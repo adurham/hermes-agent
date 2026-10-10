@@ -70,7 +70,6 @@ import {
   SIDEBAR_MAX_WIDTH,
   sidebarSide
 } from '@/store/layout'
-import { $petZoneEnabled, setPetZoneEnabled } from '@/store/pet'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $profiles } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
@@ -257,20 +256,6 @@ registry.registerMany([
       tabTitleText: () => translateNow('sidebar.terminal')
     },
     render: () => <WiredPane part="terminal" />
-  },
-  {
-    id: 'pet-zone',
-    area: 'panes',
-    title: 'pet zone',
-    data: {
-      placement: 'bottom',
-      collapsible: true,
-      height: '12vh',
-      minHeight: '6rem',
-      maxHeight: '30vh',
-      revealAliases: ['pet-zone']
-    },
-    render: () => <WiredPane part="petZone" />
   },
   {
     id: 'files',
@@ -632,15 +617,6 @@ $profiles.subscribe(profiles => setModeContext({ profileCount: profiles.length }
 $connectionsRegistry.subscribe(registry => setModeContext({ connectionCount: registry?.connections.length ?? 0 }))
 // ⌘K door onto the same pane the keybind and statusbar pill flip.
 registry.register(terminalPaletteToggle)
-
-// Pet zone: shown/hidden by the pet zone toggle in settings. Collapses to a
-// rail when off so the zone stays mounted (pet keeps its position).
-bindToolPaneCollapse(
-  'pet-zone',
-  $petZoneEnabled,
-  () => setPetZoneEnabled(false),
-  () => setPetZoneEnabled(true)
-)
 
 // Preview EXISTS only while something is previewed (old-shell semantics:
 // closing the last preview tab closes the pane; a new target opens + fronts

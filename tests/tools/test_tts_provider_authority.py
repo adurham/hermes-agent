@@ -214,3 +214,101 @@ class TestResolverAuthority:
         assert len(warnings) == 2, (
             "The same requested value must warn once; a distinct value warns again."
         )
+
+
+# ---------------------------------------------------------------------------
+# Trusted per-call provider (fork-only: desktop pet voice via /api/audio/speak)
+# ---------------------------------------------------------------------------
+
+class TestTrustedProvider:
+    """``_trusted_provider`` is the dashboard route's owner-selected voice
+    (``display.pet.voice_provider``). It must actually route to that backend,
+    while the public ``provider`` arg keeps the #90109 ignore rule."""
+
+    @staticmethod
+    def _xai_writes_audio(openai_backend):
+        def fake_xai(text, output_path, tts_config, *a, **kw):
+            Path(output_path).write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+            return output_path
+
+        openai_backend.xai_generator.side_effect = fake_xai
+
+    def test_trusted_provider_routes_to_requested_backend(
+        self, tmp_path, openai_backend, caplog
+    ):
+        from tools.tts_tool import text_to_speech_tool
+
+        self._xai_writes_audio(openai_backend)
+        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+            result = json.loads(
+                text_to_speech_tool(
+                    "Hello world",
+                    output_path=str(tmp_path / "out.mp3"),
+                    _trusted_provider="xai",
+                )
+            )
+        assert result.get("success") is True, result
+        assert result.get("provider") == "xai"
+        openai_backend.xai_generator.assert_called_once()
+        openai_backend.create.assert_not_called()
+        assert not any(
+            "Ignoring per-call TTS provider override" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_trusted_provider_does_not_mutate_cached_config(
+        self, tmp_path, openai_backend
+    ):
+        from tools import tts_tool
+
+        self._xai_writes_audio(openai_backend)
+        cfg = tts_tool._load_tts_config()
+        tts_tool.text_to_speech_tool(
+            "Hello world", output_path=str(tmp_path / "out.mp3"),
+            _trusted_provider="xai",
+        )
+        assert cfg == {"provider": "openai"}
+        # A following default call still uses the configured backend.
+        result = json.loads(
+            tts_tool.text_to_speech_tool(
+                "Hello again", output_path=str(tmp_path / "out2.mp3"))
+        )
+        assert result.get("provider") == "openai"
+
+    @pytest.mark.parametrize("blank", [None, "", "   "])
+    def test_blank_trusted_provider_uses_configured(
+        self, tmp_path, openai_backend, blank
+    ):
+        from tools.tts_tool import text_to_speech_tool
+
+        result = json.loads(
+            text_to_speech_tool(
+                "Hello world", output_path=str(tmp_path / "out.mp3"),
+                _trusted_provider=blank,
+            )
+        )
+        assert result.get("provider") == "openai"
+        openai_backend.xai_generator.assert_not_called()
+
+    def test_model_handler_cannot_reach_trusted_kwarg(
+        self, tmp_path, openai_backend
+    ):
+        """Model tool args named like the trusted kwarg are not forwarded,
+        and the schema does not advertise it."""
+        from tools.registry import registry
+        from tools.tts_tool import TTS_SCHEMA
+
+        assert "_trusted_provider" not in TTS_SCHEMA["parameters"]["properties"]
+        entry = registry.get_entry("text_to_speech")
+        result = json.loads(
+            entry.handler(
+                {
+                    "text": "Hello world",
+                    "output_path": str(tmp_path / "out.mp3"),
+                    "_trusted_provider": "xai",
+                    "provider": "xai",
+                }
+            )
+        )
+        assert result.get("provider") == "openai"
+        openai_backend.xai_generator.assert_not_called()

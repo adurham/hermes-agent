@@ -6,6 +6,7 @@ import {
   assistantTextPart,
   type ChatMessage,
   chatMessageText,
+  pendingToolCallPart,
   preserveLocalAssistantErrors,
   textPart,
   toChatMessages
@@ -1202,6 +1203,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   const inflightError = projection.inflight?.error?.trim() ?? ''
   const inflightErrorSurface = parseErrorSurface(projection.inflight?.error_surface)
   const queuedUser = projection.queued?.user?.trim() ?? ''
+  // The backend's currently-open tool call, when the turn is mid-tool.
+  const inflightTool = projection.inflight?.tool?.tool_call_id ? projection.inflight.tool : null
 
   if (
     !inflightUser &&
@@ -1209,7 +1212,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     !inflightStreaming &&
     !inflightError &&
     !queuedUser &&
-    !inflightCorrections.length
+    !inflightCorrections.length &&
+    !inflightTool
   ) {
     return messages
   }
@@ -1444,8 +1448,24 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     }
   }
 
+  // Resume mid-tool: the text-only dump cannot express the open tool call, so
+  // without this a cold resume shows a bare "thinking" bubble until the tool
+  // completes. Project `inflight.tool` as a pending tool-call part on this
+  // turn's live assistant row, unless the live tail already carries it.
+  const resumed =
+    inflightTool && !inflightError && !turnAlreadyCommitted
+      ? projectInflightToolCall(messages, projected, {
+          liveStreamId,
+          tool: inflightTool,
+          turnTailStart: latestUserIndex + 1
+        })
+      : { messages, projected }
+
+  const baseMessages = resumed.messages
+  const projectedTail = resumed.projected
+
   if (queuedUser) {
-    projected.push({
+    projectedTail.push({
       id: `user-queued-${sessionId}`,
       role: 'user',
       parts: [textPart(queuedUser)]
@@ -1455,10 +1475,72 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   if (foldTarget) {
     // Splice the folded live row (plus any corrections/queued tail) into the
     // committed partial's slot instead of appending beside it.
-    return [...messages.slice(0, committedPartialAt), ...projected, ...messages.slice(committedPartialAt + 1)]
+    return [
+      ...baseMessages.slice(0, committedPartialAt),
+      ...projectedTail,
+      ...baseMessages.slice(committedPartialAt + 1)
+    ]
   }
 
-  return projected.length ? [...messages, ...projected] : messages
+  return projectedTail.length ? [...baseMessages, ...projectedTail] : baseMessages
+}
+
+type InflightTool = NonNullable<NonNullable<LiveSessionProjection['inflight']>['tool']>
+
+/**
+ * Attach the resumed turn's open tool call (`inflight.tool`) as a pending
+ * tool-call part. Skips when this turn's tail (stored or projected) already
+ * holds a tool-call part with that id — the live stream / journal delivered
+ * it. Otherwise it lands on the projected live assistant row, else on the
+ * stored live-tail assistant row, else on a fresh pending row.
+ */
+function projectInflightToolCall(
+  messages: ChatMessage[],
+  projected: ChatMessage[],
+  { liveStreamId, tool, turnTailStart }: { liveStreamId: string; tool: InflightTool; turnTailStart: number }
+): { messages: ChatMessage[]; projected: ChatMessage[] } {
+  const hasToolCall = (message: ChatMessage) =>
+    message.parts.some(part => part.type === 'tool-call' && part.toolCallId === tool.tool_call_id)
+
+  const storedTail = messages.slice(Math.max(turnTailStart, 0))
+
+  if (storedTail.some(hasToolCall) || projected.some(hasToolCall)) {
+    return { messages, projected }
+  }
+
+  const part = pendingToolCallPart(tool.tool_call_id, tool.name, tool.args)
+
+  const withPart = (message: ChatMessage): ChatMessage => ({
+    ...message,
+    parts: [...message.parts, part],
+    pending: true
+  })
+
+  const projectedIndex = projected.findLastIndex(message => message.role === 'assistant')
+
+  if (projectedIndex >= 0) {
+    const next = [...projected]
+    next[projectedIndex] = withPart(projected[projectedIndex])
+
+    return { messages, projected: next }
+  }
+
+  const storedIndex = messages.findLastIndex(
+    (message, index) =>
+      index >= turnTailStart && message.role === 'assistant' && (message.id === liveStreamId || isLiveTailRow(message))
+  )
+
+  if (storedIndex >= 0) {
+    const next = [...messages]
+    next[storedIndex] = withPart(messages[storedIndex])
+
+    return { messages: next, projected }
+  }
+
+  return {
+    messages,
+    projected: [...projected, { id: liveStreamId, role: 'assistant', parts: [part], pending: true }]
+  }
 }
 
 function normalizedMessageText(message: ChatMessage): string {

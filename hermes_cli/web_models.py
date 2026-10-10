@@ -233,6 +233,11 @@ class DebugShareRequest(BaseModel):
 
 class TTSSpeakRequest(BaseModel):
     text: str
+    # Fork-only (desktop pet voice): a ``tts.provider`` / ``tts.providers.<name>`` name to use
+    # for THIS call only (``display.pet.voice_provider``, e.g. ``miku``). None/blank -> the
+    # configured ``tts.provider``. Forwarded via ``text_to_speech_tool``'s trusted-caller kwarg,
+    # never via the model-facing ``provider`` override (#90109).
+    provider: Optional[str] = None
 
 class VoiceLiveSessionRequest(BaseModel):
     """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior

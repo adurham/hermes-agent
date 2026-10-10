@@ -237,9 +237,6 @@ exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
 ddgs = ["ddgs==9.16.0"]
-# Fork: free web_extract backend (plugins/web/trafilatura). Opt-in like ddgs: picked in `hermes tools`, installed through PM
-# (hermes_cli/tools_config_post_setup.py `_python_hook`). 2.3.x postdates the uv exclude-newer cutoff below.
-trafilatura = ["trafilatura==2.2.0"]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
@@ -266,7 +263,6 @@ piper = [
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
-hindsight = ["hindsight-client==0.6.1"]
 google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
@@ -640,27 +636,7 @@ override-dependencies = [
   # Remove this line when misaki drops it or a 3.14-capable release fits.
   "spacy-curated-transformers; sys_platform == 'never'",
 ]
-# Absolute RFC 3339 UTC timestamp (with explicit "Z"), NOT a relative
-# duration ("7 days" etc) and NOT a bare date ("2026-07-19"). Two footguns
-# ruled out here, both confirmed the hard way on this exact line:
-#
-# 1. A relative duration recomputes a different absolute cutoff on every
-#    `uv lock`/`uv sync --locked` invocation, so the check drifts out of
-#    sync with the committed uv.lock within hours — with zero real
-#    dependency changes. Known upstream footgun: removed once (PR #21221,
-#    May 7) then reintroduced the same day in the v0.13.0 release commit,
-#    and reintroduced again since (see git log on this file).
-# 2. A bare date with no time/offset ("2026-07-19") is resolved in the
-#    LOCAL SYSTEM TIMEZONE of whatever machine runs `uv lock`/`uv sync`,
-#    not UTC. `uv lock` on a CDT (UTC-5) laptop bakes in a different
-#    absolute instant than `uv sync --locked` on GitHub Actions' UTC
-#    runners — same nominal date, different cutoff, same "lockfile needs
-#    updating" failure as (1).
-#
-# Bump this timestamp by hand + `uv lock` when you want a newer dependency
-# cooldown window. Always include the trailing "Z" — do NOT put a relative
-# string or a bare date back here.
-exclude-newer = "2026-09-25T00:00:00Z"
+exclude-newer = "14 days"
 # Allow anthropic past the cutoff: 0.100.0 (2026-05-06) ships fields
 # we mirror to match Claude Code's wire format. Selective override only.
 # vercel/nemo-relay/huggingface_hub are permanently exempted (upstream
@@ -759,7 +735,6 @@ google-auth-httplib2 = false
 google-auth-oauthlib = false
 google-cloud-pubsub = false
 h2 = false
-hindsight-client = false
 # httpcore2: httpx2 exact-pins it (httpcore2==<same version>), so it moves only with a reviewed httpx2 bump;
 # 2.12.0 (the GHSA-7mj9/8xx6/f2fp/h4x7/pf96 fix) postdates the cutoff.
 httpcore2 = false

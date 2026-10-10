@@ -1155,8 +1155,6 @@ export const en: Translations = {
         noneAvailable: 'No pets available to turn on right now.',
         turnOnFailed: 'Could not turn the pet on.',
         turnOffFailed: 'Could not turn the pet off.',
-        zoneTitle: 'Pet Zone',
-        zoneDesc: 'Confine the pet to a dedicated pane in the layout instead of the full window.',
         voiceTitle: 'Pet voice',
         voiceDesc: 'Announce aloud when a turn finishes or needs your input — not the running status chatter.'
       }
@@ -4523,7 +4521,6 @@ export const en: Translations = {
     toggleStripTab: title => `Toggle ${title} tab`,
     minimize: 'Minimize',
     restore: 'Restore',
-    closeTab: label => `Close ${label}`,
     closeRunningTitle: 'Close running tab?',
     closeRunningBody:
       'This chat is still working (or waiting on your input). Closing the tab hides it — the session keeps its progress and can be reopened from the sidebar.',

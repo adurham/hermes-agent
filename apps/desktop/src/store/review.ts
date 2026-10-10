@@ -41,7 +41,6 @@ const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
 // Persisted so the pane stays open across reloads (like the other rail panes).
-// Persisted so the pane stays open across reloads (like the other rail panes).
 // Simple mode rests it closed without touching the preference; ⌘G still opens
 // it for the session.
 const $reviewOpenPref = persistentAtom(OPEN_KEY, false, Codecs.bool)

@@ -25,7 +25,7 @@ silent.
 import json
 from unittest.mock import MagicMock, patch
 
-import hermes_cli.ruflo_agents as ruflo
+import hermes_cli.personas as ruflo
 import tools.async_delegation as ad
 import tools.delegate_tool as dt
 

@@ -11,29 +11,6 @@ import cli as cli_mod
 from cli import HermesCLI
 
 
-@pytest.fixture(autouse=True)
-def _reset_active_skin():
-    """Force the "default" skin (status_glyph "⚕") for every test here.
-
-    cli.py runs ``init_skin_from_config(CLI_CONFIG)`` at import time, which
-    reads the OPERATOR's real ``~/.hermes/config.yaml`` and sets the
-    module-level ``_active_skin`` singleton in hermes_cli/skin_engine.py.
-    On any machine with a non-default ``display.skin`` configured (e.g. a
-    custom branded skin overriding ``status_glyph``), every status-bar test
-    in this file that asserts the literal default glyph fails -- not
-    because of a code bug, but because the test suite is silently coupled
-    to whatever skin happens to be active on the machine running pytest.
-    Reset to "default" before each test and restore afterward so the suite
-    is deterministic regardless of the operator's local skin config.
-    """
-    from hermes_cli.skin_engine import get_active_skin_name, set_active_skin
-
-    original = get_active_skin_name()
-    set_active_skin("default")
-    yield
-    set_active_skin(original)
-
-
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
@@ -106,31 +83,6 @@ class TestCLIStatusBar:
         snapshot = cli_obj._get_status_bar_snapshot()
 
         assert snapshot["session_title"] == "user-profiles"
-
-    def test_session_title_badge_hidden_when_disabled(self):
-        """FORK: display.status_bar_session_title=False hides the badge
-        entirely, without touching title generation/persistence."""
-        cli_obj = _make_cli()
-        cli_obj._status_bar_session_title_visible = False
-        cli_obj._pending_title = "weekly-digest"
-
-        text = cli_obj._build_status_bar_text(width=80)
-
-        assert "weekly-digest" not in text
-        # No badge segment means the bar should just be the plain content,
-        # not padded/right-aligned to make room for one.
-        assert not text.endswith(" ")
-
-    def test_session_title_badge_shown_by_default(self):
-        """Default (attribute absent, matching a freshly-constructed real
-        HermesCLI before __init__ sets it) must preserve upstream behaviour."""
-        cli_obj = _make_cli()
-        assert not hasattr(cli_obj, "_status_bar_session_title_visible")
-        cli_obj._pending_title = "weekly-digest"
-
-        text = cli_obj._build_status_bar_text(width=80)
-
-        assert "weekly-digest" in text
 
     def test_status_bar_config_helper_treats_persisted_off_as_hidden(self):
         for value in (False, "off", "false", "hidden", "no", "0"):

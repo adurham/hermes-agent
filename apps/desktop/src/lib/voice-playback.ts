@@ -85,7 +85,8 @@ export interface VoicePlaybackOptions extends OwnerScope {
    *  answered `fallback` this reply; the relay may not have been probed. */
   syncOnly?: boolean
   source: VoicePlaybackSource
-  /** Bypass the user's configured tts.provider for this call (e.g. the pet's own voice). */
+  /** Bypass the user's configured tts.provider for this call (e.g. the pet's own voice).
+   *  Implies `syncOnly` in playSpeechText: only the POST /api/audio/speak rung carries it. */
   provider?: string
   /** Stable across a live-id rewrite. A second start of this turn must not stop the first. */
   turnKey?: string
@@ -762,7 +763,12 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
   try {
     // Ladder: client-direct synthesis (profile's own TTS, no gateway audio
     // hop) → streaming WS relay → POST data-URL fallback.
-    const direct = options.syncOnly ? null : await directTtsConfig(options).catch(() => null)
+    // A per-call `provider` (the pet's own voice, display.pet.voice_provider)
+    // is only honored by the POST rung: client-direct resolves the profile's
+    // configured tts.provider and the speak-stream WS takes no provider. So
+    // treat it as syncOnly, else those rungs answer first in the default voice.
+    const syncOnly = Boolean(options.syncOnly || options.provider?.trim())
+    const direct = syncOnly ? null : await directTtsConfig(options).catch(() => null)
 
     if (direct && isCurrent()) {
       const session = openClientDirectSpeechSession(direct, options)
@@ -786,7 +792,7 @@ async function startSpeechText(text: string, options: VoicePlaybackOptions): Pro
       return false
     }
 
-    const streamUrl = options.syncOnly ? null : await resolveSpeakStreamUrl(options)
+    const streamUrl = syncOnly ? null : await resolveSpeakStreamUrl(options)
 
     if (streamUrl && isCurrent()) {
       const outcome = await playSpeechStream(streamUrl, speakableText, options)

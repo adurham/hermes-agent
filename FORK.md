@@ -33,10 +33,11 @@ a zero conflict-marker grep + the undef/shadow scans before staging.
    rc 0), run with `HERMES_HOME`/`HERMES_RUNTIME_DIR` set OUTSIDE `~/.hermes`. The lock keeps the
    fork pins (anthropic 0.100.0, httpx2 2.12.0, anyio ≥4.14.2, hindsight-client 0.6.1,
    pytest-randomly/-cov, coverage). `scripts/setup-merge-drivers.sh` is now a retirement stub;
-   the raw-`uv lock` driver is not re-registered.
+   the raw-`uv lock` driver is not re-registered. **(2026-10-09 de-fork round 2):** RETIRED — the stub
+   is deleted too; `.gitattributes` `merge=ours` is the whole mechanism now.
 2. `pyproject.toml` — upstream moved the `dev` extra to `[dependency-groups]`; the fork's test
    tooling re-homed into the `dev`/`test` groups. New `trafilatura = ["trafilatura==2.2.0"]`
-   extra (fork, see defects). `exclude-newer` absolute-UTC pin kept, cutoff bumped to 2026-09-25.
+   extra (fork, see defects; **(2026-10-09 de-fork round 2):** RETIRED with the trafilatura backend). `exclude-newer`: **(2026-10-09 de-fork round 2):** RETIRED — back to upstream's relative `exclude-newer = "14 days"` (uv ≥0.12 stores the span itself as `exclude-newer-span = "P14D"`, so the old drift rationale no longer applies; verified by `uv lock --check` under UTC/Chicago/Tokyo and a PM relock).
 3. Session DB (`hermes_state*.py`) — `hermes_state_ids.py` took upstream verbatim: upstream's
    `SESSION_ID_RECOGNIZERS` now independently cover the fork's PR-branch content (cron/bg/room +
    api_/run_/uuid shapes; the fork's 12 filed upstream PRs remain closed unmerged). The
@@ -50,6 +51,11 @@ a zero conflict-marker grep + the undef/shadow scans before staging.
    the tag that are NOT reached from `ci.yaml` on the fork stay ungated by upstream design:
    desktop-bundled-release, windows-install-update-e2e, windows-venv-e2e,
    install-e2e-windows-run, docker release-publish, tests-os e2e-windows.
+   **(2026-10-09 de-fork round 2):** CORRECTED — `install-e2e-windows-run` IS reached on the fork: it is
+   called from `install-e2e.yml` (2×-daily schedule) and `stable-release.yml`, so its
+   32-core Windows jobs sat queued (the stuck-queue class the 2026-09-07 large-runner entry
+   fixed). Both job `if:`s now carry `github.repository == 'NousResearch/hermes-agent' &&`.
+   The other names in this list were not re-checked in this pass.
 5. Docs/installers/branding — README*/CONTRIBUTING/install.sh/install.ps1/skills SKILL.md taken
    from upstream; `scripts/sync-fork-branding.py` re-applies the fork URL rebrand and was re-run
    at the end of the merge (0 further changes — the rebrand survived).
@@ -69,6 +75,7 @@ a zero conflict-marker grep + the undef/shadow scans before staging.
    `trafilatura==2.2.0` extra, and rewrote `tests/hermes_cli/test_post_setup_hooks_cover_declared_keys.py`
    as data contracts (every declared key resolves to a hook; every hook extra is declared in
    pyproject; trafilatura installs via `pm.sync_venv(["trafilatura"], explicit=True)`).
+   **(2026-10-09 de-fork round 2):** RETIRED — the trafilatura backend, this hook and the extra are deleted.
 2. `agent/auxiliary_client.py` `_try_anthropic` — the fork's `sk-ant-` placeholder-key filter was
    skipped for ANY `explicit_base_url`, and the auto path hands the canonical
    `https://api.anthropic.com` as `explicit_base_url`, so the filter was effectively disabled on
@@ -81,6 +88,8 @@ a zero conflict-marker grep + the undef/shadow scans before staging.
    (`scripts/ts_import_resolve.py`, kept with the sync tools) now covers this class.
 4. `tests/gateway/test_matrix_message_length.py` — asserted the old 16000/65535 limits while
    upstream's adapter moved DEFAULT/CEILING to `45_000//3`. Now asserts the exported constants.
+   **(2026-10-09 de-fork round 2):** RETIRED — the file is now upstream's verbatim; the fork's 5 retained
+   tests (upstream pruned them in `b015e59fb92`) are gone.
 5. `tests/tui_gateway/test_slash_worker_mcp_discovery.py` — duplicate `mcp_discovery_timeout`
    dict key (fork 15.0 vs tag 30; kept the tag value); duplicate import in
    `tests/hermes_cli/test_doctor.py`.
@@ -137,7 +146,8 @@ silently lost (each invisible to conflict markers):
   `tools/bridges/cc_proxy_mcp.py` stdin=DEVNULL (×6, upstream's stricter guard); `cli.py` +
   `cli_config_load.py` stale env-map removal (restores vercel_image); `web_server_config.py`
   task-slot vs provider check; `cli.py` Chinese reasoning-tag lists (local copies hid upstream's);
-  `scripts/corporate-rip.py` hermes_yaml.
+  `scripts/corporate-rip.py` hermes_yaml. **(2026-10-09 de-fork round 2):** both files since deleted (cc_proxy
+  bridge and `corporate-rip.py` RETIRED).
 
 **Test repairs** (42 files): patch-target retargets from the removed `run_agent` PLUGIN-COMPAT
 re-export to the modules production reads (`model_tools`, `agent.process_bootstrap`); pyyaml→
@@ -272,9 +282,9 @@ default); 16926 — redundant exemption dropped; live-config dead keys pruned (t
 files):** `use-background-queue-preservation.test.tsx` restored verbatim from the tag (the ref
 shape; the fork's getter shape was superseded by the 10058 restore); fork-branded URLs retargeted
 in the `version-details` and `boot-failure-overlay` tests (adurham); the fork's `pet.*` /
-`zones.closeTab` keys added to `overlay-gaps.json` (ar/de/es/fr/ru); the `@/store/session` +
+`zones.closeTab` (round 2: retired with the pane-tab `closeLabel`) keys added to `overlay-gaps.json` (ar/de/es/fr/ru); the `@/store/session` +
 `./surfaces` mocks completed (`$connection`, `$workspaceCwdOwner`, `$unlistedSessionOwnerRows`,
-`$lastReadAtBySessionId`, `$currentServiceTier`, session fn no-ops; `PetZoneSurface`); GLM casing
+`$lastReadAtBySessionId`, `$currentServiceTier`, session fn no-ops; `PetZoneSurface` — gone with the pet-zone pane, round 2); GLM casing
 aligned in the fallback-label tests; the new delegate-role test switched to `hermes_yaml` (PyYAML
 is not in the CI env). Verified: 9/9 desktop files + 56 tests green, renderer tsc rc 0.
 
@@ -284,6 +294,22 @@ upstream/backlog set (compare5: 0 regressions, 13 cleared vs run 4); renderer + 
 rc 0; vitest ui 1,217/1,217 files, 10,781/10,781 tests passed. The earlier run's 7 flags
 (6 crash-killed tui_gateway files + connectors catalog) re-ran green (767/767) — transient load
 flakes, not regressions.
+
+### De-fork round 2 — 2026-10-09 (owner bar: "not needed + not used → defork"; 184 items re-verified; 22 retirements + fixes executed)
+
+**The bar (owner, verbatim intent):** "if we don't NEED it in the fork and it's not a feature we're using then we should defork it." Applied as: every surviving fork divergence must carry an explicit + good + DOCUMENTED reason; dead reason or none → align to upstream; reason alive AND used → keep (with the reason written down). "Has callers/tests" never proves need — and a retirement candidate with documented live use goes BACK to the owner (the cc_proxy bridge + trafilatura backend were flagged, then retired on the owner's "spoon it" call).
+
+**Method:** 10 read-only audit units re-examined all 184 items round 1 had kept (135 KEEP-OK · 25 DOC-GAP · 11 STALE · 8 NOT-JUSTIFIED · 4 FIX-MISSING · 2 CONVERGED-DONE); worklists + per-item JSONL evidence under `defork2/`, every retirement claim parent-verified against the trees (two units ran partially on an ollama fallback after an opus rate-limit; their candidates were re-checked by hand). Gate: `defork2/DEFORK2_GATE.md`; owner approved all tiers.
+
+**Retired (22):** react/react-dom overrides; exclude-newer absolute pin; sr-coder alias (config owns the role; the alias would have mis-tiered); Nerd Font fallback (upstream `terminal.font_family` covers it; value set before landing); banner disabled-toolsets filter; Tavily keyed-only policy; delegate deadline remnants (static floor covers it; consult hook stays); status-bar title override (`display.status_bar.fields` hides it); web-gate hermeticity patches; two test-only fix sets + the setgid chunk; two fork-retained upstream-pruned test files (restored verbatim); hindsight extra; pane-tab closeLabel + `zones.closeTab`; `.upstream-candidates/`; corporate-rip; hermes_hard_eval + fix_duration_cache_paths; setup-merge-drivers stub; pet-zone pane (+ its 14841 fix); cc_proxy bridge; trafilatura backend.
+
+**Fixed first (bugs):** CI 32-core Windows jobs gated to upstream's repo (they run on the fork's twice-daily schedule); `auxiliary.pet_dialogue` DEFAULT_CONFIG restored; WorkspaceHeader `ref`/`...rest` restored (lane-header right-click menus); resume-mid-tool consumer wired (`pendingToolCallPart` projected on resume); pet voice restored end-to-end (request-model provider field + trusted-path forwarding that leaves the model-facing override rule closed + desktop ladder skips direct/stream when a provider is set; tests: test_tts_provider_authority, the /api/audio/speak route, voice-playback for workstation); leftovers (review.ts dup comment, chrome.tsx unused exports, subagent-dock i18n, ruflo_agents shim deleted → personas, dead `status_bar_session_title` key removed from config_defaults).
+
+**Config (live, backed up):** `display.status_bar.fields` (18 fields, no title) replaces the retired key; `terminal.font_family` = the Nerd Font stack the fork had hardcoded; trafilatura pins removed from main + exo profiles.
+
+**Locks:** `uv.lock` relocked via PM (`--lock-only` + `--check-lock` rc 0; upstream's relative span now recorded; hindsight + trafilatura dependency trees dropped; fork pins intact). `package-lock.json` needed NO change — a sandbox regen with the overrides gone is annotation-only (react/react-dom still resolve single 19.2.7).
+
+**Suite:** full workstation re-run pending for this head.
 
 ### Fork-only fix — 2026-10-06 (the "impossible timer" corruption ROOT-CAUSED: VS-16 width divergence stranded diff-repaint cells — badge glyphs de-VS16'd)
 
@@ -661,7 +687,7 @@ re-exports in `ruflo_agents.py`, and 12 tests that pinned the old behaviour. Kep
 `LAST_KNOWN_GOOD_TIERS`, `suggest_retunes`, `/delegation list|stats|parallel|depth|<role> <model>`.
 The single source for role routing is homelab `ansible/roles/hermes_gateway/vars/model_routing.yml`.
 
-**Verified:** 310 tests pass, 3 skipped, across the personas / ruflo shim / model_tiers / role_aliases /
+**Verified:** 310 tests pass, 3 skipped, across the personas / ruflo shim / model_tiers / role_aliases (RETIRED round 2) /
 delegation_stats / commands / delegate suites. New guard
 `tests/hermes_cli/test_personas.py::test_no_bulk_default_fill_of_model_by_role`. `grep` for
 `SUGGESTED_ROLE_MODELS|apply_suggested_defaults` over all `.py`/`.md` outside FORK.md returns nothing.
@@ -678,6 +704,8 @@ Three independent defects in the delegation role machinery, all fork-only code (
    the whole spawn with an error that lists the known roles. Unaffected: `agent_type='auto'`,
    auto-route picks, tier roles, aliases (`sr-coder` -> `coder`), and installs with no roster configured
    (fail-open). The two tests that asserted the old fall-through now assert the refusal.
+   **(2026-10-09 de-fork round 2):** the `ROLE_ALIASES` / `sr-coder` -> `coder` path named here is RETIRED (see the
+   2026-08-23 `sr-coder` role alias entry); `sr-coder` resolves through its own `model_by_role` entry.
    Consequence for config: removing a `model_by_role` key is now loud, which is what makes pruning the
    ~49 never-dispatched roles safe (62 roles, 5 persona files, ~13 ever referenced).
 2. **`delegation_stats.json` stopped growing on 2026-09-16.** The `record()` call lived in the old
@@ -1226,7 +1254,8 @@ hygiene. Full reports: `~/.hermes/cache/scratch/defork-2026-09-24/*.md`
    dedupe/cache" claim in the soft-fork row — that was never true.
 6. `tests/tools/test_web_tools_tavily.py` — was byte-identical to upstream's and
    asserting the keyless header the fork deliberately removed (2 genuine
-   failures); rewritten to assert the fork's actual keyed-only contract.
+   failures); rewritten to assert the fork's actual keyed-only contract. **(2026-10-09 de-fork round 2):**
+   keyed-only is RETIRED; the test asserts upstream's keyless opt-in again.
 7. `web.search_chain` now DECLARED in `hermes_cli/config_defaults.py` (was
    read by `_get_search_chain()` but never in DEFAULT_CONFIG; default `[]` =
    single-provider behavior).
@@ -1269,14 +1298,15 @@ generated inventory; superseded by this file, which is the only ref to it),
 `hermes-already-has-routines.md` (zero inbound refs), and `cron-heartbeat` /
 `cron-started` (runtime state accidentally committed at merge `c046c29dca`,
 absent from both parents and upstream) — both now in `.gitignore`.
-`scripts/corporate-rip.py`'s stale toolset map repaired from primary evidence
+`scripts/corporate-rip.py` (RETIRED 2026-10-09 de-fork round 2)'s stale toolset map repaired from primary evidence
 (4 yuanbao paths renamed to `tests/gateway/`, 1 feishu_doc test purged with no
 successor, moa+rl entries retired — both features were deleted outright
 upstream). `.upstream-candidates/` KEPT deliberately (all 7 PRs closed
 unmerged; content already in the fork). **(2026-10-09 de-fork pass):** 3 of the 7 are now implemented
 independently upstream (`desktop-model-picker-anthropic-fix.diff`, `mcp-orphaned-task-fix.diff`,
 `profile-deletion-hygiene-fix.diff`) and are removed. The other 4 stay because their fixes
-are still fork-only hunks.
+are still fork-only hunks. **(2026-10-09 de-fork round 2):** RETIRED — the remaining 4 all fail `git apply
+--check` and their real fixes live in code, so `.upstream-candidates/` is deleted.
 
 **Explicitly NOT retired after re-verification** (same shape as every prior
 pass): the whole memory subsystem (warm-tier migration onto upstream's
@@ -1358,7 +1388,8 @@ methods → `cli_stream_mixin.py` / `cli_tui_mixin.py`. Fork behaviour preserved
 in the unions: post-stream deferral drain, reasoning indent/hard-wrap
 (`_wrap_stream_line` + `_STREAM_PAD`), table-cell markdown strip, picker-first
 `/reasoning` routing, `/busy` patchable seams, cost reporting in `_show_usage`,
-`disabled_toolsets` in `show_banner`. Deliberate calls: `_init_toolsets` keeps
+`disabled_toolsets` in `show_banner` (RETIRED 2026-10-09 de-fork round 2 — see the 2026-08-14
+`NameError: disabled_toolsets` entry). Deliberate calls: `_init_toolsets` keeps
 upstream's non-blocking `get_plugin_toolset_keys_nowait()` (the fork's eager
 `discover_plugins()` broke `TestPluginToolsetStartupValidation` and the TUI
 launcher skip path); the mixins' `None` sentinels were kept over the copies'
@@ -1377,7 +1408,8 @@ effort label, queued `/steer` note, display-true provider prompt count, and the
 per-turn context delta + cause classification; both renderers now share
 `_status_bar_segments()` so fragments cannot drift.
 `_get_status_bar_session_title` stays KEEP-FORK (config gate +
-pending-title fast path) with a FORK provenance comment; `_format_context_delta`
+pending-title fast path) with a FORK provenance comment (**(2026-10-09 de-fork round 2):** RETIRED — the
+`cli.py` shadow is deleted; the mixin's upstream copy runs); `_format_context_delta`
 stays in `cli.py` (no mixin defines it — no shadow). Verified by the parent:
 all 6 resolve to the mixin, zero class-body copies remain, 136 tests pass across
 the status-bar blast radius. **All 25 Phase C MERGE methods are now de-forked.**
@@ -2775,6 +2807,8 @@ full-wall) and gains `avg_ttft_s`. Output-token accounting
 
 **Status (2026-10-09 de-fork pass): LIVE (updated) — upstream later reversed its `d6773cf26f` removal and independently shipped Tavily as a plugin (`428e084dcd0`), with `KEYLESS=True` and an opt-in keyless mode (`X-Tavily-Access-Mode: keyless`) used only when explicitly selected. Both sides keep Tavily out of the default-on keyless ring (exa/parallel/firecrawl/keenable), so the default-egress concern is now shared. The fork's stricter policy stays: `plugins/web/tavily/provider.py` sets `KEYLESS=False` and requires `TAVILY_API_KEY` even when Tavily is selected explicitly. This is a deliberate owner-chosen divergence from upstream's keyless opt-in, not retired. "Divergence from upstream's removal" below is now "divergence from upstream's keyless opt-in". Kept for history.**
 
+**(2026-10-09 de-fork round 2):** RETIRED — zero-config keyless egress is impossible upstream (Tavily is outside the default-on ring and its keyless mode needs an explicit pick), so the stricter policy guarded nothing. `plugins/web/tavily/` is restored verbatim from upstream (`KEYLESS=True` + opt-in keyless) and the fork-only `tests/plugins/web/test_tavily_provider.py` is deleted. The LIVE status above is history.
+
 **What happened and what this commit does.** The Tavily web-search provider
 plugin landed earlier today (7ce185fe65) as a faithful port of a keyed-only
 WIP: it required `TAVILY_API_KEY`, set `payload["api_key"]`, raised a clear
@@ -2831,7 +2865,8 @@ lockfiles, node_modules, build artifacts): **218 fork-only + 703 soft-fork**
 landed 2026-09-01 — consult-tool override, pyproject test-tooling
 exemptions, Tavily plugin — touching 10 paths: 6 fork-only, 3 soft-fork,
 1 deletion). Fork-only by area: 106 tests, 21 tools, 18 agent, 11 hermes_cli,
-10 apps/desktop, 8 scripts, 8 plugins, 7 `.upstream-candidates`, 5 personas,
+10 apps/desktop, 8 scripts, 8 plugins, 7 `.upstream-candidates` (dir RETIRED 2026-10-09
+de-fork round 2), 5 personas,
 4 local-packages, 4 docs, plus scattered docs/website entries.
 
 **Coverage denominator.** All 40 non-test fork-only module/file paths were
@@ -2928,7 +2963,7 @@ the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
   superset is consumed by upstream's own new module; coherent by
   construction. `agent/fork/rate_limit_tracker.py` (80%/90% hot-zone
   observability events) remains fork-only.
-- web provider plugins `claude_code`, `trafilatura` — absent upstream
+- web provider plugins `claude_code`, `trafilatura` **[RETIRED 2026-10-09 de-fork round 2]** — absent upstream
   (its bundled set: brave_free, ddgs, exa, firecrawl, keenable, parallel,
   searxng, xai + keyless_mcp). Notably upstream REMOVED its Tavily backend
   in this range (`d6773cf26f` "remove the Tavily web backend; keyless ring
@@ -2943,7 +2978,7 @@ the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
   `model_by_role`/`persona`-in-delegation greps 0 upstream.
 - agent-messaging stack (`tools/agent_messaging_contract.py`,
   `agent_messaging_tools.py`, `agent_messaging_transport_a.py`,
-  `gateway/agent_messaging_bridge.py`, `tools/bridges/cc_proxy_mcp.py`):
+  `gateway/agent_messaging_bridge.py`, `tools/bridges/cc_proxy_mcp.py` **[RETIRED 2026-10-09 de-fork round 2]**):
   0 upstream hits.
 - memory stack (`tools/memory_warm.py`, `tools/memory_extraction/*`,
   `tools/memory_auto_feedback/*`, `hermes_cli/memory_confirm.py`) and
@@ -2980,6 +3015,8 @@ the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
   `sync-fork-branding.py`,
   `setup-merge-drivers.sh`, `check-unspecced-sdk-mocks.py`): upstream
   `scripts/` enumerated, no name/purpose collisions.
+  **(2026-10-09 de-fork round 2):** `corporate-rip.py`, `hermes_hard_eval.py` and `setup-merge-drivers.sh` are
+  RETIRED (deleted).
   *(Amended 2026-09-26 — `refresh_cc_canonical.sh` was on this list and has since been deleted
   with Slice B, along with the `agent/cc_canonical/` tree it regenerated.)*
 
@@ -3005,6 +3042,8 @@ further; the fork's remaining surface is deliberate.
 ### Fix — 2026-09-01 (web tool gate missed keyed plugin providers; 4 stale test failures fixed — 2 pre-existing since pre-sync)
 
 **Status (2026-10-09 de-fork pass): PARTIAL — Bug 1 HISTORICAL — upstream's `check_web_api_key` now runs the same final plugin-registry walk (`get_active_*_provider` + `_provider_is_ready`), so the registry walk in the tree has upstream's shape and Bug 1 is not a fork delta. The fork's remaining code delta in that function is the explicit-config short-circuit, a separate #78412 regression guard. Bug 2 (test `Path.home()` isolation) is still fork-only. Bug 3's tests left with `tests/tools/test_web_providers_claude_code.py`. Kept for history.**
+
+**(2026-10-09 de-fork round 2):** RETIRED (Bug 2) — the Claude Code credentials probe the `Path.home()` patches hid is gone from both trees, so the test-hermeticity patches and their stale comments are removed from `tests/tools/test_web_tools_config.py`. The explicit-config short-circuit stays.
 
 Found by the systematic de-fork audit below while exercising the web-search
 stack's real test suites (the audit's verification step), not by inspection.
@@ -3144,6 +3183,8 @@ avoid scope creep; flagged for triage.
 ### Feature — 2026-09-01 (Tavily web-search provider plugin)
 
 **Status (2026-10-09 de-fork pass): SUPERSEDED / HISTORICAL — the plugin this entry added is now upstream's own (`428e084dcd0`, with the same headers, base URL and capabilities). The keyless-ring change described here was deliberately reversed by the "Tavily kept keyed-only" entry and is absent from the tree (`plugins/web/keyless_mcp.py` matches the tag). Do NOT restore `plugins/web/tavily/` from upstream on this entry's basis: the remaining tavily delta and `tests/plugins/web/test_tavily_provider.py` now implement the keyed-only entry. Kept for history.**
+
+**(2026-10-09 de-fork round 2):** cross-ref update — the "Tavily kept keyed-only" entry is itself RETIRED: `plugins/web/tavily/` IS now upstream's verbatim and `test_tavily_provider.py` is deleted, so the "do NOT restore" caution above no longer applies.
 
 **Problem:** the fork had no Tavily web-search/extract backend. Tavily
 offers a keyless public tier (rate-limited) plus a keyed tier, which slots
@@ -4016,7 +4057,8 @@ reusing existing machinery in both rather than inventing new retry logic:
   `agent/agent_init.py` already uses for the global chain's `🔄 Fallback
   chain...` banner), and `logger.info` records it. No further runtime
   fallback is attached for this hop — one hop only, matching the existing
-  `ROLE_ALIASES` "aliases don't chain" precedent in `personas.py`. If the
+  `ROLE_ALIASES` "aliases don't chain" precedent in `personas.py` (alias table
+  RETIRED 2026-10-09 de-fork round 2; the one-hop rule stands on its own). If the
   fallback ALSO fails to resolve, the loud `ValueError` names BOTH
   failures and the whole batch refuses exactly like today's
   no-fallback-configured case — no silent third attempt.
@@ -4238,7 +4280,7 @@ problem:
   importer set identical to upstream's.
 * **`plugins/web/keenable/` + `plugins/web/keyless_mcp.py` vs
   `plugins/web/trafilatura/`.** Flagged for Adam below — this one is close
-  enough to matter.
+  enough to matter. (Trafilatura RETIRED 2026-10-09 de-fork round 2.)
 * **`hermes_cli/worktree_cmd.py` / `worktree_gc.py` / `update_receipt.py` /
   `update_inventory.py` / `process_identity.py` / `relay_plugin_cutover.py`
   and the 5 new preview/tour tools (all new upstream this delta).** Checked
@@ -4298,6 +4340,8 @@ resolved here. Nothing below was removed or changed.
    If no: delete `plugins/web/trafilatura/`, the `post_setup_key ==
    "trafilatura"` pip-install block in `hermes_cli/tools_config.py`, and the
    `is_available()` package comment.
+   **(2026-10-09 de-fork round 2):** RETIRED — owner chose retire: the plugin, the post-setup hook and the
+   pyproject extra are deleted; the profiles' `web_extract` pins are cleaned in the same pass.
 2. **`tools/swarm_board.py` — status unchanged, still yours to call.** Re-checked
    against `v2026.8.19`: still zero upstream equivalent. The nearest thing,
    `hermes_cli/kanban_swarm.py`, is a Kanban *task-graph* DB (planner/worker/
@@ -4333,7 +4377,7 @@ resolved here. Nothing below was removed or changed.
    so: still used?). The other fork-only scripts are demonstrably live
    (`hermes_token_check.py`/`hermes_usage_tracker.py` run as gateway systemd
    timers, `corporate-rip.py` is idempotent by
-   design, `check-unspecced-sdk-mocks.py` is an active CI guardrail).
+   design — RETIRED 2026-10-09 de-fork round 2, it never ran on the live install, `check-unspecced-sdk-mocks.py` is an active CI guardrail).
    *(Amended 2026-09-26 — this paragraph also credited `refresh_cc_canonical.sh` as live and the
    "only refresh path" for `agent/cc_canonical/tools_eager.json`; both were deleted with Slice B,
    2026-09-25.)*
@@ -4590,6 +4634,8 @@ will drift independently on its own release cadence, so this is not
 upstream-relevant.
 
 ### Feature — 2026-08-23 (`sr-coder` role alias — role-name synonyms resolve to their target's model/provider/effort/persona)
+
+**(2026-10-09 de-fork round 2):** RETIRED — the owner's config gives `sr-coder` its own `model_by_role` entry, so the alias never fired (and would now mis-tier: `coder` is no longer the senior tier). `ROLE_ALIASES`, `resolve_role_alias()`, the lookup fallbacks, the `delegate_tool.py` `_role_cfg_key` hop, the `DEFAULT_CONFIG` comment and `tests/hermes_cli/test_role_aliases.py` are removed; `lookup_role_entry()` is now a plain read. Kept for history.
 
 **Problem:** the Jr/Mid/Sr coder tiering the provider-aware
 `model_by_role` feature (above) exists to serve names only two of its three
@@ -5202,6 +5248,8 @@ already matched the live config). `hermes_cli/config.py`,
 
 ### Fix — 2026-08-19 (`cc_proxy_mcp.py` silently dropped isError/structuredContent on every tool-call relay — pre-existing, not from the mcp 2.0 port)
 
+**(2026-10-09 de-fork round 2):** RETIRED — owner-approved: the cc_proxy MCP bridge (`tools/bridges/`) and `tests/tools/test_cc_proxy_mcp.py` are deleted. Kept for history.
+
 **Found via:** a `consult()` second opinion after the two mcp-2.0-migration
 fixes below, prompted by the user asking "you positive about that?" —
 the grep-based import sweep only caught import-time crashes, not
@@ -5281,6 +5329,8 @@ slash-worker discovery — 348 tests) clean.
 `hermes_cli/mcp_gateway.py`, `tests/hermes_cli/test_mcp_gateway.py`.
 
 ### Fix — 2026-08-19 (`cc_proxy_mcp.py` bridge broke on mcp 2.0 SDK, missed by the 2.x migration)
+
+**(2026-10-09 de-fork round 2):** RETIRED — the bridge is deleted (see the isError entry above). Kept for history.
 
 **Live symptom:** every Claude-Code-connector proxy (Slack, Notion,
 PagerDuty, Microsoft 365, Stack Overflow Teams) failed to connect in a
@@ -5531,6 +5581,8 @@ failure.
 
 **Status (2026-10-09 de-fork pass): PARTIAL — item 1 HISTORICAL — item 1 (the `.env` deprecation warning) has CONVERGED: upstream's `warn_deprecated_cwd_env_vars` reads the `.env` file directly, the fork is identical there, and there is no code to remove. Item 2 (the `display.status_bar_session_title` toggle) is still fork-only and live via the `HermesCLI._get_status_bar_session_title` shadow in `cli.py`. Kept for history.**
 
+**(2026-10-09 de-fork round 2):** RETIRED (item 2) — upstream hides the title via `display.status_bar.fields`; the `HermesCLI._get_status_bar_session_title` shadow in `cli.py`, the `_status_bar_session_title_visible` flag in `cli_init_mixin.py` and its tests are removed. Open: the `display.status_bar_session_title` key still sits in `hermes_cli/config_defaults.py` and is now inert.
+
 Two independent items found and fixed in the same session:
 
 1. **`warn_deprecated_cwd_env_vars()` false-positived on every run.** It
@@ -5600,7 +5652,7 @@ now.
 
 **Re-checked, still correctly fork-only (nothing upstream in this tag
 covers them):** `agent.pin_anthropic_token` (upstream PR #82095 not yet
-merged), the `trafilatura` free `web_extract` backend (issue #78624 / PR
+merged), the `trafilatura` free `web_extract` backend (RETIRED 2026-10-09 de-fork round 2; issue #78624 / PR
 #50456 still open, no matching commits in this range), opt-in toolset
 deferral via `tool_search` (issues #60181/#60184, PRs #60182/#63844/#67457
 — none landed), and `pets.py` in profile clone. No commits matching any of
@@ -5614,6 +5666,8 @@ non-overlapping (different windows/surfaces) but not formally confirmed
 line-by-line this session.
 
 ### Fix — 2026-08-14 (crash on every launch: `NameError: disabled_toolsets`)
+
+**(2026-10-09 de-fork round 2):** RETIRED — a live probe showed upstream's banner gives the same result, so the `disabled_toolsets` param is unthreaded from `build_welcome_banner()` / `_build_toolsets_section()` / `show_banner`. Kept for history.
 
 Every `hermes` invocation crashed in `show_banner()` →
 `build_welcome_banner()` with `NameError: name 'disabled_toolsets' is not
@@ -6327,6 +6381,8 @@ skipped) and `tests/ -k "skill_manager or background_review"` (95 passed,
 
 **Status (2026-10-09 de-fork pass): PARTIAL — items 2 and 4 HISTORICAL — Item 2 is moot: `agent/cc_aliases.py` was deleted in Slice B. Item 4 has CONVERGED: upstream widened the same `_get_child_timeout` stub and the test matches the tag. Still live: item 3 (the `_skip_requires_wal_tests` helper in `tests/conftest.py`, needed because the fork adds its own known-failing collection hook), and from item 1 the root `react`/`react-dom` `19.2.7` overrides in `package.json`. The rimraf override is gone on both sides. The react pins can be retired only after `npm ci` plus desktop `check:test:ui` on upstream show no dual-React. Kept for history.**
 
+**(2026-10-09 de-fork round 2):** RETIRED (item 1's react pins) — upstream's lock (no overrides) resolves a single React 19.2.7, which is this entry's own retire condition; the root `react`/`react-dom` overrides are dropped from `package.json`. Item 3 stays.
+
 All CI (`CI` workflow) runs on `main` were failing. Four unrelated causes,
 found and fixed together:
 
@@ -6565,7 +6621,8 @@ protective divergence, not dedup.
 
 Still open upstream (converge when they land): PRs #72087 (estimator
 4x-count — upstream's refactor reintroduced the exact bug), #72151,
-#72152, #72153 (Nerd Font — locally re-applied as the one-constant form),
+#72152, #72153 (Nerd Font — locally re-applied as the one-constant form; RETIRED
+2026-10-09 de-fork round 2),
 #72155, #72164, #82070 (background-review turn-race, filed 2026-08-08 —
 see the 2026-07-22 entry below for full detail), #82095
 (agent.pin_anthropic_token, filed 2026-08-08 — see the 2026-07-25 entry
@@ -7449,6 +7506,8 @@ existing state/beat unsubscribes.
 tests, all passing. File touched: `pet-sprite.tsx`. Commit `0b89c317e`.
 
 ### Fork-only fix — 2026-07-28 (desktop: Pet Zone dragged into the bottom dock made the whole bottom band unresizable)
+
+**(2026-10-09 de-fork round 2):** the pet-zone pane that triggered this is RETIRED; the `edgeFixedZones` / `edgeZonesClamp` multi-zone fix is generic pane-shell code and stays.
 
 **Reported:** user enabled Pet Zone and dragged it into the bottom dock next
 to the Terminal/Logs tab group, landing side-by-side rather than stacked as
@@ -8516,7 +8575,7 @@ risk.
 
 ### Fork-only feature — 2026-07-24 (desktop: pet voice via Miku RVC voice-conversion pipeline)
 
-**Status (2026-10-09 de-fork pass):** LOSS DOCUMENTED (owner call: document, revisit later) — the per-call provider path is gone at three layers: `voice-playback.ts`'s client-direct / speak-stream rungs run first and never read `options.provider` (the pet's `playSpeechText(text, {provider, source: 'pet'})` call is ignored there); `/api/audio/speak`'s `TTSSpeakRequest` has no `provider` field (`speak_text` calls `text_to_speech_tool(text)` without one — lost pre-merge in the `web_server → web_routers` split); and `tools/tts_tool.py` now deliberately ignores a per-call provider that disagrees with `tts.provider` (upstream #90109, taken in the v0.21.6 sync). Net: `display.pet.voice_provider` (e.g. 'miku') is inert — pet speech always uses `tts.provider`. Re-apply recipe when revisited: add `provider: Optional[str] = None` to `TTSSpeakRequest`, forward it on a trusted-desktop path that bypasses `_apply_call_overrides`' ignore rule (do NOT re-open the model-facing override), and skip the client-direct/stream rungs when set. Kept for history.
+**Status (2026-10-09 de-fork pass):** ~~LOSS DOCUMENTED~~ **RESTORED (2026-10-09 de-fork round 2):** the web request model + trusted-path forwarding + desktop ladder rungs are back — `TTSSpeakRequest.provider` (`hermes_cli/web_models.py`), `/api/audio/speak` forwards it as `text_to_speech_tool(..., _trusted_provider=)` so #90109's model-facing ignore rule is untouched, and `voice-playback.ts` skips the client-direct/stream rungs when a per-call provider is set. Tests: `tests/tools/test_tts_provider_authority.py`, `tests/hermes_cli/test_web_server.py`, desktop voice-playback. The loss record below is history: the per-call provider path was gone at three layers: `voice-playback.ts`'s client-direct / speak-stream rungs run first and never read `options.provider` (the pet's `playSpeechText(text, {provider, source: 'pet'})` call is ignored there); `/api/audio/speak`'s `TTSSpeakRequest` has no `provider` field (`speak_text` calls `text_to_speech_tool(text)` without one — lost pre-merge in the `web_server → web_routers` split); and `tools/tts_tool.py` now deliberately ignores a per-call provider that disagrees with `tts.provider` (upstream #90109, taken in the v0.21.6 sync). Net: `display.pet.voice_provider` (e.g. 'miku') is inert — pet speech always uses `tts.provider`. Re-apply recipe when revisited: add `provider: Optional[str] = None` to `TTSSpeakRequest`, forward it on a trusted-desktop path that bypasses `_apply_call_overrides`' ignore rule (do NOT re-open the model-facing override), and skip the client-direct/stream rungs when set. Kept for history.
 
 **Request:** user has the Hatsune Miku petdex mascot active in Hermes Desktop
 and asked to wire its status-bubble lines (PetBubble's "working…"/"thinking…"
@@ -8836,6 +8895,8 @@ folded into `miku_voice.py`).
 tooling for completeness, matching the original pet-voice entry's pattern.
 
 ### Fork-only feature — 2026-07-24 (desktop: LLM-generated pet dialogue, opt-in, two beats only)
+
+**(2026-10-09 de-fork round 2):** FIXED — the `auxiliary.pet_dialogue` DEFAULT_CONFIG block (`enabled: false`, `timeout: 8`, `reasoning_effort: none`, `max_context_chars: 400`) had been lost and is restored, now in `hermes_cli/config_defaults.py`; the route lives in `hermes_cli/web_routers/audio.py` (`POST /api/pet/dialogue`). The `hermes_cli/config.py` / `web_server.py` paths below are pre-split.
 
 **Follow-up idea from the user** while discussing the voice feature: "maybe
 we should have some of the text or responses here come from a cheap LLM?"
@@ -9606,6 +9667,8 @@ next upstream sync.
 
 ### Fork-only feature — 2026-07-23 (desktop: visible × close button on every pane tab)
 
+**(2026-10-09 de-fork round 2):** RETIRED — upstream ships the same close button; the only fork delta was the `closeLabel` aria-label and an unused `PANE_TAB_STRIP_LINE` export. `pane-tab.tsx` is restored from upstream and the `zones.closeTab` i18n key dropped. Kept for history.
+
 **Follow-up to the browser-tab feature above:** once sidebar clicks could
 open multiple session tabs, the user noticed there was no visible way to
 close one — `PaneTab`'s design had deliberately shipped without a hover-X
@@ -9906,7 +9969,7 @@ change).
 
 **Status (2026-10-09 de-fork pass): CONVERGED / HISTORICAL — re-verified: upstream's `bindToolPaneCollapse` boot-only-collapse rule covers this scenario; the fork's `front:` params are gone and there is no remaining delta. Kept for history.**
 
-**SUPERSEDED 2026-08-04** — upstream's `bindToolPaneCollapse` boot-only-collapses rule covers this scenario; fork's `front:` params removed (`revealTreePane`/`setPaneCollapsed` back to upstream signatures), pet-zone rebound through `bindToolPaneCollapse`, `bind-order-front.test.ts` deleted in favor of upstream's equivalent `tool-pane-toggle.test.ts` Terminal-deck case.
+**SUPERSEDED 2026-08-04** — upstream's `bindToolPaneCollapse` boot-only-collapses rule covers this scenario; fork's `front:` params removed (`revealTreePane`/`setPaneCollapsed` back to upstream signatures), pet-zone rebound through `bindToolPaneCollapse` (pet-zone RETIRED 2026-10-09 de-fork round 2), `bind-order-front.test.ts` deleted in favor of upstream's equivalent `tool-pane-toggle.test.ts` Terminal-deck case.
 
 **Symptom:** opening the desktop app while on the "Terminal deck" layout
 preset (or any layout where `terminal` and `logs` share one tabbed zone)
@@ -10169,6 +10232,8 @@ Files: `package.json`, `package-lock.json`, new
 `local-packages/boolean-shim/{index.js,package.json}`.
 
 ### Fork-only fix — 2026-07-22 (desktop: terminal glyphs render as tofu boxes, missing Nerd Font fallback)
+
+**(2026-10-09 de-fork round 2):** RETIRED — upstream ships `terminal.font_family` plus a Settings font picker, so a Nerd Font is set in config instead; `terminal-font.ts` is restored verbatim from upstream. Kept for history.
 
 Reported symptom: the embedded xterm.js terminal pane rendered shell-prompt
 icons (powerline separators, starship/oh-my-posh glyphs) as tofu/box
@@ -10451,6 +10516,8 @@ Files: `apps/desktop/src/app/contrib/hooks/use-background-sync.ts` (+ test),
 ### Fork-only fix — 2026-07-22 (desktop: queued composer message could be delivered into a different, currently-viewed session)
 
 **Status (2026-10-09 de-fork pass): REVERTED-TO-T — upstream `062d2619551` ("prevent cross-session leak in background queue drain") catches a stale raw id downstream in `submit.ts` with the same validated getter, so the fork's drain change had become redundant defense-in-depth. `use-background-queue-drain.ts` and its `.test.tsx` are restored verbatim from upstream in this pass, and only the `getRuntimeIdForStoredSession` arg in `wiring.tsx` is reverted (the pet-zone/`openStoredSession` hunks stay). Kept for history.**
+
+**(2026-10-09 de-fork round 2):** the pet-zone hunks in `wiring.tsx` are RETIRED with the pane; `openStoredSession` stays.
 
 Reported symptom: user queued a composer message while viewing session A
 (agent busy), switched to viewing session B before A's turn finished, and
@@ -11073,8 +11140,8 @@ will never touch them.
 || `hermes_cli/submit.py` | **RETIRED 2026-09-22** (owner-approved consolidation, commits `071c694df7` + the follow-up). Superseded by upstream's `hermes peer run` (`hermes_cli/subcommands/peer.py`), which had converged on the same `POST /v1/runs` mechanism and was already strictly better on one axis (it sends an `Idempotency-Key` submit.py never had, and probes `/v1/capabilities` to warn when a peer can't durably replay a run). The three capabilities submit.py uniquely had were ported onto `peer.py` first, as fork-only enhancements that leave every upstream path untouched: (1) SSE `--tail` streaming, now `peer run --tail` plus a new `peer tail <target> <run_id>` action, rebased on peer.py's `run_id` model and routed through the same `open_credentialed_url` redirect policy as every other peer request (submit.py used raw httpx with no such protection — a security gain, not just a port); (2) the permissive credential chain, WIDENED onto upstream's registry rather than replacing it — `--url`/`--api-key` for an ad-hoc gateway, and the reserved target name `default` resolving `HERMES_GATEWAY_URL` → `~/.hermes/.env` → the built-in default; an *unregistered* name still hard-fails, so a typo can never silently route a prompt to the wrong machine, and a *registered* peer never falls back to the gateway-wide key (that would weaken the registry's per-peer guarantee); (3) session-less operation as `run --no-session`, an opt-out — upstream's forced canonical "Bot Chat" stays the DEFAULT because that transcript is the point of the bot-to-bot DM feature (cross-turn continuity + a human-inspectable record on the remote machine). Also carried over: `-f/--file`, `--instructions`, `-q`. `hermes submit` itself remains for ONE release as a deprecation shim (`hermes_cli/main.py::cmd_submit`) that prints the translated `hermes peer run` command and exits 2; delete the shim, its parser, `_BUILTIN_SUBCOMMANDS["submit"]` and `tests/hermes_cli/test_submit_shim.py` together. Equivalent: `hermes submit "x"` → `hermes peer run default "x" --no-session`. |
 || `plugins/model-providers/exo/` | First-class exo provider profile (`custom:exo` provider type). |
 || `plugins/web/claude_code/` | Claude Code web backend for the Hermes web interface. **REMOVED 2026-09-25** (Slice A, commit `ecb91a03ab`, owner-approved). The directory is absent from the tree, and its dead config was cleaned up 2026-09-29 (see the "Slice A/C dead-config follow-through" entry). Do NOT re-carry. |
-|| `plugins/web/trafilatura/` | Free, no-API-key `web_extract` backend — direct `httpx` fetch (manual redirect-hop walk with per-hop SSRF/policy re-check) + the open-source `trafilatura` library for local content extraction. Closes the gap where non-Anthropic providers (exo, ollama-cloud) had a free search backend (brave-free/ddgs) but no free extract backend — every existing extract-capable provider (firecrawl/tavily/exa/parallel) needs a paid API key. |
-|| `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). |
+|| `plugins/web/trafilatura/` | Free, no-API-key `web_extract` backend — direct `httpx` fetch (manual redirect-hop walk with per-hop SSRF/policy re-check) + the open-source `trafilatura` library for local content extraction. Closes the gap where non-Anthropic providers (exo, ollama-cloud) had a free search backend (brave-free/ddgs) but no free extract backend — every existing extract-capable provider (firecrawl/tavily/exa/parallel) needs a paid API key. **[RETIRED 2026-10-09 de-fork round 2]** — owner-approved; plugin, post-setup hook and pyproject extra deleted. |
+|| `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). **[RETIRED 2026-10-09 de-fork round 2]** — owner-approved; directory and `tests/tools/test_cc_proxy_mcp.py` deleted. |
 || `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress. **RETIRED 2026-09-23** (owner-approved, commit `37d7fb4782`): superseded by upstream's `hermes_cli/cli_subagent_monitor.py` dock, which also offers steer/stop/transcript-tail; every signal the board uniquely rendered was ported onto the registry the dock already reads first. See "Fork-only retirements — 2026-09-23" below. |
 || `tools/hermes_load_tools.py` | Fork tool loading bridge — loads fork-only tools into agent runtime. **RETIRED 2026-10-09 de-fork pass** (with `agent/fork/tool_search_lazy.py`). |
 || `tools/memory_warm.py` | Warm-tier memory tool — search/recall/pin/unpin warm facts. |
@@ -11083,7 +11150,7 @@ will never touch them.
 | `tools/consult_tool.py` | Second-opinion tool — asks a configurable reference model (`auxiliary.consult`) for a review before a risky/uncertain decision; refusals/empty responses degrade gracefully to `unavailable: true` rather than erroring. Available to main agent + subagents (not in `DELEGATE_BLOCKED_TOOLS`). |
 | `tools/delegation_router.py` | Cheap classifier that reads a delegate_task goal+context in ONE batch call and serves two roles: (a) full routing for tasks with no explicit model/agent_type (or `agent_type='auto'`) — capability tier (light/standard/deep) and optionally a ruflo persona, mapped tier→role→model through `delegation.model_by_role`; (b) an ESCALATE-ONLY tier check for tasks that DID state an agent_type — replaces the stated role only when the classifier's tier ranks strictly higher (never a downgrade), ranked via `hermes_cli/model_tiers.py`'s Anthropic AND local ladders. An explicit `model=` bypasses both. Fail-open everywhere. Config: `delegation.auto_route.*` (incl. `escalate_only`, default true), `auxiliary.delegation_router`. |
 | `FORK.md` | This file |
-| `scripts/setup-merge-drivers.sh` | Retirement stub (2026-10-09): removes the stale `uvlock-ours` driver from a clone's `.git/config`. `uv.lock` now merges `merge=ours`; relock with `hermes pm lock`. |
+| `scripts/setup-merge-drivers.sh` | Retirement stub (2026-10-09): removes the stale `uvlock-ours` driver from a clone's `.git/config`. `uv.lock` now merges `merge=ours`; relock with `hermes pm lock`. **[RETIRED 2026-10-09 de-fork round 2]** — the stub itself is deleted (it only removed an inert setting). |
 | `scripts/autostash_cleanup.py` | Safe cleanup for the `hermes-update-autostash-*` orphans `hermes update` parks (and never GCs - it only warns past 7 days). Containment audit per touched path (HEAD blob compare, then an exact-blob search of reachable history), bundle-archive before dropping, drop by INDEX highest-first. An uncontained blob is recoverable work and is never dropped; paths absent from HEAD count as superseded-by-removal only when they were TRACKED at the stash base AND `--allow-removed` is passed. Read-only by default. Tests: `tests/scripts/test_autostash_cleanup.py`. |
 
 ### Soft-fork edits (merge conflicts possible)
@@ -12505,7 +12572,7 @@ verification above before filing — "plausible" is not "confirmed."
   refactor (deduplicating three near-identical blocks into
   `_cancel_lifecycle_wait_tasks()`), not a bug fix. Only the orphaned-task
   reaping in `_connect_server()` (bug 1) was real. Patch saved at
-  `.upstream-candidates/mcp-orphaned-task-fix.diff`; branch ready to push
+  `.upstream-candidates/mcp-orphaned-task-fix.diff` (dir since RETIRED); branch ready to push
   and open as a PR.
 
   **SUBMITTED 2026-07-26 as upstream PR #72054.** Before submitting, got two
@@ -12639,7 +12706,7 @@ blob, Miku pet bubble) even when the fix itself is generic:
   variant). Zero fork-only symbols in the isolated diff. Searched
   issues/PRs first (per CONTRIBUTING.md) — genuinely nothing existing,
   unlike the two prior candidates. Patch saved at
-  `.upstream-candidates/reasoning-estimator-dedup-fix.diff`.
+  `.upstream-candidates/reasoning-estimator-dedup-fix.diff` (dir RETIRED 2026-10-09 de-fork round 2).
 * Dangling `toolsets` NameError in `delegate_task` after upstream removed the
   model-facing arg (2026-07-07). **CHECKED 2026-07-26, ALREADY FIXED
   UPSTREAM.** Both spots the fork's fix targeted (`tools/delegate_tool.py`
@@ -12724,7 +12791,7 @@ blob, Miku pet bubble) even when the fix itself is generic:
   adjacent credential-detection test files.
 * Desktop: terminal glyphs render as tofu boxes — missing Nerd Font fallback
   in the xterm.js `fontFamily` chain (2026-07-22). **SUBMITTED 2026-07-26
-  as upstream PR #72153.** Trivial, low-risk font-stack string extension;
+  as upstream PR #72153.** (Local copy RETIRED 2026-10-09 de-fork round 2.) Trivial, low-risk font-stack string extension;
   applied cleanly, 0 conflicts. No dedicated unit test to extend (a
   font-family constant isn't meaningfully unit-testable); ran the broader
   `src/app/right-sidebar/terminal` suite instead — 25/25 passed, 0 new
@@ -13219,10 +13286,10 @@ equivalent as of v2026.9.24:**
 | memory subsystem | `tools/memory_warm.py`, `tools/memory_extraction/*`, `tools/memory_auto_feedback/*`, `hermes_cli/memory_confirm.py` |
 | delegation / personas | `tools/delegation_router.py`, `tools/delegate_tool.py` deltas, `hermes_cli/model_tiers.py`, `hermes_cli/personas.py`, `hermes_cli/persona_library.py`, `hermes_cli/ruflo_agents.py`, `tools/personas_sync.py`, `personas/delegation/*`, `hermes_cli/delegation_stats.py` |
 | agent messaging / cross-session | `tools/agent_messaging_*` (contract, tools, Transport A), `tools/cross_session_*`, `gateway/agent_messaging_bridge.py`, `hermes_cli/agents_inbox.py`, `hermes_cli/subcommands/agents.py` |
-| web plugins | `plugins/web/trafilatura/`, `plugins/model-providers/exo/`, `tools/web_tools.py` chain (`plugins/web/claude_code/` RETIRED 2026-09-25) |
-| tooling / CLI | `tools/consult_tool.py`, `tools/content_filter_scrub.py`, `tools/process_registry.py` delta, `hermes_cli/fork_banner.py`, `hermes_cli/mcp_gateway.py`, `hermes_cli/clipboard.py`, `tools/bridges/cc_proxy_mcp.py`, `ui-tui/src/lib/modelFallback.ts`, `web/src/lib/session-overview.ts` |
-| desktop | pet zone/voice (`store/pet-voice.ts`), `lib/model-fallback-label.ts` (`session-row-state.ts` drag handle and `sync-version.mjs` version-sync prebuild RETIRED 2026-10-09 de-fork pass) |
-| scripts / CI | `scripts/setup-merge-drivers.sh`, `sync-fork-branding.py`, `hlxc-test.sh`, `hermes_hard_eval.py`, `hermes_token_check.py`, `check-unspecced-sdk-mocks.py`, `ci/fix_duration_cache_paths.py`, `corporate-rip.py` |
+| web plugins | `plugins/web/trafilatura/` **[RETIRED 2026-10-09 de-fork round 2]**, `plugins/model-providers/exo/`, `tools/web_tools.py` chain (`plugins/web/claude_code/` RETIRED 2026-09-25) |
+| tooling / CLI | `tools/consult_tool.py`, `tools/content_filter_scrub.py`, `tools/process_registry.py` delta, `hermes_cli/fork_banner.py`, `hermes_cli/mcp_gateway.py`, `hermes_cli/clipboard.py`, `tools/bridges/cc_proxy_mcp.py` **[RETIRED 2026-10-09 de-fork round 2]**, `ui-tui/src/lib/modelFallback.ts`, `web/src/lib/session-overview.ts` |
+| desktop | pet zone **[RETIRED 2026-10-09 de-fork round 2]**/voice (`store/pet-voice.ts`), `lib/model-fallback-label.ts` (`session-row-state.ts` drag handle and `sync-version.mjs` version-sync prebuild RETIRED 2026-10-09 de-fork pass) |
+| scripts / CI | `sync-fork-branding.py`, `hlxc-test.sh`, `hermes_token_check.py`, `check-unspecced-sdk-mocks.py` (`setup-merge-drivers.sh`, `hermes_hard_eval.py`, `ci/fix_duration_cache_paths.py`, `corporate-rip.py` **[RETIRED 2026-10-09 de-fork round 2]**) |
 
 **Deleted from the fork on purpose (do NOT re-carry at the next sync):** Google
 Code Assist OAuth providers, the vendored Anthropic converter, `submit.py` (shim
@@ -13294,10 +13361,14 @@ run tests, push the branch, review, then merge to `main`.
 ./scripts/setup-merge-drivers.sh   # retirement stub: removes the stale "uvlock-ours" driver
 ```
 
+**(2026-10-09 de-fork round 2):** RETIRED — the stub is deleted. On an old clone that still has the driver,
+`git config --remove-section merge.uvlock-ours` does the same thing; nothing is needed per clone.
+
 **(2026-10-09 de-fork pass):** the `uvlock-ours` driver is retired. Raw `uv lock` cannot
 resolve v0.21.6's multi-extra graph. `.gitattributes` now merges `uv.lock` as `merge=ours`;
 after a merge, seed from the tag's lock and relock with `hermes pm lock` (see the v0.21.6
-sync entry at the top). Run the script once only on clones that registered the old driver.
+sync entry at the top). Run the script once only on clones that registered the old driver
+(script RETIRED in round 2 — see the note above).
 
 ### Conflict guidance by file (refresh after each sync; line numbers drift)
 
@@ -13690,6 +13761,8 @@ Tests: `tests/tools/test_consult_tool.py`, `tests/test_consult_nudge_reminder.py
 
 
 ### Fork-only test fixes — 2026-07-07 (deterministic suite, no behavior change)
+
+**(2026-10-09 de-fork round 2):** RETIRED (items 1 and 3) — item 1's skin fixture is redundant (upstream sandboxes `HERMES_HOME`) and item 3's modal-paint helper lost its callers upstream; both are deleted from `tests/hermes_cli/test_cli_status_bar.py` / `test_cli_approval_ui.py`. Item 2 stays.
 
 1. **`e046afdd3` — isolate status-bar tests from operator's local skin
    config.** `tests/cli/test_cli_status_bar.py`. `cli.py` runs
@@ -14763,6 +14836,8 @@ before and after this change). Zero new failures.
 
 ### Fork-only feature — 2026-07-18 (`trafilatura`: free no-API-key `web_extract` backend)
 
+**(2026-10-09 de-fork round 2):** RETIRED — owner-approved: upstream's keyless extract ring closed the gap; `plugins/web/trafilatura/`, the post-setup hook and the `trafilatura` extra are deleted. Kept for history.
+
 **CHECKED 2026-08-08, DO NOT FILE — real open competing PR already exists.**
 Found the exact matching upstream issue: **#78624** ("web.extract_backend
 has no keyless option — every extract-capable provider requires an API
@@ -15194,6 +15269,8 @@ confirm it — checked the resolved tool names instead).
 
 ### Fork-only feature — 2026-07-21 (pet zone pane for the desktop app)
 
+**(2026-10-09 de-fork round 2):** RETIRED — owner-approved: no recorded who/why, and upstream's roam-off default covers the stated case. Pane registration, `bindToolPaneCollapse` binding, `PetZoneSurface`, `WiringApi.petZone`, the wiring hunks, `$petZoneEnabled` and the i18n keys are removed. Kept for history.
+
 **Motivation:** the floating pet roams the entire window by default, which
 can be distracting. A dedicated layout pane confines the pet to a specific
 area of the window while preserving all its behavior (roam, loaf, hop,
@@ -15239,6 +15316,8 @@ the prop is unaffected (it's optional, defaults to full-window mode).
 ### Fork-only fix — 2026-07-22 (pet zone: roam/drag used viewport coords, pet vanished)
 
 **Status (2026-10-09 de-fork pass): PARTIAL — split-weights sentence stale — the coordinate-space half (`zoneOrigin()` in `use-pet-roam.ts`, zone-local drag and mount in `floating-pet.tsx`) is live and still needed. The split-weights half is gone: `DEFAULT_TREE` moved to `apps/desktop/src/app/contrib/layout-presets.ts`, and the pet zone is no longer a third weighted child of the right column. The pane is adopted by placement instead (`placement: 'bottom'` in `controller.tsx`). Do not re-apply the `[1.6, 0.6, 0.4]` weights below. Kept for history.**
+
+**(2026-10-09 de-fork round 2):** RETIRED — the coordinate-space half described as live above (`zoneOrigin()`, zone-local drag/mount) went with the pet-zone pane. Kept for history.
 
 **Symptom:** with the pet zone enabled, the pet either never appeared or
 disappeared the moment you dragged it — flung outside the (clipped)
@@ -15304,7 +15383,8 @@ activity.
    dedicated pet zone pane. The full-window pet still skips it per the
    original design note ("the app itself is the surface"), but that
    reasoning doesn't hold inside a small dedicated box where a glanceable
-   status line costs nothing.
+   status line costs nothing. **(2026-10-09 de-fork round 2):** RETIRED with the
+   pet-zone pane (no `zoneContainer` exists any more); items 1 and 3 are pet-wide.
 3. **Idle fidget.** A new effect watches `$petState` (not `$petAtRest`,
    which ignores the roam pose — gating on it would fire the fidget
    mid-stride while the pet is walking) and, on an exponential dwell
@@ -15324,6 +15404,8 @@ and its `FloatingPet` predates the zone-aware coordinate work above) —
 no conflict risk on sync.
 
 ### Fork-only fix — 2026-07-22 (pet: idle fidget leaked into the status bubble; zone bubble clipped)
+
+**(2026-10-09 de-fork round 2):** the zone-bubble half is RETIRED with the pet-zone pane; the idle-fidget/status-bubble half is pet-wide.
 
 **Symptom:** with the pet zone on and roam enabled, the status bubble
 showed "making moves…" (a `run`-state phrase) while the pet was simply
@@ -15416,6 +15498,8 @@ correctly zeroes `$petRoamDir`, which is what lets `PetSprite`'s
 risk.
 
 ### Fork-only fix — 2026-07-22 (pet zone: resizing the pane didn't adjust the walk)
+
+**(2026-10-09 de-fork round 2):** RETIRED — went with the pet-zone pane. Kept for history.
 
 **Symptom:** live-dragging the pet-zone layout track to shrink/grow the
 pane had no visible effect on the wander — the pet kept strolling to
@@ -16059,6 +16143,8 @@ should apply cleanly.
 
 ### Fork-only fix — 2026-07-27 (macOS-only failure: `test_media_files_routed_by_type` compared against an unresolved /tmp symlink path)
 
+**(2026-10-09 de-fork round 2):** RETIRED — upstream pruned this test (`39975613b13`) and the fork had kept it plus 3 siblings with no recorded reason; `tests/gateway/test_background_command.py` is restored verbatim from upstream. Kept for history.
+
 **Symptom:** `pytest-randomly` flagged
 `tests/gateway/test_background_command.py::TestRunBackgroundTask::test_media_files_routed_by_type`
 as failing under one random ordering — but investigation showed it's not
@@ -16099,6 +16185,8 @@ no production code changed).
 ### Fork-only fix — 2026-07-27 (test-order/environment-dependent failure: `test_seed_supervise_skeleton_*` setgid bit silently stripped depending on pytest's ambient basetemp group ownership)
 
 **Status (2026-10-09 de-fork pass): PARTIAL — for `test_seed_supervise_skeleton_creates_expected_layout`, upstream independently fixed the same flake with `@pytest.mark.platforms('linux')` and a docstring naming the BSD setgid-strip cause. The fork's `os.chown` pin there is redundant and can be dropped. `test_seed_supervise_skeleton_handles_log_subservice` exists only in the fork (upstream deleted it), runs on macOS and still needs the pin. Dropping that test to match upstream would retire this whole entry. Kept for history.**
+
+**(2026-10-09 de-fork round 2):** RETIRED — the redundant `os.chown` pin and the fork-retained `test_seed_supervise_skeleton_handles_log_subservice` are both dropped, which retires this entry as the status above predicted.
 
 **Symptom:** `pytest-randomly` (via a full-suite run, not the file in
 isolation) surfaced
@@ -16313,6 +16401,8 @@ upstream's own `-p`/`--profile` handling (if any) on next merge.
 
 ### Fork-only fix — 2026-07-27 (blocking CI lint failures from a concurrent session's commit — missing encoding= on 4 open()/.read_text() calls)
 
+**(2026-10-09 de-fork round 2):** RETIRED — `scripts/hermes_hard_eval.py` was an accidental commit (its own docstring said "do not commit") and is deleted. Kept for history.
+
 **Symptom:** a concurrent Hermes session's commit
 (`38d36c0357`, "fix(tools): strip orphan tool-call TAIL leaking into final
 content") added `scripts/hermes_hard_eval.py` — despite the file's own
@@ -16342,6 +16432,8 @@ myself, since that's a workflow decision outside a lint-fix's scope.
 
 
 ### Fork-only fix — 2026-07-27 (a 6th real intra-file test-order leak, plus a subtle monkeypatch.delenv footgun: it snapshots the CURRENT value, not the pre-test value)
+
+**(2026-10-09 de-fork round 2):** RETIRED — the leaking tests were among the 5 the fork kept after upstream pruned them (`b015e59fb92`); `tests/gateway/test_matrix_message_length.py` is restored verbatim from upstream. Kept for history.
 
 **Symptom:** the CI run for the previous "2 real intra-file leaks" push
 still failed 2 unrelated Python test slices, this time on
@@ -17017,7 +17109,7 @@ only unit-test coverage, no live end-to-end exercise.
 **Running the desktop suite surfaced 1 real merge-caused regression:**
 `apps/desktop/src/app/contrib/surfaces.test.tsx` — the fork's
 `PetZoneSurface` (co-located in `surfaces.tsx`, needed for the pet-zone
-feature) imports `FloatingPet` and `store/pet`'s `$petZoneEnabled` at
+feature — RETIRED 2026-10-09 de-fork round 2) imports `FloatingPet` and `store/pet`'s `$petZoneEnabled` at
 module top-level; `store/pet.ts` itself does a top-level
 `computed([$petActivity, $busy], ...)` read against `store/session`.
 Since the whole `surfaces.tsx` module body evaluates on import regardless
@@ -17341,6 +17433,8 @@ cleanup-pass feature, which upstream doesn't have.
 ### Fork-only fix — 2026-08-23 (nested delegation: orchestrator subagent's blocking `delegate_task` killed at 420s by the generic tool deadline, orphaning its own grandchildren for ~7h)
 
 **Status (2026-10-09 de-fork pass):** PARTIAL — `delegate_task`'s own registration/predicate (`_is_blocking_spawn_call` / `_delegate_owns_own_deadline`) was dropped as redundant: upstream's static `_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS` floor (kept in the merged tree; checked BEFORE the registry hook) independently grants the exemption on the only path delegate_task can take. The generic registry hook, `_resolve_call_tool_timeout`, the concurrent-batch drop and the `_owner_abandoned` teardown all stay (consult_tool still uses the hook). Kept for history.
+
+**(2026-10-09 de-fork round 2):** RETIRED (remnants) — once the exemption went static the delegate-side remnants were import-only names and an untriggerable poll: `_owner_abandoned`, `_teardown_abandoned_children`, `_DelegationAbandoned` and the executor's concurrent-batch deadline drop are removed and upstream's dispatch line is restored. The generic `owns_own_deadline` registry hook and `_resolve_call_tool_timeout` stay for consult (see "`consult` failed at exactly 420.0s, repeatedly — 2026-09-10").
 
 **Symptom:** An orchestrator subagent (depth 1) dispatched a nested batch
 via `delegate_task(tasks=[...])`. It reported itself `completed` to its
@@ -17741,7 +17835,8 @@ Added `delegation.max_iterations_by_role` to config.yaml (mirrors the existing
   global 100 cap mid-campaign; workers should stay at 100).
 - New helpers in `hermes_cli/personas.py`: `get_role_max_iterations_map`,
   `set_role_max_iterations`, `lookup_max_iterations_for_role` (agent_type beats
-  spawn role beats global, alias-aware via resolve_role_alias).
+  spawn role beats global, alias-aware via resolve_role_alias — alias hop RETIRED
+  2026-10-09 de-fork round 2).
 - `tools/delegate_tool.py`: global default folds in the top-level role cap
   (`effective_max_iter`), then per-task: agent_type entry beats the per-task
   role entry beats `effective_max_iter` — passed as `max_iterations=task_max_iter`
@@ -18586,7 +18681,8 @@ cluster, three commits:
   THREAD-LOCAL interrupt bit — precisely the signal the tool executor sets
   before `shutdown(wait=False)`, i.e. **the 2026-08-23 orphaning incident**
   (an orchestrator's grandchildren left running ~7h). Both signals restored
-  plus deterministic child teardown.
+  plus deterministic child teardown. **(2026-10-09 de-fork round 2):** the abandonment half is RETIRED
+  (see the 2026-08-23 nested-delegation entry); the heartbeat emit stays.
 * **RUFLO persona injection.** The merge moved `_build_child_system_prompt`
   into `tools/delegate_tool_progress.py` under UPSTREAM's signature, which has
   neither `agent_type` nor `cwd_collision_warning`, and the call site stopped
@@ -19526,7 +19622,7 @@ file's PATH. The 2026-09 tests/ reorg (`tests/cli` → `tests/hermes_cli`,
 `tests/run_agent` → `tests/agent`, a batch of top-level `tests/test_*.py` into
 topical dirs) left **728 of 4889** entries pointing at paths that no longer
 exist — 15% of the cache, and every genuinely slow file among them. Fixed by
-`scripts/ci/fix_duration_cache_paths.py` (dry-run by default; remaps an orphaned
+`scripts/ci/fix_duration_cache_paths.py` (one-shot, RETIRED 2026-10-09 de-fork round 2; dry-run by default; remaps an orphaned
 key onto its current path by unique basename, preserving the duration; 515
 remapped, 11 ambiguous and 202 unmatched left alone). The cache is gitignored
 (CI-cache-backed), so the tool is the fix, not a data commit.
@@ -19741,8 +19837,9 @@ contention artifacts that pass in isolation — no action).
 
 * `test_matrix_message_length.py` — merge adopted upstream's trimmed header while
   the fork's extra tests using those imports survived; import block restored
-  from the fork tip.
-* `test_background_command.py` — two error-path tests asserted `adapter.send`;
+  from the fork tip. (**(2026-10-09 de-fork round 2):** RETIRED — file is upstream's verbatim.)
+* `test_background_command.py` (fork-retained tests RETIRED 2026-10-09 de-fork round 2) —
+  two error-path tests asserted `adapter.send`;
   production emits the failure notice via `emit_warning`. Stale since that
   change, red at the fork tip too.
 * `test_profiles_toolset_pin.py` — upstream asserts exact set equality for a
@@ -19765,7 +19862,7 @@ Residual red at HEAD, provenance-checked against both baselines (not merge- or
 de-fork-caused): `test_cross_vm_fs_wal_refusal`, `test_guest_durability_barriers`,
 `test_cua_no_overlay` are red on the pristine upstream tag on macOS (Linux-gated
 behavior); `test_transport_a_registration`, `test_restart_stale_runtime_recovery`,
-the a2a suites, `test_tavily_provider`, `test_cross_session_*` are red at the
+the a2a suites, `test_tavily_provider` (deleted, round 2), `test_cross_session_*` are red at the
 fork's pre-merge tip (pre-existing fork-side).
 
 ## 2026-09-25 - fork tooling: safe cleanup for aged `hermes update` autostash orphans
@@ -19931,6 +20028,8 @@ unaffected.
 
 ### Fork-only fix — 2026-09-29 (`trafilatura` post_setup: restore the merge-dropped installer + pin the declared-key contract)
 
+**(2026-10-09 de-fork round 2):** RETIRED — the trafilatura backend and this installer hook are deleted. Kept for history.
+
 **Problem:** the fork's free `web_extract` backend (`plugins/web/trafilatura`,
 added 5be047056c, 2026-07-18) declares `post_setup: "trafilatura"` so that picking
 it in `hermes tools` pip-installs the `trafilatura` package. That installer was an
@@ -20070,7 +20169,8 @@ degrade rather than error, so nothing surfaced in logs or the picker.
 homelab ansible templates (`config.yaml.j2`, `dashboard_profile_config.yaml.j2`),
 each carrying a dated REMOVED note with the restore tag so the next sync does not
 re-add them. `web.by_provider` keeps only the two entries that still resolve
-(ollama-cloud, exo → brave-free/trafilatura) and the six-provider `search_chain`.
+(ollama-cloud, exo → brave-free/trafilatura — trafilatura pins removed 2026-10-09 de-fork
+round 2) and the six-provider `search_chain`.
 
 **Replacement question (answered, nothing to build):** the dead server-side
 native search has no in-tree successor and none is wanted. Upstream has no
@@ -20082,7 +20182,8 @@ non-function tool and invokes the CLI with `--tools ''`, i.e. the child is
 deliberately tool-less and Hermes owns every tool. Server-side search would be a
 policy change to that transport, not a config toggle. The user-facing capability
 is covered by the six-provider `search_chain` (which is strictly more resilient
-than the deleted single-vendor swap) plus `trafilatura` for extract.
+than the deleted single-vendor swap) plus `trafilatura` for extract (RETIRED 2026-10-09
+de-fork round 2; extract now uses upstream's keyless ring).
 
 **Files:** `~/.hermes/config.yaml` (not in-repo), `roles/hermes_gateway/templates/
 {config,dashboard_profile_config}.yaml.j2` + commit `be91627` in adurham/homelab,
@@ -20105,6 +20206,8 @@ production behavior change. The ollama-cloud plugin's `OLLAMA_BASE_URL` `/v1`
 fix is PR'd upstream as rriggs/hermes-plugin-ollama-cloud-search#1.
 
 ### Fix — 2026-10-02 (`cc_proxy_mcp.py` dedicated-login isolation restored: newest-entry resolution + `CC_PROXY_KEYCHAIN_SERVICE` pin)
+
+**(2026-10-09 de-fork round 2):** RETIRED — owner-approved retirement of the cc_proxy MCP bridge; `tools/bridges/` and its test are deleted. Kept for history.
 
 **Problem:** in fresh sessions every connector-based MCP server failed to register —
 `slack`, `notion`, `tanium-gateway`, `StackOverflowTeams`, `pagerduty`, `microsoft365`,
@@ -20165,7 +20268,7 @@ config still depends on. Commit fork fixes on the main checkout, push, and pull 
 
 **Filing gotcha (GitHub) — CORRECTED 2026-10-03 by resume session:** NOT a PR-creation abuse throttle. The 11.5h-persistent block is a GitHub-side, per-account gate on NON-DRAFT pull request creation for this repo, hitting multiple established external contributors (kuehnberger, liuhao1024, AgilityHacker, maebahesioru, + us) with rolling onsets from 2026-10-02 ~21:00 UTC; tracked in **NousResearch/hermes-agent#131859**. Exact matrix (all reproduced): non-draft create → GraphQL `does not have the correct permissions to execute CreatePullRequest` + REST `POST /pulls` masked 404; **draft create (`--draft`) succeeds**; `markPullRequestReadyForReview` (`gh pr ready`) rejected; own-fork PRs / pushes / comments / reads normal; `rate_limit` shows full quota. Ruled out: repo policy `ALL`; the repo creation-cap setting (non-collaborators with 47 open PRs still file non-drafts; closing stale PRs does not lift it); repo-wide interaction limits (first-time contributors file fine concurrently). Workaround in effect: the four pending PRs were filed as **drafts** (#132227-#132230) — a maintainer must flip them ready, or the gate must lift. If the gate persists at next check, ask a maintainer to check `interaction-limits/pulls/creation-cap` + bypass list, and/or escalate on issue #131859. Skill reference updated: `upstreaming-fork-patches/references/pr-creation-abuse-throttle.md`.
 
-**Kept load-bearing (no upstream equivalent):** #82095 pin_anthropic_token, #72164 exit-summary-before-cleanup, #72153 nerd-font stacks, #72151 raf-throttle flush, #72087 estimator dedup, #25234 orphan web-search audit; plus the whole hard-fork set (agent/fork/*, cc_proxy_mcp, consult, delegation by_provider/model_by_role, search_chain, trafilatura backend, stream recovery).
+**Kept load-bearing (no upstream equivalent):** #82095 pin_anthropic_token, #72164 exit-summary-before-cleanup, #72153 nerd-font stacks (RETIRED 2026-10-09 de-fork round 2), #72151 raf-throttle flush, #72087 estimator dedup, #25234 orphan web-search audit; plus the whole hard-fork set (agent/fork/*, cc_proxy_mcp, consult, delegation by_provider/model_by_role, search_chain, trafilatura backend, stream recovery). **(2026-10-09 de-fork round 2):** `cc_proxy_mcp`, the trafilatura backend and the `.upstream-candidates/` diffs are RETIRED; the other code fixes named here stay.
 
 ## 2026-10-03 — Compaction-trigger overcharge on aggregator reasoning-echo routes (+ status-bar timer rollover fixes)
 

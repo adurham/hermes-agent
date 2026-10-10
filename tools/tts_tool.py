@@ -451,12 +451,20 @@ def _synthesize_chunks(chunks: List[str], base_path: Path, generated_artifacts: 
 
 def text_to_speech_tool(
     text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None) -> str:
+    instructions: Optional[str] = None, provider: Optional[str] = None, *,
+    _trusted_provider: Optional[str] = None) -> str:
     """Convert text to speech with long-form chunking; returns the JSON result envelope.
 
     Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
     sequentially, then packed against the platform's upload limit: a failed combine keeps the
-    separate valid files and no over-limit artifact is ever returned."""
+    separate valid files and no over-limit artifact is ever returned.
+
+    ``_trusted_provider`` (fork-only, desktop pet voice): an owner-selected backend for this
+    call only, honored by swapping ``provider`` in a per-call copy of the tts config before
+    resolution — the #90109 ignore rule in ``_apply_call_overrides`` (which governs the public
+    ``provider`` arg) is untouched. Only trusted in-process callers pass it (the authenticated
+    dashboard ``/api/audio/speak`` route); the registered model handler forwards a fixed key set
+    that excludes it and the model-facing schema does not advertise it."""
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
@@ -466,7 +474,13 @@ def text_to_speech_tool(
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    tts_config = _load_tts_config()
+    trusted = (_trusted_provider or "").strip()
+    if trusted:
+        # Shallow copy: never mutate the cached config. The swapped name then resolves
+        # exactly like a configured tts.provider (built-ins, tts.providers.<name>, plugins).
+        tts_config = {**tts_config, "provider": trusted}
+    tts_config, provider = _apply_call_overrides(tts_config, speed, provider)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)

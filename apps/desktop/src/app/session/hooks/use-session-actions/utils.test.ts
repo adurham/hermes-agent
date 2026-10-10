@@ -1555,6 +1555,58 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  // Resume mid-tool: the backend's open tool call (`inflight.tool`) renders as
+  // a pending tool row on the live assistant, not a bare thinking bubble.
+  it('projects the open inflight tool call as a pending tool-call part', () => {
+    const tool = { tool_call_id: 'call-1', name: 'terminal', args: { command: 'sleep 60' } }
+
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: 'run it', assistant: '', streaming: true, tool }
+    })
+
+    const live = restored.find(message => message.id === 'assistant-stream-runtime-1')
+
+    expect(live?.pending).toBe(true)
+    expect(live?.parts).toEqual([
+      expect.objectContaining({ type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: tool.args })
+    ])
+
+    // Re-hydrating with the same snapshot must not duplicate the tool row.
+    const again = appendLiveSessionProjection(restored, {
+      session_id: 'runtime-1',
+      inflight: { user: 'run it', assistant: '', streaming: true, tool }
+    })
+
+    const toolParts = again.flatMap(message =>
+      message.parts.filter(part => part.type === 'tool-call' && part.toolCallId === 'call-1')
+    )
+
+    expect(toolParts).toHaveLength(1)
+  })
+
+  it('does not re-add an inflight tool call the live tail already carries', () => {
+    const liveRow: ChatMessage = {
+      id: 'assistant-stream-runtime-1',
+      role: 'assistant',
+      pending: true,
+      parts: [
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', args: {}, argsText: '' } as ChatMessagePart
+      ]
+    }
+
+    const messages: ChatMessage[] = [{ id: 'u1', role: 'user', parts: [textPart('run it')] }, liveRow]
+
+    const restored = appendLiveSessionProjection(messages, {
+      session_id: 'runtime-1',
+      inflight: { user: 'run it', assistant: '', streaming: true, tool: { tool_call_id: 'call-1', name: 'terminal' } }
+    })
+
+    const toolParts = restored.flatMap(message => message.parts.filter(part => part.type === 'tool-call'))
+
+    expect(toolParts).toHaveLength(1)
+  })
+
   // A synthetic starting prompt keeps the display typing its persisted row
   // will get: on reconnect it renders as the same timeline event as history,
   // never as a user bubble; a real user quoting the marker text stays a user

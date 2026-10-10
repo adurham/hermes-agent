@@ -126,9 +126,7 @@ class CLIInfoMixin:
             banner_kw = dict(
                 console=self.console, model=self.model, cwd=cwd,
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
-                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned,
-                # FORK: filter the tool panel by toolsets disabled at startup.
-                disabled_toolsets=self.disabled_toolsets)
+                context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
             if snapshot is not None:
                 self._defer_tool_warnings = True

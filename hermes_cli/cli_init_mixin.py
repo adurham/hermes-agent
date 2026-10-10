@@ -469,11 +469,6 @@ class CLIInitMixin:
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
-        # FORK: session-title badge (the yellow right-aligned chip) in the status bar. On by
-        # default (upstream behaviour); display.status_bar_session_title: false hides it.
-        self._status_bar_session_title_visible = bool(
-            CLI_CONFIG["display"].get("status_bar_session_title", True)
-        )
         # Vi/vim editing mode for the input composer (display.vim_mode, config-only).
         # Off by default: prompt_toolkit's standard emacs bindings.
         self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))

@@ -460,47 +460,6 @@ class TestModalPaintNow:
         assert cli._app.invalidate.called
 
 
-    def _drive(self, cli, target, state_attr):
-        result = {}
-
-        def _run():
-            result["value"] = target()
-
-        with patch.object(cli_module, "_cprint"):
-            thread = threading.Thread(target=_run, daemon=True)
-            thread.start()
-            deadline = time.time() + 2
-            while getattr(cli, state_attr) is None and time.time() < deadline:
-                time.sleep(0.01)
-            assert getattr(cli, state_attr) is not None
-            # State is set a few statements before _paint_now() is actually
-            # called (attention signals — a real stdout write/flush and, on
-            # darwin, a real subprocess.Popen for osascript — run in between).
-            # Poll for the paint itself rather than asserting the instant the
-            # state dict appears, or this races and fails nondeterministically
-            # against whichever modal type's background thread hasn't reached
-            # _paint_now() yet.
-            while not cli._app.invalidate.called and time.time() < deadline:
-                time.sleep(0.01)
-            assert cli._app.invalidate.called, (
-                f"{state_attr} panel was not painted despite throttle + resize gates"
-            )
-            # Reset so we can prove the response-received teardown also repaints
-            # (the panel must clear at once, not be held by the throttle).
-            cli._app.invalidate.reset_mock()
-            getattr(cli, state_attr)["response_queue"].put(
-                "deny" if state_attr == "_approval_state" else
-                ("a" if state_attr == "_clarify_state" else "pw")
-            )
-            thread.join(timeout=2)
-            # clarify returns immediately on a response (no teardown repaint);
-            # approval and sudo repaint to tear the panel down.
-            if state_attr != "_clarify_state":
-                assert cli._app.invalidate.called, (
-                    f"{state_attr} panel was not repainted on teardown"
-                )
-        assert not thread.is_alive()
-        return result["value"]
     def test_secret_response_teardown_paints(self):
         """_submit_secret_response tears the secret panel down via _paint_now,
         so the panel clears immediately rather than being held by the throttle."""

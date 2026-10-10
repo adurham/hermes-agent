@@ -238,13 +238,8 @@ class TestBackendSelection:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
-        "TAVILY_API_KEY",
         "KEENABLE_API_KEY",
-        # check_web_api_key() falls through to "Anthropic native available?"
-        # when no third-party search backend is wired. Tests for "no keys"
-        # paths must scrub these too.
-        "ANTHROPIC_API_KEY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
+        "TAVILY_API_KEY",
     )
 
     def setup_method(self):
@@ -647,25 +642,6 @@ class TestCheckWebApiKey:
     def setup_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
-        # FORK-HERMETIC: check_web_api_key() ends with a fork-only filesystem
-        # probe for Claude Code OAuth credentials (~/.claude/.credentials.json)
-        # so a first-party-Anthropic install with zero env keys still gates the
-        # web tools available. Upstream's version of this suite never had that
-        # probe, so its mocks scrub env vars only. On a machine that actually
-        # has Claude Code credentials, the probe leaks the REAL home directory
-        # into these "zero-credential" tests and check_web_api_key() returns
-        # True, failing the two does_not_crash assertions below. Redirect
-        # Path.home() to an empty temp dir so the filesystem probe sees
-        # nothing, mirroring the env scrub above.
-        import pathlib as _pathlib
-        import shutil as _shutil
-        import tempfile as _tempfile
-
-        self._fake_home = _tempfile.mkdtemp(prefix="hermes-webcfg-test-")
-        self._home_patcher = patch.object(
-            _pathlib.Path, "home", staticmethod(lambda: _pathlib.Path(self._fake_home))
-        )
-        self._home_patcher.start()
         self._managed_patchers = [
             patch("tools.tool_backend_helpers.managed_nous_tools_enabled", return_value=True),
             patch("tools.managed_tool_gateway.managed_nous_tools_enabled", return_value=True),
@@ -684,10 +660,6 @@ class TestCheckWebApiKey:
     def teardown_method(self):
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
-        self._home_patcher.stop()
-        import shutil as _shutil
-
-        _shutil.rmtree(self._fake_home, ignore_errors=True)
         for p in self._managed_patchers:
             p.stop()
 
@@ -732,11 +704,8 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
-    def test_no_keys_returns_false(self, monkeypatch, tmp_path):
-        # check_web_api_key() also falls through to a ~/.claude/.credentials.json
-        # existence probe; redirect HOME to an empty tempdir so a host login can't
-        # leak True into this assertion. Also patch out every no-credential
-        # plugin provider (ddgs for search, trafilatura for extract) so their
+    def test_no_keys_returns_false(self):
+        # Patch out every no-credential plugin provider (ddgs for search) so its
         # legitimate "no API key needed" availability doesn't count as
         # "configured" for this specifically-testing-the-no-keys-case test.
         # Two ddgs patch targets are both needed: the legacy
@@ -745,14 +714,11 @@ class TestCheckWebApiKey:
         # walks the registry directly and isn't gated by the legacy probe —
         # in a dev env where the `ddgs` package is actually pip-installed,
         # only mocking the legacy probe left this test failing).
-        monkeypatch.setenv("HOME", str(tmp_path))
         from tools.web_tools import check_web_api_key
         from plugins.web.ddgs.provider import DDGSWebSearchProvider
-        from plugins.web.trafilatura.provider import TrafilaturaWebExtractProvider
 
         with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch.object(DDGSWebSearchProvider, "is_available", return_value=False), \
-             patch.object(TrafilaturaWebExtractProvider, "is_available", return_value=False):
+             patch.object(DDGSWebSearchProvider, "is_available", return_value=False):
             assert check_web_api_key() is False
 
     def test_both_keys_returns_true(self):
@@ -1180,17 +1146,6 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
-    # FORK-HERMETIC (same reason as TestCheckWebApiKey.setup_method): the fork's
-    # check_web_api_key ends with a filesystem probe for Claude Code OAuth
-    # credentials, so on a machine that HAS ~/.claude/.credentials.json the probe
-    # returns True and this "keyless off -> tools off" assertion fails. Upstream's
-    # version returns False unconditionally in the plugin path, which is why this
-    # test passed against the tag. Point Path.home() at an empty dir so the probe
-    # sees nothing; the registry/dispatcher behaviour under test is unaffected.
-    import pathlib as _pathlib
-    import tempfile as _tempfile
-    _fake_home = _tempfile.mkdtemp(prefix="hermes-webcfg-xai-")
-    monkeypatch.setattr(_pathlib.Path, "home", staticmethod(lambda: _pathlib.Path(_fake_home)))
     for k in ("PERPLEXITY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     with registry._lock:

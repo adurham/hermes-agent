@@ -1,11 +1,9 @@
 """Tavily web search + content extraction (``/search``, ``/extract``; sync httpx).
 
-Env: ``TAVILY_API_KEY`` (https://app.tavily.com/home, required). Tavily is a
-deliberate **keyed, opt-in** provider — see FORK.md "Tavily kept keyed-only;
-removed from the default-on keyless ring" (2026-09-01). It never participates
-in the keyless ring/failover; requests without a key raise a clear error
-rather than silently falling back to an anonymous request against a vendor
-the user never opted into.
+Env: ``TAVILY_API_KEY`` (https://app.tavily.com/home, optional), ``TAVILY_BASE_URL``.
+Keyed requests use ``Authorization: Bearer``; without a key the request is
+keyless (``X-Tavily-Access-Mode: keyless``). Tavily is NOT in the zero-config
+keyless ring — keyless access is opt-in by selecting Tavily in ``hermes tools``.
 """
 
 from __future__ import annotations
@@ -17,7 +15,7 @@ import httpx
 
 from plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, extract_fail, http_status_detail, provider_env, run_extract,
-    run_search, search_fail, search_ok, setup_schema, title_hit,
+    run_search, search_fail, search_ok, setup_schema, title_hit, use_keyless,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,16 +26,19 @@ _SEARCH_PAYLOAD = {"include_raw_content": False, "include_images": False}
 
 
 def _tavily_headers(api_key: str) -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "X-Client-Name": _CLIENT_NAME,
-    }
+    headers = {"X-Client-Name": _CLIENT_NAME}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        headers["X-Tavily-Access-Mode"] = "keyless"
+    return headers
 
 
 def _tavily_request(endpoint: str, payload: Dict[str, Any], *, api_key: Optional[str] = None) -> Dict[str, Any]:
-    """POST to Tavily and return parsed JSON. ``api_key=None`` reads ``TAVILY_API_KEY``.
-    Non-2xx raises ValueError with the body so Tavily's rate-limit/upgrade text reaches the model.
-    """
+    """POST to Tavily and return parsed JSON. ``api_key=None`` reads ``TAVILY_API_KEY``;
+    pass ``""`` to force the keyless header even when a key exists
+    (``web.provider_tier.tavily: free``). Non-2xx raises ValueError with the body so
+    Tavily's rate-limit/upgrade text reaches the model."""
     if api_key is None:
         api_key = provider_env("TAVILY_API_KEY")
     base_url = provider_env("TAVILY_BASE_URL") or "https://api.tavily.com"
@@ -72,42 +73,52 @@ def _failed_document(url: str, error: str) -> Dict[str, Any]:
 
 
 def _missing_key_error(action: str) -> str:
-    return f"TAVILY_API_KEY environment variable not set. Get your API key at https://app.tavily.com/home"
+    return f"TAVILY_API_KEY is not set. Get a key at https://app.tavily.com/home or select Tavily in `hermes tools` for opt-in keyless {action}."
+
+
+def _auth(action: str) -> tuple[Optional[str], Optional[str], str]:
+    """``(request_key, missing_key_error, log_prefix)``: request key is ``""`` when forcing
+    keyless, ``None`` when neither key nor keyless applies (``missing_key_error`` set)."""
+    api_key = provider_env("TAVILY_API_KEY")
+    force_keyless = use_keyless("tavily", api_key)
+    if not force_keyless and not api_key:
+        return None, _missing_key_error(action), ""
+    return "" if force_keyless else api_key, None, "keyless " if force_keyless else ""
 
 
 class TavilyWebSearchProvider(BaseWebSearchProvider):
-    """Tavily search + extract provider (keyed, opt-in — never keyless)."""
+    """Tavily search + extract provider (keyed, or opt-in keyless)."""
 
     NAME = "tavily"
     DISPLAY_NAME = "Tavily"
     KEY_ENV = "TAVILY_API_KEY"
     EXTRACT = True
-    KEYLESS = False  # fork-deliberate: keep Tavily out of the default-on keyless ring (FORK.md 2026-09-01)
+    KEYLESS = True
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         def _body() -> Dict[str, Any]:
-            api_key = provider_env("TAVILY_API_KEY")
-            if not api_key:
-                return search_fail(_missing_key_error("search"))
-            logger.info("Tavily search: '%s' (limit=%d)", query, limit)
+            key, missing, prefix = _auth("search")
+            if missing:
+                return search_fail(missing)
+            logger.info("Tavily %ssearch: '%s' (limit=%d)", prefix, query, limit)
             payload = {"query": query, "max_results": min(limit, SEARCH_LIMIT_CAP), **_SEARCH_PAYLOAD}
-            return _normalize_tavily_search_results(_tavily_request("search", payload, api_key=api_key))
+            return _normalize_tavily_search_results(_tavily_request("search", payload, api_key=key))
 
         return run_search("Tavily", logger, _body)
 
     def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
         def _body() -> List[Dict[str, Any]]:
-            api_key = provider_env("TAVILY_API_KEY")
-            if not api_key:
-                return extract_fail(urls, _missing_key_error("extract"))
-            logger.info("Tavily extract: %d URL(s)", len(urls))
-            raw = _tavily_request("extract", {"urls": urls, "include_images": False}, api_key=api_key)
+            key, missing, prefix = _auth("extract")
+            if missing:
+                return extract_fail(urls, missing)
+            logger.info("Tavily %sextract: %d URL(s)", prefix, len(urls))
+            raw = _tavily_request("extract", {"urls": urls, "include_images": False}, api_key=key)
             return _normalize_tavily_documents(raw)
 
         return run_extract("Tavily", logger, urls, _body)
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return setup_schema(
-            "Tavily", "paid", "Search + extract in one provider.",
-            "TAVILY_API_KEY", "Tavily API key", "https://app.tavily.com/home",
+            "Tavily", "free · key optional", "Search + extract. Opt-in keyless; set TAVILY_API_KEY for higher limits.",
+            "TAVILY_API_KEY", "Tavily API key (optional — keyless works when Tavily is selected)", "https://app.tavily.com/home",
         )

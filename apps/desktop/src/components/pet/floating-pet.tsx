@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
@@ -29,7 +29,6 @@ import { $gatewayState } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { PetBubble } from './pet-bubble'
 import { PET_STARTUP_RETRY_MS, petInfoPollIntervalMs } from './pet-info-poll'
 import { PetSprite, roamWalkRow } from './pet-sprite'
 import { dwellMs, type DwellRange } from './roam-behavior'
@@ -53,11 +52,6 @@ const CLICK_SLOP_PX = 4
 // much longer mean so it reads as an occasional glance, not a tic.
 const FIDGET_DWELL: DwellRange = { maxMs: 150000, meanMs: 50000, minMs: 20000 }
 
-// Minimum room above the sprite (in the zone's local coordinate space) for
-// the status bubble to fit without clipping against the zone's clipped top
-// edge — a generous estimate for the bubble's own height + its 6px margin.
-const BUBBLE_CLEARANCE_PX = 40
-
 interface Point {
   x: number
   y: number
@@ -74,55 +68,22 @@ function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
   )
 }
 
-// Keep a w×h box fully inside the viewport (or zone container, when confined).
-// Pre-pet-load callers pass a nominal size; the live size flows in once `info` arrives.
-function clampPoint(x: number, y: number, w: number, h: number, zone?: DOMRect | null): Point {
-  const maxX = zone ? Math.max(0, zone.width - w) : Math.max(0, (window.innerWidth || 800) - w)
-  const maxY = zone ? Math.max(0, zone.height - h) : Math.max(0, (window.innerHeight || 600) - h)
-
+// Keep a w×h box fully inside the viewport. Pre-pet-load callers pass a nominal
+// size; the live size flows in once `info` arrives.
+function clampPoint(x: number, y: number, w: number, h: number): Point {
   return {
-    x: Math.min(Math.max(0, x), maxX),
-    y: Math.min(Math.max(0, y), maxY)
+    x: Math.min(Math.max(0, x), Math.max(0, (window.innerWidth || 800) - w)),
+    y: Math.min(Math.max(0, y), Math.max(0, (window.innerHeight || 600) - h))
   }
 }
 
 // The sprite art faces left by default, so mirror it when the pet's center sits
-// on the left half of the window (or zone container, when confined) — it always
-// faces inward, toward the content.
-function facing(leftX: number, petW: number, zone?: DOMRect | null): string {
-  const mid = zone ? zone.width / 2 : (window.innerWidth || 800) / 2
-
-  return leftX + petW / 2 < mid ? 'scaleX(-1)' : 'none'
+// on the left half of the window — it always faces inward, toward the content.
+function facing(leftX: number, petW: number): string {
+  return leftX + petW / 2 < (window.innerWidth || 800) / 2 ? 'scaleX(-1)' : 'none'
 }
 
-// Horizontal anchor for the zone status bubble: centers on the pet by default,
-// but pins to the pet's near edge instead when the pet sits in the outer third
-// of a narrow zone — a strictly-centered bubble would otherwise overhang past
-// the zone's clipped left/right edge and get cut off, same failure mode the
-// vertical flip (BUBBLE_CLEARANCE_PX) fixes for the top edge.
-function bubbleHorizontalStyle(petX: number, petW: number, zoneWidth: number): CSSProperties {
-  const petCenter = petX + petW / 2
-  const third = zoneWidth / 3
-
-  if (petCenter < third) {
-    return { left: 0, transform: 'none' }
-  }
-
-  if (petCenter > zoneWidth - third) {
-    return { right: 0, transform: 'none' }
-  }
-
-  return { left: '50%', transform: 'translateX(-50%)' }
-}
-
-function loadPosition(zone?: DOMRect | null): Point {
-  // When confined to a zone, default to the top-left corner of the zone
-  // (0,0 relative to the container). The full-window default doesn't make
-  // sense for absolute positioning inside a pane.
-  if (zone) {
-    return { x: 0, y: 0 }
-  }
-
+function loadPosition(): Point {
   try {
     const raw = storedString(POSITION_KEY)
 
@@ -163,7 +124,7 @@ function loadPosition(zone?: DOMRect | null): Point {
  * Promotion to a separate frameless OS-level window is a follow-up — the
  * sprite + state logic here is reused as-is, only the host changes.
  */
-export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject<HTMLDivElement | null> }) {
+export function FloatingPet() {
   const { requestGateway } = useGatewayRequest()
   const { resolvedMode } = useTheme()
   const gatewayState = useStore($gatewayState)
@@ -176,10 +137,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   const roamDir = useStore($petRoamDir)
   const routeOverlayOpen = useRouteOverlayActive()
 
-  const [position, setPosition] = useState<Point>(() =>
-    zoneContainer ? { x: 0, y: 0 } : loadPosition()
-  )
-
+  const [position, setPosition] = useState<Point>(loadPosition)
   const containerRef = useRef<HTMLDivElement | null>(null)
   // The facing mirror lives on the sprite wrapper, not the container, so the
   // speech bubble (a container child) never renders flipped/backwards.
@@ -209,14 +167,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
 
   // Keep the *whole* pet on-screen at its current size, so growing it near an
   // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
-  const clamp = useCallback(
-    ({ x, y }: Point): Point => {
-      const zone = zoneContainer?.current?.getBoundingClientRect()
-
-      return clampPoint(x, y, petW, petH, zone)
-    },
-    [petW, petH, zoneContainer]
-  )
+  const clamp = useCallback(({ x, y }: Point): Point => clampPoint(x, y, petW, petH), [petW, petH])
 
   // Fetch pet.info on connect. pet.changed re-runs this effect when the
   // signature moves; a slow backstop covers silent seed + cold-start races.
@@ -400,15 +351,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
 
   // Never strand or crop the pet: re-clamp (and persist) whenever the viewport
   // shrinks or the pet's own size changes (wheel/slider). `clamp` carries the
-  // current size, so depending on it covers both triggers. Zone-mode positions
-  // are container-local and never persisted — POSITION_KEY belongs to the
-  // full-window pet's coordinate space.
-  //
-  // In zone mode the zone pane is a layout-tree track the user drags, which
-  // never fires `window.resize` — only a ResizeObserver on the container
-  // itself sees it. Without this, shrinking the zone left the pet clamped to
-  // its OLD (now stale) bounds until some unrelated window resize happened to
-  // trigger a recheck.
+  // current size, so depending on it covers both triggers.
   useEffect(() => {
     const reclamp = () =>
       setPosition(prev => {
@@ -418,9 +361,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
           return prev
         }
 
-        if (!zoneContainer) {
-          persistString(POSITION_KEY, JSON.stringify(next))
-        }
+        persistString(POSITION_KEY, JSON.stringify(next))
 
         return next
       })
@@ -428,24 +369,8 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     reclamp()
     window.addEventListener('resize', reclamp)
 
-    const zoneEl = zoneContainer?.current
-    const zoneObserver = zoneEl ? new ResizeObserver(reclamp) : undefined
-    zoneObserver?.observe(zoneEl!)
-
-    return () => {
-      window.removeEventListener('resize', reclamp)
-      zoneObserver?.disconnect()
-    }
-  }, [clamp, zoneContainer])
-
-  // Viewport→container-local conversion. In zone mode style.left/top are
-  // relative to the zone container; in full-window mode (position:fixed)
-  // viewport coords ARE the style coords, so the origin is (0,0).
-  const zoneOrigin = useCallback((): Point => {
-    const z = zoneContainer?.current?.getBoundingClientRect()
-
-    return z ? { x: z.left, y: z.top } : { x: 0, y: 0 }
-  }, [zoneContainer])
+    return () => window.removeEventListener('resize', reclamp)
+  }, [clamp])
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -467,12 +392,11 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         return
       }
 
-      const origin = zoneOrigin()
       dragRef.current = {
         dx: e.clientX - rect.left,
         dy: e.clientY - rect.top,
-        x: rect.left - origin.x,
-        y: rect.top - origin.y,
+        x: rect.left,
+        y: rect.top,
         startClientX: e.clientX,
         startClientY: e.clientY,
         moved: false
@@ -480,7 +404,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
       el.setPointerCapture(e.pointerId)
       el.style.cursor = 'grabbing'
     },
-    [zoneOrigin]
+    []
   )
 
   const onPointerMove = useCallback(
@@ -499,10 +423,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         drag.moved = true
       }
 
-      // clientX/Y are viewport coords; convert the drag target into the pet's
-      // positioning space (container-local in zone mode) before clamping.
-      const origin = zoneOrigin()
-      const next = clamp({ x: e.clientX - drag.dx - origin.x, y: e.clientY - drag.dy - origin.y })
+      const next = clamp({ x: e.clientX - drag.dx, y: e.clientY - drag.dy })
       drag.x = next.x
       drag.y = next.y
       // Mutate the DOM directly — no setState, so no re-render while dragging. The
@@ -512,11 +433,10 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
       el.style.top = `${next.y}px`
 
       if (spriteWrapRef.current) {
-        const zone = zoneContainer?.current?.getBoundingClientRect()
-        spriteWrapRef.current.style.transform = facing(next.x, petW, zone)
+        spriteWrapRef.current.style.transform = facing(next.x, petW)
       }
     },
-    [clamp, petW, zoneOrigin, zoneContainer]
+    [clamp, petW]
   )
 
   const onPointerUp = useCallback(
@@ -527,10 +447,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         dragRef.current = null
         const committed = { x: drag.x, y: drag.y }
         setPosition(committed)
-
-        if (!zoneContainer) {
-          persistString(POSITION_KEY, JSON.stringify(committed))
-        }
+        persistString(POSITION_KEY, JSON.stringify(committed))
 
         // Pet the pet: a plain click (no real movement, not the shift-click
         // pop-out) triggers the same reaction the composer's affection detector
@@ -548,7 +465,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         el.releasePointerCapture?.(e.pointerId)
       }
     },
-    [zoneContainer]
+    []
   )
 
   // Alt+wheel over the pet resizes it (persisted via the same path as the
@@ -559,28 +476,19 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     (next: number, { clientX, clientY, ratio }: PetZoomAnchor) => {
       setPetScale(requestGateway, next)
       setPosition(prev => {
-        // clientX/Y are viewport coords; prev is in the pet's positioning
-        // space (container-local in zone mode) — convert before anchoring.
-        const origin = zoneOrigin()
-        const localX = clientX - origin.x
-        const localY = clientY - origin.y
-
         const at = clampPoint(
-          localX - (localX - prev.x) * ratio,
-          localY - (localY - prev.y) * ratio,
+          clientX - (clientX - prev.x) * ratio,
+          clientY - (clientY - prev.y) * ratio,
           (info.frameW ?? 192) * next,
-          (info.frameH ?? 208) * next,
-          zoneContainer?.current?.getBoundingClientRect()
+          (info.frameH ?? 208) * next
         )
 
-        if (!zoneContainer) {
-          persistString(POSITION_KEY, JSON.stringify(at))
-        }
+        persistString(POSITION_KEY, JSON.stringify(at))
 
         return at
       })
     },
-    [requestGateway, info.frameW, info.frameH, zoneOrigin, zoneContainer]
+    [requestGateway, info.frameW, info.frameH]
   )
 
   usePetZoomGesture(containerRef, onScale, active && !overlayActive)
@@ -588,18 +496,11 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
   // Commit a roamed-to position back to React state + storage when the wander
   // loop settles, so the inline style matches the DOM once the loop stops
   // driving it imperatively. Stable identity keeps the roam effect from
-  // restarting every render. Zone-mode positions are container-local — never
-  // persisted to the full-window POSITION_KEY.
-  const commitRoamPosition = useCallback(
-    (point: Point) => {
-      setPosition(point)
-
-      if (!zoneContainer) {
-        persistString(POSITION_KEY, JSON.stringify(point))
-      }
-    },
-    [zoneContainer]
-  )
+  // restarting every render.
+  const commitRoamPosition = useCallback((point: Point) => {
+    setPosition(point)
+    persistString(POSITION_KEY, JSON.stringify(point))
+  }, [])
 
   const isDragging = useCallback(() => dragRef.current !== null, [])
 
@@ -618,8 +519,7 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
     loopMs: info.loopMs ?? 1100,
     overlayOpen: routeOverlayOpen,
     petH,
-    petW,
-    zoneContainer
+    petW
   })
 
   // Idle fidget: while the pet is genuinely at rest, occasionally flash a
@@ -689,11 +589,11 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
         cursor: 'grab',
         left: position.x,
         pointerEvents: 'auto',
-        position: zoneContainer ? 'absolute' : 'fixed',
+        position: 'fixed',
         top: position.y,
         touchAction: 'none',
         userSelect: 'none',
-        zIndex: zoneContainer ? 10 : 60
+        zIndex: 60
       }}
     >
       <div
@@ -710,43 +610,12 @@ export function FloatingPet({ zoneContainer }: { zoneContainer?: React.RefObject
           zIndex: 0
         }}
       />
-      {/* Status bubble ("working…"/"your turn"/etc.) — only in the dedicated
-          zone. The full-window pet skips it (the app itself is the surface,
-          per the pop-out overlay's own rationale), but the zone is a small
-          fixed box where a glanceable status line earns its keep.
-
-          Flips below the sprite when there isn't enough headroom above (the
-          zone clips with overflow:hidden, so a bubble that assumes it always
-          has room above gets cut off whenever the pet is near the zone's top
-          edge — from roaming there, or just being dragged there). */}
-      {zoneContainer &&
-        (() => {
-          const aboveFits = position.y >= BUBBLE_CLEARANCE_PX
-          const zoneWidth = zoneContainer.current?.getBoundingClientRect().width ?? 0
-          const horizontal = zoneWidth ? bubbleHorizontalStyle(position.x, petW, zoneWidth) : {}
-
-          return (
-            <div
-              style={{
-                [aboveFits ? 'bottom' : 'top']: '100%',
-                [aboveFits ? 'marginBottom' : 'marginTop']: 6,
-                pointerEvents: 'none',
-                position: 'absolute',
-                whiteSpace: 'nowrap',
-                zIndex: 2,
-                ...horizontal
-              }}
-            >
-              <PetBubble />
-            </div>
-          )
-        })()}
       <div
         ref={spriteWrapRef}
         style={{
           lineHeight: 0,
           position: 'relative',
-          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW, zoneContainer?.current?.getBoundingClientRect()),
+          transform: roamDir !== 0 ? (walk.mirror ? 'scaleX(-1)' : 'none') : facing(position.x, petW),
           zIndex: 1
         }}
       >

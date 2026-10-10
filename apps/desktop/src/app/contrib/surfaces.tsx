@@ -8,17 +8,15 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo, useRef } from 'react'
+import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
 import { Navigate, Route, Routes, useParams } from 'react-router'
 
-import { FloatingPet } from '@/components/pet/floating-pet'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { $activeConnectionId } from '@/store/connections'
 import { $gateway } from '@/store/gateway'
 import { $guideOpening } from '@/store/onboarding-gate'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
-import { $petZoneEnabled } from '@/store/pet'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
 
@@ -65,28 +63,6 @@ export const TerminalSurface = memo(function TerminalSurface() {
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-(--ui-terminal-surface-background)">
       <TerminalPaneChrome />
-    </div>
-  )
-})
-
-/**
- * Pet zone surface — a dedicated pane that confines the floating pet.
- * Renders the pet inside a container with `data-slot="pet-zone"` so the
- * roam geometry can detect it and constrain ledges to its bounds.
- * The pet is mounted here when `$petZoneEnabled` is true; otherwise it
- * floats over the full window as before.
- */
-export const PetZoneSurface = memo(function PetZoneSurface() {
-  const zoneRef = useRef<HTMLDivElement | null>(null)
-  const zoneEnabled = useStore($petZoneEnabled)
-
-  return (
-    <div
-      className="relative h-full min-h-0 overflow-hidden bg-(--ui-bg-chrome)"
-      data-slot="pet-zone"
-      ref={zoneRef}
-    >
-      {zoneEnabled && <FloatingPet zoneContainer={zoneRef} />}
     </div>
   )
 })

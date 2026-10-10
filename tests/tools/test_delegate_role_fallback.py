@@ -135,7 +135,7 @@ def dispatch(monkeypatch):
     actually constructed, and ``parent`` is the mock parent agent (so a
     test can inspect ``parent._emitted_status``).
     """
-    import hermes_cli.ruflo_agents as ruflo
+    import hermes_cli.personas as ruflo
     import hermes_cli.runtime_provider as runtime_provider
     import tools.delegate_tool as dt
 

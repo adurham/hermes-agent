@@ -745,8 +745,6 @@ export const jaOverrides = {
         noneAvailable: 'オンにできるペットがありません。',
         turnOnFailed: 'ペットをオンにできませんでした。',
         turnOffFailed: 'ペットをオフにできませんでした。',
-        zoneTitle: 'ペットゾーン',
-        zoneDesc: 'ペットをウィンドウ全体ではなく、レイアウト内の専用ペインに閉じ込めます。',
         voiceTitle: 'ペットの声',
         voiceDesc: 'ターン完了時やユーザーの入力が必要なときに読み上げます（作業中の状態メッセージは読み上げません）。'
       }
@@ -3383,7 +3381,6 @@ export const jaOverrides = {
     toggleStripTab: title => `${title} タブを切り替え`,
     minimize: '最小化',
     restore: '復元',
-    closeTab: label => `${label} を閉じる`,
     reload: '再読み込み',
     closeOthers: '他を閉じる',
     closeToRight: '右側を閉じる',

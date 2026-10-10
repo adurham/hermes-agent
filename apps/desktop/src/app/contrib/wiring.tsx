@@ -52,7 +52,6 @@ import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { $petZoneEnabled } from '@/store/pet'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
 import {
@@ -170,7 +169,7 @@ import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { type KickoffSlashCommand, useOnboardingKickoff } from './onboarding-kickoff'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
-import { ChatRoutesSurface, PetZoneSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
+import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 import {
   useCreditsNoticeDemo,
@@ -323,7 +322,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
-  const petZoneEnabled = useStore($petZoneEnabled)
   const boot = useStore($desktopBoot)
 
   const routedSessionId = routeSessionId(location.pathname)
@@ -1210,17 +1208,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [actions, voiceMaxRecordingSeconds]
   )
 
-  const petZoneNode = useMemo(() => <PetZoneSurface />, [])
-
   const api = useMemo<WiringApi>(
     () => ({
       chatRoutes: chatRoutesNode,
-      petZone: petZoneNode,
       sidebar: sidebarNode,
       statusbar: statusbarNode,
       terminal: terminalNode
     }),
-    [chatRoutesNode, petZoneNode, sidebarNode, statusbarNode, terminalNode]
+    [chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
   )
 
   // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,
@@ -1449,11 +1444,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       <ExternalOpenFailedDialog />
 
       {/* Petdex floating mascot — renders nothing unless installed + enabled.
-          When pet zone is active, the pet lives inside the PetZoneSurface pane
-          instead of floating over the full window. Never in the HUD or
-          browser windows: the HUD is the chat bar and nothing else, and a
-          browser window has no chat surface for the pet to react to. */}
-      {!petZoneEnabled && !isHudWindow() && !isBrowserWindow() && <FloatingPet />}
+          Never in the HUD: that window is the chat bar and nothing else. */}
+      {!isHudWindow() && !isBrowserWindow() && <FloatingPet />}
 
       {/* In-app tips. Renders nothing until the app is quiet and has something
           to point at, and nothing at all once they're off or all retired. The

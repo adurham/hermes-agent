@@ -477,7 +477,6 @@ export const zhHantChrome = {
     toggleStripTab: title => `切換 ${title} 分頁`,
     minimize: '最小化',
     restore: '還原',
-    closeTab: label => `關閉 ${label}`,
     reload: '重新載入',
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',

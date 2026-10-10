@@ -1562,6 +1562,44 @@ CONFIG_SCHEMA = ProviderConfigSchema(
     def test_speak_text_requires_nonempty_text(self):
         resp = self.client.post("/api/audio/speak", json={"text": "   "})
         assert resp.status_code == 400
+
+    def _capture_speak_calls(self, monkeypatch, tmp_path):
+        import tools.tts_tool as tts_tool
+
+        calls = []
+
+        def fake_tts(text, provider=None, _trusted_provider=None, **kwargs):
+            audio_file = tmp_path / f"speech{len(calls)}.mp3"
+            audio_file.write_bytes(b"ID3fake-audio-bytes")
+            calls.append({"provider": provider, "_trusted_provider": _trusted_provider})
+            return json.dumps({
+                "success": True,
+                "file_path": str(audio_file),
+                "provider": _trusted_provider or "configured",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+        return calls
+
+    def test_speak_text_forwards_provider_on_trusted_path(self, monkeypatch, tmp_path):
+        """Desktop pet voice: request provider rides the trusted kwarg, never the
+        model-facing ``provider=`` override that #90109 ignores."""
+        calls = self._capture_speak_calls(monkeypatch, tmp_path)
+
+        resp = self.client.post(
+            "/api/audio/speak", json={"text": "hello there", "provider": " miku "})
+        assert resp.status_code == 200
+        assert resp.json()["provider"] == "miku"
+        assert calls == [{"provider": None, "_trusted_provider": "miku"}]
+
+    def test_speak_text_without_provider_uses_configured(self, monkeypatch, tmp_path):
+        calls = self._capture_speak_calls(monkeypatch, tmp_path)
+
+        for body in ({"text": "hi"}, {"text": "hi", "provider": ""}, {"text": "hi", "provider": None}):
+            resp = self.client.post("/api/audio/speak", json=body)
+            assert resp.status_code == 200
+            assert resp.json()["provider"] == "configured"
+        assert calls == [{"provider": None, "_trusted_provider": None}] * 3
     def test_update_hermes_returns_docker_guidance_without_spawning(self, monkeypatch):
 
         spawned = False

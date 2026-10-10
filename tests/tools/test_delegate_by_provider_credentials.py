@@ -132,7 +132,7 @@ class TestByProviderReachesTaskRoutes:
 
     @pytest.fixture
     def routed(self, runtime, monkeypatch):
-        import hermes_cli.ruflo_agents as ruflo
+        import hermes_cli.personas as ruflo
 
         # The dispatched role has no model_by_role entry of its own; the
         # sibling entry exists so "no entry" is a real lookup miss rather

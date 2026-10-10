@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import hermes_cli.ruflo_agents as ruflo
+import hermes_cli.personas as ruflo
 from tools.delegate_tool import _resolve_task_routes
 
 PARENT_PROVIDER = "p-parent"

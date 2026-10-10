@@ -130,30 +130,13 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.mark.platforms("linux")
 def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
-    """Verifies the dirs + FIFO + modes the helper lays down."""
-    import os
+    """Verifies the dirs + FIFO the helper lays down."""
     import stat
 
     from hermes_cli.service_manager import _seed_supervise_skeleton
 
     svc_dir = tmp_path / "gateway-foo"
     svc_dir.mkdir()
-    # Force svc_dir's group to our own egid before seeding. macOS/BSD mkdir
-    # inherits the PARENT directory's group (not the creating process's
-    # egid, unlike SysV semantics) — so if pytest's tmp_path basetemp
-    # happens to land under an ancestor owned by a group we're not a
-    # member of (observed: /tmp/pytest-of-<user>/... is group `wheel` in
-    # some full-suite runs, vs. the usual /private/var/.../T/pytest-of-
-    # <user>/... which is group `staff`, ours), every subdirectory
-    # _seed_supervise_skeleton creates underneath inherits that
-    # non-membership too. The kernel then SILENTLY strips the setgid bit
-    # on chmod(...0o3730...) — POSIX security semantics: only root or a
-    # member of a group may set setgid for it, no exception raised. This
-    # is correct OS behavior, not a bug in _seed_supervise_skeleton (which
-    # already handles the analogous chown PermissionError explicitly) —
-    # pin svc_dir's group to something we ARE a member of so the test's
-    # outcome doesn't depend on pytest's ambient basetemp placement.
-    os.chown(svc_dir, -1, os.getegid())
 
     _seed_supervise_skeleton(svc_dir)
 
@@ -177,41 +160,6 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
         "supervise/control must be a FIFO"
     )
     assert stat.S_IMODE(control.stat().st_mode) == 0o660
-
-
-def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
-    """When a log/ subdir exists, its supervise tree also gets seeded.
-
-    Without this, ``unregister_profile_gateway``'s rmtree would EACCES
-    on the logger's root-owned supervise dir even after the parent
-    slot's supervise/ was hermes-owned.
-    """
-    import os
-    import stat
-
-    from hermes_cli.service_manager import _seed_supervise_skeleton
-
-    svc_dir = tmp_path / "gateway-foo"
-    svc_dir.mkdir()
-    # See the sibling test above for why this is needed — pins svc_dir's
-    # group to one we're a member of so setgid-stripping doesn't depend on
-    # pytest's ambient basetemp placement.
-    os.chown(svc_dir, -1, os.getegid())
-    (svc_dir / "log").mkdir()  # logger subdir present
-
-    _seed_supervise_skeleton(svc_dir)
-
-    # Logger's own supervise tree is seeded the same way.
-    log_event = svc_dir / "log" / "event"
-    log_supervise = svc_dir / "log" / "supervise"
-    log_supervise_event = log_supervise / "event"
-    log_control = log_supervise / "control"
-
-    assert log_event.is_dir()
-    assert stat.S_IMODE(log_event.stat().st_mode) == 0o3730
-    assert log_supervise.is_dir()
-    assert log_supervise_event.is_dir()
-    assert log_control.exists() and stat.S_ISFIFO(log_control.stat().st_mode)
 
 
 @pytest.mark.platforms("linux")

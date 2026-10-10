@@ -25,19 +25,6 @@ from tools.delegate_tool_results import (
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
-class _DelegationAbandoned(Exception):
-    """Raised when a synchronous delegation's owner stopped waiting for it.
-
-    Distinct from a timeout: the child was NOT over budget, the consumer went away
-    (generic tool deadline abandoning this worker thread, or a parent interrupt).
-    Surfaced as status='abandoned' rather than 'timeout' so the transcript never claims
-    the subagent was too slow when it was actually orphaned.
-    """
-
-# How often a blocking single-child wait re-checks for owner abandonment. Short enough
-# that teardown lands promptly, long enough to be free.
-_ABANDON_POLL_INTERVAL = 1.0
-
 # Heartbeat cycles of unchanged state before re-emitting anyway (~every 2 min on the
 # 30s interval) — the "still alive" backstop.
 _HEARTBEAT_FORCE_EMIT_CYCLES = 4

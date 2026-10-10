@@ -52,8 +52,7 @@ fallback, reusing the exact same retry/classification machinery
 (``agent._fallback_chain`` / ``_try_activate_fallback`` /
 ``agent/error_classifier.py``) the top-level session's own
 ``fallback_providers`` chain already uses. Only ONE hop: the fallback
-bundle itself has no ``fallback`` of its own (mirrors the one-hop
-:data:`ROLE_ALIASES` precedent below). A ``fallback`` sub-key on a role
+bundle itself has no ``fallback`` of its own. A ``fallback`` sub-key on a role
 entry with no ``provider`` of its own is ignored — a fallback identity
 only makes sense once the primary already declares its own credential
 bundle. Requires no ``fallback`` sub-key to work exactly as before —
@@ -88,7 +87,7 @@ from hermes_cli.persona_library import (
 )
 from hermes_cli.persona_library import lookup_persona as _lookup_persona_lib
 from hermes_cli.persona_library import get_personas_path as _get_personas_path_lib
-# Re-exported for legacy callers (ruflo_agents.py shim, older tests) that
+# Re-exported for legacy callers (older tests) that
 # imported the frontmatter helpers directly off this module.
 from hermes_cli.persona_library import _parse_frontmatter, _strip_frontmatter
 
@@ -144,72 +143,14 @@ def discover_ruflo_agents(
     return discover_personas(ruflo_path)
 
 
-# ---------------------------------------------------------------------------
-# Role aliases
-#
-# A role name that is a pure synonym for another role: it resolves to the
-# SAME model, provider, reasoning effort, and persona prompt as its target,
-# with no config of its own.  This exists so a role can be *named* along an
-# explicit axis without forking its configuration.
-#
-# ``sr-coder`` is the motivating case.  The Jr/Mid/Sr coder tiering is
-# spelled out for the cheap tiers (``jr-coder``, ``mid-coder`` — pinned in
-# config to their own models/providers) while the top tier kept the bare
-# historical name ``coder``.  That reads asymmetric at a dispatch site, so
-# ``sr-coder`` is accepted as a synonym for ``coder``.  It is deliberately
-# an alias rather than a second ``model_by_role`` entry: a copied entry
-# forks the value and silently drifts the moment ``coder`` is retargeted,
-# and would have to be copied again into ``reasoning_effort_by_role`` and
-# again for the persona file.  One alias covers every role-keyed surface.
-#
-# Aliases are a FALLBACK, never an override: an explicitly configured
-# ``sr-coder`` entry always wins over the aliased ``coder`` one, so a user
-# who later wants the tiers to genuinely diverge just configures it.
-# ---------------------------------------------------------------------------
-
-ROLE_ALIASES: dict[str, str] = {
-    "sr-coder": "coder",
-}
-
-
-def resolve_role_alias(role: Optional[str]) -> Optional[str]:
-    """Return the canonical role ``role`` is a synonym for, else ``None``.
-
-    Returns ``None`` for a falsy role and for any role that is not an
-    alias, so callers can use it as a plain fallback::
-
-        entry = m.get(role)
-        if entry is None:
-            target = resolve_role_alias(role)
-            if target is not None:
-                entry = m.get(target)
-
-    Only one hop is resolved — aliases do not chain.
-    """
-    if not role:
-        return None
-    return ROLE_ALIASES.get(role.strip())
-
-
 def lookup_agent(name: str) -> Optional[Persona]:
     """Find a discovered persona by name (using the configured personas dir).
 
     Returns None if not found.  Used by ``tools/delegate_tool.py`` to load
     the persona prompt for a given ``agent_type=...`` argument on
     ``delegate_task``.
-
-    A role in :data:`ROLE_ALIASES` with no persona file of its own falls
-    back to its canonical role's persona, so an alias inherits the same
-    prompt rather than silently dispatching with the generic one.  A real
-    persona file matching the alias name always wins.
     """
-    personas_path = get_personas_path()
-    persona = _lookup_persona_lib(name, personas_path=personas_path)
-    if persona is None:
-        target = resolve_role_alias(name)
-        if target is not None:
-            persona = _lookup_persona_lib(target, personas_path=personas_path)
-    return persona
+    return _lookup_persona_lib(name, personas_path=get_personas_path())
 
 
 # ---------------------------------------------------------------------------
@@ -505,26 +446,12 @@ def set_role_model(
 def lookup_role_entry(role: Optional[str]) -> dict[str, "str | dict[str, str]"]:
     """Return the normalized ``model_by_role`` entry for ``role``.
 
-    The single alias-aware read of :func:`get_role_entry_map`.  A role
-    configured in its own right returns its own entry; a role in
-    :data:`ROLE_ALIASES` with no entry of its own returns its canonical
-    role's entry (so an alias inherits model + provider + endpoint
-    credentials as one bundle, never a mix of the two).  Returns an empty
-    dict when neither resolves.
-
-    Prefer this over ``get_role_entry_map().get(role)`` at any new
-    role-keyed consumption site — the raw map is a faithful view of
-    config.yaml and deliberately does NOT contain alias keys.
+    A plain read of :func:`get_role_entry_map` keyed by the stripped role
+    name.  Returns an empty dict when the role has no entry.
     """
     if not role:
         return {}
-    entries = get_role_entry_map()
-    entry = entries.get(role.strip())
-    if entry is None:
-        target = resolve_role_alias(role)
-        if target is not None:
-            entry = entries.get(target)
-    return entry or {}
+    return get_role_entry_map().get(role.strip()) or {}
 
 
 def lookup_model_for_role(role: Optional[str]) -> Optional[str]:
@@ -535,9 +462,6 @@ def lookup_model_for_role(role: Optional[str]) -> Optional[str]:
     explicitly.  Falls through to the existing precedence chain (top-level
     ``model`` arg → ``delegation.model`` config → parent's model) when
     None is returned.
-
-    A role in :data:`ROLE_ALIASES` with no entry of its own resolves to its
-    canonical role's model.  An explicit entry always wins over the alias.
     """
     if not role:
         return None
@@ -552,9 +476,6 @@ def lookup_provider_for_role(role: Optional[str]) -> Optional[str]:
     with a model from :func:`lookup_model_for_role` for the same role — the
     entry map drops provider-only entries — so the caller can switch the
     child's provider knowing the matching model travels with it.
-
-    Alias roles resolve through to their canonical role's provider, so an
-    alias can never be pinned to a provider without that provider's model.
     """
     if not role:
         return None
@@ -638,19 +559,10 @@ def lookup_reasoning_for_role(role: Optional[str]) -> Optional[str]:
     no persona-specific entry exists, before falling through to the existing
     precedence chain (``delegation.reasoning_effort`` global → parent's
     reasoning config) when both return None.
-
-    A role in :data:`ROLE_ALIASES` with no entry of its own resolves to its
-    canonical role's effort, so an alias inherits the same thinking budget.
     """
     if not role:
         return None
-    efforts = get_role_reasoning_map()
-    effort = efforts.get(role.strip())
-    if effort is None:
-        target = resolve_role_alias(role)
-        if target is not None:
-            effort = efforts.get(target)
-    return effort
+    return get_role_reasoning_map().get(role.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -733,25 +645,15 @@ def lookup_max_iterations_for_role(role: Optional[str]) -> Optional[int]:
     first, then fall back to the spawn ``role`` ("orchestrator"/"leaf") when
     no persona-specific entry exists, before falling through to the global
     ``delegation.max_iterations`` value.
-
-    A role in :data:`ROLE_ALIASES` with no entry of its own resolves to its
-    canonical role's budget, so an alias inherits the same cap.
     """
     if not role:
         return None
-    caps = get_role_max_iterations_map()
-    n = caps.get(role.strip())
-    if n is None:
-        target = resolve_role_alias(role)
-        if target is not None:
-            n = caps.get(target)
-    return n
+    return get_role_max_iterations_map().get(role.strip())
 
 
 __all__ = [
     "DEFAULT_PERSONAS_PATH",
     "Persona",
-    "ROLE_ALIASES",
     "RufloAgent",
     "discover_personas",
     "discover_ruflo_agents",
@@ -767,7 +669,6 @@ __all__ = [
     "lookup_provider_for_role",
     "lookup_reasoning_for_role",
     "lookup_role_entry",
-    "resolve_role_alias",
     "set_role_model",
     "set_role_reasoning",
     "sync_from_ruflo",

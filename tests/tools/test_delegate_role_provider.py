@@ -99,7 +99,7 @@ def dispatch(monkeypatch):
     Returns a callable(tasks, entry_map, model_map=None, known=None) →
     (parsed_result, captured_child_kwargs).
     """
-    import hermes_cli.ruflo_agents as ruflo
+    import hermes_cli.personas as ruflo
     import hermes_cli.runtime_provider as runtime_provider
     import tools.delegate_tool as dt
 
@@ -543,23 +543,13 @@ class TestRouterToleratesDictEntries:
         assert _entry_model(123) == ""
 
 
-class TestRoleAliasDispatch:
-    """``agent_type="sr-coder"`` dispatches exactly like ``agent_type="coder"``.
+class TestSrCoderIsAFirstClassRole:
+    """``sr-coder`` resolves through its OWN model_by_role entry, never ``coder``'s.
 
-    ``sr-coder`` is a pure synonym (hermes_cli.personas.ROLE_ALIASES) carrying
-    no config of its own, so these assert what actually reaches child
-    construction — the dispatch loop resolves the alias to ``coder``'s config
-    key for BOTH role-keyed lookups (model and credential entry).
-
-    Stated as a relation against a ``coder`` sibling in the same batch rather
-    than as a frozen model literal: the contract is "the alias resolves like
-    its target", which must survive ``coder`` being retargeted.
+    The former ``sr-coder`` -> ``coder`` alias was retired; ``sr-coder`` is
+    configured in its own right, and its config must stay independent of
+    ``coder`` (which is now a cheaper tier).
     """
-
-    ENTRY_MAP_CODER_OPUS = {
-        "coder": {"model": "claude-opus-5"},
-        "researcher": {"model": "claude-haiku-4-5"},
-    }
 
     TASK_SR_CODER = {
         "goal": "Harden the retry helper in tools/http.py against partial reads",
@@ -570,59 +560,7 @@ class TestRoleAliasDispatch:
         "agent_type": "coder",
     }
 
-    def test_sr_coder_resolves_to_the_same_model_as_coder(self, dispatch):
-        """The headline contract, asserted as a relation."""
-        _result, captured = dispatch(
-            [self.TASK_SR_CODER, self.TASK_CODER], self.ENTRY_MAP_CODER_OPUS
-        )
-
-        alias_child = _by_agent_type(captured, "sr-coder")
-        canonical_child = _by_agent_type(captured, "coder")
-        assert alias_child["model"] == canonical_child["model"]
-        assert alias_child["override_provider"] == canonical_child["override_provider"]
-
-    def test_sr_coder_dispatches_on_opus_5(self, dispatch):
-        """Value-level proof against a fixture mirroring the live config."""
-        _result, captured = dispatch(
-            [self.TASK_SR_CODER, TASK_BARE], self.ENTRY_MAP_CODER_OPUS
-        )
-
-        alias_child = _by_agent_type(captured, "sr-coder")
-        assert alias_child["model"] == "claude-opus-5"
-        # Bare-string entry: no provider override, child keeps the batch bundle.
-        assert alias_child["override_provider"] == BATCH_PROVIDER
-
-    def test_alias_child_keeps_its_own_agent_type_for_the_persona_prompt(
-        self, dispatch
-    ):
-        """Config resolution aliases; the dispatched identity does not.
-
-        The child is still built with ``agent_type="sr-coder"`` — only the
-        CONFIG KEY used to look up its model/credentials is aliased.
-        """
-        _result, captured = dispatch(
-            [self.TASK_SR_CODER, TASK_BARE], self.ENTRY_MAP_CODER_OPUS
-        )
-
-        assert _by_agent_type(captured, "sr-coder")["agent_type"] == "sr-coder"
-
-    def test_alias_inherits_a_provider_pin_from_its_target(self, dispatch):
-        """When ``coder`` pins its own provider, the alias gets that bundle."""
-        entry_map = {
-            "coder": {"model": "qwen3-coder:480b-cloud", "provider": ROLE_PROVIDER},
-            "researcher": {"model": "claude-haiku-4-5"},
-        }
-        _result, captured = dispatch([self.TASK_SR_CODER, TASK_BARE], entry_map)
-
-        alias_child = _by_agent_type(captured, "sr-coder")
-        assert alias_child["override_provider"] == ROLE_PROVIDER
-        assert alias_child["model"] == "qwen3-coder:480b-cloud"
-        # The whole bundle travels together, not a mix of the two providers.
-        assert alias_child["override_api_key"] == "ollama-role-key"
-        assert alias_child["override_base_url"] == "https://ollama.com/v1"
-
-    def test_explicit_sr_coder_entry_wins_over_the_alias(self, dispatch):
-        """An alias is a fallback: a configured entry always takes priority."""
+    def test_sr_coder_and_coder_use_their_own_entries(self, dispatch):
         entry_map = {
             "coder": {"model": "claude-opus-5"},
             "sr-coder": {"model": "claude-sonnet-4-6"},
@@ -634,20 +572,21 @@ class TestRoleAliasDispatch:
         assert _by_agent_type(captured, "sr-coder")["model"] == "claude-sonnet-4-6"
         assert _by_agent_type(captured, "coder")["model"] == "claude-opus-5"
 
-    def test_unconfigured_target_falls_through_to_the_batch_model(self, dispatch):
-        """No ``coder`` entry: the alias invents nothing, batch default applies."""
-        _result, captured = dispatch(
-            [self.TASK_SR_CODER, TASK_BARE],
-            {"researcher": {"model": "claude-haiku-4-5"}},
-        )
+    def test_sr_coder_does_not_inherit_coders_provider_pin(self, dispatch):
+        entry_map = {
+            "coder": {"model": "qwen3-coder:480b-cloud", "provider": ROLE_PROVIDER},
+            "sr-coder": {"model": "claude-opus-5"},
+            "researcher": {"model": "claude-haiku-4-5"},
+        }
+        _result, captured = dispatch([self.TASK_SR_CODER, TASK_BARE], entry_map)
 
-        alias_child = _by_agent_type(captured, "sr-coder")
-        assert alias_child["model"] == "claude-sonnet-4-6"  # batch cfg model
-        assert alias_child["override_provider"] == BATCH_PROVIDER
+        child = _by_agent_type(captured, "sr-coder")
+        assert child["model"] == "claude-opus-5"
+        assert child["override_provider"] == BATCH_PROVIDER
 
 
 class TestCoderDispatchUnaffected:
-    """Regression guard: adding the alias changed nothing for ``coder``."""
+    """Regression guard: ``coder`` dispatches on its own configured entry."""
 
     ENTRY_MAP = {
         "coder": {"model": "claude-opus-5"},

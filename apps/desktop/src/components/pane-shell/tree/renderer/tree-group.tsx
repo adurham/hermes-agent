@@ -533,14 +533,12 @@ export function TreeGroup({
             >
               {shown.map(paneId => {
                 const closeable = closeableTab(paneId)
-                const title = paneFor(paneId)?.title ?? paneId
 
                 return (
                   <PaneTab
                     // Match the horizontal minimized strip: no tab is "active"
                     // while collapsed (there's no content surface to merge into).
                     aria-selected={paneId === activeId}
-                    closeLabel={t.zones.closeTab(title)}
                     data-tree-tab={paneId}
                     key={paneId}
                     onClick={event => {
@@ -632,7 +630,6 @@ export function TreeGroup({
                     <PaneTab
                       active={isActive}
                       aria-selected={isActive}
-                      closeLabel={t.zones.closeTab(title)}
                       data-tree-tab={paneId}
                       key={paneId}
                       onClose={closeable ? () => closeTab(paneId) : undefined}

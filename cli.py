@@ -1505,54 +1505,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         except Exception:
             pass
 
-    # FORK: KEEP-FORK shadow (deliberate) over CLIStatusBarMixin._get_status_bar_session_title.
-    # Two fork-only behaviors the mixin lacks:
-    #   1. The ``display.status_bar_session_title`` config gate — when off, this returns ""
-    #      unconditionally (``_status_bar_session_title_visible``, read as default-True via
-    #      getattr so a freshly-constructed CLI matches upstream) so the badge never renders;
-    #      title generation and persistence (/resume, `hermes -c`) are untouched. The mixin
-    #      has no such gate.
-    #   2. The pending-title fast path — a queued ``_pending_title`` short-circuits BEFORE the
-    #      1.5s cache-freshness check (no time.monotonic() call, no state.db touch): the
-    #      pending value is written into the title cache and returned immediately. In the
-    #      mixin the pending value is resolved only after the cache-freshness computation.
-    # Do not delete this copy without porting both into the mixin.
-    def _get_status_bar_session_title(self) -> str:
-        """Return the current title without polling state.db on every repaint.
-
-        FORK: gated by display.status_bar_session_title (default True). When
-        disabled, always returns "" so the badge never renders — title
-        generation and persistence (used by /resume, `hermes -c`, etc.) are
-        untouched; this only hides the status-bar display.
-        """
-        if not getattr(self, "_status_bar_session_title_visible", True):
-            return ""
-        pending = str(getattr(self, "_pending_title", None) or "").strip()
-        session_id = str(getattr(self, "session_id", "") or "")
-        if pending:
-            self._status_bar_title_session_id = session_id
-            self._status_bar_title_cache = pending
-            self._status_bar_title_checked_at = time.monotonic()
-            return pending
-
-        now = time.monotonic()
-        cached_session_id = getattr(self, "_status_bar_title_session_id", None)
-        checked_at = float(getattr(self, "_status_bar_title_checked_at", 0.0) or 0.0)
-        if cached_session_id == session_id and now - checked_at < 1.5:
-            return str(getattr(self, "_status_bar_title_cache", "") or "")
-
-        title = ""
-        db = getattr(self, "_session_db", None)
-        if db is not None and session_id:
-            try:
-                title = str(db.get_session_title(session_id) or "").strip()
-            except Exception:
-                title = ""
-        self._status_bar_title_session_id = session_id
-        self._status_bar_title_cache = title
-        self._status_bar_title_checked_at = now
-        return title
-
     @staticmethod
     def _format_context_delta(snapshot: dict) -> Optional[str]:
         """Format the per-turn context delta segment, or None to omit it.
@@ -2988,7 +2940,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     def _print_delegation_map(self) -> None:
         try:
-            from hermes_cli.ruflo_agents import get_role_model_map
+            from hermes_cli.personas import get_role_model_map
         except Exception:
             _cprint(f"  {_DIM}(._.) Delegation module not available{_RST}")
             return
@@ -3008,7 +2960,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     def _apply_delegation_assignment(self, role: str, model: str) -> None:
         """Pin (or clear) a per-role model assignment and persist."""
         try:
-            from hermes_cli.ruflo_agents import set_role_model, lookup_agent
+            from hermes_cli.personas import set_role_model, lookup_agent
         except Exception:
             _cprint(f"  {_DIM}(._.) Delegation module not available{_RST}")
             return
@@ -3218,7 +3170,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         ESC bails to the prompt.
         """
         try:
-            from hermes_cli.ruflo_agents import (
+            from hermes_cli.personas import (
                 discover_ruflo_agents,
                 get_role_model_map,
                 group_by_category,
@@ -3293,7 +3245,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         a "Cancel" option that no-ops.
         """
         try:
-            from hermes_cli.ruflo_agents import get_role_model_map, lookup_agent
+            from hermes_cli.personas import get_role_model_map, lookup_agent
             from hermes_cli.curses_ui import curses_radiolist
         except Exception as e:
             _cprint(f"  {_DIM}(>_<) /delegation unavailable: {e}{_RST}")

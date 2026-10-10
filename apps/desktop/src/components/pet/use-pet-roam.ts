@@ -11,7 +11,6 @@ import {
   overlapsX,
   overlayLedge,
   resolveLedge,
-  snapshotContainerLedges,
   snapshotLedges
 } from './roam-geometry'
 
@@ -78,8 +77,6 @@ interface PetRoamOptions {
   overlayOpen: boolean
   /** Persist the resting position back to React state when the loop settles. */
   commit: (point: Point) => void
-  /** When set, the pet is confined to this container instead of the full window. */
-  zoneContainer?: RefObject<HTMLDivElement | null>
 }
 
 /**
@@ -112,8 +109,7 @@ export function usePetRoam({
   petH,
   loopMs,
   overlayOpen,
-  commit,
-  zoneContainer
+  commit
 }: PetRoamOptions): void {
   // Read every frame via a ref, not an effect dependency — see `canMove`'s
   // doc comment. Updating a ref doesn't re-run the setup effect below.
@@ -147,21 +143,10 @@ export function usePetRoam({
     const jumpDurMs = jumpDurationMs(loopMs)
     const restY = (ledge: Ledge): number => groundTop(ledge, petH)
 
-    // In zone mode the pet is position:absolute inside the zone container, so
-    // style.left/top are CONTAINER-LOCAL — but getBoundingClientRect() always
-    // returns VIEWPORT coords. This origin converts between the two; (0,0)
-    // in full-window mode where the two spaces coincide (position:fixed).
-    const zoneOrigin = (): Point => {
-      const z = zoneContainer?.current?.getBoundingClientRect()
-
-      return z ? { x: z.left, y: z.top } : { x: 0, y: 0 }
-    }
-
     // Seed from the live DOM rect so we resume from wherever the pet actually is
     // (after a drag, reclamp, or activity pause) rather than a stale closure.
     const rect = el.getBoundingClientRect()
-    const origin = zoneOrigin()
-    const cur: Point = { x: rect.left - origin.x, y: rect.top - origin.y }
+    const cur: Point = { x: rect.left, y: rect.top }
 
     let phase: Phase = 'pause'
     let pauseUntil = performance.now() + rand(400, 1200)
@@ -276,15 +261,8 @@ export function usePetRoam({
     const planNext = (now: number) => {
       // An open overlay swaps the surface set to just its bottom edge, so the pet
       // patrols along it; closing it restores the normal surfaces (and the pet
-      // drops to whatever's below). Zone mode wins: the zone pane isn't covered
-      // by route overlays' viewport-space ledge, and its ledges are
-      // container-local anyway.
-      const ledges = zoneContainer?.current
-        ? snapshotContainerLedges(zoneContainer.current, petW, petH)
-        : overlayOpen
-          ? [overlayLedge(petW)]
-          : snapshotLedges(petW, petH)
-
+      // drops to whatever's below).
+      const ledges = overlayOpen ? [overlayLedge(petW)] : snapshotLedges(petW, petH)
       curLedge = resolveLedge(ledges, cur.x, cur.y, petH)
 
       if (Math.abs(cur.y - restY(curLedge)) > GROUND_EPS) {
@@ -343,9 +321,8 @@ export function usePetRoam({
       // reset the idle beat so it doesn't bolt the instant it's let go.
       if (isInteracting()) {
         const live = el.getBoundingClientRect()
-        const liveOrigin = zoneOrigin()
-        cur.x = live.left - liveOrigin.x
-        cur.y = live.top - liveOrigin.y
+        cur.x = live.left
+        cur.y = live.top
         phase = 'pause'
         pendingHop = null
         // Short settle so the pet falls right after you drop it, not seconds later.
@@ -453,48 +430,9 @@ export function usePetRoam({
     hidden = pauseController.isPaused()
     schedule()
 
-    // React immediately to a live pane resize — not just the re-measure baked
-    // into each decision beat. Without this, a resize mid-pause (dwell up to
-    // PAUSE_DWELL's ~13s ceiling) or mid-stroll leaves the pet targeting stale
-    // geometry: shrinking the zone can walk it right past the new clipped
-    // edge, and growing it won't be "noticed" until whatever beat is already
-    // in flight finishes — which reads as "resizing doesn't adjust the walk."
-    let resizeObserver: ResizeObserver | undefined
-
-    if (zoneContainer?.current) {
-      resizeObserver = new ResizeObserver(() => {
-        // Let a drag keep sole control; the step loop already yields for it.
-        if (isInteracting()) {
-          return
-        }
-
-        const rect = zoneContainer.current?.getBoundingClientRect()
-
-        if (!rect) {
-          return
-        }
-
-        // Always keep the pet inside the fresh bounds, whatever the phase.
-        cur.x = Math.min(Math.max(0, cur.x), Math.max(0, rect.width - petW))
-
-        // Re-plan immediately from a controlled phase so a stroll/loaf picks
-        // up the new span right away instead of finishing on stale geometry.
-        // Mid-air transitions (fall/jump) look glitchy if re-targeted — those
-        // finish naturally and the next pause re-measures anyway.
-        if (phase === 'pause' || phase === 'walk') {
-          pendingHop = null
-          planNext(performance.now())
-        } else {
-          applyDom()
-        }
-      })
-      resizeObserver.observe(zoneContainer.current)
-    }
-
     return () => {
       cancelAnimationFrame(raf)
       pauseController?.dispose()
-      resizeObserver?.disconnect()
       signal(null, 0)
       $petRoamAirborne.set(false)
       $petRoamPaused.set(false)
@@ -502,5 +440,5 @@ export function usePetRoam({
       // the loop stops re-asserting it.
       commit({ ...cur })
     }
-  }, [enabled, petW, petH, loopMs, overlayOpen, containerRef, isInteracting, commit, zoneContainer])
+  }, [enabled, petW, petH, loopMs, overlayOpen, containerRef, isInteracting, commit])
 }
