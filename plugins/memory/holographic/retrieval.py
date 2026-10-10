@@ -194,7 +194,10 @@ class FactRetriever:
         chars, phrase-quote each survivor. If nothing survives, return the raw query (zero results, not a SQL error)."""
         if not query:
             return ""
-        tokens = [f'"{c}"' for c in (raw.strip(_PUNCT).translate(_FTS_OPERATORS) for raw in query.lower().split())
+        # Split on hyphens before stripping operators: unicode61 indexes "PLAT-15800" as two tokens, and
+        # deleting '-' would glue the query into an unmatchable "plat15800".
+        tokens = [f'"{c}"' for c in (raw.strip(_PUNCT).translate(_FTS_OPERATORS)
+                                     for raw in query.lower().replace("-", " ").split())
                   if len(c) >= 2 and c not in _FTS_STOPWORDS]
         return " OR ".join(tokens) if tokens else query
 

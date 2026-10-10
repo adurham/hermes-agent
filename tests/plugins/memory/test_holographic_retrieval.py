@@ -30,7 +30,9 @@ from plugins.memory.holographic.store import MemoryStore
         # empty string → empty output
         ("", ""),
         # FTS5 operator characters stripped
-        ("context: length-probe", {"context", "lengthprobe"}),
+        ("context: length-probe", {"context", "length", "probe"}),
+        # hyphenated identifiers split the way FTS5's unicode61 tokenizer indexes them
+        ("status of PLAT-15800?", {"status", "plat", "15800"}),
         # trailing punctuation stripped by tokenizer
         ("hello, world!", {"hello", "world"}),
     ],
@@ -90,6 +92,20 @@ def test_prefetch_recovers_prose_query(retriever_with_facts):
     assert len(results) >= 1
     # The top hit should be the deployment rollback fact
     assert "deployment rollback" in results[0]["content"].lower()
+
+def test_search_matches_hyphenated_term(retriever_with_facts):
+    """A hyphenated query term must match the fact containing it.
+
+    unicode61 indexes "PLAT-15800" as "plat" + "15800"; deleting the hyphen
+    instead of splitting on it produced the unmatchable token "plat15800".
+    """
+    retriever_with_facts.store.add_fact(
+        content="Ticket PLAT-15800 tracks the cache eviction regression.",
+        category="project",
+    )
+    results = retriever_with_facts.search("PLAT-15800")
+    assert results, "hyphenated query returned no hits"
+    assert "PLAT-15800" in results[0]["content"]
 
 # ---------------------------------------------------------------------------
 # Loop-invariant encode hoists (perf) — search/probe/related must encode
