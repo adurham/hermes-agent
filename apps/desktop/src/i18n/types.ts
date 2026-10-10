@@ -945,8 +945,6 @@ export interface Translations extends NoticeTranslations {
         noneAvailable: string
         turnOnFailed: string
         turnOffFailed: string
-        zoneTitle: string
-        zoneDesc: string
         voiceTitle: string
         voiceDesc: string
       }
@@ -3946,7 +3944,6 @@ export interface Translations extends NoticeTranslations {
     toggleStripTab: (title: string) => string
     minimize: string
     restore: string
-    closeTab: (label: string) => string
     closeRunningTitle: string
     closeRunningBody: string
     closeRunningConfirm: string

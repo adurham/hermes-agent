@@ -182,10 +182,10 @@ jobs:
       - name: Set up locked Python and test dependencies
         # PM provisions the pinned interpreter and the dev+test dependency groups from uv.lock
         # (the lock is python>=3.14 only, and `dev` is a dependency group, not an extra), so the
-        # fork lanes no longer drive `uv sync` themselves. `hindsight` stays: the fork keeps that extra.
+        # fork lanes no longer drive `uv sync` themselves.
         uses: ./.github/actions/setup-pm
         with:
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "hindsight"]'
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -269,11 +269,11 @@ jobs:
       - name: Set up locked Python and test dependencies
         # PM provisions the pinned interpreter and the dev+test dependency groups from uv.lock
         # (the lock is python>=3.14 only, and `dev` is a dependency group, not an extra), so the
-        # fork lanes no longer drive `uv sync` themselves. `hindsight` stays: the fork keeps that extra.
+        # fork lanes no longer drive `uv sync` themselves.
         uses: ./.github/actions/setup-pm
         with:
           packages: 'ripgrep'
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "hindsight"]'
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -316,11 +316,11 @@ jobs:
       - name: Set up locked Python and test dependencies
         # PM provisions the pinned interpreter and the dev+test dependency groups from uv.lock
         # (the lock is python>=3.14 only, and `dev` is a dependency group, not an extra), so the
-        # fork lanes no longer drive `uv sync` themselves. `hindsight` stays: the fork keeps that extra.
+        # fork lanes no longer drive `uv sync` themselves.
         uses: ./.github/actions/setup-pm
         with:
           packages: 'git,ripgrep'
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web", "hindsight"]'
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 

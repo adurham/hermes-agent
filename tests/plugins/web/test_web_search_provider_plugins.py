@@ -98,9 +98,6 @@ class TestBundledPluginsRegister:
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
-            # trafilatura: extract-only (direct fetch + content extraction,
-            # no search capability).
-            ("trafilatura", False, True),
             # openai-native: marker for the Codex Responses server-side web_search swap;
             # search-only, so web_extract keeps its own backend (#19320).
             ("openai-native", True, False),

@@ -139,11 +139,7 @@ _PYTHON_POST_SETUP_HOOKS: dict = {
     "ddgs": _python_hook(
         "ddgs", "ddgs", "ddgs", "Installing ddgs (DuckDuckGo search package)...",
         always=("No API key required. DuckDuckGo enforces server-side rate limits.",
-                "Pair with an extract provider if you also need web_extract.")),
-    "trafilatura": _python_hook(
-        "trafilatura", "trafilatura", "trafilatura", "Installing trafilatura (content extraction package)...",
-        always=("No API key required. Fetches pages directly via httpx.",
-                "Pair with a search provider (brave-free, ddgs, searxng) if you also need web_search."))}
+                "Pair with an extract provider if you also need web_extract."))}
 
 
 def _post_setup_python(spec: dict) -> None:

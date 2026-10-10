@@ -29,15 +29,6 @@ export function SidebarSectionMeta({ children }: { children: React.ReactNode }) 
   return <span className="shrink-0 text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
-/** `loaded/total` when there's more on the server, else just the loaded count. */
-export const countLabel = (loaded: number, total: number): string =>
-  total > loaded ? `${loaded}/${total}` : String(loaded)
-
-/** The muted count chip next to a section/workspace label. */
-export function SidebarCount({ children }: { children: React.ReactNode }) {
-  return <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
-}
-
 // Row geometry lives in `row-geometry.ts` — see that file for why each class
 // belongs to the box it belongs to. Re-exported here because this module is
 // where callers already look for row chrome.

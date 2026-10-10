@@ -8,10 +8,6 @@ import { translateNow } from '@/i18n'
 import { isMetaClose, middleClickHandlers } from '@/lib/middle-click'
 import { cn } from '@/lib/utils'
 
-/** Inset bottom stroke for a horizontal tab strip — titlebar color, cut by the active tab. */
-export const PANE_TAB_STRIP_LINE = 'shadow-[inset_0_-1px_0_var(--ui-stroke-tertiary)]'
-
-
 /** Inset stroke for a vertical tab rail — content-facing edge. */
 export const PANE_TAB_STRIP_LINE_LEFT = 'shadow-[inset_1px_0_0_var(--ui-stroke-tertiary)]'
 export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke-tertiary)]'
@@ -62,10 +58,6 @@ interface PaneTabProps extends React.ComponentProps<'div'> {
    *  the pointer gestures are one affordance, so a closeable tab always says
    *  so. Omit `onClose` to make a tab uncloseable. */
   onClose?: () => void
-  /** Accessible label for the close button (e.g. "Close My Session"). Falls
-   *  back to a generic "Close" when the caller doesn't have a per-tab title
-   *  handy. */
-  closeLabel?: string
   /** Part of a multi-tab selection (⌥/Ctrl-click, Shift-click) — an accent
    *  wash marks every tab that a drag would carry, Chrome-style. */
   selected?: boolean
@@ -87,7 +79,6 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
     active = false,
     dirty = false,
     onClose,
-    closeLabel,
     onMouseDown,
     onPointerDown,
     onPointerUp,
@@ -183,7 +174,7 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
         // Geometry stays fixed; the same fade works on solid and glass surfaces.
         <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity group-hover/tab:pointer-events-auto group-hover/tab:opacity-100">
           <button
-            aria-label={closeLabel ?? translateNow('common.close')}
+            aria-label={translateNow('common.close')}
             className="grid w-(--pane-tab-close-width) cursor-pointer place-items-center bg-transparent text-(--ui-text-tertiary) outline-none hover:text-foreground"
             onClick={event => {
               event.preventDefault()

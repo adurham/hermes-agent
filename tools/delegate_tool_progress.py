@@ -201,7 +201,7 @@ def _build_child_system_prompt(
     if agent_type:
         persona = None
         with _quiet("subagent: persona lookup failed for agent_type=%s: %s", agent_type):
-            from hermes_cli.ruflo_agents import lookup_agent
+            from hermes_cli.personas import lookup_agent
             persona = lookup_agent(agent_type)
         if persona is not None:
             persona_prompt = persona.load_prompt().strip()

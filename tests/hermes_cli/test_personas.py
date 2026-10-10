@@ -502,30 +502,6 @@ def _read_by_role(tmp_path) -> dict:
     return cfg.get("delegation", {}).get("model_by_role", {})
 
 
-# ── Back-compat shim ──────────────────────────────────────────────────────
-
-
-def test_ruflo_agents_shim_reexports():
-    """The legacy ``hermes_cli.ruflo_agents`` shim re-exports everything we
-    need for the old import paths to keep working without churn."""
-    from hermes_cli import ruflo_agents
-
-    # Public API
-    assert ruflo_agents.Persona is personas.Persona
-    assert ruflo_agents.RufloAgent is personas.Persona
-    assert ruflo_agents.discover_ruflo_agents is personas.discover_ruflo_agents
-    assert ruflo_agents.lookup_agent is personas.lookup_agent
-    assert ruflo_agents.get_role_model_map is personas.get_role_model_map
-    assert ruflo_agents.get_role_entry_map is personas.get_role_entry_map
-    assert ruflo_agents.get_role_provider_map is personas.get_role_provider_map
-    assert ruflo_agents.set_role_model is personas.set_role_model
-    assert ruflo_agents.lookup_model_for_role is personas.lookup_model_for_role
-    assert ruflo_agents.lookup_provider_for_role is personas.lookup_provider_for_role
-    # Private helpers re-exported for older test imports
-    assert ruflo_agents._parse_frontmatter is personas._parse_frontmatter
-    assert ruflo_agents._strip_frontmatter is personas._strip_frontmatter
-
-
 # ── No bulk gap-fill of model_by_role ─────────────────────────────────────
 
 

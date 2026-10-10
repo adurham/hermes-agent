@@ -911,8 +911,6 @@ export const zhOverrides = {
         noneAvailable: '当前没有可开启的宠物。',
         turnOnFailed: '无法开启宠物。',
         turnOffFailed: '无法关闭宠物。',
-        zoneTitle: '宠物区域',
-        zoneDesc: '将宠物限制在布局中的专用窗格内，而非整个窗口。',
         voiceTitle: '宠物语音',
         voiceDesc: '当一轮任务完成或需要你输入时朗读提示——不包括运行中的状态提示。'
       }
@@ -4384,7 +4382,6 @@ export const zhOverrides = {
     toggleStripTab: title => `切换 ${title} 标签`,
     minimize: '最小化',
     restore: '还原',
-    closeTab: label => `关闭 ${label}`,
     closeRunningTitle: '关闭正在运行的标签？',
     closeRunningBody: '此对话仍在运行（或正在等待你的输入）。关闭标签只会隐藏它——会话将保留进度，可从侧边栏重新打开。',
     closeRunningConfirm: '关闭标签',

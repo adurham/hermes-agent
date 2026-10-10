@@ -831,6 +831,16 @@ DEFAULT_CONFIG = {
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
         "voice_chat": {**_aux(120), "reasoning_effort": "none"},  # agent/voice_turn_route.py; off = lowest valid
+        # Desktop pet's LLM-flavored announced-beat line (POST /api/pet/dialogue in
+        # hermes_cli/web_routers/audio.py). Opt-in: enabled=false -> the route 404s and the desktop
+        # uses its static line pool. Short timeout (a slow reply just falls back to the static pool);
+        # a 2-6 word one-liner needs no reasoning; max_context_chars caps the prompt's context.
+        "pet_dialogue": {
+            "enabled": False,
+            **_aux(8),
+            "reasoning_effort": "none",
+            "max_context_chars": 400,
+        },
         # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
         # kanban_decomposer emits a JSON graph of child tasks (more tokens).
         "triage_specifier": _aux(120),
@@ -880,13 +890,6 @@ DEFAULT_CONFIG = {
         #   "both"             — Either key interrupts; Ctrl+C keeps its
         #                        double-press force-exit behaviour.
         "interrupt_key": "ctrl-c",
-        # FORK: the session-title badge right-aligned in the status bar (the
-        # yellow " ─ <title> " chip, styled via the status-bar-session-title
-        # skin key). Set False to hide it — the rest of the status bar is
-        # unaffected; this only gates the auto-generated/typed session title
-        # display, not title generation itself (session titles are still
-        # saved and usable via /resume, `hermes -c`, etc.).
-        "status_bar_session_title": True,
         # steer mode: false hides only the "Steered into current run" bubble; steering itself still
         # happens.
         "busy_steer_ack_enabled": True,
@@ -1463,14 +1466,6 @@ DEFAULT_CONFIG = {
         # api_key / api_mode is accepted alongside model + provider. An entry
         # carrying a provider but NO model is ignored — a provider is never
         # applied without its own model.
-        # Role aliases: a few role names are pure synonyms for another role
-        # and need no entry of their own — they resolve to their target's
-        # model, provider, reasoning effort, and persona prompt. Currently
-        # "sr-coder" -> "coder" (so the Jr/Mid/Sr coder tiering can be named
-        # symmetrically at a dispatch site without forking "coder"'s config
-        # into a second entry that would silently drift). Configuring the
-        # alias name explicitly always overrides the aliased value. The
-        # table lives in hermes_cli/personas.py (ROLE_ALIASES).
         # Per-role reasoning-effort overrides, keyed first by agent_type
         # persona (e.g. "coder", "reviewer") then by spawn role
         # ("orchestrator", "leaf") — see delegation.model_by_role for the

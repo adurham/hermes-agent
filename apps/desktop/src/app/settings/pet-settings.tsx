@@ -17,7 +17,7 @@ import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { $petInfo, $petRoam, $petZoneEnabled, setPetRoam, setPetZoneEnabled } from '@/store/pet'
+import { $petInfo, $petRoam, setPetRoam } from '@/store/pet'
 import {
   $petBusy,
   $petGallery,
@@ -60,7 +60,6 @@ export function PetSettings() {
   const busySlug = useStore($petBusy)
   const petInfo = useStore($petInfo)
   const roam = useStore($petRoam)
-  const zoneEnabled = useStore($petZoneEnabled)
   const voiceEnabled = useStore($petVoiceEnabled)
   const [query, setQuery] = useState('')
   const [confirmDelete, setConfirmDelete] = useState<GalleryPet | null>(null)
@@ -293,17 +292,6 @@ export function PetSettings() {
           <ToggleRow checked={roam} description={copy.roamDesc} label={copy.roamTitle} onChange={setPetRoam} />
         )}
 
-        {enabled && (
-          <ToggleRow
-            checked={zoneEnabled}
-            description={copy.zoneDesc}
-            label={copy.zoneTitle}
-            onChange={on => {
-              setPetZoneEnabled(on)
-              triggerHaptic('crisp')
-            }}
-          />
-        )}
         {enabled && (
           <ToggleRow
             checked={voiceEnabled}

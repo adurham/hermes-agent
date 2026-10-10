@@ -134,21 +134,4 @@ describe('PaneTab hover close button', () => {
 
     expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
   })
-
-  it('uses closeLabel for the accessible name when provided, else a generic fallback', () => {
-    const { rerender } = render(
-      <PaneTab closeLabel="Close My Session" onClose={vi.fn()}>
-        <PaneTabLabel>tab</PaneTabLabel>
-      </PaneTab>
-    )
-
-    expect(screen.getByRole('button', { name: 'Close My Session' })).toBeTruthy()
-
-    rerender(
-      <PaneTab onClose={vi.fn()}>
-        <PaneTabLabel>tab</PaneTabLabel>
-      </PaneTab>
-    )
-    expect(screen.getByRole('button').getAttribute('aria-label')).toBeTruthy()
-  })
 })

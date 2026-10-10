@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
-    _ABANDON_POLL_INTERVAL, _ChildRun, _DelegationAbandoned, _attach_child, _build_child_goal_message,
+    _ChildRun, _attach_child, _build_child_goal_message,
     _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry, _record_delegation_stat,
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
@@ -38,7 +38,7 @@ from tools.delegate_tool_config import (  # noqa: F401
     _subagent_auto_approve, _subagent_auto_deny,
 )
 from tools.delegate_tool_dispatch import (  # noqa: F401
-    _Batch, _announce_batch, _capture_origin, _owner_abandoned, _run_batch, _teardown_abandoned_children,
+    _Batch, _announce_batch, _capture_origin, _run_batch,
 )
 from tools.delegate_tool_progress import (  # noqa: F401
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
@@ -559,31 +559,24 @@ def _resolve_role_credentials(entry: dict, parent_agent, cache: dict) -> dict:
     return resolved
 
 
-def _load_role_maps() -> tuple[Dict[str, Any], Dict[str, Any], Any]:
-    """``(role_model_map, role_entry_map, resolve_role_alias)`` for one delegate_task call.
+def _load_role_maps() -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """``(role_model_map, role_entry_map)`` for one delegate_task call.
 
-    Three independent guards on purpose: a missing/failing entry-map API must never take
-    the flattened model map (and therefore auto-route) down with it, and an older
-    hermes_cli without the alias table degrades to "no aliases" rather than taking both
-    role maps down.
+    Two independent guards on purpose: a missing/failing entry-map API must never take
+    the flattened model map (and therefore auto-route) down with it.
     """
     try:
-        from hermes_cli.ruflo_agents import get_role_model_map
+        from hermes_cli.personas import get_role_model_map
         role_model_map = get_role_model_map()
     except Exception:
         role_model_map = {}
     try:
-        from hermes_cli.ruflo_agents import get_role_entry_map
+        from hermes_cli.personas import get_role_entry_map
         role_entry_map = get_role_entry_map()
     except Exception:
         role_entry_map = {}
-    try:
-        from hermes_cli.ruflo_agents import resolve_role_alias
-    except Exception:
-        def resolve_role_alias(role: Optional[str]) -> Optional[str]:  # type: ignore[misc]
-            return None
     return (role_model_map if isinstance(role_model_map, dict) else {},
-            role_entry_map if isinstance(role_entry_map, dict) else {}, resolve_role_alias)
+            role_entry_map if isinstance(role_entry_map, dict) else {})
 
 
 def _auto_route_batch(
@@ -679,7 +672,7 @@ def _resolve_task_routes(
       explicit ``model=`` → explicit ``agent_type`` role-map → auto-route persona pick
       → auto-route tier→role→model → ``delegation.model``/``by_provider`` → parent's model
     """
-    role_model_map, role_entry_map, resolve_role_alias = _load_role_maps()
+    role_model_map, role_entry_map = _load_role_maps()
     auto_route_diag: Dict[str, Any] = {}
     auto_routes = _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent, auto_route_diag)
     # The literal agent_type meaning "auto-route this task" — imported from the router
@@ -764,20 +757,12 @@ def _resolve_task_routes(
                 f"model (e.g. the 'pm' persona), pass agent_type=<role> alongside role='orchestrator'."
             )
 
-        # Role aliases (hermes_cli.personas.ROLE_ALIASES, e.g. "sr-coder" -> "coder"): a
-        # pure synonym carries no config of its own, so the config key its entry lives
-        # under may differ from the dispatched agent_type. Resolved ONCE and used for BOTH
-        # role-keyed lookups below (model and credential entry) so the two can never
-        # disagree. An explicitly configured alias always wins — the fallback only fires
-        # when the dispatched name has no entry of its own.
+        # The config key used for BOTH role-keyed lookups below (model and credential
+        # entry), resolved ONCE so the two can never disagree.
         # A TIER-ONLY auto-route has no agent_type to dispatch (no persona prompt), but
         # the tier's role IS a model_by_role key and is resolved through this same key —
         # that is what applies the role's provider pin and fallback chain to the route.
         role_cfg_key = task_agent_type or tier_route_role
-        if role_cfg_key and not (role_cfg_key in role_model_map or role_cfg_key in role_entry_map):
-            alias_target = resolve_role_alias(role_cfg_key)
-            if alias_target:
-                role_cfg_key = alias_target
         role_map_model = role_model_map.get(role_cfg_key) if role_cfg_key else None
 
         # A STATED agent_type that names neither a model_by_role entry nor a persona would
@@ -790,7 +775,6 @@ def _resolve_task_routes(
             and role_model_map
             and task_agent_type == stated_agent_type
             and not (role_cfg_key in role_model_map or role_cfg_key in role_entry_map)
-            and not resolve_role_alias(task_agent_type)
             and not _persona_exists(task_agent_type)
         ):
             known = ", ".join(sorted(role_model_map))
@@ -1093,7 +1077,7 @@ def _build_model_roster(
     # (c) delegation.model_by_role entries (get_role_entry_map) — each
     # entry's model plus its nested fallback dict's model.
     try:
-        from hermes_cli.ruflo_agents import get_role_entry_map
+        from hermes_cli.personas import get_role_entry_map
 
         _entry_map = get_role_entry_map()
         if isinstance(_entry_map, dict):

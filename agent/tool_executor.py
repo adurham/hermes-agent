@@ -945,11 +945,10 @@ def _run_sequential_tool_execution_middleware(
     generic deadline would report ``tool_timeout`` while the prompt is still live. They
     are ``_NEVER_PARALLEL_TOOLS`` and run inline below, before any deadline is armed, so
     they need no ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` entry."""
-    # FORK: the per-call ``owns_own_deadline`` registry hook supersedes upstream's static
-    # _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS name set — same intent (delegate_task must not be
-    # abandoned mid-flight), but it also covers any other tool that registers the predicate
-    # and it fails closed. The static set is kept as the floor so the exemption survives even
-    # if the registry lookup is unavailable.
+    # FORK: upstream's static _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS set covers delegate_task.
+    # The per-call ``owns_own_deadline`` registry hook layered on top exists for consult
+    # (tools/consult_tool.py — see FORK.md "consult" entry): it fails closed, so an
+    # unregistered tool or a raising predicate keeps the generic deadline.
     timeout_s = (
         None if function_name in _SEQUENTIAL_DEADLINE_EXEMPT_TOOLS
         else _resolve_call_tool_timeout(agent, function_name, function_args, _resolve_sequential_tool_timeout())
@@ -1680,17 +1679,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     # Resolved before the batch is built so the start-order gate can clamp under the deadline.
     timeout_s = _resolve_concurrent_tool_timeout()
-    # FORK: the deadline is BATCH-wide, so a single call that owns its own completion bound
-    # (registry ``owns_own_deadline`` — e.g. a blocking nested delegate_task waiting on whole
-    # child agents) disables it for the whole batch. Abandoning the batch abandons every worker
-    # in it (documented ``shutdown(wait=False)``: "a wedged tool thread is left running
-    # detached"), which would sever exactly the supervisor we must not detach. Interrupt polling
-    # is unaffected: the wait loops still break on ``agent._interrupt_requested`` when the
-    # deadline is None.
-    for _pc in parsed_calls:
-        if _pc.parse_error is None and _resolve_call_tool_timeout(agent, _pc.name, _pc.args, timeout_s) is None:
-            timeout_s = None
-            break
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
     agent._current_tool = tool_names_str
     agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")

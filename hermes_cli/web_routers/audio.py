@@ -413,7 +413,17 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
     with http_failure("Desktop voice TTS failed", 500, "Speech synthesis failed"):
         from tools.tts_tool import text_to_speech_tool
 
-        result_json = await _run_config_scoped(profile, lambda: text_to_speech_tool(text))
+        # Fork-only (desktop pet voice): a per-call ``provider`` from the desktop
+        # (``display.pet.voice_provider``) rides the TRUSTED kwarg, not ``provider=``.
+        # Safe: this route is the authenticated dashboard API driven by the local
+        # owner's own desktop config — the same principal that writes tts.provider —
+        # not model output, so #90109's "a model/leaked platform hint must not reroute
+        # speech" concern does not apply. Absent/blank -> configured tts.provider.
+        trusted_provider = (payload.provider or "").strip() or None
+        result_json = await _run_config_scoped(
+            profile,
+            lambda: text_to_speech_tool(text, _trusted_provider=trusted_provider),
+        )
 
     try:
         result = json.loads(result_json) if isinstance(result_json, str) else result_json

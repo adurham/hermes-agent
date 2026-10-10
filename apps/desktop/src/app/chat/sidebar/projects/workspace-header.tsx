@@ -12,7 +12,6 @@ import { copyPath, revealPath } from '@/store/projects'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
-  SidebarCount,
   SidebarRowBody,
   SidebarRowGrab,
   SidebarRowLabel,
@@ -253,7 +252,8 @@ export function WorkspaceHeader({
   dragging = false,
   dragHandleProps,
   dragAriaLabel,
-  count
+  ref,
+  ...rest
 }: {
   action?: React.ReactNode
   emphasis?: boolean
@@ -274,8 +274,7 @@ export function WorkspaceHeader({
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
   dragAriaLabel?: string
-  count?: React.ReactNode
-}) {
+} & React.ComponentProps<'div'>) {
   const leadIcon = reorderable ? (
     <SidebarRowGrab
       ariaLabel={dragAriaLabel ?? label}
@@ -289,13 +288,14 @@ export function WorkspaceHeader({
     <SidebarRowLead>{icon}</SidebarRowLead>
   )
 
-
   return (
     <div
       className={cn(
         'group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem]',
         emphasis ? 'font-semibold text-(--ui-text-secondary)' : 'font-medium text-(--ui-text-tertiary)'
       )}
+      ref={ref}
+      {...rest}
     >
       <button
         className={cn(
@@ -308,9 +308,6 @@ export function WorkspaceHeader({
         {leadIcon}
         <LaneLabel label={label} title={title ? `${label}\n${title}` : label} />
         {workingWhileCollapsed && <WorkspaceWorkingDot />}
-        <span className="shrink-0">
-          <SidebarCount>{count}</SidebarCount>
-        </span>
         <DisclosureCaret
           className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
           open={open}

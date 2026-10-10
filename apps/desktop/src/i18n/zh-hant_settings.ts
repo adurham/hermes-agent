@@ -403,8 +403,6 @@ export const zhHantSettings = {
         noneAvailable: '目前沒有可開啟的寵物。',
         turnOnFailed: '無法開啟寵物。',
         turnOffFailed: '無法關閉寵物。',
-        zoneTitle: '寵物區域',
-        zoneDesc: '將寵物限制在佈局中的專用窗格內，而非整個視窗。',
         voiceTitle: '寵物語音',
         voiceDesc: '當一輪任務完成或需要你輸入時朗讀提示——不包括執行中的狀態提示。'
       }

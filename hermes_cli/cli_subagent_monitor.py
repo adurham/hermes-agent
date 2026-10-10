@@ -430,8 +430,8 @@ class SubagentMonitor:
                 # finished" and "8 hidden, all running" are very different situations
                 # for someone watching a live dock.
                 live = sum(1 for r in self.entries[agent_count:] if r.get('status') not in _TERMINAL_STATUSES)
-                suffix = f' ({live} running)' if live else ''
-                lines.append(_clip(f' +{hidden} more{suffix} · Ctrl+T all subagents', columns))
+                suffix = ' · ' + t('cli.subagents.count_running', count=live) if live else ''
+                lines.append(_clip(' ' + t('cli.subagents.more_subagents', count=hidden) + suffix, columns))
         if self.processes:
             proc_count = min(len(self.processes), max(1, budget - agent_count))
             running = sum(r['status'] == 'running' for r in self.processes)

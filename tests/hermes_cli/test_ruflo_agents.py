@@ -1,4 +1,5 @@
-"""Unit tests for ``hermes_cli.ruflo_agents`` discovery + config helpers."""
+"""Unit tests for persona discovery + config helpers (``hermes_cli.personas``;
+formerly exercised through the removed ``hermes_cli.ruflo_agents`` shim)."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import ruflo_agents
+from hermes_cli import personas as ruflo_agents
 
 
 # ── Frontmatter parser ────────────────────────────────────────────────────

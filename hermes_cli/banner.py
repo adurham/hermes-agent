@@ -731,8 +731,7 @@ def _banner_left_lines(model: str, cwd: str, session_id, context_length, provide
 
 def _banner_tool_lines(
     tools: list, unavailable_toolsets: list, get_toolset_for_tool, *,
-    lazy_tools: set, disabled_tools: set, accent: str, dim: str, text: str,
-    disabled_toolsets: list = None) -> list:
+    lazy_tools: set, disabled_tools: set, accent: str, dim: str, text: str) -> list:
     """"Available Tools" section: up to 8 toolsets, each truncated to ~42 columns."""
     lines = [f"[bold {accent}]Available Tools[/]"]
     toolsets_dict: Dict[str, list] = {}
@@ -740,15 +739,8 @@ def _banner_tool_lines(
         tool_name = tool["function"]["name"]
         toolset = _display_toolset_name(get_toolset_for_tool(tool_name) or "other")
         toolsets_dict.setdefault(toolset, []).append(tool_name)
-    # Toolsets the user explicitly disabled in config shouldn't appear at all — not even as
-    # "unavailable" hints, which read like a bug rather than the configured intent.
-    _disabled_set = set(disabled_toolsets or [])
     for item in unavailable_toolsets:
-        toolset_id = item.get("id", item.get("name", "unknown"))
-        display_name = _display_toolset_name(toolset_id)
-        if toolset_id in _disabled_set or display_name in _disabled_set:
-            continue
-        names = toolsets_dict.setdefault(display_name, [])
+        names = toolsets_dict.setdefault(_display_toolset_name(item.get("id", item.get("name", "unknown"))), [])
         for tool_name in item.get("tools", []):
             if tool_name not in names:
                 names.append(tool_name)
@@ -786,7 +778,6 @@ def build_welcome_banner(
     console: "Console", model: str, cwd: str, tools: List[dict] = None, enabled_toolsets: List[str] = None,
     session_id: str = None, get_toolset_for_tool=None, context_length: int = None, provider: str = None,
     availability: Dict[str, Any] = None, skills_by_category: Dict[str, List[str]] = None,
-    disabled_toolsets: List[str] = None,
     context_pinned: bool = False,
 ):
     """Build and print a welcome banner with caduceus on left and info on right.
@@ -797,8 +788,6 @@ def build_welcome_banner(
         cwd: Current working directory.
         tools: List of tool definitions.
         enabled_toolsets: List of enabled toolset names.
-        disabled_toolsets: List of toolset names/ids the user has explicitly
-            disabled in config; these are hidden from the "unavailable" hints.
         session_id: Session identifier.
         get_toolset_for_tool: Callable to map tool name -> toolset name.
         context_length: Model's context window size in tokens.
@@ -831,7 +820,7 @@ def build_welcome_banner(
     right_lines = _banner_tool_lines(
         tools, availability.get("unavailable_toolsets", []), get_toolset_for_tool,
         lazy_tools=set(availability.get("lazy_tools", [])), disabled_tools=set(availability.get("disabled_tools", [])),
-        accent=accent, dim=dim, text=text, disabled_toolsets=disabled_toolsets)
+        accent=accent, dim=dim, text=text)
     # MCP Servers section (only if configured) — see ``_mcp_configured`` for why the cheap probe.
     mcp_status = _quiet(_probe_mcp_status, []) if _mcp_configured() else []
     if mcp_status:
