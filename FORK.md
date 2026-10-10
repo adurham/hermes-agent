@@ -309,7 +309,7 @@ flakes, not regressions.
 
 **Locks:** `uv.lock` relocked via PM (`--lock-only` + `--check-lock` rc 0; upstream's relative span now recorded; hindsight + trafilatura dependency trees dropped; fork pins intact). `package-lock.json` needed NO change — a sandbox regen with the overrides gone is annotation-only (react/react-dom still resolve single 19.2.7).
 
-**Suite:** full workstation re-run pending for this head.
+**Suite (this head, run locally — the workstation went unreachable mid-verification and the owner directed the run to the Mac):** Python 60,580 passed / 312 failed / 4 crashed / 1,457 skipped across 5,608 files (27.5 min, 14 workers); desktop renderer tsc rc 0, electron tsc rc 0, vitest 10,782/10,782. The 127 broad-run-failing files were re-run SINGLY at both this head and the pre-round-2 base (81e4f8e2833): 123 pass at both arms (the broad-run failures are macOS broad-run context artifacts — live-venv/updater self-detection, 3.11-vs-3.14 PM env, home-guard classes), and 4 fail at both arms with identical crash marking (test_update_ci_routing, test_cron_script, test_bundle_payload, test_termux_build_driver — pre-existing). REGRESSIONS: 0.
 
 ### Fork-only fix — 2026-10-06 (the "impossible timer" corruption ROOT-CAUSED: VS-16 width divergence stranded diff-repaint cells — badge glyphs de-VS16'd)
 
