@@ -311,6 +311,30 @@ flakes, not regressions.
 
 **Suite (this head, run locally — the workstation went unreachable mid-verification and the owner directed the run to the Mac):** Python 60,580 passed / 312 failed / 4 crashed / 1,457 skipped across 5,608 files (27.5 min, 14 workers); desktop renderer tsc rc 0, electron tsc rc 0, vitest 10,782/10,782. The 127 broad-run-failing files were re-run SINGLY at both this head and the pre-round-2 base (81e4f8e2833): 123 pass at both arms (the broad-run failures are macOS broad-run context artifacts — live-venv/updater self-detection, 3.11-vs-3.14 PM env, home-guard classes), and 4 fail at both arms with identical crash marking (test_update_ci_routing, test_cron_script, test_bundle_payload, test_termux_build_driver — pre-existing). REGRESSIONS: 0.
 
+### Upstream-filing attempt — 2026-10-10 (round-3 queue: 4 branches ready, filing BLOCKED at the account level)
+
+**Prepared + pushed (signed, on origin for manual pickup; PR bodies in `scratch/sync-v0.21.6/upstream-prs/`):**
+- `upstream-fix-mcp-cancel-guard` (47fd3d341db) — `_cancel_waiters` `t.cancel()` moved inside the
+  try; regression test on a real closed loop. [fix(mcp)]
+- `upstream-fix-aux-slots` (65f546e5932) — `_AUX_TASK_SLOTS` +5 missing built-in keys
+  (memory_query_rewrite, tts_audio_tags, goal_judge, monitor, background_review) + web labels + tests;
+  MoA preset keys deliberately excluded (`_AUX_NON_SLOT_TASKS`). [fix(web)]
+- `upstream-fix-aux-timeout` (10ce2738e66) — native-Anthropic aux adapter now forwards the per-task
+  `timeout` (it ran under the SDK's 900s default). [fix(aux)]
+- `upstream-fix-fts-hyphen` (2ef4f0ee913) — `_sanitize_fts_query` splits on hyphens before operator
+  stripping (`PLAT-15800` was glued to `plat15800`, unmatchable). [fix(memory)]
+
+**Dropped before filing:** the config set/unset comment-preservation fix (upstream 0706dffca19,
+2026-09-22, already routes every writer through the comment-preserving round-trip writer — verified
+live); the MCP empty-cache reconnect item (open issue 88661 + upstream actively reworking via
+#119092); the placeholder-key 401 item (two open competing PRs in that family, 92125/110841).
+**BLOCKED at filing:** `CreatePullRequest` on NousResearch/hermes-agent returns "adurham does not
+have the correct permissions" with BOTH the gh OAuth token and the classic PAT from
+`~/.hermes/.env`; the fork is public, the compare API shows the heads `ahead_by:1`, read access is
+normal — i.e. an account-level restriction on this org's repos, not fixable from here. Branches + PR
+bodies stand ready; if filing becomes possible (or via another account), the four PRs are 2-click
+submissions.
+
 ### De-fork round 3 — 2026-10-10 (upstream-absorption audit: owner hypothesis DISPROVEN — 0 retireable)
 
 **Question (owner):** "the fork specific bug fixes should be mostly fixed upstream by now."
