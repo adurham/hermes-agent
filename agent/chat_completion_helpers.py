@@ -2144,9 +2144,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
-    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent.fallback_cooldown import _arm_primary_restore_hold, _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
+    # Captured before this walk mutates it: a chain failover away from an already active
+    # fallback means the primary was not the failing source (the anti-flap hold must not arm).
+    was_fallback_active = bool(getattr(agent, "_fallback_activated", False))
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
@@ -2173,12 +2176,17 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             fb_model = agent.model  # normalized by the binder
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
+            hold_seconds = _arm_primary_restore_hold(agent, reason, was_fallback_active=was_fallback_active)
             notice = (
                 f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
                 f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}.")
             if cooldown_seconds is not None:
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
+            elif hold_seconds is not None:
+                notice += (
+                    f" Primary restore probe held ~{math.ceil(hold_seconds)} s "
+                    f"(anti-flap guard); recovery is not guaranteed.")
             _buffer_fallback_notice(agent, notice)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.

@@ -1436,6 +1436,19 @@ def restore_primary_runtime(agent) -> bool:
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
+    from agent.fallback_cooldown import primary_restore_hold_remaining
+    hold_remaining = primary_restore_hold_remaining(agent)
+    if hold_remaining > 0:
+        # Anti-flap hold (fallback_cooldown._arm_primary_restore_hold): the fallback fired
+        # while the primary was still unproven since its last restore — i.e. the previous
+        # restore probe failed. Re-probing on this turn would re-marshal the context to a
+        # still-broken backend and then re-upload it cold to the fallback: the exact flip
+        # (and the cache churn) the hold exists to space out.
+        logger.info(
+            "Primary %s/%s restore held another %.0f s (anti-flap guard; last restore probe failed)",
+            primary_provider or "?", primary_model or "?", hold_remaining,
+        )
+        return False
     from agent.fallback_cooldown import _is_entitlement_rejected
     from hermes_cli.chat_catalog import is_known_non_chat_model
     if primary_model and (
@@ -1476,6 +1489,10 @@ def restore_primary_runtime(agent) -> bool:
         reinstall_primary_runtime(
             agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
         )
+        # Proven only by the first completed response ON the primary
+        # (fallback_cooldown.note_primary_completion). A fallback activation while this is
+        # still True means THIS restore probe failed → arm the escalating anti-flap hold.
+        agent._primary_unproven_since_restore = True
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
@@ -2532,6 +2549,10 @@ def switch_model(
     from agent.chat_completion_helpers import _reset_stale_streak
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
+    # An explicit user model switch drops any anti-flap primary-restore hold: the operator
+    # asked for this route; a stale hold would keep re-probing it gated.
+    from agent.fallback_cooldown import clear_primary_restore_hold
+    clear_primary_restore_hold(agent)
     _finish_switch(agent, new_provider, old_norm, new_norm)
     logger.info(
         "Model switched in-place: %s (%s) -> %s (%s)",

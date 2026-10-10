@@ -92,6 +92,8 @@ def note_empty_fallback_activated(agent: Any) -> None:
 
 def note_primary_response_ok(agent: Any) -> None:
     """A real (non-empty) response arrived; a restored primary under probe is confirmed."""
+    from agent.fallback_cooldown import note_primary_completion
+    note_primary_completion(agent)  # marks the primary proven + feeds the anti-flap counter reset
     if getattr(agent, ATTR_PROBE_ACTIVE, False) is True and not getattr(agent, "_fallback_activated", False):
         setattr(agent, ATTR_PROBE_ACTIVE, False)
         logger.info("Restored primary answered — staying on %s (%s)",
@@ -104,6 +106,12 @@ def maybe_restore_primary_mid_run(agent: Any) -> bool:
     True only when the primary runtime was actually restored (the caller must then re-sync
     its system prompt from ``agent._cached_system_prompt``)."""
     if getattr(agent, "_fallback_activated", False) is not True:
+        return False
+    from agent.fallback_cooldown import primary_restore_hold_remaining
+    if primary_restore_hold_remaining(agent) > 0:
+        # Anti-flap hold active: restore_primary_runtime would decline anyway, so do not
+        # spend a probe attempt or advance the failed-cycle back-off against it. The first
+        # boundary after the hold expires probes normally.
         return False
     if getattr(agent, ATTR_LAST_CAUSE, None) != EMPTY_RESPONSE_CAUSE:
         return False  # 429/5xx/auth/etc.: turn-start-only restore

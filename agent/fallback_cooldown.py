@@ -1,5 +1,6 @@
-"""Primary rate-limit cooldown arming and per-session model rejection markers, shared by the
-fallback walk (chat_completion_helpers) and restore_primary_runtime (agent_runtime_helpers)."""
+"""Primary rate-limit cooldown arming, the anti-flap primary-restore hold, and per-session
+model rejection markers, shared by the fallback walk (chat_completion_helpers) and
+restore_primary_runtime (agent_runtime_helpers)."""
 import logging
 import math
 import time
@@ -127,3 +128,136 @@ def _is_entitlement_rejected(agent, provider: str, model: str) -> bool:
         return True
     from hermes_cli.model_normalize import normalize_model_for_provider
     return (provider, normalize_model_for_provider(model, provider)) in rejected
+
+
+# ── Anti-flap hold: space out failed primary-restore probes ──────────────────────────────
+# Fallback is turn-scoped: restore_primary_runtime swaps the primary back in at every turn
+# start. When the primary is still broken, that restore is a failed PROBE — the turn
+# re-marshals the full context to the primary (seconds for fast 5xx classes, minutes for
+# slow-failing subscription-SDK routes), then falls back and re-uploads the whole context
+# COLD to the fallback cache. Repeated across turns this is the observed fallback↔primary
+# flap: every flip costs both providers' prompt caches plus a failed retry sequence, while
+# re-probing an unchanged outage cannot succeed any sooner than a delayed probe.
+#
+# Trigger: a fallback activation while the primary is still _primary_unproven_since_restore
+# (set by every successful restore, cleared by the first completed response ON the primary).
+# A fresh primary failure (no recent restore) keeps the legacy fast re-probe. Hold: base 10
+# min, doubling per consecutive flap (cap 2 h); the counter restarts only once the primary
+# was actually seen working again (>= _PRIMARY_RESTORE_HOLD_RESET_COMPLETIONS completed
+# primary responses, or _PRIMARY_RESTORE_HOLD_RESET_HEALTHY_S of a healthy primary run) —
+# never on wall time alone. Rate-limit reasons keep their own longer provider-reset cooldown;
+# a fallback-chain failover (the fallback itself died) lifts the hold so the primary probe is
+# not stranded behind it. The hold is process-wide as well: a gateway hosts many sessions and
+# a provider-wide outage should not be re-probed by every session simultaneously.
+_PRIMARY_RESTORE_HOLD_BASE_S = 600.0
+_PRIMARY_RESTORE_HOLD_MAX_S = 7200.0
+_PRIMARY_RESTORE_HOLD_RESET_COMPLETIONS = 3
+_PRIMARY_RESTORE_HOLD_RESET_HEALTHY_S = 1800.0
+_PROCESS_RESTORE_HOLD_UNTIL: dict = {}
+
+
+def _primary_hold_key(agent) -> tuple:
+    rt = getattr(agent, "_primary_runtime", None) or {}
+    return (str(rt.get("provider") or "").strip().lower(), str(rt.get("model") or "").strip())
+
+
+def primary_restore_hold_remaining(agent) -> float:
+    """Seconds until the next primary restore probe is allowed (0 = not held)."""
+    now = time.monotonic()
+    agent_until = float(getattr(agent, "_primary_restore_hold_until", 0.0) or 0.0)
+    key = _primary_hold_key(agent)
+    process_until = _PROCESS_RESTORE_HOLD_UNTIL.get(key, 0.0) if (key[0] or key[1]) else 0.0
+    return max(0.0, max(agent_until, process_until) - now)
+
+
+def _arm_primary_restore_hold(agent, reason, was_fallback_active: bool = False) -> float | None:
+    """Arm the anti-flap hold after a fallback activation; returns held seconds or None.
+
+    Only arms when the activation happened while the primary was still unproven since its
+    last restore (i.e. a restore probe just failed) — a fresh failure on a previously
+    healthy primary keeps the legacy per-turn re-probe. Skips rate-limit reasons (their own
+    cooldown already gates the restore). A chain failover away from an already active
+    fallback means the primary was not the failing source: lift any hold instead of arming.
+    """
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    primary_provider = ((getattr(agent, "_primary_runtime", None) or {}).get("provider") or "").strip().lower()
+    if was_fallback_active and not (primary_provider and current_provider == primary_provider):
+        if float(getattr(agent, "_primary_restore_hold_until", 0.0) or 0.0) > time.monotonic():
+            logging.info(
+                "Primary restore hold lifted: the fallback chain itself is failing over "
+                "(the primary was not the failing source)")
+            agent._primary_restore_hold_until = 0.0
+        return None
+    if reason in _RATE_LIMIT_FAILOVER_REASONS:
+        return None
+    if not getattr(agent, "_primary_unproven_since_restore", False):
+        return None  # fresh primary failure: keep the legacy fast re-probe next turn
+    now = time.monotonic()
+    completions = int(getattr(agent, "_primary_completions_since_flap", 0) or 0)
+    run_started = float(getattr(agent, "_primary_run_started_at", 0.0) or 0.0)
+    healthy_run = bool(run_started) and (now - run_started) >= _PRIMARY_RESTORE_HOLD_RESET_HEALTHY_S
+    if completions >= _PRIMARY_RESTORE_HOLD_RESET_COMPLETIONS or healthy_run:
+        count = 0  # the primary demonstrably worked since the last flap — restart the ladder
+    else:
+        count = int(getattr(agent, "_primary_restore_hold_count", 0) or 0)
+    count += 1
+    hold = min(_PRIMARY_RESTORE_HOLD_BASE_S * (2 ** (count - 1)), _PRIMARY_RESTORE_HOLD_MAX_S)
+    agent._primary_restore_hold_count = count
+    agent._primary_restore_hold_until = max(
+        float(getattr(agent, "_primary_restore_hold_until", 0.0) or 0.0), now + hold)
+    agent._primary_completions_since_flap = 0
+    agent._primary_run_started_at = 0.0
+    key = _primary_hold_key(agent)
+    if key[0] or key[1]:
+        for expired in [k for k, until in _PROCESS_RESTORE_HOLD_UNTIL.items() if until <= now]:
+            _PROCESS_RESTORE_HOLD_UNTIL.pop(expired, None)
+        _PROCESS_RESTORE_HOLD_UNTIL[key] = max(_PROCESS_RESTORE_HOLD_UNTIL.get(key, 0.0), now + hold)
+    logging.info(
+        "Primary restore hold armed: flap #%d, next probe of %s/%s in %.0f s "
+        "(post-restore fallback — the restore probe failed)",
+        count, key[0] or "?", key[1] or "?", hold,
+    )
+    return hold
+
+
+def note_primary_completion(agent) -> None:
+    """A response completed ON the primary (no fallback active): the primary is proven since
+    its last restore, and this feeds the hold-counter restart rule (see
+    _arm_primary_restore_hold). Model comparison is normalization-aware; an unparseable pair
+    counts as a completion (proving the primary is the safe direction)."""
+    if getattr(agent, "_fallback_activated", False):
+        return
+    rt = getattr(agent, "_primary_runtime", None) or {}
+    p_prov = str(rt.get("provider") or "").strip().lower()
+    p_model = str(rt.get("model") or "").strip()
+    if not p_prov and not p_model:
+        return
+    cur_prov = str(getattr(agent, "provider", "") or "").strip().lower()
+    cur_model = str(getattr(agent, "model", "") or "").strip()
+    if p_prov and cur_prov and cur_prov != p_prov:
+        return
+    if p_model and cur_model and cur_model != p_model:
+        try:
+            from hermes_cli.model_normalize import normalize_model_for_provider
+            ref = cur_prov or p_prov
+            if normalize_model_for_provider(cur_model, ref) != normalize_model_for_provider(p_model, ref):
+                return
+        except Exception:
+            pass  # unparseable pair: treat as a completion rather than never proving the primary
+    agent._primary_unproven_since_restore = False
+    completions = int(getattr(agent, "_primary_completions_since_flap", 0) or 0) + 1
+    agent._primary_completions_since_flap = completions
+    if completions == 1:
+        agent._primary_run_started_at = time.monotonic()
+
+
+def clear_primary_restore_hold(agent) -> None:
+    """Explicit user model switch: drop the anti-flap hold entirely (agent + process map)."""
+    agent._primary_restore_hold_until = 0.0
+    agent._primary_restore_hold_count = 0
+    agent._primary_unproven_since_restore = False
+    agent._primary_completions_since_flap = 0
+    agent._primary_run_started_at = 0.0
+    key = _primary_hold_key(agent)
+    if key[0] or key[1]:
+        _PROCESS_RESTORE_HOLD_UNTIL.pop(key, None)
