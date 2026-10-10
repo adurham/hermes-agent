@@ -325,8 +325,21 @@ upstream code STILL BROKEN at v0.21.6 — spot-verified at the exact upstream li
 `retry_utils.py:96-101` wall-clock 429 resets; T `display.py:931` `len()` spinner padding; T
 `auxiliary_client.py:1717-1795` dropped per-task timeouts; T `run_tests_parallel.py:493-510`
 drops every failed file from duration caches).
-**Left open (see `defork2/R3_CONSOLIDATED.md`):** 6 small in-fork cleanup candidates, a 7-item
-upstream-filing queue (needs owner go per the no-PR rule), and 4 owner decisions.
+**Cleanup executed (owner-approved, same day):** (a) `tests/tools/test_voice_mode.py` — the
+redundant `short_socket_dir` fixture removed and `TestPulseSocketReachable` replaced with
+upstream's verbatim copy (upstream 67475a62c6f shortened the socket paths itself); single-file
+run 58 passed / 0 failed / 6 skipped. (b) `tests/tools/test_delegate.py` — moot fork-only
+`test_default_is_ten` dropped (both trees share `_DEFAULT_MAX_CONCURRENT_CHILDREN = 10`);
+97 passed. (c) desktop — dead `renderRows` `preserveOrder` parameter removed (workspace-group.tsx,
+entered-content.tsx); renderer tsc rc 0; sessions-section-new-session-drag 24/24,
+workspace-groups 85/85, layout-lane-order 6/6, overview-row 6/6. Two candidates withdrawn as
+keep-not-trim after evidence: the mcp `t.cancel()` guard (still covers a residual drain-miss
+path) and the completion-notification residual (the still-needed hold-gate half).
+**Still open (see `defork2/R3_CONSOLIDATED.md`):** the 7-item upstream-filing queue (needs owner
+go per the no-PR rule) and 4 owner decisions.
+*Side note (unverified): the lane `renderRows` path also drops `draggable`/`sortData`
+(`renderRowsDated` always passes draggable=false) — check whether per-lane session drag is
+expected to work in the app; out of scope this round.*
 
 ### Fork-only fix — 2026-10-06 (the "impossible timer" corruption ROOT-CAUSED: VS-16 width divergence stranded diff-repaint cells — badge glyphs de-VS16'd)
 
