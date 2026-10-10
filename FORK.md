@@ -301,7 +301,9 @@ flakes, not regressions.
 
 **Method:** 10 read-only audit units re-examined all 184 items round 1 had kept (135 KEEP-OK · 25 DOC-GAP · 11 STALE · 8 NOT-JUSTIFIED · 4 FIX-MISSING · 2 CONVERGED-DONE); worklists + per-item JSONL evidence under `defork2/`, every retirement claim parent-verified against the trees (two units ran partially on an ollama fallback after an opus rate-limit; their candidates were re-checked by hand). Gate: `defork2/DEFORK2_GATE.md`; owner approved all tiers.
 
-**Retired (22):** react/react-dom overrides; exclude-newer absolute pin; sr-coder alias (config owns the role; the alias would have mis-tiered); Nerd Font fallback (upstream `terminal.font_family` covers it; value set before landing); banner disabled-toolsets filter; Tavily keyed-only policy; delegate deadline remnants (static floor covers it; consult hook stays); status-bar title override (`display.status_bar.fields` hides it); web-gate hermeticity patches; two test-only fix sets + the setgid chunk; two fork-retained upstream-pruned test files (restored verbatim); hindsight extra; pane-tab closeLabel + `zones.closeTab`; `.upstream-candidates/`; corporate-rip; hermes_hard_eval + fix_duration_cache_paths; setup-merge-drivers stub; pet-zone pane (+ its 14841 fix); cc_proxy bridge; trafilatura backend.
+**Retired (22):** react/react-dom overrides; exclude-newer absolute pin; sr-coder alias (config owns the role; the alias would have mis-tiered); Nerd Font fallback (upstream `terminal.font_family` covers it; value set before landing); banner disabled-toolsets filter; Tavily keyed-only policy; delegate deadline remnants (static floor covers it; consult hook stays); status-bar title override (`display.status_bar.fields` hides it); web-gate hermeticity patches; two test-only fix sets + the setgid chunk; two fork-retained upstream-pruned test files (restored verbatim); hindsight extra; pane-tab closeLabel + `zones.closeTab`; `.upstream-candidates/`; corporate-rip; hermes_hard_eval + fix_duration_cache_paths; setup-merge-drivers stub; pet-zone pane (+ its 14841 fix); trafilatura backend; cc_proxy bridge
+**(restored 2026-10-10: the corp MacBook's 7 enterprise connector MCP servers launch
+`tools/bridges/cc_proxy_mcp.py` from their config — in-use, so it stays).**
 
 **Fixed first (bugs):** CI 32-core Windows jobs gated to upstream's repo (they run on the fork's twice-daily schedule); `auxiliary.pet_dialogue` DEFAULT_CONFIG restored; WorkspaceHeader `ref`/`...rest` restored (lane-header right-click menus); resume-mid-tool consumer wired (`pendingToolCallPart` projected on resume); pet voice restored end-to-end (request-model provider field + trusted-path forwarding that leaves the model-facing override rule closed + desktop ladder skips direct/stream when a provider is set; tests: test_tts_provider_authority, the /api/audio/speak route, voice-playback for workstation); leftovers (review.ts dup comment, chrome.tsx unused exports, subagent-dock i18n, ruflo_agents shim deleted → personas, dead `status_bar_session_title` key removed from config_defaults).
 
@@ -3032,7 +3034,7 @@ the full v2026.8.31 tree, 0 hits; same-word traps resolved by reading):
   `model_by_role`/`persona`-in-delegation greps 0 upstream.
 - agent-messaging stack (`tools/agent_messaging_contract.py`,
   `agent_messaging_tools.py`, `agent_messaging_transport_a.py`,
-  `gateway/agent_messaging_bridge.py`, `tools/bridges/cc_proxy_mcp.py` **[RETIRED 2026-10-09 de-fork round 2]**):
+  `gateway/agent_messaging_bridge.py`, `tools/bridges/cc_proxy_mcp.py` **[RETIRED 2026-10-09 de-fork round 2]**): — **restored 2026-10-10 (live dependency on the corp connector stack).**
   0 upstream hits.
 - memory stack (`tools/memory_warm.py`, `tools/memory_extraction/*`,
   `tools/memory_auto_feedback/*`, `hermes_cli/memory_confirm.py`) and
@@ -5302,7 +5304,7 @@ already matched the live config). `hermes_cli/config.py`,
 
 ### Fix — 2026-08-19 (`cc_proxy_mcp.py` silently dropped isError/structuredContent on every tool-call relay — pre-existing, not from the mcp 2.0 port)
 
-**(2026-10-09 de-fork round 2):** RETIRED — owner-approved: the cc_proxy MCP bridge (`tools/bridges/`) and `tests/tools/test_cc_proxy_mcp.py` are deleted. Kept for history.
+**(2026-10-09 de-fork round 2):** RETIRED — owner-approved: the cc_proxy MCP bridge (`tools/bridges/`) and `tests/tools/test_cc_proxy_mcp.py` are deleted. Kept for history. — **restored 2026-10-10 (live dependency on the corp connector stack).**
 
 **Found via:** a `consult()` second opinion after the two mcp-2.0-migration
 fixes below, prompted by the user asking "you positive about that?" —
@@ -11195,7 +11197,7 @@ will never touch them.
 || `plugins/model-providers/exo/` | First-class exo provider profile (`custom:exo` provider type). |
 || `plugins/web/claude_code/` | Claude Code web backend for the Hermes web interface. **REMOVED 2026-09-25** (Slice A, commit `ecb91a03ab`, owner-approved). The directory is absent from the tree, and its dead config was cleaned up 2026-09-29 (see the "Slice A/C dead-config follow-through" entry). Do NOT re-carry. |
 || `plugins/web/trafilatura/` | Free, no-API-key `web_extract` backend — direct `httpx` fetch (manual redirect-hop walk with per-hop SSRF/policy re-check) + the open-source `trafilatura` library for local content extraction. Closes the gap where non-Anthropic providers (exo, ollama-cloud) had a free search backend (brave-free/ddgs) but no free extract backend — every existing extract-capable provider (firecrawl/tavily/exa/parallel) needs a paid API key. **[RETIRED 2026-10-09 de-fork round 2]** — owner-approved; plugin, post-setup hook and pyproject extra deleted. |
-|| `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). **[RETIRED 2026-10-09 de-fork round 2]** — owner-approved; directory and `tests/tools/test_cc_proxy_mcp.py` deleted. |
+|| `tools/bridges/` | Fork-only tool bridges (CC proxy MCP bridge). **[RETIRED 2026-10-09 de-fork round 2]** — owner-approved; directory and `tests/tools/test_cc_proxy_mcp.py` deleted. | — **restored 2026-10-10 (live dependency on the corp connector stack).**
 || `tools/swarm_board.py` | Live SwarmBoard display for multi-agent task progress. **RETIRED 2026-09-23** (owner-approved, commit `37d7fb4782`): superseded by upstream's `hermes_cli/cli_subagent_monitor.py` dock, which also offers steer/stop/transcript-tail; every signal the board uniquely rendered was ported onto the registry the dock already reads first. See "Fork-only retirements — 2026-09-23" below. |
 || `tools/hermes_load_tools.py` | Fork tool loading bridge — loads fork-only tools into agent runtime. **RETIRED 2026-10-09 de-fork pass** (with `agent/fork/tool_search_lazy.py`). |
 || `tools/memory_warm.py` | Warm-tier memory tool — search/recall/pin/unpin warm facts. |
@@ -13341,7 +13343,7 @@ equivalent as of v2026.9.24:**
 | delegation / personas | `tools/delegation_router.py`, `tools/delegate_tool.py` deltas, `hermes_cli/model_tiers.py`, `hermes_cli/personas.py`, `hermes_cli/persona_library.py`, `hermes_cli/ruflo_agents.py`, `tools/personas_sync.py`, `personas/delegation/*`, `hermes_cli/delegation_stats.py` |
 | agent messaging / cross-session | `tools/agent_messaging_*` (contract, tools, Transport A), `tools/cross_session_*`, `gateway/agent_messaging_bridge.py`, `hermes_cli/agents_inbox.py`, `hermes_cli/subcommands/agents.py` |
 | web plugins | `plugins/web/trafilatura/` **[RETIRED 2026-10-09 de-fork round 2]**, `plugins/model-providers/exo/`, `tools/web_tools.py` chain (`plugins/web/claude_code/` RETIRED 2026-09-25) |
-| tooling / CLI | `tools/consult_tool.py`, `tools/content_filter_scrub.py`, `tools/process_registry.py` delta, `hermes_cli/fork_banner.py`, `hermes_cli/mcp_gateway.py`, `hermes_cli/clipboard.py`, `tools/bridges/cc_proxy_mcp.py` **[RETIRED 2026-10-09 de-fork round 2]**, `ui-tui/src/lib/modelFallback.ts`, `web/src/lib/session-overview.ts` |
+| tooling / CLI | `tools/consult_tool.py`, `tools/content_filter_scrub.py`, `tools/process_registry.py` delta, `hermes_cli/fork_banner.py`, `hermes_cli/mcp_gateway.py`, `hermes_cli/clipboard.py`, `tools/bridges/cc_proxy_mcp.py` **[RETIRED 2026-10-09 de-fork round 2]**, `ui-tui/src/lib/modelFallback.ts`, `web/src/lib/session-overview.ts` | — **restored 2026-10-10 (live dependency on the corp connector stack).**
 | desktop | pet zone **[RETIRED 2026-10-09 de-fork round 2]**/voice (`store/pet-voice.ts`), `lib/model-fallback-label.ts` (`session-row-state.ts` drag handle and `sync-version.mjs` version-sync prebuild RETIRED 2026-10-09 de-fork pass) |
 | scripts / CI | `sync-fork-branding.py`, `hlxc-test.sh`, `hermes_token_check.py`, `check-unspecced-sdk-mocks.py` (`setup-merge-drivers.sh`, `hermes_hard_eval.py`, `ci/fix_duration_cache_paths.py`, `corporate-rip.py` **[RETIRED 2026-10-09 de-fork round 2]**) |
 
@@ -20261,7 +20263,7 @@ fix is PR'd upstream as rriggs/hermes-plugin-ollama-cloud-search#1.
 
 ### Fix — 2026-10-02 (`cc_proxy_mcp.py` dedicated-login isolation restored: newest-entry resolution + `CC_PROXY_KEYCHAIN_SERVICE` pin)
 
-**(2026-10-09 de-fork round 2):** RETIRED — owner-approved retirement of the cc_proxy MCP bridge; `tools/bridges/` and its test are deleted. Kept for history.
+**(2026-10-09 de-fork round 2):** RETIRED — owner-approved retirement of the cc_proxy MCP bridge; `tools/bridges/` and its test are deleted. Kept for history. — **restored 2026-10-10 (live dependency on the corp connector stack).**
 
 **Problem:** in fresh sessions every connector-based MCP server failed to register —
 `slack`, `notion`, `tanium-gateway`, `StackOverflowTeams`, `pagerduty`, `microsoft365`,
@@ -20322,7 +20324,7 @@ config still depends on. Commit fork fixes on the main checkout, push, and pull 
 
 **Filing gotcha (GitHub) — CORRECTED 2026-10-03 by resume session:** NOT a PR-creation abuse throttle. The 11.5h-persistent block is a GitHub-side, per-account gate on NON-DRAFT pull request creation for this repo, hitting multiple established external contributors (kuehnberger, liuhao1024, AgilityHacker, maebahesioru, + us) with rolling onsets from 2026-10-02 ~21:00 UTC; tracked in **NousResearch/hermes-agent#131859**. Exact matrix (all reproduced): non-draft create → GraphQL `does not have the correct permissions to execute CreatePullRequest` + REST `POST /pulls` masked 404; **draft create (`--draft`) succeeds**; `markPullRequestReadyForReview` (`gh pr ready`) rejected; own-fork PRs / pushes / comments / reads normal; `rate_limit` shows full quota. Ruled out: repo policy `ALL`; the repo creation-cap setting (non-collaborators with 47 open PRs still file non-drafts; closing stale PRs does not lift it); repo-wide interaction limits (first-time contributors file fine concurrently). Workaround in effect: the four pending PRs were filed as **drafts** (#132227-#132230) — a maintainer must flip them ready, or the gate must lift. If the gate persists at next check, ask a maintainer to check `interaction-limits/pulls/creation-cap` + bypass list, and/or escalate on issue #131859. Skill reference updated: `upstreaming-fork-patches/references/pr-creation-abuse-throttle.md`.
 
-**Kept load-bearing (no upstream equivalent):** #82095 pin_anthropic_token, #72164 exit-summary-before-cleanup, #72153 nerd-font stacks (RETIRED 2026-10-09 de-fork round 2), #72151 raf-throttle flush, #72087 estimator dedup, #25234 orphan web-search audit; plus the whole hard-fork set (agent/fork/*, cc_proxy_mcp, consult, delegation by_provider/model_by_role, search_chain, trafilatura backend, stream recovery). **(2026-10-09 de-fork round 2):** `cc_proxy_mcp`, the trafilatura backend and the `.upstream-candidates/` diffs are RETIRED; the other code fixes named here stay.
+**Kept load-bearing (no upstream equivalent):** #82095 pin_anthropic_token, #72164 exit-summary-before-cleanup, #72153 nerd-font stacks (RETIRED 2026-10-09 de-fork round 2), #72151 raf-throttle flush, #72087 estimator dedup, #25234 orphan web-search audit; plus the whole hard-fork set (agent/fork/*, cc_proxy_mcp, consult, delegation by_provider/model_by_role, search_chain, trafilatura backend, stream recovery). **(2026-10-09 de-fork round 2):** `cc_proxy_mcp`, the trafilatura backend and the `.upstream-candidates/` diffs are RETIRED; the other code fixes named here stay. — **restored 2026-10-10 (live dependency on the corp connector stack).**
 
 ## 2026-10-03 — Compaction-trigger overcharge on aggregator reasoning-echo routes (+ status-bar timer rollover fixes)
 
