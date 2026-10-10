@@ -331,7 +331,58 @@ the same wall on their next PM-path update). **Also:** the 6 stale hermes-update
 and dropped (4 trivial version bumps; 2 Sep-era code sets superseded by later committed sync
 work). **Note:** the isolated PM runtime prints "Failed to load bundled provider plugin
 solstice: No module named 'httpx'" on PM-invoked CLI runs (minimal runtime env); the main venv
-is unaffected.
+is unaffected. **(Root-caused + fixed later the same day — see the next entry: the flood was the
+checkpoint git path paying a guaranteed-failing PM worker per call.)**
+
+### Fork-only fix — 2026-10-10 (solstice "No module named 'httpx'" update-log flood: checkpoint git calls paid a guaranteed-failing PM worker per call; client-side target-gap refusal + no provider scan in PM's runtime)
+
+**Symptom (owner):** since the sync, every `hermes update` printed ~109-110 identical lines
+`Failed to load bundled provider plugin solstice: No module named 'httpx'`, right after
+"→ Preparing pinned cua-driver (Computer Use)...".
+
+**Root cause (traced live — a Popen-spy on the updater's own maintenance steps, an import
+trace under the PM runtime, and `update.log` forensics; three stacked layers):**
+1. The update's checkpoint footprint notice walks the checkpoint store (`store_status`) — 109
+   projects here — running one checkpoint git command per project via
+   `tools/checkpoint_manager._run_git`. `_run_git` → `_git_env` →
+   `hermes_cli/_subprocess_compat.selected_git_env` → `pm.ensure("git")` **per call** (upstream
+   v0.21.6 `02f9a241d3` "Let PM own Git environments and Matrix dependency preparation").
+2. On POSIX, PM's `git` package is a deliberate gap (`Git.gaps`: "POSIX uses system git by
+   choice"), so client.ensure spawned the PM worker for EVERY call — 109 worker+preflight pairs
+   (~218 extra processes) per update — and the worker's `pm.install.ensure` raised the same
+   `unavailable …` error; `selected_git_env` caught it and fell back to system git.
+3. Inside the worker, `lazy_installs_allowed()` imports `hermes_cli.config`; config's
+   import-time `_inject_profile_env_vars()` runs `from providers import list_providers` → the
+   bundled plugin scan → solstice (new in v0.21.6) imports httpx — absent in the minimal
+   runtime → one warning per worker spawn.
+
+**Fix (two fork-local patches):**
+- `pm/client.py::ensure` — new `_target_gap_error()`: a missing package whose registry definition
+  declares `missing_reason` for the current target is refused client-side with the byte-identical
+  `InstallError(package, f"unavailable on {target}: {reason}", "none")` the worker's `_install`
+  raises. Lazy-refusal precedence preserved (`_missing_or_refuse` runs first, matching the
+  worker's order); explicit installs and acquirable targets keep the full worker path.
+- `hermes_cli/config.py::_inject_profile_env_vars` — skip under `pm.runtime.is_runtime()` (True
+  only in PM's private runtime; verified False in the app venv + toolchain). PM workers never run
+  the provider scan — closes the class for any future plugin with an app-only dependency.
+
+**Verified live:** git-route probe — identical InstallError, 0 worker spawns, 0 warnings (was:
+worker + warning per call). Checkpoint notice step — **solstice 0, pm-worker processes 0, total
+spawns 328→110** (the remaining 110 are the legitimate `git rev-list --count` per checkpoint
+ref + one `git rev-parse HEAD`). Tests: `tests/pm/test_client_target_gap.py` (new, 3),
+`tests/tools/test_git_consumer_environment.py` (6 — 4 pre-existing fallback tests were failing
+on this Mac: `is_runtime()`'s resident probe touches the real home, which the repo's home-I/O
+guard refuses in tests; they now stub `client.is_runtime` like other pm tests, and the new
+by-design-gap consumer test asserts the gap refusal fires and no worker is requested),
+`tests/hermes_cli/test_provider_env_injection_pm_runtime_skip.py` (new, 2), plus
+`test_install_extra` + `test_blocked_features` regressions green.
+
+**Notes / upstream candidates (for the filing queue):** (a) the worker's app-config import for
+`lazy_installs_allowed` is the deeper design smell — pass the resolved policy in the worker
+request instead (pm-side refactor); (b) `selected_git_env` paying an ensure round-trip per git
+call is upstream-fixable in pm.client or by caching the verdict; (c) skipping the doomed spawns
+also means a POSIX box no longer *accidentally* provisions the pm-runtime from a checkpoint git
+call (real pm work still provisions it; benign).
 
 ### Upstream-filing attempt — 2026-10-10 (round-3 queue: 4 branches ready, filing BLOCKED at the account level)
 

@@ -26,6 +26,34 @@ def _missing_or_refuse(name):
     return missing
 
 
+def _target_gap_error(name, missing):
+    """The refusal the worker would raise for a package this target can never host.
+
+    A package whose registry definition declares a ``missing_reason`` for the
+    current target — e.g. ``git`` on POSIX ("POSIX uses system git by choice",
+    a deliberate gap) — fails inside the worker's ``_install`` before any
+    download. Answering here hands back the byte-identical InstallError without
+    paying for a worker process that could only fail, and without the worker's
+    startup importing app config (whose import-time provider scan has no
+    dependency tree in PM's minimal runtime).
+    Lazy-policy refusals keep their precedence: ``_missing_or_refuse`` raises
+    ``_refuse_lazy`` first, matching the worker's order.
+    """
+    if not missing:
+        return None
+    from pm.install import current_target
+    from pm.registry import walk
+
+    target = current_target()
+    for package in walk([name]):
+        if package.name not in missing:
+            continue
+        reason = package.missing_reason(target)
+        if reason is not None:
+            return InstallError(package.name, f"unavailable on {target}: {reason}", "none")
+    return None
+
+
 def _refuse_cold_runtime(cold: InstallError, arguments) -> InstallError:
     """Record a lazy sync refused because PM's own runtime is missing; return the error to raise."""
     from pm import receipt
@@ -187,8 +215,12 @@ def ensure(name, *, base_env=None, explicit=False, progress=None, pause_event=No
         return direct(name, base_env=base_env, explicit=explicit, progress=progress,
                       pause_event=pause_event, download_progress=download_progress)
     if not explicit and not isinstance(get_package(name), StatePackage):
-        if not _missing_or_refuse(name):
+        missing = _missing_or_refuse(name)
+        if not missing:
             return Runner(name, env_for(name, base_env=base_env))
+        refusal = _target_gap_error(name, missing)
+        if refusal is not None:
+            raise refusal
     if pause_event is not None and pause_event.is_set():
         from pm.downloader import DownloadPaused
         raise DownloadPaused("install paused")
