@@ -86,10 +86,12 @@ def _tool_response(name="web_search", call_id="c1"):
 
 class _Script:
     """Shared ``create`` for primary + fallback clients. ``plan`` maps provider → list of
-    responses (popped in order); every call records the live (model, provider)."""
+    responses (popped in order); every call records the live (model, provider). An optional
+    ``on_call(script, provider)`` hook fires after each served request (mid-run assertions)."""
 
-    def __init__(self, agent_ref, plan, clock):
+    def __init__(self, agent_ref, plan, clock, on_call=None):
         self.agent_ref, self.plan, self.clock, self.calls, self.systems = agent_ref, plan, clock, [], []
+        self.on_call = on_call
 
     def __call__(self, *args, **kwargs):
         agent = self.agent_ref()
@@ -97,7 +99,10 @@ class _Script:
         self.calls.append((agent.model, agent.provider))
         msgs = kwargs.get("messages") or []
         self.systems.append(msgs[0].get("content") if msgs and msgs[0].get("role") == "system" else None)
-        return self.plan[agent.provider].pop(0)
+        response = self.plan[agent.provider].pop(0)
+        if self.on_call is not None:
+            self.on_call(self, agent.provider)
+        return response
 
 
 def _tool_defs(*names):
@@ -125,10 +130,10 @@ def _build_agent(transient_home):
     return agent
 
 
-def _run(agent, plan, clock, *, max_iterations=40):
+def _run(agent, plan, clock, *, max_iterations=40, on_call=None):
     import weakref
 
-    script = _Script(weakref.ref(agent), plan, clock)
+    script = _Script(weakref.ref(agent), plan, clock, on_call=on_call)
     primary = MagicMock()
     primary.chat.completions.create.side_effect = script
     agent.client = primary
@@ -248,27 +253,62 @@ def _runs(calls):
 
 
 def test_restored_primary_emptying_again_refalls_back_with_doubled_backoff(transient_home):
-    """Probe fails (the restored primary empties out again) → the ladder re-falls-back with
-    the same cause, and the next restore waits the doubled skip (2 boundaries, not 1) before
-    probing again; the second probe answers and the run ends on the primary."""
+    """Probe fails (the restored primary empties out again) → the ladder re-falls-back with the
+    same cause and the anti-flap hold arms (2026-10-10): fallback boundaries then pass WITHOUT
+    burning probe attempts or advancing the back-off until the hold releases, after which the
+    doubled skip (2 boundaries) applies; the second probe answers and the run ends on the
+    primary. The hold's own arithmetic lives in test_primary_restore_hold.py; here it is driven
+    by a releasable clock so the mid-run interaction is asserted end-to-end."""
+    from agent import fallback_cooldown as fc
+
     agent = _build_agent(transient_home)
     plan = {
         # streak 1: 9 empties (first + 6 budget + 2 cap, frozen clock); probe 1: post-tool
-        # nudge + 9 empties; probe 2 answers.
+        # nudge + 9 empties; probe 2 answers. openrouter: 1 first-skip + 1 held + 2 doubled skip.
         PRIMARY_PROVIDER: [_response() for _ in range(9 + 10)] + [_response("primary is back")],
-        "openrouter": [_tool_response("web_search", f"c{i}") for i in range(3)],
+        "openrouter": [_tool_response("web_search", f"c{i}") for i in range(4)],
     }
-    result, calls = _run(agent, plan, _Clock(step=0.0))
+
+    class _HoldClock:
+        """Monotonic stand-in for the anti-flap hold: frozen until released, then far ahead so
+        the armed hold reads as expired."""
+
+        def __init__(self):
+            self.released = False
+
+        def __call__(self):
+            return 100_000.0 + (10**6 if self.released else 0.0)
+
+    hold_clock = _HoldClock()
+
+    def _release_after_one_held_boundary(script, provider):
+        if provider != "openrouter":
+            return
+        served = sum(1 for _, p in script.calls if p == "openrouter")
+        if served == 2:  # the first fallback boundary + one HELD boundary
+            state = script.agent_ref()
+            assert state._empty_restore_attempts == 1, "held boundaries must not burn probe attempts"
+            assert state._empty_restore_skip_remaining == 2, "held boundaries must not advance the back-off"
+            hold_clock.released = True
+
+    try:
+        with patch("agent.fallback_cooldown.time.monotonic", hold_clock):
+            result, calls = _run(
+                agent, plan, _Clock(step=0.0), on_call=_release_after_one_held_boundary
+            )
+    finally:
+        fc._PROCESS_RESTORE_HOLD_UNTIL.clear()
 
     assert _runs(calls) == [
         (PRIMARY_PROVIDER, 9), ("openrouter", 1),   # first fallback: 1 boundary skipped
-        (PRIMARY_PROVIDER, 10), ("openrouter", 2),  # failed probe → 2 boundaries skipped
+        (PRIMARY_PROVIDER, 10), ("openrouter", 3),  # failed probe → hold (1 held), then doubled skip (2)
         (PRIMARY_PROVIDER, 1),                      # second probe succeeds
     ]
     assert result["final_response"] == "primary is back"
     assert [e["cause"] for e in agent._fallback_events] == ["empty_response", "empty_response"]
     assert agent._empty_restore_attempts == 2
     assert agent._fallback_activated is False
+    assert agent._primary_restore_hold_count == 1  # armed exactly once, by the failed restore probe
 
 
 def test_t4_landed_tool_round_ends_the_empty_streak(transient_home):
