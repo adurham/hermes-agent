@@ -6,7 +6,7 @@ maintainer: BrokeSkill
 tier: community
 category: desktop
 version: "0.1.0"
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 image: https://raw.githubusercontent.com/BrokeSkill/hermes-taskbar-badge/fabe90e1e2271c90e31ccd4b784352193e46c795/docs/demo.png
 platforms: [windows]
 capabilities:
