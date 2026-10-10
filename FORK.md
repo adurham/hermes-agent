@@ -47,9 +47,19 @@ probe bounds (2/4/8/16 boundaries, ≤4/turn) are per-turn state, so across-turn
 **Tests:** `tests/agent/test_primary_restore_hold.py` (arming matrix incl. fresh-failure no-arm,
 rate-limit skip, chain-failover lift; ladder math + restart rule on a frozen clock; restore gate
 decline/expiry through the real `restore_primary_runtime`; mid-run hold without budget burn + resume;
-process-map gating). Re-run green: `test_fallback_exhaustion_cooldown`, `test_mid_run_restore`,
-`test_reset_aware_primary_restore`, `test_primary_runtime_restore`, `test_conversation_fallback_state`,
-`test_switch_model_fallback_prune`.
+process-map gating). `test_empty_response_transient_e2e.py`'s failed-probe case now drives the hold
+with a releasable clock (held boundaries burn no probe attempt and do not advance the back-off; the
+doubled skip applies after release). Re-run green: `test_fallback_exhaustion_cooldown`,
+`test_mid_run_restore`, `test_reset_aware_primary_restore`, `test_primary_runtime_restore`,
+`test_conversation_fallback_state`, `test_switch_model_fallback_prune`,
+`test_empty_response_transient_policy`, `test_system_prompt_restore`.
+
+**Rebase note:** these commits were re-applied on top of the concurrent v0.21.6 sync
+(`7cb8107522c`): `fallback_cooldown.py` and `empty_fallback_restore.py` were untouched by the
+sync; the restore success-path flag lives in `restore_primary_runtime` right after
+`route_binding.reinstall_primary_runtime` returns (the inline success block it used to live in
+moved into that module). The hold gate sits before the entitlement/quota/rate gates — it
+declines fastest and shares no state with them.
 
 ### Upstream sync — 2026-10-09 (v2026.9.24 → v0.21.6, 9180 commits, 172 conflict files)
 
