@@ -81,6 +81,10 @@ def test_git_consumers_fall_back_to_system_git(tmp_path, monkeypatch, consumer, 
     boundary = "current_target" if failure == "unsupported-target" else "_installed_location"
     monkeypatch.setattr(resolver, boundary, unavailable)
     monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", tmp_path / "checkpoints")
+    # is_runtime()'s resident probe reads beside the checkout (the real hermes
+    # home here), which the repo's home-I/O guard refuses in tests; the
+    # consumer under test is the pm boundary, not runtime discovery.
+    monkeypatch.setattr(importlib.import_module("pm.client"), "is_runtime", lambda: False)
     if consumer == "checkpoint":
         manager = checkpoint_manager.CheckpointManager(enabled=True)
         assert manager.ensure_checkpoint(str(repo)) is True
@@ -89,3 +93,49 @@ def test_git_consumers_fall_back_to_system_git(tmp_path, monkeypatch, consumer, 
         assert result["success"] is True
         assert "+system git content" in result["diff"]
     assert calls
+
+
+@pytest.mark.platforms("posix")
+def test_git_consumers_answer_by_design_gaps_without_a_worker(tmp_path, monkeypatch):
+    """POSIX's system-git gap is refused client-side: checkpoints keep working on
+    system git, and the PM worker is never spawned — its startup would import
+    app config inside PM's minimal runtime (the solstice/httpx warning flood)."""
+    git = shutil.which("git")
+    assert git is not None
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run([git, "init", str(repo)], check=True, capture_output=True)
+    (repo / "new.txt").write_text("system git content\n", encoding="utf-8")
+
+    client = importlib.import_module("pm.client")
+    installer = importlib.import_module("pm.install")
+    paths = importlib.import_module("pm.paths")
+    store = tmp_path / "store"
+    store.mkdir()
+    monkeypatch.setattr(paths, "store_root", lambda: store)
+    monkeypatch.setattr(paths, "writable_store_root", lambda: store)
+
+    worker_requests = []
+    gap_refusals = []
+
+    def record_request(*args, **kwargs):
+        worker_requests.append(args)
+        raise pm.InstallError("pm", "worker requested in test")
+
+    orig_gap = client._target_gap_error
+
+    def gap_spy(name, missing):
+        refusal = orig_gap(name, missing)
+        gap_refusals.append((name, list(missing), refusal is not None))
+        return refusal
+
+    monkeypatch.setattr(client, "is_runtime", lambda: False)
+    monkeypatch.setattr(client, "_request", record_request)
+    monkeypatch.setattr(client, "_target_gap_error", gap_spy)
+    monkeypatch.setattr(installer, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", tmp_path / "checkpoints")
+
+    manager = checkpoint_manager.CheckpointManager(enabled=True)
+    assert manager.ensure_checkpoint(str(repo)) is True
+    assert worker_requests == []
+    assert gap_refusals and gap_refusals[0][0] == "git" and gap_refusals[0][2] is True

@@ -4509,6 +4509,18 @@ def _inject_profile_env_vars() -> None:
     """Expose env_vars of every ``auth_type="api_key"`` provider in providers/ via OPTIONAL_ENV_VARS
     without editing this file."""
     try:
+        from pm.runtime import is_runtime
+
+        if is_runtime():
+            # This injection feeds interactive surfaces (setup/config UI). PM's
+            # private runtime (the worker) never renders those and carries no
+            # app dependency tree — the provider scan there can only fail
+            # noisily (bundled plugins import app-only deps; solstice needs
+            # httpx). Skip it.
+            return
+    except Exception:
+        pass
+    try:
         from providers import list_providers
         for _pp in list_providers():
             if _pp.auth_type != "api_key":
