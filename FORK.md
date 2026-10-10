@@ -311,6 +311,23 @@ flakes, not regressions.
 
 **Suite (this head, run locally — the workstation went unreachable mid-verification and the owner directed the run to the Mac):** Python 60,580 passed / 312 failed / 4 crashed / 1,457 skipped across 5,608 files (27.5 min, 14 workers); desktop renderer tsc rc 0, electron tsc rc 0, vitest 10,782/10,782. The 127 broad-run-failing files were re-run SINGLY at both this head and the pre-round-2 base (81e4f8e2833): 123 pass at both arms (the broad-run failures are macOS broad-run context artifacts — live-venv/updater self-detection, 3.11-vs-3.14 PM env, home-guard classes), and 4 fail at both arms with identical crash marking (test_update_ci_routing, test_cron_script, test_bundle_payload, test_termux_build_driver — pre-existing). REGRESSIONS: 0.
 
+### De-fork round 3 — 2026-10-10 (upstream-absorption audit: owner hypothesis DISPROVEN — 0 retireable)
+
+**Question (owner):** "the fork specific bug fixes should be mostly fixed upstream by now."
+**Method:** 4 read-only audit units checked all 48 surviving fork bug-fix rows against upstream
+v0.21.6 — the code at the exact sites (pristine tag tree) AND upstream history across the
+9,180-commit sync window; evidence = file:line + commit refs in `defork2/reports/R3-U*.jsonl`.
+**Result:** 39 STILL-FORKONLY · 19 PARTIAL · 2 UPSTREAMED (both = stale rows already retired in
+round 2). **Net retireable by absorption: 0.** The fixes either protect fork-only machinery
+upstream never had a reason to touch (provider-first aux schema, Transport A/B, per-role
+delegation, Δ status bar, exo handling, adaptive-thinking default, native 1M opt-in) or fix
+upstream code STILL BROKEN at v0.21.6 — spot-verified at the exact upstream lines (T
+`retry_utils.py:96-101` wall-clock 429 resets; T `display.py:931` `len()` spinner padding; T
+`auxiliary_client.py:1717-1795` dropped per-task timeouts; T `run_tests_parallel.py:493-510`
+drops every failed file from duration caches).
+**Left open (see `defork2/R3_CONSOLIDATED.md`):** 6 small in-fork cleanup candidates, a 7-item
+upstream-filing queue (needs owner go per the no-PR rule), and 4 owner decisions.
+
 ### Fork-only fix — 2026-10-06 (the "impossible timer" corruption ROOT-CAUSED: VS-16 width divergence stranded diff-repaint cells — badge glyphs de-VS16'd)
 
 **Problem (recurrence ~6 of the spinner/status-line timer saga):** screenshot showed the status bar's
