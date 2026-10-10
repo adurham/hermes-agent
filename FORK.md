@@ -3,6 +3,54 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only fix — 2026-10-10 (fallback↔primary flap: escalating anti-flap hold on primary-restore probes)
+
+**Problem (user-visible):** "keeps flipping between fallback and primary which kills cache". Long
+sessions flip models across turns; every flip re-marshals the whole context — the incoming side
+pre-fills COLD and re-WRITES its prompt cache, the outgoing side's cache goes stale. Log evidence:
+2026-10-08 session `20261008_183536_6cfe48` cycled fallback→restore→fallback 5× in 30 min (restores
+54 s–8 min after each fallback; "Fallback activated after empty responses"); 2026-10-09 child
+`20261009_121931_e941f2` (opus, directsdk) burned 3 attempts over **11 minutes** before falling back;
+2026-10-10 `20261010_070746_b6b4f4` fell back at 16:04 (3× HTTP 500) and the claude calls that
+followed paid 390K+ token cache writes (607 s first call, 9% reads on later ones). Return flips
+measured 1–22% cache reads (deepseek) vs 99–100% while un-flipped.
+
+**Root cause:** fallback is deliberately turn-scoped — `restore_primary_runtime` re-probes the primary
+at EVERY turn start — but only rate-limit/billing failures arm a real gate (`_rate_limited_until`).
+For every other class (5xx, timeout, SDK RuntimeError, empty-response, incomplete) the only throttle
+was upstream's 5-second `_FALLBACK_EXHAUSTED_COOLDOWN_S` (armed only on walk-exhaustion), long expired
+by the next turn. So a still-broken primary is re-probed every turn: failed retry sequence + full cold
+re-upload on the fallback, then a cold flip back on recovery. The empty-response cluster's mid-run
+probe bounds (2/4/8/16 boundaries, ≤4/turn) are per-turn state, so across-turn churn was untouched.
+
+**Fix (fork-only):**
+1. `fallback_cooldown._arm_primary_restore_hold(agent, reason, was_fallback_active)` — called from
+   `try_activate_fallback`'s success path (pre-activation `_fallback_activated` captured at the top).
+   Arms ONLY when a fallback fires while `_primary_unproven_since_restore` (set by every successful
+   restore in `restore_primary_runtime`; cleared by `note_primary_completion` on the first completed
+   response ON the primary, wired through `note_primary_response_ok`) — i.e. exactly a failed restore
+   probe. Fresh failures keep the legacy fast re-probe.
+2. Ladder: base 600 s, doubling per consecutive flap, cap 7200 s; restarts only after ≥3 completed
+   primary responses (or 30 min of healthy primary run); never on wall time alone. Rate-limit reasons
+   skip it (own cooldown). A chain failover away from an active fallback LIFTS the hold (the fallback
+   itself is dying; don't strand the primary probe) without re-counting.
+3. Gate in `restore_primary_runtime` (rate-limit gate first, then this, then entitlement/pool gates) —
+   declines with an INFO line while held. Process-wide `_PROCESS_RESTORE_HOLD_UNTIL[(provider, model)]`
+   so a gateway's many sessions don't all re-probe one outage simultaneously.
+4. `empty_fallback_restore.maybe_restore_primary_mid_run` waits out the hold WITHOUT consuming a probe
+   attempt or advancing the failed-cycle back-off; first boundary after expiry probes normally.
+5. `/model` (`switch_model`) clears the hold; the fallback notice appends "Primary restore probe held
+   ~Ns (anti-flap guard)" when armed.
+6. Known acceptances: monotonic clock excludes macOS sleep (holds stretch by awake time — conservative,
+   matches `_rate_limited_until`); running processes pick the change up only on next start.
+
+**Tests:** `tests/agent/test_primary_restore_hold.py` (arming matrix incl. fresh-failure no-arm,
+rate-limit skip, chain-failover lift; ladder math + restart rule on a frozen clock; restore gate
+decline/expiry through the real `restore_primary_runtime`; mid-run hold without budget burn + resume;
+process-map gating). Re-run green: `test_fallback_exhaustion_cooldown`, `test_mid_run_restore`,
+`test_reset_aware_primary_restore`, `test_primary_runtime_restore`, `test_conversation_fallback_state`,
+`test_switch_model_fallback_prune`.
+
 ### Upstream sync — 2026-10-09 (v2026.9.24 → v0.21.6, 9180 commits, 172 conflict files)
 
 Merged tag `v0.21.6` (released 2026-10-08; tag commit `818c13be1dc4fd28987e1e881a9408224afd4535`)
