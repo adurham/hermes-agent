@@ -1,6 +1,7 @@
 """Authenticated WS projection of the gateway authority; no TUI execution fallback."""
 import asyncio
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 import sqlite3
 import uuid
@@ -244,11 +245,24 @@ class AuthorityConnection:
         return await readiness(self.authority, self.actor, params, runtime=True)
 
     async def create(self, ref, params):
-        from gateway.session_local import create_local_session
-        from gateway.session_local_title import resolve_titled_session, title_new_session, validate_title
-        # ``-c <title> --create-if-missing``: resolve-or-create is one owner step (no await
-        # between lookup and creation), so concurrent programmatic callers converge.
+        from gateway.session_local_title import validate_title
         title = validate_title(params.pop('title')) if 'title' in params else None
+        if title is None:
+            return await self._create(params, None)
+        # ``-c <title> --create-if-missing``: resolve -> create -> title is one owner step per
+        # authority (the commits run off the loop), so concurrent programmatic callers converge.
+        lock = getattr(self.authority, '_titled_create_lock', None)
+        if lock is None:
+            lock = self.authority._titled_create_lock = asyncio.Lock()
+        async with lock:
+            return await self._create(params, title)
+
+    async def _create(self, params, title):
+        from gateway.session_local import stage_local_session
+        from gateway.session_local_recovery import restore_local_session
+        from gateway.session_local_title import resolve_titled_session, title_new_session
+        from gateway.session_runtime_workers import tracked_write
+        from hermes_state_local import commit_local_session
         # Bot Mode's forever-chat mint: born hidden from the sidebar; `follow_profile_config` is
         # the canonical default (a local session's runtime is built from the profile's current
         # config on every attach), so the flag is accepted for the legacy contract and implied.
@@ -268,7 +282,14 @@ class AuthorityConnection:
                 sid = local_identity(self.authority.profile_id, self.actor.subject, params['request_id'])
                 if self.authority.db.get_session(sid) is None:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
-            ref = create_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt)
+            ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt)
+            if isinstance(ref, dict):
+                # The creation commit runs off the owner loop: a held writer must not freeze
+                # every session behind one new chat (N50).
+                receipt = ref
+                await tracked_write(self.authority, partial(
+                    commit_local_session, self.authority.db, epoch=self.authority.epoch, receipt=receipt))
+                ref = restore_local_session(self.authority, receipt['session_id'])
             if params.get('accept_hooks') is True:
                 from gateway.session_policy import accept_launch_hooks, restore_policy
                 from hermes_state_local import local_receipt

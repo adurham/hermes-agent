@@ -11,7 +11,7 @@ import uuid
 from gateway.config import Platform
 from gateway.session_api import bind_api_steps, restore_api_session, run_steps, run_steps_off_loop
 from gateway.session_results import admission_result
-from hermes_state_runtime import RuntimeStoreError, admit_session_input, _epoch, _json
+from hermes_state_runtime import RuntimeStoreError, admit_session_input, _json
 
 api_execution: ContextVar[dict | None] = ContextVar('api_execution', default=None)
 _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
@@ -243,8 +243,17 @@ def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, d
     check_api_turn(authority, ref, payload)
     row = yield partial(admit_session_input, authority.db, epoch=authority.epoch, principal_id='api',
                         session_id=sid, request_id=request_id, payload=payload,
-                        _authorize_write=authority._admission_gate(partial(_one_target, sid, request_id)))
+                        _authorize_write=authority._admission_gate(partial(_admit_target, sid, request_id, payload['api_turn_v1']['settings'])))
     return authority, ref, row
+
+
+def _admit_target(session_id, request_id, settings, conn):
+    """Inside the admission's own off-loop transaction: one target per request id, and the
+    session's settings for its later payload-less (internal) turns, committed with the admitted
+    turn rather than by the drain on the owner loop (N50)."""
+    _one_target(session_id, request_id, conn)
+    conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                 (_SETTINGS_PREFIX + session_id, _json(settings)))
 
 
 def _one_target(session_id, request_id, conn):
@@ -423,13 +432,6 @@ def prepare_api_execution(authority, ref, payload):
     adapter = check_api_turn(authority, ref, payload)
     data = payload.get('api_turn_v1')
     settings = data['settings'] if data else api_settings(authority, ref)
-    if data:
-        def write(conn):
-            _epoch(conn, authority.epoch)
-            conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
-                         'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                         (_SETTINGS_PREFIX + ref.session_id, _json(settings)))
-        authority.db._execute_write(write)
     content = payload['text']
     if data and isinstance(content, list):
         from gateway.session_api_media import restore_api_images

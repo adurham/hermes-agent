@@ -145,6 +145,20 @@ def _bypass_policy(params, *, private_secrets):
 
 
 def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
+    """Stage, commit and publish a local session inline (synchronous callers)."""
+    from gateway.session_local_recovery import restore_local_session
+    from hermes_state_local import commit_local_session
+    staged = stage_local_session(authority, actor, params, trusted_policy=trusted_policy,
+                                 trusted_secrets=trusted_secrets, skills_prompt=skills_prompt)
+    if isinstance(staged, dict):
+        commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
+        staged = restore_local_session(authority, staged['session_id'])
+    return staged
+
+
+def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
+    """Everything before the creation commit: the existing session's ref on an exact retry, else the
+    receipt ``commit_local_session`` writes (the async RPC commits it off the owner loop)."""
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
@@ -171,7 +185,6 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     from gateway.session import SessionEntry
     from gateway.session_lifecycle import _now
     from gateway.session_local_recovery import local_identity, restore_local_session
-    from hermes_state_local import commit_local_session
     authority._require_admission_open()
     sid = local_identity(authority.profile_id, actor.subject, request_id)
     from gateway.session_policy import bind_launch_key, restore_policy, launch_key
@@ -201,10 +214,8 @@ def create_local_session(authority, actor, params, *, trusted_policy=None, trust
     # naive cutoff, and one aware entry aborts the whole iteration.
     now = _now()
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
-    commit_local_session(authority.db, epoch=authority.epoch, receipt={
-        'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
-        'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})
-    return restore_local_session(authority, sid)
+    return {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
+            'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)}
 
 
 def publish_local_policy(authority, session_id):
