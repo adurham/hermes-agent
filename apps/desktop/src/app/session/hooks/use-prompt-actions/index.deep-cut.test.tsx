@@ -319,6 +319,92 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     expect(submits[1]).toMatchObject({ confirm_deep_truncate: true, truncate_before_row_id: 21 })
   })
 
+  it.each([
+    ['accepting', true],
+    ['declining', false]
+  ])('%s the second deep confirm on a stale-target retry acts on the refreshed history', async (_label, accept) => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 },
+      { id: 'u2', parts: [textPart('second')], role: 'user' as const, rowId: 13, timestamp: 2 }
+    ]
+
+    const fresh = [
+      { ...seed[0], rowId: 21 },
+      seed[1],
+      { ...seed[2], rowId: 23 },
+      { id: 'u3', parts: [textPart('arrived after consent')], role: 'user' as const, rowId: 25, timestamp: 3 }
+    ]
+
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', seed as never))
+    setMessages(seed as never)
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+
+        if (submits.length === 1) {
+          throw new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+    let lastState: Record<string, unknown> | undefined
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        onUpdateState={(_id, _stored, next) => {
+          lastState = next
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={async () => {
+          // As in the real session cache, the slice and the foreground mirror are separate arrays.
+          publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', [...fresh] as never))
+          setMessages(fresh as never)
+        }}
+        seedMessages={seed}
+        storedSessionId="stored"
+      />
+    )
+
+    let confirms = 0
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        confirms += 1
+        settleConfirm(confirms === 1 || accept)
+      }
+    })
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+    stopConfirming()
+
+    expect(confirms).toBe(2)
+
+    if (accept) {
+      expect(submits).toHaveLength(2)
+      expect(submits[1]).toMatchObject({ confirm_deep_truncate: true, truncate_before_row_id: 21 })
+    } else {
+      expect(submits).toHaveLength(1)
+      expect($busy.get()).toBe(false)
+      // The refresh already replaced the optimistic edit; a decline must not restore the stale seed.
+      expect(lastState).toMatchObject({ busy: false })
+      expect(lastState?.messages).not.toBe(seed)
+    }
+  })
+
   it('a deep-edit confirm answered after a session switch sends nothing and leaves the new session idle', async () => {
     const seed = [
       { id: 'u1', parts: [textPart('first')], role: 'user', rowId: 11, timestamp: 0 },
