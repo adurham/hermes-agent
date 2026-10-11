@@ -471,8 +471,10 @@ call (real pm work still provisions it; benign).
   `plugins/memory/holographic/` no longer exists in `main` and the PR was CONFLICTING on arrival. The fix
   itself verified live (`PLAT-15800 …` → `"plat" OR "15800" …`) and now belongs to the community plugin
   repo `itpartypattaya/hermes-plugin-holographic` (catalog v0.6.1, sha 46b6f908). **Fork-planning item:**
-  the fork runs the in-tree holographic provider (fact_store) — the next sync will delete it; decide
-  adopt-catalog vs preserve-in-tree (details in `docs/defork/2026-10-10-r3-upstream-absorption.md`).
+  the fork runs the in-tree holographic provider (fact_store) — the next sync will delete it; **DECIDED 2026-10-11 (owner): adopt the catalog plugin** — same name/config/db; catalog v0.6.1
+  already carries equivalents of the fork's local holographic fixes (role-binding, exact probe/reason,
+  hyphen handling, retrieval-count accounting); the one fork-only delta to port at migration = the
+  warm-tier prefetch recall hook (~12 lines) (details in `docs/defork/2026-10-10-r3-upstream-absorption.md`).
 - **`upstream-fix-aux-slots` NOT filed** — competing open PR **#125435** (dskwe) adds the same keys to
   `_AUX_TASK_SLOTS` (plus the CLI picker + stale-pin iteration); branch kept on origin.
 
