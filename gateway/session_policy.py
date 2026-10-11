@@ -99,7 +99,11 @@ class LocalSessionPolicy:
 def present_sections(config):
     """A bare ``gateway:`` key parses as YAML null; like load_config's merge (#58277), treat it as absent so
     ``cfg.get('gateway', {}).get(...)`` reads the default instead of crashing a fresh install's first turn."""
-    return {key: value for key, value in config.items() if value is not None}
+    config = {key: value for key, value in config.items() if value is not None}
+    # A scalar ``model: <id>`` (a form every classic loader accepts) is the mapping's ``default``.
+    if isinstance(config.get('model'), str):
+        config['model'] = {'default': config['model']} if config['model'].strip() else {}
+    return config
 
 
 def build_policy(params, config, *, private_secrets=None, profile_terminal=True):
