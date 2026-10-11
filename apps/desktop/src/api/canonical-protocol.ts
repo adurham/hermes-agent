@@ -151,6 +151,12 @@ function canonicalProducerFrame(method: string, params: Record<string, unknown>)
     throw new Error(`Changing ${params.key}${'scope' in params ? ` (${params.scope})` : ''} is not available on the shared gateway yet`)
   }
 
+  // The sidecar's move rewrites only the stored row: the owner's frozen policy (execution cwd,
+  // TERMINAL_CWD, resume) would stay on the old folder while the sidebar showed the new one.
+  if (method === 'session.workspace.move') {
+    throw new Error('Moving a chat to another project is not available on the shared gateway yet')
+  }
+
   if (SIDECAR_SESSION_VERBS.has(method) || (method.startsWith('connect') && (params.owner as { type?: unknown } | undefined)?.type === 'session')) {
     throw new Error(`${method} is not available on the shared gateway yet`)
   }

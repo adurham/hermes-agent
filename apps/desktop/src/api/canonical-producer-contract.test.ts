@@ -166,6 +166,12 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     /preview\.restart is not available/
   ],
   [
+    'projects.ts moveSessionToProject (B21 / C-hx-2)',
+    'session.workspace.move',
+    { cwd: '/repo', session_key: 's' },
+    /Moving a chat to another project is not available/
+  ],
+  [
     'connector-tool.tsx in-chat connect',
     'connectors.connect',
     { connectors: ['gh'], owner: { session_id: 's', type: 'session' } },
