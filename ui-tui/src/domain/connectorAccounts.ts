@@ -12,6 +12,14 @@ export const isRetired = (row: ConnectorAccountRow): boolean => Boolean(row.disa
  *  would only be signed in again, so the panel answers that it is connected instead. */
 export const needsRepair = (row: ConnectorAccountRow): boolean => !isRetired(row) && row.status !== 'active'
 
+/** Why the panel will not start a reconnect on `row`, or null when it should. */
+export function reconnectRefusal(row: ConnectorAccountRow): 'healthy' | 'retired' | null {
+  return isRetired(row) ? 'retired' : needsRepair(row) ? null : 'healthy'
+}
+
+/** Whether the panel's hint offers `c`: only for a selected row that needs repair (or no selection). */
+export const offersReconnect = (row: ConnectorAccountRow | undefined): boolean => !row || needsRepair(row)
+
 /** The name a row is addressed by: its alias, else the app's own account label. */
 export const accountName = (row: ConnectorAccountRow): string => row.alias || row.label
 

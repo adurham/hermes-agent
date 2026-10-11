@@ -7,7 +7,15 @@ import {
   resetConnectionOperationsForTests
 } from '../app/connectionOperationStore.js'
 import { getOverlayState, hasPromptOpen, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { accountRowText, accountView, nameProblem, needsRepair, panelShortcut } from '../domain/connectorAccounts.js'
+import {
+  accountRowText,
+  accountView,
+  nameProblem,
+  needsRepair,
+  offersReconnect,
+  panelShortcut,
+  reconnectRefusal
+} from '../domain/connectorAccounts.js'
 
 const row = (over: Partial<ConnectorAccountRow> & { disabled?: boolean }): ConnectorAccountRow =>
   ({
@@ -55,7 +63,13 @@ describe('reconnect is offered only as a repair', () => {
 
     for (const status of ['failed', 'expired', 'revoked', 'inactive'] as const) {
       expect(needsRepair(row({ active: false, status }))).toBe(true)
+      expect(reconnectRefusal(row({ active: false, status }))).toBeNull()
     }
+
+    expect(reconnectRefusal(row({ status: 'active' }))).toBe('healthy')
+    expect(reconnectRefusal(row({ disabled: true, status: 'inactive' }))).toBe('retired')
+    expect(offersReconnect(row({ status: 'active' }))).toBe(false)
+    expect(offersReconnect(undefined)).toBe(true)
   })
 })
 

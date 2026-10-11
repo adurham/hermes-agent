@@ -19,8 +19,10 @@ import {
   isRetired,
   nameProblem,
   type NameProblem,
-  needsRepair,
-  panelShortcut
+  offersReconnect,
+  type PanelShortcut,
+  panelShortcut,
+  reconnectRefusal
 } from '../domain/connectorAccounts.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { Translations } from '../i18n/types.js'
@@ -80,6 +82,12 @@ const errorText = (T: Translations, error: unknown): string =>
   error instanceof JsonRpcGatewayError && error.code === ALIAS_TAKEN
     ? T.connectors.notice.nameTaken
     : rpcErrorMessage(error)
+
+/** The open link's operation, app, name and deadline; empty outside the link view. */
+const linkFields = (stage: Stage) =>
+  stage.kind === 'link'
+    ? { linkApp: stage.app, linkDeadline: stage.deadlineAt, linkName: stage.name, linkOp: stage.opId }
+    : { linkApp: '', linkDeadline: 0, linkName: '', linkOp: '' }
 
 export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverlayProps) {
   const T = useT()
@@ -170,10 +178,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
   }
 
   // Poll the account operation while its link is open; Esc leaves the link valid until it expires.
-  const linkOp = stage.kind === 'link' ? stage.opId : ''
-  const linkApp = stage.kind === 'link' ? stage.app : ''
-  const linkName = stage.kind === 'link' ? stage.name : ''
-  const linkDeadline = stage.kind === 'link' ? stage.deadlineAt : 0
+  const { linkApp, linkDeadline, linkName, linkOp } = linkFields(stage)
 
   useEffect(() => {
     if (!linkOp) {
@@ -293,17 +298,38 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       }
     )
 
+  // A healthy account has nothing to repair; signing it in again would only replace a working link.
   const reconnect = (row: ConnectorAccountRow) => {
-    if (isRetired(row)) {
-      return setNotice(T.connectors.notice.retiredNoReconnect)
-    }
+    const refusal = reconnectRefusal(row)
 
-    // A healthy account has nothing to repair; signing it in again would only replace a working link.
-    if (!needsRepair(row)) {
-      return setNotice(T.connectors.notice.connected(row.connector, accountName(row)))
-    }
+    refusal
+      ? setNotice(
+          refusal === 'retired'
+            ? T.connectors.notice.retiredNoReconnect
+            : T.connectors.notice.connected(row.connector, accountName(row))
+        )
+      : startConnect(row.connector, { connection_id: row.connection_id }, accountName(row))
+  }
 
-    startConnect(row.connector, { connection_id: row.connection_id }, accountName(row))
+  const startRename = (row: ConnectorAccountRow) => {
+    setErr('')
+    setStage({ draft: row.alias ?? '', kind: 'rename', row })
+  }
+
+  const confirmRemove = (row: ConnectorAccountRow) =>
+    patchOverlayState({
+      confirm: {
+        danger: true,
+        onConfirm: () => remove(row),
+        title: T.connectors.remove.confirm(row.connector, accountName(row))
+      }
+    })
+
+  // The letter shortcuts that act on the selected row.
+  const rowActions: Partial<Record<PanelShortcut, (row: ConnectorAccountRow) => void>> = {
+    reconnect,
+    remove: confirmRemove,
+    rename: startRename
   }
 
   const listKey = (ch: string, key: KeyLike) => {
@@ -329,30 +355,10 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       return openAddApp()
     }
 
-    if (!selected) {
-      return
-    }
+    const act = shortcut ? rowActions[shortcut] : undefined
 
-    if (shortcut === 'rename') {
-      setErr('')
-
-      return setStage({ draft: selected.alias ?? '', kind: 'rename', row: selected })
-    }
-
-    if (shortcut === 'remove') {
-      const row = selected
-
-      return patchOverlayState({
-        confirm: {
-          danger: true,
-          onConfirm: () => remove(row),
-          title: T.connectors.remove.confirm(row.connector, accountName(row))
-        }
-      })
-    }
-
-    if (shortcut === 'reconnect') {
-      return reconnect(selected)
+    if (act && selected) {
+      act(selected)
     }
   }
 
@@ -510,9 +516,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
         </Text>
       ) : null}
       {footer}
-      <OverlayHint t={t}>
-        {selected && !needsRepair(selected) ? T.connectors.hintHealthy : T.connectors.hint}
-      </OverlayHint>
+      <OverlayHint t={t}>{offersReconnect(selected) ? T.connectors.hint : T.connectors.hintHealthy}</OverlayHint>
     </Box>
   )
 }
