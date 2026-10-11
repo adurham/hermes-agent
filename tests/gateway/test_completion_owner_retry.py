@@ -1,5 +1,6 @@
 """Durable delivery retries uncertain delegate ancestry without moving the route."""
 
+import queue
 import sqlite3
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,6 +12,7 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionSource
 from tools import async_delegation as ad
+from tools.process_registry import process_registry
 
 
 @pytest.mark.asyncio
@@ -280,6 +282,72 @@ async def test_admitted_completion_reaches_compressed_owners_tip_without_reading
             assert resolved == ["owner-tip"]
             current = store.lookup_by_session_key(entry.session_key)
             assert current is not None and current.session_id == "owner-tip"
+        finally:
+            store.close_all_db_handles()
+            runner.close_all_session_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_owner_after_admission_offers_the_completion_again(
+    tmp_path, monkeypatch, private_db_probe_cleanup,
+):
+    """A compression after admission plus a failed read leaves the result pending and queued; the next
+    delivery proves the compressed tip and reaches it."""
+    with _profile_runtime_scope(tmp_path):
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+        store = runner.session_store
+        offered: queue.Queue = queue.Queue()
+        monkeypatch.setattr(process_registry, "completion_queue", offered)
+        try:
+            entry = store.get_or_create_session(SessionSource(
+                platform=Platform.TELEGRAM, chat_id="ownership-requeue", chat_type="dm",
+            ))
+            db = cast(Any, store._db)
+            owner = entry.session_id
+            db.create_session("worker", source="subagent", model_config={"_delegate_from": owner})
+            get_session = runner._session_db.get_session
+            owner_read_fails = False
+
+            async def lookup_session(sid):
+                if owner_read_fails and sid == owner:
+                    raise RuntimeError("transient read failure")
+                return await get_session(sid)
+
+            monkeypatch.setattr(runner._session_db, "get_session", lookup_session)
+            admitted = []
+
+            async def accept(event):
+                admitted.append(event)
+                event._gateway_accepted = True
+
+            runner.adapters[Platform.TELEGRAM] = cast(BasePlatformAdapter, SimpleNamespace(handle_message=accept))
+            event = {
+                "type": "async_delegation", "delegation_id": "requeued-owner",
+                "session_key": entry.session_key, "parent_session_id": "worker",
+                "dispatched_at": 1.0, "status": "completed", "summary": "completed result",
+            }
+            ad._persist_dispatch(event)
+            ad._persist_completion(event, {"status": "completed", "summary": event["summary"]})
+
+            # The turn runs after admission settled the row, as the adapter's background task does.
+            assert await runner._deliver_completion_notification("completed result", event) is True
+            db.create_session("owner-tip", source="telegram", parent_session_id=owner)
+            db.end_session(owner, end_reason="compression")
+            assert store.advance_compression_session(entry.session_key, owner, "owner-tip") is not None
+            owner_read_fails = True
+            assert await runner._hmwa_resolve_session(admitted[0], admitted[0].source) is None
+            owner_read_fails = False
+            row = ad.get_durable_delegation("requeued-owner")
+            assert row is not None and row["delivery_state"] == "pending"
+            again = offered.get_nowait()
+            assert again["delegation_id"] == "requeued-owner" and again["restored"] is True
+
+            assert await runner._deliver_completion_notification("completed result", again) is True
+            resolved = await runner._hmwa_resolve_session(admitted[1], admitted[1].source)
+            assert resolved is not None and resolved[1].session_id == "owner-tip"
+            row = ad.get_durable_delegation("requeued-owner")
+            assert row is not None and row["delivery_state"] == "delivered"
+            assert offered.empty()
         finally:
             store.close_all_db_handles()
             runner.close_all_session_db_handles()

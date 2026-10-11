@@ -9,9 +9,10 @@ that owner is proven.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from typing import Any, Optional, cast
+from typing import Any, Optional, Sequence, cast
 
 from gateway.session import SessionEntry
 
@@ -112,12 +113,14 @@ class GatewayNotificationOwnershipMixin:
 
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str, proven_session_id: str = "",
+        completion_ids: Sequence[str] = (),
     ) -> Optional[SessionEntry]:
         """Resolve an async completion to its verified owning gateway session.
 
         Follow compression-rotation lineage (parent row ended, child continues), but never let a
         late completion override an unrelated /new or restored route. Unknown ownership fails
-        closed; the result stays in the delegation records.
+        closed; the result stays in the delegation records. An owner that cannot be confirmed right
+        now (``retry``) sends the completions admitted with the event back to the delivery queue.
 
         A pinned *delegate* row is likewise canonicalized to its human-facing parent through
         ``model_config._delegate_from`` before any route check or mutation (#92611). Unresolvable
@@ -144,7 +147,7 @@ class GatewayNotificationOwnershipMixin:
             pinned_session_id, session_entry.session_id,
         )
         if verdict != "deliver" or pinned_row is None:
-            return None
+            return await self._requeue_uncertain_completion(verdict, completion_ids)
         target_session_id = pinned_session_id
         follows_compression = False
         if pinned_row.get("ended_at"):
@@ -170,7 +173,7 @@ class GatewayNotificationOwnershipMixin:
                 session_db, session_entry, pinned_session_id,
             )
             if verdict != "deliver" or target_session_id is None:
-                return None
+                return await self._requeue_uncertain_completion(verdict, completion_ids)
         if target_session_id == session_entry.session_id:
             return session_entry
         prior_session_id = session_entry.session_id
@@ -203,3 +206,27 @@ class GatewayNotificationOwnershipMixin:
             target_session_id, prior_session_id, session_entry.session_key,
         )
         return switched
+
+    async def _requeue_uncertain_completion(self, verdict: str, completion_ids: Sequence[str]) -> None:
+        """Offer admitted completions again when the turn could not confirm their owner (``retry``),
+        so the next delivery re-runs the pre-flight; boundary verdicts stay dropped."""
+        if verdict != "retry" or not completion_ids:
+            return None
+        from tools.async_delegation import requeue_admitted_completion
+        from tools.process_registry import process_registry
+        runner = cast(Any, self)
+        with runner._completion_delivery_lock:
+            for delegation_id in completion_ids:
+                runner._completion_deliveries_delivered.pop(("async_delegation", delegation_id, ""), None)
+        for delegation_id in completion_ids:
+            try:
+                requeued = await asyncio.to_thread(
+                    requeue_admitted_completion, delegation_id, process_registry.completion_queue)
+            except Exception:
+                logger.debug("Could not requeue admitted completion %s", delegation_id, exc_info=True)
+                requeued = False
+            logger.warning(
+                "Async-delegation completion %s: owner not confirmed after admission; %s.", delegation_id,
+                "offered again" if requeued else "not offered again (result remains queryable)",
+            )
+        return None

@@ -1174,7 +1174,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
-            metadata = {"notification_origin": "process_registry_synthetic"}
+            metadata: dict[str, Any] = {"notification_origin": "process_registry_synthetic"}
             synth_text = _mark_internal_notification(synth_text)
             session_key = str(evt.get("session_key") or "").strip()
             from agent.notification_presentation import diagnostic_process_event
@@ -1188,6 +1188,8 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
             proven_session_id = str(evt.get("proven_session_id") or "").strip()
             if proven_session_id:
                 metadata["gateway_proven_session_id"] = proven_session_id
+            if completion_ids := evt.get("completion_ids"):
+                metadata["gateway_completion_ids"] = list(completion_ids)
             # The queued event's ``message_id`` is the message that STARTED the process, and the
             # persisted origin carries the same stale id. A synthetic completion is not a reply to
             # it: by delivery time the user has often continued elsewhere, and an event anchored
@@ -1494,6 +1496,10 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
                 # Admission settles the durable claim, so the resolver starts from the owner proven here.
                 evt = {**evt, "parent_session_id": claim.owner_session_id,
                        "proven_session_id": claim.proven_session_id}
+            # The rows this admission settles: a turn that cannot confirm the owner offers them again.
+            completion_ids = [claim.delegation_id] if claim.claim_id else []
+            completion_ids += [sibling["delegation_id"] for sibling, claim_id in sibling_claims if claim_id]
+            evt = {**evt, "completion_ids": completion_ids}
             injection_result = await self._inject_watch_notification(synth_text, evt, raise_not_accepted=True)
             if injection_result is not True:
                 return injection_result
