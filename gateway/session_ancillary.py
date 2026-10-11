@@ -162,14 +162,15 @@ def _owned_targets(connection, ref, params, *, select):
 
 async def kill_process(connection, ref, params):
     """Desktop's per-process Stop: one process THIS session owns (the ``process.list`` rule); any
-    other id, another chat's included, is ``not_found``. The legacy sidecar handler looked the
+    other id, another chat's included, is ``process_not_found``. The legacy sidecar handler looked the
     session up in its own table, which never holds an authority session."""
     if (set(params) - {'session_id', 'process_id', 'profile'} or not ref.session_id
             or not isinstance(params.get('process_id'), str) or not params['process_id']):
         raise RuntimeStoreError('invalid_params')
     registry, ids = _owned_targets(connection, ref, params, select=lambda p: p.id == params['process_id'])
     if not ids:
-        raise RuntimeStoreError('not_found')
+        # Never ``not_found``: Desktop reads that reason as "this chat is gone" (dokterdok N64).
+        raise RuntimeStoreError('process_not_found')
     return await asyncio.to_thread(registry.kill_process, ids[0])
 
 

@@ -23,7 +23,8 @@ def test_desktop_process_kill_stop_and_mcp_reload_reach_only_this_session(tmp_pa
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((home / 'receipt.json').read_text())
     assert receipt['kill'] == 'killed', receipt
-    assert receipt['foreign_kill'] == 'not_found', receipt
+    # Not ``not_found``, which Desktop's session-gone latch reads as a dead chat (dokterdok N64).
+    assert receipt['foreign_kill'] == 'process_not_found', receipt
     assert receipt['stop'] == {'killed': 1}, receipt
     assert receipt['exited'] == [True, True, False], receipt
     assert receipt['reload_mcp'] == 'reloaded', receipt
