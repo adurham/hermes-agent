@@ -27,7 +27,35 @@ def handlers(connection):
         'approval.received': partial(approvals, connection, ack=True),
         'process.stop': partial(stop_processes, connection),
         'process.kill': partial(kill_process, connection), 'reload.mcp': partial(reload_mcp, connection),
-        'file.attach': partial(attach_file, connection)}
+        'file.attach': partial(attach_file, connection),
+        **{name: partial(subagent_control, connection, steer=name == 'subagent.steer')
+           for name in ('subagent.steer', 'subagent.interrupt')}}
+
+
+async def subagent_control(connection, ref, params, *, steer):
+    """Desktop's per-child Steer / Stop: only a child of THIS session's live agent (the
+    ``subagent.list`` rule). The sidecar handler never held an authority session."""
+    fields = {'session_id', 'profile', 'subagent_id'} | ({'text'} if steer else set())
+    if (set(params) - fields or not ref.session_id or any(not isinstance(params.get(k), str) or not params[k]
+                                                           for k in fields - {'profile'})):
+        raise RuntimeStoreError('invalid_params')
+    if ref.session_id not in connection.authority.sessions:
+        raise RuntimeStoreError('not_found')
+    authorize(connection, ref, params, 'session:control')
+    live, sub = connection.authority.sessions[ref.session_id], params['subagent_id']
+    with live.event_stream.lock:
+        _require_current_route(connection.authority, ref)
+        child = next((r['agent'] for r in _owner_objects(connection.authority, ref)[1] if r.get('subagent_id') == sub), None)
+    if not steer:
+        from agent.interrupt_compat import request_hard_interrupt
+        return {'found': child is not None and bool(request_hard_interrupt(child, f'Interrupted via Desktop ({sub})')),
+                'subagent_id': sub}
+    from tools import delegate_tool_registry as registry
+    with registry._active_subagents_lock:  # linearized with the child's final steer drain
+        record = registry._active_subagents.get(sub)
+        queued = bool(child is not None and record and record.get('agent') is child and record.get('accepting_steer')
+                      and child.steer(params['text']))
+    return {'status': 'queued' if queued else 'rejected', 'subagent_id': sub, 'text': params['text']}
 
 
 async def attach_file(connection, ref, params):
