@@ -3,6 +3,21 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only UX change — 2026-10-11 (live todo board: collapsed by default, Ctrl+E expand/collapse)
+
+**Request (user):** the in-TUI todo board "takes up way too much space" — a 27-item plan rendered ~30 rows. Ask: show fewer items by default with a keyboard combo to reveal more, "like the subagents list today".
+
+**Change (`hermes_cli/cli_tui_mixin.py`):** the board renders COLLAPSED by default — item budget `_TODO_BOARD_COLLAPSED_ROWS` (5) instead of the full `terminal_rows // 2` clamp, same in_progress → pending → done priority via the existing `_select_todo_display_items`. The header gains "· Ctrl+E expand" ("· Ctrl+E collapse" when expanded) whenever the plan exceeds the collapsed budget. Ctrl+E toggles via a new module-level `toggle_todo_board(cli)` — state on the CLI instance (`_todo_board_expanded`), same pattern as the subagent dock's `toggle_dock`/Ctrl+R but its own key so the two panels expand independently. `get_todo_board_text`/`get_todo_board_height` take `expanded=` (default False); the widget passes the live state. Hidden-count footer unchanged.
+
+**Tests (`tests/hermes_cli/test_todo_board_widget.py`):** full-budget tests pinned to `expanded=True`; new: collapsed cap + expand hint, expanded hint flip, no-hint-when-fits, toggle flip + invalidate, source-wiring. Drive-by hermeticity (pre-existing, Mac-only): three TUI tests tripped the home-I/O guard at `from cli import ...` — hermes_bootstrap's boot-time `activate_dependencies` reads `repo_root().parent/"manifest.json"` = the real `~/.hermes/manifest.json` when the checkout lives under `~/.hermes` — `test_real_layout_paints_board_end_to_end`, `test_cli_footer_split.test_footer_survives_a_row_appearing_between_measure_and_paint`, `test_session_dock.test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle`; all three now stub `pm.environments._payload_manifest` (the pm-worker-flood-2026-10-10 reference's test-gotchas idiom).
+
+**Verification:** `scripts/run_tests.sh` over the 5-file TUI cluster (todo board, footer-split, session dock, subagent dock collapse, subagent monitor UI) → 46 passed, 0 failed; todo-board file alone 38 passed (32 passed / 1 failed on base).
+
+**Files:** `hermes_cli/cli_tui_mixin.py`, `tests/hermes_cli/test_todo_board_widget.py`, `tests/hermes_cli/test_cli_footer_split.py`, `tests/hermes_cli/test_session_dock.py`.
+
+**Upstreamable:** plausible (generic UX); not filed.
+
+
 ### Fork-only fix — 2026-10-10 (fallback↔primary flap: escalating anti-flap hold on primary-restore probes)
 
 **Problem (user-visible):** "keeps flipping between fallback and primary which kills cache". Long

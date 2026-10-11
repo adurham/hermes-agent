@@ -59,6 +59,12 @@ def _render_once(layout, kb, style, tty, rows=50, columns=200):
 
 def test_footer_survives_a_row_appearing_between_measure_and_paint(monkeypatch):
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
+    # macOS checkout under ~/.hermes: cli's import of hermes_bootstrap runs boot-time
+    # activate_dependencies -> _payload_manifest, which reads repo_root().parent/"manifest.json"
+    # = the REAL home; the home-I/O guard refuses it (see pm-worker-flood-2026-10-10.md,
+    # "Test gotchas"). Not a sealed payload — stub the probe so the boot path no-ops.
+    import pm.environments as pm_environments
+    monkeypatch.setattr(pm_environments, "_payload_manifest", lambda root: None)
     from cli import HermesCLI
 
     cli = HermesCLI(model="fixture", provider="openai-compat", api_key="fixture", base_url="http://127.0.0.1:1/v1")

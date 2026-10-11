@@ -23,7 +23,13 @@ def hermes_home(tmp_path, monkeypatch):
     goals._DB_CACHE.clear()
 
 
-def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(hermes_home):
+def test_dock_paints_goal_on_top_and_queue_last_and_follows_their_lifecycle(hermes_home, monkeypatch):
+    # macOS checkout under ~/.hermes: cli's import of hermes_bootstrap runs boot-time
+    # activate_dependencies -> _payload_manifest, which reads repo_root().parent/"manifest.json"
+    # = the REAL home; the home-I/O guard refuses it (see pm-worker-flood-2026-10-10.md,
+    # "Test gotchas"). Not a sealed payload — stub the probe so the boot path no-ops.
+    import pm.environments as pm_environments
+    monkeypatch.setattr(pm_environments, "_payload_manifest", lambda root: None)
     from cli import _VoiceInputMessage
     from hermes_cli.cli_subagent_monitor import SubagentMonitor
     from hermes_cli.goals import GoalManager
