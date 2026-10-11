@@ -15,7 +15,7 @@ Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
 **Files:** `hermes_cli/cli_tui_mixin.py`, `tests/hermes_cli/test_todo_board_widget.py`, `tests/hermes_cli/test_cli_footer_split.py`, `tests/hermes_cli/test_session_dock.py`.
 
-**Upstreamable:** plausible (generic UX); not filed.
+**Upstream PR:** `upstream-pr/live-todo-board` → **#136664** (DRAFT): base = upstream/main @ 97a9ae8ee5, single commit 66dad64983. Upstream has NO live todo board at all (the todo list is only visible as raw tool output), so the PR ports the whole feature — board renderer + widget/keybinding wiring + display-cell helpers + the collapsed-default/Ctrl+E behavior. Verified on a clean upstream clone (`~/repos/hermes-agent-pr-checkout`): `scripts/run_tests.sh tests/hermes_cli/test_todo_board_widget.py tests/hermes_cli/test_cli_footer_split.py` → 38 passed, 0 failed; ruff clean.
 
 
 ### Fork-only fix — 2026-10-10 (fallback↔primary flap: escalating anti-flap hold on primary-restore probes)
