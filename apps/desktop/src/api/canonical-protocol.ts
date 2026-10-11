@@ -176,9 +176,14 @@ function policyEdit(method: string, params: Record<string, unknown>): { session:
     return { session: params.session_id, operation: 'reasoning', payload: { effort } }
   }
 
+  // The composer's folder picker on an open chat (main's session.cwd.set) is the same re-home.
+  if (method === 'session.cwd.set') { return { session: params.session_id, operation: 'workspace', payload: { cwd: params.cwd } } }
+
   return method === 'session.workspace.move' ? { session: params.session_key, operation: 'workspace', payload: { cwd: params.cwd } } : null
 }
 
+// Desktop methods that become `session.mutate` once prepareMutation chose an operation.
+const POLICY_EDIT_METHODS = new Set(['slash.exec', 'config.set', 'session.workspace.move', 'session.cwd.set'])
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
 // Value-setting mutations: re-applying one is harmless, so a later acknowledged edit retires it.
 const VALUE_OPERATIONS = new Set(['rename', 'archive', 'model', 'reasoning', 'workspace'])
@@ -230,7 +235,7 @@ export class CanonicalDesktopProtocol {
     // rebinds the live event transport and returns the same snapshot shape.
     if (method === 'session.activate') { return 'session.resume' }
 
-    return (method === 'slash.exec' || method === 'config.set' || method === 'session.workspace.move') && typeof prepared.operation === 'string' ? 'session.mutate' : method
+    return POLICY_EDIT_METHODS.has(method) && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
 
   private retainedMutation(sessionId: unknown, profile: unknown, operation: string, payload: Record<string, unknown>, withGeneration: boolean): Record<string, unknown> {
@@ -474,7 +479,7 @@ export class CanonicalDesktopProtocol {
   result(method: string, params: Record<string, unknown>, value: any): any {
     if (!value || typeof value !== 'object') { return value }
 
-    const mutation = MUTATION_METHODS.has(method) || ((method === 'slash.exec' || method === 'config.set' || method === 'session.workspace.move') && typeof params.operation === 'string')
+    const mutation = MUTATION_METHODS.has(method) || (POLICY_EDIT_METHODS.has(method) && typeof params.operation === 'string')
     this.adoptRevision(params, value, mutation)
 
     if (mutation) { return this.mutationReceipt(method, params, value) }

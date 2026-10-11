@@ -185,6 +185,12 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     ['session.mutate']
   ],
   [
+    'use-cwd-actions.ts changeSessionCwd (composer folder picker on an open chat)',
+    'session.cwd.set',
+    { session_id: 's', cwd: '/repo' },
+    ['session.mutate']
+  ],
+  [
     'connector-tool.tsx in-chat connect',
     'connectors.connect',
     { connectors: ['gh'], owner: { session_id: 's', type: 'session' } },
@@ -225,8 +231,9 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
     const address = server.address() as { port: number }
     await client.connect(`ws://127.0.0.1:${address.port}/api/ws?native_dial=fixture&ticket=one-use`)
 
-    // Typed /reasoning and the keybind act on the open (attached) session, as the model picker does.
-    if (method === 'config.set' && params.key === 'reasoning') {
+    // Typed /reasoning, the keybind and the composer's folder picker act on the open (attached)
+    // session, as the model picker does.
+    if ((method === 'config.set' && params.key === 'reasoning') || method === 'session.cwd.set') {
       await client.request('session.resume', { session_id: 's' })
     }
 
