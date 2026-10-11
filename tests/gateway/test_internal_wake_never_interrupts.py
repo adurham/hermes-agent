@@ -11,6 +11,8 @@ import asyncio
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 
 @pytest.mark.asyncio
 async def test_kanban_wake_during_an_admitted_turn_queues_without_interrupting(monkeypatch):
@@ -64,16 +66,13 @@ async def test_kanban_wake_during_an_admitted_turn_queues_without_interrupting(m
     await asyncio.wait_for(deliver_wake(adapter, text=wake, source=source), 10)  # accepted, no raise
     assert interrupts == [], 'the internal wake interrupted the admitted user turn'
     finish.set()
-    async with asyncio.timeout(10):
-        while wake not in executed:
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: wake in executed, what='the wake turn to run')
     owner = runner.session_store.peek_session_id(key)
 
     def rows():
         return list_session_admissions(authority.db, session_id=owner, pending_only=False)
-    async with asyncio.timeout(10):
-        while [r['status'] for r in rows()] != ['terminal', 'terminal']:
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: [r['status'] for r in rows()] == ['terminal', 'terminal'],
+                           what='both admissions to settle')
     # The wake ran as its own FIFO turn after the user's, never inside or instead of it.
     assert [(r['principal_id'].split(':')[0], r['outcome']) for r in rows()] == [
         ('messaging', 'completed'), ('automation', 'completed')]
@@ -125,9 +124,8 @@ async def test_idle_loop_tick_runs_as_a_fifo_turn_not_beside_it(monkeypatch):
     def rows():
         owner = runner.session_store.peek_session_id(key)
         return list_session_admissions(authority.db, session_id=owner, pending_only=False) if owner else []
-    async with asyncio.timeout(10):
-        while [r['status'] for r in rows()] != ['terminal'] or runner._is_session_running(key):
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: [r['status'] for r in rows()] == ['terminal'] and not runner._is_session_running(key),
+                           what='the first turn to settle and release the session')
     owner = runner.session_store.peek_session_id(key)
 
     class Loop:
@@ -149,10 +147,7 @@ async def test_idle_loop_tick_runs_as_a_fifo_turn_not_beside_it(monkeypatch):
     route = {'platform': 'discord', 'chat_id': '42', 'chat_type': 'dm', 'user_id': '42'}
     await runner._loop_wakeup_fire_one(owner, SimpleNamespace(awaiting_response=False, next_due_at=0, route=route),
                                        1e12, set())
-    async with asyncio.timeout(10):
-        while len(started) < 2:
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: len(started) >= 2, what='the loop tick turn to start')
     assert started == [('hello', True), ('loop tick prompt', True)], 'the tick ran outside the FIFO'
-    async with asyncio.timeout(10):
-        while [r['status'] for r in rows()] != ['terminal', 'terminal']:
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: [r['status'] for r in rows()] == ['terminal', 'terminal'],
+                           what='both admissions to settle')

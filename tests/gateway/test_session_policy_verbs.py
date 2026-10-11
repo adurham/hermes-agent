@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 
 def _owner(tmp_path, monkeypatch, handle):
     from gateway import run
@@ -94,9 +96,8 @@ async def test_move_to_project_rehomes_the_policy_and_row_and_refuses_mid_turn(t
         assert busy['error']['data']['reason'] == 'session_busy', busy
         assert db.get_session(ref.session_id)['cwd'] == str(tmp_path / 'project-a')
         release.set()
-        async with asyncio.timeout(10):
-            while rt.get_session_admission(db, admission_id=queued.admission_id)['status'] != 'terminal':
-                await asyncio.sleep(0.02)
+        await async_wait_until(lambda: rt.get_session_admission(db, admission_id=queued.admission_id)['status'] == 'terminal',
+                               what='turn-1 to settle')
         moved = await owner.dispatch(_mutation(db, ref, 'mv', 'workspace', {'cwd': str(target)}))
         assert moved['result']['cwd'] == str(target), moved
         policy = local_receipt(db, ref.session_id)['policy']
@@ -107,9 +108,8 @@ async def test_move_to_project_rehomes_the_policy_and_row_and_refuses_mid_turn(t
         started.clear()
         second = await authority.submit(owner.actor, Submission('turn-2', ref, {'text': 'two'}, 'queue'))
         await asyncio.wait_for(started.wait(), 10)
-        async with asyncio.timeout(10):
-            while rt.get_session_admission(db, admission_id=second.admission_id)['status'] != 'terminal':
-                await asyncio.sleep(0.02)
+        await async_wait_until(lambda: rt.get_session_admission(db, admission_id=second.admission_id)['status'] == 'terminal',
+                               what='turn-2 to settle')
         assert seen == [str(tmp_path / 'project-a'), str(target)]
         missing = await owner.dispatch(_mutation(db, ref, 'mv-missing', 'workspace', {'cwd': str(tmp_path / 'nope')}))
         assert missing['error']['data']['reason'] == 'invalid_params'
