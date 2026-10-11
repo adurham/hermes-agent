@@ -23,9 +23,10 @@ class _Cli:
             uploaded = any(kind == "submit" for kind, _ in self.events)
             # Before the upload: the last submission (in flight or published). After: the new draft.
             status = "PendingCommit" if uploaded else ("Certification" if self.pending else "Published")
+            # The CLI serializes .NET property names (rc.13-v0.21.7: '{"Id": ..., "ApplicationCategory": ...').
             return json.dumps({
-                "status": status, "targetPublishMode": "Immediate",
-                "friendlyName": "Submission 2", "listings": {}})
+                "Status": status, "TargetPublishMode": "Immediate",
+                "FriendlyName": "Submission 2", "Listings": {}})
         if argv[:3] == ["msstore", "submission", "delete"]:
             self.events.append(("delete-pending", name))
             return ""
@@ -76,7 +77,8 @@ def test_submit_turns_auto_publish_off():
 
     cli = _Cli(pending=False)
     submit("verified/Store-1.2.3.msixbundle", product_id="9NTEST", run=cli)
-    assert cli.updated["targetPublishMode"] == "Manual"
+    assert cli.updated["TargetPublishMode"] == "Manual"
+    assert "targetPublishMode" not in cli.updated
 
 
 def test_submit_commits_the_held_submission():
