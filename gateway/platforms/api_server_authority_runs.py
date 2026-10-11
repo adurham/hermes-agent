@@ -107,12 +107,21 @@ async def stop_run(adapter, run_id):
     actor = Principal('api', authority.profile_id,
                       frozenset({'session:submit', 'session:control'}), 'api-run:' + run_id)
     if row['status'] == 'queued':
-        await authority.cancel_queued(actor, ref, row['admission_id'])
-        adapter._stopping_run_ids.add(run_id)
-        waiter = authority.waiters.pop(row['admission_id'], None)
-        if waiter is not None and not waiter.done():
-            waiter.set_result(None)
-    elif row['status'] == 'started':
+        try:
+            await authority.cancel_queued(actor, ref, row['admission_id'])
+        except RuntimeStoreError as exc:
+            # The drain claimed the head between the read above and the cancel commit: the run is
+            # executing now, so Stop that exact claim below instead of refusing a live run.
+            if exc.reason != 'stale_generation':
+                raise
+            authority, row = run_admission(adapter, run_id)
+        else:
+            adapter._stopping_run_ids.add(run_id)
+            waiter = authority.waiters.pop(row['admission_id'], None)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(None)
+            return run_projection(adapter, run_id)
+    if row['status'] == 'started':
         await authority.interrupt(actor, ref, row['generation'])
         adapter._stopping_run_ids.add(run_id)
         return {'run_id': run_id, 'status': 'stopping', 'admission_id': row['admission_id']}
