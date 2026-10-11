@@ -45,8 +45,9 @@ const CANONICAL_PROMPT_EVENTS: Record<string, 'approval' | 'clarify'> = { 'appro
 
 const ATTACH_REQUIRED = new Set(['prompt.submit', 'approval.respond', 'clarify.respond', 'session.interrupt', 'prompt.cancel', 'session.rewind'])
 // A branch is a CAS mutation on the PARENT: an un-attached parent (right-click on a sidebar row
-// that was never opened) has no cached revision, so attach it first to learn one.
-const PARENT_ATTACH_REQUIRED = new Set(['session.branch_stored', 'session.branch_whole'])
+// that was never opened) has no cached revision, so attach it first to learn one. Move to project
+// (`session_key`) is the same CAS mutation on a sidebar row.
+const PARENT_ATTACH_REQUIRED = new Set(['session.branch_stored', 'session.branch_whole', 'session.workspace.move'])
 
 // Canonical-only identity keys. The legacy `hermes serve` contract refuses an unknown key as
 // version skew (4000), so they are stripped on a non-canonical dial. `prompt.submit` keeps its
@@ -401,7 +402,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
       await resume(sid)
     }
 
-    const parent = PARENT_ATTACH_REQUIRED.has(method) ? params.parent_session_id ?? params.session_id : null
+    const parent = PARENT_ATTACH_REQUIRED.has(method) ? params.parent_session_id ?? params.session_id ?? params.session_key : null
 
     if (typeof parent === 'string' && parent && !this.attached.has(canonicalSessionKey(parent, params.profile))) {
       await resume(parent)

@@ -25,14 +25,13 @@ _connection_profile_home: contextvars.ContextVar[str | None] = contextvars.Conte
 # The authority owns every session, its transcript and its admissions: a legacy handler in these
 # namespaces would write the same state.db behind its receipts and revision fence (a legacy
 # ``session.delete`` dropped a row the authority still held live; ``session.branch_stored`` built a
-# second, legacy-owned runtime). Kept: store-wide reads, foreign-history import (new rows only), and
-# Desktop's project move (``session.workspace.move``), which rewrites only the row's cwd/git grouping
-# and has no authority verb yet.
+# second, legacy-owned runtime; ``session.workspace.move`` rewrote only the row, never the frozen
+# policy: Desktop sends ``session.mutate operation=workspace``). Kept: store-wide reads and
+# foreign-history import (new rows only).
 _SESSION_NAMESPACES = ("session.", "prompt.", "message.")
 _SESSION_FALLBACK_ALLOWED = frozenset({
     "session.most_recent", "session.active_list", "session.events.stats",
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
-    "session.workspace.move",
 })
 # Sidecar verbs whose handler acts on PROCESS-global state. In a TUI's own sidecar that state was
 # that TUI's alone; on the shared owner it is every chat's, Desktop window's and served profile's:

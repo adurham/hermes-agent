@@ -1894,6 +1894,7 @@
   "sidebar.projects.branchOff": ["ar"],
   "sidebar.projects.moveFailed": ["ar","ja","zh-hant"],
   "sidebar.projects.moveNoFolder": ["ar","ja","zh-hant"],
+  "sidebar.projects.moveBusy": ["ar","ja","zh-hant"],
   "sidebar.projects.moveNoProjects": ["ar","ja","zh-hant"],
   "sidebar.projects.moveToProject": ["ar","ja","zh-hant"],
   "sidebar.projects.movedTo": ["ar","ja","zh-hant"],

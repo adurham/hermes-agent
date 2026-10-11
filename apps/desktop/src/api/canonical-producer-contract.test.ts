@@ -80,6 +80,13 @@ function answer(frame: { method: string; params: Record<string, unknown> }): Rec
   return { status: 'settled', delivery_id: p.id, value: 'x' }
 }
 
+// The owner edit each mutating site must send (fenced by the attached snapshot's revision/generation).
+const MUTATIONS: Record<string, Record<string, unknown>> = {
+  rewind: { operation: 'rewind', payload: { target_message_id: 9 } },
+  reasoning: { operation: 'reasoning', payload: { effort: 'high' } },
+  workspace: { operation: 'workspace', payload: { cwd: '/repo' } }
+}
+
 // [label, Desktop method, exact producer params, expected: wire methods sent (after attach) or a named refusal]
 const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]> = [
   [
@@ -102,9 +109,15 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     /reasoning .*not available/
   ],
   [
-    'reasoning-step.ts keybind step',
+    'reasoning-step.ts keybind step (B14)',
     'config.set',
     { key: 'reasoning', session_id: 's', value: 'high' },
+    ['session.mutate']
+  ],
+  [
+    'reasoning-slash.ts /reasoning show (display word, config.yaml)',
+    'config.set',
+    { key: 'reasoning', session_id: 's', value: 'show' },
     /reasoning is not available/
   ],
   ['model-presets.ts fast', 'config.set', { key: 'fast', session_id: 's', value: 'fast' }, /fast is not available/],
@@ -169,7 +182,7 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     'projects.ts moveSessionToProject (B21 / C-hx-2)',
     'session.workspace.move',
     { cwd: '/repo', session_key: 's' },
-    /Moving a chat to another project is not available/
+    ['session.mutate']
   ],
   [
     'connector-tool.tsx in-chat connect',
@@ -211,6 +224,12 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
   try {
     const address = server.address() as { port: number }
     await client.connect(`ws://127.0.0.1:${address.port}/api/ws?native_dial=fixture&ticket=one-use`)
+
+    // Typed /reasoning and the keybind act on the open (attached) session, as the model picker does.
+    if (method === 'config.set' && params.key === 'reasoning') {
+      await client.request('session.resume', { session_id: 's' })
+    }
+
     const call = client.request(method, params)
 
     if (expected instanceof RegExp) {
@@ -231,10 +250,12 @@ test.each(SITES)('%s: the canonical frame fits the generated contract', async (_
     }
 
     if (Array.isArray(expected) && expected[0] === 'session.mutate') {
+      const edit =
+        MUTATIONS[method === 'prompt.submit' ? 'rewind' : method === 'config.set' ? 'reasoning' : 'workspace']
+
       expect(sent.find(frame => frame.method === 'session.mutate').params).toMatchObject({
         session_id: 's',
-        operation: 'rewind',
-        payload: { target_message_id: 9 },
+        ...edit,
         expected_revision: 4,
         expected_generation: 2
       })

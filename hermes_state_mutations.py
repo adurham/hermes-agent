@@ -14,6 +14,14 @@ def validate_action(operation, payload):
         return
     if operation == 'branch' and _valid_branch_payload(payload):
         return
+    # Session-scope ``/reasoning <level>`` and Desktop's Move to project: revision-fenced edits of
+    # the frozen policy (gateway/session_mutation_policy.py).
+    if operation == 'reasoning' and set(payload) == {'effort'} and isinstance(payload['effort'], str):
+        from hermes_constants import parse_reasoning_effort
+        if parse_reasoning_effort(payload['effort']) is not None:
+            return
+    if operation == 'workspace' and set(payload) == {'cwd'} and isinstance(payload['cwd'], str) and payload['cwd'].strip():
+        return
     if operation == 'compress' and _valid_compress_payload(payload):
         return
     if operation in {'delete', 'reset'} and not payload:
@@ -62,9 +70,9 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
         return compress_in_transaction(db, conn, session_id, payload, prepared)
-    if operation == 'model':
-        from hermes_state_mutation_prepared import model_in_transaction
-        return model_in_transaction(db, conn, session_id, payload, prepared)
+    if operation in {'model', 'reasoning', 'workspace'}:
+        from hermes_state_mutation_prepared import POLICY_HANDLERS
+        return POLICY_HANDLERS[operation](db, conn, session_id, payload, prepared)
     from hermes_state_mutation_reset import reset_in_transaction
     from hermes_state_mutation_branch import branch_in_transaction
     handlers = {'delete': _delete, 'import': _import, 'rewind': _rewind, 'reset': reset_in_transaction,

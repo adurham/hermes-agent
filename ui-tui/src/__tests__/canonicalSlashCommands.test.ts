@@ -39,6 +39,10 @@ function harness() {
       }
     }
 
+    if (method === 'session.mutate' && params.operation === 'reasoning') {
+      return { session_id: 'owner', operation: 'reasoning', revision: 8, execution_generation: 4, effort: params.payload.effort }
+    }
+
     if (method === 'prompt.receipt') {
       return { status: 'terminal', result: { model: 'm', input_tokens: 5, output_tokens: 7, total_tokens: 12, api_calls: 1 } }
     }
@@ -202,7 +206,7 @@ it('setting writes the shared gateway has no verb for say so instead of a bare i
   const { request, slash, sys } = harness()
 
   // dokterdok P3: the canonical config.set accepts only busy / verbose / yolo / model.
-  for (const cmd of ['/theme dark', '/skin mono', '/indicator ascii', '/reasoning high', '/fast fast', '/personality pirate', '/skin']) {
+  for (const cmd of ['/theme dark', '/skin mono', '/indicator ascii', '/reasoning high --global', '/fast fast', '/personality pirate', '/skin']) {
     slash(cmd)
   }
 
@@ -218,4 +222,23 @@ it('setting writes the shared gateway has no verb for say so instead of a bare i
   }
 
   expect(notices.some(line => /skin: default/.test(line))).toBe(true)
+})
+
+it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); display words still refuse', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/reasoning high')
+  await flush()
+  slash('/reasoning show')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('session.mutate', expect.objectContaining({
+    session_id: 'owner', operation: 'reasoning', payload: { effort: 'high' }, expected_revision: 7, expected_generation: 3
+  }))
+  expect(request.mock.calls.map(([method]) => method)).not.toContain('config.set')
+
+  const notices = sys.mock.calls.map(([text]) => String(text))
+
+  expect(notices.some(line => /high/.test(line))).toBe(true)
+  expect(notices).toContain('/reasoning is not available on the shared gateway yet')
 })

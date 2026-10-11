@@ -78,6 +78,39 @@ export async function renameCanonicalSession(
   return mutation?.result ? String(mutation.result.title ?? title).trim() : undefined
 }
 
+// The levels `hermes_constants.parse_reasoning_effort` accepts; the display words are config.yaml writes.
+const REASONING_EFFORTS = new Set([
+  'none',
+  'false',
+  'disabled',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+])
+
+/** Session-scope `/reasoning <level>`: the owner's revision-fenced `reasoning` mutation of the frozen
+ * policy. False when the shared gateway has no verb for it (`--global`, a display word). */
+export function canonicalReasoning(payload: { scope?: string; value: string }, ctx: SlashRunCtx): boolean {
+  const effort = payload.value.trim().toLowerCase()
+
+  if (payload.scope === 'global' || !REASONING_EFFORTS.has(effort)) {
+    return false
+  }
+
+  void mutateCanonical(ctx.gateway.gw, ctx.sid!, 'reasoning', { effort }, ctx.stale)
+    .then(
+      mutation =>
+        mutation?.result && !ctx.stale() && ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
+    )
+    .catch(ctx.guardedErr)
+
+  return true
+}
+
 /** `/undo` and `/retry`: rewind to before the newest user turn; `/retry` then resubmits its text. */
 export function canonicalRewind(intent: 'retry' | 'undo', ctx: SlashRunCtx) {
   const sid = ctx.sid!

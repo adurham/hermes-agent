@@ -20,7 +20,7 @@ import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
-import { canonicalUsage } from '../canonicalSessionCommands.js'
+import { canonicalReasoning, canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -665,13 +665,15 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
-      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
-      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
+      const payload = reasoningConfigPayload(arg, ctx.sid ?? '')
+
+      // The shared owner sets a session level through its frozen-policy mutation; it has no verb for
+      // the config.yaml writes (`--global`, the display words): say so instead of a bare invalid_params.
       if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reasoning'))
+        return canonicalReasoning(payload, ctx) || ctx.transcript.sys(t('canonical.controls.notAvailable', 'reasoning'))
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', payload).then(
         ctx.guarded<ConfigSetResponse>(r => {
           if (!r.value) {
             return

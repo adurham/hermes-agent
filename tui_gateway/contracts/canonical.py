@@ -79,7 +79,9 @@ canonical_method("prompt.resolve_unknown", params=PromptResolveUnknownParams, re
 
 class SessionMutateParams(Params):
     """``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;
-    ``expected_generation`` is required for delete/rewind/reset/branch/model/compress."""
+    ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.
+    ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite
+    the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project."""
 
     session_id: str
     request_id: str
@@ -101,7 +103,7 @@ class SessionMutateResult(OpenModel):
 
 canonical_method("session.mutate", params=SessionMutateParams, result=SessionMutateResult,
                  doc="Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, "
-                     "delete, rewind, reset, model, compress, import).")
+                     "delete, rewind, reset, model, reasoning, workspace, compress, import).")
 
 
 class SessionPruneParams(Params):
