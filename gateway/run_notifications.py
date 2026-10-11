@@ -106,6 +106,36 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
+def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
+    """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
+    automation identities, and the local async-result card."""
+    metadata: dict[str, Any] = {"notification_origin": "process_registry_synthetic"}
+    session_key = str(evt.get("session_key") or "").strip()
+    from agent.notification_presentation import diagnostic_process_event
+    if diagnostic_process_event(evt):
+        metadata["notification_category"] = "diagnostic"
+    if session_key.startswith("agent:"):
+        metadata["gateway_session_key"] = session_key
+    parent_session_id = str(evt.get("parent_session_id") or "").strip()
+    if parent_session_id:
+        metadata["gateway_session_id"] = parent_session_id
+    if evt.get('_automation_identities'):
+        metadata['automation_identities'] = evt['_automation_identities']
+    if source.platform == Platform.LOCAL and evt.get("type", "completion") == "completion":
+        # A local completion persists as the async-result card the in-process TUI wrote;
+        # messaging rows stay internal_notification, as on main.
+        from tools.process_registry_notifications import (
+            PROCESS_COMPLETE_DISPLAY_KIND, process_completion_display_text)
+        metadata["display_kind"] = PROCESS_COMPLETE_DISPLAY_KIND
+        metadata["display_text"] = evt.get("_display_text") or process_completion_display_text([evt])
+    proven_session_id = str(evt.get("proven_session_id") or "").strip()
+    if proven_session_id:
+        metadata["gateway_proven_session_id"] = proven_session_id
+    if completion_ids := evt.get("completion_ids"):
+        metadata["gateway_completion_ids"] = list(completion_ids)
+    return metadata
+
+
 class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotificationOwnershipMixin):
     """Process/completion/update notifications, media delivery and async-delegation delivery for GatewayRunner."""
 
@@ -827,31 +857,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
-            metadata: dict[str, Any] = {"notification_origin": "process_registry_synthetic"}
             synth_text = _mark_internal_notification(synth_text)
-            session_key = str(evt.get("session_key") or "").strip()
-            from agent.notification_presentation import diagnostic_process_event
-            if diagnostic_process_event(evt):
-                metadata["notification_category"] = "diagnostic"
-            if session_key.startswith("agent:"):
-                metadata["gateway_session_key"] = session_key
-            parent_session_id = str(evt.get("parent_session_id") or "").strip()
-            if parent_session_id:
-                metadata["gateway_session_id"] = parent_session_id
-            if evt.get('_automation_identities'):
-                metadata['automation_identities'] = evt['_automation_identities']
-            if source.platform == Platform.LOCAL and evt.get("type", "completion") == "completion":
-                # A local completion persists as the async-result card the in-process TUI wrote;
-                # messaging rows stay internal_notification, as on main.
-                from tools.process_registry_notifications import (
-                    PROCESS_COMPLETE_DISPLAY_KIND, process_completion_display_text)
-                metadata["display_kind"] = PROCESS_COMPLETE_DISPLAY_KIND
-                metadata["display_text"] = evt.get("_display_text") or process_completion_display_text([evt])
-            proven_session_id = str(evt.get("proven_session_id") or "").strip()
-            if proven_session_id:
-                metadata["gateway_proven_session_id"] = proven_session_id
-            if completion_ids := evt.get("completion_ids"):
-                metadata["gateway_completion_ids"] = list(completion_ids)
+            metadata = _watch_notification_metadata(evt, source)
             # The queued event's ``message_id`` is the message that STARTED the process, and the
             # persisted origin carries the same stale id. A synthetic completion is not a reply to
             # it: by delivery time the user has often continued elsewhere, and an event anchored
