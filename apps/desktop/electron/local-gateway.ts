@@ -82,7 +82,7 @@ export function gatewayOwnerProfile(endpoint: GatewayEndpoint): string {
   return path.basename(path.dirname(home)) === 'profiles' ? path.basename(home) : 'default'
 }
 
-/** One restart per stale (gateway, client) code pair per process. An owner a restart cannot move
+/** One restart per (owner process, stale gateway, client) per Desktop process. An owner a restart cannot move
  *  (a service unit pinned to another checkout) is then attached as-is instead of being restarted
  *  on every dial. */
 export function createStaleGatewayRestarter(
@@ -94,7 +94,7 @@ export function createStaleGatewayRestarter(
   const restarts = new Map<string, { done: boolean; promise: Promise<void> }>()
 
   return async (endpoint, stale) => {
-    const key = `${stale.gateway}\n${stale.client}`.toLowerCase()
+    const key = `${gatewayOwnerProfile(endpoint)}\n${stale.gateway}\n${stale.client}`.toLowerCase()
     const pending = restarts.get(key)
 
     if (pending && !pending.done) {
