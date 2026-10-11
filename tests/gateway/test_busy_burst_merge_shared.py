@@ -9,6 +9,8 @@ import asyncio
 
 import pytest
 
+from tests.waiting import async_wait_until
+
 PNG = b'\x89PNG\r\n\x1a\n' + b'\x00' * 24
 
 # (case, follow-ups as (sender, text, photo?), expected admitted (text, media count) after 'A')
@@ -87,7 +89,5 @@ async def test_busy_burst_is_admitted_once(monkeypatch, tmp_path, case, follow_u
     assert [(r['payload']['text'], len(r['payload']['native_text_v1'].get('media', [])))
             for r in rows[1:]] == expected
     finish.set()
-    async with asyncio.timeout(10):
-        while len(executed) < 1 + len(expected):
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: len(executed) >= 1 + len(expected), timeout=10, what='every merged turn executed')
     await asyncio.to_thread(authority.db.close)

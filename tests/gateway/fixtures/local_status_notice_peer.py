@@ -77,7 +77,6 @@ async def probe():
         async with asyncio.timeout(30):
             while not any(f.get('params', {}).get('type') == 'message.complete' for f in frames):
                 frames.append(json.loads(await ws.recv()))
-        await asyncio.sleep(0.3)
         events = [f['params'] for f in frames if f.get('method') == 'event']
         # The classic `hermes chat` view renders what reached it on stderr.
         import contextlib
