@@ -78,13 +78,43 @@ def _foreign_profile_home(server: Any, profile_id: Any) -> str | None:
     return str(home)
 
 
+def _own_profile_read(server: Any, req: dict, home: str) -> dict:
+    """A store-wide session read for a ticket bound to the non-launch *home*. Those handlers default
+    to the LAUNCH profile's store and ``session.active_list`` lists every profile's live sessions, so
+    the ticket's own profile is named (or the read refused), never the launch profile's served."""
+    from hermes_constants import profile_name_for_home
+    params = req.get("params") if isinstance(req.get("params"), dict) else {}
+    name = params.get("profile") or profile_name_for_home(home)
+    try:
+        resolved = server._profile_home(name) if name else None
+    except (OSError, ValueError):
+        resolved = None
+    if resolved is None or Path(resolved).resolve() != Path(home).resolve():
+        return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4064, "message": "profile unavailable"}}
+    if req.get("method") != "session.active_list":
+        return dict(req, params={**params, "profile": name})
+    with server._sessions_lock:
+        live = list(server._sessions.items())
+    current = str(params.get("current_session_id") or "")
+    rows = [server._session_live_item(sid, session, current) for sid, session in live
+            if not session.get("_finalized") and Path(session.get("profile_home") or server._launch_home()).resolve()
+            == Path(home).resolve()]
+    return {"jsonrpc": "2.0", "id": req.get("id"), "result": {"sessions": rows}}
+
+
 def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict | None:
     """Run ``server.dispatch`` with the ticket's profile home bound (call from a worker thread;
     the pool path copies this context, so long handlers see it too)."""
     actions, refusal = _PROCESS_GLOBAL_ACTIONS.get(req.get("method"), ((), ""))
     if (req.get("params") or {}).get("action", "status") in actions:
         return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4030, "message": refusal}}
-    token = _connection_profile_home.set(_foreign_profile_home(server, getattr(actor, "profile_id", None)))
+    home = _foreign_profile_home(server, getattr(actor, "profile_id", None))
+    if home is not None and req.get("method") in _SESSION_FALLBACK_ALLOWED:
+        scoped = _own_profile_read(server, req, home)
+        if "result" in scoped or "error" in scoped:
+            return scoped
+        req = scoped
+    token = _connection_profile_home.set(home)
     try:
         return server.dispatch(req, transport)
     finally:
