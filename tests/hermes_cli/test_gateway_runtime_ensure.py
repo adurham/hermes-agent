@@ -199,6 +199,7 @@ def test_unmanaged_child_uses_explicit_home_and_survives_launcher_exit(tmp_path,
         f"home=Path({str(home)!r})\n"
         "real=start.subprocess.Popen\n"
         "def boundary(argv, **kw):\n"
+        " if 'hermes_cli.main' not in argv: return real(argv, **kw)  # e.g. git from the env builder\n"
         " assert argv[-3:] == ['gateway','run','--quiet']\n"
         " assert '--replace' not in argv and '--force' not in argv\n"
         " assert kw['env']['HERMES_HOME'] == str(home)\n"
