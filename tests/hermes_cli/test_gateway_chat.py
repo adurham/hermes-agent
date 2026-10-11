@@ -287,7 +287,8 @@ async def test_new_and_branch_move_the_terminal_continue_pointer(monkeypatch, tm
     from hermes_cli.gateway_chat_view import GatewayChatView
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("TMUX_PANE", "%9")
-    monkeypatch.setattr(terminal_breadcrumbs.os, "ttyname", lambda fd: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(terminal_breadcrumbs.os, "ttyname", lambda fd: (_ for _ in ()).throw(OSError()),
+                        raising=False)  # os.ttyname does not exist on Windows
 
     class Peer:
         async def rpc(self, method, **params):
