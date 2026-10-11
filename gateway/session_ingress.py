@@ -20,7 +20,13 @@ busy_acceptance = ContextVar('busy_acceptance', default=None)
 async def admit_message(authority, event):
     accepted = busy_acceptance.get()
     busy_acceptance.set(None)  # the drain task this schedules must not inherit the busy caller's future
-    receipt = await authority.admit_native(event)
+    try:
+        receipt = await authority.admit_native(event)
+    except RuntimeStoreError as exc:
+        if exc.reason != 'queue_full':
+            raise
+        # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.
+        return '⏳ Too many messages are already waiting in this conversation; send this again after the current reply.'
     if receipt.status == 'terminal':
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
