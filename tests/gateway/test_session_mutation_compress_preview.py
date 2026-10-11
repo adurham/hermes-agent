@@ -169,7 +169,7 @@ async def test_input_is_admitted_while_compress_summarizes_but_not_claimed_until
             'during', ref, {'text': 'typed while compressing'}, 'queue')), 2)
         assert receipt.status == 'queued'
         claim = asyncio.create_task(authority._claim_next(ref, authority.sessions[ref.session_id]))
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.2)  # health: allow HX013 -- proves the claim does NOT complete while compress holds the gate
         assert not claim.done(), 'a turn was claimed under a compression still preparing its transcript'
         release.set()
         reply = await asyncio.wait_for(compressing, 10)

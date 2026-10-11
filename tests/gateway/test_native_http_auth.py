@@ -142,7 +142,7 @@ def test_native_http_grants_are_single_use_and_bound_to_daemon(tmp_path):
         assert client.get('/api/config', params={'ticket': query_ticket}).status_code == 401
         assert client.get('/api/config', headers={'Cookie': 'X-Hermes-Gateway-Ticket=' + query_ticket}).status_code == 401
         expired = ticket(home, descriptor)
-        time.sleep(31)  # Real production TTL, not a patched clock or shortened grant.
+        time.sleep(31)  # health: allow HX013 -- the real 30 s production ticket TTL must elapse (no patched clock or shortened grant)
         assert client.get('/api/config', headers=headers(expired)).status_code == 401
         stale = ticket(home, descriptor)
         old_instance = descriptor['instance_id']
