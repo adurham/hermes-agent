@@ -33,7 +33,9 @@ def run_projection(adapter, run_id):
     if owned is None:
         return None
     authority, row = owned
-    status = {'queued': 'queued', 'started': 'running', 'unknown': 'interrupted', 'terminal': row['outcome']}.get(row['status'])
+    # ``unknown`` is not terminal: later turns wait for POST /v1/runs/{id}/resolve-unknown, and
+    # ``interrupted`` is in TERMINAL_STATUSES, so a poller would stop at a paused head.
+    status = {'queued': 'queued', 'started': 'running', 'unknown': 'unknown', 'terminal': row['outcome']}.get(row['status'])
     saved = admission_result(authority.db, row['admission_id'])
     result = saved.get('result', {}) if saved else {}
     if row['status'] == 'terminal':
