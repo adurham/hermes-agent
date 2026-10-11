@@ -51,8 +51,13 @@ class LocalSessionPolicy:
                     continue
                 target = config
                 for key in path[:-1]:
-                    target = target[key]
+                    # An alias entry added after creation is absent from the frozen tree.
+                    target = target.setdefault(key, {}) if isinstance(target, dict) else target[key]
                 target[path[-1]] = value
+            model = config.get('model')
+            # ``/model <alias>`` with a literal key: the receipt points at the alias entry's secret.
+            if isinstance(model, dict) and model.get('api_key_from') and 'api_key' in model:
+                model['api_key'] = secrets.get(tuple(model['api_key_from']))
         return config
 
     @property
