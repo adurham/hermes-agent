@@ -84,6 +84,9 @@ class SessionAuthority:
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
         self.pending_stops = {}
+        # session -> (generation, [steer text]) accepted before that generation adopted an agent;
+        # adopt_agent hands it to that agent (never a later generation's), the drain drops the rest.
+        self.pending_steers = {}
         # session -> generation of the last Stop delivered to a live agent. A repeated
         # Stop can land on the session's reusable cached agent after that turn's finalizer
         # cleared it; the next generation's adopt_agent drops it instead of starting interrupted.
@@ -630,13 +633,19 @@ class SessionAuthority:
         delivered to the cached agent for an earlier generation may have landed after that
         turn's finalizer cleared it, so it is dropped rather than cancelling this turn. A managed
         worker is a fresh process per turn and carries no earlier flag to drop."""
-        self.adopted[session_id] = (generation, agent)
-        clear = getattr(agent, 'clear_interrupt', None)
-        if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
-            clear()
-        if self.pending_stops.get(session_id) == generation:
-            del self.pending_stops[session_id]
-            agent.interrupt()
+        live = self.sessions.get(session_id)
+        # The turn's executor thread runs this; the stream lock orders it against session.steer's latch.
+        with live.event_stream.lock if live is not None else contextlib.nullcontext():
+            self.adopted[session_id] = (generation, agent)
+            clear = getattr(agent, 'clear_interrupt', None)
+            if self.delivered_stops.pop(session_id, generation) != generation and clear is not None:
+                clear()
+            if self.pending_stops.get(session_id) == generation:
+                del self.pending_stops[session_id]
+                agent.interrupt()
+            latched, steers = self.pending_steers.pop(session_id, (None, ()))
+            for text in steers if latched == generation else ():
+                agent.steer(text)
 
     def check_approval_generation(self, session_id, generation):
         handle = self._handle(SessionRef(self.profile_id, session_id))
@@ -807,6 +816,7 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     live.event_stream.execution = {}
                 self.pending_stops.pop(ref.session_id, None)
+                self.pending_steers.pop(ref.session_id, None)
                 self.adopted.pop(ref.session_id, None)
                 self._pause(ref, 'unknown_execution')
                 return
@@ -880,6 +890,7 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     live.event_stream.execution = {}
                 self.pending_stops.pop(ref.session_id, None)
+                self.pending_steers.pop(ref.session_id, None)
                 self.adopted.pop(ref.session_id, None)
                 if settled is None:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
