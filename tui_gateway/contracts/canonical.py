@@ -138,6 +138,10 @@ class CanonicalSessionInfo(OpenModel):
     profile_name: str
     cwd: str | None = None
     launch_request: dict[str, JsonValue] | None = None
+    reasoning_effort: str | None = None
+    reasoning_effort_wire: str | None = None
+    service_tier: str | None = None
+    fast: bool | None = None
 
 
 canonical_method("session.info", params=CanonicalSessionInfoParams, result=CanonicalSessionInfo,

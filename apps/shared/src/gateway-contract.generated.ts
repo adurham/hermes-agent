@@ -4511,6 +4511,10 @@ export interface CanonicalSessionInfo {
   profile_name: string
   cwd?: string | null
   launch_request?: Record<string, unknown> | null
+  reasoning_effort?: string | null
+  reasoning_effort_wire?: string | null
+  service_tier?: string | null
+  fast?: boolean | null
   [key: string]: unknown
 }
 export interface SessionDetachParams {
@@ -4769,6 +4773,10 @@ export interface CanonicalSnapshotInfo {
   profile_name?: string | null
   cwd?: string | null
   launch_request?: Record<string, unknown> | null
+  reasoning_effort?: string | null
+  reasoning_effort_wire?: string | null
+  service_tier?: string | null
+  fast?: boolean | null
 }
 export interface CanonicalResumeParams {
   profile?: string | null

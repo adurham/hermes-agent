@@ -231,6 +231,36 @@ def _lazy_model(authority, policy):
         return GUEST_MODEL if free_tier_route() else model
 
 
+def _reasoning_fields(agent, policy, model):
+    """Main's session-info effort/tier fields, from the built agent or (lazy) the frozen policy: a
+    resumed Desktop slice holds its reasoning pill pending until ``reasoning_effort`` arrives."""
+    from agent.fast_mode import STATIC_TIERS, parse_service_tier
+    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+    from agent.voice_turn_route import session_runtime_view
+    from hermes_cli.models import resolve_fast_mode_overrides
+    if agent is None and policy is None:
+        return {}
+    view = session_runtime_view(agent) if agent is not None else None
+    config = getattr(view, 'reasoning_config', None) if view is not None else policy.reasoning_config
+    tier = (getattr(view, 'service_tier', None) if view is not None
+            else parse_service_tier((policy.config().get('agent') or {}).get('service_tier'))) or ''
+    provider = getattr(view, 'provider', None) if view is not None else policy.provider
+    base_url = getattr(view, 'base_url', None) if view is not None else policy.base_url
+    effort = ''
+    if isinstance(config, dict):
+        effort = 'none' if config.get('enabled') is False else str(config.get('effort') or '')
+    wire = ''
+    if effort and effort != 'none':
+        wire = str(clamp_effort(effort, route_supported_efforts(
+            provider, model, getattr(view, 'api_mode', None))) or '')
+    try:
+        fast = tier in STATIC_TIERS and resolve_fast_mode_overrides(
+            model, provider=provider or None, base_url=base_url or None, tier=tier) is not None
+    except Exception:  # health: allow BLE001 -- main's _fast_tier_applies gate: unknown means not Fast
+        fast = False
+    return {'reasoning_effort': effort, 'reasoning_effort_wire': wire, 'service_tier': tier, 'fast': fast}
+
+
 def local_session_info(authority, ref):
     live = authority.sessions[ref.session_id]
     agent = authority.agent(ref)
@@ -245,6 +275,7 @@ def local_session_info(authority, ref):
             # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.
             'profile_name': served_profile_name(authority.profile_id),
             **({'cwd': policy.cwd} if policy else {})}
+    info.update(_reasoning_fields(agent, policy, info['model']))
     if policy:
         # The creation request the route was frozen with (secrets already extracted), so a
         # resuming client can tell "same flags again" from a real override attempt.

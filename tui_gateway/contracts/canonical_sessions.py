@@ -90,6 +90,10 @@ class CanonicalSnapshotInfo(Result):
     profile_name: str | None = None
     cwd: str | None = None
     launch_request: dict[str, JsonValue] | None = None
+    reasoning_effort: str | None = None
+    reasoning_effort_wire: str | None = None
+    service_tier: str | None = None
+    fast: bool | None = None
 
 
 class CanonicalSnapshot(Result):
