@@ -233,7 +233,11 @@ async def test_http_resolve_unknown_refuses_stale_or_foreign_admission(
             assert response.status == 409
             assert (await response.json())["error"]["code"] == code
 
-        await asyncio.sleep(0.05)
+        # A refused resolution must not release the FIFO: let any drain it scheduled run to the end
+        # (the restored drain parks on the unknown head) before reading what it left behind.
+        drain = owner.sessions["api-session"].task
+        if drain is not None:
+            await asyncio.wait_for(drain, 10)
         rows = {
             row["admission_id"]: row["status"]
             for row in list_session_admissions(owner.db, session_id="api-session")
