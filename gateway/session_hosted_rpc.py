@@ -249,8 +249,8 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
-            await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
-        else:
+            row = await self.authority.cancel_or_claimed(self.principal, self.ref, row['admission_id'])
+        if row is not None:
             await self.authority.interrupt(self.principal, self.ref, row['generation'])
         return {'interrupted': True, 'status': 'interrupted'}
 

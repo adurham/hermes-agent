@@ -509,6 +509,21 @@ class SessionAuthority:
         await asyncio.to_thread(release_admission_media, self.db, admission_id)
         return self._receipt(row)
 
+    async def cancel_or_claimed(self, actor, ref, admission_id):
+        """Cancel a row the caller read ``queued``: None once cancelled, else the started row the
+        drain claimed between that read and the cancel commit (``stale_generation``), which the
+        caller must stop instead of refusing a live execution."""
+        try:
+            await self.cancel_queued(actor, ref, admission_id)
+            return None
+        except RuntimeStoreError as exc:
+            if exc.reason != 'stale_generation':
+                raise
+        row = get_session_admission(self.db, admission_id=admission_id)
+        if row is None or row['status'] != 'started':
+            raise RuntimeStoreError('stale_generation')
+        return row
+
     async def _commit_cancel(self, ref, admission_id, before):
         if before.status == 'queued':
             # Owed from before the write: a commit that reports failure, or anything raising

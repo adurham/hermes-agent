@@ -160,8 +160,8 @@ async def operation(authority, name, params, actor=None):
         raise RuntimeStoreError('permission_denied')
     if name == 'cancel':
         if row['status'] == 'queued':
-            await authority.cancel_queued(actor, ref, row['admission_id'])
-        elif row['status'] == 'started':
+            row = await authority.cancel_or_claimed(actor, ref, row['admission_id']) or {'status': 'terminal'}
+        if row['status'] == 'started':
             # The claim commits before execute() registers its event; latching the
             # cancellation on the admission here means that window cannot lose it.
             _cancellations(authority).setdefault(row['admission_id'], threading.Event()).set()
