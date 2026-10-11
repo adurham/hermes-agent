@@ -1431,7 +1431,10 @@ def create_profile(
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists() and not named_profile_has_identity(profile_dir):
         if named_profile_is_deleted(profile_dir):
-            # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace.
+            # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace
+            # unless a gateway still tearing the deleted profile down holds its gateway.lock in it.
+            if not wait_profile_unowned(profile_dir, timeout=0):
+                raise FileExistsError(f"Cannot create profile '{canon}': a running gateway still owns {profile_dir}")
             shutil.rmtree(profile_dir)
         else:
             # A live marker-less dir is invisible to ``profile list`` but may still hold user

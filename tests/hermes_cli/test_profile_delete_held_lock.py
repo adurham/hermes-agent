@@ -4,6 +4,7 @@ A multiplexer answers the delete's rescan ``pending`` after 5 s and keeps tearin
 it releases the profile's ``gateway.lock`` reservation last. The holder here is a real separate
 process reserving through the same primitive the multiplexer uses (``process_ownership.reserve``).
 """
+import shutil
 import subprocess
 import sys
 import threading
@@ -46,14 +47,18 @@ def _release(holder):
 
 
 # Every site that removes or moves a profile home after unrouting it from a live multiplexer.
-CASES = [("delete", True), ("delete", False), ("rename", False)]
+CASES = [("delete", True), ("delete", False), ("rename", False), ("recreate", False)]
 
 
 @pytest.mark.parametrize(("op", "released"), CASES, ids=["delete-owner-releases", "delete-owner-keeps-it",
-                                                       "rename-owner-keeps-it"])
+                                                       "rename-owner-keeps-it", "recreate-over-owned-shell"])
 def test_profile_home_waits_for_the_live_owner_to_release_it(profile, monkeypatch, op, released):
     monkeypatch.setattr(profiles_remove, "OWNER_RELEASE_WAIT_SECONDS", 30.0 if released else 1.5)
     monkeypatch.setattr(profiles, "_live_default_multiplexer", lambda: op == "rename")  # rename's unroute arm
+    if op == "recreate":
+        shutil.rmtree(profile)
+        profile.mkdir()
+        profiles.mark_named_profile_deleted(profile)
     holder = _hold(profile)
     outcome = {}
 
@@ -61,10 +66,12 @@ def test_profile_home_waits_for_the_live_owner_to_release_it(profile, monkeypatc
         try:
             if op == "rename":
                 profiles.rename_profile("owned-delete", "owned-renamed")
+            elif op == "recreate":  # the tombstoned, marker-less shell an owner's reserve() re-made
+                profiles.create_profile("owned-delete", no_alias=True)
             else:
                 profiles.delete_profile("owned-delete", yes=True)
             outcome["ok"] = True
-        except RuntimeError as exc:
+        except (RuntimeError, FileExistsError) as exc:
             outcome["error"] = str(exc)
 
     worker = threading.Thread(target=delete)
@@ -82,4 +89,4 @@ def test_profile_home_waits_for_the_live_owner_to_release_it(profile, monkeypatc
     if released:
         assert outcome == {"ok": True} and not profile.exists()
     else:
-        assert "still owns this profile" in outcome["error"] and profile.is_dir()
+        assert "still owns" in outcome["error"] and (profile / "gateway.lock").is_file()
