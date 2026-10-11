@@ -256,6 +256,13 @@ def check_resume_policy(args, snapshot):
     frozen = dict((info or {}).get("launch_request") or {})
     if info and "cwd" in info:
         frozen["cwd"] = info["cwd"]
+    if "model" in requested and requested["model"] != frozen.get("model"):
+        # The owner froze the resolved id of a `-m <alias>`; the same alias again is the same route.
+        from gateway.session_local_route import resolve_launch_route
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_constants import get_hermes_home
+        flags = {key: requested[key] for key in ("model", "provider", "base_url", "api_key") if key in requested}
+        requested["model"] = resolve_launch_route(flags, load_user_config_effective(get_hermes_home() / "config.yaml"))["model"]
     for key, value in requested.items():
         if key == "api_key":
             continue  # never durable; a repeated key is not a policy change
