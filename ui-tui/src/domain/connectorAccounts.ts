@@ -35,6 +35,22 @@ export function accountRowText(row: ConnectorAccountRow, statusLabel: string, un
   return `${row.connector} · ${name} · ${statusLabel}`
 }
 
+export type PanelShortcut = 'add' | 'close' | 'reconnect' | 'remove' | 'rename'
+
+const PANEL_SHORTCUTS: Readonly<Record<string, PanelShortcut>> = {
+  a: 'add',
+  c: 'reconnect',
+  q: 'close',
+  r: 'rename',
+  x: 'remove'
+}
+
+/** The panel's letter shortcut for a key press. A Ctrl or Meta chord is never one: Ink reports Ctrl+C as `c`
+ *  with `ctrl` set, and that press belongs to the global cancel, not to Reconnect. */
+export function panelShortcut(ch: string, key: { ctrl?: boolean; meta?: boolean }): PanelShortcut | null {
+  return key.ctrl || key.meta ? null : (PANEL_SHORTCUTS[ch] ?? null)
+}
+
 export type NameProblem = 'invalid' | 'taken' | null
 
 /** Client-side check before a rename or an add; the gateway re-checks and answers alias_taken. */

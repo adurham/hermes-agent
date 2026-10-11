@@ -18,7 +18,8 @@ import {
   accountView,
   isRetired,
   nameProblem,
-  type NameProblem
+  type NameProblem,
+  panelShortcut
 } from '../domain/connectorAccounts.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { Translations } from '../i18n/types.js'
@@ -297,7 +298,9 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       : startConnect(row.connector, { connection_id: row.connection_id }, accountName(row))
 
   const listKey = (ch: string, key: KeyLike) => {
-    if (key.escape || ch === 'q') {
+    const shortcut = panelShortcut(ch, key)
+
+    if (key.escape || shortcut === 'close') {
       return onClose()
     }
 
@@ -313,7 +316,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       return setShowRetired(value => !value)
     }
 
-    if (ch === 'a') {
+    if (shortcut === 'add') {
       return openAddApp()
     }
 
@@ -321,13 +324,13 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       return
     }
 
-    if (ch === 'r') {
+    if (shortcut === 'rename') {
       setErr('')
 
       return setStage({ draft: selected.alias ?? '', kind: 'rename', row: selected })
     }
 
-    if (ch === 'x') {
+    if (shortcut === 'remove') {
       const row = selected
 
       return patchOverlayState({
@@ -339,7 +342,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       })
     }
 
-    if (ch === 'c') {
+    if (shortcut === 'reconnect') {
       return reconnect(selected)
     }
   }
@@ -556,8 +559,10 @@ function LinkView({ footer, stage, t, title, width }: StageViewProps<'link'>) {
 }
 
 interface KeyLike {
+  ctrl: boolean
   downArrow: boolean
   escape: boolean
+  meta: boolean
   tab: boolean
   upArrow: boolean
 }

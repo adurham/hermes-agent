@@ -7,7 +7,7 @@ import {
   resetConnectionOperationsForTests
 } from '../app/connectionOperationStore.js'
 import { getOverlayState, hasPromptOpen, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { accountRowText, accountView, nameProblem } from '../domain/connectorAccounts.js'
+import { accountRowText, accountView, nameProblem, panelShortcut } from '../domain/connectorAccounts.js'
 
 const row = (over: Partial<ConnectorAccountRow> & { disabled?: boolean }): ConnectorAccountRow =>
   ({
@@ -45,6 +45,15 @@ describe('connector account rows', () => {
     expect(nameProblem('home', 'gmail', rows)).toBe('taken')
     expect(nameProblem('home', 'gmail', rows, 'ca_h')).toBeNull()
     expect(nameProblem('home', 'slack', rows)).toBeNull()
+  })
+})
+
+describe('panel letter shortcuts', () => {
+  it('maps a bare letter to its action and never a Ctrl or Meta chord, so Ctrl+C cancels without reconnecting', () => {
+    expect(panelShortcut('c', { ctrl: false, meta: false })).toBe('reconnect')
+    expect(panelShortcut('c', { ctrl: true, meta: false })).toBeNull()
+    expect(panelShortcut('x', { ctrl: false, meta: true })).toBeNull()
+    expect(panelShortcut('z', {})).toBeNull()
   })
 })
 
