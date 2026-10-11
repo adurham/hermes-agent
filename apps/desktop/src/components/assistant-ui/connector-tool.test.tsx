@@ -127,8 +127,8 @@ function Where() {
 }
 
 describe('ConnectorOffer named-account notice', () => {
-  it('says which name Hermes chose once the account connected, and Rename opens that account on the Connectors tab', () => {
-    const request = { ...REQUEST, settled: true, targets: [{ ...GMAIL, alias: 'work', state: 'connected' as const }] }
+  it('says which name Hermes chose once the account connected, and Rename opens that account (by id) on the Connectors tab', () => {
+    const request = { ...REQUEST, settled: true, targets: [{ ...GMAIL, alias: 'work', connectionId: 'ca_work', state: 'connected' as const }] }
 
     setConnectionRequest(request)
     render(
@@ -147,7 +147,7 @@ describe('ConnectorOffer named-account notice', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
 
     expect(screen.getByTestId('where').textContent).toBe(
-      '/capabilities?tab=connectors&connector=gmail&profile=default&rename=work'
+      '/capabilities?tab=connectors&connector=gmail&profile=default&rename=ca_work'
     )
   })
 })

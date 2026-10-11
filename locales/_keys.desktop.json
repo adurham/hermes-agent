@@ -1057,6 +1057,7 @@
     "connectorsPage.accounts.removeBody",
     "connectorsPage.accounts.removeTitle",
     "connectorsPage.accounts.rename",
+    "connectorsPage.accounts.renameGone",
     "connectorsPage.accounts.renameLabel",
     "connectorsPage.accounts.retiredCount",
     "connectorsPage.accounts.status.expired",
