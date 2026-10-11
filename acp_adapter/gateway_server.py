@@ -422,7 +422,6 @@ class GatewayACPAgent(acp.Agent):
         # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
         # prompt (slash work included) retires the retained identity, so a later repeat is new work.
         retained = self._unacked.pop(session_id, None)
-        self._mutations.retire(session_id)  # ... and every prepared control's (a slash re-keeps its own)
         command = _slash_command(text) if not attachments else None
         if command is not None:
             from hermes_cli.gateway_mutations import slash_mutation
@@ -445,8 +444,8 @@ class GatewayACPAgent(acp.Agent):
                 self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
             self._mutations.acknowledge(session_id, operation, payload)
             return PromptResponse(stop_reason='end_turn')
-        client = await self._client()
-        link = self._link
+        # ... and every prepared control's (a slash keeps its own key: apply retires the rest).
+        self._mutations.retire(session_id)
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
@@ -454,6 +453,9 @@ class GatewayACPAgent(acp.Agent):
         input_id = retained[1] if retained is not None and retained[0] == retry_key else uuid.uuid4().hex
         self._submitting.add(session_id)
         try:
+            # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
+            client = await self._client()
+            link = self._link
             receipt = await client.rpc("prompt.submit", session_id=session_id, input_id=input_id, **submit)
         except BaseException as exc:
             from hermes_cli.gateway_client import GatewayRPCError
