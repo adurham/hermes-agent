@@ -869,6 +869,17 @@ class GatewayTurnProgressMixin:
         except Exception as e:
             logger.debug("event_callback hook error: %s", e)
 
+    def _local_notice_callback_sync(self, notice) -> None:
+        """``AgentNotice`` -> ``notification.show`` for local viewers (the TUI's payload)."""
+        from gateway.warning_notifications import is_diagnostic_notice, render_notification
+        ctx = self._ctx
+        if ctx.mute_notification_reply or not self._status_live() or not str(notice.text or "").strip():
+            return
+        render_notification(lambda: self._publish_execution("notification.show", {
+            "text": str(notice.text).strip(), "level": notice.level, "kind": notice.kind,
+            "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id}),
+            platform=ctx.source.platform, user_config=ctx.user_config, diagnostic=is_diagnostic_notice(notice))
+
     def _status_live(self) -> bool:
         """Status adapter present and this run is still the current generation."""
         return bool(self._ctx._status_adapter) and self._ctx._run_still_current()
@@ -923,6 +934,10 @@ class GatewayTurnProgressMixin:
             )
             return
         def present():
+            if local_viewer_turn(self):
+                self._publish_execution("status.update", {"kind": _viewer_status_kind(event_type, prepared),
+                                                          "text": prepared})
+                return
             fut = self._schedule(
                 _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
                 f"status_callback ({event_type}) scheduling error",
@@ -931,3 +946,15 @@ class GatewayTurnProgressMixin:
                 fut.add_done_callback(self._track_future_cleanup_id)
         render_notification(present, platform=ctx.source.platform, user_config=ctx.user_config,
                             diagnostic=is_warning_status(event_type, message))
+
+
+def local_viewer_turn(runner) -> bool:
+    """A local route's viewers read the canonical event stream; ``LocalSessionAdapter.send``
+    publishes nothing, so status and notices go to that stream instead."""
+    return getattr(runner, "_approval_owner", None) is not None and runner._ctx.source.platform == Platform.LOCAL
+
+
+def _viewer_status_kind(kind, text):
+    """The TUI's ``status.update`` kind: auto-compaction progress is re-tagged ``compacting``."""
+    from agent.conversation_compression import is_compaction_progress_status
+    return "compacting" if kind == "lifecycle" and is_compaction_progress_status(text) else str(kind)
