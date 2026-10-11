@@ -37,6 +37,8 @@ class CanonicalCreateParams(ProfileParams):
     title: str | None = None
     hidden: bool = False
     follow_profile_config: bool | None = None
+    service_tier: str | None = None
+    cwd_explicit: bool | None = None
 
 
 class CanonicalResumeParams(ProfileParams):

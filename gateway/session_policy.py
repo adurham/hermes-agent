@@ -10,7 +10,8 @@ from hermes_state_runtime import RuntimeStoreError
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
-                           'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config'})
+                           'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
+                           'service_tier', 'cwd_explicit'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases')
@@ -103,6 +104,16 @@ class LocalSessionPolicy:
         authority = active_authority(runner)
         return resolve_reasoning_config(self.config(authority), self.current_model(authority) or '')
 
+    def current_service_tier(self, runner, session_key):
+        """The next turn's tier: a typed session /fast, else the policy's (frozen, or the profile's when following)."""
+        from agent.fast_mode import parse_service_tier
+        from gateway.session_authorities import active_authority
+        from gateway.session_state import SERVICE_TIER_UNSET
+        state = runner._peek_session_state(session_key) if session_key else None
+        if state is not None and state.conversation.service_tier_override is not SERVICE_TIER_UNSET:
+            return state.conversation.service_tier_override
+        return parse_service_tier((self.config(active_authority(runner)).get('agent') or {}).get('service_tier'))
+
     def current_model(self, authority):
         """The model this session's next turn runs: the profile's current default when following."""
         live = self._live_profile(authority, present_sections(json.loads(self.config_json)))
@@ -194,6 +205,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     cwd = params.get('cwd', str(resolve_agent_cwd()))
     if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
         raise RuntimeStoreError('invalid_params')
+    if params.get('cwd_explicit') is False and 'cwd' in params:
+        cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
     validate_editor(source, params.get('editor'))
     launch_skills(params)
@@ -217,6 +230,20 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config)
 
 
+def _profile_workspace_cwd(home):
+    """A NAMED profile's configured ``terminal.cwd``, which beats a client cwd the Desktop only inherited
+    (``cwd_explicit: false``; main's ``_completion_cwd``). Placeholders and missing dirs are unset."""
+    import os
+    from hermes_constants import profile_name_for_home
+    if profile_name_for_home(home) in {None, 'default'}:
+        return None
+    from hermes_cli.config import read_user_config_raw
+    terminal = read_user_config_raw(Path(home) / 'config.yaml').get('terminal')
+    raw = str((terminal if isinstance(terminal, dict) else {}).get('cwd') or '').strip()
+    configured = os.path.abspath(os.path.expanduser(raw)) if raw not in {'', '.', 'auto', 'cwd'} else None
+    return configured if configured and os.path.isdir(configured) else None
+
+
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
@@ -233,9 +260,21 @@ def _apply_launch_overrides(params, config):
                         or url.username or url.password or url.query or url.fragment):
                     raise RuntimeStoreError('invalid_params')
             config.setdefault('model', {})[key] = value
-    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config'):
+    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
+                 'cwd_explicit'):
         if flag in params and type(params[flag]) is not bool:
             raise RuntimeStoreError('invalid_params')
+    if 'service_tier' in params:
+        # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
+        # profile tier; an unknown word is refused, never read as normal.
+        from agent.fast_mode import parse_exact_service_tier
+        try:
+            tier = parse_exact_service_tier(params['service_tier']) if isinstance(params['service_tier'], str) else None
+        except ValueError:
+            tier = None
+        if tier is None:
+            raise RuntimeStoreError('invalid_params')
+        config.setdefault('agent', {})['service_tier'] = tier or 'normal'
     if params.get('checkpoints'):
         section = config.get('checkpoints')
         section = dict(section) if isinstance(section, dict) else {'enabled': bool(section)} if section else {}

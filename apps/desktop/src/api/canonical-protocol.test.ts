@@ -92,7 +92,7 @@ test('canonical create retries retain identity and reject unsupported explicit i
   expect(first).toMatchObject({ source: 'gui', cwd: '/tmp', request_id: expect.any(String) })
   expect(protocol.prepare('session.create', { ...params })).toEqual(first)
   expect(first).not.toHaveProperty('profile')
-  expect(() => protocol.prepare('session.create', { ...params, fast: true })).toThrow('fast')
+  expect(protocol.prepare('session.create', { ...params, fast: true })).toMatchObject({ service_tier: 'priority' })
   expect(() => protocol.prepare('session.create', { ...params, provider: 'custom' })).toThrow('provider')
   protocol.result('session.create', first, { session_id: 'canonical', stored_session_id: 'canonical' })
   expect(protocol.prepare('session.create', params).request_id).not.toBe(first.request_id)

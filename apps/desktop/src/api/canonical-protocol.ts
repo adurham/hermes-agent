@@ -384,24 +384,26 @@ export class CanonicalDesktopProtocol {
   }
 
   // The composer's per-session create options in the owner's create contract: the effort is the
-  // frozen launch `reasoning`; `cwd_explicit` is provenance the owner has no field for (it freezes
-  // `cwd` as given). No owner field carries a speed tier, so a non-normal pick is refused by name
-  // rather than silently running the chat at the profile's tier.
+  // frozen launch `reasoning`; the speed pick is `service_tier` (main: an explicit tier wins, Fast
+  // pins priority, Normal pins normal over a profile tier, omitted inherits); `cwd_explicit` is the
+  // provenance that lets a named profile's own workspace beat an inherited cwd.
   private prepareCreate(input: Record<string, unknown>): Record<string, unknown> {
-    const { reasoning_effort: effort, cwd_explicit: _provenance, fast, service_tier: tier, ...params } = input
-
-    if (fast === true || (typeof tier === 'string' && tier && tier !== 'normal')) {
-      throw new Error(`Starting a chat at ${tier === 'ultrafast' ? 'ultrafast' : 'fast'} speed is not available on the shared gateway yet; switch speed to Normal`)
-    }
+    const { reasoning_effort: effort, fast, service_tier: picked, ...params } = input
+    const tier = typeof picked === 'string' && picked ? picked : fast === true ? 'priority' : fast === false ? 'normal' : undefined
 
     if (typeof effort === 'string' && effort) { params.reasoning = effort }
-    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'reasoning', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
+
+    if (tier) { params.service_tier = tier }
+
+    if (typeof params.cwd_explicit !== 'boolean') { delete params.cwd_explicit }
+
+    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'reasoning', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'])
     const unsupported = Object.keys(params).filter(key => !allowed.has(key))
 
     if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
     const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config'].includes(key) || (key === 'profile' && siblingRoute(value))))
+      ['request_id', 'cwd', 'model', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && siblingRoute(value))))
 
     const key = JSON.stringify(result)
     const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()

@@ -17,13 +17,13 @@ const BASE = { cols: 96, source: 'desktop', profile: 'default' }
 
 // [label, desktopSessionCreateParams output, expected owner frame subset | named refusal]
 const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | RegExp]> = [
-  ['inherited workspace', { ...BASE, cwd: '/w', cwd_explicit: false, fast: false }, { cwd: '/w' }],
-  ['picked workspace', { ...BASE, cwd: '/w', cwd_explicit: true, fast: false }, { cwd: '/w' }],
-  ['composer effort', { ...BASE, cwd: '/w', cwd_explicit: false, reasoning_effort: 'high', fast: false }, { cwd: '/w', reasoning: 'high' }],
-  ['onboarding minimal effort', { ...BASE, reasoning_effort: 'minimal', fast: false, title: 'Welcome' }, { reasoning: 'minimal', title: 'Welcome' }],
+  ['inherited workspace', { ...BASE, cwd: '/w', cwd_explicit: false, fast: false }, { cwd: '/w', cwd_explicit: false, service_tier: 'normal' }],
+  ['picked workspace', { ...BASE, cwd: '/w', cwd_explicit: true, fast: false }, { cwd: '/w', cwd_explicit: true, service_tier: 'normal' }],
+  ['composer effort', { ...BASE, cwd: '/w', cwd_explicit: false, reasoning_effort: 'high', fast: false }, { cwd: '/w', reasoning: 'high', service_tier: 'normal' }],
+  ['onboarding minimal effort', { ...BASE, reasoning_effort: 'minimal', fast: false, title: 'Welcome' }, { reasoning: 'minimal', title: 'Welcome', service_tier: 'normal' }],
   ['Bot Chat', { ...BASE, title: 'Bot Chat', hidden: true, follow_profile_config: true }, { follow_profile_config: true, hidden: true }],
-  ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, /fast speed is not available on the shared gateway yet/],
-  ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, /ultrafast speed is not available on the shared gateway yet/]
+  ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { cwd: '/w', service_tier: 'priority' }],
+  ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { service_tier: 'ultrafast' }]
 ]
 
 test.each(CASES)('%s: the Desktop create frame is admitted by the owner contract or refused by name', async (_label, params, expected) => {

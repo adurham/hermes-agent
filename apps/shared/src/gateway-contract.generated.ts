@@ -4734,6 +4734,8 @@ export interface CanonicalCreateParams {
   title?: string | null
   hidden?: boolean
   follow_profile_config?: boolean | null
+  service_tier?: string | null
+  cwd_explicit?: boolean | null
 }
 export interface CanonicalSnapshot {
   session_id: string
