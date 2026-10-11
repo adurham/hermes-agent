@@ -725,6 +725,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if getattr(event, "internal", False) and not event.get_command():
+            # Main's rule (run_busy's busy handler, which the shared runtime's busy dispatch skips):
+            # an internal synthetic event never interrupts or steers the running turn.
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return None
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
