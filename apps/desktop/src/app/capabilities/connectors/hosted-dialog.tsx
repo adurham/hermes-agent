@@ -130,6 +130,7 @@ export function HostedConnectorDialog({
       onRetry={retryable(operation) ? () => accountActions.retry(operation) : undefined}
       onStopWaiting={() => onGiveUp(operation.opId)}
       operation={operation}
+      retrying={accountActions.reconnecting}
     />
   ) : undefined
 

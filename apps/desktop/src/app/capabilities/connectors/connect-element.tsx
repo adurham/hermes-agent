@@ -11,9 +11,11 @@ export interface ConnectElementProps {
   /** Restarts the failed sign-in of the account the operation is for; absent while one is still waiting. */
   onRetry?: () => void
   onStopWaiting: () => void
+  /** A start for this app is in flight; a second Try again would mint a second replacement sign-in. */
+  retrying?: boolean
 }
 
-export function ConnectElement({ operation, onRetry, onStopWaiting }: ConnectElementProps) {
+export function ConnectElement({ operation, onRetry, onStopWaiting, retrying = false }: ConnectElementProps) {
   const { t } = useI18n()
   const copy = t.connectorsPage
   const link = operation.targets.find(target => target.connectUrl)?.connectUrl ?? null
@@ -43,7 +45,7 @@ export function ConnectElement({ operation, onRetry, onStopWaiting }: ConnectEle
         ) : null}
 
         {onRetry ? (
-          <Button onClick={onRetry} size="xs" variant="secondary">
+          <Button disabled={retrying} onClick={onRetry} size="xs" variant="secondary">
             {copy.card.verb.tryAgain}
           </Button>
         ) : null}
