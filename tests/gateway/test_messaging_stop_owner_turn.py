@@ -9,6 +9,7 @@ drain over a real SessionDB; only agent construction/conversation is a stand-in.
 import asyncio
 
 import pytest
+from tests.waiting import async_wait_until
 
 
 def _owner(monkeypatch):
@@ -31,9 +32,7 @@ def _owner(monkeypatch):
 
 
 async def _until(predicate, timeout=10):
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0.01)
+    await async_wait_until(predicate, timeout=timeout)
 
 
 @pytest.mark.asyncio

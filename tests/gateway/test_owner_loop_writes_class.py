@@ -9,6 +9,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from tests.waiting import async_wait_until
 
 
 def _owner(tmp_path, monkeypatch, handle):
@@ -39,9 +40,8 @@ def _local(authority, owner, tmp_path, source='cli', request_id='m'):
 
 async def _terminal(db, receipt):
     import hermes_state_runtime as rt
-    async with asyncio.timeout(10):
-        while rt.get_session_admission(db, admission_id=receipt.admission_id)['status'] != 'terminal':
-            await asyncio.sleep(0.02)
+    await async_wait_until(lambda: rt.get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal',
+                           timeout=10, interval=0.02, what='the admission to settle')
 
 
 async def _model_prepare(authority, owner, tmp_path, db):
