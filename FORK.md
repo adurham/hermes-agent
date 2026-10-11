@@ -255,7 +255,7 @@ as they went. Result tally: KEEP-NEEDED 94, DOC-ONLY 33, PARTIAL 38, FORKONLY-KE
 SUPERSEDED 15, CONVERGED 14, FIX-MISSING 9, DEAD 6, ESCAPES-TAXONOMY 0; feature half: 24
 fork-only clusters kept (NOT-COVERED), 4 partial, 2 DEAD, 2 COVERED-BY-UPSTREAM. Nothing was
 edited by the auditors. The consolidated decision record (per-item evidence + exact actions)
-lives at `~/.hermes/cache/scratch/sync-v0.21.6/DEFORK_CONSOLIDATED.md`; all retirements stop at
+lived at `~/.hermes/cache/scratch/sync-v0.21.6/DEFORK_CONSOLIDATED.md` (scratch copies since pruned by the 24h cleanup; the round-3 record is re-homed at `docs/defork/2026-10-10-r3-upstream-absorption.md`); all retirements stop at
 the owner's approval gate.
 
 **FIX-MISSING (separate RESTORE list — never mixed into the retirement list):**
@@ -300,7 +300,7 @@ status lines record each one.
 
 Execution half of the de-fork audit above; the owner approved all tiers (including the config
 surface) on 2026-10-09. Four workstreams plus a close-out pass applied the audit's decisions;
-per-entry actions live in `DEFORK_GATE.md` / `DEFORK_CONSOLIDATED.md` (scratch `sync-v0.21.6/`).
+per-entry actions lived in `DEFORK_GATE.md` / `DEFORK_CONSOLIDATED.md` (scratch `sync-v0.21.6/`, since pruned; the round-3 record is re-homed at `docs/defork/2026-10-10-r3-upstream-absorption.md`).
 The full suite re-runs on amd-workstation (fork CI is disabled).
 
 **Retirements applied (audit SUPERSEDED/DEAD/COVERED-BY-UPSTREAM set):**
@@ -457,6 +457,45 @@ call is upstream-fixable in pm.client or by caching the verdict; (c) skipping th
 also means a POSIX box no longer *accidentally* provisions the pm-runtime from a checkpoint git
 call (real pm work still provisions it; benign).
 
+### Upstream-PR wave — 2026-10-11 (2 filed · 1 closed same-day · drafts refreshed · undraft + non-draft gated)
+
+**Filed (drafts — the account can only create drafts; see gate note below):**
+- **#136704** `fix(mcp): guard task cancel against a closed event loop in _cancel_waiters` — branch
+  `upstream-fix-mcp-cancel-guard` (47fd3d341db); clean vs `main`@97a9ae8ee5; `tests/tools/test_mcp_tool.py`
+  108 passed (macOS).
+- **#136705** `fix(aux): forward per-task timeout on native Anthropic auxiliary calls` — branch
+  `upstream-fix-aux-timeout` (10ce2738e66); `tests/agent/test_auxiliary_client.py` 242 passed.
+- **#136706** `fix(memory): hyphenated terms in holographic FTS search` — **filed and closed same day**:
+  upstream re-landed the holographic→community-catalog migration (`cca83848ec` "holographic leaves core
+  for its community catalog plugin (re-land #136424)") between the branch build and filing, so
+  `plugins/memory/holographic/` no longer exists in `main` and the PR was CONFLICTING on arrival. The fix
+  itself verified live (`PLAT-15800 …` → `"plat" OR "15800" …`) and now belongs to the community plugin
+  repo `itpartypattaya/hermes-plugin-holographic` (catalog v0.6.1, sha 46b6f908). **Fork-planning item:**
+  the fork runs the in-tree holographic provider (fact_store) — the next sync will delete it; decide
+  adopt-catalog vs preserve-in-tree (details in `docs/defork/2026-10-10-r3-upstream-absorption.md`).
+- **`upstream-fix-aux-slots` NOT filed** — competing open PR **#125435** (dskwe) adds the same keys to
+  `_AUX_TASK_SLOTS` (plus the CLI picker + stale-pin iteration); branch kept on origin.
+
+**Draft-batch refresh:** all 11 Oct-3/4 drafts checked vs current `main`; **5 were CONFLICTING → rebased
+onto `97a9ae8ee5`, retested, force-pushed (signed):** #132900 `4491b942dc→bcd887033b` (123 tests green);
+#132442 `283476e432→c8d035507c` (4 files green — the estimator-facing re-export exclusion re-applied onto
+upstream's new route model, which rearchitected the same function without it); #132439 `1dcfb1c383→3e3ebbe463`
+(51 green); #132249 `daf5bc8d01→158c1affab` (PR tests green; the 8 `test_update_autostash.py` fails are a
+pre-existing Mac home-IO-guard trap — identical on pure upstream/main); #132229 `8ae7ab9f64→128d5dcc83`
+(36 green). The other 6 are mergeable as-is.
+
+**Account gate (fully mapped):** `markPullRequestReadyForReview` denied — "adurham does not have
+permission to mark the pull request … ready for review" (tested #132439, #132900, #136664); non-draft
+creation denied (`CreatePullRequest`, tested on #136704). The account can create drafts and close PRs,
+nothing else; a maintainer must flip drafts ready.
+
+**Round-3 queue disposition + docs re-home:** scratch copies of the round-3 record were pruned by the 24h
+cleanup; recovered from the de-fork session to `docs/defork/2026-10-10-r3-upstream-absorption.md` (full
+unit tables + PARTIAL re-eval + this wave's dispositions). Queue: 4 built → 2 filed (#136704/#136705),
+1 closed (#136706), 1 held (aux-slots); 1 dropped (config-comment fix — upstream fixed it); 2 declined
+(mcp empty-cache — issue 88661/#119092; placeholder-401 — competing PRs 92125/110841). 4 owner decisions
+remain open (vision fix; clarify bell; adaptive-thinking + native-1M conditionals; interrupt-image caveat).
+
 ### Upstream-filing attempt — 2026-10-10 (round-3 queue: 4 branches ready, filing BLOCKED at the account level)
 
 **Prepared + pushed (signed, on origin for manual pickup; PR bodies in `scratch/sync-v0.21.6/upstream-prs/`):**
@@ -505,8 +544,9 @@ entered-content.tsx); renderer tsc rc 0; sessions-section-new-session-drag 24/24
 workspace-groups 85/85, layout-lane-order 6/6, overview-row 6/6. Two candidates withdrawn as
 keep-not-trim after evidence: the mcp `t.cancel()` guard (still covers a residual drain-miss
 path) and the completion-notification residual (the still-needed hold-gate half).
-**Still open (see `defork2/R3_CONSOLIDATED.md`):** the 7-item upstream-filing queue (needs owner
-go per the no-PR rule) and 4 owner decisions.
+**Still open (see `docs/defork/2026-10-10-r3-upstream-absorption.md`):** 4 owner decisions. The 7-item
+upstream-filing queue was dispositioned on 2026-10-11 (2 filed, 1 closed same-day, 1 held, 1 dropped,
+2 declined — see the 2026-10-11 entry above and the doc).
 *Side note (unverified): the lane `renderRows` path also drops `draggable`/`sortData`
 (`renderRowsDated` always passes draggable=false) — check whether per-lane session drag is
 expected to work in the app; out of scope this round.*
