@@ -603,7 +603,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         ref = SessionRef(authority.profile_id, sid)
         actor = Principal('messaging-control', authority.profile_id,
                           frozenset({'session:submit', 'session:control'}), 'busy-command')
-        for row in await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid):
+        rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
+        # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice
+        # promised the queued followers stay saved, so a /new from the chat leaves them queued.
+        paused = any(row['status'] == 'unknown' for row in rows)
+        for row in [] if paused else rows:
             if row['status'] == 'queued' and row['principal_id'].startswith('messaging:'):
                 # Claimed meanwhile (stale_generation): it runs as main's post-claim race does.
                 with suppress(RuntimeStoreError):
@@ -613,6 +617,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             # Settled meanwhile (stale_generation): there is no claimed turn left to stop.
             with suppress(RuntimeStoreError):
                 await authority.interrupt(actor, ref, handle.execution_generation)
+
     def _hm_busy_telegram_grace_queue(
         self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str
     ) -> bool:
