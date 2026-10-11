@@ -296,3 +296,24 @@ def test_truncation_detection_semantics():
     assert event_replay.is_truncated("s1", 5)
     # Unknown session: nothing evicted, nothing truncated.
     assert not event_replay.is_truncated("nope", 0)
+
+
+def test_forget_session_frees_the_ring_and_keeps_seq_and_gap_semantics():
+    for _ in range(3):
+        event_replay._stamp_event(_frame("gone"))
+    event_replay._stamp_event(_frame("kept"))
+    before = replay_stats()["bytes"]
+
+    event_replay.forget_session("gone")
+
+    assert replay_stats()["sessions"] == 1
+    assert 0 < replay_stats()["bytes"] < before
+    assert events_since("gone", 0) == []
+    assert latest_seq("gone") == 3  # numbering survives: a late frame continues at 4
+    assert event_replay.is_truncated("gone", 2)  # a client behind the drop must refetch
+    assert not event_replay.is_truncated("gone", 3)
+    late = _frame("gone")
+    event_replay._stamp_event(late)
+    assert late["params"]["seq"] == 4
+    assert len(events_since("kept", 0)) == 1
+    event_replay.forget_session("never-seen")  # no-op

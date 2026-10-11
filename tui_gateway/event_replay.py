@@ -128,6 +128,25 @@ def _stamp_event(obj: dict) -> None:
                     break
 
 
+def _drop_ring_locked(sid: str) -> None:
+    """Free one session's retained frames; keep its seq counter and raise its truncation watermark
+    to the latest seq (the FIFO-eviction contract, #100122). Caller holds ``_replay_lock``."""
+    global _replay_total_bytes
+    if _replay_buffers.pop(sid, None) is None:
+        return
+    _replay_total_bytes -= _replay_buffer_bytes.pop(sid, 0)
+    _replay_evicted_through[sid] = max(_replay_evicted_through.get(sid, 0), _replay_next_seq.get(sid, 0))
+
+
+def forget_session(sid: str) -> None:
+    """Release a torn-down session's replay ring. A runtime sid is never reattached after teardown
+    (resume mints a new one), so its frames can only be replayed to nobody."""
+    if not sid:
+        return
+    with _replay_lock:
+        _drop_ring_locked(sid)
+
+
 def events_since(sid: str, last_seen: int) -> list[dict]:
     """Recorded EVENT OBJECTS (each frame's ``params`` dict) with seq > last_seen for *sid*.
 

@@ -661,6 +661,8 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
     if end_reason != "tui_shutdown":
         _settle_isolated_turn_before_close(session)
     _teardown_session(session, end_reason=end_reason)
+    from tui_gateway.event_replay import forget_session
+    forget_session(str(session.get("_sid") or ""))  # after the reclaim announcement, the sid's last frame
     return True
 
 
