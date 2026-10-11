@@ -276,7 +276,11 @@ export function useConnectConnector(scope: ProfileScope): ConnectorConnect {
           connectionId: options?.connectionId,
           reconnect: options?.reconnect ?? false
         }
+
         const snapshot = await connectAccountConnectors(scope, [slug], request.reconnect, request)
+
+        // The start already lists the new or repaired account as pending; the list must not wait for the settle.
+        invalidateConnectors(scope, 'accounts')
 
         return { ok: true, operation: startAccountOperation(scope, [slug], snapshot, request) }
       } catch (error) {

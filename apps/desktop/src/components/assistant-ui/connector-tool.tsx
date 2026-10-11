@@ -401,7 +401,13 @@ function NamedAccountNotices({ owner, targets }: { owner: ConnectionOwner; targe
   return (
     <div className="grid gap-1 px-3.5" data-slot="connector-named-account">
       {named.map(target => (
-        <NamedAccountNotice alias={target.alias ?? ''} key={target.name} name={target.name} owner={owner} />
+        <NamedAccountNotice
+          alias={target.alias ?? ''}
+          connectionId={target.connectionId}
+          key={target.name}
+          name={target.name}
+          owner={owner}
+        />
       ))}
     </div>
   )
@@ -409,29 +415,33 @@ function NamedAccountNotices({ owner, targets }: { owner: ConnectionOwner; targe
 
 interface NamedAccountProps {
   alias: string
+  /** The account the line is about; the Rename link goes by it, since the name can change hands. */
+  connectionId: string
   name: string
   owner: ConnectionOwner
 }
 
-function NamedAccountNotice({ alias, name, owner }: NamedAccountProps) {
+function NamedAccountNotice({ alias, connectionId, name, owner }: NamedAccountProps) {
   const { t } = useI18n()
   const inRouter = useInRouterContext()
 
   return (
     <p className="flex flex-wrap items-center gap-x-1.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
       {t.connectors.namedAccount(connectorTitle(name), alias)}
-      {inRouter ? <RenameAccountLink alias={alias} name={name} owner={owner} /> : null}
+      {inRouter && connectionId ? (
+        <RenameAccountLink alias={alias} connectionId={connectionId} name={name} owner={owner} />
+      ) : null}
     </p>
   )
 }
 
 // useNavigate() throws outside a Router; the parent mounts this only inside one.
-function RenameAccountLink({ alias, name, owner }: NamedAccountProps) {
+function RenameAccountLink({ connectionId, name, owner }: NamedAccountProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
 
   return (
-    <Button onClick={() => navigate(accountRenameRoute(name, alias, owner))} size="inline" variant="textStrong">
+    <Button onClick={() => navigate(accountRenameRoute(name, connectionId, owner))} size="inline" variant="textStrong">
       {t.connectors.renameAccount}
     </Button>
   )

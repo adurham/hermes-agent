@@ -11,6 +11,7 @@ export const enConnectorAccounts: Translations['connectorsPage']['accounts'] = {
   add: 'Connect',
   rename: 'Rename',
   renameLabel: (name: string) => `New name for ${name}`,
+  renameGone: 'That account is no longer there. It was removed or replaced by a reconnect.',
   remove: 'Remove',
   removeTitle: (app: string, name: string) => `Remove the ${name} ${app} account?`,
   removeBody: 'Hermes stops acting as this account. Your other accounts stay connected.',

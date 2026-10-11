@@ -44,6 +44,7 @@ export interface ConnectorAccountsTranslations {
   add: string
   rename: string
   renameLabel: (name: string) => string
+  renameGone: string
   remove: string
   removeTitle: (app: string, name: string) => string
   removeBody: string

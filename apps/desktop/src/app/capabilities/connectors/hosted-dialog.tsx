@@ -2,7 +2,9 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import type { ProfileScope } from '@/hermes'
+import { translateNow } from '@/i18n'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { notify } from '@/store/notifications'
 
 import type { McpServersController } from '../mcp/use-mcp-servers'
 
@@ -50,8 +52,24 @@ export interface HostedConnectorDialogProps {
 }
 
 export interface PendingRename {
-  alias: string
+  /** The account goes by id: a stale link must not open another account that took its old name. */
+  connectionId: string
   slug: string
+}
+
+/** The account a pending rename link opens in this app's dialog: the row with that id, 'gone' once the list
+ *  has answered without it, or null while there is nothing to do yet. Never a row matched by name. */
+export function renameLinkTarget(
+  pending: null | PendingRename,
+  slug: string,
+  accounts: readonly AccountRow[],
+  loaded: boolean
+): 'gone' | AccountRow | null {
+  if (pending?.slug !== slug) {
+    return null
+  }
+
+  return accounts.find(row => row.connection_id === pending.connectionId) ?? (loaded ? 'gone' : null)
 }
 
 export interface HostedAccountActions {
@@ -101,6 +119,7 @@ export function HostedConnectorDialog({
 
   const accountList = useAccountList(
     card,
+    hosted.accountsLoaded,
     accountActions,
     operation !== null && !operation.settled,
     retryableAccount(operation)
@@ -211,6 +230,7 @@ function menuReconnect(
  *  rename opens that account's editor once this app lists it. */
 function useAccountList(
   card: ConnectorCardModel,
+  accountsLoaded: boolean,
   actions: HostedAccountActions,
   connecting: boolean,
   retryable: null | string
@@ -219,15 +239,20 @@ function useAccountList(
   const accounts = card.ways.hosted?.accounts ?? []
   const { pendingRename, renameOpened } = actions
 
-  const renameTarget =
-    pendingRename?.slug === card.slug ? accounts.find(row => row.alias === pendingRename.alias) : undefined
+  const linked = renameLinkTarget(pendingRename, card.slug, accounts, accountsLoaded)
+  const renameTarget = linked === 'gone' ? undefined : (linked ?? undefined)
+  const renameGone = linked === 'gone'
 
   useEffect(() => {
     if (renameTarget) {
       setEdit({ connectionId: renameTarget.connection_id, kind: 'rename' })
       renameOpened()
+    } else if (renameGone) {
+      // Removed or replaced by a reconnect since the link was made: open nothing and say so.
+      notify({ kind: 'info', message: translateNow('connectorsPage.accounts.renameGone') })
+      renameOpened()
     }
-  }, [renameOpened, renameTarget])
+  }, [renameGone, renameOpened, renameTarget])
 
   const props: AccountsSectionProps = {
     accounts,

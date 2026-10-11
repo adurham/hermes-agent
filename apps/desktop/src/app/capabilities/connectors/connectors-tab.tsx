@@ -15,6 +15,7 @@ import { useMcpServers } from '../mcp/use-mcp-servers'
 import { AddServerDialog } from './add-dialog'
 import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects, $accountOperations, abandonConnect, accountOperationFor } from './data/account-operations'
+import { claimRouteLink } from './data/deep-link'
 import { accountAddress, joinBundledEntries, joinLocalServers, pickAccount } from './data/join'
 import { useConnectConnector, useConnectorSwitch, useDisconnectAccount, useRenameAccount } from './data/mutations'
 import { seedLocalServers, startConnectorPersistence, storeLocalServers } from './data/persist'
@@ -117,7 +118,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
   const openCard = useMemo(() => cards.find(card => cardKey(card) === openKey) ?? null, [cards, openKey])
 
-  useOpenFromRoute(cards, setOpenKey, setPendingRename)
+  useOpenFromRoute(cards, profile, setOpenKey, setPendingRename)
 
   const write = async (pending: Promise<{ error?: unknown; ok: boolean }>) => {
     const outcome = await pending
@@ -378,10 +379,11 @@ function HostedNotice({ hasGuest, phase }: { hasGuest: boolean; phase: HostedPha
 
 function useOpenFromRoute(
   cards: readonly ConnectorCardModel[],
+  scope: ProfileScope,
   open: (key: string) => void,
   rename: (target: PendingRename) => void
 ): void {
-  const { hash, pathname, search } = useLocation()
+  const { hash, key: locationKey, pathname, search } = useLocation()
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -397,7 +399,9 @@ function useOpenFromRoute(
       ? cards.find(card => card.residency === 'local' && card.slug === server)
       : cards.find(card => card.slug === slug)
 
-    if (!target) {
+    // A tab for another profile leaves the link to the page once it takes the link's scope, and of two
+    // mounted pages (one docked) only one acts on it.
+    if (!target || !claimRouteLink(locationKey, params, scope)) {
       return
     }
 
@@ -405,10 +409,10 @@ function useOpenFromRoute(
       openToolsList(toolsListKey(target))
     }
 
-    const alias = params.get('rename')
+    const connectionId = params.get('rename')
 
-    if (alias) {
-      rename({ alias, slug: target.slug })
+    if (connectionId) {
+      rename({ connectionId, slug: target.slug })
     }
 
     open(cardKey(target))
@@ -421,5 +425,5 @@ function useOpenFromRoute(
 
     const query = params.toString()
     navigate({ hash, pathname, search: query ? `?${query}` : '' }, { replace: true })
-  }, [cards, hash, navigate, open, pathname, rename, search])
+  }, [cards, hash, locationKey, navigate, open, pathname, rename, scope, search])
 }

@@ -12,6 +12,7 @@ export const frConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   add: 'Connecter',
   rename: 'Renommer',
   renameLabel: (name: string) => `Nouveau nom pour ${name}`,
+  renameGone: 'Ce compte n’existe plus. Il a été supprimé ou remplacé par une reconnexion.',
   remove: 'Retirer',
   removeTitle: (app: string, name: string) => `Retirer le compte ${app} ${name} ?`,
   removeBody: "Hermes cesse d'agir avec ce compte. Vos autres comptes restent connectés.",

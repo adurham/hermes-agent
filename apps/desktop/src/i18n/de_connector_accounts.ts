@@ -12,6 +12,7 @@ export const deConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   add: 'Verbinden',
   rename: 'Umbenennen',
   renameLabel: (name: string) => `Neuer Name für ${name}`,
+  renameGone: 'Dieses Konto gibt es nicht mehr. Es wurde entfernt oder durch eine neue Verbindung ersetzt.',
   remove: 'Entfernen',
   removeTitle: (app: string, name: string) => `Das ${app}-Konto ${name} entfernen?`,
   removeBody: 'Hermes handelt nicht mehr über dieses Konto. Ihre anderen Konten bleiben verbunden.',

@@ -354,6 +354,7 @@
   "connectorsPage.accounts.removeBody": ["ar","ja","ru","zh","zh-hant"],
   "connectorsPage.accounts.removeTitle": ["ar","ja","ru","zh","zh-hant"],
   "connectorsPage.accounts.rename": ["ar","ja","ru","zh","zh-hant"],
+  "connectorsPage.accounts.renameGone": ["ar","ja","ru","zh","zh-hant"],
   "connectorsPage.accounts.renameLabel": ["ar","ja","ru","zh","zh-hant"],
   "connectorsPage.accounts.retiredCount": ["ar","ja","ru","zh","zh-hant"],
   "connectorsPage.accounts.status.expired": ["ar","ja","ru","zh","zh-hant"],
