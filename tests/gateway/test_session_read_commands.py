@@ -53,7 +53,11 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
             for command in ('usage', 'insights', 'profile', 'topup', 'diff', 'memory', 'kanban list',
                             'suggestions', 'bundles', 'usage reset', 'memory approval on', 'kanban create x',
                             'suggestions catalog', 'debug', 'agents', 'sessions', 'platform', 'fast'):
-                reply = await rpc(ws, 'slash.exec', session_id=sid, command=command)
+                try:
+                    reply = await rpc(ws, 'slash.exec', session_id=sid, command=command)
+                except TimeoutError:
+                    # Name the command: an unnamed 20 s rpc timeout under load carried no evidence.
+                    raise AssertionError(f'slash.exec {command!r} did not answer within the rpc bound') from None
                 out[command] = reply.get('result', {}).get('output') or reply.get('error', {}).get('message')
             dispatched = await rpc(ws, 'command.dispatch', session_id=sid, name='profile', arg='')
             out['dispatch profile'] = dispatched['result']['output']

@@ -36,8 +36,6 @@ import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID, sessionInfo
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 
-import { uploadComposerAttachment } from '.'
-
 // Suites in this file reuse the same stored-id constants. The module-level
 // single-flight resume map (and drift-recovery cache) would otherwise leak a
 // never-settling in-flight promise from one test into the next.
