@@ -17,6 +17,7 @@ import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects, $accountOperations, abandonConnect, accountOperationFor } from './data/account-operations'
 import { claimRouteLink } from './data/deep-link'
 import { accountAddress, joinBundledEntries, joinLocalServers, pickAccount } from './data/join'
+import { invalidateConnectors } from './data/keys'
 import { useConnectConnector, useConnectorSwitch, useDisconnectAccount, useRenameAccount } from './data/mutations'
 import { seedLocalServers, startConnectorPersistence, storeLocalServers } from './data/persist'
 import { prefetchConnectorTools, usePrefetchConnectedTools } from './data/prefetch'
@@ -412,6 +413,8 @@ function useOpenFromRoute(
     const connectionId = params.get('rename')
 
     if (connectionId) {
+      // The cached list can predate an account connected since; the editor decides on a fresh read.
+      invalidateConnectors(scope, 'accounts')
       rename({ connectionId, slug: target.slug })
     }
 
