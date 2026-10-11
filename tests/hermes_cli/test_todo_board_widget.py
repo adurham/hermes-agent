@@ -128,17 +128,17 @@ def test_board_text_border_markers_and_header():
 def test_board_overflow_footer_and_pending_first():
     # 24 term rows → cap 12. 20 completed + 6 pending.
     items = _items(*(["completed"] * 20 + ["pending"] * 6))
-    lines = _text(m.get_todo_board_text(items, 100, 24)).splitlines()
+    lines = _text(m.get_todo_board_text(items, 100, 24, expanded=True)).splitlines()
     body = lines[1:-1]
     assert body[-1].strip(" │").startswith("… +14 completed hidden")
     assert sum("[ ]" in l for l in body) == 6
     # header + 12 items + footer + 2 borders
-    assert m.get_todo_board_height(items, 24) == 1 + 12 + 1 + 2 == len(lines)
+    assert m.get_todo_board_height(items, 24, expanded=True) == 1 + 12 + 1 + 2 == len(lines)
 
 
 def test_board_footer_reports_hidden_pending_on_all_pending_list():
     items = _items(*(["pending"] * 20))
-    lines = _text(m.get_todo_board_text(items, 100, 16)).splitlines()  # cap = 8
+    lines = _text(m.get_todo_board_text(items, 100, 16, expanded=True)).splitlines()  # cap = 8
     assert "… +12 pending hidden" in lines[-2]
 
 
@@ -146,7 +146,7 @@ def test_board_footer_reports_hidden_pending_on_all_pending_list():
 def test_height_tracks_cap_boundaries(term_rows, cap):
     items = _items(*(["pending"] * 50))
     # header + cap items + footer + 2 borders
-    assert m.get_todo_board_height(items, term_rows) == cap + 4
+    assert m.get_todo_board_height(items, term_rows, expanded=True) == cap + 4
 
 
 def test_narrow_terminal_trims_rows_keeps_border_aligned():
@@ -209,6 +209,14 @@ def test_real_layout_paints_board_end_to_end(monkeypatch):
     from tests.hermes_cli.test_cli_footer_split import _render_once, _Tty
 
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
+    # macOS checkout under ~/.hermes: importing cli runs hermes_bootstrap's boot-time
+    # activate_dependencies -> payload_venv -> _payload_manifest, which reads
+    # repo_root().parent/"manifest.json" = the REAL home; the suite's home-I/O guard refuses
+    # that read (tests/home_io_guard.py). This tree is not a sealed payload — stub the manifest
+    # probe so the boot path takes its no-payload route (idiom: skill reference
+    # pm-worker-flood-2026-10-10.md, "Test gotchas").
+    import pm.environments as pm_environments
+    monkeypatch.setattr(pm_environments, "_payload_manifest", lambda root: None)
     from cli import HermesCLI
 
     cli = HermesCLI(model="fixture", provider="openai-compat", api_key="fixture",
@@ -231,3 +239,48 @@ def test_todo_border_style_registered():
     cli = SimpleNamespace()
     m.CLITuiMixin._tui_set_base_style(cli)
     assert cli._tui_style_base["todo-border"] == "#CD7F32"
+
+
+# ── collapsed default (fork 2026-10-11): fewer rows + Ctrl+E expand/collapse ───────────────────
+
+
+def test_collapsed_default_caps_rows_and_shows_expand_hint():
+    # 20 completed + 6 pending → collapsed budget 5: header + 5 pending + hidden footer + borders.
+    items = _items(*(["completed"] * 20 + ["pending"] * 6))
+    lines = _text(m.get_todo_board_text(items, 100, 24)).splitlines()
+    body = lines[1:-1]
+    assert "Ctrl+E expand" in body[0]
+    assert "… +1 pending / 20 completed hidden" in body[-1]
+    assert sum("[ ]" in l for l in body) == 5
+    assert m.get_todo_board_height(items, 24) == 1 + 5 + 1 + 2 == len(lines)
+
+
+def test_expanded_view_flips_hint_to_collapse():
+    items = _items(*(["completed"] * 20 + ["pending"] * 6))
+    lines = _text(m.get_todo_board_text(items, 100, 24, expanded=True)).splitlines()
+    assert "Ctrl+E collapse" in lines[1]
+    assert "Ctrl+E expand" not in lines[1]
+    assert m.get_todo_board_height(items, 24, expanded=True) == 12 + 4 == len(lines)
+
+
+def test_no_toggle_hint_when_list_fits_collapsed_budget():
+    items = _items("pending", "pending", "in_progress")
+    text = _text(m.get_todo_board_text(items, 100, 24))
+    assert "Ctrl+E" not in text
+    assert len(text.splitlines()) == 3 + 1 + 2
+
+
+def test_toggle_todo_board_flips_state_and_invalidates():
+    calls = []
+    cli = SimpleNamespace(_invalidate=lambda: calls.append(1))
+    assert getattr(cli, "_todo_board_expanded", False) is False
+    m.toggle_todo_board(cli)
+    assert cli._todo_board_expanded is True and len(calls) == 1
+    m.toggle_todo_board(cli)
+    assert cli._todo_board_expanded is False and len(calls) == 2
+
+
+def test_toggle_wiring_in_tui_source():
+    assert "kb.add('c-e'" in TUI_SRC
+    assert "toggle_todo_board(self)" in TUI_SRC
+    assert 'expanded=getattr(cli_ref, "_todo_board_expanded", False)' in TUI_SRC
