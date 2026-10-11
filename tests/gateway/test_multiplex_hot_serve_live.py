@@ -20,6 +20,8 @@ import time
 import pytest
 from websockets.asyncio.client import connect
 
+from tests.waiting import wait_until
+
 ROOT = Path(__file__).resolve().parents[2]
 # The daemon is a foreground child of the test (never detached), boots a disposable custom root
 # with HOME redirected (no systemd unit, no webhook port) and is reaped in every path below.
@@ -192,13 +194,15 @@ def kill_recorded_gateway(root, timeout=45):
     if pid:
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGINT)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        def gone():
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                return
-            time.sleep(.2)
+                return True
+            return False
+        with contextlib.suppress(AssertionError):
+            wait_until(gone, timeout=timeout, interval=.2, what=f'gateway {pid} exited')
+            return
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
 

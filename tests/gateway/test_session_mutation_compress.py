@@ -10,6 +10,7 @@ import threading
 import pytest
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 from tests.gateway.test_session_mutation_model import CatalogModel
+from tests.waiting import async_wait_until
 
 
 class SummaryModel(CatalogModel):
@@ -87,13 +88,12 @@ def run_compress_case(tmp_path, mode, in_place):
             accepted = {}
             async def turn(text):
                 accepted[text] = await call('prompt.submit', session_id=sid, input_id=text, text=text)
-                async with asyncio.timeout(30):
-                    while True:
-                        with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
-                            row = db.execute('SELECT status FROM session_admissions WHERE request_id=?', (text,)).fetchone()
-                        if row and row[0] == 'terminal':
-                            return await call('session.resume', session_id=sid)
-                        await asyncio.sleep(.03)
+                def terminal():
+                    with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
+                        row = db.execute('SELECT status FROM session_admissions WHERE request_id=?', (text,)).fetchone()
+                    return row and row[0] == 'terminal'
+                await async_wait_until(terminal, timeout=30, what=f'{text} terminal')
+                return await call('session.resume', session_id=sid)
             history_count = 16
             for i in range(history_count):
                 before = await turn('HISTORY_' + str(i))
