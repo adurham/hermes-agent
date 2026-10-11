@@ -401,7 +401,7 @@ export class CanonicalDesktopProtocol {
     if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
     const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'toolsets', 'reasoning', 'title', 'hidden'].includes(key) || (key === 'profile' && siblingRoute(value))))
+      ['request_id', 'cwd', 'model', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config'].includes(key) || (key === 'profile' && siblingRoute(value))))
 
     const key = JSON.stringify(result)
     const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()

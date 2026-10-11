@@ -21,6 +21,7 @@ const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | R
   ['picked workspace', { ...BASE, cwd: '/w', cwd_explicit: true, fast: false }, { cwd: '/w' }],
   ['composer effort', { ...BASE, cwd: '/w', cwd_explicit: false, reasoning_effort: 'high', fast: false }, { cwd: '/w', reasoning: 'high' }],
   ['onboarding minimal effort', { ...BASE, reasoning_effort: 'minimal', fast: false, title: 'Welcome' }, { reasoning: 'minimal', title: 'Welcome' }],
+  ['Bot Chat', { ...BASE, title: 'Bot Chat', hidden: true, follow_profile_config: true }, { follow_profile_config: true, hidden: true }],
   ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, /fast speed is not available on the shared gateway yet/],
   ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, /ultrafast speed is not available on the shared gateway yet/]
 ]

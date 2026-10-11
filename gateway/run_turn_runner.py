@@ -1132,7 +1132,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             if policy and policy.model and not pending_fallback_notice:
                 # The frozen route's model, unless resolution just fell back: the fallback entry's
                 # model is the one this agent must send (#112600).
-                model = policy.model
+                from gateway.session_authorities import active_authority
+                model = policy.current_model(active_authority(runner))
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1169,7 +1170,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 return _unresolved(f"⚠️ {exc}")
             return _unresolved(t("gateway.errors.no_credentials"))
         pr = runner._provider_routing
-        reasoning_config = (policy.reasoning_config if policy else
+        reasoning_config = (policy.current_reasoning_config(runner) if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         from gateway.session_api_turn import api_execution

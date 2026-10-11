@@ -10,7 +10,11 @@ from hermes_state_runtime import RuntimeStoreError
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
-                           'skills', 'checkpoints', 'accept_hooks', 'pass_session_id'})
+                           'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config'})
+# Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
+# turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
+FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases')
+FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier')
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
 # Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``) and
@@ -43,9 +47,10 @@ class LocalSessionPolicy:
 
     def config(self, authority=None):
         config = present_sections(json.loads(self.config_json))
+        live = self._live_profile(authority, config)
         if self.config_secret_ref is not None and authority is not None:
             from gateway.session_policy_credentials import recover_config_secrets
-            secrets = recover_config_secrets(authority, self)
+            secrets = recover_config_secrets(authority, self, skip=FOLLOW_SECTIONS if live is not None else ())
             for path, value in secrets.items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
@@ -58,7 +63,53 @@ class LocalSessionPolicy:
             # ``/model <alias>`` with a literal key: the receipt points at the alias entry's secret.
             if isinstance(model, dict) and model.get('api_key_from') and 'api_key' in model:
                 model['api_key'] = secrets.get(tuple(model['api_key_from']))
+        if live is not None:
+            for key in FOLLOW_SECTIONS:
+                if key in live:
+                    config[key] = live[key]
+                else:
+                    config.pop(key, None)
+            agent, live_agent = config.setdefault('agent', {}), live.get('agent') or {}
+            for key in FOLLOW_AGENT_KEYS:
+                if key in live_agent:
+                    agent[key] = live_agent[key]
+                else:
+                    agent.pop(key, None)
         return config
+
+    @property
+    def follows_profile(self):
+        return json.loads(self.request_json).get('follow_profile_config') is True
+
+    def _live_profile(self, authority, frozen):
+        """The owning profile's current config for a following session, or None when the frozen route
+        applies: not following, or an explicit pick (create-time model / committed /model) made while
+        the profile still targets what it targeted then (main's ``composer_override_profile``)."""
+        if authority is None or not self.follows_profile:
+            return None
+        from gateway.run import _load_gateway_config
+        live = present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+        pick = (frozen.get('model') or {}).get('selection_profile')
+        if not live or (pick is not None and pick == list(profile_target(live))):
+            return None
+        return live
+
+    def current_reasoning_config(self, runner):
+        """The next turn's reasoning: the profile's current effort when following, else the frozen one."""
+        if not self.follows_profile:
+            return self.reasoning_config
+        from gateway.session_authorities import active_authority
+        from hermes_constants import resolve_reasoning_config
+        authority = active_authority(runner)
+        return resolve_reasoning_config(self.config(authority), self.current_model(authority) or '')
+
+    def current_model(self, authority):
+        """The model this session's next turn runs: the profile's current default when following."""
+        live = self._live_profile(authority, present_sections(json.loads(self.config_json)))
+        if live is None:
+            return self.model
+        from gateway.run import _resolve_gateway_model
+        return _resolve_gateway_model(live) or self.model
 
     @property
     def provider(self):
@@ -101,6 +152,15 @@ class LocalSessionPolicy:
         return resolve_reasoning_config(self.config(), self.model or '')
 
 
+def profile_target(config):
+    """(model, provider) a profile config selects; 'auto' is no provider (main's _config_model_target)."""
+    model = config.get('model')
+    if isinstance(model, dict):
+        provider = str(model.get('provider') or '').strip()
+        return str(model.get('default') or '').strip(), '' if provider.lower() == 'auto' else provider
+    return (model.strip() if isinstance(model, str) else ''), ''
+
+
 def present_sections(config):
     """A bare ``gateway:`` key parses as YAML null; like load_config's merge (#58277), treat it as absent so
     ``cfg.get('gateway', {}).get(...)`` reads the default instead of crashing a fresh install's first turn."""
@@ -138,6 +198,10 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     validate_editor(source, params.get('editor'))
     launch_skills(params)
     config = present_sections(json.loads(json.dumps(config)))
+    if params.get('follow_profile_config') is True and 'model' in params:
+        # The pick's provenance, recorded before the launch route folds in: it holds while the profile
+        # still targets this, and a later profile edit supersedes it.
+        config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
     enabled = _resolve_toolsets(params, config, source, safe_mode)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
@@ -169,7 +233,7 @@ def _apply_launch_overrides(params, config):
                         or url.username or url.password or url.query or url.fragment):
                     raise RuntimeStoreError('invalid_params')
             config.setdefault('model', {})[key] = value
-    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id'):
+    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config'):
         if flag in params and type(params[flag]) is not bool:
             raise RuntimeStoreError('invalid_params')
     if params.get('checkpoints'):

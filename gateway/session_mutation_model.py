@@ -33,6 +33,15 @@ async def prepare_model(authority, live, payload, prepared):
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
     # Off-loop: the context-pin check can do cold-start disk I/O.
     frozen['model'] = await asyncio.to_thread(apply_model_selection, frozen.get('model'), result)
+    if old.follows_profile:
+        # A committed /model holds while the profile still targets what it targets now (main's
+        # composer_override_profile); a later profile edit supersedes it.
+        from pathlib import Path
+        from gateway.run import _load_gateway_config
+        from gateway.session_policy import present_sections, profile_target
+        live = await asyncio.to_thread(
+            lambda: _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+        frozen['model']['selection_profile'] = list(profile_target(present_sections(live)))
     # A direct alias's own credential is part of the selection (never ``result.api_key``, which the
     # switch resolved for its probe): its env pointer is committed and re-read every turn; a literal
     # key is a private config secret at the alias entry's own path (what a restarted owner re-reads)

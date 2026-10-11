@@ -32,13 +32,16 @@ def config_reference(authority, session_id, policy, secrets):
         sort_keys=True)
 
 
-def recover_config_secrets(authority, policy):
+def recover_config_secrets(authority, policy, skip=()):
+    """The frozen config secrets; entries under a *skip* section are neither re-read nor checked (a
+    following session overwrites those sections from the live profile, so a key rotation there is not
+    a revoked launch credential)."""
     ref = policy.config_secret_ref
     if not ref.startswith(PREFIX):
         values = getattr(authority, '_local_config_secrets', {}).get(ref)
         if values is None:
             raise RuntimeStoreError('launch_credentials_unavailable')
-        return values
+        return {path: value for path, value in values.items() if path[0] not in skip}
     try:
         source = json.loads(ref[len(PREFIX):])
         home = Path(authority.db.db_path).resolve().parent
@@ -47,11 +50,13 @@ def recover_config_secrets(authority, policy):
             raise ValueError('scope mismatch')
         cached = getattr(authority, '_local_config_secrets', {}).get(ref)
         if cached is not None:
-            return cached
+            return {path: value for path, value in cached.items() if path[0] not in skip}
         from gateway.run import _load_gateway_config
         config = _load_gateway_config(home / 'config.yaml')
         values = {}
         for path, fingerprint in source['entries']:
+            if path[0] in skip:
+                continue
             value = config
             lookup = path
             if path[0] is None:

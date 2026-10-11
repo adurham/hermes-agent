@@ -1675,10 +1675,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             self._evict_cached_agent(session_key)
             return
         # A LOCAL session runs its frozen launch policy's model, not the gateway's configured one.
+        from gateway.session_authorities import active_authority
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(self, turn_ctx.source)
         _cfg_model = self._fallback_baseline_model(
-            session_key, turn_ctx.source, _agent, policy_model=policy.model if policy and policy.model else None)
+            session_key, turn_ctx.source, _agent, policy_model=policy.current_model(active_authority(self)) if policy and policy.model else None)
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 

@@ -232,7 +232,7 @@ def _lazy_model(authority, policy):
     """The model a not-yet-built session will run: with no provider pinned, the free tier's agent
     build pins ``nous/welcome`` (``pin_model_for_route``), so the configured default is not it."""
     import json
-    model = policy.model if policy else None
+    model = policy.current_model(authority) if policy else None
     if (policy is None or json.loads(policy.request_json).get('model')
             or str(policy.provider or '').strip().lower() not in {'', 'auto'}):
         return model
@@ -279,7 +279,7 @@ def local_session_info(authority, ref):
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
     info = {'source': policy.source if policy else live.source.platform.value,
-            'model': (getattr(agent, 'model', policy.model if policy else None) if agent is not None
+            'model': (getattr(agent, 'model', policy.current_model(authority) if policy else None) if agent is not None
                       else _lazy_model(authority, policy)),
             'lazy': agent is None,
             'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,

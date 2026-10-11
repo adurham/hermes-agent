@@ -263,11 +263,9 @@ class AuthorityConnection:
         from gateway.session_local_title import resolve_titled_session, title_new_session
         from gateway.session_runtime_workers import tracked_write
         from hermes_state_local import commit_local_session
-        # Bot Mode's forever-chat mint: born hidden from the sidebar; `follow_profile_config` is
-        # the canonical default (a local session's runtime is built from the profile's current
-        # config on every attach), so the flag is accepted for the legacy contract and implied.
+        # Bot Mode's forever-chat mint: born hidden from the sidebar. `follow_profile_config` stays in
+        # the frozen request: the policy re-reads the profile's current route every turn.
         hidden = params.pop('hidden', False)
-        params.pop('follow_profile_config', None)
         if type(hidden) is not bool:
             raise RuntimeStoreError('invalid_params')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
