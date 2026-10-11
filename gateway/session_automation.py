@@ -82,9 +82,13 @@ def automation_display_metadata(metadata):
 # notification_origin / original_trigger_message_id are producer debug context (#52694) and are not
 # persisted; notification_category="diagnostic" rides the snapshot so the replayed wake still mutes,
 # and display_kind/display_text so the persisted row is the card the producer named.
+# gateway_proven_session_id / gateway_completion_ids are main's delivery-time ownership proof for the
+# classic resolver (802fd5782f3, fd4e277c849). Here _owner() proves the route inside the admission
+# itself and the durable claim settles only on that commit, so they are accepted and not persisted:
+# carrying a sibling set in the fingerprint would make the same completion's retry a new identity.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids'})
 
 
 def snapshot_automation(authority, adapter, event, identity):
