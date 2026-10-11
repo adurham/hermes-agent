@@ -642,6 +642,22 @@ class SessionAuthority:
         agent = running.get(self.sessions[ref.session_id].route)
         return agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
+    def steer_agent(self, ref, generation, text):
+        """The agent a steer for this running generation reaches; the caller holds the session's
+        event_stream.lock after check_approval_generation. Before the turn adopts its agent the
+        resident one is the previous turn's cached agent, which this turn may replace, so *text* is
+        latched for the agent this generation adopts (adopt_agent, under the same lock):
+        ``(None, True)``. A claim with no steer seam (cron, managed worker) latches nothing."""
+        adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
+        if adopted_generation != generation:
+            agent = self.agent(ref) if self._runs_own_agent(ref) else None
+        from gateway.session_busy_controls import adopts_owner_agent
+        if agent is not None or text is None or not adopts_owner_agent(self, ref):
+            return agent, False
+        latched, texts = self.pending_steers.get(ref.session_id, (None, []))
+        self.pending_steers[ref.session_id] = (generation, [*texts, text] if latched == generation else [text])
+        return None, True
+
     def adopt_agent(self, session_id, generation, agent):
         """The turn installs its agent for the running claim; a Stop latched while there
         was no agent to deliver it to fires now, never against a later generation. A Stop

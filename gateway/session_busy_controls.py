@@ -111,7 +111,7 @@ async def yolo_config(connection, ref, params, write):
     return {'key': 'yolo', 'value': '1' if enabled else '0', 'scope': 'session'}
 
 
-def _adopts_owner_agent(authority, ref):
+def adopts_owner_agent(authority, ref):
     """The claimed turn runs an in-process owner agent, which adopt_agent hands latched steers to;
     a cron job or a managed worker has no steer seam, so a latch there would be acknowledged and lost."""
     from gateway.session_managed_worker import managed_policy
@@ -138,17 +138,10 @@ async def correct(connection, ref, params, *, verb):
         # agent. Refuse explicitly instead of acknowledging undeliverable text.
         if ref.session_id in getattr(authority, '_managed_workers', {}):
             raise RuntimeStoreError('unsupported_control')
-        adopted_generation, agent = authority.adopted.get(ref.session_id, (None, None))
-        if adopted_generation != generation:
-            # Before adoption the resident agent is the previous turn's cached one, which this
-            # turn may replace: only a running slot holding a real agent is this turn's own.
-            agent = authority.agent(ref) if authority._runs_own_agent(ref) else None
-        if agent is None and verb == 'steer' and _adopts_owner_agent(authority, ref):
-            # Accepted for this exact claim before its turn built an agent: adopt_agent hands it
-            # to the agent this generation adopts (under this lock), never to a later one.
-            latched, texts = authority.pending_steers.get(ref.session_id, (None, []))
-            authority.pending_steers[ref.session_id] = (generation, [*texts, params['text']] if latched == generation
-                                                        else [params['text']])
+        # Accepted for this exact claim before its turn built an agent: steer_agent latches it for
+        # the agent this generation adopts, never a later one.
+        agent, latched = authority.steer_agent(ref, generation, params['text'] if verb == 'steer' else None)
+        if latched:
             return {'status': 'queued', 'text': params['text'], 'execution_generation': generation,
                     'authority_epoch': authority.epoch}
         method = getattr(agent, verb, None)

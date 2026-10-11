@@ -1349,6 +1349,11 @@ async def _handle_run_clarify(self, request, *, _api_server):
     return await _respond_authority_run(self, run_id, body, kind='clarify', _api_server=_api_server)
 
 
+def _steer_refused(_openai_error, run_id):
+    return _json_error(_openai_error, f"Run is not currently accepting steer input: {run_id}",
+                       code="run_not_accepting_steer", status=409)
+
+
 async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.Response:
     """POST /v1/runs/{run_id}/steer — inject guidance into a running agent."""
     _openai_error = _api_server._openai_error
@@ -1356,25 +1361,16 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
         self, request, _api_server=_api_server, permission=None, active_fallback=False)
     if err is not None:
         return err
+    owned = None
     if getattr(self.gateway_runner, 'session_authority', None) is not None:
         from gateway.platforms.api_server_authority_runs import run_admission
-        from hermes_state_runtime import RuntimeStoreError
         owned = run_admission(self, run_id)
+        owned = owned if run_id not in self._stopping_run_ids else None
         agent = None
-        if owned is not None and run_id not in self._stopping_run_ids:
-            authority, row = owned
-            try:
-                authority.check_approval_generation(row['target_session_id'], row['generation'])
-                from gateway.session_contract import SessionRef
-                agent = authority.agent(SessionRef(authority.profile_id, row['target_session_id']))
-            except RuntimeStoreError:
-                pass
     # /stop keeps agent refs during cooperative shutdown, so the status gate (not the
     # agent ref) is what rejects stop-then-steer.
-    if status.get("status") != "running" or not hasattr(agent, "steer"):
-        return _json_error(
-            _openai_error, f"Run is not currently accepting steer input: {run_id}",
-            code="run_not_accepting_steer", status=409)
+    if status.get("status") != "running" or (owned is None and not hasattr(agent, "steer")):
+        return _steer_refused(_openai_error, run_id)
     body, err = await self._read_json_body(request)
     if err:
         return err
@@ -1384,6 +1380,23 @@ async def _handle_steer_run(self, request: web.Request, *, _api_server) -> web.R
         return _json_error(
             _openai_error, "Missing non-empty steer text; expected 'input', 'message', or 'text'.",
             code="invalid_steer_input", status=400)
+    if owned is not None:
+        from gateway.session_contract import SessionRef
+        from hermes_state_runtime import RuntimeStoreError
+        authority, row = owned
+        sid, latched = row['target_session_id'], False
+        try:
+            with authority.sessions[sid].event_stream.lock:
+                authority.check_approval_generation(sid, row['generation'])
+                # Before the claimed turn adopts its agent the steer is latched for that agent.
+                agent, latched = authority.steer_agent(SessionRef(authority.profile_id, sid), row['generation'], steer_text)
+        except (KeyError, RuntimeStoreError):
+            agent = None
+        if not latched and not hasattr(agent, "steer"):
+            return _steer_refused(_openai_error, run_id)
+        if latched:
+            _mark_run_event(self, run_id, "run.steered", accepted=True)
+            return web.json_response({"object": "hermes.run.steer", "run_id": run_id, "accepted": True})
     try:
         accepted = bool(agent.steer(steer_text))
     except Exception as exc:
