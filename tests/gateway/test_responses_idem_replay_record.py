@@ -6,6 +6,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from tests.waiting import async_wait_until
+
 
 def _frames(text):
     return [json.loads(line[6:]) for line in text.splitlines() if line.startswith('data: ')]
@@ -44,11 +46,11 @@ async def test_in_flight_retry_does_not_win_the_replay_record_without_deltas(api
     body, headers = {'input': 'work', 'stream': True}, {'Idempotency-Key': 'lagging-publisher'}
     async with TestClient(TestServer(app)) as client:
         original = asyncio.create_task(client.post('/v1/responses', json=body, headers=headers))
-        async with asyncio.timeout(10):
-            while not calls:
-                await asyncio.sleep(.01)
+        await async_wait_until(lambda: calls, timeout=10, what='the original turn to start')
         retry = asyncio.create_task(client.post('/v1/responses', json=body, headers=headers))
-        await asyncio.sleep(.2)  # the retry joins the in-flight admission as an observer
+        # The retry joins the in-flight admission as a second observer beside the original.
+        await async_wait_until(lambda: any(len(o) >= 2 for o in getattr(owner, 'api_observers', {}).values()),
+                               timeout=10, what='the retry to join the in-flight admission as an observer')
         release.set()
         first, joined = await original, await retry
         assert first.status == joined.status == 200
