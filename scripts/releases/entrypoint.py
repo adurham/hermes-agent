@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from scripts.releases import optional_platforms
@@ -197,7 +198,8 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
             skip_bundles: bool = False, skip_tests: bool = False,
             include_macos_intel: bool = False, include_termux: bool = False,
             published: tuple[str, str | None] = (SEED, None),
-            run_wait: float = 0, sleep=time.sleep) -> dict:
+            run_wait: float = 0, sleep=time.sleep,
+            confirm_abandon: Callable[[str], bool] | None = None, inspect=None) -> dict:
     """Claim the next attempt of the derived version, cut its draft, and start the gate.
 
     ``published`` is the stable channel's ``(version, commit)``; the commit is
@@ -207,13 +209,21 @@ def release(commit: str, *, bump: str, repo: Path, remote: str, repository: str,
     not built unless their include flag is set.
     ``run_wait`` is how many seconds to keep looking for the dispatched run;
     GitHub lists it a moment after the dispatch returns.
+    ``confirm_abandon`` is asked about an outstanding attempt's ref; only a
+    caller with a person at the terminal passes one. A yes abandons the attempt
+    through ``abandon`` (so it needs ``inspect``, which cancels runs and deletes
+    the draft) and the cut goes on; no confirmer, or a no, is the refusal.
     """
     _refresh_claims(repo, remote)
     _require_remote_main(repo, commit)
     outstanding = _outstanding_attempt(repo, remote)
     if outstanding is not None:
-        raise _refuse_outstanding(outstanding, repo=repo, remote=remote,
-                                  repository=repository, execute=execute)
+        refusal = _refuse_outstanding(outstanding, repo=repo, remote=remote,
+                                      repository=repository, execute=execute)
+        if confirm_abandon is None or not confirm_abandon(outstanding[2]):
+            raise refusal
+        print(abandon_steps(abandon(outstanding[0], repo=repo, remote=remote, repository=repository,
+                                    execute=execute, inspect=inspect)), file=sys.stderr)
     published_version, published_commit = published
     _require_ancestry(repo, commit, published_commit)
     version = derive_next_version(published=published_version, bump=bump)
@@ -497,6 +507,25 @@ def next_steps(result: dict, *, bold: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _abandon_prompt() -> Callable[[str], bool] | None:
+    """A y/N prompt, N by default, when a person can answer it; None otherwise.
+
+    ``input`` writes its prompt to stdout when either stream is redirected, so
+    both must be terminals for the question to reach a person.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return None
+
+    def confirm(ref: str) -> bool:
+        try:
+            answer = input(f"Abandon {ref} and cut a new attempt? [y/N] ")
+        except EOFError:
+            return False
+        return answer.strip().lower() in {"y", "yes"}
+
+    return confirm
+
+
 def cmd_release(args) -> None:
     """The ``release`` subcommand: claim, draft, dispatch."""
     from scripts import release as release_script
@@ -521,6 +550,7 @@ def cmd_release(args) -> None:
         skip_bundles=args.skip_bundles, skip_tests=args.skip_tests,
         include_macos_intel=args.include_macos_intel, include_termux=args.include_termux,
         published=published_stable_identity(repository), run_wait=RUN_WAIT_SECONDS,
+        confirm_abandon=_abandon_prompt(), inspect=lambda command: _inspect(repo, command),
     )
     print(next_steps(result, bold=sys.stdout.isatty() and "NO_COLOR" not in os.environ))
 
