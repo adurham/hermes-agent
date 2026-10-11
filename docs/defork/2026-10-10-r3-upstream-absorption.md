@@ -177,10 +177,13 @@ same provider name, config `plugins.hermes-memory-store` and `memory_store.db` �
 update` moves existing users onto it"; `requires_hermes >=0.21.5`).
 
 **Fork impact:** the fork runs the in-tree holographic provider (fact_store) — the next
-upstream sync will delete it. Decision needed: adopt the catalog plugin (upstream's
-migration path) or preserve the in-tree copy. The hyphen-FTS fix (#136706) would need
-re-homing to the community repo if still present there (unverified; touching that repo
-needs owner go).
+upstream sync will delete it. Decided 2026-10-11 (owner): adopt the catalog plugin (upstream's
+migration path; same provider name/config/db). Compared against the fork's in-tree copy: catalog
+v0.6.1 already carries equivalents of the fork's local holographic fixes (role-binding query
+vector; exact `fact_entities` probe/reason; hyphen-as-space FTS handling; retrieval-count
+accounting) — the one fork-only delta to port at migration is the warm-tier prefetch recall hook
+(`tools.memory_warm` `_after_recall`, ~12 lines) in the provider's prefetch. The hyphen-FTS fix (#136706): checked — catalog v0.6.1's sanitizer translates
+FTS operators to spaces (`-` included), so hyphenated terms already work there; no re-home needed.
 
 ## Owner decisions still open (from the audit)
 
