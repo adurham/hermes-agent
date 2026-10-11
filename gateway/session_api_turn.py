@@ -394,7 +394,12 @@ def observe_api_controls(admitted, sink):
     either in the snapshot or arrives live (never both), and one already answered is absent."""
     from hermes_state_runtime import get_session_admission
     authority, ref, row = admitted
-    live = authority.sessions[ref.session_id]
+    live = authority.sessions.get(ref.session_id)
+    if live is None:
+        # Deleted or pruned: only an exact retry of a settled (retired) receipt reaches here,
+        # and a settled admission has no prompts left to project.
+        yield
+        return
     events = live.event_stream
 
     def observer(frame):
