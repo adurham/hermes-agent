@@ -357,14 +357,25 @@ export class CanonicalDesktopProtocol {
     if (this.modelConfirmations.get(key)?.token === payload.confirm) { this.modelConfirmations.delete(key) }
   }
 
-  private prepareCreate(params: Record<string, unknown>): Record<string, unknown> {
-    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
-    const unsupported = Object.keys(params).filter(key => !allowed.has(key) && !(key === 'fast' && params[key] === false))
+  // The composer's per-session create options in the owner's create contract: the effort is the
+  // frozen launch `reasoning`; `cwd_explicit` is provenance the owner has no field for (it freezes
+  // `cwd` as given). No owner field carries a speed tier, so a non-normal pick is refused by name
+  // rather than silently running the chat at the profile's tier.
+  private prepareCreate(input: Record<string, unknown>): Record<string, unknown> {
+    const { reasoning_effort: effort, cwd_explicit: _provenance, fast, service_tier: tier, ...params } = input
+
+    if (fast === true || (typeof tier === 'string' && tier && tier !== 'normal')) {
+      throw new Error(`Starting a chat at ${tier === 'ultrafast' ? 'ultrafast' : 'fast'} speed is not available on the shared gateway yet; switch speed to Normal`)
+    }
+
+    if (typeof effort === 'string' && effort) { params.reasoning = effort }
+    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'reasoning', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
+    const unsupported = Object.keys(params).filter(key => !allowed.has(key))
 
     if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
     const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden'].includes(key) || (key === 'profile' && siblingRoute(value))))
+      ['request_id', 'cwd', 'model', 'toolsets', 'reasoning', 'title', 'hidden'].includes(key) || (key === 'profile' && siblingRoute(value))))
 
     const key = JSON.stringify(result)
     const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
