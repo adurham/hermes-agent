@@ -211,7 +211,7 @@ class GatewayNotificationOwnershipMixin:
         """Offer admitted completions again when the turn could not confirm their owner (``retry``),
         so the next delivery re-runs the pre-flight; boundary verdicts stay dropped."""
         if verdict != "retry" or not completion_ids:
-            return None
+            return
         from tools.async_delegation import requeue_admitted_completion
         from tools.process_registry import process_registry
         runner = cast(Any, self)
@@ -229,4 +229,3 @@ class GatewayNotificationOwnershipMixin:
                 "Async-delegation completion %s: owner not confirmed after admission; %s.", delegation_id,
                 "offered again" if requeued else "not offered again (result remains queryable)",
             )
-        return None

@@ -1294,7 +1294,7 @@ class GatewayNotificationsMixin(GatewayNotificationOwnershipMixin):
         entry = None
         if session_key:
             try:
-                session_store = cast(SessionStore, getattr(self, "session_store"))
+                session_store: SessionStore = cast(Any, self).session_store
                 await asyncio.to_thread(session_store._ensure_loaded)
                 entry = session_store._entries.get(session_key)
             except Exception:
