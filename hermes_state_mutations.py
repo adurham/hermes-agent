@@ -99,14 +99,28 @@ def _rewind(db, conn, session_id, payload):
     from hermes_state_local_lineage import local_physical_target
     physical = local_physical_target(conn, session_id)
     require_idle(db, conn, list({session_id, physical}))
-    target, ids, head, replacement = rewind_in_transaction(db, conn, physical,
-        payload['target_message_id'], preserve_compaction_handoff=payload.get('preserve_compaction_handoff', False))
+    # A composite compaction carrier (summary + the next ask in one row) keeps its handoff, as
+    # main's rewind does; the receipt reports the live ask, so /retry resubmits it, not the summary.
+    live = _carrier_live_view(db, conn, physical, payload['target_message_id'])
+    target, ids, head, replacement = rewind_in_transaction(db, conn, physical, payload['target_message_id'],
+        preserve_compaction_handoff=live is not None or payload.get('preserve_compaction_handoff', False))
     # Receipts are JSON: publish the same public message shape get_messages() returns (decoded
     # content/tool_calls, no internal display_identity BLOB / display_order).
     target = db._row_to_message_dict(target, warn_context='rewind receipt', summary_flag=True)
+    if live is not None:
+        target['content'] = live.get('content')
     conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
     return {session_id, physical}, {'rewound_count': len(ids), 'target_message': target,
         'new_head_id': head, 'replacement_message_id': replacement}
+
+
+def _carrier_live_view(db, conn, session_id, message_id):
+    from agent.context_compressor import split_user_originated_turn
+    row = conn.execute('SELECT * FROM messages WHERE id=? AND session_id=? AND active=1',
+                       (message_id, session_id)).fetchone()
+    message = row and db._row_to_message_dict(row, warn_context='rewind target', summary_flag=True)
+    handoff, live = split_user_originated_turn(message) if message else (None, None)
+    return live if handoff is not None else None
 
 
 def _import(db, conn, session_id, payload):
