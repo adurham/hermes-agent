@@ -515,6 +515,14 @@ def publish_api_tool_event(authority, session_id, generation, event_type, call_i
             _notify_observers(authority, session_id, 'tool_complete_callback', call_id, tool_name, args or {}, result)
 
 
+def api_runtime_locked():
+    """The executing API admission's settings when they carry a confirmed Browser model lock, else
+    None. Main's ``_create_agent`` passes ``fallback_model=None`` under the lock and refuses a
+    settled turn whose served runtime differs from it (``_turn_runtime_metadata``)."""
+    current = api_execution.get()
+    return current if current and current['settings'].get('confirmed_runtime_lock') else None
+
+
 def prepare_api_runtime(model, runtime_kwargs):
     current = api_execution.get()
     if current is None:

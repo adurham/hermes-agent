@@ -115,6 +115,22 @@ from gateway.run_turn_progress import GatewayTurnProgressMixin
 from gateway.session_execution import GatewaySessionAgentMixin
 
 
+def _settle_api_runtime_lock(agent, result, captured):
+    """A confirmed API model lock settles only on the runtime it named (main's
+    ``_finish_turn_result``): the served runtime rides the usage, a mismatch fails the turn."""
+    from gateway.session_api_turn import api_runtime_locked
+    api = api_runtime_locked()
+    if api is None or not isinstance(result, dict):
+        return
+    settings = api['settings']
+    try:
+        captured['usage']['runtime'] = api['adapter']._turn_runtime_metadata(
+            agent, route=settings.get('route'), requested_runtime=settings.get('requested_runtime'),
+            route_source=settings.get('route_source') or '', confirmed_runtime_lock=True)
+    except RuntimeError as exc:
+        result.update(final_response='', failed=True, completed=False, error=str(exc))
+
+
 class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -887,6 +903,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
                 captured['usage'] = {'input_tokens': incoming, 'output_tokens': outgoing,
                                      'total_tokens': incoming + outgoing}
+                _settle_api_runtime_lock(agent, result, captured)
             return result
         finally:
             unregister_gateway_notify(session_key)
