@@ -374,12 +374,14 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
           // As in the real session cache, the slice and the foreground mirror are separate arrays.
           publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', [...fresh] as never))
           setMessages(fresh as never)
+          handle!.replaceSessionMessages(fresh)
         }}
         seedMessages={seed}
         storedSessionId="stored"
       />
     )
 
+    const grown = [...fresh, { id: 'u4', parts: [textPart('newer')], role: 'user' as const, rowId: 27, timestamp: 4 }]
     let confirms = 0
     const stopConfirming = $confirmRequest.listen(request => {
       if (request) {
@@ -391,9 +393,9 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
 
         if (confirms === 2 && answer === 'moved') {
           // A newer user turn lands while the dialog is open: the plan no longer covers it.
-          const grown = [...fresh, { id: 'u4', parts: [textPart('newer')], role: 'user', rowId: 27, timestamp: 4 }]
           publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', grown as never))
           setMessages(grown as never)
+          handle!.replaceSessionMessages(grown)
         }
 
         settleConfirm(confirms === 1 || answer !== 'decline')
@@ -417,9 +419,12 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
       expect(submits).toHaveLength(1)
       // After a switch the foreground busy flag belongs to the session now on screen.
       expect($busy.get()).toBe(answer === 'switch')
-      // The refresh already replaced the optimistic edit; a cancel must not restore the stale seed.
+      // Nothing was cut: the session keeps the history it holds now (refreshed, or grown under the
+      // dialog), with the refreshed row ids, never the pre-refresh seed.
+      const kept = (lastState?.messages ?? []) as { id: string; rowId?: number }[]
+      const expected = answer === 'moved' ? grown : fresh
       expect(lastState).toMatchObject({ busy: false })
-      expect(lastState?.messages).not.toBe(seed)
+      expect(kept.map(m => [m.id, m.rowId])).toEqual(expected.map(m => [m.id, m.rowId]))
     }
 
     // Only a turn that moved under an accepted confirm is worth a notice; a decline is the user's choice.
