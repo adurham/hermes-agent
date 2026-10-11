@@ -386,8 +386,8 @@ DEFAULT_CONFIG = {
         "docker_snap_compat": False,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
-        # SSH: carry exported env vars between commands (cwd always carries; plain vars/functions
-        # never do). false = each command starts from the login env. Local: TERMINAL_LOCAL_PERSISTENT.
+        # SSH: carry exported env vars between commands (cwd always carries). false = every command
+        # starts from the login env, profile functions included. Local: TERMINAL_LOCAL_PERSISTENT.
         "persistent_shell": True,
     },
 

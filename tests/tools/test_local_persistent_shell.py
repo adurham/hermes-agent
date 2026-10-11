@@ -39,12 +39,13 @@ def test_local_persistent_defaults_on_and_reaches_the_environment(monkeypatch, t
     monkeypatch.delenv("TERMINAL_LOCAL_PERSISTENT", raising=False)
     config = _get_env_config()
     assert config["local_persistent"] is True
-    env = _create_configured_env({**config, "local_persistent": False}, "local", image="", cwd=str(tmp_path),
-                                 timeout=30, task_id="local-persist-config", host_cwd=None)
-    try:
-        assert env._persist_env is False
-    finally:
-        env.cleanup()
+    for value, task in ((config["local_persistent"], "default"), (False, "off")):
+        env = _create_configured_env({**config, "local_persistent": value}, "local", image="", cwd=str(tmp_path),
+                                     timeout=30, task_id=f"local-persist-config-{task}", host_cwd=None)
+        try:
+            assert env._persist_env is value
+        finally:
+            env.cleanup()
 
 
 @pytest.mark.platforms("linux", "macos")
