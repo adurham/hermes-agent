@@ -201,6 +201,7 @@
   "connectors.empty",
   "connectors.errorLine",
   "connectors.hint",
+  "connectors.hintHealthy",
   "connectors.link.hint",
   "connectors.link.reconnectTitle",
   "connectors.link.starting",

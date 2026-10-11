@@ -208,6 +208,7 @@ connectors.add.pickHint: "↑/↓ вибір · Enter обрати · Esc ска
 connectors.empty: "Облікових записів конекторів ще немає. Натисніть a, щоб додати."
 connectors.errorLine: "помилка: {0}"
 connectors.hint: "r перейменувати · a додати · c перепідключити · x видалити · Tab архівні · Esc/q закрити"
+connectors.hintHealthy: "r перейменувати · a додати · x видалити · Tab архівні · Esc/q закрити"
 connectors.link.hint: "Enter відкрити в браузері · Esc припинити очікування"
 connectors.link.reconnectTitle: "Перепідключити обліковий запис {0} «{1}»"
 connectors.link.starting: "Запуск…"

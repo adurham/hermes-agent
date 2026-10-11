@@ -208,6 +208,7 @@ connectors.add.pickHint: "↑/↓ اختيار · Enter تحديد · Esc إلغ
 connectors.empty: "لا توجد حسابات موصلات بعد. اضغط a لإضافة حساب."
 connectors.errorLine: "خطأ: {0}"
 connectors.hint: "r إعادة تسمية · a إضافة · c إعادة الاتصال · x إزالة · Tab المؤرشفة · Esc/q إغلاق"
+connectors.hintHealthy: "r إعادة تسمية · a إضافة · x إزالة · Tab المؤرشفة · Esc/q إغلاق"
 connectors.link.hint: "Enter فتح في المتصفح · Esc إيقاف الانتظار"
 connectors.link.reconnectTitle: "إعادة توصيل حساب {0} {1}"
 connectors.link.starting: "جارٍ البدء…"

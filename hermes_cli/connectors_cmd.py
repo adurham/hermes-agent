@@ -140,6 +140,10 @@ def _connect(args) -> int:
         # A repair is addressed by the account's id, which also reaches an unnamed account.
         row = _pick_account(app, args.alias)
         alias, name = None, _account_name(row)
+        if row.get("status") == "active" and not args.force:
+            # A repair of a working account would only replace its sign-in.
+            print(f"{app} account {name} is connected. Nothing to repair; pass --force to sign in again.")
+            return 0
         start = account.find_or_start_operation([app], action="reconnect", profile_home=None,
                                                 repair_id=row["connectionId"])
     else:

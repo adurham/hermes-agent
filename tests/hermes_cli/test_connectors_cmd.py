@@ -85,6 +85,35 @@ def test_reconnect_repairs_an_unnamed_account_by_its_id(portal, monkeypatch):
     assert started == [{"names": ["gmail"], "action": "reconnect", "profile_home": None, "repair_id": "conn-old"}]
 
 
+def test_reconnect_on_a_connected_account_starts_nothing(portal, monkeypatch, capsys):
+    from tools.connectors import account
+
+    started: list[dict] = []
+    monkeypatch.setattr(account, "find_or_start_operation", lambda names, **kw: started.append(kw))
+
+    rc = cmd_connectors(_parse("connectors", "connect", "gmail", "--reconnect", "--alias", "work"))
+
+    assert rc == 0
+    assert started == []
+    assert "is connected" in capsys.readouterr().out
+
+
+def test_forced_reconnect_on_a_connected_account_repairs_it_by_id(portal, monkeypatch):
+    from tools.connectors import account
+
+    started: list[dict] = []
+
+    def stop_after_start(names, **kwargs):
+        started.append(kwargs)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(account, "find_or_start_operation", stop_after_start)
+    with pytest.raises(KeyboardInterrupt):
+        cmd_connectors(_parse("connectors", "connect", "gmail", "--reconnect", "--force", "--alias", "work"))
+
+    assert started[0]["repair_id"] == "conn-work"
+
+
 def test_disconnect_can_remove_a_retired_account_by_its_label(portal):
     rc = cmd_connectors(_parse("connectors", "disconnect", "gmail", "--alias", "d@x.test", "--yes"))
 

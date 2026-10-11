@@ -208,6 +208,7 @@ connectors.add.pickHint: "↑/↓ választás · Enter kiválasztás · Esc még
 connectors.empty: "Még nincsenek összekötő-fiókok. Nyomd meg az a gombot egy hozzáadásához."
 connectors.errorLine: "hiba: {0}"
 connectors.hint: "r átnevezés · a hozzáadás · c újracsatlakozás · x eltávolítás · Tab kivezetett · Esc/q bezárás"
+connectors.hintHealthy: "r átnevezés · a hozzáadás · x eltávolítás · Tab kivezetett · Esc/q bezárás"
 connectors.link.hint: "Enter megnyitás böngészőben · Esc várakozás leállítása"
 connectors.link.reconnectTitle: "{0}-fiók újracsatlakoztatása: {1}"
 connectors.link.starting: "Indítás…"

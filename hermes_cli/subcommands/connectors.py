@@ -23,6 +23,8 @@ def build_connectors_parser(subparsers) -> None:
     connect.add_argument(
         "--alias", help="Name for a new account (for example work); with --reconnect, the name or label to repair")
     connect.add_argument("--reconnect", action="store_true", help="Repair an account that stopped working")
+    connect.add_argument(
+        "--force", action="store_true", help="With --reconnect, sign in again even if the account is connected")
 
     rename = actions.add_parser("rename", help="Rename an account")
     rename.add_argument("app", help="App the account belongs to")

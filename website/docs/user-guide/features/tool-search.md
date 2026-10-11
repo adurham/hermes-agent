@@ -201,8 +201,9 @@ You can link more than one account of the same app, each with its own name
 Once a connector has two or more active accounts, each of its tools takes a
 `connector_alias` argument whose allowed values are your account names, and the
 tool description lists them (`Accounts: home, work.`), so `tool_search` and
-`tool_describe` show them. Every connector result entry carries `account`: the
-name the call ran under, or `null`.
+`tool_describe` show them. A connector result entry carries `account`, the
+name the call ran under, when that account is named; the field is absent for
+an unnamed account.
 
 The desktop backend's account-list and disconnect APIs use the Portal's
 account-management service, including its organization membership checks and

@@ -60,6 +60,8 @@ export const connectorsEn = {
       browserDidNotOpen: 'The browser did not open. Copy the link above.'
     },
     hint: 'r rename · a add · c reconnect · x remove · Tab retired · Esc/q close',
+    // The selected account works, so the repair key is not offered.
+    hintHealthy: 'r rename · a add · x remove · Tab retired · Esc/q close',
     errorLine: (message: string) => `error: ${message}`
   }
 }

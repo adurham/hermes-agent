@@ -132,7 +132,7 @@ Connectors are hosted apps such as Gmail that the agent reaches through the Nous
 
 Once a connector has two or more active accounts, every tool of that connector takes a `connector_alias` field whose allowed values are your account names. The field is required when every active account is named and optional when some are unnamed.
 
-If the agent leaves it out when several accounts are named, or names one that does not exist, the call fails and the error lists the valid names. Every result reports the `account` it ran under.
+If the agent leaves it out when several accounts are named, or names one that does not exist, the call fails and the error lists the valid names. A result reports the `account` it ran under when that account is named; for an unnamed account the field is absent.
 
 Manage accounts in any of these places:
 

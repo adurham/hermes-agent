@@ -1642,7 +1642,7 @@ Manage hosted connector accounts (apps such as Gmail reached through the Nous to
 |------------|-------------|
 | `list` | List connectors and whether each is connected. |
 | `accounts [app] [--all]` | List accounts, for one app or all of them. `--all` includes retired accounts. |
-| `connect <app> [--alias NAME] [--reconnect]` | Print the link to connect an account, then wait until it is connected or the deadline passes. Ctrl-C stops waiting. `--alias` names the account; a new name adds another account. `--reconnect` repairs the named account and deletes nothing. |
+| `connect <app> [--alias NAME] [--reconnect [--force]]` | Print the link to connect an account, then wait until it is connected or the deadline passes. Ctrl-C stops waiting. `--alias` names the account; a new name adds another account. `--reconnect` repairs the named account and deletes nothing; on an account that is already connected it says so and does nothing unless `--force` is given. |
 | `rename <app> <name-or-label> --to <new>` | Rename an account. An unnamed account is matched by its app label. |
 | `disconnect <app> [--alias NAME] [--yes]` | Remove an account. Asks to confirm unless you pass `--yes`. |
 

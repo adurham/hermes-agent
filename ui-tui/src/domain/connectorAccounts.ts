@@ -8,6 +8,10 @@ export const isValidAccountName = (name: string): boolean => ACCOUNT_NAME_RE.tes
 /** An account a reconnect replaced: kept and listed, never selectable. Older backends omit the key. */
 export const isRetired = (row: ConnectorAccountRow): boolean => Boolean(row.disabled)
 
+/** A reconnect is a repair: only an account that stopped working offers it. A healthy account
+ *  would only be signed in again, so the panel answers that it is connected instead. */
+export const needsRepair = (row: ConnectorAccountRow): boolean => !isRetired(row) && row.status !== 'active'
+
 /** The name a row is addressed by: its alias, else the app's own account label. */
 export const accountName = (row: ConnectorAccountRow): string => row.alias || row.label
 

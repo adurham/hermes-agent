@@ -19,6 +19,7 @@ import {
   isRetired,
   nameProblem,
   type NameProblem,
+  needsRepair,
   panelShortcut
 } from '../domain/connectorAccounts.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -163,7 +164,7 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
     setNotice(
       target.state === 'connected'
         ? T.connectors.notice.connected(target.name, name)
-        : T.connectors.notice.notConnected(target.name)
+        : target.detail || T.connectors.notice.notConnected(target.name)
     )
     void load()
   }
@@ -292,10 +293,18 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
       }
     )
 
-  const reconnect = (row: ConnectorAccountRow) =>
-    isRetired(row)
-      ? setNotice(T.connectors.notice.retiredNoReconnect)
-      : startConnect(row.connector, { connection_id: row.connection_id }, accountName(row))
+  const reconnect = (row: ConnectorAccountRow) => {
+    if (isRetired(row)) {
+      return setNotice(T.connectors.notice.retiredNoReconnect)
+    }
+
+    // A healthy account has nothing to repair; signing it in again would only replace a working link.
+    if (!needsRepair(row)) {
+      return setNotice(T.connectors.notice.connected(row.connector, accountName(row)))
+    }
+
+    startConnect(row.connector, { connection_id: row.connection_id }, accountName(row))
+  }
 
   const listKey = (ch: string, key: KeyLike) => {
     const shortcut = panelShortcut(ch, key)
@@ -501,7 +510,9 @@ export function ConnectorsOverlay({ gw, maxWidth, onClose, t }: ConnectorsOverla
         </Text>
       ) : null}
       {footer}
-      <OverlayHint t={t}>{T.connectors.hint}</OverlayHint>
+      <OverlayHint t={t}>
+        {selected && !needsRepair(selected) ? T.connectors.hintHealthy : T.connectors.hint}
+      </OverlayHint>
     </Box>
   )
 }
