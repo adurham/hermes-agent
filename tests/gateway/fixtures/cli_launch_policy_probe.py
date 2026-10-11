@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, websocket, rpc
 
@@ -135,12 +136,13 @@ def probe(tmp_path):
                 result = await rpc(ws, 'prompt.submit', session_id=sid, input_id='restart-' + side, text='NEVER_INFER')
                 assert 'result' in result, result
                 admission = result['result']['admission_id']
-                async with asyncio.timeout(20):
-                    while True:
-                        result = await rpc(ws, 'prompt.receipt', session_id=sid, admission_id=admission)
-                        if result['result']['status'] == 'terminal':
-                            break
-                        await asyncio.sleep(.05)
+                deadline = time.monotonic() + 20
+                while True:
+                    result = await rpc(ws, 'prompt.receipt', session_id=sid, admission_id=admission)
+                    if result['result']['status'] == 'terminal':
+                        break
+                    assert time.monotonic() < deadline, result
+                    await asyncio.sleep(.05)
                 events = await rpc(ws, 'session.events.since', session_id=sid, last_sequence=0, replay_epoch=replay_epoch)
                 assert 'launch_credentials_unavailable' in json.dumps(events), events
 
