@@ -634,9 +634,12 @@ class _ResponsesStream:
         if self.durable_key:
             headers = {k: v for k, v in self.response.headers.items() if k.startswith('X-Hermes-')}
             terminal_event = {'type': 'response.' + status, 'response': env, 'sequence_number': self.sequence_number}
-            self.response_store.put(self.durable_key[0], {
-                'fingerprint': self.durable_key[1], 'response': env, 'headers': headers,
-                'events': [*self.recorded_events, ('response.' + status, terminal_event)]})
+            if not self.terminal_replay:
+                # Only the publisher recorded the deltas; a replay observer winning the
+                # INSERT OR IGNORE would leave every later replay without them.
+                self.response_store.put(self.durable_key[0], {
+                    'fingerprint': self.durable_key[1], 'response': env, 'headers': headers,
+                    'events': [*self.recorded_events, ('response.' + status, terminal_event)]})
             stored = self.response_store.get(self.durable_key[0])
             if _settled(stored):
                 env = stored['response']
