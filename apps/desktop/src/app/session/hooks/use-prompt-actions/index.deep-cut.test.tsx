@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
-import { clearNotifications } from '@/store/notifications'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { $busy, setActiveSessionId, setMessages } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 
@@ -323,7 +323,8 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
   it.each([
     ['accepting', 'accept'],
     ['declining', 'decline'],
-    ['accepting after a session switch', 'switch']
+    ['accepting after a session switch', 'switch'],
+    ['accepting after the edited turn moved', 'moved']
   ])('%s the second deep confirm on a stale-target retry acts on the refreshed history', async (_label, answer) => {
     const seed = [
       { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
@@ -388,6 +389,13 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
           handle!.activeSessionIdRef.current = 'other-runtime'
         }
 
+        if (confirms === 2 && answer === 'moved') {
+          // A newer user turn lands while the dialog is open: the plan no longer covers it.
+          const grown = [...fresh, { id: 'u4', parts: [textPart('newer')], role: 'user', rowId: 27, timestamp: 4 }]
+          publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', grown as never))
+          setMessages(grown as never)
+        }
+
         settleConfirm(confirms === 1 || answer !== 'decline')
       }
     })
@@ -413,6 +421,57 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
       expect(lastState).toMatchObject({ busy: false })
       expect(lastState?.messages).not.toBe(seed)
     }
+
+    // Only a turn that moved under an accepted confirm is worth a notice; a decline is the user's choice.
+    expect($notifications.get().some(n => n.kind === 'warning')).toBe(answer === 'moved')
+  })
+
+  it('a stale-target retry whose resume rebinds the runtime reports the turn unavailable', async () => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 }
+    ]
+
+    setActiveSessionId(RUNTIME_SESSION_ID)
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', seed as never))
+    setMessages(seed as never)
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+        throw new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={async () => {
+          handle!.activeSessionIdRef.current = 'rebound-runtime'
+        }}
+        seedMessages={seed}
+        storedSessionId="stored"
+      />
+    )
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+
+    expect(submits).toHaveLength(1)
+    expect($notifications.get().some(n => n.kind === 'error')).toBe(true)
   })
 
   it('a deep-edit confirm answered after a session switch sends nothing and leaves the new session idle', async () => {

@@ -1343,6 +1343,12 @@ export function usePromptActions({
           await resumeStoredSession(storedId)
         }
 
+        // The resume can rebind the runtime (or the user switched away meanwhile): surface that as
+        // unavailable rather than drop the edit.
+        if (activeSessionIdRef.current !== sessionId) {
+          return { unavailable: true }
+        }
+
         // A refresh that keeps the same later turns keeps the user's answer; one that reveals more
         // asks again. After the dialog the plan is re-aimed by content (revalidateEditPlan), since the
         // session slice and the $messages mirror are distinct arrays.
@@ -1363,6 +1369,11 @@ export function usePromptActions({
         })
 
         if (planned === null || planned === 'moved') {
+          if (planned === 'moved') {
+            // The edited turn moved while the confirm was open: nothing was sent.
+            notify({ kind: 'warning', message: copy.editFailed })
+          }
+
           // Nothing was cut and the refresh already replaced the optimistic edit: keep whatever
           // history the session holds now and only drop the busy arm.
           rollBackEdit(sessionId)
@@ -1399,6 +1410,7 @@ export function usePromptActions({
     [
       activeSessionIdRef,
       applySurvivorRowIds,
+      copy.editFailed,
       resumeStoredSession,
       rollBackEdit,
       selectedStoredSessionIdRef,
