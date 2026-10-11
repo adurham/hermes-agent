@@ -67,7 +67,6 @@ import {
   durableRowIdsForRebind,
   type EditPlan,
   finalizeStoppedMessages,
-  laterVisibleUserTurns,
   planConfirmedReload,
   planEdit,
   planEditAfterConfirm,
@@ -1344,34 +1343,35 @@ export function usePromptActions({
           await resumeStoredSession(storedId)
         }
 
+        // A refresh that keeps the same later turns keeps the user's answer; one that reveals more
+        // asks again. After the dialog the plan is re-aimed by content (revalidateEditPlan), since the
+        // session slice and the $messages mirror are distinct arrays.
         const refreshed = $messages.get()
-        const retryPlan = planEdit(refreshed, edited)
+        const first = planEdit(refreshed, edited)
 
-        if (!retryPlan || retryPlan.isFailedTurn) {
+        if (!first || first.isFailedTurn) {
           return { unavailable: true }
         }
 
-        surfacedConfirmed = retryKeepsDeepConfirm(plan, messages, retryPlan, refreshed)
+        const planned = await planEditAfterConfirm({
+          answeredFor: retryKeepsDeepConfirm(plan, messages, first, refreshed) ? refreshed : undefined,
+          confirmDeep: () => confirm(deepCutConfirmRequest(t.assistant.thread)),
+          current: () => currentMessages(sessionId),
+          edited,
+          planning: refreshed,
+          stillOwned: () => activeSessionIdRef.current === sessionId
+        })
 
-        // A refreshed 4018 retry can reveal later user turns the first plan did
-        // not cover. During the warn-only rollout the backend still allows an
-        // unconfirmed deep cut, so the client must ask again before sending it.
-        if (laterVisibleUserTurns(refreshed, retryPlan.sourceIndex) > 0 && !surfacedConfirmed) {
-          // Compare like with like: the session slice before and after the dialog ($messages is a
-          // separate mirror array, so comparing it with the slice is never equal).
-          const shown = currentMessages(sessionId)
-          const accepted = await confirm(deepCutConfirmRequest(t.assistant.thread))
+        if (planned === null || planned === 'moved') {
+          // Nothing was cut and the refresh already replaced the optimistic edit: keep whatever
+          // history the session holds now and only drop the busy arm.
+          rollBackEdit(sessionId)
 
-          if (!accepted || activeSessionIdRef.current !== sessionId || currentMessages(sessionId) !== shown) {
-            // Nothing was cut and the refresh already replaced the optimistic edit: keep whatever
-            // history the session holds now and only drop the busy arm.
-            rollBackEdit(sessionId)
-
-            return 'done'
-          }
-
-          surfacedConfirmed = true
+          return 'done'
         }
+
+        const { messages: target, plan: retryPlan } = planned
+        surfacedConfirmed = retryPlan.confirmDeepTruncate
 
         const survivorRowIds = await submitRewindPrompt(
           sessionId,
@@ -1381,7 +1381,7 @@ export function usePromptActions({
           false,
           retryPlan.truncateRowId,
           retryPlan.sourceText,
-          durableRowIdsForRebind(refreshed),
+          durableRowIdsForRebind(target),
           surfacedConfirmed
         )
 

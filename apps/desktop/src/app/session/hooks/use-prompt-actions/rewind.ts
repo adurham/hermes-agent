@@ -840,8 +840,9 @@ export function revalidateEditPlan<P extends EditPlan>(
  * Edit's plan step around the deep-cut confirm. Returns the plan and the transcript it is aimed at,
  * null when there is nothing to send (declined, nothing changed, or the confirm was answered after
  * the session switched away), or 'moved' when the edited turn moved during the confirm.
- * *answeredFor* is the transcript a 4033 confirm already covered: the re-run forces the deep cut
- * only while the transcript is still exactly that one.
+ * *answeredFor* is the transcript an earlier answer already covers (a 4033 re-run, or a stale-target
+ * retry whose refresh kept the same later turns): the deep cut is forced only while *planning* is
+ * still exactly that transcript.
  */
 export async function planEditAfterConfirm(opts: {
   answeredFor?: ChatMessage[]
@@ -870,8 +871,7 @@ export async function planEditAfterConfirm(opts: {
 
 /**
  * A stale-target retry re-addresses the same turn after a history refresh. The user's deep-cut
- * answer covers the later turns they saw; if the refresh shows more, the retry goes unconfirmed and
- * the server gate decides.
+ * answer covers the later turns they saw; if the refresh shows more, the retry asks again.
  */
 export function retryKeepsDeepConfirm(
   plan: EditPlan & { confirmDeepTruncate: boolean },

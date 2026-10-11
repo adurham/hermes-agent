@@ -7,7 +7,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { clearNotifications } from '@/store/notifications'
-import { $busy, setMessages } from '@/store/session'
+import { $busy, setActiveSessionId, setMessages } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './prompt-actions-harness'
@@ -248,6 +248,7 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     clearNotifications()
     setMessages([])
     $busy.set(false)
+    setActiveSessionId(null)
     dropSessionState(RUNTIME_SESSION_ID)
     dropSessionState('other-runtime')
   })
@@ -320,9 +321,10 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
   })
 
   it.each([
-    ['accepting', true],
-    ['declining', false]
-  ])('%s the second deep confirm on a stale-target retry acts on the refreshed history', async (_label, accept) => {
+    ['accepting', 'accept'],
+    ['declining', 'decline'],
+    ['accepting after a session switch', 'switch']
+  ])('%s the second deep confirm on a stale-target retry acts on the refreshed history', async (_label, answer) => {
     const seed = [
       { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
       { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 },
@@ -336,6 +338,8 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
       { id: 'u3', parts: [textPart('arrived after consent')], role: 'user' as const, rowId: 25, timestamp: 3 }
     ]
 
+    // The session on screen: the store keeps its transcript (an unreferenced settled one is evicted).
+    setActiveSessionId(RUNTIME_SESSION_ID)
     publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', seed as never))
     setMessages(seed as never)
     const submits: Record<string, unknown>[] = []
@@ -379,7 +383,12 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     const stopConfirming = $confirmRequest.listen(request => {
       if (request) {
         confirms += 1
-        settleConfirm(confirms === 1 || accept)
+
+        if (confirms === 2 && answer === 'switch') {
+          handle!.activeSessionIdRef.current = 'other-runtime'
+        }
+
+        settleConfirm(confirms === 1 || answer !== 'decline')
       }
     })
 
@@ -393,13 +402,14 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
 
     expect(confirms).toBe(2)
 
-    if (accept) {
+    if (answer === 'accept') {
       expect(submits).toHaveLength(2)
       expect(submits[1]).toMatchObject({ confirm_deep_truncate: true, truncate_before_row_id: 21 })
     } else {
       expect(submits).toHaveLength(1)
-      expect($busy.get()).toBe(false)
-      // The refresh already replaced the optimistic edit; a decline must not restore the stale seed.
+      // After a switch the foreground busy flag belongs to the session now on screen.
+      expect($busy.get()).toBe(answer === 'switch')
+      // The refresh already replaced the optimistic edit; a cancel must not restore the stale seed.
       expect(lastState).toMatchObject({ busy: false })
       expect(lastState?.messages).not.toBe(seed)
     }
