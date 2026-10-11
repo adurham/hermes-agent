@@ -134,6 +134,8 @@ async def operation(authority, name, params, actor=None):
         if frozen['extra_prompt'] != params['extra_prompt']:
             raise RuntimeStoreError('admission_conflict')
         state['job'] = frozen['cron_job']
+        # The receipt a firer whose submit answer was lost polls, exactly as if it had arrived.
+        state.update(session_id=sid, admission_id=row['admission_id'])
         return state
     if name == 'submit':
         authority._require_admission_open()

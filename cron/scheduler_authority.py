@@ -59,7 +59,12 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                     record['job'] = dict(job)
                     save()
                     return tuple(result)
-            raise
+                if state['status'] not in {'queued', 'started', 'terminal'}:
+                    raise
+                # Admitted before the answer was lost: observe it through the recovered receipt.
+                receipt = {'session_id': state['session_id'], 'admission_id': state['admission_id']}
+            else:
+                raise
         record['receipt'] = receipt
         save()
         delay, progress = .1, None
