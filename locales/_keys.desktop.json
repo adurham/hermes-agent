@@ -4297,6 +4297,7 @@
     "sidebar.projects.menuDelete",
     "sidebar.projects.menuRename",
     "sidebar.projects.menuSetActive",
+    "sidebar.projects.moveBusy",
     "sidebar.projects.moveFailed",
     "sidebar.projects.moveNoFolder",
     "sidebar.projects.moveNoProjects",
