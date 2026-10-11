@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import subprocess
 import threading
+import time
 
 import pytest
 
@@ -43,13 +44,14 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
             created = await rpc(ws, 'session.create', request_id='reads', source='cli', toolsets=[], cwd=str(work))
             sid = created['result']['session_id']
             await rpc(ws, 'prompt.submit', session_id=sid, input_id='warm', text='WARM_READS')
-            async with asyncio.timeout(45):
-                while True:
-                    snap = (await rpc(ws, 'session.resume', session_id=sid))['result']
-                    if not snap['running'] and not snap['pending'] and 'RECOVERY_ACK_WARM_READS' in json.dumps(
-                            snap['messages']):
-                        break
-                    await asyncio.sleep(.1)
+            deadline = time.monotonic() + 45
+            while True:
+                snap = (await rpc(ws, 'session.resume', session_id=sid))['result']
+                if not snap['running'] and not snap['pending'] and 'RECOVERY_ACK_WARM_READS' in json.dumps(
+                        snap['messages']):
+                    break
+                assert time.monotonic() < deadline, ('warm turn never settled', snap)
+                await asyncio.sleep(.1)
             for command in ('usage', 'insights', 'profile', 'topup', 'diff', 'memory', 'kanban list',
                             'suggestions', 'bundles', 'usage reset', 'memory approval on', 'kanban create x',
                             'suggestions catalog', 'debug', 'agents', 'sessions', 'platform', 'fast'):
