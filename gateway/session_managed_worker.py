@@ -294,17 +294,31 @@ class ManagedWorker:
         except psutil.Error:
             pass
 
+    def _signal_group(self, kill):
+        """POSIX: signal the worker's whole process group (it leads one, WORKER_POPEN), so the tool
+        children a killed worker never reaps with _die_with_owner go too. Only while the leader is
+        unreaped and still leads its group; otherwise (Windows, gone) the handle alone."""
+        if os.name != 'nt' and self.process.poll() is None:
+            import signal
+            try:
+                if os.getpgid(self.process.pid) == self.process.pid:
+                    os.killpg(self.process.pid, signal.SIGKILL if kill else signal.SIGTERM)  # windows-footgun: ok — POSIX only
+                    return
+            except (ProcessLookupError, PermissionError):
+                pass
+        (self.process.kill if kill else self.process.terminate)()
+
     def close(self):
         self.closed.set()
         self._demand.release()  # a reader parked between frames exits; one mid-read ends at EOF
         if self.process.poll() is None:
             self._signal_worker(kill=False)
-            self.process.terminate()
+            self._signal_group(kill=False)
         try:
             self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self._signal_worker(kill=True)
-            self.process.kill()
+            self._signal_group(kill=True)
             self.process.wait(timeout=5)
         else:
             self._signal_worker(kill=True)
