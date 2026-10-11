@@ -742,7 +742,7 @@ A host path in `terminal.cwd` (for example `C:\Users\me\project` on Windows, or 
 
 ### Persistent Shell
 
-Every terminal command on the **local** and **SSH** backends runs in a fresh `bash` process. Hermes captures your login shell's environment once (PATH, exports from your profile, functions, aliases) and every command starts from that snapshot. The persistence setting decides whether **exported environment variables** set by one command reach the next.
+Every terminal command on the **local** and **SSH** backends runs in a fresh `bash` process. Hermes captures your login shell's environment once (PATH, exports from your profile, functions, aliases) and starts the first command from that snapshot. With the setting off, every command starts from it. With the setting on, each command saves its exported variables for the next one, and that saved copy holds exported variables only, so profile functions and aliases are gone after the first command.
 
 | What | Setting on (default) | Setting off |
 |------|----------------------|-------------|
@@ -751,6 +751,7 @@ Every terminal command on the **local** and **SSH** backends runs in a fresh `ba
 | Plain shell vars (`MY_VAR=hello`) | do **not** carry over | do not carry over |
 | Functions / aliases defined mid-session | do **not** carry over | do not carry over |
 | Login environment (PATH, profile exports) | always present | always present |
+| Profile functions / aliases | first command only | always present |
 
 The working directory always carries over because the file tools resolve relative paths against it. To make a variable stick in either mode, `export` it (setting on) or put it in your shell profile or `terminal.env_passthrough`.
 

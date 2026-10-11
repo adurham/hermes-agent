@@ -45,3 +45,30 @@ def test_local_persistent_defaults_on_and_reaches_the_environment(monkeypatch, t
         assert env._persist_env is False
     finally:
         env.cleanup()
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("setting, later", [("true", "fn:no"), ("false", "fn:yes")])
+def test_profile_functions_survive_only_with_persistence_off(monkeypatch, tmp_path, setting, later):
+    """The login snapshot holds profile functions; with persistence on the first command's
+    ``export -p`` re-dump replaces it, so they are gone from the second command on. The docs'
+    "Profile functions / aliases" row states exactly this."""
+    home = tmp_path / "home"
+    home.mkdir()
+    for rc in (".bashrc", ".bash_profile"):
+        (home / rc).write_text("hermes_lp_fn(){ echo FN; }\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_LOCAL_PERSISTENT", setting)
+    task_id = f"local-persist-fn-{setting}"
+    probe = "type hermes_lp_fn >/dev/null 2>&1 && echo fn:yes || echo fn:no"
+
+    def run(cmd):
+        return json.loads(terminal_tool(cmd, task_id=task_id))["output"].strip()
+
+    try:
+        assert run(probe) == "fn:yes"
+        assert run(probe) == later
+    finally:
+        cleanup_vm(_resolve_container_task_id(task_id))
