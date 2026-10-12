@@ -865,11 +865,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
+            from gateway.session_api_turn import api_execution
+            api = api_execution.get()
+            if api is not None and api.get('relay_metadata') and _accepts_keyword(agent.run_conversation, "relay_metadata"):
+                kwargs["relay_metadata"] = api['relay_metadata']  # main: api_server forwards body.metadata
             if _accepts_keyword(agent.run_conversation, "turn_author"):
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
-                from gateway.session_api_turn import api_execution
                 from gateway.session_ingress import admission_author
-                api = api_execution.get()
                 kwargs["turn_author"] = (api.get('turn_author') if api is not None else
                     admission_author.get() or {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
                                                "is_bot": bool(getattr(ctx.source, "is_bot", False))})
