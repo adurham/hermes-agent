@@ -919,7 +919,14 @@ class MemoryManager:
                             previous = result.get("patched_entry_before")
                     if isinstance(previous, str) and previous:
                         metadata["previous_content"] = previous
-                self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
+                mirrored_action, content = action, str(op.get("content") or op.get("new_text") or "")
+                if action == "patch":
+                    # To a provider a patch replaced the whole entry with its edited form; mirror it as
+                    # that replace so providers that know add/replace/remove handle it unchanged.
+                    mirrored_action = "replace"
+                    content = (previous.replace(str(old_text).strip(), content.strip()) if batched
+                               else str(result.get("patched_entry_after") or ""))
+                self.on_memory_write(mirrored_action, target, content, metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 
