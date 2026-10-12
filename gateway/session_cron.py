@@ -60,7 +60,6 @@ def _create(authority, actor, params):
     from gateway.session_policy import build_policy, bind_launch_key
     from gateway.run import _load_gateway_config
     from cron.scheduler import _load_cron_job_config
-    from hermes_state_local import commit_local_session
     from gateway.config import Platform
     from gateway.session import SessionSource, SessionEntry
     from gateway.session_lifecycle import _now
@@ -92,10 +91,9 @@ def _create(authority, actor, params):
     route = authority.runner.session_store._generate_session_key(source)
     now = _now()
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
-    commit_local_session(authority.db, epoch=authority.epoch, receipt={
-        'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
-        'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})
-    return restore_local_session(authority, sid), request_id
+    # The staged creation receipt: ``operation('submit')`` commits it off the owner loop.
+    return {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
+            'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)}, request_id
 
 
 # Run-side verdicts run_job stamps on the job dict for the firing scheduler's bookkeeping tail
@@ -145,6 +143,12 @@ async def operation(authority, name, params, actor=None):
             ref, request_id = _create(authority, actor, params)
         from functools import partial
         from gateway.session_runtime_workers import tracked_write
+        if isinstance(ref, dict):
+            # The creation commit waits on the writer off the owner loop, like session.create (N50).
+            from gateway.session_local_recovery import restore_local_session
+            from hermes_state_local import commit_local_session
+            await tracked_write(authority, partial(commit_local_session, authority.db, epoch=authority.epoch, receipt=ref))
+            ref = restore_local_session(authority, ref['session_id'])
         receipt = await tracked_write(authority, partial(
             admit_session_input, authority.db, epoch=authority.epoch, principal_id=actor.subject,
             session_id=ref.session_id, request_id=request_id, payload={'text': params['extra_prompt'] or ''},
