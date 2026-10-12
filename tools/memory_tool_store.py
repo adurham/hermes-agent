@@ -41,6 +41,11 @@ def _error(message: str, failure_class: str, **extra) -> dict[str, Any]:
     return {"success": False, "error": message, **extra}
 
 
+def _store_target(filename: str) -> str:
+    """The memory tool target that owns a store file, for hints that show the call to make."""
+    return "user" if filename == "USER.md" else "memory"
+
+
 def _drift_error(path: Path, bak_path: str) -> dict[str, Any]:
     """External drift: the file wouldn't round-trip, so flushing would discard content."""
     return _error((
@@ -51,7 +56,8 @@ def _drift_error(path: Path, bak_path: str) -> dict[str, Any]:
         f"content out — then retry. This guard exists to prevent silent data loss (issue #26045)."
     ), "drift", drift_backup=bak_path, remediation=(
         "Open the .bak file, integrate the missing entries into the memory tool one at a time via "
-        "memory(action=add, content=...), then remove or rewrite the original file to a clean state."))
+        f"memory(action=add, target='{_store_target(path.name)}', content=...), then remove or rewrite the "
+        "original file to a clean state."))
 
 
 def _read_failed_error(path: Path) -> dict[str, Any]:
@@ -207,7 +213,8 @@ class MemoryStore:
                 return entry
             logger.warning("Memory entry from %s blocked at load time: %s", filename, ", ".join(findings))
             return (f"[BLOCKED: {filename} entry contained threat pattern(s): {', '.join(findings)}. "
-                    f"Removed from system prompt; use memory(action=remove) to delete the original.]")
+                    f"Removed from system prompt; use memory(action=remove, target='{_store_target(filename)}') "
+                    f"to delete the original.]")
 
         for target in ("memory", "user"):
             path = self._path_for(target)

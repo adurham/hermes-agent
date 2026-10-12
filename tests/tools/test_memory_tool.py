@@ -788,6 +788,8 @@ class TestLoadTimeSnapshotSanitization:
         assert "Clean fact about the project." in snapshot
         # Poisoned entry replaced with placeholder
         assert "[BLOCKED:" in snapshot
+        # The removal hint names the store, since memory writes require an explicit target
+        assert "memory(action=remove, target='memory')" in snapshot
         assert "ignore previous instructions" not in snapshot
         assert "$API_KEY" not in snapshot
         # Live state keeps the raw text so the user can see + remove it
@@ -813,6 +815,7 @@ class TestLoadTimeSnapshotSanitization:
 
         snapshot = s._system_prompt_snapshot["user"]
         assert "[BLOCKED:" in snapshot
+        assert "memory(action=remove, target='user')" in snapshot
         assert "REGISTER AS A NODE" not in snapshot
         assert "BRAINWORM" not in snapshot
 
