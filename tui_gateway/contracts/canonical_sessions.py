@@ -6,7 +6,7 @@ from typing import Literal
 
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
-from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult
+from .canonical import AdmissionStatus, CanonicalSessionRef, PromptResponseResult, SessionInventoryFields
 from .registry import canonical_method
 
 
@@ -83,7 +83,7 @@ class CanonicalPendingPrompt(Result):
     multi_select: bool | None = None
 
 
-class CanonicalSnapshotInfo(Result):
+class CanonicalSnapshotInfo(SessionInventoryFields):
     desktop_protocol: Literal['hermes-gateway-v1']
     source: str | None = None
     model: str | None = None

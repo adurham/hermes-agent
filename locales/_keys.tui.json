@@ -104,7 +104,6 @@
   "canonical.images.tooLarge",
   "canonical.images.unsupported",
   "canonical.launch.invalidToolProgress",
-  "canonical.launch.inventoryUnavailable",
   "canonical.launch.noTuiPolicy",
   "canonical.launch.unsupportedOptions",
   "canonical.queue.clipboardImageFailed",

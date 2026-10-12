@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import OpenModel
+from .common import McpServerStatus, OpenModel, ProjectRef
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .registry import canonical_method
 
@@ -129,8 +129,29 @@ class CanonicalSessionInfoParams(Params):
     session_id: str
 
 
-class CanonicalSessionInfo(OpenModel):
-    """``gateway/session_local.py::local_session_info``."""
+class SessionInventoryFields(Result):
+    """Main's banner / status-bar inventory (``gateway/session_local_inventory.py::session_inventory``):
+    the shapes ``tui_gateway/server.py::_session_info`` sent, computed for the session's frozen policy.
+    ``enabled_toolsets`` / ``tool_availability`` / ``context_length`` feed the classic CLI banner."""
+
+    provider: str | None = None
+    tools: dict[str, list[str]] | None = None
+    skills: dict[str, list[str]] | None = None
+    mcp_servers: list[McpServerStatus] | None = None
+    version: str | None = None
+    release_date: str | None = None
+    update_behind: JsonValue | None = None
+    update_command: str | None = None
+    branch: str | None = None
+    project: ProjectRef | None = None
+    system_prompt: str | None = None
+    context_length: int | None = None
+    enabled_toolsets: list[str] | None = None
+    tool_availability: dict[str, JsonValue] | None = None
+
+
+class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
+    """``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory."""
 
     source: str
     model: str | None = None

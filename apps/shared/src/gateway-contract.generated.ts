@@ -4510,8 +4510,22 @@ export interface SessionPruneResult {
 export interface CanonicalSessionInfoParams {
   session_id: string
 }
-/** ``gateway/session_local.py::local_session_info``. */
+/** ``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory. */
 export interface CanonicalSessionInfo {
+  provider?: string | null
+  tools?: Record<string, string[]> | null
+  skills?: Record<string, string[]> | null
+  mcp_servers?: McpServerStatus[] | null
+  version?: string | null
+  release_date?: string | null
+  update_behind?: unknown | null
+  update_command?: string | null
+  branch?: string | null
+  project?: ProjectRef | null
+  system_prompt?: string | null
+  context_length?: number | null
+  enabled_toolsets?: string[] | null
+  tool_availability?: Record<string, unknown> | null
   source: string
   model?: string | null
   lazy: boolean
@@ -4776,6 +4790,20 @@ export interface CanonicalPendingPrompt {
   multi_select?: boolean | null
 }
 export interface CanonicalSnapshotInfo {
+  provider?: string | null
+  tools?: Record<string, string[]> | null
+  skills?: Record<string, string[]> | null
+  mcp_servers?: McpServerStatus[] | null
+  version?: string | null
+  release_date?: string | null
+  update_behind?: unknown | null
+  update_command?: string | null
+  branch?: string | null
+  project?: ProjectRef | null
+  system_prompt?: string | null
+  context_length?: number | null
+  enabled_toolsets?: string[] | null
+  tool_availability?: Record<string, unknown> | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
   model?: string | null

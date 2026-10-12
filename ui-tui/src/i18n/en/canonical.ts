@@ -62,12 +62,11 @@ export const canonicalEn = {
       notFound: (path: string) => `Image not found: ${path}`,
       noOwnerPath: 'Image upload did not return an owner path'
     },
-    // canonicalGateway.ts — launch-contract refusals; components/branding.tsx.
+    // canonicalGateway.ts — launch-contract refusals.
     launch: {
       noTuiPolicy: 'gateway does not support tui session policy; update/restart the gateway',
       unsupportedOptions: (options: string) => `gateway does not support TUI launch options: ${options}`,
-      invalidToolProgress: (value: string) => `invalid HERMES_TUI_TOOL_PROGRESS: ${value}`,
-      inventoryUnavailable: 'Tool and skill inventory is not exposed by this runtime.'
+      invalidToolProgress: (value: string) => `invalid HERMES_TUI_TOOL_PROGRESS: ${value}`
     }
   }
 }

@@ -316,11 +316,11 @@ class AuthorityConnection:
                                    'parameters': sorted(CREATE_FIELDS | {'title'})}}
 
     async def info(self, ref, params):
-        from gateway.session_local import local_session_info
+        from gateway.session_local_inventory import snapshot_info
         if set(params) != {'session_id'}:
             raise RuntimeStoreError('invalid_params')
         await self.authority.resolve(self.actor, ref)
-        return local_session_info(self.authority, ref)
+        return await snapshot_info(self.authority, ref)
 
     async def list_sessions(self, ref, params):
         if 'session:read' not in self.actor.capabilities:
@@ -370,7 +370,7 @@ class AuthorityConnection:
         return {'sessions': sessions[:limit], 'scope': 'live'}
 
     async def resume(self, ref, params):
-        from gateway.session_local import local_session_info
+        from gateway.session_local_inventory import snapshot_info
         if 'latest' in params:
             # Bare `-c` / `--resume latest`: the most recent session of that surface family the
             # actor may read (workspace first), resolved by the owner like a title.
@@ -401,11 +401,12 @@ class AuthorityConnection:
         self.authority.authorize(self.actor, ref, 'session:read')
         snapshot = await self.authority.attach(self.actor, ref)
         self.subscriptions[ref.session_id] = snapshot.subscription_id
-        # Only local routes have a frozen local launch policy to project.
+        # Only local routes have a frozen local launch policy to project; with it, main's banner and
+        # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
         info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
         source = self.authority.sessions[snapshot.handle.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL:
-            info = local_session_info(self.authority, snapshot.handle.ref)
+            info = await snapshot_info(self.authority, snapshot.handle.ref)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
                 'messages': list(snapshot.history), 'message_count': len(snapshot.history),
                 'running': snapshot.handle.execution_state == 'running',
