@@ -2021,7 +2021,7 @@ DEFAULT_CONFIG = {
                 # Desktop GUI surface (desktop_ui, project and catalog toolsets)
                 "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",
                 "show_tip", "desktop_project", "close_terminal",
-                "apply_layout", "read_terminal", "read_window_below", "focus_pane",
+                "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
