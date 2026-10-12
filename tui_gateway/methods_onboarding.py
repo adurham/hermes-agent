@@ -91,34 +91,40 @@ def _active_onboarding_session() -> str | None:
 @method("onboarding.start")
 def _(rid, params: dict) -> dict:
     from agent.onboarding_facts import read_facts
-    from agent.onboarding_record import active_session_id, start
+    from agent.onboarding_flow import Facts
+    from agent.onboarding_record import active_session_id, load, start
     from agent.onboarding_text import CHAT_TITLE, opening_prompt
-    facts = None
-    try:
-        with _onboarding_start_lock, _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
-            if db is None:
-                return _db_unavailable_error(rid, code=5000)
-            stored = None if params.get("rerun") else active_session_id(db)
-            if stored is None:
-                facts = read_facts(facts_source=params.get("facts_source") or "local", locale=params.get("locale"))
-                stored = db.create_session(new_session_id(), "desktop")
-                db.set_session_title(stored, db.get_next_title_in_lineage(CHAT_TITLE))
-                # The record exists before the agent is built, so the build folds the onboarding toolset in.
-                start(db, stored, facts)
-    except Exception as e:
-        logger.exception("onboarding.start failed")
-        return _err(rid, 5078, str(e))
-    resumed = _methods["session.resume"](rid, {**_ONBOARDING_PROFILE, "session_id": stored, "source": "desktop"})
-    if "error" in resumed:
-        return resumed
-    sid = resumed["result"]["session_id"]
-    if facts is not None:
-        # The opening rules ride a hidden user turn; its prelude plays the greeting and the name card.
-        submitted = _methods["prompt.submit"](
-            rid, {"session_id": sid, "text": opening_prompt(facts), "display_kind": "hidden"})
-        if "error" in submitted:
-            return submitted
-    return _ok(rid, {"session_id": sid, "stored_session_id": stored, "resumed": facts is None})
+    # Held through the opening submit: two windows pressing start at once get one chat and one opening.
+    with _onboarding_start_lock:
+        try:
+            with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+                if db is None:
+                    return _db_unavailable_error(rid, code=5000)
+                stored = None if params.get("rerun") else active_session_id(db)
+                created = stored is None
+                if created:
+                    facts = read_facts(facts_source=params.get("facts_source") or "local", locale=params.get("locale"))
+                    stored = db.create_session(new_session_id(), "desktop")
+                    db.set_session_title(stored, db.get_next_title_in_lineage(CHAT_TITLE))
+                    # The record exists before the agent is built, so the build folds the onboarding toolset in.
+                    start(db, stored, facts)
+                else:
+                    facts = Facts.from_stored(load(db, stored)["facts"])
+                # A chat with no messages never got its opening (a restart between start and the first turn).
+                opening = None if (db.get_session(stored) or {}).get("message_count") else opening_prompt(facts)
+        except Exception as e:
+            logger.exception("onboarding.start failed")
+            return _err(rid, 5078, str(e))
+        resumed = _methods["session.resume"](rid, {**_ONBOARDING_PROFILE, "session_id": stored, "source": "desktop"})
+        if "error" in resumed:
+            return resumed
+        sid = resumed["result"]["session_id"]
+        if opening is not None:
+            # The opening rules ride a hidden user turn; its prelude plays the greeting and the name card.
+            submitted = _methods["prompt.submit"](rid, {"session_id": sid, "text": opening, "display_kind": "hidden"})
+            if "error" in submitted:
+                return submitted
+    return _ok(rid, {"session_id": sid, "stored_session_id": stored, "resumed": not created})
 
 
 @method("onboarding.skip")
@@ -196,9 +202,8 @@ def _stage_onboarding_turn_note(sid: str, agent, history_empty: bool) -> None:
     if history_empty or not _builds_onboarding(agent) or server_requests.pending_kind(sid) == "setup_beat":
         return
     record = load(agent._session_db, agent.session_id)
-    if is_active(record):
+    if is_active(record) and (note := turn_note(record)):
         prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
-        note = turn_note(record)
         agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
 
 

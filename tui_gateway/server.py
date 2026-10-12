@@ -176,8 +176,8 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # interrupts); voice.*/wake.* = SYNCHRONOUS faster-whisper install (300s); session.workspace.move =
 # git subprocess probes on an arbitrary (maybe slow) mount; session.save = a full stored-session read + JSON
 # render (up to sessions.max_export_messages rows, ~0.8s at the default cap); onboarding.* setup profile =
-# create_profile skill copy + state.db writes + the first import of the setup scanner; session.start_chat =
-# session creation + a prompt.submit.
+# create_profile skill copy + state.db writes + the first import of the setup scanner; session.start_chat and
+# onboarding.start = session creation + a prompt.submit.
 _LONG_HANDLERS = frozenset({
     "session.foreign.list", "session.foreign.preview", "session.foreign.import",
     "billing.state", "subscription.state", "subscription.preview", "subscription.change",
@@ -194,7 +194,7 @@ _LONG_HANDLERS = frozenset({
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "onboarding.ensure_setup_profile", "onboarding.ensure_setup_session", "onboarding.reset_setup_profile",
-    "session.start_chat",
+    "session.start_chat", "onboarding.start",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })

@@ -32,7 +32,8 @@ def root(tmp_path, monkeypatch) -> Path:
 
 @pytest.fixture
 def client(root, monkeypatch):
-    """session.resume and prompt.submit as a recorder: the RPCs onboarding.start drives."""
+    """session.resume and prompt.submit as a recorder: the RPCs onboarding.start drives. A submit
+    stores its user turn, as the real turn does when it starts."""
     calls = []
 
     def resume(rid, params):
@@ -41,6 +42,7 @@ def client(root, monkeypatch):
 
     def submit(rid, params):
         calls.append(("submit", params))
+        server._get_db().append_message(params["session_id"].removeprefix("rt-"), "user", params["text"])
         return {"result": {"status": "streaming"}}
 
     monkeypatch.setitem(server._methods, "session.resume", resume)
@@ -69,6 +71,21 @@ def test_start_creates_one_onboarding_chat_and_plays_the_opening_once(client):
     again = _call("onboarding.start")["result"]
     assert again["stored_session_id"] == stored and again["resumed"] is True and len(client) == 3
     assert _call("onboarding.start", {"rerun": True})["result"]["stored_session_id"] != stored
+
+
+def test_a_restart_before_the_opening_turn_plays_the_opening_on_relaunch(client, monkeypatch):
+    def lost_submit(rid, params):
+        client.append(("lost", params))
+        return {"result": {"status": "streaming"}}
+
+    storing_submit = server._methods["prompt.submit"]
+    monkeypatch.setitem(server._methods, "prompt.submit", lost_submit)
+    stored = _call("onboarding.start")["result"]["stored_session_id"]
+    monkeypatch.setitem(server._methods, "prompt.submit", storing_submit)
+
+    reopened = _call("onboarding.start")["result"]
+    assert reopened == {"session_id": f"rt-{stored}", "stored_session_id": stored, "resumed": True}
+    assert [kind for kind, _ in client] == ["resume", "lost", "resume", "submit"]
 
 
 def test_only_a_chat_with_a_run_in_progress_gets_the_onboarding_toolset(root):
