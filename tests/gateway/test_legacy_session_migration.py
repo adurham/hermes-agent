@@ -125,7 +125,7 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     reset_local_target(db, epoch=authority.epoch, parent_session_id=ref.session_id, entry=entry)
     from gateway.session_bot import _target
     submitter = Principal(native.subject, native.profile_id, native.capabilities | {'session:submit'}, native.transport_id)
-    assert _target(authority, submitter)[2].session_id == 'reset-tip'
+    assert (await _target(authority, submitter))[2].session_id == 'reset-tip'
 
 
 @pytest.mark.asyncio
