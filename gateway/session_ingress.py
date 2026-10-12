@@ -209,6 +209,11 @@ async def execute_admission(authority, ref, row):
         if 'local_automation_v1' in row['payload']:
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
+    if event.internal and 'gateway_session_id' in event.metadata:
+        # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
+        # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.
+        event.metadata['gateway_proven_session_id'] = (
+            authority.physical_target(ref) if 'native_text_v1' in row['payload'] else event.metadata['gateway_session_id'])
     provenance = row['payload'].get('native_text_v1', {}).get('provenance')
     home = None
     if provenance is not None:
