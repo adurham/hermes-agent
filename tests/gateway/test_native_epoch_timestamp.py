@@ -36,7 +36,7 @@ async def test_epoch_zero_producer_timestamp_runs_with_local_time_and_keeps_retr
     monkeypatch.setattr(adapter, 'send', send)
     monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
     source = adapter.build_source(chat_id=CHAT, user_id=CHAT, chat_type='dm')
-    pinned = lambda: MessageEvent(text='hi', source=source, message_id='p1',  # noqa: E731
+    pinned = lambda: MessageEvent(text='hi', source=source, message_id='p1',
                                   timestamp=datetime.fromtimestamp(0, UTC))
     try:
         before = datetime.now()

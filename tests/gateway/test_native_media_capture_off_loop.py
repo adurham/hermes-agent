@@ -43,6 +43,7 @@ async def test_native_media_capture_runs_off_loop_and_commits_owned_bytes(tmp_pa
         attachment.write_bytes(b'changed')
         row = get_session_admission(authority.db, admission_id=receipt.admission_id)
         restored = restore_native(row['payload'], runner)
-        assert open(restored.media_urls[0], 'rb').read() == b'video-bytes' * 1000
+        from pathlib import Path
+        assert Path(restored.media_urls[0]).read_bytes() == b'video-bytes' * 1000
     finally:
         authority.db.close()

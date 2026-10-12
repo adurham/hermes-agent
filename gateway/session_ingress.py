@@ -285,14 +285,21 @@ async def _execution_scope(authority, home):
     config, secrets, state.db), never the launch profile's ambient scope; native provenance
     (``home``) refines it. A single-profile gateway keeps its ambient scope byte-for-byte.
     Secret sources (external CLIs) hydrate off the loop, as main's per-message scope does (#99519)."""
-    if home is None and getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False):
-        from pathlib import Path
-        owner = Path(str(authority.profile_id))  # owner_scope's home: symbolic test ids keep ambient
-        home = owner if owner.is_absolute() and owner.is_dir() else None
-    if home is None:
+    multiplex = getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False)
+    if home is None and not multiplex:
         return nullcontext()
     from gateway.run import _load_profile_secret_scope, _profile_runtime_scope
-    return _profile_runtime_scope(home, await asyncio.to_thread(_load_profile_secret_scope, home))
+
+    def load():
+        from pathlib import Path
+        scope_home = home
+        if scope_home is None:  # owner_scope's home; symbolic test ids keep the ambient scope
+            owner = Path(str(authority.profile_id))
+            scope_home = owner if owner.is_absolute() and owner.is_dir() else None
+        return scope_home, scope_home and _load_profile_secret_scope(scope_home)
+
+    scope_home, secrets = await asyncio.to_thread(load)
+    return nullcontext() if scope_home is None else _profile_runtime_scope(scope_home, secrets)
 
 
 async def deliver_settled(authority, admission_id):
