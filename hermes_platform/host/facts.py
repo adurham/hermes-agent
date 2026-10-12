@@ -295,6 +295,30 @@ def gpu_class() -> str:
     return "unknown" if vendors is None else classify_gpu_vendors(vendors)
 
 
+_NVIDIA_PROC_GPUS = "/proc/driver/nvidia/gpus"
+
+
+def parse_nvidia_gpu_model(information: str) -> str:
+    """Return the ``Model:`` value of a ``/proc/driver/nvidia/gpus/<bus>/information`` file."""
+    for line in information.splitlines():
+        if line.startswith("Model:"):
+            return line.split(":", 1)[1].strip()
+    return ""
+
+
+@functools.cache
+def nvidia_gpu_names() -> tuple[str, ...]:
+    """Model names the Linux NVIDIA driver reports per GPU; empty elsewhere or without the driver."""
+    if not sys.platform.startswith("linux"):
+        return ()
+    try:
+        buses = sorted(os.listdir(_NVIDIA_PROC_GPUS))[:_GPU_SCAN_LIMIT]
+    except OSError:
+        return ()
+    names = (parse_nvidia_gpu_model(_read_text(f"{_NVIDIA_PROC_GPUS}/{bus}/information", 4096)) for bus in buses)
+    return tuple(name for name in names if name)
+
+
 def _windows_interactive_session() -> bool:
     import ctypes
     from ctypes import wintypes
@@ -325,5 +349,6 @@ def interactive_session() -> bool:
 
 def clear_caches() -> None:
     """Clear every cached host fact."""
-    for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class):
+    for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
+                 nvidia_gpu_names):
         fact.cache_clear()
