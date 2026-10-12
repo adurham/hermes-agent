@@ -14,6 +14,7 @@ the connection's ticket grants (R2-M3):
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 from pathlib import Path
 from typing import Any
@@ -69,12 +70,46 @@ def connection_profile_home() -> str | None:
 
 
 def _foreign_profile_home(server: Any, profile_id: Any) -> str | None:
+    """The ticket's non-launch home, or None for the launch profile. Raises when the ticket names a
+    home that stopped being a directory: that is a refusal, never the launch profile (N86)."""
     home = Path(str(profile_id or ""))
-    if not home.is_absolute() or not home.is_dir():
+    if not home.is_absolute():
         return None
+    if not home.is_dir():
+        raise FileNotFoundError(str(home))
     if home.resolve() == Path(server._launch_home()).resolve():
         return None
     return str(home)
+
+
+def _ticket_profile_request(server: Any, req: dict, home: str) -> tuple[dict, str | None]:
+    """Bind a non-launch ticket's profile into a legacy verb (N86). The verb runs in the ticket's
+    home, or in the one an explicit ``profile`` names (Desktop's host-scoped routing), so handlers
+    that ignore ``profile`` (billing, usage) resolve through that runtime scope instead of the
+    launch home. A method whose contract declares ``profile`` and got none is handed the ticket's
+    own profile name (refused when that name does not resolve to the ticket's home). Returns the
+    request plus the home to scope ("" = launch), or an error frame and None."""
+    from hermes_constants import profile_name_for_home
+    from tui_gateway.contracts.registry import METHODS
+    params = req.get("params") if isinstance(req.get("params"), dict) else {}
+    refused = {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4064, "message": "profile unavailable"}}
+    if explicit := str(params.get("profile") or "").strip():
+        try:
+            named = server._profile_home(explicit)
+        except Exception:
+            return refused, None
+        return req, str(named) if named else ""
+    contract = METHODS.get(req.get("method"))
+    if contract is None or "profile" not in contract.params.model_fields:
+        return req, home
+    name = profile_name_for_home(home)
+    try:
+        resolved = server._profile_home(name) if name else None
+    except (OSError, ValueError):
+        resolved = None
+    if resolved is None or Path(resolved).resolve() != Path(home).resolve():
+        return refused, None
+    return dict(req, params={**params, "profile": name}), home
 
 
 def _own_profile_read(server: Any, req: dict, home: str) -> dict:
@@ -107,14 +142,25 @@ def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict 
     actions, refusal = _PROCESS_GLOBAL_ACTIONS.get(req.get("method"), ((), ""))
     if (req.get("params") or {}).get("action", "status") in actions:
         return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4030, "message": refusal}}
-    home = _foreign_profile_home(server, getattr(actor, "profile_id", None))
+    try:
+        home = _foreign_profile_home(server, getattr(actor, "profile_id", None))
+    except OSError:
+        return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4064, "message": "profile unavailable"}}
+    scope = contextlib.nullcontext()
     if home is not None and req.get("method") in _SESSION_FALLBACK_ALLOWED:
         scoped = _own_profile_read(server, req, home)
         if "result" in scoped or "error" in scoped:
             return scoped
         req = scoped
+    elif home is not None:
+        req, target = _ticket_profile_request(server, req, home)
+        if target is None:
+            return req
+        if target:
+            scope = server._session_profile_runtime_scope({"profile_home": target})
     token = _connection_profile_home.set(home)
     try:
-        return server.dispatch(req, transport)
+        with scope:
+            return server.dispatch(req, transport)
     finally:
         _connection_profile_home.reset(token)
