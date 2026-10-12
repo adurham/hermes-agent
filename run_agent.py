@@ -953,6 +953,10 @@ class AIAgent(
         self._session_messages = []
         self._db_flush_scan_prefix = None
         self._streamed_assistant_text_parts = []
+        if isinstance(session_messages, list):
+            # The token-estimate memo pins message strings; a closed conversation's can never hit again.
+            from agent.model_metadata_token_memo import forget_message_token_memo
+            _quietly(forget_message_token_memo, session_messages)
         _quietly(self._trim_process_memory)
         _quietly(self._finalize_owned_session_row)
 
