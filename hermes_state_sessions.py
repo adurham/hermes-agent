@@ -832,6 +832,23 @@ class SessionSessionsMixin:
         session = self.get_session(session_id) or {}
         return _parse_model_config(session.get("model_config")).get(key, default)
 
+    def update_session_model_config_value(self, session_id: str, key: str, update: Callable[[Any], Any]) -> bool:
+        """Read ``key``, write ``update(value)`` back, in one write transaction, so a concurrent writer of
+        the same key cannot be overwritten with a stale copy. ``update`` may run more than once (lock
+        retry) and must be pure; returning None removes the key. False when the row does not exist."""
+        def _do(conn) -> bool:
+            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return False
+            config = _parse_model_config(row[0])
+            if (value := update(config.get(key))) is None:
+                config.pop(key, None)
+            else:
+                config[key] = value
+            conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(config), session_id))
+            return True
+        return self._execute_write(_do)
+
     def session_ids_with_model_config_key(self, key: str) -> list[str]:
         """Ids of the sessions whose model_config carries ``key``, newest first."""
         with self._read_ctx() as conn:

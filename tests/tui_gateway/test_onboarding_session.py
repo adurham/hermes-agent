@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import onboarding_record
-from agent.onboarding_flow import Facts, Shown
+from agent.onboarding_flow import Facts, Shown, SkipAll
 from agent.onboarding_text import GREETING
 from tui_gateway import server, server_requests
 
@@ -156,3 +156,29 @@ def test_a_compression_rotation_carries_the_run_record(root):
 
     assert onboarding_record.load(db, "child") == onboarding_record.load(db, "parent")
     assert db.get_session_model_config_value("child", "codex_thread_id") is None
+    # The parent keeps its active copy; the run is read at the tip, so skipping the child ends it.
+    assert onboarding_record.active_session_id(db) == "child"
+    onboarding_record.advance(db, "child", SkipAll())
+    assert onboarding_record.active_session_id(db) is None
+
+
+def test_a_skip_retried_after_a_failed_config_write_closes_the_install_flag(root, monkeypatch):
+    from hermes_cli import onboarding_run
+    from hermes_cli.config import read_user_config_raw
+    db = server._get_db()
+    db.create_session("onb", "desktop")
+    onboarding_record.start(db, "onb", FACTS)
+    real_set_run = onboarding_run.set_run
+
+    def disk_full(value, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(onboarding_run, "set_run", disk_full)
+    with pytest.raises(OSError):
+        onboarding_record.advance(db, "onb", SkipAll())
+    monkeypatch.setattr(onboarding_run, "set_run", real_set_run)
+
+    assert onboarding_record.load(db, "onb")["phase"] == "skipped"
+    assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is True
+    onboarding_record.advance(db, "onb", SkipAll())
+    assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is False
