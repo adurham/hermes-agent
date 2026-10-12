@@ -308,3 +308,24 @@ def test_mutation_receipts_naming_a_deleted_physical_target_drop_its_text(tmp_pa
         replay = rt.mutate_runtime_session(db, epoch=epoch, **rewind)
         assert replay['target_message'] is None and replay['rewound_count'] == 2
         assert rt.mutate_runtime_session(db, epoch=epoch, **rename)['title'] is None
+
+
+def test_retirement_drops_the_turn_user_row_copy(tmp_path):
+    """The settled user row as the model saw it is a transcript copy: deletion strips it (N88)."""
+    with SessionDB(tmp_path / 'state.db') as db:
+        db.create_session('gone', source='api_server')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        rt.admit_session_input(db, epoch=epoch, principal_id='api', session_id='gone', request_id='r1',
+                               payload={'text': 'secret ask'})
+        row = rt.claim_session_input(db, epoch=epoch, session_id='gone')
+        user = {'role': 'user', 'content': 'secret ask', 'api_content': 'memory: secret ask'}
+        retain_result(db, epoch=epoch, row=row, result={'result': {
+            'final_response': 'reply', 'current_turn_user_idx': 0,
+            'messages': [user, {'role': 'assistant', 'content': 'reply'}]}})
+        assert admission_result(db, row['admission_id'])['result']['_turn_user_row'] == user
+        snap = db.get_session('gone')
+        rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='gone', request_id='del',
+                                  operation='delete', payload={}, expected_revision=snap['runtime_revision'],
+                                  expected_generation=snap['runtime_generation'])
+        retired = admission_result(db, row['admission_id'])['result']
+        assert retired['final_response'] == 'reply' and '_turn_user_row' not in retired

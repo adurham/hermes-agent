@@ -20,12 +20,13 @@ def has_mutation_receipt(db, principal_id, session_id, request_id):
         return conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone() is not None
 
 
-_TRANSCRIPT_FIELDS = frozenset({'messages', 'last_reasoning', 'tools'})
+_TRANSCRIPT_FIELDS = frozenset({'messages', 'last_reasoning', 'tools', '_turn_user_row'})
 
 
 def _compact_result(conn, admission_id):
     """A retired result keeps the exact-retry outcome (final response, flags, usage/accounting)
-    but not the transcript copies a turn result carries (cumulative ``messages``, reasoning)."""
+    but not the transcript copies a turn result carries (cumulative ``messages``, reasoning, the
+    settled ``_turn_user_row``)."""
     from hermes_state_terminal import RESULT_PREFIX
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone()
     if saved is None:
