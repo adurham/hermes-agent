@@ -23,9 +23,32 @@ def wait_profile_unowned(profile_dir: Path, *, timeout: float | None = None) -> 
             with exclusive_maintenance([profile_dir]):
                 return True
         except OwnershipConflict:
-            if time.monotonic() >= deadline:
-                return False
-            time.sleep(0.25)
+            pass
+        except OSError:
+            # A read-only copy (0555 home, 0444 lock) cannot host a reservation: probe it instead.
+            if _lock_unheld_read_only(profile_dir / 'gateway.lock'):
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.25)
+
+
+def _lock_unheld_read_only(path: Path) -> bool:
+    """A missing lock, or one our own flock through a read-only descriptor wins, has no holder."""
+    if os.name == 'nt':
+        return False  # a sharing violation there is a live holder
+    import fcntl
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
 
 
 def _rmtree_make_writable(func, path, exc):
