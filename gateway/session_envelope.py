@@ -4,6 +4,7 @@ Ordinary context and local media are retained without serializing delegated trus
 Multiplex callbacks bind current connector ownership; roles require fresh preflight.
 Relay snapshots bind the authenticated connector and exact source; replay rechecks both.
 """
+import asyncio
 from copy import copy, deepcopy
 from datetime import datetime
 import json
@@ -114,11 +115,16 @@ async def prepare_native(runner, event):
     # not silently discard them while freezing the caller's source identity.
     frozen = replace(event, source=copy(event.source))
     fresh_roles = await reauthorize_roles(runner, frozen.source, provenance)
-    return _snapshot_native(runner, frozen, provenance, fresh_roles)
+    encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
+    # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the
+    # copied context carries the admission's capture lease.
+    media = await asyncio.to_thread(capture_native_media, frozen.media_urls) if frozen.media_urls else None
+    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
 
 
-def _snapshot_native(runner, event, provenance, fresh_roles=False):
-    encoded_source = _validate_native(runner, event, provenance, fresh_roles)
+def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None):
+    if encoded_source is None:
+        encoded_source = _validate_native(runner, event, provenance, fresh_roles)
     envelope = {'source': encoded_source,
                 'route': runner.session_store._generate_session_key(event.source),
                 'event': deepcopy({name: getattr(event, name) for name in _EVENT_FIELDS}),
@@ -144,7 +150,7 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False):
     if event.message_type != MessageType.TEXT:
         envelope['message_type'] = event.message_type.value
     if event.media_urls:
-        envelope['media'] = capture_native_media(event.media_urls)
+        envelope['media'] = media if media is not None else capture_native_media(event.media_urls)
         envelope['event'].update(media_types=list(event.media_types),
                                  media_text_inlined=list(event.media_text_inlined))
     # Keep the private dispatch key so previously committed text-only rows recover
