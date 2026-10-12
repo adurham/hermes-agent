@@ -315,7 +315,7 @@ function shellQuote(file: string): string {
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
  *  daemon, ticket minted for the sibling profile's home (`profiles/<name>` under the launch root).
  *  The gateway refuses a ticket whose profile it does not serve, so a bad name fails closed. */
-export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, launchHome: string): GatewayEndpoint {
+export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, _launchHome: string): GatewayEndpoint {
   const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? new URL(urlOrProfile).searchParams.get('profile') : urlOrProfile)?.trim()
 
   if (!profile || profile === 'current') {return endpoint}
@@ -325,7 +325,9 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   if (profile === ownName) {return endpoint}
 
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {throw new Error('Invalid profile route')}
-  const root = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? path.dirname(path.dirname(endpoint.profile_id)) : launchHome
+  // The root home is the endpoint's own profile_id (Python resolved it); the raw launch HERMES_HOME
+  // may be a symlink, and a ticket for an unresolved sibling home fails 'Noncanonical' (B2-17).
+  const root = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? path.dirname(path.dirname(endpoint.profile_id)) : endpoint.profile_id
   const home = profile === 'default' ? root : path.join(root, 'profiles', profile)
 
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }
