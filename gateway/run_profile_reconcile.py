@@ -114,6 +114,7 @@ class GatewayProfileReconcileMixin:
         async with self._reconcile_lock():
             active = getattr(self, "_primary_profile_name", None) or "default"
             live = {str(name): Path(home) for name, home in profiles_to_serve(multiplex=True)}
+            listed = set(live)  # a probe skip below is not a deletion: it never clears a parked verdict
             known = dict(self._served_profile_homes or {})
             from gateway.status import live_gateway_pid_for_home
 
@@ -154,7 +155,7 @@ class GatewayProfileReconcileMixin:
             self._profile_probe_timeout_warned = timed_out
             sigs = self._served_profile_signatures or {}
             from gateway.run_runtime import unpark_profile
-            for name in [n for n in self._parked_profile_names() if n not in live]:
+            for name in [n for n in self._parked_profile_names() if n not in listed]:
                 unpark_profile(self, name)
             parked = self._parked_profile_names()
             # The watcher never re-parks the same profile every cycle; a creator's explicit signal does.
