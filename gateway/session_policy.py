@@ -582,7 +582,6 @@ def restore_policy(data):
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
                 or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
-                or not Path(policy.cwd).is_dir()
                 or not isinstance(policy.model, str) or not policy.model.strip()
                 or not isinstance(policy.toolsets, (list, tuple))
                 or any(not isinstance(name, str) for name in policy.toolsets)
@@ -622,6 +621,10 @@ def policy_scope(policy, *, authority=None):
     if policy is None:
         yield
         return
+    # Readiness, not structure: a removed workspace keeps the chat readable and movable, but no
+    # turn runs in a missing directory.
+    if not Path(policy.cwd).is_dir():
+        raise RuntimeStoreError('workspace_unavailable')
     from agent.runtime_cwd import set_session_cwd
     from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
