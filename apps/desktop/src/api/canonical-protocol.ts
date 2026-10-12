@@ -447,11 +447,7 @@ export class CanonicalDesktopProtocol {
     const profile = canonicalProfile(event.profile)
     const owner = canonicalSessionKey(sid, profile)
 
-    if (Array.isArray(payload.pending)) {
-      payload.pending_submissions = payload.pending.map(row => ({ ...row, user: row.text }))
-
-      this.reconcileUnknownAdmissions(sid, profile, payload.pending)
-    }
+    if (Array.isArray(payload.pending)) { payload.pending_submissions = payload.pending.map(row => ({ ...row, user: row.text })) }
 
     const generation = event.execution_generation ?? payload.execution_generation
 
@@ -461,6 +457,9 @@ export class CanonicalDesktopProtocol {
       if (generation < current) { return }
       this.generations.set(owner, generation)
     }
+
+    // C20: only a frame that passed the generation fence may retire a live Discard action.
+    if (Array.isArray(payload.pending)) { this.reconcileUnknownAdmissions(sid, profile, payload.pending) }
 
     // Turns advance the CAS revision without a session.updated event; the
     // pending fanout is where a viewer learns the value its next mutation must present.
