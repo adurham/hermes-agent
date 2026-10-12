@@ -70,7 +70,7 @@ export function SetupChoosePending({
   const copy = t.assistant.clarify
   const setupCopy = t.assistant.setupChoose
   const storedId = useStore(useSessionView().$storedId)
-  const { mode, setMode, setTheme } = useTheme()
+  const { mode, setMode } = useTheme()
 
   const { kind, pickerKind, ready, requestId, setup, source } = setupChooseSource(request, fromArgs)
   const freeText = pickerKind === null
@@ -151,10 +151,10 @@ export function SetupChoosePending({
   const commitLook = useCallback(
     (ids: string[]) => {
       if (ids[0]) {
-        LIVE_LOOK[kind]?.commit?.(ids[0], setTheme)
+        LIVE_LOOK[kind]?.commit?.(ids[0])
       }
     },
-    [kind, setTheme]
+    [kind]
   )
 
   // Composer text that names a row picks it through this card, so the typed pick applies its look too.
