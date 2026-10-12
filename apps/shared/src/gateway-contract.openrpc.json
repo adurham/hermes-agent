@@ -2131,8 +2131,44 @@
       }
     },
     {
+      "name": "onboarding.skip",
+      "summary": "Skip setup: end the session's onboarding run and close the card that waits.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/OnboardingSkipParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingSkipResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.start",
+      "summary": "Open the onboarding chat in the default profile: create it, write its run record and play the opening.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/OnboardingStartParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingStartResult"
+        }
+      }
+    },
+    {
       "name": "onboarding.state",
-      "summary": "Whether the desktop first-run questionnaire is due; reads the root profile's config.",
+      "summary": "Whether desktop first-run onboarding is due, and the chat in progress; reads the root profile's config.",
       "params": [
         {
           "name": "params",
@@ -20448,6 +20484,14 @@
         "title": "OnboardingEnsureSetupSessionResult",
         "type": "object"
       },
+      "OnboardingFactsSource": {
+        "enum": [
+          "local",
+          "remote"
+        ],
+        "title": "OnboardingFactsSource",
+        "type": "string"
+      },
       "OnboardingIntro": {
         "enum": [
           "unseen",
@@ -20482,7 +20526,7 @@
       },
       "OnboardingRunStateResult": {
         "additionalProperties": false,
-        "description": "``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).",
+        "description": "``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).\n``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it.",
         "properties": {
           "run": {
             "title": "Run",
@@ -20491,6 +20535,18 @@
           "eligible": {
             "title": "Eligible",
             "type": "boolean"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           }
         },
         "required": [
@@ -20518,6 +20574,100 @@
           "run"
         ],
         "title": "OnboardingSetRunParams",
+        "type": "object"
+      },
+      "OnboardingSkipParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "OnboardingSkipParams",
+        "type": "object"
+      },
+      "OnboardingSkipResult": {
+        "additionalProperties": false,
+        "properties": {
+          "skipped": {
+            "title": "Skipped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "skipped"
+        ],
+        "title": "OnboardingSkipResult",
+        "type": "object"
+      },
+      "OnboardingStartParams": {
+        "additionalProperties": false,
+        "description": "``rerun``: start a new onboarding chat even when one is in progress (Settings, Run onboarding\nagain). ``facts_source``: whether the backend runs on the user's own computer. ``locale``: the\ndesktop's UI language, preferred over the backend OS locale.",
+        "properties": {
+          "rerun": {
+            "default": false,
+            "title": "Rerun",
+            "type": "boolean"
+          },
+          "facts_source": {
+            "$ref": "#/components/schemas/OnboardingFactsSource",
+            "default": "local"
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Locale"
+          }
+        },
+        "title": "OnboardingStartParams",
+        "type": "object"
+      },
+      "OnboardingStartResult": {
+        "additionalProperties": false,
+        "description": "``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding\nchat already in progress was reopened instead of a new one started.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "resumed": {
+            "title": "Resumed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "resumed"
+        ],
+        "title": "OnboardingStartResult",
         "type": "object"
       },
       "OnboardingStateResult": {
@@ -33354,6 +33504,89 @@
         "title": "SessionWorkspaceMoveResult",
         "type": "object"
       },
+      "SetupBeat": {
+        "enum": [
+          "name",
+          "theme",
+          "layout",
+          "connectors",
+          "plugins",
+          "tour",
+          "build"
+        ],
+        "title": "SetupBeat",
+        "type": "string"
+      },
+      "SetupBeatRequestParams": {
+        "additionalProperties": false,
+        "description": "``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name ``{suggested?}`` (the OS\naccount's name, card-only), theme ``{picker}``, layout and tour ``{options}``, connectors\n``{suggested}`` (slugs), plugins ``{plugins}`` (catalog names), build ``{options}``.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "beat": {
+            "$ref": "#/components/schemas/SetupBeat"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Question"
+          },
+          "card": {
+            "additionalProperties": true,
+            "title": "Card",
+            "type": "object"
+          }
+        },
+        "required": [
+          "session_id",
+          "beat",
+          "card"
+        ],
+        "title": "SetupBeatRequestParams",
+        "type": "object"
+      },
+      "SetupBeatResult": {
+        "additionalProperties": false,
+        "description": "``answer`` holds the beat's picks (name ``{name}``, theme ``{accent, mode?}``, layout ``{layout}``,\nconnectors ``{connected, newly_connected}``, plugins ``{installed}``, tour ``{tour}``, build\n``{build}``); ``said`` is composer text typed while the card waited. A response with neither, or\nnone within 300 s, closes the card unanswered.",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Answer"
+          },
+          "said": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Said"
+          }
+        },
+        "title": "SetupBeatResult",
+        "type": "object"
+      },
       "SetupChooseKind": {
         "enum": [
           "question",
@@ -40709,6 +40942,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/ValueResult"
+        }
+      }
+    },
+    {
+      "name": "setup_beat",
+      "summary": "The onboarding chat's card for one beat; blocks setup_beat until answered (300 s).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SetupBeatRequestParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SetupBeatResult"
         }
       }
     },

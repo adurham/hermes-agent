@@ -1,5 +1,5 @@
 """``onboarding.state`` / ``onboarding.set_run`` read and write the ROOT profile's config.yaml, even
-from a pooled backend launched under a named profile, and answer ``{run, eligible}``."""
+from a pooled backend launched under a named profile, and answer ``{run, eligible, session_id}``."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _onboarding(home: Path) -> dict:
 
 def test_state_answers_run_and_eligible(launched_under_work, monkeypatch):
     # The user's own "work" profile is install history, so an unset flag is not due.
-    assert _call("onboarding.state")["result"] == {"run": False, "eligible": True}
+    assert _call("onboarding.state")["result"] == {"run": False, "eligible": True, "session_id": None}
 
     monkeypatch.delenv("HERMES_GUEST_ONBOARDING")
     assert _call("onboarding.state")["result"]["eligible"] is False
@@ -44,7 +44,7 @@ def test_state_answers_run_and_eligible(launched_under_work, monkeypatch):
 def test_set_run_writes_the_root_config(launched_under_work):
     root, work = launched_under_work
 
-    assert _call("onboarding.set_run", {"run": True})["result"] == {"run": True, "eligible": True}
+    assert _call("onboarding.set_run", {"run": True})["result"] == {"run": True, "eligible": True, "session_id": None}
     assert _onboarding(root)["run"] is True
     assert "run" not in _onboarding(work)
     assert _call("onboarding.state")["result"]["run"] is True

@@ -71,7 +71,135 @@ def _(rid, params: dict) -> dict:
 def _run_state() -> dict:
     from hermes_cli.anon_auth import guest_enabled
     from hermes_cli.onboarding_run import should_run
-    return {"run": should_run(), "eligible": guest_enabled()}
+    return {"run": should_run(), "eligible": guest_enabled(), "session_id": _active_onboarding_session()}
+
+
+# ── first-run onboarding: one chat in the default profile, driven by setup_beat ───────────────
+
+# Onboarding always runs in the default profile, whichever profile this backend was launched under.
+_ONBOARDING_PROFILE = {"profile": "default"}
+# Two windows pressing start at once must not both find no run and open two onboarding chats.
+_onboarding_start_lock = threading.Lock()
+
+
+def _active_onboarding_session() -> str | None:
+    from agent.onboarding_record import active_session_id
+    with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+        return None if db is None else active_session_id(db)
+
+
+@method("onboarding.start")
+def _(rid, params: dict) -> dict:
+    from agent.onboarding_facts import read_facts
+    from agent.onboarding_record import active_session_id, start
+    from agent.onboarding_text import CHAT_TITLE, opening_prompt
+    facts = None
+    try:
+        with _onboarding_start_lock, _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5000)
+            stored = None if params.get("rerun") else active_session_id(db)
+            if stored is None:
+                facts = read_facts(facts_source=params.get("facts_source") or "local", locale=params.get("locale"))
+                stored = db.create_session(new_session_id(), "desktop")
+                db.set_session_title(stored, db.get_next_title_in_lineage(CHAT_TITLE))
+                # The record exists before the agent is built, so the build folds the onboarding toolset in.
+                start(db, stored, facts)
+    except Exception as e:
+        logger.exception("onboarding.start failed")
+        return _err(rid, 5078, str(e))
+    resumed = _methods["session.resume"](rid, {**_ONBOARDING_PROFILE, "session_id": stored, "source": "desktop"})
+    if "error" in resumed:
+        return resumed
+    sid = resumed["result"]["session_id"]
+    if facts is not None:
+        # The opening rules ride a hidden user turn; its prelude plays the greeting and the name card.
+        submitted = _methods["prompt.submit"](
+            rid, {"session_id": sid, "text": opening_prompt(facts), "display_kind": "hidden"})
+        if "error" in submitted:
+            return submitted
+    return _ok(rid, {"session_id": sid, "stored_session_id": stored, "resumed": facts is None})
+
+
+@method("onboarding.skip")
+def _(rid, params: dict) -> dict:
+    from agent.onboarding_flow import SkipAll
+    from agent.onboarding_record import advance, load
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    stored = getattr(agent, "session_id", None) or session["session_key"]
+    with _session_db(session) as db:
+        if load(db, stored) is None:
+            return _ok(rid, {"skipped": False})
+        step = advance(db, stored, SkipAll())
+    from tui_gateway import server_requests
+    # The card that waits returns to setup_beat, which reads the skipped record.
+    server_requests.cancel(params["session_id"], "resolved", method="setup_beat")
+    return _ok(rid, {"skipped": bool(step.result.get("skipped_all"))})
+
+
+def _setup_beat_request(sid: str, payload: dict) -> dict | None:
+    from agent.onboarding_flow import CARD_TIMEOUT_S
+    from tui_gateway import server_requests
+    return server_requests.send("setup_beat", sid, dict(payload), timeout=CARD_TIMEOUT_S)
+
+
+def _builds_onboarding(agent) -> bool:
+    return "setup_beat" in (getattr(agent, "valid_tool_names", None) or ())
+
+
+def _onboarding_toolsets(enabled, db, session_id: str):
+    """*enabled* plus ``onboarding`` for a chat whose run is in progress. Decided once, at agent build:
+    the tool array is part of the cached prefix, so a finished run keeps setup_beat (as a refusal)
+    until the session is rebuilt."""
+    from agent.onboarding_flow import is_active
+    from agent.onboarding_record import load
+    if not enabled or "onboarding" in enabled:
+        return enabled
+    return [*enabled, "onboarding"] if is_active(load(db if db is not None else _get_db(), session_id)) else enabled
+
+
+def _carry_onboarding_toolset(enabled, agent):
+    """A tool refresh keeps the onboarding toolset the agent was built with."""
+    if not enabled or "onboarding" in enabled or "onboarding" not in (getattr(agent, "enabled_toolsets", None) or ()):
+        return enabled
+    return [*enabled, "onboarding"]
+
+
+def _onboarding_prelude(agent, history: list):
+    """The opening's scripted step, greeting and name card, while the name beat was never shown. A
+    greeting already in the chat (a relaunch) is not said twice."""
+    from agent.onboarding_flow import PENDING, is_active
+    from agent.onboarding_record import load
+    from agent.onboarding_text import GREETING
+    if not _builds_onboarding(agent):
+        return None
+    record = load(agent._session_db, agent.session_id)
+    if not is_active(record) or record["beats"]["name"] != PENDING:
+        return None
+    said = any(m.get("role") == "assistant" and m.get("content") == GREETING for m in history)
+
+    def opening():
+        yield ("" if said else GREETING), "setup_beat", {"beat": "name"}
+    return opening()
+
+
+def _stage_onboarding_turn_note(sid: str, agent, history_empty: bool) -> None:
+    """Before a user turn in the onboarding chat, while no card waits: which card is closed and how to
+    bring it back. Rides the turn's API-only notes, like the first-contact note."""
+    from agent.onboarding_flow import is_active
+    from agent.onboarding_record import load
+    from agent.onboarding_text import turn_note
+    from tui_gateway import server_requests
+    if history_empty or not _builds_onboarding(agent) or server_requests.pending_kind(sid) == "setup_beat":
+        return
+    record = load(agent._session_db, agent.session_id)
+    if is_active(record):
+        prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
+        note = turn_note(record)
+        agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
 
 
 @method("onboarding.record_failed_start")

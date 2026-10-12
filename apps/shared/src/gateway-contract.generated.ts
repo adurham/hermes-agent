@@ -2202,15 +2202,36 @@ export interface OnboardingStateResult {
   profile?: string | null
 }
 export type OnboardingIntro = 'unseen' | 'seen'
-/** ``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). */
+/** ``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it. */
 export interface OnboardingRunStateResult {
   run: boolean
   eligible: boolean
+  session_id?: string | null
 }
 /** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after the questionnaire gets the plain intro instead of the profile offer. */
 export interface OnboardingSetRunParams {
   run: boolean
   mark_profile_offered?: boolean
+}
+/** ``rerun``: start a new onboarding chat even when one is in progress (Settings, Run onboarding again). ``facts_source``: whether the backend runs on the user's own computer. ``locale``: the desktop's UI language, preferred over the backend OS locale. */
+export interface OnboardingStartParams {
+  rerun?: boolean
+  facts_source?: OnboardingFactsSource
+  locale?: string | null
+}
+export type OnboardingFactsSource = 'local' | 'remote'
+/** ``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding chat already in progress was reopened instead of a new one started. */
+export interface OnboardingStartResult {
+  session_id: string
+  stored_session_id: string
+  resumed: boolean
+}
+export interface OnboardingSkipParams {
+  session_id: string
+  profile?: string | null
+}
+export interface OnboardingSkipResult {
+  skipped: boolean
 }
 export interface OnboardingResetSetupProfileResult {
   name: string
@@ -4534,6 +4555,19 @@ export interface SetupChooseResult {
   label?: string | string[] | null
   said?: string | null
 }
+/** ``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name ``{suggested?}`` (the OS account's name, card-only), theme ``{picker}``, layout and tour ``{options}``, connectors ``{suggested}`` (slugs), plugins ``{plugins}`` (catalog names), build ``{options}``. */
+export interface SetupBeatRequestParams {
+  session_id: string
+  beat: SetupBeat
+  question?: string | null
+  card: Record<string, unknown>
+}
+export type SetupBeat = 'name' | 'theme' | 'layout' | 'connectors' | 'plugins' | 'tour' | 'build'
+/** ``answer`` holds the beat's picks (name ``{name}``, theme ``{accent, mode?}``, layout ``{layout}``, connectors ``{connected, newly_connected}``, plugins ``{installed}``, tour ``{tour}``, build ``{build}``); ``said`` is composer text typed while the card waited. A response with neither, or none within 300 s, closes the card unanswered. */
+export interface SetupBeatResult {
+  answer?: Record<string, unknown> | null
+  said?: string | null
+}
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
   session_id: string
@@ -5306,7 +5340,11 @@ export interface RpcMethods {
   'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }
   /** Write onboarding.run in the root profile's config.yaml; answers the new state. */
   'onboarding.set_run': { params: OnboardingSetRunParams; result: OnboardingRunStateResult }
-  /** Whether the desktop first-run questionnaire is due; reads the root profile's config. */
+  /** Skip setup: end the session's onboarding run and close the card that waits. */
+  'onboarding.skip': { params: OnboardingSkipParams; result: OnboardingSkipResult }
+  /** Open the onboarding chat in the default profile: create it, write its run record and play the opening. */
+  'onboarding.start': { params: OnboardingStartParams; result: OnboardingStartResult }
+  /** Whether desktop first-run onboarding is due, and the chat in progress; reads the root profile's config. */
   'onboarding.state': { params: Params; result: OnboardingRunStateResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
@@ -5713,6 +5751,8 @@ export const RPC_METHODS = [
   'onboarding.record_failed_start',
   'onboarding.reset_setup_profile',
   'onboarding.set_run',
+  'onboarding.skip',
+  'onboarding.start',
   'onboarding.state',
   'paste.collapse',
   'pdf.attach',
@@ -5872,6 +5912,8 @@ export interface ServerRequestMap {
   'preview.read': { params: ReadRangeRequestParams; result: ValueResult }
   /** Masked value for a named env var (skills / setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
+  /** The onboarding chat's card for one beat; blocks setup_beat until answered (300 s). */
+  setup_beat: { params: SetupBeatRequestParams; result: SetupBeatResult }
   setup_choose: { params: SetupChooseRequestParams; result: SetupChooseResult }
   /** Masked sudo password for the terminal tool. */
   sudo: { params: SudoRequestParams; result: ValueResult }
@@ -5896,6 +5938,7 @@ export const SERVER_REQUEST_METHODS = [
   'preview.act',
   'preview.read',
   'secret',
+  'setup_beat',
   'setup_choose',
   'sudo',
   'terminal.read',

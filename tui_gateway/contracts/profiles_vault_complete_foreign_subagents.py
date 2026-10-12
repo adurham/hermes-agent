@@ -399,15 +399,17 @@ method("onboarding.mark_seen", params=Params, result=OnboardingStateResult)
 
 
 class OnboardingRunStateResult(Result):
-    """``run``: the questionnaire opens on this launch (root config ``onboarding.run``, else a fresh
-    install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``)."""
+    """``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh
+    install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).
+    ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it."""
 
     run: bool
     eligible: bool
+    session_id: str | None = None
 
 
 method("onboarding.state", params=Params, result=OnboardingRunStateResult,
-       doc="Whether the desktop first-run questionnaire is due; reads the root profile's config.")
+       doc="Whether desktop first-run onboarding is due, and the chat in progress; reads the root profile's config.")
 
 
 class OnboardingSetRunParams(Params):
@@ -420,6 +422,46 @@ class OnboardingSetRunParams(Params):
 
 method("onboarding.set_run", params=OnboardingSetRunParams, result=OnboardingRunStateResult,
        doc="Write onboarding.run in the root profile's config.yaml; answers the new state.")
+
+
+class OnboardingFactsSource(WireEnum):
+    local = "local"
+    remote = "remote"
+
+
+class OnboardingStartParams(Params):
+    """``rerun``: start a new onboarding chat even when one is in progress (Settings, Run onboarding
+    again). ``facts_source``: whether the backend runs on the user's own computer. ``locale``: the
+    desktop's UI language, preferred over the backend OS locale."""
+
+    rerun: bool = False
+    facts_source: OnboardingFactsSource = OnboardingFactsSource.local
+    locale: str | None = None
+
+
+class OnboardingStartResult(Result):
+    """``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding
+    chat already in progress was reopened instead of a new one started."""
+
+    session_id: str
+    stored_session_id: str
+    resumed: bool
+
+
+method("onboarding.start", params=OnboardingStartParams, result=OnboardingStartResult,
+       doc="Open the onboarding chat in the default profile: create it, write its run record and play the opening.")
+
+
+class OnboardingSkipParams(SessionParams):
+    pass
+
+
+class OnboardingSkipResult(Result):
+    skipped: bool
+
+
+method("onboarding.skip", params=OnboardingSkipParams, result=OnboardingSkipResult,
+       doc="Skip setup: end the session's onboarding run and close the card that waits.")
 
 
 class OnboardingResetSetupProfileResult(Result):

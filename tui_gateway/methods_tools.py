@@ -326,7 +326,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
         agent = sess["agent"]
         try:
             with _session_profile_runtime_scope(sess):
-                enabled = _load_enabled_toolsets(getattr(agent, "platform", None))
+                enabled = _carry_onboarding_toolset(_load_enabled_toolsets(getattr(agent, "platform", None)), agent)
                 disabled = _load_disabled_toolsets()
                 refresh(agent, enabled_override=enabled, disabled_override=disabled,
                         quiet_mode=True, preserve_prefix=preserve_prefix)

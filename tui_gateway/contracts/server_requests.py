@@ -94,6 +94,43 @@ class SetupChooseResult(Result):
 server_request("setup_choose", params=SetupChooseRequestParams, result=SetupChooseResult)
 
 
+# ── setup_beat (first-run onboarding) ─────────────────────────────────────────────────────────
+
+
+class SetupBeat(WireEnum):
+    name = "name"
+    theme = "theme"
+    layout = "layout"
+    connectors = "connectors"
+    plugins = "plugins"
+    tour = "tour"
+    build = "build"
+
+
+class SetupBeatRequestParams(ServerRequestParams):
+    """``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name ``{suggested?}`` (the OS
+    account's name, card-only), theme ``{picker}``, layout and tour ``{options}``, connectors
+    ``{suggested}`` (slugs), plugins ``{plugins}`` (catalog names), build ``{options}``."""
+
+    beat: SetupBeat
+    question: str | None = None
+    card: dict[str, JsonValue]
+
+
+class SetupBeatResult(Result):
+    """``answer`` holds the beat's picks (name ``{name}``, theme ``{accent, mode?}``, layout ``{layout}``,
+    connectors ``{connected, newly_connected}``, plugins ``{installed}``, tour ``{tour}``, build
+    ``{build}``); ``said`` is composer text typed while the card waited. A response with neither, or
+    none within 300 s, closes the card unanswered."""
+
+    answer: dict[str, JsonValue] | None = None
+    said: str | None = None
+
+
+server_request("setup_beat", params=SetupBeatRequestParams, result=SetupBeatResult,
+               doc="The onboarding chat's card for one beat; blocks setup_beat until answered (300 s).")
+
+
 # ── approval ──────────────────────────────────────────────────────────────────────────────────
 
 
