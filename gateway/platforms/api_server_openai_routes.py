@@ -310,7 +310,8 @@ class _ResponsesStream:
         if "sequence_number" not in data:
             data["sequence_number"] = self.sequence_number
         self.sequence_number += 1
-        self.recorded_events.append((event_type, data))
+        if self.durable_key:  # the only reader is the keyed replay record (emit_completed)
+            self.recorded_events.append((event_type, data))
         await self.response.write(self._api._sse_frame(data, event=event_type))
 
     def _item_id(self, kind, *, call_id=None, commentary=False):
