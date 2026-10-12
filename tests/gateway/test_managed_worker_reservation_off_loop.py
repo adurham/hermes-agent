@@ -2,6 +2,7 @@
 writer held by another process (up to _WRITE_PATIENCE_S) must not freeze every other session,
 timer, socket and Stop on the loop. Real child, real SQLite, a real competing writer."""
 import asyncio
+from itertools import pairwise
 import sqlite3
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.session_contract import Principal, SessionRef
+from tests.waiting import wait_until
 
 CHILD = """import json, os, sys, time, psutil
 me = psutil.Process()
@@ -63,12 +65,11 @@ def test_reservation_and_loss_writes_never_block_the_loop(tmp_path, monkeypatch,
 
     def competing_writer():
         if held_during == 'lose':
-            while not bootstrapped.exists():
-                time.sleep(.01)
+            wait_until(bootstrapped.exists, timeout=30, what='the worker to receive its bootstrap')
         rival = sqlite3.connect(tmp_path / 'state.db', isolation_level=None)
         rival.execute('BEGIN IMMEDIATE')
         held.set()
-        time.sleep(HOLD_S)
+        time.sleep(HOLD_S)  # health: allow HX013 -- the held writer's duration IS the behaviour under test
         rival.execute('ROLLBACK')
         rival.close()
 
@@ -84,7 +85,7 @@ def test_reservation_and_loss_writes_never_block_the_loop(tmp_path, monkeypatch,
         async def ticker():
             while True:
                 ticks.append(time.monotonic())
-                await asyncio.sleep(.05)
+                await asyncio.sleep(.05)  # health: allow HX013 -- the loop heartbeat probe; its gaps are the measurement
         beat = asyncio.create_task(ticker())
         try:
             async with asyncio.timeout(60):
@@ -94,7 +95,7 @@ def test_reservation_and_loss_writes_never_block_the_loop(tmp_path, monkeypatch,
         finally:
             beat.cancel()
         await asyncio.to_thread(writer.join, 10)
-        return row, max(b - a for a, b in zip(ticks, ticks[1:]))
+        return row, max(b - a for a, b in pairwise(ticks))
     with db:
         row, gap = asyncio.run(scenario())
         status = db._read_one('SELECT status FROM session_admissions WHERE admission_id=?', (row['admission_id'],))[0]

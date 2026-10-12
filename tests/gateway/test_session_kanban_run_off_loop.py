@@ -2,6 +2,7 @@
 Kanban DB is the cross-profile dispatch bus (busy_timeout up to 120 s), so a dispatcher holding
 its writer must not freeze every session on the loop. Real Kanban SQLite, a real held writer."""
 import asyncio
+from itertools import pairwise
 from contextlib import closing
 import sqlite3
 import threading
@@ -54,7 +55,7 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
         rival = sqlite3.connect(board_db, isolation_level=None)
         rival.execute('BEGIN IMMEDIATE')
         held.set()
-        time.sleep(HOLD_S)
+        time.sleep(HOLD_S)  # health: allow HX013 -- the held writer's duration IS the behaviour under test
         rival.execute('ROLLBACK')
         rival.close()
     monkeypatch.setattr('gateway.session_kanban.asdict', lambda receipt: {})
@@ -68,7 +69,7 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
         async def ticker():
             while True:
                 ticks.append(time.monotonic())
-                await asyncio.sleep(.05)
+                await asyncio.sleep(.05)  # health: allow HX013 -- the loop heartbeat probe; its gaps are the measurement
         beat = asyncio.create_task(ticker())
         try:
             async with asyncio.timeout(30):
@@ -77,7 +78,7 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
             beat.cancel()
         ticks.append(time.monotonic())  # a loop blocked from the first tick still yields one gap
         await asyncio.to_thread(writer.join, 10)
-        return max(b - a for a, b in zip(ticks, ticks[1:]))
+        return max(b - a for a, b in pairwise(ticks))
     gap = asyncio.run(scenario())
     assert calls == ['resume', 'submit']
     with closing(connect(board='owned')) as conn:
