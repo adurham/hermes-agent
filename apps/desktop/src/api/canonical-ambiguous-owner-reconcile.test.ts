@@ -24,6 +24,28 @@ async function equalIdClient(resume: (profile: string) => Promise<unknown>) {
 
 const snapshot = (profile: string, epoch: string) => ({ session_id: 'same', revision: 1, execution_generation: 2, replay_epoch: epoch, prompts: [], info: { profile_name: profile } })
 
+test('a failed owner reconciliation is probed again by the next frame', async () => {
+  let down = false
+
+  const { calls, client, emit } = await equalIdClient(async profile => {
+    if (down) { throw new Error('owner unavailable') }
+
+    return snapshot(profile, `epoch-${profile}`)
+  })
+
+  await client.request('session.resume', { session_id: 'same', profile: 'alpha' })
+  await client.request('session.resume', { session_id: 'same', profile: 'beta' })
+  client.onAny(() => undefined)
+  down = true
+  const probes = () => calls.filter(call => call.startsWith('session.resume')).length - 2
+  emit({ type: 'message.delta', session_id: 'same', replay_epoch: 'restarted', payload: { text: 'a' } })
+  await vi.waitFor(() => expect(probes()).toBe(2))
+  await new Promise(resolve => setTimeout(resolve, 0))
+  emit({ type: 'message.delta', session_id: 'same', replay_epoch: 'restarted', payload: { text: 'b' } })
+  await vi.waitFor(() => expect(probes()).toBe(4))
+  client.close()
+})
+
 test('a prompt declined locally is shown again while the authority still lists it', async () => {
   const prompt = { kind: 'approval', prompt_id: 'pending', execution_generation: 2, command: 'build', choices: ['once'] }
   const { calls, client } = await equalIdClient(async () => ({ session_id: 's', revision: 1, execution_generation: 2, prompts: [prompt] }))

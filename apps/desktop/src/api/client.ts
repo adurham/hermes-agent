@@ -265,12 +265,19 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     if (this.reconciledEpochs.has(key)) { return }
     this.reconciledEpochs.add(key)
+    const generation = this.connectionGeneration
 
     // A new/unknown replay epoch cannot choose between equal stored IDs. One
     // authoritative snapshot per known owner recovers cards and establishes routes.
-    for (const profile of this.sessionProfiles.get(sessionId) ?? []) {
-      void this.request('session.resume', { session_id: sessionId, profile }).catch(() => undefined)
-    }
+    const probes = [...this.sessionProfiles.get(sessionId) ?? []].map(profile =>
+      this.request('session.resume', { session_id: sessionId, profile }))
+
+    void Promise.allSettled(probes).then(results => {
+      // No owner answered: a later frame probes again instead of being dropped until reconnect.
+      if (generation === this.connectionGeneration && !results.some(result => result.status === 'fulfilled')) {
+        this.reconciledEpochs.delete(key)
+      }
+    })
   }
 
   override async connect(wsUrl: string): Promise<void> {
