@@ -1707,16 +1707,18 @@ _CHAT_PASSTHROUGH = (
 def cmd_chat(args):
     """Run interactive chat CLI."""
     from hermes_cli.stream_json import stream_json_requested
-    # Structured stdout is a non-interactive protocol: it overrides HERMES_TUI/display.interface too,
-    # so it is decided before the TUI gate and always rides the gateway transport.
-    if stream_json_requested(args) or _bypass_chat_launch(args) or not _resolve_use_tui(args):
+    # Structured stdout (stream-json) and the --safe-mode / --ignore-user-config bypass keep the
+    # gateway transport client; the classic CLI (interactive and -q/-Q) is main's HermesCLI, whose
+    # agent is a gateway-backed proxy (hermes_cli/gateway_agent.py).
+    if stream_json_requested(args) or _bypass_chat_launch(args):
         from hermes_cli.gateway_chat_startup import launch_gateway_chat
         sys.exit(launch_gateway_chat(args))
-    _refuse_unforwarded_tui_flags(args)
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
     use_tui = _resolve_use_tui(args)
+    if use_tui:
+        _refuse_unforwarded_tui_flags(args)
 
     _resolve_chat_session_args(args, use_tui)
 
@@ -3239,9 +3241,15 @@ def _try_termux_fast_cli_launch() -> bool:
     _promote_top_level_resume(args)
     if args.command in {None, "chat"}:
         _set_chat_arg_defaults(args)
-        # The gateway owns agent startup; legacy banner hints must not become
-        # execution options or leak into a newly ensured owner.
-        if getattr(args, "query", None) or getattr(args, "image", None):
+        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
+        if interactive_prompt:
+            # Reach the prompt first; agent-only discovery on the first turn.
+            args.compact = True
+            os.environ["HERMES_DEFER_AGENT_STARTUP"] = "1"
+            os.environ["HERMES_FAST_STARTUP_BANNER"] = "1"
+            if getattr(args, "accept_hooks", False):
+                os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+        else:
             _prepare_agent_startup(args)
         cmd_chat(args)
         return True
