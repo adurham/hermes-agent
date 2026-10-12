@@ -24,7 +24,6 @@ _NON_NAMES = frozenset({
     "admin", "administrator", "default", "guest", "me", "owner", "root", "test", "user",
 })
 _HANDLE_CHARS = re.compile(r"[\d_@/\\]")
-_SPARK_MODEL = re.compile(r"\b(dgx|spark|gb10)\b", re.IGNORECASE)
 
 FORK_QUESTION = "Know what you'd like it to make?"
 # Reading the Blender plugin's app declaration takes the network.
@@ -157,12 +156,6 @@ def _locale() -> str:
 # --- the facts block ------------------------------------------------------------------
 
 
-def _is_spark(os_family: str, arch: str, gpu: str, cpu: str) -> bool:
-    """RTX Sparks by platform, architecture and GPU; DGX Sparks by model string."""
-    rtx = os_family == "win32" and arch == "arm64" and gpu == "nvidia"
-    return rtx or products.is_nvidia_arm_soc() or bool(_SPARK_MODEL.search(cpu.replace("_", " ")))
-
-
 def _machine_kind(os_family: str, spark: bool) -> str:
     if spark:
         return "Spark"
@@ -175,7 +168,7 @@ def facts() -> dict:
     model only when the user picks it."""
     os_family, arch, gpu, cpu = host.os_family(), host.native_arch(), host.gpu_class(), host.cpu_model()
     ram = host.ram_total_bytes()
-    spark = _is_spark(os_family, arch, gpu, cpu)
+    spark = products.nvidia_platform() in ("rtx_spark", "dgx_spark")
     machine = {
         "os_family": os_family,
         "os_release": platform.release(),
