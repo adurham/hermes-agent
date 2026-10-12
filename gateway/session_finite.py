@@ -31,15 +31,31 @@ def finite_turn_scope(finite, unattended=False):
         _finite_turn.reset(token)
 
 
-def admit_finite(params):
+def admit_finite(params, *, submitter=None):
+    """Validate a submission's finite flags. *submitter* ``(connection, ref)`` marks a wire client: it may
+    ask for an unattended (auto-approving) turn only as the local CLI principal on its own CLI session."""
     if 'unattended' in params and (type(params['unattended']) is not bool
                                    or (params['unattended'] and params.get('finite') is not True)):
+        raise RuntimeStoreError('invalid_params')
+    if params.get('unattended') and submitter is not None and not _may_run_unattended(*submitter):
         raise RuntimeStoreError('invalid_params')
     if 'finite' not in params:
         return {}
     if type(params['finite']) is not bool:
         raise RuntimeStoreError('invalid_params')
     return {'finite': params['finite'], **({'unattended': True} if params.get('unattended') else {})}
+
+
+def _may_run_unattended(connection, ref):
+    """``hermes -z`` parity: main auto-approved only inside the one-shot's own process. Over the wire that
+    is the private local bootstrap ticket (no dashboard / remote identity), the session's creator (no
+    operator attach) and a CLI-surface session (never a Desktop, TUI, ACP or Bot Chat others watch)."""
+    from gateway.session_policy import policy_for_source
+    source = connection.authority.sessions[ref.session_id].source
+    if not connection.native_owner or source is None or source.user_id != connection.actor.subject:
+        return False
+    policy = policy_for_source(connection.authority.runner, source)
+    return policy is not None and policy.platform == 'cli'
 
 
 async def execute_finite_admission(authority, ref, row):

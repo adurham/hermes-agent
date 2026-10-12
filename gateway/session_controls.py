@@ -454,7 +454,7 @@ class AuthorityConnection:
         from gateway.session_finite import admit_finite
         from gateway.session_display import submit_display_fields
         from gateway.session_surface import submit_surface_fields
-        payload = {'text': params.get('text'), **admit_finite(params), **submit_surface_fields(params),
+        payload = {'text': params.get('text'), **admit_finite(params, submitter=(self, ref)), **submit_surface_fields(params),
                    **submit_display_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
