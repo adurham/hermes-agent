@@ -97,6 +97,7 @@ canonical.controls.launchToolsets: "ツールセットはセッション起動�
 canonical.controls.modelUsage: "使い方: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} は共有ゲートウェイではまだ利用できません"
 canonical.controls.prefNotSaved: "/{0} はこの表示にのみ適用されます。共有ゲートウェイには保存されません"
+canonical.controls.retryUnsupported: "/retry: 再試行はメディアや不明なコンテンツ部分に対応していません"
 canonical.controls.rowCost: "推定コスト"
 canonical.controls.unsupportedModelOption: "未対応のモデルオプション: {0}"
 canonical.controls.usageLastTurnTitle: "使用量 · 直前のターン"

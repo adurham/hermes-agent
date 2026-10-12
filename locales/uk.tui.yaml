@@ -97,6 +97,7 @@ canonical.controls.launchToolsets: "набори інструментів заф
 canonical.controls.modelUsage: "використання: /model <model> [--provider <provider>] [--session]"
 canonical.controls.notAvailable: "/{0} ще недоступна у спільному шлюзі"
 canonical.controls.prefNotSaved: "/{0} діє лише в цьому вікні; не збережено у спільному шлюзі"
+canonical.controls.retryUnsupported: "/retry: повтор не підтримує медіа та невідомі частини вмісту"
 canonical.controls.rowCost: "Орієнтовна вартість"
 canonical.controls.unsupportedModelOption: "непідтримуваний канонічний параметр моделі: {0}"
 canonical.controls.usageLastTurnTitle: "Використання · останній хід"

@@ -97,6 +97,7 @@ canonical.controls.launchToolsets: "наборы инструментов заф
 canonical.controls.modelUsage: "использование: /model <модель> [--provider <провайдер>] [--session]"
 canonical.controls.notAvailable: "/{0} пока недоступна в общем шлюзе"
 canonical.controls.prefNotSaved: "/{0} действует только в этом окне; не сохранено в общем шлюзе"
+canonical.controls.retryUnsupported: "/retry: повтор не поддерживает медиа и неизвестные части содержимого"
 canonical.controls.rowCost: "Оценочная стоимость"
 canonical.controls.unsupportedModelOption: "неподдерживаемый параметр модели: {0}"
 canonical.controls.usageLastTurnTitle: "Использование · последний ход"

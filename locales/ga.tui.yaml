@@ -97,6 +97,7 @@ canonical.controls.launchToolsets: "tacair uirlisí socraithe ag tús an tseisi�
 canonical.controls.modelUsage: "úsáid: /model <samhail> [--provider <soláthraí>] [--session]"
 canonical.controls.notAvailable: "níl /{0} ar fáil ar an gateway comhroinnte fós"
 canonical.controls.prefNotSaved: "baineann /{0} leis an amharc seo amháin; níor sábháladh é ar an gateway comhroinnte"
+canonical.controls.retryUnsupported: "/retry: ní thacaíonn atriail le meáin ná le codanna ábhair anaithnide"
 canonical.controls.rowCost: "Costas measta"
 canonical.controls.unsupportedModelOption: "rogha samhla canónaí gan tacaíocht: {0}"
 canonical.controls.usageLastTurnTitle: "Úsáid · an seal deireanach"
