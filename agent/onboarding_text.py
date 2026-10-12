@@ -199,8 +199,8 @@ def _tour(preset: str):
         'setup_beat(beat="next"): the build card waits under the tour. Never bring the tour up again.')
 
 
-def _waiting_beat(record) -> str:
-    return (record.get("waiting") or {}).get("beat") or next_beat(record) or "build"
+def _waiting_beat(record) -> str | None:
+    return (record.get("waiting") or {}).get("beat") or next_beat(record)
 
 
 _REMINDERS = {
@@ -239,15 +239,17 @@ def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None
     if not key:
         return ""
     if key in ("said", "timed_out"):
-        return (_said if key == "said" else _timed_out)(record, facts, beat or _waiting_beat(record))
+        return (_said if key == "said" else _timed_out)(record, facts, beat or _waiting_beat(record) or "build")
     if key.startswith("build_"):
         return build_guidance(key.removeprefix("build_"), facts)
     return _REMINDERS[key](record, facts)
 
 
 def turn_note(record: Mapping[str, Any]) -> str:
-    """The note on a user turn while no card waits: which card is closed and how to bring it back."""
-    beat = _waiting_beat(record)
+    """The note on a user turn while no card waits: which card is closed and how to bring it back.
+    Empty once every card is settled: the build is under way and nothing is left to reopen."""
+    if (beat := _waiting_beat(record)) is None:
+        return ""
     return (f"[System note: Onboarding continues; the {beat} card is closed. Answer their message first, then bring "
             f'the card back in one line with setup_beat(beat="{beat}").]')
 

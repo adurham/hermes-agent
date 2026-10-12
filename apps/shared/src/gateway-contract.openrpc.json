@@ -33519,7 +33519,7 @@
       },
       "SetupBeatRequestParams": {
         "additionalProperties": false,
-        "description": "``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name ``{suggested?}`` (the OS\naccount's name, card-only), theme ``{picker}``, layout and tour ``{options}``, connectors\n``{suggested}`` (slugs), plugins ``{plugins}`` (catalog names), build ``{options}``.",
+        "description": "``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and\nplugins have their own shape; layout, tour and build carry ``options``.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -33541,9 +33541,24 @@
             "title": "Question"
           },
           "card": {
-            "additionalProperties": true,
-            "title": "Card",
-            "type": "object"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SetupNameCard"
+              },
+              {
+                "$ref": "#/components/schemas/SetupThemeCard"
+              },
+              {
+                "$ref": "#/components/schemas/SetupOptionsCard"
+              },
+              {
+                "$ref": "#/components/schemas/SetupConnectorsCard"
+              },
+              {
+                "$ref": "#/components/schemas/SetupPluginsCard"
+              }
+            ],
+            "title": "Card"
           }
         },
         "required": [
@@ -33556,13 +33571,30 @@
       },
       "SetupBeatResult": {
         "additionalProperties": false,
-        "description": "``answer`` holds the beat's picks (name ``{name}``, theme ``{accent, mode?}``, layout ``{layout}``,\nconnectors ``{connected, newly_connected}``, plugins ``{installed}``, tour ``{tour}``, build\n``{build}``); ``said`` is composer text typed while the card waited. A response with neither, or\nnone within 300 s, closes the card unanswered.",
+        "description": "``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend\nrejects any other answer). ``said`` is composer text typed while the card waited. A response\nwith neither, or none within 300 s, closes the card unanswered.",
         "properties": {
           "answer": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/SetupNameAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/SetupThemeAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/SetupLayoutAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/SetupConnectorsAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/SetupPluginsAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/SetupTourAnswer"
+              },
+              {
+                "$ref": "#/components/schemas/SetupBuildAnswer"
               },
               {
                 "type": "null"
@@ -33585,6 +33617,20 @@
           }
         },
         "title": "SetupBeatResult",
+        "type": "object"
+      },
+      "SetupBuildAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "build": {
+            "title": "Build",
+            "type": "string"
+          }
+        },
+        "required": [
+          "build"
+        ],
+        "title": "SetupBuildAnswer",
         "type": "object"
       },
       "SetupChooseKind": {
@@ -33744,6 +33790,164 @@
           }
         },
         "title": "SetupChooseResult",
+        "type": "object"
+      },
+      "SetupConnectorsAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "connected": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Connected",
+            "type": "array"
+          },
+          "newly_connected": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Newly Connected",
+            "type": "array"
+          }
+        },
+        "required": [
+          "connected"
+        ],
+        "title": "SetupConnectorsAnswer",
+        "type": "object"
+      },
+      "SetupConnectorsCard": {
+        "additionalProperties": false,
+        "properties": {
+          "suggested": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggested",
+            "type": "array"
+          }
+        },
+        "required": [
+          "suggested"
+        ],
+        "title": "SetupConnectorsCard",
+        "type": "object"
+      },
+      "SetupLayoutAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "layout": {
+            "title": "Layout",
+            "type": "string"
+          }
+        },
+        "required": [
+          "layout"
+        ],
+        "title": "SetupLayoutAnswer",
+        "type": "object"
+      },
+      "SetupNameAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SetupNameAnswer",
+        "type": "object"
+      },
+      "SetupNameCard": {
+        "additionalProperties": false,
+        "properties": {
+          "suggested": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Suggested"
+          }
+        },
+        "title": "SetupNameCard",
+        "type": "object"
+      },
+      "SetupOption": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "SetupOption",
+        "type": "object"
+      },
+      "SetupOptionsCard": {
+        "additionalProperties": false,
+        "properties": {
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/SetupOption"
+            },
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "options"
+        ],
+        "title": "SetupOptionsCard",
+        "type": "object"
+      },
+      "SetupPluginsAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "installed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Installed",
+            "type": "array"
+          }
+        },
+        "required": [
+          "installed"
+        ],
+        "title": "SetupPluginsAnswer",
+        "type": "object"
+      },
+      "SetupPluginsCard": {
+        "additionalProperties": false,
+        "properties": {
+          "plugins": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Plugins",
+            "type": "array"
+          }
+        },
+        "required": [
+          "plugins"
+        ],
+        "title": "SetupPluginsCard",
         "type": "object"
       },
       "SetupReadyPayload": {
@@ -34100,6 +34304,65 @@
           }
         },
         "title": "SetupStatusResult",
+        "type": "object"
+      },
+      "SetupThemeAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "accent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accent"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mode"
+          }
+        },
+        "title": "SetupThemeAnswer",
+        "type": "object"
+      },
+      "SetupThemeCard": {
+        "additionalProperties": false,
+        "properties": {
+          "picker": {
+            "title": "Picker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "picker"
+        ],
+        "title": "SetupThemeCard",
+        "type": "object"
+      },
+      "SetupTourAnswer": {
+        "additionalProperties": false,
+        "properties": {
+          "tour": {
+            "title": "Tour",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tour"
+        ],
+        "title": "SetupTourAnswer",
         "type": "object"
       },
       "SharedMetricsConsentResult": {

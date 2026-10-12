@@ -107,23 +107,77 @@ class SetupBeat(WireEnum):
     build = "build"
 
 
+class SetupOption(Params):
+    id: str
+    label: str
+
+
+class SetupNameCard(Params):
+    suggested: str | None = None  # the OS account's name: shown on the card, never sent to the model
+
+
+class SetupThemeCard(Params):
+    picker: str
+
+
+class SetupOptionsCard(Params):
+    options: list[SetupOption]
+
+
+class SetupConnectorsCard(Params):
+    suggested: list[str]
+
+
+class SetupPluginsCard(Params):
+    plugins: list[str]
+
+
 class SetupBeatRequestParams(ServerRequestParams):
-    """``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name ``{suggested?}`` (the OS
-    account's name, card-only), theme ``{picker}``, layout and tour ``{options}``, connectors
-    ``{suggested}`` (slugs), plugins ``{plugins}`` (catalog names), build ``{options}``."""
+    """``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and
+    plugins have their own shape; layout, tour and build carry ``options``."""
 
     beat: SetupBeat
     question: str | None = None
-    card: dict[str, JsonValue]
+    card: SetupNameCard | SetupThemeCard | SetupOptionsCard | SetupConnectorsCard | SetupPluginsCard
+
+
+class SetupNameAnswer(Result):
+    name: str
+
+
+class SetupThemeAnswer(Result):
+    accent: str | None = None
+    mode: str | None = None
+
+
+class SetupLayoutAnswer(Result):
+    layout: str
+
+
+class SetupConnectorsAnswer(Result):
+    connected: list[str]
+    newly_connected: list[str] = Field(default_factory=list)
+
+
+class SetupPluginsAnswer(Result):
+    installed: list[str]
+
+
+class SetupTourAnswer(Result):
+    tour: str
+
+
+class SetupBuildAnswer(Result):
+    build: str
 
 
 class SetupBeatResult(Result):
-    """``answer`` holds the beat's picks (name ``{name}``, theme ``{accent, mode?}``, layout ``{layout}``,
-    connectors ``{connected, newly_connected}``, plugins ``{installed}``, tour ``{tour}``, build
-    ``{build}``); ``said`` is composer text typed while the card waited. A response with neither, or
-    none within 300 s, closes the card unanswered."""
+    """``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend
+    rejects any other answer). ``said`` is composer text typed while the card waited. A response
+    with neither, or none within 300 s, closes the card unanswered."""
 
-    answer: dict[str, JsonValue] | None = None
+    answer: (SetupNameAnswer | SetupThemeAnswer | SetupLayoutAnswer | SetupConnectorsAnswer | SetupPluginsAnswer
+             | SetupTourAnswer | SetupBuildAnswer | None) = None
     said: str | None = None
 
 

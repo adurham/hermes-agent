@@ -242,8 +242,31 @@ def _shown(record: dict, event: Shown, facts: Facts, now: float) -> Step:
     return Step(record, {})
 
 
+def _is_names(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def valid_answer(beat: str, answer: Mapping[str, Any], facts: Facts, picks: Mapping[str, Any]) -> bool:
+    """A card answer carries only its beat's pick keys, with ids from the card's own options."""
+    spec = BEAT_BY_ID[beat]
+    if not answer or not set(answer) <= set(spec.picks):
+        return False
+    if spec.values is not None:
+        return answer.get(spec.value) in spec.values(facts, picks)
+    if beat == "name":
+        return isinstance(answer.get("name"), str) and bool(answer["name"].strip())
+    if beat == "theme":
+        return all(value is None or isinstance(value, str) for value in answer.values())
+    if beat == "plugins":
+        return _is_names(answer.get("installed")) and set(answer["installed"]) <= set(facts.plugins)
+    return "connected" in answer and all(_is_names(value) for value in answer.values())
+
+
 def _answered(record: dict, event: Answered, facts: Facts, now: float) -> Step:
     record["waiting"] = None
+    if not valid_answer(event.beat, event.answer, facts, record["picks"]):
+        return Step(record, {"beat": event.beat, "error": "The card sent an answer this beat does not accept. "
+                             f'Bring it back with setup_beat(beat="{event.beat}").'})
     _settle(record, event.beat, event.answer)
     return Step(record, {"beat": event.beat, "answer": dict(event.answer), "next": _next_field(record)},
                 BEAT_BY_ID[event.beat].after(record["picks"]))

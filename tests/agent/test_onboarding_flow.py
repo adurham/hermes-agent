@@ -41,10 +41,11 @@ def answer_all(facts: Facts) -> list:
     """The happy path for a machine: every beat it gets, shown and answered on its card."""
     answers = {"name": {"name": "Sid"}, "theme": {"accent": "Ultraviolet"}, "layout": {"layout": "terminal-deck"},
                "connectors": {"connected": ["slack"], "newly_connected": ["slack"]},
-               "plugins": {"installed": ["blender"]}, "tour": {"tour": "quick"}, "build": {"build": "week"}}
+               "plugins": {"installed": list(facts.plugins[:1])}, "tour": {"tour": "quick"}}
     record, events = new_record(facts), []
     while (beat := next_beat(record)) is not None:
-        for event in (Shown(beat, f"call_{beat}"), Answered(beat, answers[beat])):
+        answer = answers.get(beat) or {"build": build_options(facts, record["picks"])[0]["id"]}
+        for event in (Shown(beat, f"call_{beat}"), Answered(beat, answer)):
             events.append(event)
             record = apply(record, event, facts).record
     return [*events, Done()]
@@ -258,3 +259,22 @@ def test_quiet_spell_after_the_build_card_completes_the_run():
     ended = expire(record, now=record["updated_at"] + flow.QUIET_COMPLETE_S)
     assert ended["phase"] == flow.COMPLETE and ended["ended_by"] == "timeout"
     assert expire(new_record(facts), now=10**9)["phase"] == flow.ONBOARDING
+
+
+def test_a_card_answer_outside_the_cards_options_is_refused_and_the_beat_stays_open():
+    facts = MACHINES["mac"]
+    record = run(facts, Shown("build", "call_b"))[-1].record
+    step = apply(record, Answered("build", {"build": "games"}), facts, now=2.0)
+
+    assert "error" in step.result and step.record["beats"]["build"] == SHOWN
+    assert step.record["picks"]["build"] is None and step.record["waiting"] is None
+    for beat, answer in [("name", {"name": "  "}), ("layout", {"layout": "x"}), ("theme", {"accent": 3}),
+                         ("plugins", {"installed": ["nvidia-app"]}), ("connectors", {"installed": ["blender"]})]:
+        assert "error" in apply(new_record(facts), Answered(beat, answer), facts, now=1.0).result
+
+
+def test_no_turn_note_once_every_card_is_settled():
+    facts = MACHINES["linux"]
+    steps = run(facts, *answer_all(facts)[:-1])
+
+    assert next_beat(steps[-1].record) is None and turn_note(steps[-1].record) == ""

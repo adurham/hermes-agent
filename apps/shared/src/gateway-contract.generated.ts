@@ -4555,18 +4555,60 @@ export interface SetupChooseResult {
   label?: string | string[] | null
   said?: string | null
 }
-/** ``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name ``{suggested?}`` (the OS account's name, card-only), theme ``{picker}``, layout and tour ``{options}``, connectors ``{suggested}`` (slugs), plugins ``{plugins}`` (catalog names), build ``{options}``. */
+/** ``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and plugins have their own shape; layout, tour and build carry ``options``. */
 export interface SetupBeatRequestParams {
   session_id: string
   beat: SetupBeat
   question?: string | null
-  card: Record<string, unknown>
+  card: SetupNameCard | SetupThemeCard | SetupOptionsCard | SetupConnectorsCard | SetupPluginsCard
 }
 export type SetupBeat = 'name' | 'theme' | 'layout' | 'connectors' | 'plugins' | 'tour' | 'build'
-/** ``answer`` holds the beat's picks (name ``{name}``, theme ``{accent, mode?}``, layout ``{layout}``, connectors ``{connected, newly_connected}``, plugins ``{installed}``, tour ``{tour}``, build ``{build}``); ``said`` is composer text typed while the card waited. A response with neither, or none within 300 s, closes the card unanswered. */
+export interface SetupNameCard {
+  suggested?: string | null
+}
+export interface SetupThemeCard {
+  picker: string
+}
+export interface SetupOptionsCard {
+  options: SetupOption[]
+}
+export interface SetupOption {
+  id: string
+  label: string
+}
+export interface SetupConnectorsCard {
+  suggested: string[]
+}
+export interface SetupPluginsCard {
+  plugins: string[]
+}
+/** ``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend rejects any other answer). ``said`` is composer text typed while the card waited. A response with neither, or none within 300 s, closes the card unanswered. */
 export interface SetupBeatResult {
-  answer?: Record<string, unknown> | null
+  answer?: SetupNameAnswer | SetupThemeAnswer | SetupLayoutAnswer | SetupConnectorsAnswer | SetupPluginsAnswer | SetupTourAnswer | SetupBuildAnswer | null
   said?: string | null
+}
+export interface SetupNameAnswer {
+  name: string
+}
+export interface SetupThemeAnswer {
+  accent?: string | null
+  mode?: string | null
+}
+export interface SetupLayoutAnswer {
+  layout: string
+}
+export interface SetupConnectorsAnswer {
+  connected: string[]
+  newly_connected?: string[]
+}
+export interface SetupPluginsAnswer {
+  installed: string[]
+}
+export interface SetupTourAnswer {
+  tour: string
+}
+export interface SetupBuildAnswer {
+  build: string
 }
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
