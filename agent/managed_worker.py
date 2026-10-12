@@ -228,6 +228,8 @@ class WorkerControls:
 
     def _ask(self, question, choices, multi_select):
         import uuid
+        from tools.clarify_gateway import get_clarify_timeout
+        timeout = get_clarify_timeout()  # the frozen worker config; <= 0 is unlimited, as on every surface
         prompt_id = uuid.uuid4().hex
         state = {'event': threading.Event(), 'answer': None}
         with self.lock:
@@ -237,7 +239,7 @@ class WorkerControls:
         try:
             self.channel.send('clarify', prompt_id=prompt_id, question=question,
                               choices=list(choices or []), multi_select=bool(multi_select))
-            state['event'].wait(3600)
+            state['event'].wait(timeout if timeout > 0 else None)
             return state['answer']
         finally:
             with self.lock:
