@@ -41,8 +41,10 @@ def check_api_turn(authority, ref, payload):
         raise RuntimeStoreError('runtime_draining')
     if 'api_turn_v1' in payload:
         data = payload['api_turn_v1']
-        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'browser_control'}
+        if (set(data) - {'history', 'settings', 'turn_author', 'media', 'run_owner_scope', 'browser_control',
+                         'relay_metadata'}
                 or not {'history', 'settings'} <= set(data)
+                or not isinstance(data.get('relay_metadata', {}), dict)
                 or (data['history'] is not None and not isinstance(data['history'], list))
                 or ('run_owner_scope' in data and not _valid_owner_scope(data['run_owner_scope']))
                 or ('browser_control' in data and not _valid_browser_control(data['browser_control']))):
@@ -208,6 +210,10 @@ def admit_api_steps(adapter, **kwargs):
         if author is None:
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
+    if kwargs.get('relay_metadata'):
+        # The request's Relay metadata rides the admission to the turn it describes (main passed it
+        # to ``run_conversation``); it is client JSON, so it is part of the exact-retry identity.
+        payload['api_turn_v1']['relay_metadata'] = kwargs['relay_metadata']
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
     if not isinstance(kwargs['user_message'], list):
         return (yield from _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs))
@@ -438,6 +444,7 @@ def prepare_api_execution(authority, ref, payload):
         content = restore_api_images(content, data.get('media') or [])
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
             'content': content, 'turn_author': data.get('turn_author') if data else None,
+            'relay_metadata': data.get('relay_metadata') if data else None,
             'browser_control': _rebind_browser_control(adapter, data)}
 
 
