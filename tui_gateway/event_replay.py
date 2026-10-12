@@ -90,21 +90,7 @@ def _stamp_event(obj: dict) -> None:
             buf = _replay_buffers[sid] = deque()
             _replay_buffer_bytes[sid] = 0
             while len(_replay_buffers) > _REPLAY_SESSIONS_MAX:
-                oldest_sid, _oldest_buf = _replay_buffers.popitem(last=False)
-                _replay_total_bytes -= _replay_buffer_bytes.pop(oldest_sid, 0)
-                # FIFO eviction drops the ring, not the session's seq numbering
-                # (#100122). Keep the counter so a revisited session continues
-                # from its high seq instead of restarting at 1 under clients'
-                # still-held watermarks (a reset seq is invisible to
-                # dispatchIfNewer — replay AND live frames silently vanish).
-                # Retain the truncation watermark too, raised to the latest
-                # stamped seq: the whole retained ring is gone, so a client
-                # holding any older watermark has a gap and must refetch
-                # history instead of trusting the new tail. Both counters are
-                # one int per session id seen this process (bounded by distinct
-                # sessions, not by traffic).
-                _replay_evicted_through[oldest_sid] = max(
-                    _replay_evicted_through.get(oldest_sid, 0), _replay_next_seq.get(oldest_sid, 0))
+                _drop_ring_locked(next(iter(_replay_buffers)))
         if size > _REPLAY_BUFFER_BYTES_MAX or size > _REPLAY_PROCESS_BYTES_MAX:
             _replay_evicted_through[sid] = seq
             return
@@ -129,8 +115,13 @@ def _stamp_event(obj: dict) -> None:
 
 
 def _drop_ring_locked(sid: str) -> None:
-    """Free one session's retained frames; keep its seq counter and raise its truncation watermark
-    to the latest seq (the FIFO-eviction contract, #100122). Caller holds ``_replay_lock``."""
+    """Free one session's retained frames (FIFO cap eviction and teardown). Caller holds ``_replay_lock``.
+
+    The ring goes, the session's seq numbering stays (#100122): a revisited session continues from its high
+    seq instead of restarting at 1 under clients' still-held watermarks (a reset seq is invisible to
+    dispatchIfNewer, so replay AND live frames silently vanish). The truncation watermark is raised to the
+    latest stamped seq: a client holding any older watermark has a gap and must refetch history instead of
+    trusting the new tail. Both counters are one int per session id seen this process."""
     global _replay_total_bytes
     if _replay_buffers.pop(sid, None) is None:
         return
