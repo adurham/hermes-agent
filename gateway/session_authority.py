@@ -1024,6 +1024,28 @@ class SessionAuthority:
                 await asyncio.wait_for(released.wait(), _MARKER_RELEASE_WAIT_S)
 
 
+def backfill_legacy_session_owners(db):
+    """Stamp this store's own profile onto pre-ownership NULL rows (#94724).
+
+    The owner is the only writer while it holds the profile, so the offline REST backfill is
+    refused for as long as it runs; doing it here is what migrates an upgraded install. Idempotent
+    and never overwrites an owner, so every start runs it. A store outside the profile tree has
+    no derivable owner and keeps NULL.
+    """
+    import logging
+    stamp = db._own_profile_name()
+    if not stamp:
+        return 0
+    try:
+        stamped = db.backfill_null_session_profiles(stamp)
+    except Exception:
+        logging.getLogger(__name__).warning('Legacy session owner backfill failed for %s', db.db_path, exc_info=True)
+        return 0
+    if stamped:
+        logging.getLogger(__name__).info('Stamped %d legacy session row(s) with owner profile %r', stamped, stamp)
+    return stamped
+
+
 async def initialize_session_authority(runner, *, profile_id, instance_id, db=None, register=True):
     """Call after exclusive profile ownership, before connecting adapters/API.
 
@@ -1039,6 +1061,7 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     epoch = await asyncio.to_thread(begin_runtime_epoch, db, instance_id=instance_id)
     # Hot-serve builds a profile while the loop serves the others: both writes stay off it.
     await asyncio.to_thread(recover_session_inputs, db, epoch=epoch)
+    await asyncio.to_thread(backfill_legacy_session_owners, db)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)
     if register:
         runner.session_authority = authority
