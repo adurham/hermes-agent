@@ -320,9 +320,18 @@ def launch_from_args(args) -> int:
                 return failed("credentials or agent init failed", 1)
         query_file = getattr(args, "query_file", None)
         if query_file:
-            args.query = sys.stdin.read() if query_file == "-" else Path(query_file).read_text(encoding="utf-8-sig")
+            # Main's --query-file contract (the Bot Mode DM transport): undecodable bytes are
+            # replaced, and an unreadable or empty file is exit 2 with the file named.
+            try:
+                if query_file == "-":
+                    args.query = sys.stdin.read()
+                else:
+                    with open(query_file, encoding="utf-8-sig", errors="replace") as handle:
+                        args.query = handle.read()
+            except OSError as exc:
+                return failed(f"cannot read --query-file {query_file}: {exc}", 2)
             if not args.query.strip():
-                raise GatewayClientError("--query-file is empty")
+                return failed(f"--query-file {query_file} is empty", 2)
         if not (getattr(args, "query", None) or getattr(args, "q", None) or getattr(args, "oneshot", None) or sys.stdin.isatty()):
             raise GatewayClientError("Noninteractive chat requires --query or --oneshot")
         return asyncio.run(run_gateway_chat(args, emitter=emitter))
