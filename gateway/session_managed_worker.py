@@ -1,6 +1,6 @@
 """Admission-owned production exec; observers never own the worker lifetime."""
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from collections import deque
 from dataclasses import asdict, replace
 import json
@@ -319,7 +319,9 @@ class ManagedWorker:
         except subprocess.TimeoutExpired:
             self._signal_worker(kill=True)
             self._signal_group(kill=True)
-            self.process.wait(timeout=5)
+            # Still unreaped after SIGKILL (a launcher's handle): the teardown below must still run.
+            with suppress(subprocess.TimeoutExpired):
+                self.process.wait(timeout=5)
         else:
             self._signal_worker(kill=True)
         if self.writer.ident is not None:
@@ -512,11 +514,11 @@ async def execute_managed(authority, ref, row, policy):
                 await asyncio.to_thread(worker.send, {'type': 'finish'})
                 continue
             if frame == {'type': 'finished'} and accepted is not None:
-                code = await asyncio.to_thread(process.wait, 10)
-                if code != 0:
-                    raise RuntimeStoreError('managed_worker_lost')
+                # 'finished' follows the worker's durable execution.finish: the turn is complete.
+                # A slow or non-zero interpreter exit after it is close()'s cleanup, not a loss.
+                with suppress(subprocess.TimeoutExpired):
+                    await asyncio.to_thread(process.wait, 10)
                 # Like in-process execution, settlement belongs to the drain's stream lock.
-                # The worker must acknowledge its durable finish before that boundary.
                 authority.pending_results[row['admission_id']] = {'result': accepted, 'usage': usage}
                 return accepted['final_response']
             raise RuntimeStoreError('invalid_worker_frame')
