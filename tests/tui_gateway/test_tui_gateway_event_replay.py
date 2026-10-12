@@ -317,3 +317,19 @@ def test_forget_session_frees_the_ring_and_keeps_seq_and_gap_semantics():
     assert late["params"]["seq"] == 4
     assert len(events_since("kept", 0)) == 1
     event_replay.forget_session("never-seen")  # no-op
+
+
+def test_session_teardown_releases_the_replay_ring(monkeypatch):
+    from tui_gateway import session_lifecycle
+
+    # The isolated-turn settle and full finalize need an agent/DB behind the dict; the subject is the ring.
+    monkeypatch.setattr(session_lifecycle, "_teardown_session", lambda session, end_reason="tui_close": None)
+    for _ in range(3):
+        event_replay._stamp_event(_frame("closed-sid"))
+    event_replay._stamp_event(_frame("live-sid"))
+
+    assert session_lifecycle._teardown_popped_session({"_sid": "closed-sid"}, end_reason="tui_shutdown")
+
+    assert events_since("closed-sid", 0) == []
+    assert event_replay.is_truncated("closed-sid", 0)
+    assert len(events_since("live-sid", 0)) == 1
