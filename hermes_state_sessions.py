@@ -832,6 +832,14 @@ class SessionSessionsMixin:
         session = self.get_session(session_id) or {}
         return _parse_model_config(session.get("model_config")).get(key, default)
 
+    def session_ids_with_model_config_key(self, key: str) -> list[str]:
+        """Ids of the sessions whose model_config carries ``key``, newest first."""
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM sessions WHERE {_sql_json_extract('model_config', '$.' + key)} IS NOT NULL "
+                "ORDER BY started_at DESC").fetchall()
+        return [row["id"] for row in rows]
+
     def update_session_runtime_lock(
         self, session_id: str, *, model: Optional[str] = None, provider: Optional[str] = None,
         model_options: Optional[dict[str, Any]] = None, route_source: Optional[str] = None,
