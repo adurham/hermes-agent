@@ -1443,6 +1443,8 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import APIServerAdapter
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
+        if isinstance(result, dict) and isinstance(result.get("_turn_user_row"), dict):
+            current_user = dict(result["_turn_user_row"])  # settled canonical turn: carries api_content
         agent_messages = result.get("messages") if isinstance(result, dict) else None
         if isinstance(agent_messages, list) and agent_messages:
             turn_start = APIServerAdapter._response_messages_turn_start_index(
