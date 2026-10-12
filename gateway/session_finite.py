@@ -62,7 +62,9 @@ async def execute_finite_admission(authority, ref, row):
     from gateway.session_ingress import execute_admission
     from gateway.session_display import display_turn_scope
     from gateway.session_surface import surface_turn_scope
+    from gateway.session_cli_turn import cli_turn_scope
     with finite_turn_scope(row['payload'].get('finite', False), row['payload'].get('unattended') is True), \
             surface_turn_scope(row['payload'].get('surface_v1')), \
-            display_turn_scope(row['admission_id'], row['payload'].get('display_v1')):
+            display_turn_scope(row['admission_id'], row['payload'].get('display_v1')), \
+            cli_turn_scope(row['payload'].get('cli_turn_v1')):
         return await execute_admission(authority, ref, row)

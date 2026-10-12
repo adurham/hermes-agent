@@ -4925,10 +4925,23 @@ export interface CanonicalSubmitParams {
   voice_turn?: boolean
   display_kind?: 'hidden' | null
   title_preview?: string | null
+  turn_author?: CanonicalTurnAuthor | null
+  api_text?: string | null
+  model_override?: CanonicalModelOverride | null
 }
 export interface CanonicalAttachment {
   path: string
   mime: string
+}
+export interface CanonicalTurnAuthor {
+  id?: string | null
+  name?: string | null
+  is_bot?: boolean
+  origin?: string | null
+}
+export interface CanonicalModelOverride {
+  model: string
+  provider?: string | null
 }
 export interface CanonicalApprovalParams {
   profile?: string | null

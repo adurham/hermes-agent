@@ -8971,6 +8971,32 @@
         "title": "CanonicalListResult",
         "type": "object"
       },
+      "CanonicalModelOverride": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          }
+        },
+        "required": [
+          "model"
+        ],
+        "title": "CanonicalModelOverride",
+        "type": "object"
+      },
       "CanonicalPendingAdmission": {
         "additionalProperties": false,
         "properties": {
@@ -10698,6 +10724,40 @@
             ],
             "default": null,
             "title": "Title Preview"
+          },
+          "turn_author": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalTurnAuthor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "api_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Api Text"
+          },
+          "model_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CanonicalModelOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -10705,6 +10765,54 @@
           "text"
         ],
         "title": "CanonicalSubmitParams",
+        "type": "object"
+      },
+      "CanonicalTurnAuthor": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "is_bot": {
+            "default": false,
+            "title": "Is Bot",
+            "type": "boolean"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Origin"
+          }
+        },
+        "title": "CanonicalTurnAuthor",
         "type": "object"
       },
       "CapabilityEntry": {

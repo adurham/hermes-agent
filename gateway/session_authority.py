@@ -425,13 +425,14 @@ class SessionAuthority:
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
-                'voice_turn', 'display_kind', 'title_preview'}
+                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
         from gateway.session_finite import admit_finite
         from gateway.session_surface import admit_surface
         from gateway.session_display import admit_display
+        from gateway.session_cli_turn import admit_cli_turn
         finite = admit_finite(request.payload)
         def admitted():
             # The exact durable identity (authenticated principal + target + request id); the
@@ -443,7 +444,7 @@ class SessionAuthority:
             from hermes_state_runtime import _row
             return _row(row) if row is not None else None
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
-                   **admit_display(request.payload),
+                   **admit_display(request.payload), **admit_cli_turn(request.payload),
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
         source = self.sessions[request.ref.session_id].source
         if source is not None and source.user_id != actor.subject:

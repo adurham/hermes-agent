@@ -144,6 +144,18 @@ class CanonicalAttachment(Params):
     mime: str
 
 
+class CanonicalTurnAuthor(Params):
+    id: str | None = None
+    name: str | None = None
+    is_bot: bool = False
+    origin: str | None = None
+
+
+class CanonicalModelOverride(Params):
+    model: str
+    provider: str | None = None
+
+
 class CanonicalSubmitParams(CanonicalSessionParams):
     text: str
     submission_id: str | None = None
@@ -161,6 +173,12 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     # titler input only, never model input.
     display_kind: Literal['hidden'] | None = None
     title_preview: str | None = None
+    # Classic CLI per-turn inputs, committed per admission (``cli_turn_v1``): who wrote the turn
+    # (memory attribution only), the model-facing text when it differs from the persisted ``text``
+    # (voice prefix, model-switch / skills-reload notes) and a one-turn ``/model --once`` override.
+    turn_author: CanonicalTurnAuthor | None = None
+    api_text: str | None = None
+    model_override: CanonicalModelOverride | None = None
 
 
 class CanonicalControlParams(CanonicalSessionParams):

@@ -178,7 +178,7 @@ def row_turn_author(policy, row):
     """Who wrote the admitted input, for memory attribution only: the producer's stamp when it
     left one, else the forwarded peer bound into the session policy; never grants anything."""
     payload = row['payload']
-    for key in ('local_automation_v1', 'api_turn_v1'):
+    for key in ('local_automation_v1', 'api_turn_v1', 'cli_turn_v1'):
         author = (payload.get(key) or {}).get('turn_author')
         if author is not None:
             return author
