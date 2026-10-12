@@ -16,6 +16,7 @@ SHOWN = [['status.update', {'kind': 'warn', 'text': 'PROBE_WARNING_STATUS'}],
          ['status.update', {'kind': 'lifecycle', 'text': 'PROBE_LIFECYCLE_STATUS'}],
          ['notification.show', {'text': 'PROBE_NOTICE', 'level': 'warn', 'kind': 'sticky', 'ttl_ms': None,
                                 'key': 'probe', 'id': 'probe'}]]
+CLEARED = ['notification.clear', {'key': 'probe'}]
 
 
 @pytest.mark.parametrize('mode', ['default', 'suppress'])
@@ -32,6 +33,7 @@ def test_local_viewer_receives_agent_status_and_notices(tmp_path, mode):
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
     receipt = json.loads((state / 'receipt.json').read_text())
     # display.suppress_warning_notifications still hides the diagnostics (warn status, warn notice).
-    expected = SHOWN if mode == 'default' else [SHOWN[1]]
+    # The recovery clear always reaches the viewer, as main's TUI emitted it (clearing nothing is a no-op).
+    expected = (SHOWN if mode == 'default' else [SHOWN[1]]) + [CLEARED]
     assert receipt['events'] == expected
-    assert receipt['cli_stderr'].split() == [payload['text'] for _, payload in expected]
+    assert receipt['cli_stderr'].split() == [payload['text'] for _, payload in expected if 'text' in payload]

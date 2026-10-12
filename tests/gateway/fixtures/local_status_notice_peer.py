@@ -50,6 +50,7 @@ async def probe():
         self._emit_warning('PROBE_WARNING_STATUS')
         self._emit_status('PROBE_LIFECYCLE_STATUS')
         self._emit_notice(AgentNotice(text='PROBE_NOTICE', level='warn', key='probe', id='probe'))
+        self._emit_notice_clear('probe')  # recovery withdraws the sticky notice (main: notification.clear)
         return original(self, *args, **kwargs)
     run_agent.AIAgent.run_conversation = run_conversation
 
@@ -88,7 +89,7 @@ async def probe():
                 view._dispatch_event(params['type'], params.get('admission_id'), params.get('payload', {}))
         Path(os.environ['HERMES_HOME'], 'receipt.json').write_text(json.dumps({
             'events': [[p['type'], p.get('payload')] for p in events if p['type'] in (
-                'status.update', 'notification.show')], 'cli_stderr': printed.getvalue()}))
+                'status.update', 'notification.show', 'notification.clear')], 'cli_stderr': printed.getvalue()}))
     finally:
         await ws.close()
         await stop_gateway_api(api)

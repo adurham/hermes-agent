@@ -880,6 +880,11 @@ class GatewayTurnProgressMixin:
             "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id}),
             platform=ctx.source.platform, user_config=ctx.user_config, diagnostic=is_diagnostic_notice(notice))
 
+    def _local_notice_clear_callback_sync(self, key) -> None:
+        """Recovery -> ``notification.clear`` for local viewers (main's TUI payload)."""
+        if key and self._status_live():
+            self._publish_execution("notification.clear", {"key": str(key)})
+
     def _status_live(self) -> bool:
         """Status adapter present and this run is still the current generation."""
         return bool(self._ctx._status_adapter) and self._ctx._run_still_current()
