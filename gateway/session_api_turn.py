@@ -504,7 +504,7 @@ def wire_api_observers(agent, owner, want_interim):
 
 
 def publish_api_event(authority, session_id, event_type, payload):
-    if event_type == 'message.delta':
+    if event_type == 'message.delta' and payload['text'] is not None:  # a None segment boundary is viewer-only
         return _notify_observers(authority, session_id, 'stream_delta_callback', payload['text'])
     return False
 

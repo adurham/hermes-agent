@@ -231,13 +231,18 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             ) if sc is not None
         ]
         stream_delta_cb = None
+        local_viewer_route = getattr(ctx.source, "platform", None) == Platform.LOCAL
         if delta_sinks or self._approval_owner is not None:
             def stream_delta_cb(text: Optional[str]) -> None:
                 if not ctx._run_still_current():
                     return
                 delivered = bool(delta_sinks)
-                if text is not None:  # None closes only the native stream segment.
+                if text is not None:
                     delivered = self._publish_execution("message.delta", {"text": text}) or delivered
+                elif local_viewer_route:
+                    # The segment boundary (main's ``_stream_delta(None)`` closes the reply box
+                    # before tool lines); messaging routes only close their native stream.
+                    self._publish_execution("message.delta", {"text": None})
                 for sink in delta_sinks:
                     sink.on_delta(text)
                 if text is not None and (not delivered or _finite_viewer_turn()):
@@ -246,8 +251,6 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     # only. The agent must treat it as undelivered, else a stream that dies here is
                     # stitched as a "partial delivery" nobody received (classic -q parity).
                     raise _NoStreamConsumer()
-
-        local_viewer_route = getattr(ctx.source, "platform", None) == Platform.LOCAL
 
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
@@ -1197,10 +1200,21 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
-        agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
-        persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-        compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        from gateway.run_turn_progress import local_viewer_turn
+        local_sinks = None
+        if local_viewer_turn(self) and not ctx.mute_notification_reply:
+            # Per turn on the shared cached agent: installed here, restored when the run returns.
+            from gateway import local_viewer_events
+            local_sinks = local_viewer_events.wire(self, agent)
+        try:
+            agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
+            persist_msg, persist_ts = self._prepare_turn_message(agent_history)
+            compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
+            result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        finally:
+            if local_sinks is not None:
+                from gateway import local_viewer_events
+                local_viewer_events.restore(agent, local_sinks)
         persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:

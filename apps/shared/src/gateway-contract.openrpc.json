@@ -5153,6 +5153,21 @@
         "title": "AgentPluginRow",
         "type": "object"
       },
+      "AgentPrintPayload": {
+        "additionalProperties": false,
+        "description": "A session-authority local-viewer turn: one line the agent printed through ``_print_fn``\n(subagent completion, compaction, errors, budget notices), which main's classic CLI rendered\nthrough ``_agent_status_print``.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "AgentPrintPayload",
+        "type": "object"
+      },
       "AgentProcessRow": {
         "additionalProperties": false,
         "properties": {
@@ -22518,6 +22533,52 @@
           }
         },
         "title": "MessageCompletePayload",
+        "type": "object"
+      },
+      "MessageDeltaPayload": {
+        "additionalProperties": false,
+        "description": "``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the\nreply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that\ncloses the classic CLI's reply box. Every other viewer ignores an empty chunk.",
+        "properties": {
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "rendered": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rendered"
+          },
+          "verbose": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Verbose"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "MessageDeltaPayload",
         "type": "object"
       },
       "MessageInterimPayload": {
@@ -45390,6 +45451,18 @@
   ],
   "x-notifications": [
     {
+      "name": "agent.print",
+      "summary": "A status line the agent printed during a local viewer's turn.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/AgentPrintPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "agent.terminal.output",
       "summary": "Output chunk from an agent-owned background process.",
       "params": [
@@ -45643,12 +45716,12 @@
     },
     {
       "name": "message.delta",
-      "summary": "One streamed chunk of the assistant reply.",
+      "summary": "One streamed chunk of the assistant reply (null text: segment boundary).",
       "params": [
         {
           "name": "payload",
           "schema": {
-            "$ref": "#/components/schemas/StreamDeltaPayload"
+            "$ref": "#/components/schemas/MessageDeltaPayload"
           }
         }
       ]

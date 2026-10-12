@@ -5277,6 +5277,12 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
+/** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. */
+export interface MessageDeltaPayload {
+  text: string | null
+  rendered?: string | null
+  verbose?: boolean | null
+}
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
   text: string
@@ -5358,6 +5364,10 @@ export interface ReactionPayload {
 }
 /** ``server`` background_review_callback. */
 export interface ReviewSummaryPayload {
+  text: string
+}
+/** A session-authority local-viewer turn: one line the agent printed through ``_print_fn`` (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered through ``_agent_status_print``. */
+export interface AgentPrintPayload {
   text: string
 }
 /** ``tool_progress._on_tool_start`` (+ ``agent_callbacks._mirror_subagent_to_child`` rows with ``preview`` and empty ``args``). ``todos``/``revision`` are NOT set by the emitter; kept optional because tool.start rows may pass through connector redaction unchanged. */
@@ -6553,6 +6563,8 @@ export const SERVER_REQUEST_METHODS = [
 
 // ── Notifications (`event` frames) ──
 export interface BackendGatewayEventMap {
+  /** A status line the agent printed during a local viewer's turn. */
+  'agent.print': AgentPrintPayload
   /** Output chunk from an agent-owned background process. */
   'agent.terminal.output': TerminalOutputPayload
   /** Pending gateway approvals were dropped by interrupt/reap/teardown; the wait resolved as deny (not a user refusal). */
@@ -6595,8 +6607,8 @@ export interface BackendGatewayEventMap {
   'layout.apply': LayoutApplyPayload
   /** The turn ended: final text, usage and outcome. */
   'message.complete': MessageCompletePayload
-  /** One streamed chunk of the assistant reply. */
-  'message.delta': StreamDeltaPayload
+  /** One streamed chunk of the assistant reply (null text: segment boundary). */
+  'message.delta': MessageDeltaPayload
   /** Interim assistant commentary (text beside tool calls) sealed as its own segment. */
   'message.interim': MessageInterimPayload
   /** The agent reacted to a message; paint it live. */
@@ -6710,6 +6722,7 @@ export interface BackendGatewayEventMap {
 }
 export type BackendGatewayEventName = keyof BackendGatewayEventMap
 export const GATEWAY_EVENT_TYPES = [
+  'agent.print',
   'agent.terminal.output',
   'approval.cancelled',
   'background.complete',

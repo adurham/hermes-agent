@@ -126,7 +126,15 @@ class StreamDeltaPayload(Payload):
     verbose: bool | None = None
 
 
-event("message.delta", StreamDeltaPayload, doc="One streamed chunk of the assistant reply.")
+class MessageDeltaPayload(StreamDeltaPayload):
+    """``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the
+    reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that
+    closes the classic CLI's reply box. Every other viewer ignores an empty chunk."""
+
+    text: str | None
+
+
+event("message.delta", MessageDeltaPayload, doc="One streamed chunk of the assistant reply (null text: segment boundary).")
 event("reasoning.delta", StreamDeltaPayload, doc="One streamed chunk of the model's reasoning.")
 event("reasoning.available", StreamDeltaPayload, doc="A completed reasoning block (non-streaming providers).")
 event("thinking.delta", StreamDeltaPayload, doc="Legacy thinking-text chunk (thinking_callback).")
@@ -266,6 +274,17 @@ class ReviewSummaryPayload(Payload):
 
 
 event("review.summary", ReviewSummaryPayload, doc="Background review of the last turn finished.")
+
+
+class AgentPrintPayload(Payload):
+    """A session-authority local-viewer turn: one line the agent printed through ``_print_fn``
+    (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered
+    through ``_agent_status_print``."""
+
+    text: str
+
+
+event("agent.print", AgentPrintPayload, doc="A status line the agent printed during a local viewer's turn.")
 
 
 # ── tools ─────────────────────────────────────────────────────────────────────────────────────

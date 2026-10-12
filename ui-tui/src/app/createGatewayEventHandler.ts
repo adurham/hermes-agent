@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
-import type { StreamDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { MessageDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -1676,7 +1676,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.delta':
-        turnController.recordMessageDelta(ev.payload ?? ({} as StreamDeltaPayload))
+        turnController.recordMessageDelta(ev.payload ?? ({} as MessageDeltaPayload))
 
         return
       case 'message.interim': {

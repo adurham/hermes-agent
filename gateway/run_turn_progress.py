@@ -821,6 +821,9 @@ class GatewayTurnProgressMixin:
 
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            local_viewer_events.note_tool_start(self, call_id)
         self._publish_execution("tool.start", _tool_lifecycle_payload(call_id, tool_name, args))
         self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
@@ -836,6 +839,9 @@ class GatewayTurnProgressMixin:
         # A session's /verbose (gateway/session_busy_controls.py) ships the Result block text.
         verbose = live is not None and (getattr(live, "tool_progress_mode", None) or self._ctx.progress_mode) == "verbose"
         payload = _tool_complete_payload(call_id, tool_name, args, result, is_error=is_error, verbose=verbose)
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            payload.update(local_viewer_events.complete_fields(self, call_id))
         self._publish_execution("tool.complete", payload)
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:
