@@ -226,6 +226,16 @@ def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
     )
 
 
+def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The run record lives on the session row and the card callback on the agent.
+    from tools.setup_beat_tool import setup_beat_tool
+
+    return setup_beat_tool(
+        args, db=getattr(agent, "_session_db", None), session_id=getattr(agent, "session_id", None) or "",
+        tool_call_id=ctx.tool_call_id or "", callback=getattr(agent, "setup_beat_callback", None),
+    )
+
+
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     # Replay shim for conversations whose cached prompt still names setup_mcp.
     # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
@@ -284,6 +294,7 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         callback=lambda agent, ctx: getattr(agent, "setup_choose_callback", None),
         session_id=lambda agent, ctx: getattr(agent, "session_id", None),
     ),
+    "setup_beat": _setup_beat,
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,

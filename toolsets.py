@@ -145,6 +145,8 @@ TOOLSETS = {
     ),
     "setup": _ts("Onboarding-only surface for the setup profile: question and picker cards", ["setup_choose"],
                  platforms=frozenset({"desktop"})),
+    "onboarding": _ts("First-run onboarding cards; folded in only for the onboarding chat (tui_gateway/methods_onboarding.py)",
+                      ["setup_beat"], platforms=frozenset({"desktop"})),
     "start_chat": _ts("Start a new visible desktop chat that runs a task in a chosen profile", ["start_chat"],
                       platforms=frozenset({"desktop"})),
     # ``platforms``: the session platforms this toolset exists for (TOOLSET_SESSION_PLATFORMS).
