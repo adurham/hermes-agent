@@ -12,6 +12,16 @@ def _authority(adapter):
     return active_authority(adapter.gateway_runner)
 
 
+def store_error_response(_openai_error, exc):
+    """A refused store call -> HTTP: a ``RuntimeStoreError`` keeps its reason; any other failure
+    (SQLite writer patience exhausted, I/O) is ``storage_unavailable``, a retryable 503."""
+    from aiohttp import web
+    if isinstance(exc, RuntimeStoreError):
+        return web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
+    return web.json_response(_openai_error('storage_unavailable', code='storage_unavailable'),
+                             status=503, headers={'Retry-After': '1'})
+
+
 def run_admission(adapter, run_id):
     authority = _authority(adapter)
     if authority is None:

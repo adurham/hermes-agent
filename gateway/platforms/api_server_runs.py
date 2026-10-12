@@ -668,8 +668,10 @@ async def _admit_run_to_authority(
     self, launch, run_id, session_history_delivery, _declared_selected,
     idempotency_scope, idempotency_key, _openai_error,
 ) -> Optional[web.Response]:
-    """Admit a /v1/runs turn to the session authority FIFO -> ``None``, or the 409 refusal."""
+    """Admit a /v1/runs turn to the session authority FIFO -> ``None``, or the refusal."""
+    from gateway.platforms.api_server_authority_runs import run_admission, store_error_response
     from gateway.session_api_turn import admit_api_turn_async
+    from gateway.session_contract import SessionRef
     from hermes_state_runtime import RuntimeStoreError
     try:
         with self._profile_scope(launch.request_profile):
@@ -681,7 +683,13 @@ async def _admit_run_to_authority(
                 session_history_delivery='1' if session_history_delivery else '',
                 bind_declared_conversation=_declared_selected,
                 **launch.agent_kwargs)
-    except RuntimeStoreError as exc:
+    except Exception as exc:  # health: allow BLE001 -- answered below; a committed admission is kept
+        # A storage failure after the admission committed (a later media-release write) still
+        # owns that run: forgetting it would let a keyed retry admit the same work twice.
+        owned = None if isinstance(exc, RuntimeStoreError) else await asyncio.to_thread(run_admission, self, run_id)
+        if owned is not None:
+            launch.admission = (owned[0], SessionRef(owned[0].profile_id, owned[1]['target_session_id']), owned[1])
+            return None
         # A refused admission owns no run: drop every reservation so an exact
         # retry is refused again instead of replaying a run nobody executes.
         _forget_run(
@@ -689,7 +697,7 @@ async def _admit_run_to_authority(
             self._run_statuses, self._run_owners, self._run_idempotency_ids)
         if idempotency_key:
             self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
-        return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+        return store_error_response(_openai_error, exc)
     return None
 
 
