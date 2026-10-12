@@ -316,7 +316,21 @@ def test_forget_session_frees_the_ring_and_keeps_seq_and_gap_semantics():
     event_replay._stamp_event(late)
     assert late["params"]["seq"] == 4
     assert len(events_since("kept", 0)) == 1
-    event_replay.forget_session("never-seen")  # no-op
+    event_replay.forget_session("never-seen")  # frees nothing, raises nothing
+
+
+def test_a_frame_stamped_after_forget_does_not_rebuild_the_ring():
+    event_replay._stamp_event(_frame("closed"))
+    event_replay.forget_session("closed")
+
+    late = _frame("closed")
+    late["params"]["payload"] = {"text": "x" * 100_000}
+    event_replay._stamp_event(late)
+
+    assert late["params"]["seq"] == 2  # numbering still advances
+    assert events_since("closed", 0) == []
+    assert replay_stats()["sessions"] == 0 and replay_stats()["bytes"] == 0
+    assert event_replay.is_truncated("closed", 1)  # a client holding seq 1 refetches
 
 
 def test_session_teardown_releases_the_replay_ring(monkeypatch):

@@ -9,7 +9,8 @@ _REPLAY_BUFFER_MAX events AND _REPLAY_BUFFER_BYTES_MAX frozen UTF-8 payload byte
 _REPLAY_PROCESS_BYTES_MAX frozen UTF-8 payload bytes across at most _REPLAY_SESSIONS_MAX sessions,
 oldest evicted FIFO (their seq/truncation counters are retained so a revisited session stays
 monotonic within the epoch, #100122). Evicted or never-retained (oversized) frames leave a truncation watermark so a
-reconnecting client refetches instead of trusting a replay with holes.
+reconnecting client refetches instead of trusting a replay with holes. A torn-down session's ring is freed at
+teardown (``forget_session``) and never rebuilt by late frames.
 """
 
 from __future__ import annotations
@@ -43,6 +44,10 @@ _replay_buffer_bytes: dict[str, int] = {}
 _replay_evicted_through: dict[str, int] = {}
 _replay_total_bytes = 0
 _replay_next_seq: dict[str, int] = {}
+# Torn-down sids (forget_session). A frame stamped later (a turn thread that outlived the teardown join, a
+# compute-host bridge echo) still gets a seq and a watermark but is never retained, so it cannot rebuild a
+# ring that nothing would free until FIFO eviction. One str per closed session, like _replay_next_seq.
+_replay_forgotten: set[str] = set()
 
 
 def replay_epoch() -> str:
@@ -85,6 +90,9 @@ def _stamp_event(obj: dict) -> None:
         seq = _replay_next_seq.get(sid, 0) + 1
         _replay_next_seq[sid] = seq
         params["seq"] = seq
+        if sid in _replay_forgotten:
+            _replay_evicted_through[sid] = seq
+            return
         buf = _replay_buffers.get(sid)
         if buf is None:
             buf = _replay_buffers[sid] = deque()
@@ -135,6 +143,7 @@ def forget_session(sid: str) -> None:
     if not sid:
         return
     with _replay_lock:
+        _replay_forgotten.add(sid)
         _drop_ring_locked(sid)
 
 
@@ -172,6 +181,7 @@ def reset_replay_state() -> None:
         _replay_buffer_bytes.clear()
         _replay_evicted_through.clear()
         _replay_next_seq.clear()
+        _replay_forgotten.clear()
         _replay_total_bytes = 0
 
 
