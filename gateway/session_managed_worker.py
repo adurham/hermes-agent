@@ -544,7 +544,8 @@ async def execute_managed(authority, ref, row, policy):
             live.controls.snapshot(ref.session_id, None)
             authority._publish_pending(ref)
             live.event_stream.publish(ref.session_id, {'text': 'Worker execution is unknown.',
-                'content': 'Worker execution is unknown.', 'admission_id': row['admission_id'], 'outcome': 'unknown'})
+                'content': 'Worker execution is unknown.', 'admission_id': row['admission_id'], 'outcome': 'unknown',
+                'status': 'error'})  # the message.complete TurnStatus: never painted as a normal finish
         waiter = authority.waiters.pop(row['admission_id'], None)
         if waiter is not None and not waiter.done():
             waiter.set_result('Worker execution is unknown.')
