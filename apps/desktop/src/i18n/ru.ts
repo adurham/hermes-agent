@@ -37,7 +37,7 @@ export const ruOverrides = {
       suggested: 'Рекомендуемые',
       allApps: 'Все приложения',
       receiptConnected: apps => `Подключены: ${apps}`,
-      receiptNone: 'Приложения не подключены',
+      receiptNone: 'Новые приложения не подключены',
       receiptSaid: 'Ответ дан в чате',
       receiptTimedOut: 'Закрыто через 5 минут'
     }

@@ -56,7 +56,11 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
 
   const [filter, setFilter] = useState<ConnectorsFilter>(EMPTY_CONNECTORS_FILTER)
   const [openKey, setOpenKey] = useState<null | string>(null)
-  const hostedActions = useHostedActions(profile, hosted.accounts, card => setOpenKey(cardKey(card)))
+
+  const hostedActions = useHostedActions(profile, hosted.accounts, {
+    onStarted: card => setOpenKey(cardKey(card))
+  })
+
   const { connectAccount, connector, remover, startConnect, switcher, write } = hostedActions
   const renamer = useRenameAccount(profile)
 

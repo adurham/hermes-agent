@@ -37,7 +37,7 @@ export const esConnectorCard: TranslationOverrides['connectors'] = {
     suggested: 'Sugeridas',
     allApps: 'Todas las apps',
     receiptConnected: apps => `Conectadas: ${apps}`,
-    receiptNone: 'Ninguna app conectada',
+    receiptNone: 'Ninguna app nueva conectada',
     receiptSaid: 'Respondido en el chat',
     receiptTimedOut: 'Cerrado tras 5 minutos'
   }

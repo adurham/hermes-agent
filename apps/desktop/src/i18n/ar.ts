@@ -17,7 +17,7 @@ export const arOverrides = {
       suggested: 'مقترحة',
       allApps: 'كل التطبيقات',
       receiptConnected: apps => `متصلة: ${apps}`,
-      receiptNone: 'لم يتم ربط أي تطبيق',
+      receiptNone: 'لم يتم ربط تطبيقات جديدة',
       receiptSaid: 'تمت الإجابة في الدردشة',
       receiptTimedOut: 'أُغلقت بعد 5 دقائق'
     }

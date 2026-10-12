@@ -32,12 +32,19 @@ export interface HostedActions {
   write: (pending: Promise<WriteOutcome>) => Promise<void>
 }
 
+export interface HostedActionOptions {
+  /** Runs after a sign-in starts. */
+  onStarted?: (card: ConnectorCardModel) => void
+  /** Where the browser's return shows the user; the Connectors page when absent. */
+  returnRoute?: string
+}
+
 /** The hosted connect, reconnect, give-up and turn-back-on paths, shared by the Connectors page and the chat's
- *  directory card. `onStarted` runs after a sign-in starts. */
+ *  directory card. */
 export function useHostedActions(
   scope: ProfileScope,
   accounts: readonly AccountRow[],
-  onStarted?: (card: ConnectorCardModel) => void
+  { onStarted, returnRoute }: HostedActionOptions = {}
 ): HostedActions {
   const { t } = useI18n()
   const operations = useStore($accountOperations)
@@ -54,7 +61,7 @@ export function useHostedActions(
   }
 
   const connectAccount = async (card: ConnectorCardModel, reconnect: boolean, address: ConnectAddress = {}) => {
-    const outcome = await connector.connect(card.slug, { ...address, reconnect })
+    const outcome = await connector.connect(card.slug, { ...address, reconnect, returnRoute })
 
     if (outcome.ok) {
       const url = outcome.operation.targets.find(target => target.connectUrl)?.connectUrl

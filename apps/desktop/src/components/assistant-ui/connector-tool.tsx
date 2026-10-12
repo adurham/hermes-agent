@@ -148,7 +148,7 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const owner = useConnectionOwner(storedId, live)
 
   if (recordOf(props.args).action === 'display') {
-    return <ConnectorDirectoryTool live={live} request={request} result={props.result} />
+    return <ConnectorDirectoryTool live={live} part={props} request={request} />
   }
 
   if (!live || !request) {
@@ -160,12 +160,13 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 
 interface ConnectorDirectoryToolProps {
   live: boolean
+  part: ToolCallMessagePartProps
   request: ConnectionRequest | null
-  result: unknown
 }
 
-/** The display card while its operation is open; afterwards the one line the result says. */
-function ConnectorDirectoryTool({ live, request, result }: ConnectorDirectoryToolProps) {
+/** The display card while its operation is open; afterwards the one line the result says, or the generic row
+ *  for a call that failed. */
+function ConnectorDirectoryTool({ live, part, request }: ConnectorDirectoryToolProps) {
   if (live && request && !request.settled) {
     return (
       <ConnectorDirectoryCard
@@ -175,7 +176,15 @@ function ConnectorDirectoryTool({ live, request, result }: ConnectorDirectoryToo
     )
   }
 
-  return result === undefined ? null : <ConnectorDirectoryReceipt result={result} />
+  if (part.result === undefined) {
+    return null
+  }
+
+  return part.isError || recordOf(part.result).error !== undefined ? (
+    <ToolFallback {...part} />
+  ) : (
+    <ConnectorDirectoryReceipt result={part.result} />
+  )
 }
 
 function receiptText(copy: ConnectorCopy['directory'], outcome: ReturnType<typeof recordOf>, added: string[]): string {

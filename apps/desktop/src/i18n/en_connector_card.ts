@@ -37,7 +37,7 @@ export const enConnectorCard: Translations['connectors'] = {
     suggested: 'Suggested',
     allApps: 'All apps',
     receiptConnected: apps => `Connected: ${apps}`,
-    receiptNone: 'No apps connected',
+    receiptNone: 'No new apps connected',
     receiptSaid: 'Answered in chat',
     receiptTimedOut: 'Closed after 5 minutes'
   }

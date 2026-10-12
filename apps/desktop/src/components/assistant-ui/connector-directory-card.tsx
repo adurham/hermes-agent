@@ -8,6 +8,7 @@ import { deriveCards, forgetAbandoned } from '@/app/capabilities/connectors/deri
 import { HostedNotice } from '@/app/capabilities/connectors/hosted-notice'
 import type { ConnectorCardModel } from '@/app/capabilities/connectors/types'
 import { useSessionView } from '@/app/chat/session-view'
+import { sessionRoute } from '@/app/routes'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Chip } from '@/components/onboarding-chat/chip'
@@ -57,12 +58,14 @@ export function directorySections(
   query: string
 ): DirectorySections {
   const needle = query.trim().toLowerCase()
-  const bySlug = new Map(cards.map(card => [card.slug, card]))
   const pinned = new Set(suggested)
 
   const ordered = orderConnectorPicks(
     cards.map(card => ({ card, connector: card.slug, enabled: card.state !== 'off' }))
   ).map(row => row.card)
+
+  // A suggestion cannot bring back an app the picker leaves out.
+  const bySlug = new Map(ordered.map(card => [card.slug, card]))
 
   return {
     rest: ordered.filter(card => !pinned.has(card.slug) && matches(card, needle)),
@@ -85,20 +88,22 @@ export function ConnectorDirectoryCard(props: ConnectorDirectoryCardProps) {
   const storedId = useStore(useSessionView().$storedId)
   const owner = useConnectionOwner(storedId, true)
 
-  return owner ? <DirectoryBody {...props} owner={owner} /> : null
+  // The browser's return from a sign-in brings the user back to this chat, where the card waits.
+  return owner && storedId ? <DirectoryBody {...props} owner={owner} returnRoute={sessionRoute(storedId)} /> : null
 }
 
-function DirectoryBody({
-  onContinue,
-  owner,
-  suggested = NO_SUGGESTIONS
-}: ConnectorDirectoryCardProps & { owner: ConnectionOwner }) {
+interface DirectoryBodyProps extends ConnectorDirectoryCardProps {
+  owner: ConnectionOwner
+  returnRoute: string
+}
+
+function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTIONS }: DirectoryBodyProps) {
   const { t } = useI18n()
   const copy = t.connectors
   const hosted = useHostedConnectors(owner)
   const abandoned = useStore($abandonedConnects)
   const freeTier = useStore($freeTierStatus)
-  const actions = useHostedActions(owner, hosted.accounts)
+  const actions = useHostedActions(owner, hosted.accounts, { returnRoute })
   const [query, setQuery] = useState('')
 
   const cards = useMemo(
