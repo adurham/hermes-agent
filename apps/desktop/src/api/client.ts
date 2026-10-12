@@ -89,6 +89,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
   private readonly displayProfiles = new Map<string, string>()
   private readonly eventRoutes = new WeakMap<GatewayEvent, string>()
   private readonly reconciledEpochs = new Set<string>()
+  // Frames of an ambiguous (session, epoch) parked until its owner probes settle.
+  private readonly parkedFrames = new Map<string, Array<() => void>>()
   private connectionGeneration = 0
 
   override onRequest(handler: ServerRequestHandler): () => void {
@@ -180,25 +182,40 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.replayProfiles.clear()
     this.displayProfiles.clear()
     this.reconciledEpochs.clear()
+    this.parkedFrames.clear()
     this.attached.clear()
     super.close()
   }
 
   override on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
-    return super.on<K>(type, event => {
-      // Named listeners run before wildcard listeners in the shared client.
-      // Normalize before either kind sees the prompt, including replay delivery.
-      if (this.canonical && !this.normalizeCanonicalEvent(event)) { return }
-      handler(event)
-    })
+    // Named listeners run before wildcard listeners in the shared client.
+    // Normalize before either kind sees the prompt, including replay delivery.
+    return super.on<K>(type, event => this.deliverNormalized(event, handler as (event: GatewayEvent) => void))
   }
 
   override onAny(handler: (event: GatewayEvent) => void): () => void {
-    return super.onAny(event => {
-      if (this.canonical && !this.normalizeCanonicalEvent(event)) { return }
-      handler(event)
-    })
+    return super.onAny(event => this.deliverNormalized(event, handler))
   }
+
+  private deliverNormalized(event: GatewayEvent, handler: (event: GatewayEvent) => void): void {
+    const key = JSON.stringify([event.session_id, event.replay_epoch])
+    // While an owner probe for this (session, epoch) runs, its frames wait and deliver in order.
+    const parked = this.canonical && event.session_id ? this.parkedFrames.get(key) : undefined
+
+    const deliver = () => {
+      if (!this.canonical || this.normalizeCanonicalEvent(event)) { handler(event) }
+    }
+
+    if (parked) {
+      parked.push(deliver)
+    } else if (!this.canonical || this.normalizeCanonicalEvent(event)) {
+      handler(event)
+    } else {
+      // The owner probe this frame just started may establish its route; it is the first frame parked.
+      this.parkedFrames.get(key)?.push(deliver)
+    }
+  }
+
 
   private rememberSessionProfile(sessionId: string, profile: unknown): void {
     const profiles = this.sessionProfiles.get(sessionId) ?? new Set<string>()
@@ -265,6 +282,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     if (this.reconciledEpochs.has(key)) { return }
     this.reconciledEpochs.add(key)
+    this.parkedFrames.set(key, [])
     const generation = this.connectionGeneration
 
     // A new/unknown replay epoch cannot choose between equal stored IDs. One
@@ -273,10 +291,18 @@ export class HermesGateway extends JsonRpcGatewayClient {
       this.request('session.resume', { session_id: sessionId, profile }))
 
     void Promise.allSettled(probes).then(results => {
+      if (generation !== this.connectionGeneration) { return }
+      const parked = this.parkedFrames.get(key) ?? []
+      this.parkedFrames.delete(key)
+
       // No owner answered: a later frame probes again instead of being dropped until reconnect.
-      if (generation === this.connectionGeneration && !results.some(result => result.status === 'fulfilled')) {
+      if (!results.some(result => result.status === 'fulfilled')) {
         this.reconciledEpochs.delete(key)
+
+        return
       }
+
+      for (const deliver of parked) { deliver() }
     })
   }
 
@@ -290,6 +316,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.replayProfiles.clear()
     this.displayProfiles.clear()
     this.reconciledEpochs.clear()
+    this.parkedFrames.clear()
 
     return super.connect(wsUrl)
   }

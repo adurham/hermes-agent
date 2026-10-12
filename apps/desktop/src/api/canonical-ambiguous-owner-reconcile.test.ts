@@ -46,6 +46,26 @@ test('a failed owner reconciliation is probed again by the next frame', async ()
   client.close()
 })
 
+test('the frame that triggered a successful reconciliation is delivered to its owner', async () => {
+  let restarted = false
+
+  const { client, emit } = await equalIdClient(async profile =>
+    snapshot(profile, restarted && profile === 'beta' ? 'beta-restarted' : `epoch-${profile}`))
+
+  await client.request('session.resume', { session_id: 'same', profile: 'alpha' })
+  await client.request('session.resume', { session_id: 'same', profile: 'beta' })
+  const named: any[] = []
+  const wildcard: any[] = []
+  client.on('message.complete', event => named.push(event))
+  client.onAny(event => { if (event.type === 'message.complete') { wildcard.push(event) } })
+  restarted = true
+  emit({ type: 'message.complete', session_id: 'same', replay_epoch: 'beta-restarted', payload: { text: 'done' } })
+  await vi.waitFor(() => expect(named).toHaveLength(1))
+  expect(named[0].profile).toBe('beta')
+  expect(wildcard.map(event => event.profile)).toEqual(['beta'])
+  client.close()
+})
+
 test('a prompt declined locally is shown again while the authority still lists it', async () => {
   const prompt = { kind: 'approval', prompt_id: 'pending', execution_generation: 2, command: 'build', choices: ['once'] }
   const { calls, client } = await equalIdClient(async () => ({ session_id: 's', revision: 1, execution_generation: 2, prompts: [prompt] }))
