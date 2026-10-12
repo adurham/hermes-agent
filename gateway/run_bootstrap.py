@@ -792,23 +792,22 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         cron_stop, cron_provider, cron_thread, housekeeping_thread = (
             _start_gateway_start_cron_and_housekeeping(runner))
-
-        # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
-        from gateway.run_runtime import publish_gateway_runtime_ready
-        publish_gateway_runtime_ready(runner)
-        runner._start_systemd_watchdog()
-        if idle_exit:
-            from gateway.run_idle_exit import arm_unmanaged_idle_exit
-            arm_unmanaged_idle_exit(runner)
-        else:
-            # A supervised/explicit gateway serves Desktop and the dashboard SPA, which call the
-            # dashboard routes right away: mount them now, after READY. A client's own idle-exit
-            # gateway (chat -q, TUI) only uses the native WebSocket; it mounts on first request.
-            from gateway.run_api import warm_gateway_dashboard
-            warm_gateway_dashboard(runner)
-
-        from gateway.run_runtime import wait_gateway_runtime
+        # From here every exit (a READY publication that raises included) runs the shutdown tail,
+        # which stops the cron ticker and housekeeping before the adapters they deliver through close.
+        from gateway.run_runtime import publish_gateway_runtime_ready, wait_gateway_runtime
         try:
+            # READY only once adapters, cron and housekeeping run; missing systemd state just disables watchdog.
+            publish_gateway_runtime_ready(runner)
+            runner._start_systemd_watchdog()
+            if idle_exit:
+                from gateway.run_idle_exit import arm_unmanaged_idle_exit
+                arm_unmanaged_idle_exit(runner)
+            else:
+                # A supervised/explicit gateway serves Desktop and the dashboard SPA, which call the
+                # dashboard routes right away: mount them now, after READY. A client's own idle-exit
+                # gateway (chat -q, TUI) only uses the native WebSocket; it mounts on first request.
+                from gateway.run_api import warm_gateway_dashboard
+                warm_gateway_dashboard(runner)
             await wait_gateway_runtime(runner)
         finally:
             try:
