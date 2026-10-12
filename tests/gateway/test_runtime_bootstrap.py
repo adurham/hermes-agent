@@ -64,9 +64,12 @@ def test_ticket_atomic_single_use_profile_purpose_expiry_and_capacity(monkeypatc
         grants = list(pool.map(consume, range(8)))
     assert sum(g is not None for g in grants) == 1
     expired = store.mint(profile_id='a', subject='uid:1', purpose='interactive')
+    native = store.mint(profile_id='a', subject='uid:1', purpose='native-http')
     clock[0] = 30
     with pytest.raises(PermissionError):
         store.redeem(expired, profile_id='a', purpose='interactive')
+    with pytest.raises(PermissionError, match='expired'):  # the native-HTTP gate's redeem (profile_id=None)
+        store.redeem(native, profile_id=None, purpose='native-http')
     exposure = store.mint(profile_id='a', subject='uid:1', purpose='exposure')
     assert store.redeem(exposure, profile_id='a', purpose='exposure')['capabilities'] == frozenset({'transport:delegate'})
     for _ in range(store.MAX_ENTRIES):
