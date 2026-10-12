@@ -492,7 +492,15 @@ class AuthorityConnection:
         return out
 
     async def cancel(self, ref, params):
-        return asdict(await self.authority.cancel_queued(self.actor, ref, params.get('admission_id')))
+        admission_id = params.get('admission_id')
+        if (await self.authority.receipt(self.actor, ref, admission_id)).status != 'queued':
+            return asdict(await self.authority.cancel_queued(self.actor, ref, admission_id))  # started: unaffected
+        # Queued at this read, claimed by the drain before the cancel commit: Stop that exact claim (as
+        # API and ACP do) instead of refusing while the withdrawn prompt runs.
+        row = await self.authority.cancel_or_claimed(self.actor, ref, admission_id)
+        if row is not None:
+            await self.interrupt(ref, {'execution_generation': row['generation']})
+        return asdict(await self.authority.receipt(self.actor, ref, admission_id))
 
     async def resolve_unknown(self, ref, params):
         if set(params) != {'session_id', 'admission_id', 'execution_generation'}:
