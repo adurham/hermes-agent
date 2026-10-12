@@ -688,41 +688,23 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_busy_preempt(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
-        """busy_input_mode for a follow-up the durable FIFO is about to admit. Returns True when the
-        text already landed inside the running turn (steer / redirect), so it must NOT also be
-        admitted as its own turn; False when the caller should admit it (queue mode, a demotion,
-        or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
+        """busy_input_mode for a follow-up the durable FIFO is about to admit, through main's own busy
+        resolution (voice transcribed into steer/interrupt, steer folded into the turn, busy ack).
+        Returns True when the text already landed inside the running turn (steer / redirect), so it
+        must NOT also be admitted as its own turn; False when the caller should admit it (queue mode,
+        a demotion, or an interrupt — the ended turn lets the FIFO run the follow-up next)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
         mode = self._effective_busy_input_mode(source)
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
-        if (mode == "queue" or self._draining or running_agent is None
-                or running_agent is _AGENT_PENDING_SENTINEL or not self._hm_text_only(event)):
+        adapter = self._delivery_adapter_for(source)
+        if (self._draining or adapter is None or running_agent is None or running_agent is _AGENT_PENDING_SENTINEL
+                or (event.message_type == MessageType.TEXT and mode != "steer"
+                    and self._effective_busy_text_mode(source) == "queue")):
             return False
-        text = (event.text or "").strip()
-        if not text:
-            return False
-        if mode == "steer":
-            if hasattr(running_agent, "steer"):
-                try:
-                    return bool(self._steer_running_agent(running_agent, self._steer_text_with_origin(text, event)))
-                except Exception as exc:
-                    logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc, exc_info=True)
-            return False
-        if self._agent_has_active_subagents(running_agent):
-            logger.info("PRIORITY interrupt demoted to queue for session %s because the running agent has active subagents (#30170)", _quick_key)
-            return False
-        if await self._session_has_compression_in_flight(_quick_key):
-            logger.info("PRIORITY interrupt demoted to queue for session %s because context compression is in flight (#56391)", _quick_key)
-            return False
-        if (getattr(running_agent, "_supports_active_turn_redirect", False) is True and hasattr(running_agent, "redirect")
-                and self._redirect_active_turn(running_agent, text, _quick_key, event)):
-            logger.debug("PRIORITY redirect for session %s", _quick_key)
-            return True
-        # No redirect: end the running turn; the follow-up is admitted and runs as the next turn.
-        logger.debug("PRIORITY interrupt for session %s", _quick_key)
-        running_agent.interrupt()
-        return False
+        outcome = await self._resolve_busy_steer_or_redirect(event, _quick_key, mode, running_agent)
+        await self._busy_interrupt_and_ack(event, _quick_key, adapter, state, running_agent, outcome)
+        return bool(outcome.steered or outcome.redirected)
 
     async def _hm_handle_running_session_message(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
