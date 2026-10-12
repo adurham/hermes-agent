@@ -31,7 +31,7 @@ from hermes_constants import (
 from hermes_cli import config_backend as _config_backend
 from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
 from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_cli.process_identity import release_process_groups, spawn_owned
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
 from hermes_state_ids import new_session_id
@@ -396,12 +396,8 @@ def _stop_worker_group(proc) -> None:
                 os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only, Windows returned above
             with contextlib.suppress(Exception):
                 proc.wait(timeout=1)
-    try:
-        os.killpg(pgid, 0)  # windows-footgun: ok — POSIX-only; existence probe, signals nothing
-    except ProcessLookupError:
-        release_process_groups([pgid])
-    except OSError:
-        pass  # ambiguous: stay covered by the owner-death supervisor
+    # Killed members are reaped by init asynchronously; one still alive after that stays covered.
+    release_process_group_once_empty(pgid, proc=proc)
 
 
 def _display_cfg() -> dict:
