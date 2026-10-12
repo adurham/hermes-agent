@@ -193,6 +193,16 @@ class WSTransport:
         await self._safe_send_many(batch)
         return not self._closed
 
+    async def write_many_async(self, frames: list[dict]) -> bool:
+        """``write_async`` for an ordered batch: buffered tokens, then *frames*, in one send batch."""
+        if self._closed:
+            return False
+        with self._token_lock:
+            batch, self._pending_tokens = self._pending_tokens, []
+            batch.extend(serialize_frame(frame, self._peer, _log) for frame in frames)
+        await self._safe_send_many(batch)
+        return not self._closed
+
     async def _safe_send_many(self, lines: list[str]) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
         async with self._send_lock:
