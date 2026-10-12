@@ -179,12 +179,22 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
     this.profileAliases.clear()
-    this.replayProfiles.clear()
+    this.retainReplayOwners()
     this.displayProfiles.clear()
     this.reconciledEpochs.clear()
     this.parkedFrames.clear()
     this.attached.clear()
     super.close()
+  }
+
+  // An epoch's owner qualifies the shared client's retained replay cursor, not this socket's
+  // attachments: it lives exactly as long as that cursor, so a redial replays to the same owner.
+  private retainReplayOwners(): void {
+    const cursors = this.getSeqWatermarks()
+
+    for (const [epoch, owner] of this.replayProfiles) {
+      if (!(owner.sessionId in cursors)) { this.replayProfiles.delete(epoch) }
+    }
   }
 
   override on<K extends GatewayEventName>(type: K, handler: (event: GatewayEvent<K>) => void): () => void {
@@ -313,7 +323,7 @@ export class HermesGateway extends JsonRpcGatewayClient {
     this.deliveredPrompts.clear()
     this.sessionProfiles.clear()
     this.profileAliases.clear()
-    this.replayProfiles.clear()
+    this.retainReplayOwners()
     this.displayProfiles.clear()
     this.reconciledEpochs.clear()
     this.parkedFrames.clear()
