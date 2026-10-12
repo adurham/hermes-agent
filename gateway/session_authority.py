@@ -843,10 +843,9 @@ class SessionAuthority:
             return True
         return False
 
-    async def _drain(self, ref):
-        from gateway.session_finite import execute_finite_admission
-        from gateway.session_managed_worker import ManagedExecutionUnknown
-        live = self.sessions[ref.session_id]
+    async def _claim_with_retry(self, ref, live):
+        """The drain's next ``(row, first)``, waiting out transient storage and a classic turn on the
+        route; None when the drain must exit (paused, or stopping with committed rows left queued)."""
         backoff = 0.0
         while True:
             try:
@@ -855,14 +854,14 @@ class SessionAuthority:
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
                 self._pause(ref, exc.reason)
-                return
+                return None
             except (OSError, sqlite3.OperationalError) as exc:
                 # A writer held past its patience or a full disk is transient, and every _schedule
                 # caller is event-driven: a dead drain would strand the committed head and hang its
                 # waiters until the next submit. Retry in place (like recover_failed_settlement),
                 # keeping waiters: releasing them fails requests that would run a moment later.
                 if self._drain_stopping(ref, live):
-                    return
+                    return None
                 backoff = min(max(backoff * 2, _CLAIM_RETRY_MIN_S), _CLAIM_RETRY_MAX_S)
                 import logging
                 logging.getLogger(__name__).warning(
@@ -870,11 +869,44 @@ class SessionAuthority:
                 await asyncio.sleep(backoff)
                 continue
             backoff = 0.0
-            if row == 'classic_busy':
-                if self._drain_stopping(ref, live):
-                    return
-                await asyncio.sleep(_CLAIM_RETRY_MIN_S)
-                continue
+            if row != 'classic_busy':
+                return row, first
+            if self._drain_stopping(ref, live):
+                return None
+            await asyncio.sleep(_CLAIM_RETRY_MIN_S)
+
+    async def _execute_claimed(self, ref, live, row):
+        """Run the claimed admission: ``(response, outcome)``. The executing stamp clears the moment
+        execution returns; a lost managed worker pauses the FIFO and re-raises ManagedExecutionUnknown."""
+        from gateway.session_finite import execute_finite_admission
+        from gateway.session_managed_worker import ManagedExecutionUnknown
+        try:
+            try:
+                return await execute_finite_admission(self, ref, row), 'completed'
+            finally:
+                with live.event_stream.lock:
+                    self.executing.pop(ref.session_id, None)
+        except ManagedExecutionUnknown:
+            with live.event_stream.lock:
+                live.event_stream.execution = {}
+            self.pending_stops.pop(ref.session_id, None)
+            self.pending_steers.pop(ref.session_id, None)
+            self.adopted.pop(ref.session_id, None)
+            self._pause(ref, 'unknown_execution')
+            raise
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception('Admitted turn %s failed', row['admission_id'])
+            return 'The admitted turn failed.', 'failed'
+
+    async def _drain(self, ref):
+        from gateway.session_managed_worker import ManagedExecutionUnknown
+        live = self.sessions[ref.session_id]
+        while True:
+            claimed = await self._claim_with_retry(ref, live)
+            if claimed is None:
+                return
+            row, first = claimed
             if row is False:
                 continue
             if row is None and first is not None:
@@ -895,25 +927,9 @@ class SessionAuthority:
                 return
             admission_id = row['admission_id']
             try:
-                try:
-                    response = await execute_finite_admission(self, ref, row)
-                    outcome = 'completed'
-                finally:
-                    with live.event_stream.lock:
-                        self.executing.pop(ref.session_id, None)
+                response, outcome = await self._execute_claimed(ref, live, row)
             except ManagedExecutionUnknown:
-                with live.event_stream.lock:
-                    live.event_stream.execution = {}
-                self.pending_stops.pop(ref.session_id, None)
-                self.pending_steers.pop(ref.session_id, None)
-                self.adopted.pop(ref.session_id, None)
-                self._pause(ref, 'unknown_execution')
                 return
-            except Exception:
-                import logging
-                logging.getLogger(__name__).exception('Admitted turn %s failed', admission_id)
-                response = 'The admitted turn failed.'
-                outcome = 'failed'
             settled = None
             settlement = {}
             try:

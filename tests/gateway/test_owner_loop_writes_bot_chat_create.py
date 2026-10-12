@@ -8,7 +8,9 @@ import time
 
 import pytest
 
-from tests.gateway.test_session_bot_target_lifecycle import bot  # noqa: F401  (fixture)
+from tests.gateway import test_session_bot_target_lifecycle as lifecycle
+
+bot = lifecycle.bot  # the shared Bot Chat owner fixture
 
 
 async def _resolve(bot):
@@ -17,7 +19,7 @@ async def _resolve(bot):
 
 
 @pytest.mark.asyncio
-async def test_bot_chat_creation_commits_off_the_owner_loop(bot):  # noqa: F811
+async def test_bot_chat_creation_commits_off_the_owner_loop(bot):
     db = bot.authority.db
     held, release = threading.Event(), threading.Event()
 
