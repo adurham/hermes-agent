@@ -100,3 +100,22 @@ def test_compression_telemetry_does_not_pin_the_one_shot_summary_prompt():
 
     assert recorder._active_compression_telemetry["aux_prompt_tokens"] > 0
     assert id(prompt) not in _pinned_ids()
+
+
+def test_close_evicts_a_prompt_caching_split_system_prompt():
+    from agent.prompt_caching import apply_anthropic_cache_control
+
+    static = "the static, cacheable system prefix " * 2000
+    full = static + "\nper-session suffix: today's date and the active model"
+    request = apply_anthropic_cache_control([{"role": "system", "content": full}, {"role": "user", "content": "hi"}],
+                                            static_system_prefix=static)
+    assert isinstance(request[0]["content"], list)  # the real split shape the memo sees
+    estimate_messages_tokens_rough(request)
+    agent = _closing_agent([{"role": "user", "content": "hi"}])
+    agent._cached_system_prompt = full
+    agent._cached_system_prompt_static = static
+    assert id(static) in _pinned_ids()
+
+    agent.close()
+
+    assert id(static) not in _pinned_ids()
