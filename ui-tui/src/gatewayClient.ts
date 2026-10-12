@@ -247,15 +247,24 @@ export class GatewayClient extends EventEmitter {
       this.channel.startHeartbeat()
     }
 
+    this.describeThenReady(ws, { skin: ev.payload?.skin })
+  }
+
+  /** Canonical readiness is runtime.describe on this socket. A failed describe is a transport
+   * failure (B2-21): drop the socket onto the backoff path, which redials and re-describes. */
+  private describeThenReady(ws: WebSocket | null, payload: Record<string, unknown>) {
     this.describeFlight = undefined
     void this.describeRuntime().then(() => {
-      if (this.ws === ws) {
-        this.publish({ type: 'gateway.ready', payload: { skin: ev.payload?.skin } } as unknown as AnyGatewayEvent)
-      }
+      if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload } as unknown as AnyGatewayEvent) }
     }).catch(error => {
       this.publish({ type: 'gateway.start_timeout', payload: {
         python: 'runtime.describe', cwd: '', stderr_tail: String(error)
       } })
+
+      if (this.ws === ws) {
+        this.closeGatewaySocket()
+        this.handleTransportExit(1, String(error))
+      }
     })
   }
 
@@ -605,19 +614,9 @@ export class GatewayClient extends EventEmitter {
 
             this.connectSidecarMirror()
 
-            if (this.isCanonical) {
-              this.describeFlight = undefined
-              void this.describeRuntime().then(() => {
-                // The canonical gateway has no ready frame (readiness is the discovery
-                // grant + runtime.describe); publish a client-local ready with no skin so
-                // the renderer boots on its default theme.
-                if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload: {} } as unknown as AnyGatewayEvent) }
-              }).catch(error => {
-                this.publish({ type: 'gateway.start_timeout', payload: {
-                  python: 'runtime.describe', cwd: '', stderr_tail: String(error)
-                } })
-              })
-            }
+            // The canonical gateway has no ready frame (readiness is the discovery grant +
+            // runtime.describe); a client-local ready with no skin boots the default theme.
+            if (this.isCanonical) { this.describeThenReady(ws, {}) }
           },
           { once: true }
         )

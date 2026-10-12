@@ -178,12 +178,13 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
-  it('re-reads a failed runtime.describe on the next session.create instead of bricking creation', async () => {
+  it('treats a failed runtime.describe as a transport failure: redial, re-describe, then ready (B2-21)', async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
     const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
-    gw.on('event', () => undefined)
+    const events: any[] = []
+    gw.on('event', event => events.push(event))
 
     try {
       gw.start(); gw.drain()
@@ -191,21 +192,31 @@ describe('GatewayClient websocket attach mode', () => {
       const socket = FakeWebSocket.instances[0]!
       socket.open()
       await vi.advanceTimersByTimeAsync(0)
-      const frames = () => socket.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
-      const first = frames().find(frame => frame.method === 'runtime.describe')!
+      const frames = (ws: InstanceType<typeof FakeWebSocket>) => ws.sent.map(text => JSON.parse(text) as { id: number; method: string; params: any })
+      const first = frames(socket).find(frame => frame.method === 'runtime.describe')!
       socket.message(JSON.stringify({ jsonrpc: '2.0', id: first.id, error: { code: -32000, message: 'owner busy' } }))
       await vi.advanceTimersByTimeAsync(0)
+      expect(socket.readyState).toBe(FakeWebSocket.CLOSED)
+      expect(events.some(event => event.type === 'gateway.reconnecting')).toBe(true)
 
+      // The pending create redials too, and is answered once the next socket's describe lands.
       const created = gw.request<{ session_id: string }>('session.create', { model: 'm' })
       await vi.advanceTimersByTimeAsync(0)
-      const retry = frames().filter(frame => frame.method === 'runtime.describe')
-      expect(retry).toHaveLength(2)
-      socket.message(JSON.stringify({ jsonrpc: '2.0', id: retry[1]!.id, result: {
-        session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } }))
+      const next = FakeWebSocket.instances.at(-1)!
+      expect(next).not.toBe(socket)
+      next.open()
       await vi.advanceTimersByTimeAsync(0)
-      const create = frames().find(frame => frame.method === 'session.create')!
+
+      for (const frame of frames(next).filter(f => f.method === 'runtime.describe')) {
+        next.message(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: {
+          session_create: { sources: ['tui'], parameters: ['source', 'request_id', 'model'] } } }))
+      }
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1)
+      const create = frames(next).find(frame => frame.method === 'session.create')!
       expect(create.params).toMatchObject({ source: 'tui', model: 'm' })
-      socket.message(JSON.stringify({ jsonrpc: '2.0', id: create.id, result: { session_id: 'fresh', info: {} } }))
+      next.message(JSON.stringify({ jsonrpc: '2.0', id: create.id, result: { session_id: 'fresh', info: {} } }))
       await expect(created).resolves.toMatchObject({ session_id: 'fresh' })
     } finally { gw.kill(); vi.useRealTimers() }
   })
