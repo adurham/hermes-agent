@@ -256,7 +256,9 @@ def check_resume_policy(args, snapshot):
     frozen = dict((info or {}).get("launch_request") or {})
     if info and "cwd" in info:
         frozen["cwd"] = info["cwd"]
-    if "model" in requested and requested["model"] != frozen.get("model"):
+    if "model" in requested and requested["model"] == frozen.get("model_requested"):
+        requested["model"] = frozen.get("model")  # the alias the owner resolved at creation
+    elif "model" in requested and requested["model"] != frozen.get("model") and "model_requested" not in frozen:
         # The owner froze the resolved id of a `-m <alias>`; the same alias again is the same route.
         from gateway.session_local_route import resolve_launch_route
         from hermes_cli.config_effective import load_user_config_effective

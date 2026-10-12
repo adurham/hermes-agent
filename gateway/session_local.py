@@ -174,8 +174,15 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     else:
         from gateway.session_local_route import resolve_launch_route
         config = _load_gateway_config()
+        raw_model = params.get('model')
         params = resolve_launch_route(params, config)
         policy = build_policy(params, config, private_secrets=private_secrets)
+        if isinstance(raw_model, str) and params.get('model') != raw_model:
+            # Owner-stamped provenance (not a create field): a remote client cannot re-resolve the
+            # typed `-m` alias against its own home, so resume compares a repeat against this.
+            import json
+            policy = replace(policy, request_json=json.dumps(
+                {**json.loads(policy.request_json), 'model_requested': raw_model}, sort_keys=True))
         if policy.model is None:
             policy = replace(policy, model=_resolve_gateway_model(policy.config()))
     request_id = params.get('request_id', uuid.uuid4().hex)
