@@ -18,6 +18,7 @@ export const canonicalEn = {
       usageLastTurnTitle: 'Usage · last turn',
       usageNoTurn: 'no completed turn in this view yet',
       usageTotalsUnavailable: 'session totals are not available on the shared gateway yet',
+      retryUnsupported: '/retry: retry does not support media or unknown content parts',
       rowCost: 'Estimated cost'
     },
     // app/submissionCore.ts — durable admission receipts.

@@ -93,6 +93,7 @@
   "canonical.controls.modelUsage",
   "canonical.controls.notAvailable",
   "canonical.controls.prefNotSaved",
+  "canonical.controls.retryUnsupported",
   "canonical.controls.rowCost",
   "canonical.controls.unsupportedModelOption",
   "canonical.controls.usageLastTurnTitle",
