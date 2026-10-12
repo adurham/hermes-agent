@@ -355,7 +355,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
           item.submissionId === (receipt.input_id ?? receipt.admission_id) &&
           Boolean(item.destination?.storedSid) &&
           item.destination?.storedSid === receipt.target_session_id &&
-          item.destination?.profileHome === receipt.target_profile_home
+          (item.destination?.ownerHome ?? item.destination?.profileHome) === receipt.target_profile_home
       )
 
       if (!item) {
