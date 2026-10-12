@@ -333,3 +333,18 @@ def test_session_teardown_releases_the_replay_ring(monkeypatch):
     assert events_since("closed-sid", 0) == []
     assert event_replay.is_truncated("closed-sid", 0)
     assert len(events_since("live-sid", 0)) == 1
+
+
+def test_a_raising_teardown_still_releases_the_replay_ring(monkeypatch):
+    from tui_gateway import session_lifecycle
+
+    def _boom(session, end_reason="tui_close"):
+        raise RuntimeError("finalize failed")
+
+    monkeypatch.setattr(session_lifecycle, "_teardown_session", _boom)
+    event_replay._stamp_event(_frame("failed-sid"))
+
+    with pytest.raises(RuntimeError):
+        session_lifecycle._teardown_popped_session({"_sid": "failed-sid"}, end_reason="tui_shutdown")
+
+    assert events_since("failed-sid", 0) == []

@@ -660,9 +660,13 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
             logger.debug("failed waiting for session turn thread", exc_info=True)
     if end_reason != "tui_shutdown":
         _settle_isolated_turn_before_close(session)
-    _teardown_session(session, end_reason=end_reason)
-    from tui_gateway.event_replay import forget_session
-    forget_session(str(session.get("_sid") or ""))  # after the reclaim announcement, the sid's last frame
+    try:
+        _teardown_session(session, end_reason=end_reason)
+    finally:
+        # Last, so the reclaim announcement is the final frame the ring would have held; finally, so a
+        # raising finalize (callers log and move on) still frees it.
+        from tui_gateway.event_replay import forget_session
+        forget_session(session.get("_sid") or "")
     return True
 
 
