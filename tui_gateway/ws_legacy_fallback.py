@@ -96,7 +96,7 @@ def _ticket_profile_request(server: Any, req: dict, home: str) -> tuple[dict, st
     if explicit := str(params.get("profile") or "").strip():
         try:
             named = server._profile_home(explicit)
-        except Exception:
+        except (OSError, ValueError):  # ProfileUnavailableError is a ValueError
             return refused, None
         return req, str(named) if named else ""
     contract = METHODS.get(req.get("method"))

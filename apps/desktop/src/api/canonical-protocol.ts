@@ -447,6 +447,24 @@ export class CanonicalDesktopProtocol {
     }
   }
 
+  // Turns advance the CAS revision without a session.updated event; the pending session.info fanout
+  // is where a viewer learns the value its next mutation must present. N91: another viewer's
+  // committed mutation broadcasts its receipt as session.updated: adopt it monotonically (a
+  // replayed older receipt never rewinds) and settle this viewer's superseded retained edits.
+  private adoptEventRevision(type: string, sid: string, profile: string, payload: Record<string, unknown>): void {
+    const owner = canonicalSessionKey(sid, profile)
+    const revision = payload.revision
+
+    if (typeof revision !== 'number') { return }
+
+    if (type === 'session.info') { this.revisions.set(owner, revision) }
+
+    if (type === 'session.updated' && (payload.session_id ?? sid) === sid && revision > (this.revisions.get(owner) ?? -1)) {
+      this.revisions.set(owner, revision)
+      this.retireSupersededMutations({ session_id: sid, profile }, revision)
+    }
+  }
+
   event(event: { type: string; session_id?: string; profile?: string; execution_generation?: unknown; payload?: unknown }) {
     const payload = event.payload as Record<string, unknown> | undefined
 
@@ -469,17 +487,7 @@ export class CanonicalDesktopProtocol {
     // C20: only a frame that passed the generation fence may retire a live Discard action.
     if (Array.isArray(payload.pending)) { this.reconcileUnknownAdmissions(sid, profile, payload.pending) }
 
-    // Turns advance the CAS revision without a session.updated event; the
-    // pending fanout is where a viewer learns the value its next mutation must present.
-    if (event.type === 'session.info' && typeof payload.revision === 'number') { this.revisions.set(owner, payload.revision) }
-
-    // N91: another viewer's committed mutation broadcasts its receipt as session.updated. Adopt
-    // it monotonically (a replayed older receipt never rewinds) and settle superseded retained edits.
-    if (event.type === 'session.updated' && typeof payload.revision === 'number' && (payload.session_id ?? sid) === sid &&
-        payload.revision > (this.revisions.get(owner) ?? -1)) {
-      this.revisions.set(owner, payload.revision)
-      this.retireSupersededMutations({ session_id: sid, profile }, payload.revision)
-    }
+    this.adoptEventRevision(event.type, sid, profile, payload)
 
     if (typeof payload.prompt_id === 'string') {
       if (event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile));
