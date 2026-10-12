@@ -50,7 +50,7 @@ export function canonicalResult(method: string, value: any, request: Record<stri
     // live events render, making reconnect depend on catching the final delta.
     const messages = Array.isArray(value.messages) ? value.messages.map((row: any) =>
       row && typeof row === 'object'
-        ? { ...row, text: row.content, name: row.tool_name }
+        ? { ...row, text: rowText(row.content), name: row.tool_name }
         : row) : value.messages
 
     return { ...value, messages, info: { ...value.info, stored_session_id: value.stored_session_id,
@@ -59,6 +59,15 @@ export function canonicalResult(method: string, value: any, request: Record<stri
   }
 
   return value
+}
+
+// A stored multipart row (`content` is a parts list) as display text: text parts joined, an image
+// part as `[image]` (N94). `content` itself stays on the row for /undo targeting.
+function rowText(content: unknown): unknown {
+  if (!Array.isArray(content)) { return content }
+
+  return content.map(part => typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text
+    : part?.type ? (String(part.type).includes('image') ? '[image]' : `[${part.type}]`) : '').filter(Boolean).join('\n')
 }
 
 // The authority's durable FIFO rows (`pending` on snapshots and session.info
