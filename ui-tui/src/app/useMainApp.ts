@@ -667,6 +667,10 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
+    // Offline (sid kept across a socket close): each poll would re-dial through
+    // ensureAttachedWebSocket and collapse GatewayClient's backoff (B2-20).
+    if (ui.gatewayConnected === false) { return }
+
     let stopped = false
     applyAgentSnapshot(ui.sid)
     applyProcessSnapshot(ui.sid)
@@ -739,7 +743,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, ui.sid])
+  }, [gw, ui.sid, ui.gatewayConnected])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
@@ -1114,7 +1118,8 @@ export function useMainApp(gw: GatewayClient) {
           status: t('session.status.reconnecting')
         })
 
-        if (state.sid) {
+        // Once per outage: each failed redial emits another exit (main printed it once).
+        if (state.sid && state.gatewayConnected !== false) {
           turnController.pushActivity(connectionLostActivity(), 'warn')
           sys(connectionLost())
         }
