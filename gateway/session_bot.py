@@ -21,6 +21,8 @@ from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_recei
 _CANONICAL_RECEIPT_STATUSES = frozenset({
     'canonical', 'queued', 'claimed', 'ambiguous', 'settled', 'failed', 'cancelled',
 })
+_BOT_DM_MAX_CHARS = 16200
+_PRODUCER_MAX_CHARS = 1024 * 1024
 
 
 def _canonical_record_error(path, record):
@@ -459,7 +461,11 @@ async def _deliver(connection, params):
     except ValueError as exc:
         raise RuntimeStoreError('invalid_params') from exc
     message = params.get('message')
-    if not isinstance(message, str) or not message.strip() or len(message) > 16200:
+    # Main capped only a relayed bot DM (MESSAGE_MAX_CHARS + attribution headroom), at the relay
+    # edge; a trusted producer's report (cron bot-chat, its deferred drain) carries no author and
+    # was admitted whole, so it gets a resource bound only.
+    limit = _BOT_DM_MAX_CHARS if params.get('author') is not None else _PRODUCER_MAX_CHARS
+    if not isinstance(message, str) or not message.strip() or len(message) > limit:
         raise RuntimeStoreError('invalid_params')
     author = parse_turn_author(params.get('author'))
     if params.get('author') is not None and (not isinstance(params['author'], dict) or author is None):
