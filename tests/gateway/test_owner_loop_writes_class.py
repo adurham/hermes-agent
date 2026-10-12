@@ -103,8 +103,8 @@ async def _native_register(authority, owner, tmp_path, db):
         return payload
     session_envelope_prepare = session_envelope.prepare_native
     session_envelope.prepare_native = prepare_native
-    original_restore = session_envelope.restore_native
-    session_envelope.restore_native = lambda payload, runner=None: SimpleNamespace(source=source)
+    original_restore = session_envelope.restore_native_source
+    session_envelope.restore_native_source = lambda payload, runner=None: source
     authority._admit_native_write = lambda **k: {'admission_id': 'a', 'status': 'queued'}
     authority._admitted = lambda ref, event, row: row
     authority._schedule = lambda ref: None
@@ -112,7 +112,7 @@ async def _native_register(authority, owner, tmp_path, db):
         await authority.admit_native(SimpleNamespace())
     finally:
         session_envelope.prepare_native = session_envelope_prepare
-        session_envelope.restore_native = original_restore
+        session_envelope.restore_native_source = original_restore
 
 
 async def _initialize(authority, owner, tmp_path, db):
