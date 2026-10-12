@@ -16,17 +16,6 @@ Requests accept `goal`, `context`, `role`, `model`, `provider`, `allowed_toolset
 `blocked_tools`, `working_directory`, `parent_session_id`, `correlation_id`,
 `metadata`, and `timeout_seconds`, subject to the restrictions below.
 
-## Routing
-
-Children follow the `delegation` config (provider, model, base_url,
-request_overrides, and ACP command) exactly as `delegate_task` children do.
-The request's `model` overrides the configured model. Its optional `provider`
-names a configured provider for this launch, with precedence request >
-delegation config > parent; the selected provider supplies its own credential
-bundle. An unresolvable provider raises `SubagentLifecycleError` before launch.
-Core does not expose `provider` to the model: the plugin chooses it, for example
-from operator config.
-
 ```python
 from agent.subagent_lifecycle import SubagentLaunchRequest
 
@@ -77,7 +66,19 @@ starts a replacement child. Running Python threads also cannot survive process
 exit; callers must treat those handles as interrupted by process exit.
 
 Requests are fail-closed: goal/context/metadata sizes are capped, unknown or
-parent-broadening toolsets are rejected, and per-tool blocks, working-directory
-overrides, and per-launch timeouts are explicitly rejected until Hermes can
+parent-broadening toolsets are rejected (plugin-registered toolsets count as
+known), and per-tool blocks, working-directory overrides, and per-launch
+timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
+
+## Routing
+
+Children follow the `delegation` config (`provider`, `model`, `base_url`,
+`api_key`, `api_mode`, `request_overrides`) exactly as `delegate_task` children do.
+The request's `model` overrides the configured model. Its optional `provider`
+names a configured provider for this launch, with precedence request >
+delegation config > parent; the selected provider supplies its own credential
+bundle. An unresolvable provider raises `SubagentLifecycleError` before launch.
+Core does not expose `provider` to the model: the plugin chooses it, for example
+from operator config.
