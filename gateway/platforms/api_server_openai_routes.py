@@ -7,6 +7,7 @@ module (top-level import = cycle), and lazy lookup keeps ``patch("...api_server.
 """
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -311,7 +312,8 @@ class _ResponsesStream:
             data["sequence_number"] = self.sequence_number
         self.sequence_number += 1
         if self.durable_key:  # the only reader is the keyed replay record (emit_completed)
-            self.recorded_events.append((event_type, data))
+            # Snapshot: terminal trimming later edits the nested tool output these frames share.
+            self.recorded_events.append((event_type, copy.deepcopy(data)))
         await self.response.write(self._api._sse_frame(data, event=event_type))
 
     def _item_id(self, kind, *, call_id=None, commentary=False):
