@@ -474,17 +474,37 @@ function lockTypedAnswer(request: ClarifyRequest, text: string): boolean {
     })
     .catch(error => {
       forgetSettledClarify(request.requestId)
-
-      const current = $clarifyRequests.get()[keyFor(request.sessionId)]
-
-      if (hasOpenServerRequest(request.requestId) && (!current || current.requestId === request.requestId)) {
-        setClarifyRequest(request)
-      }
-
+      rollBackTypedAnswer(request, lockedAnswers, question.qid, answer)
       notifyError(error, translateNow('assistant.clarify.sendFailed'))
     })
 
   return true
+}
+
+/** Undo one failed lock without touching answers locked after it. */
+function rollBackTypedAnswer(
+  request: ClarifyRequest,
+  lockedAnswers: Record<string, null | string>,
+  qid: string,
+  answer: string
+): void {
+  const current = $clarifyRequests.get()[keyFor(request.sessionId)]
+
+  // The last answer cleared the card: bring it back while the server still waits.
+  const live =
+    current?.requestId === request.requestId
+      ? current
+      : !current && hasOpenServerRequest(request.requestId)
+        ? { ...request, lockedAnswers }
+        : null
+
+  if (live?.lockedAnswers?.[qid] !== answer) {
+    return
+  }
+
+  const kept = { ...live.lockedAnswers }
+  delete kept[qid]
+  setClarifyRequest({ ...live, lockedAnswers: kept })
 }
 
 /** The row typed text names, by id or label (any case). */

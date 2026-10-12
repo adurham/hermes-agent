@@ -640,6 +640,34 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect(hasOpenServerRequest('req-two')).toBe(true)
   })
 
+  it('rolls back only the answer whose lock failed', async () => {
+    let failFirst: (error: Error) => void = () => {}
+
+    const request = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => (failFirst = reject)))
+      .mockResolvedValue({ status: 'ok', remaining: ['q2'] })
+
+    setGateway(request)
+    rememberServerRequest({ fail: vi.fn(), id: 'req-three', method: 'clarify', params: {}, respond })
+    $clarifyRequests.set({
+      'runtime-session': {
+        requestId: 'req-three',
+        questions: ['q0', 'q1', 'q2'].map(qid => ({ choices: null, multiSelect: false, qid, question: `${qid}?` })),
+        sessionId: 'runtime-session'
+      }
+    })
+
+    for (const text of ['first', 'second']) {
+      const { hook } = renderSubmitHook({ busy: true, text })
+      act(() => hook.result.current.submitDraft())
+    }
+
+    await act(async () => failFirst(new Error('socket closed')))
+
+    await waitFor(() => expect($clarifyRequests.get()['runtime-session']?.lockedAnswers).toEqual({ q1: 'second' }))
+  })
+
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {
     parkClarify('runtime-session')
     const { hook, onCancel } = renderSubmitHook({ busy: true })
