@@ -15,7 +15,7 @@ from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_live_delivery import _delivery_id, _read
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
-    scan_receipts, remember_receipt, track_receipt_task)
+    scan_receipts, remember_receipt, track_receipt_task, withdraw_pin)
 
 
 _CANONICAL_RECEIPT_STATUSES = frozenset({
@@ -298,7 +298,15 @@ async def _maybe_retry(authority, home, path, record):
     record['retry'] = {'identity': identity}
     record.update(status='queued', reply='')
     await write_receipt(home, record)
-    receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
+    try:
+        receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, identity)
+    except RuntimeStoreError as exc:
+        if exc.reason != 'queue_full':
+            raise
+        # Nothing was admitted: keep the delivery pending (as for a drain) so the next wake or
+        # delivery performs the same derived retry once the FIFO has room.
+        record.update(status='claimed', reply='')
+        return
     record.update(_result(authority, record))
     if record['status'] in {'queued', 'claimed'}:
         _watch_reply(authority, home, record['delivery_id'], receipt.admission_id)
@@ -524,7 +532,13 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
         if legacy is not None:
             return None
         raise RuntimeStoreError('admission_conflict')
-    receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
+    try:
+        receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
+    except RuntimeStoreError as exc:
+        if exc.reason == 'queue_full' and legacy is None:
+            # Refused inside the admit transaction before any INSERT: nothing to recover.
+            await withdraw_pin(home, key)
+        raise
     record.update(status='canonical', admission_id=receipt.admission_id)
     record.update(_result(authority, record))
     if record['status'] in {'queued', 'claimed'}:
