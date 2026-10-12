@@ -55,7 +55,7 @@ async def test_retry_refuses_an_unresendable_turn_before_rewinding(tmp_path, mon
         db.append_message(ref.session_id, 'assistant', 'earlier answer')
         view = SimpleNamespace(client=_Bridge(connection), session_id=ref.session_id,
                                mutations=PreparedMutations(), submit=AsyncMock(), generation=0)
-        active = lambda: len(db.get_messages(ref.session_id))  # noqa: E731
+        active = lambda: len(db.get_messages(ref.session_id))
         if submitted is None:
             with pytest.raises(GatewayClientError, match=r'^/retry: retry does not support media'):
                 await run_command(view, '/retry', '')

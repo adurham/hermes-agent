@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-import hermes_cli.gateway_chat as gateway_chat
+from hermes_cli import gateway_chat
 import hermes_cli.gateway_chat_startup as startup
 
 
