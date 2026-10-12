@@ -42,23 +42,25 @@ def _stage_user_content(content):
         if not url.startswith('data:'):
             texts.append(f"[Image attached: {url}]")
             continue
-        header, _, data = url.partition(',')
-        declared = header[len('data:'):].split(';', 1)[0].strip().lower()
         if len(attachments) >= _ATTACHMENT_LIMIT:
             raise GatewayClientError('acp_content_invalid')
         try:
-            raw = base64.b64decode(data, validate=True)
+            raw = base64.b64decode(url.partition(',')[2], validate=True)
         except (binascii.Error, ValueError) as exc:
             raise GatewayClientError('acp_content_invalid') from exc
-        # The staged extension and admitted type come from the sniffed bytes, never the client's
-        # text (``text/html`` -> .html, ``image/svg+xml``, or a path-shaped subtype on Windows).
+        # The sniffed bytes are authoritative for the staged extension and admitted type; the
+        # client's declared type (a file suffix, or image/png by default) is never trusted. A
+        # part admission cannot carry (bmp/svg, over the media cap) degrades to a text note so
+        # the user's text still runs, as main's in-process server did for oversize images.
         mime = sniff_image_mime(raw)
-        if mime is None or (declared and {'image/jpg': 'image/jpeg'}.get(declared, declared) != mime):
-            raise GatewayClientError('acp_content_invalid')
+        if mime is None:
+            texts.append("[Image omitted: unsupported image format]")
+            continue
         try:
             path = cache_image_from_bytes(raw, _IMAGE_EXT[mime])
         except ValueError as exc:
-            raise GatewayClientError('acp_content_invalid') from exc
+            texts.append(f"[Image omitted: {exc}]")
+            continue
         attachments.append({'path': path, 'mime': mime})
     return "\n".join(texts), attachments
 
