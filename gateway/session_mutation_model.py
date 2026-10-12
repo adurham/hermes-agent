@@ -87,7 +87,8 @@ def _alias_credential(authority, result):
     path = Path(authority.db.db_path).resolve().parent / 'config.yaml'
     raw = read_user_config_raw(path) if name else {}
     for section in (('model_aliases',), ('model', 'aliases')):
-        entries = raw.get(section[0]) if len(section) == 1 else (raw.get('model') or {}).get('aliases')
+        model = raw.get('model')  # `model: name` (a scalar) is valid config and declares no aliases
+        entries = raw.get(section[0]) if len(section) == 1 else (model.get('aliases') if isinstance(model, dict) else None)
         for written, entry in (entries.items() if isinstance(entries, dict) else ()):
             if not isinstance(entry, dict) or not entry.get('model') or str(written).strip().lower() != name:
                 continue
