@@ -1194,7 +1194,11 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
                 # does to the RUNNING one (steer into it, redirect it, or end it so the FIFO advances).
                 # Without this, ``interrupt`` degrades to ``queue`` behind a turn that may hang for
                 # its whole request timeout.
-                if self._is_session_running(_quick_key) and await self._hm_busy_preempt(event, source, _quick_key):
+                # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
+                # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
+                if self._is_session_running(_quick_key) and (
+                        await self._route_plaintext_approval_while_busy(event, _quick_key)
+                        or await self._hm_busy_preempt(event, source, _quick_key)):
                     return True, None
                 _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
                 if _consumed:
