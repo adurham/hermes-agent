@@ -1,4 +1,4 @@
-"""One summary of this machine and its OS account, for the desktop first-run questionnaire.
+"""One summary of this machine and its OS account, for the desktop first-run onboarding.
 
 Hardware facts come from ``hermes_platform.host``. Account facts (full name, locale) come from OS
 user records through ``pwd`` or Win32/CoreFoundation calls, never from environment variables such

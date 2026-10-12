@@ -414,7 +414,7 @@ method("onboarding.state", params=Params, result=OnboardingRunStateResult,
 
 class OnboardingSetRunParams(Params):
     """``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config,
-    so the first chat after the questionnaire gets the plain intro instead of the profile offer."""
+    so the first chat after onboarding gets the plain intro instead of the profile offer."""
 
     run: bool
     mark_profile_offered: bool = False

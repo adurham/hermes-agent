@@ -1,4 +1,4 @@
-"""``onboarding.run`` lives in the root profile's config.yaml: unset runs the questionnaire only on a
+"""``onboarding.run`` lives in the root profile's config.yaml: unset runs onboarding only on a
 fresh install, an explicit bool wins, and a backend launched under a named profile reads and writes
 the same root file."""
 
@@ -60,7 +60,7 @@ def test_a_user_profile_is_history_but_a_setup_profile_is_not(root):
 
 
 def test_a_managed_run_false_wins_on_a_fresh_install(root, tmp_path, monkeypatch):
-    # IT can pin the questionnaire off through the managed overlay; the root file stays unset.
+    # IT can pin onboarding off through the managed overlay; the root file stays unset.
     from hermes_cli import managed_scope
 
     managed = tmp_path / "managed"

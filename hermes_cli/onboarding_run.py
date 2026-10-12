@@ -1,8 +1,8 @@
-"""``onboarding.run``: whether the desktop first-run questionnaire opens on the next launch.
+"""``onboarding.run``: whether the desktop first-run onboarding opens on the next launch.
 
 The flag lives in the ROOT profile's ``config.yaml`` (``get_default_hermes_root()``), never in the
 launch profile's: a pooled backend launched under ``-p work`` must read and write the same file as
-one launched under ``default``, because the questionnaire always targets the default profile.
+one launched under ``default``, because onboarding always targets the default profile.
 Unset means "only on a fresh install"; ``true`` re-runs it once; ``false`` means done.
 """
 

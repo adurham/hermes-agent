@@ -1,4 +1,4 @@
-"""``machine.facts``: the host summary the desktop first-run questionnaire branches on.
+"""``machine.facts``: the host summary the desktop first-run onboarding branches on.
 
 Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
 """

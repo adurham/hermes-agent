@@ -2208,7 +2208,7 @@ export interface OnboardingRunStateResult {
   eligible: boolean
   session_id?: string | null
 }
-/** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after the questionnaire gets the plain intro instead of the profile offer. */
+/** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after onboarding gets the plain intro instead of the profile offer. */
 export interface OnboardingSetRunParams {
   run: boolean
   mark_profile_offered?: boolean
