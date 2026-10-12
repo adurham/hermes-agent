@@ -49,9 +49,9 @@ def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
     from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
-    frozen = policy.config(authority)
-    # A follow_profile_config session's route is the profile's current one (frozen == live sections).
-    model, provider = policy.current_model(authority), (frozen.get('model') or {}).get('provider')
+    # A follow_profile_config session's route is the profile's current one, model and endpoint from one read.
+    frozen, model = policy.effective(authority)
+    provider = (frozen.get('model') or {}).get('provider')
     key = launch_key(authority, policy)
     launch_url = json.loads(policy.request_json).get('base_url')
     if launch_url:

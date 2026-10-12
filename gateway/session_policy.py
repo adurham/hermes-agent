@@ -14,10 +14,15 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'service_tier', 'cwd_explicit'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
-FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases')
-FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier')
+FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
+                   'platform_toolsets')
+FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets')
+# What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
+SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
+                  'api_key_env')
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 _ACTIVE_POLICY: ContextVar = ContextVar('local_session_policy', default=None)
+_TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (policy, live) for a turn
 # Creation label -> agent surface. ``tool`` (third-party integrations, ``hermes chat --source tool``) and
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
 # pickers hide them (INTERNAL_LISTING_SOURCES).
@@ -46,13 +51,19 @@ class LocalSessionPolicy:
     # ephemeral prompt never re-reads the skill files, like the CLI's startup preload.
     skills_prompt: str | None = None
 
-    def config(self, authority=None):
+    def config(self, authority=None, *, secrets=True):
+        return self.effective(authority, secrets=secrets)[0]
+
+    def effective(self, authority=None, *, secrets=True):
+        """``(config, model)`` the next turn runs, both from ONE read of the owning profile when following
+        (the turn's policy scope holds that read): a route never pairs one profile's model with another's
+        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a pick that still holds) are
+        applied over the followed defaults; frozen secrets of followed sections are never recovered."""
         config = present_sections(json.loads(self.config_json))
-        live = self._live_profile(authority, config)
-        if self.config_secret_ref is not None and authority is not None:
+        live = self.read_profile(authority)
+        if self.config_secret_ref is not None and authority is not None and secrets:
             from gateway.session_policy_credentials import recover_config_secrets
-            secrets = recover_config_secrets(authority, self, skip=FOLLOW_SECTIONS if live is not None else ())
-            for path, value in secrets.items():
+            for path, value in recover_config_secrets(authority, self).items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
                 target = config
@@ -60,40 +71,65 @@ class LocalSessionPolicy:
                     # An alias entry added after creation is absent from the frozen tree.
                     target = target.setdefault(key, {}) if isinstance(target, dict) else target[key]
                 target[path[-1]] = value
-            model = config.get('model')
-            # ``/model <alias>`` with a literal key: the receipt points at the alias entry's secret.
-            if isinstance(model, dict) and model.get('api_key_from') and 'api_key' in model:
-                model['api_key'] = secrets.get(tuple(model['api_key_from']))
-        if live is not None:
+        model = self.model
+        if live:
+            frozen, request = config.get('model') or {}, json.loads(self.request_json)
+            pick = frozen.get('selection_profile')
+            held = pick is not None and pick == list(profile_target(live))
+            pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
+            pinned |= {'reasoning_effort', 'reasoning_overrides'} if 'reasoning' in request else set()
+            pinned |= {'service_tier'} if 'service_tier' in request else set()
             for key in FOLLOW_SECTIONS:
+                if key in pinned:
+                    continue
                 if key in live:
                     config[key] = live[key]
                 else:
                     config.pop(key, None)
+            if held:
+                config['model'] = _held_pick(frozen, config.get('model') or {})
+            else:
+                from gateway.run import _resolve_gateway_model
+                model = _resolve_gateway_model(live) or self.model
             agent, live_agent = config.setdefault('agent', {}), live.get('agent') or {}
             for key in FOLLOW_AGENT_KEYS:
+                if key in pinned:
+                    continue
                 if key in live_agent:
                     agent[key] = live_agent[key]
                 else:
                     agent.pop(key, None)
-        return config
+        source = (config.get('model') or {}).get('api_key_from') if isinstance(config.get('model'), dict) else None
+        if source:
+            # ``/model <alias>`` with a literal key: the receipt points at the alias entry's secret.
+            value = config
+            for part in source:
+                value = value.get(part) if isinstance(value, dict) else None
+            config['model']['api_key'] = value
+        return config, model
 
     @property
     def follows_profile(self):
         return json.loads(self.request_json).get('follow_profile_config') is True
 
-    def _live_profile(self, authority, frozen):
-        """The owning profile's current config for a following session, or None when the frozen route
-        applies: not following, or an explicit pick (create-time model / committed /model) made while
-        the profile still targets what it targeted then (main's ``composer_override_profile``)."""
+    def read_profile(self, authority):
+        """The owning profile's current config for a following session, else None; inside this policy's
+        turn scope, the turn's one read."""
         if authority is None or not self.follows_profile:
             return None
+        held = _TURN_PROFILE.get()
+        if held is not None and held[0] == self:
+            return held[1]
         from gateway.run import _load_gateway_config
-        live = present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
-        pick = (frozen.get('model') or {}).get('selection_profile')
-        if not live or (pick is not None and pick == list(profile_target(live))):
-            return None
-        return live
+        return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+
+    def current_toolsets(self, config):
+        """The next turn's toolsets from its resolved *config*: a following session without an explicit
+        toolset pick runs the profile's current selection (main #124211), else the frozen launch set."""
+        if (not self.follows_profile or self.source not in SURFACES or self.editor_mcp_json is not None
+                or 'toolsets' in json.loads(self.request_json)):
+            return self.toolsets
+        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode)))
 
     def current_reasoning_config(self, runner):
         """The next turn's reasoning: the profile's current effort when following, else the frozen one."""
@@ -101,8 +137,8 @@ class LocalSessionPolicy:
             return self.reasoning_config
         from gateway.session_authorities import active_authority
         from hermes_constants import resolve_reasoning_config
-        authority = active_authority(runner)
-        return resolve_reasoning_config(self.config(authority), self.current_model(authority) or '')
+        config, model = self.effective(active_authority(runner), secrets=False)
+        return resolve_reasoning_config(config, model or '')
 
     def current_service_tier(self, runner, session_key):
         """The next turn's tier: a typed session /fast, else the policy's (frozen, or the profile's when following)."""
@@ -112,15 +148,12 @@ class LocalSessionPolicy:
         state = runner._peek_session_state(session_key) if session_key else None
         if state is not None and state.conversation.service_tier_override is not SERVICE_TIER_UNSET:
             return state.conversation.service_tier_override
-        return parse_service_tier((self.config(active_authority(runner)).get('agent') or {}).get('service_tier'))
+        config = self.config(active_authority(runner), secrets=False)
+        return parse_service_tier((config.get('agent') or {}).get('service_tier'))
 
     def current_model(self, authority):
         """The model this session's next turn runs: the profile's current default when following."""
-        live = self._live_profile(authority, present_sections(json.loads(self.config_json)))
-        if live is None:
-            return self.model
-        from gateway.run import _resolve_gateway_model
-        return _resolve_gateway_model(live) or self.model
+        return self.effective(authority, secrets=False)[1]
 
     @property
     def provider(self):
@@ -170,6 +203,19 @@ def profile_target(config):
         provider = str(model.get('provider') or '').strip()
         return str(model.get('default') or '').strip(), '' if provider.lower() == 'auto' else provider
     return (model.strip() if isinstance(model, str) else ''), ''
+
+
+def _held_pick(frozen, live):
+    """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
+    ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
+    from hermes_cli.route_identity import normalize_route_base_url
+
+    def route(block):
+        return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
+    if route(frozen) != route(live):
+        return frozen
+    return {**{k: v for k, v in live.items() if k not in SELECTION_KEYS},
+            **{k: frozen[k] for k in SELECTION_KEYS if k in frozen}}
 
 
 def present_sections(config):
@@ -419,7 +465,9 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
     config_secrets = dict(config_secrets or {})
     policy = bind_editor_mcp(authority, session_id, policy, config_secrets.pop(PRIVATE_KEY, None))
     if api_key is None and not config_secrets:
-        return policy
+        # Nothing private remains (a followed section's secret, or a cleared key): a stale reference
+        # would no longer match the re-fingerprinted policy identity.
+        return replace(policy, credential_ref=None, config_secret_ref=None)
     keys = getattr(authority, '_local_launch_keys', None)
     if keys is None:
         keys = authority._local_launch_keys = {}
@@ -582,9 +630,15 @@ def policy_scope(policy, *, authority=None):
         for path, value in recover_config_secrets(authority, policy).items():
             if path[0] is None:
                 terminal[path[1]] = value
+    # A following session's turn reads its profile once; every resolution in the turn uses that read.
+    profile_token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    active = policy
+    if policy.follows_profile:
+        from dataclasses import replace
+        active = replace(policy, toolsets=policy.current_toolsets(policy.config(authority, secrets=False)))
     cwd_token = set_session_cwd(policy.cwd)
     terminal_token = set_terminal_scope(terminal)
-    policy_token = _ACTIVE_POLICY.set(policy)
+    policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
         from gateway.session_local_mcp import editor_mcp_scope
@@ -594,6 +648,7 @@ def policy_scope(policy, *, authority=None):
         _ACTIVE_POLICY.reset(policy_token)
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
+        _TURN_PROFILE.reset(profile_token)
 
 
 def active_policy():

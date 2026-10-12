@@ -32,10 +32,13 @@ def config_reference(authority, session_id, policy, secrets):
         sort_keys=True)
 
 
-def recover_config_secrets(authority, policy, skip=()):
-    """The frozen config secrets; entries under a *skip* section are neither re-read nor checked (a
-    following session overwrites those sections from the live profile, so a key rotation there is not
-    a revoked launch credential)."""
+def recover_config_secrets(authority, policy, skip=None):
+    """The frozen config secrets; entries under a *skip* section are neither re-read nor checked. Every
+    caller of a following session skips its followed sections: the live profile supplies them, so a key
+    rotation there is not a revoked launch credential."""
+    if skip is None:
+        from gateway.session_policy import FOLLOW_SECTIONS
+        skip = FOLLOW_SECTIONS if policy.follows_profile else ()
     ref = policy.config_secret_ref
     if not ref.startswith(PREFIX):
         values = getattr(authority, '_local_config_secrets', {}).get(ref)
@@ -52,11 +55,10 @@ def recover_config_secrets(authority, policy, skip=()):
         if cached is not None:
             return {path: value for path, value in cached.items() if path[0] not in skip}
         from gateway.run import _load_gateway_config
-        config = _load_gateway_config(home / 'config.yaml')
+        entries = [entry for entry in source['entries'] if entry[0][0] not in skip]
+        config = _load_gateway_config(home / 'config.yaml') if any(path[0] is not None for path, _ in entries) else {}
         values = {}
-        for path, fingerprint in source['entries']:
-            if path[0] in skip:
-                continue
+        for path, fingerprint in entries:
             value = config
             lookup = path
             if path[0] is None:
