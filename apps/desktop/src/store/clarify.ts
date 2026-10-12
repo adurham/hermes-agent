@@ -428,6 +428,12 @@ function typedAnswer(question: ClarifyQuestion, text: string): string {
   return question.multiSelect ? JSON.stringify([answer]) : answer
 }
 
+/**
+ * A request's typed answers are locked one at a time in answer order, as the card's Confirm does: an
+ * answer is not sent after an earlier one failed, so the server never holds a later answer without it.
+ */
+const lockChains = new Map<string, Promise<boolean>>()
+
 function lockTypedAnswer(request: ClarifyRequest, text: string): boolean {
   const gateway = $gateway.get()
   const question = request.questions.find(entry => request.lockedAnswers?.[entry.qid] === undefined)
@@ -457,26 +463,45 @@ function lockTypedAnswer(request: ClarifyRequest, text: string): boolean {
     setClarifyRequest({ ...request, lockedAnswers })
   }
 
-  void requestForOwnedSession<{ status?: string }>(
-    request.sessionId,
-    <R>(...args: Parameters<typeof gateway.request>) => gateway.request<R>(...args),
-    'clarify.lock',
-    { answer, question_id: question.qid, request_id: request.requestId }
-  )
-    .then(reply => {
-      if (reply.status === 'expired') {
-        // The wait already ended; the tool's own result says how.
-        forgetSettledClarify(request.requestId)
-      } else if (last) {
-        // The last lock resolved the batch server-side, so no response frame is owed.
-        forgetServerRequest(request.requestId)
+  const previous = lockChains.get(request.requestId) ?? Promise.resolve(true)
+
+  const sent = previous.then(async earlierSaved => {
+    if (earlierSaved) {
+      try {
+        const reply = await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          <R>(...args: Parameters<typeof gateway.request>) => gateway.request<R>(...args),
+          'clarify.lock',
+          { answer, question_id: question.qid, request_id: request.requestId }
+        )
+
+        if (reply.status === 'expired') {
+          // The wait already ended; the tool's own result says how.
+          forgetSettledClarify(request.requestId)
+        } else if (last) {
+          // The last lock resolved the batch server-side, so no response frame is owed.
+          forgetServerRequest(request.requestId)
+        }
+
+        return true
+      } catch (error) {
+        notifyError(error, translateNow('assistant.clarify.sendFailed'))
       }
-    })
-    .catch(error => {
-      forgetSettledClarify(request.requestId)
-      rollBackTypedAnswer(request, lockedAnswers, question.qid, answer)
-      notifyError(error, translateNow('assistant.clarify.sendFailed'))
-    })
+    }
+
+    forgetSettledClarify(request.requestId)
+    rollBackTypedAnswer(request, lockedAnswers, question.qid, answer)
+
+    return false
+  })
+
+  lockChains.set(request.requestId, sent)
+
+  void sent.then(() => {
+    if (lockChains.get(request.requestId) === sent) {
+      lockChains.delete(request.requestId)
+    }
+  })
 
   return true
 }

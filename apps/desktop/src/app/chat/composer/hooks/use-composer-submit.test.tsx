@@ -640,20 +640,20 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect(hasOpenServerRequest('req-two')).toBe(true)
   })
 
-  it('rolls back only the answer whose lock failed', async () => {
+  it('brings the card back when an earlier lock fails after the last answer cleared it', async () => {
     let failFirst: (error: Error) => void = () => {}
 
     const request = vi
       .fn()
       .mockImplementationOnce(() => new Promise((_resolve, reject) => (failFirst = reject)))
-      .mockResolvedValue({ status: 'ok', remaining: ['q2'] })
+      .mockResolvedValue({ status: 'ok', remaining: [] })
 
     setGateway(request)
-    rememberServerRequest({ fail: vi.fn(), id: 'req-three', method: 'clarify', params: {}, respond })
+    rememberServerRequest({ fail: vi.fn(), id: 'req-pair', method: 'clarify', params: {}, respond })
     $clarifyRequests.set({
       'runtime-session': {
-        requestId: 'req-three',
-        questions: ['q0', 'q1', 'q2'].map(qid => ({ choices: null, multiSelect: false, qid, question: `${qid}?` })),
+        requestId: 'req-pair',
+        questions: ['q0', 'q1'].map(qid => ({ choices: null, multiSelect: false, qid, question: `${qid}?` })),
         sessionId: 'runtime-session'
       }
     })
@@ -663,9 +663,15 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       act(() => hook.result.current.submitDraft())
     }
 
+    expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+
     await act(async () => failFirst(new Error('socket closed')))
 
-    await waitFor(() => expect($clarifyRequests.get()['runtime-session']?.lockedAnswers).toEqual({ q1: 'second' }))
+    await waitFor(() => expect($clarifyRequests.get()['runtime-session']?.lockedAnswers).toEqual({}))
+    // The second answer waits on the first, so it never reaches the server without it.
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(hasOpenServerRequest('req-pair')).toBe(true)
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {
