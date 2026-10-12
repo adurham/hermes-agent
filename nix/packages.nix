@@ -60,7 +60,6 @@
           "fal"
           "feishu"
           "firecrawl"
-          "honcho"
           "messaging"
           "modal"
           "parallel-web"
