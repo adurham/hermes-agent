@@ -663,8 +663,7 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
     try:
         _teardown_session(session, end_reason=end_reason)
     finally:
-        # Last, so the reclaim announcement is the final frame the ring would have held; finally, so a
-        # raising finalize (callers log and move on) still frees it.
+        # finally: a raising finalize (callers log and move on) must still free the ring.
         from tui_gateway.event_replay import forget_session
         forget_session(session.get("_sid") or "")
     return True
