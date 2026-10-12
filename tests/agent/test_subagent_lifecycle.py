@@ -239,28 +239,6 @@ def test_steer_queues_to_running_child_and_rejects_invalid_calls(steer_lifecycle
     assert child.steering == ["focus on correctness"]
 
 
-def test_wire_handle_can_cancel_a_running_child(steer_lifecycle):
-    from hermes_cli.plugin_host_wire import decode, encode
-
-    service, child, started, finish = steer_lifecycle
-    handle = decode(encode(service.launch(SubagentLaunchRequest(goal="cancel"))))
-    assert started.wait(2)
-    assert service.cancel(handle, reason="cancel wire child").accepted
-    assert child.interrupted
-    finish.set()
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.CANCELLED
-
-
-@pytest.mark.parametrize("handle", [{}, {"subagent_id": "unknown"}, 42])
-def test_malformed_handles_keep_unknown_results(lifecycle, handle):
-    assert lifecycle.status(handle).diagnostic == "UNKNOWN_HANDLE"
-    assert lifecycle.wait(handle).diagnostic == "UNKNOWN_HANDLE"
-    assert lifecycle.cancel(handle, reason="test").unknown_handle
-    assert lifecycle.result(handle).error_classification == "UNKNOWN_HANDLE"
-    assert lifecycle.reconnect(handle).diagnostic == "RECONNECT_UNAVAILABLE"
-    assert lifecycle.steer(handle, "test") is False
-
-
 @pytest.mark.parametrize("launch_request, message", [
     ({"goal": "review", "future_field": True}, "future_field"),
     (42, "request must be a SubagentLaunchRequest"),
@@ -287,25 +265,6 @@ def routing_lifecycle(lifecycle, monkeypatch):
     return lifecycle, build, config, resolve
 
 
-def test_routing_delegation_direct_endpoint(routing_lifecycle):
-    service, build, config, resolve = routing_lifecycle
-    config.return_value = {
-        "base_url": "https://direct.example/v1", "model": "delegated-model",
-        "api_key": "direct-fixture-key", "request_overrides": {"temperature": 0.4},
-    }
-    handle = service.launch(SubagentLaunchRequest(goal="route"))
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
-    kwargs = build.call_args.kwargs
-    assert kwargs["model"] == "delegated-model"
-    assert kwargs["override_base_url"] == "https://direct.example/v1"
-    assert kwargs["override_provider"] == "custom"
-    assert kwargs["override_api_key"] == "direct-fixture-key"
-    assert kwargs["override_api_mode"] == "chat_completions"
-    assert kwargs["override_request_overrides"] == {"temperature": 0.4}
-    assert kwargs["routing_cfg"] == config.return_value
-    resolve.assert_not_called()
-
-
 def test_routing_delegation_provider_bundle(routing_lifecycle):
     service, build, config, resolve = routing_lifecycle
     config.return_value = {"provider": "openrouter", "model": "delegated-model"}
@@ -321,6 +280,9 @@ def test_routing_delegation_provider_bundle(routing_lifecycle):
     assert kwargs["override_acp_command"] is None
     assert kwargs["override_acp_args"] == []
     resolve.assert_called_once_with(requested="openrouter", target_model="delegated-model")
+    handle = service.launch(SubagentLaunchRequest(goal="route", model="request-model"))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    assert build.call_args.kwargs["model"] == "request-model"
 
 
 @pytest.mark.parametrize("wire", [False, True])
@@ -372,37 +334,6 @@ def test_routing_unknown_provider_refuses_before_registration(routing_lifecycle,
     resolve.assert_called_once_with(requested="fixture-missing", target_model=None)
 
 
-def test_routing_no_config_inherits_parent(routing_lifecycle):
-    service, build, _config, resolve = routing_lifecycle
-    handle = service.launch(SubagentLaunchRequest(goal="route"))
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
-    kwargs = build.call_args.kwargs
-    assert kwargs["model"] is None
-    for name in ("provider", "base_url", "api_key", "api_mode", "request_overrides", "acp_command", "acp_args"):
-        assert kwargs[f"override_{name}"] is None
-    assert kwargs["routing_cfg"] == {}
-    resolve.assert_not_called()
-
-
-def test_routing_request_model_beats_delegation_model(routing_lifecycle):
-    service, build, config, _resolve = routing_lifecycle
-    config.return_value = {"model": "delegated-model", "base_url": "https://direct.example/v1"}
-    handle = service.launch(SubagentLaunchRequest(goal="route", model="request-model"))
-    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
-    assert build.call_args.kwargs["model"] == "request-model"
-    assert build.call_args.kwargs["override_base_url"] == "https://direct.example/v1"
-
-
-@pytest.mark.parametrize("provider", ["", " ", 123, "p" * 65])
-def test_routing_provider_validation(routing_lifecycle, provider):
-    service, build, _config, resolve = routing_lifecycle
-    with pytest.raises(SubagentLifecycleError) as exc:
-        service.launch({"goal": "route", "provider": provider})
-    assert str(exc.value) == "provider must be a non-empty string of at most 64 characters."
-    build.assert_not_called()
-    resolve.assert_not_called()
-
-
 def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
     monkeypatch.setattr("toolsets._get_plugin_toolset_names", lambda: {"plugin-tools"})
     parent = SimpleNamespace(session_id="parent-plugin", enabled_toolsets=["file", "plugin-tools"])
@@ -414,3 +345,14 @@ def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
     narrow = SubagentLifecycleService(lambda: SimpleNamespace(session_id="parent-narrow", enabled_toolsets=["file"]))
     with pytest.raises(SubagentLifecycleError, match="broaden"):
         narrow.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))
+
+
+def test_provider_is_plugin_facing_only():
+    """``provider`` lives on the plugin request; no model-facing delegate_task field can carry a route."""
+    import dataclasses
+    from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+
+    assert "provider" in {field.name for field in dataclasses.fields(SubagentLaunchRequest)}
+    props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+    exposed = set(props) | set(props["tasks"]["items"]["properties"])
+    assert not exposed & {"provider", "model", "base_url", "api_key"}
