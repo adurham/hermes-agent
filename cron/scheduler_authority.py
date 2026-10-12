@@ -118,7 +118,7 @@ def reconcile_pending(*, allow_connect=True):
     from gateway.session_cron import owner_for_home, operation
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_client import connect_gateway
-    from cron.executions import execution_owner_live
+    from cron.executions import execution_owner_live, get_execution
     from cron.jobs import pause_job
     from cron.scheduler import (_RunDelivery, _FireOwnership, _apply_agent_failure_marker,
                                 _save_compose_deliver)
@@ -136,6 +136,12 @@ def reconcile_pending(*, allow_connect=True):
             if execution_owner_live(params['request_id'], params['job_id']):
                 # Its firer (this process included) still owns the row and its tail: re-saving the
                 # output or re-marking the job on every tick would duplicate its side effects.
+                continue
+            row = get_execution(params['request_id'])
+            if row is not None and row['job_id'] == params['job_id'] and row['status'] in {'completed', 'failed'}:
+                # The firer booked this attempt's terminal outcome itself (ownership lost, shutdown
+                # interrupt, a crashed tail): the receipt is not a result to save or deliver again.
+                journal.unlink(missing_ok=True)
                 continue
             if 'refusal' in record:
                 state = {'status': 'terminal', 'result': record['refusal'], 'job': record['job']}
