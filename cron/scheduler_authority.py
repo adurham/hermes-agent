@@ -20,6 +20,12 @@ def _pause_identity(paused):
     return {'paused_at': paused.get('paused_at'), 'reason': paused.get('paused_reason')} if paused else True
 
 
+def replayable_completions(job_id, completions):
+    """The recorded completion ids whose admission journal still exists: only journal recovery
+    can replay a completion into ``mark_job_run``, so an id without one is a dead tombstone."""
+    return [eid for eid in completions or () if journal_path(job_id, eid).exists()]
+
+
 def pause_for_unknown(job_id, execution_id, reason):
     """The firer pauses the job for this fire's unverified admission and records that exact pause
     on the fire's journal, so the receipt that later proves the run terminal can lift it."""
