@@ -47,3 +47,35 @@ async def test_native_media_capture_runs_off_loop_and_commits_owned_bytes(tmp_pa
         assert Path(restored.media_urls[0]).read_bytes() == b'video-bytes' * 1000
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_native_admission_does_not_rehash_captured_media_on_the_loop(tmp_path, monkeypatch):
+    """After the off-loop capture, admission derives the route's source without re-verifying the
+    captured bytes on the owner loop (B1-07 remainder); execution still verifies them."""
+    import hashlib
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
+    loop_thread, on_loop = threading.current_thread(), []
+    real_digest = hashlib.file_digest
+
+    def digest(*a, **k):
+        on_loop.append(threading.current_thread() is loop_thread)
+        return real_digest(*a, **k)
+    monkeypatch.setattr(hashlib, 'file_digest', digest)
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))
+    runner.adapters = {Platform.WHATSAPP: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='media')
+    try:
+        attachment = tmp_path / 'clip.mp4'
+        attachment.write_bytes(b'video-bytes' * 1000)
+        event = MessageEvent(text='look', message_type=MessageType.VIDEO, message_id='v2',
+                             source=adapter.build_source(chat_id=CHAT, user_id=CHAT, chat_type='dm'),
+                             media_urls=[str(attachment)], media_types=['video/mp4'])
+        receipt = await authority.admit_native(event)
+        assert receipt.admission_id
+        assert True not in on_loop, f'{on_loop.count(True)} captured-media re-hash(es) on the owner loop'
+    finally:
+        authority.db.close()

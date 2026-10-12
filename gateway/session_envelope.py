@@ -172,7 +172,9 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
     return payload
 
 
-def restore_native(payload, runner=None):
+def restore_native_source(payload, runner=None):
+    """restore_native's source (provenance included) without re-verifying the captured media:
+    admission needs only the route; execution's restore_native still checks every byte."""
     envelope = payload['native_text_v1']
     source = SessionSource.from_dict(envelope['source'])
     source.is_bot = envelope['source']['is_bot']
@@ -183,6 +185,12 @@ def restore_native(payload, runner=None):
         runner = runner or callback_runner()
         if runner is not None:
             restore_provenance(runner, source, envelope['provenance'])
+    return source
+
+
+def restore_native(payload, runner=None):
+    envelope = payload['native_text_v1']
+    source = restore_native_source(payload, runner)
     timestamp = datetime.fromisoformat(envelope['timestamp'])
     if timestamp.tzinfo is not None and timestamp.timestamp() == 0:
         # Epoch 0 pins the retry fingerprint of producers with no provider time (relay, webhook,

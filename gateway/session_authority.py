@@ -329,11 +329,11 @@ class SessionAuthority:
 
     async def _admit_native(self, event):
         import json
-        from gateway.session_envelope import prepare_native, restore_native
+        from gateway.session_envelope import prepare_native, restore_native_source
         self._require_admission_open()
         payload = await prepare_native(self.runner, event)
         self._require_admission_open()
-        source = restore_native(payload).source
+        source = restore_native_source(payload)  # no re-hash of the just-captured media on the loop
         from gateway.session_runtime_workers import tracked_write
         ref = self._publish_route(source, *await tracked_write(self, partial(self._reserve_route, source)))
         identity = json.dumps([source.profile, source.platform.value, source.chat_id,
