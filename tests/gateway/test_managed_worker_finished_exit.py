@@ -63,6 +63,7 @@ def test_finished_worker_keeps_its_result_on_slow_or_nonzero_exit(tmp_path, monk
     async def scenario():
         await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
         row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority._stamp_claim(ref, authority.sessions['s'], row)  # the drain's claim stamp
         async with asyncio.timeout(40):
             return row, await managed.execute_managed(authority, ref, row, policy)
     with db:

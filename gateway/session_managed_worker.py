@@ -494,7 +494,9 @@ async def execute_managed(authority, ref, row, policy):
         worker.writer.start()
         while True:
             frame = await worker.next_frame(None, ack=STOP_ACK_SECONDS)
-            authority.check_approval_generation(ref.session_id, row['generation'])
+            # The claim's execution stamp, not a ledger read per frame (publish_execution fences the same way).
+            if authority.executing.get(ref.session_id) != row['generation']:
+                raise RuntimeStoreError('stale_generation')
             with authority.sessions[ref.session_id].event_stream.lock:
                 if _prompt_frame(authority, ref, row, worker, frame):
                     continue

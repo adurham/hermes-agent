@@ -165,7 +165,8 @@ class WorkerControls:
     def stop(self):
         self.stopped.set()
         if self.agent is not None:
-            self.agent.interrupt()
+            from agent.interrupt_compat import request_hard_interrupt
+            request_hard_interrupt(self.agent)  # parity with the canonical Stop (SessionAuthority.interrupt)
         with self.lock:
             for state in self.clarifications.values():
                 state['answer'] = _INTERRUPTED
@@ -353,7 +354,8 @@ def execute(frame, channel):
                                                                                          **tool_frame(call_id, name, args, result)))
             controls.agent = agent
             if controls.stopped.is_set():
-                agent.interrupt()
+                from agent.interrupt_compat import request_hard_interrupt
+                request_hard_interrupt(agent)
             channel.send('ready', pid=os.getpid())
             history = store.get_messages_as_conversation(scope['session_id'])
             from gateway.session_kanban import run_worker_turns
