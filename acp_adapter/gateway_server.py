@@ -211,6 +211,13 @@ class GatewayACPAgent(acp.Agent):
             self._snapshots[session_id] = snapshot
             for pending in snapshot.get("prompts", []):
                 self._permission(session_id, pending)
+            await self._notify_unknown(session_id)
+
+    async def _notify_unknown(self, session_id):
+        """The classic chat's resume notice: say why the next prompt will be refused and how to recover."""
+        if self._has_unknown(session_id) and self._conn:
+            await self._conn.session_update(session_id=self._editor_id(session_id), update=acp.update_agent_message_text(
+                self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: ") + "\n"))
 
     def _transport_closed(self):
         # The socket reader settles every pending RPC before the pump sees its disconnect frame,
@@ -289,10 +296,7 @@ class GatewayACPAgent(acp.Agent):
                 await self._conn.session_update(session_id=held_id, update=update)
         for pending in snapshot.get("prompts", []):
             self._permission(session_id, pending)
-        if self._has_unknown(session_id) and self._conn:
-            # The classic chat's resume notice: say why the next prompt will be refused and how to recover.
-            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
-                self._unknown_recovery(session_id, submitted=False).removeprefix("unknown_execution: ") + "\n"))
+        await self._notify_unknown(session_id)
         return snapshot
 
     async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
