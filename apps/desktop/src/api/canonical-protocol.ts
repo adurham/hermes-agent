@@ -384,7 +384,7 @@ export class CanonicalDesktopProtocol {
   }
 
   // The composer's per-session create options in the owner's create contract: the effort is the
-  // frozen launch `reasoning`; the speed pick is `service_tier` (main: an explicit tier wins, Fast
+  // frozen launch `reasoning`; a manual model pick keeps its `provider`; the speed pick is `service_tier` (main: an explicit tier wins, Fast
   // pins priority, Normal pins normal over a profile tier, omitted inherits); `cwd_explicit` is the
   // provenance that lets a named profile's own workspace beat an inherited cwd.
   private prepareCreate(input: Record<string, unknown>): Record<string, unknown> {
@@ -397,13 +397,13 @@ export class CanonicalDesktopProtocol {
 
     if (typeof params.cwd_explicit !== 'boolean') { delete params.cwd_explicit }
 
-    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'reasoning', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'])
+    const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'])
     const unsupported = Object.keys(params).filter(key => !allowed.has(key))
 
     if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
     const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && siblingRoute(value))))
+      ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && siblingRoute(value))))
 
     const key = JSON.stringify(result)
     const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()

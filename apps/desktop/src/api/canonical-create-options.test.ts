@@ -23,7 +23,9 @@ const CASES: Array<[string, Record<string, unknown>, Record<string, unknown> | R
   ['onboarding minimal effort', { ...BASE, reasoning_effort: 'minimal', fast: false, title: 'Welcome' }, { reasoning: 'minimal', title: 'Welcome', service_tier: 'normal' }],
   ['Bot Chat', { ...BASE, title: 'Bot Chat', hidden: true, follow_profile_config: true }, { follow_profile_config: true, hidden: true }],
   ['Fast speed', { ...BASE, cwd: '/w', cwd_explicit: false, fast: true }, { cwd: '/w', service_tier: 'priority' }],
-  ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { service_tier: 'ultrafast' }]
+  ['Ultrafast speed', { ...BASE, fast: true, service_tier: 'ultrafast' }, { service_tier: 'ultrafast' }],
+  // KoNit-K P1: a manual model pick ships its provider; the owner's create contract admits both.
+  ['manual model + provider', { ...BASE, model: 'gpt-5', provider: 'openrouter', fast: false }, { model: 'gpt-5', provider: 'openrouter', service_tier: 'normal' }]
 ]
 
 test.each(CASES)('%s: the Desktop create frame is admitted by the owner contract or refused by name', async (_label, params, expected) => {
