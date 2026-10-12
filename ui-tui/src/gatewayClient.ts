@@ -137,6 +137,8 @@ const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<L
   return JSON.parse(stdout) as LocalGatewayGrant
 }
 
+
+export interface AttachHold { sid: string; frames: AnyGatewayEvent[] }
 export class GatewayClient extends EventEmitter {
   private ws: WebSocket | null = null
   private wsConnectPromise: Promise<void> | null = null
@@ -185,6 +187,7 @@ export class GatewayClient extends EventEmitter {
   isCanonical = false
   private creationContract?: CreationContract
   private describeFlight?: Promise<void>
+  private attachHold: AttachHold | null = null
   // The last session.create whose outcome is in doubt (see createCanonical).
   private unsettledCreate?: { key: string; requestId: unknown }
 
@@ -233,11 +236,17 @@ export class GatewayClient extends EventEmitter {
       // An idle frame (session.info from _publish_pending) carries its stamp in the payload only
       // (B2-18): fall back to it, and never stamp an absent value over it.
       const shared = ev as AnyGatewayEvent & { authority_epoch?: number; execution_generation?: number }
-      const payload = canonicalEvent(ev).payload ?? {}
+      const payload = (canonicalEvent(ev).payload ?? {}) as { authority_epoch?: number; execution_generation?: number }
       const epoch = shared.authority_epoch ?? payload.authority_epoch
       const generation = shared.execution_generation ?? payload.execution_generation
       ev.payload = { ...payload, ...(epoch !== undefined ? { execution_epoch: String(epoch) } : {}),
         ...(generation !== undefined ? { execution_generation: generation } : {}) } as never
+
+      if (this.attachHold && (ev as { session_id?: unknown }).session_id === this.attachHold.sid) {
+        this.attachHold.frames.push(ev)
+
+        return
+      }
     }
 
     this.publish(ev)
@@ -494,6 +503,32 @@ export class GatewayClient extends EventEmitter {
       ws.send(rawFrame)
     } catch {
       // best effort
+    }
+  }
+
+  /** B2-19: hold this session's canonical frames while its resume/activate is in flight. Fanout
+   * frames can beat the reply; the caller applies the snapshot, then settleAttach replays only the
+   * held frames after the snapshot (same replay_epoch, seq > last_sequence). */
+  holdAttach(sessionId: string): AttachHold | null {
+    if (!this.isCanonical) { return null }
+
+    return (this.attachHold = { sid: sessionId, frames: [] })
+  }
+
+  /** End a hold: with the applied snapshot, replay only frames it does not contain; without one
+   * (failed or superseded attach), deliver what was held. A replaced hold is a no-op. */
+  settleAttach(hold: AttachHold | null, snapshot?: object | null) {
+    if (!hold || this.attachHold !== hold) { return }
+    this.attachHold = null
+
+    const fence = snapshot as { last_sequence?: unknown; replay_epoch?: unknown } | null | undefined
+
+    for (const ev of hold.frames) {
+      const { replay_epoch: epoch, seq } = ev as { replay_epoch?: unknown; seq?: unknown }
+
+      if (!fence || (epoch === fence.replay_epoch && typeof seq === 'number' && seq > Number(fence.last_sequence ?? -1))) {
+        this.publish(ev)
+      }
     }
   }
 
