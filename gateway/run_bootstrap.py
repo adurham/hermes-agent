@@ -823,8 +823,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             if runner is not None:
                 from gateway.run_runtime import drain_gateway_runtime
                 await drain_gateway_runtime(runner)
-                # Startup may have opened adapters before an exception. The same
-                # stop path owns their writers and DB handles on every exit.
+                # Startup may have opened adapters before an exception or an early exit verdict. The
+                # same stop path owns their writers and DB handles on every exit, but when no stop ran
+                # yet this is cleanup, not a shutdown: keep startup_failed and the crash markers.
+                if getattr(runner, "_stop_task", None) is None and not getattr(runner, "_running", False):
+                    runner._startup_cleanup_only = True
                 await runner.stop()
         finally:
             if _planned_stop_watcher_stop is not None:
