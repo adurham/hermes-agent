@@ -101,6 +101,7 @@ class SessionAuthority:
         # Set by profile retirement (unserve): the drain claims no successor after its running turn.
         self.retiring = False
         self.retired = False
+        self._classic_evict_at = {}  # route -> last leaked/reaped-slot eviction check (monotonic)
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -646,6 +647,23 @@ class SessionAuthority:
             interrupt_for_session(session_key=live.route, parent_session_id=parent, reason='user_stop')
         return self._handle(ref)
 
+    def _classic_turn_holds(self, route):
+        """The route's running slot is held by a turn this FIFO did not claim (the drain is serial:
+        its own previous turn released the slot before this claim). Leaked and reaped slots are
+        evicted first, so they never block the FIFO; the reaped check reads state.db at most 1/s."""
+        runner = self.runner
+        running = getattr(runner, '_is_session_running', None)
+        if running is None or not running(route):
+            return False
+        import time
+        now = time.monotonic()
+        if now - self._classic_evict_at.get(route, 0.0) >= 1.0:
+            self._classic_evict_at[route] = now
+            runner._hm_evict_idle_stale_agent(route)
+            if running(route):
+                runner._hm_evict_reaped_agent(route)
+        return running(route)
+
     def _runs_own_agent(self, ref):
         """The route's running slot holds a real agent (not the claim's pending sentinel), so the
         Stop above reached the turn's own agent, not a cached one it may still replace."""
@@ -784,6 +802,11 @@ class SessionAuthority:
             if first is not None and live.source.platform == Platform.API_SERVER:
                 from gateway.session_api_turn import check_api_turn
                 check_api_turn(self, ref, first['payload'])
+            if first is not None and self._classic_turn_holds(live.route):
+                # A classic turn (fallback wake, CLI handoff, legacy resume) holds the route's slot:
+                # a claim now would hand this row to its busy path and settle it unrun. The head
+                # waits queued, as main's pending slot did; /stop and /new still cancel it.
+                return 'classic_busy', first
             self._require_admission_open()
             from gateway.session_runtime_workers import tracked_write
             live.rescan = False  # a _schedule from here on may not be visible to this claim's read
@@ -809,6 +832,14 @@ class SessionAuthority:
                 self._publish_pending(ref)
         return row
 
+    def _drain_stopping(self, ref, live):
+        """A drain about to wait (storage retry, classic slot) exits instead when the runtime drains,
+        the profile retires or the live entry was replaced; committed rows stay queued."""
+        if self.runner._draining or self.retiring or self.sessions.get(ref.session_id) is not live:
+            self._pause(ref, 'runtime_draining')
+            return True
+        return False
+
     async def _drain(self, ref):
         from gateway.session_finite import execute_finite_admission
         from gateway.session_managed_worker import ManagedExecutionUnknown
@@ -827,8 +858,7 @@ class SessionAuthority:
                 # caller is event-driven: a dead drain would strand the committed head and hang its
                 # waiters until the next submit. Retry in place (like recover_failed_settlement),
                 # keeping waiters: releasing them fails requests that would run a moment later.
-                if self.runner._draining or self.retiring or self.sessions.get(ref.session_id) is not live:
-                    self._pause(ref, 'runtime_draining')
+                if self._drain_stopping(ref, live):
                     return
                 backoff = min(max(backoff * 2, _CLAIM_RETRY_MIN_S), _CLAIM_RETRY_MAX_S)
                 import logging
@@ -837,6 +867,11 @@ class SessionAuthority:
                 await asyncio.sleep(backoff)
                 continue
             backoff = 0.0
+            if row == 'classic_busy':
+                if self._drain_stopping(ref, live):
+                    return
+                await asyncio.sleep(_CLAIM_RETRY_MIN_S)
+                continue
             if row is False:
                 continue
             if row is None and first is not None:
