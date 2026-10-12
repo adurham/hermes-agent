@@ -93,7 +93,7 @@ The agent uses the `memory` tool with these actions:
 
 - **add** — Add a new memory entry
 - **replace** — Replace an existing entry with updated content (uses substring matching via `old_text`)
-- **patch** — Replace matching text inside an existing entry while preserving the rest (uses `old_text` and `new_text`)
+- **patch** — Replace one span inside an existing entry and keep the rest (`old_text` is the span, `content` its replacement)
 - **remove** — Remove an entry that's no longer relevant (uses substring matching via `old_text`)
 
 There is no `read` action — memory content is automatically injected into the system prompt at session start. The agent sees its memories as part of its conversation context.
@@ -110,7 +110,7 @@ or staging approval. Correct the payload and retry; use separate calls to update
 
 ### Substring Matching
 
-The `replace` and `remove` actions use short unique substring matching — you don't need the full entry text. The `old_text` parameter just needs to be a unique substring that identifies exactly one entry:
+The `replace`, `patch` and `remove` actions use short unique substring matching — you don't need the full entry text. The `old_text` parameter just needs to be a unique substring that identifies exactly one entry:
 
 ```python
 # If memory contains "User prefers dark mode in all editors"
@@ -122,6 +122,10 @@ memory(action="replace", target="memory",
 If the substring matches multiple entries, an error is returned asking for a more specific match.
 
 `replace` overwrites the **whole matched entry** with `content` — `old_text` only locates the entry, it is not cut out and replaced. The new `content` must be the complete new entry, including every part of the old one you want to keep. (A whole-entry `old_text` equal to the entry itself is matched exactly and wins over substring matches.)
+
+`patch` replaces only the `old_text` span inside the matched entry and keeps everything else. The span must
+occur once in that entry; if it appears more than once, the call is rejected and the agent retries with more
+surrounding text. To drop text from an entry, patch a longer span that contains it.
 
 ## Two Targets Explained
 

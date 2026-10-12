@@ -122,6 +122,15 @@ def _over_limit(new_total: int, limit: int) -> str:
     return f"would put memory at {new_total:,}/{limit:,} chars: free at least {new_total - limit:,} chars"
 
 
+# Patch content cannot be empty, and 'remove' would drop the sibling facts in the entry.
+PATCH_DROP_HINT = "To drop text inside an entry, patch a longer span that contains it; 'remove' deletes the whole entry."
+
+
+def _repeated_span_message(old_text: str, count: int) -> str:
+    return (f"'{old_text}' appears {count} times in the matched entry, and patch edits one span. "
+            f"Include more surrounding text so old_text occurs once.")
+
+
 def _pinned_index(entries: list[str], matched_entry: str) -> Optional[int]:
     """Index of the exact entry a staged write was reviewed against; None once it is gone (stale)."""
     return entries.index(matched_entry) if matched_entry in entries else None
@@ -370,14 +379,14 @@ class MemoryStore:
 
     def patch(self, target: str, old_text: str, new_text: str,
               matched_entry: Optional[str] = None) -> dict[str, Any]:
-        """Find the entry containing *old_text* and splice every occurrence of it into
-        *new_text* — the rest of the entry is preserved verbatim. This is the partial-edit
-        shape ``replace`` deliberately is not (replace overwrites the WHOLE entry)."""
+        """Find the entry containing *old_text* and replace that one span with *new_text*;
+        the rest of the entry is preserved verbatim. This is the partial-edit shape
+        ``replace`` deliberately is not (replace overwrites the WHOLE entry). A span that
+        occurs more than once in the entry is rejected rather than edited everywhere."""
         if not (old_text or "").strip():
             return _error("old_text cannot be empty.", "missing_old_text")
         if new_text is None or not str(new_text).strip():
-            return _error("new_text cannot be empty. Use 'remove' to delete entries, "
-                          "or an empty-sense edit is not a change.", "missing_content")
+            return _error(f"new_text cannot be empty. {PATCH_DROP_HINT}", "missing_content")
         return self._patch(target, old_text.strip(), str(new_text), matched_entry)
 
     def _patch(self, target: str, old_text: str, new_text: str,
@@ -388,6 +397,8 @@ class MemoryStore:
             if isinstance(idx, dict):
                 return idx
             before = entries[idx]
+            if (count := before.count(old_text)) > 1:
+                return _error(_repeated_span_message(old_text, count), "ambiguous")
             after = before.replace(old_text, new_text)
             if after == before:
                 return _error(f"Patched entry is unchanged by replacing '{old_text}' "
@@ -479,7 +490,7 @@ class MemoryStore:
                     f"new entry (or use action='remove' to delete)."), None, "missing_content"
         if act == "patch" and not content:
             return (f"{pos}: content is required — set this operation object's own 'content' to the new "
-                    f"text for the old_text span (or use action='remove' to delete)."), None, "missing_content"
+                    f"text for the old_text span. {PATCH_DROP_HINT}"), None, "missing_content"
         if matched_entry is not None:
             idx = _pinned_index(working, matched_entry)
             if idx is None:
@@ -493,6 +504,8 @@ class MemoryStore:
                 return f"{pos}: {miss['error']}", miss.get("closest_entries"), "no_match"
         previous_content = working[idx]
         if act == "patch":
+            if (count := previous_content.count(old_text)) > 1:
+                return f"{pos}: {_repeated_span_message(old_text, count)}", None, "ambiguous"
             patched = previous_content.replace(old_text, content)
             if patched == previous_content:
                 return (f"{pos}: patch is a no-op -- '{old_text}' -> '{content}' leaves the "

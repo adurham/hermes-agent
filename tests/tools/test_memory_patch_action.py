@@ -50,6 +50,8 @@ class TestPatchSingleOp:
     def test_patch_requires_new_text(self, packed_store):
         result = json.loads(memory_tool(action="patch", old_text="item B", store=packed_store))
         assert result["success"] is False
+        # Deleting the whole entry would drop the sibling facts; point at a longer span instead.
+        assert "patch a longer span" in result["error"]
 
     def test_patch_unmatched_old_text_fails_without_write(self, packed_store):
         result = json.loads(memory_tool(
@@ -71,13 +73,20 @@ class TestPatchStoreLevel:
         assert result["success"] is True
         assert packed_store._entries_for("memory") == ["todo: item A; item B done; item C"]
 
-    def test_patch_all_occurrences_within_entry(self, tmp_path, monkeypatch):
+    def test_patch_rejects_a_span_repeated_within_the_entry(self, tmp_path, monkeypatch):
+        # Replacing every occurrence rewrote sibling facts that shared the span.
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         s = MemoryStore(memory_char_limit=500)
-        s.add("memory", "x: see B and again B")
-        result = s.patch("memory", "B", "C")
-        assert result["success"] is True
-        assert s._entries_for("memory") == ["x: see C and again C"]
+        entry = "Jeff drinks tea in the morning; his wife drinks tea at night"
+        s.add("memory", entry)
+        single = s.patch("memory", "tea", "coffee")
+        batch = s.apply_batch("memory", [{"action": "patch", "old_text": "tea", "content": "coffee"}])
+        for result in (single, batch):
+            assert result["success"] is False
+            assert "appears 2 times" in result["error"]
+        assert s._entries_for("memory") == [entry]
+        assert s.patch("memory", "drinks tea in the morning", "drinks coffee in the morning")["success"] is True
+        assert s._entries_for("memory") == ["Jeff drinks coffee in the morning; his wife drinks tea at night"]
 
 
 class TestPatchBatch:
@@ -87,6 +96,12 @@ class TestPatchBatch:
         ])
         assert result["success"] is True
         assert packed_store._entries_for("memory") == ["todo: item A; item B done; item C"]
+
+    def test_patch_op_without_content_points_at_a_longer_span(self, packed_store):
+        result = packed_store.apply_batch("memory", [{"action": "patch", "old_text": "item B", "content": ""}])
+        assert result["success"] is False
+        assert "patch a longer span" in result["error"]
+        assert packed_store._entries_for("memory") == [PACKED]
 
     def test_patch_op_counts_as_destructive_for_staging(self, packed_store):
         # patch rewrites part of an entry: it must be staged (matched_entry pinned)
