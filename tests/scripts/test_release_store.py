@@ -239,3 +239,21 @@ def test_check_from_env_passes_the_configured_credentials():
     token = next(r for r in api.requests if r["url"].endswith("/token"))
     assert token["form"]["client_id"] == "CLIENT"
     assert token["form"]["client_secret"] == "SECRET"
+
+
+def test_submit_reads_and_writes_the_keys_as_the_submission_spells_them():
+    """The CLI emits PascalCase; a camelCase (REST-shaped) submission keeps its own keys."""
+    from scripts.releases.store import submit
+
+    class _CamelCli(_Cli):
+        def __call__(self, argv):
+            out = super().__call__(argv)
+            if argv[:3] == ["msstore", "submission", "get"]:
+                data = json.loads(out)
+                return json.dumps({k[0].lower() + k[1:]: v for k, v in data.items()})
+            return out
+
+    cli = _CamelCli(pending=True)
+    submit("verified/Store-1.2.3.msixbundle", product_id="9NTEST", run=cli)
+    assert any(name.startswith("msstore submission delete") for name in cli.names())
+    assert cli.updated["targetPublishMode"] == "Manual" and "TargetPublishMode" not in cli.updated
