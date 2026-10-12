@@ -46,9 +46,11 @@ def nvidia_platform() -> NvidiaPlatform | None:
     """The NVIDIA platform of this host; ``classify_nvidia_platform`` holds the rules.
 
     Reads only cached host facts (registry, sysfs, procfs, sysctl): no subprocess, no driver
-    library, no network. The N1X PCI range is the one the local catalog's measured row uses. Not
-    verified on hardware: the N1X CPU marker in the Windows registry, the GB10 model name in
-    ``/proc/driver/nvidia/gpus/*/information``, and the DGX Spark device-tree model.
+    library, no network. Verified on an N1X laptop (native arm64 and emulated x64 Python): the
+    registry CPU name carries the N1X marker, both GPUs are NVIDIA display adapters with PCI
+    devices 0x2E03 and 0x2E06 (inside the catalog's N1X range), and the answer is ``rtx_spark``.
+    Not verified on hardware: the GB10 model name in ``/proc/driver/nvidia/gpus/*/information``
+    and the DGX Spark device-tree model.
     """
     return classify_nvidia_platform(
         os_family=facts.os_family(), native_arch=facts.native_arch(), cpu_model=facts.cpu_model(),
