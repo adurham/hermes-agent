@@ -13,6 +13,16 @@ import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
+  connectors: {
+    directory: {
+      suggested: 'おすすめ',
+      allApps: 'すべてのアプリ',
+      receiptConnected: apps => `接続済み: ${apps}`,
+      receiptNone: '接続したアプリはありません',
+      receiptSaid: 'チャットで回答しました',
+      receiptTimedOut: '5 分後に閉じました'
+    }
+  },
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',

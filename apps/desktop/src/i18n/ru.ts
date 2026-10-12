@@ -32,6 +32,16 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+  connectors: {
+    directory: {
+      suggested: 'Рекомендуемые',
+      allApps: 'Все приложения',
+      receiptConnected: apps => `Подключены: ${apps}`,
+      receiptNone: 'Приложения не подключены',
+      receiptSaid: 'Ответ дан в чате',
+      receiptTimedOut: 'Закрыто через 5 минут'
+    }
+  },
   sharedMetrics: ruSharedMetrics,
   sessionImport: {
     title: 'Продолжить из другого приложения',
