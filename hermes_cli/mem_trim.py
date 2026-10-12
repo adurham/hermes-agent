@@ -1,8 +1,8 @@
 """Rate-limited heap release for long-lived Hermes gateway processes.
 
-On Linux/glibc, ``malloc_trim(0)`` can return pages from freed Python/C allocations to the OS. Other
-platforms and allocators are safe no-ops. Behavior is configured under ``context.memory_trim`` in
-``config.yaml``.
+On Linux/glibc, ``malloc_trim(0)`` can return pages from freed Python/C allocations to the OS. Every
+platform runs the rate-limited ``gc.collect()``; only the page release is glibc-only. Behavior is configured
+under ``context.memory_trim`` in ``config.yaml``.
 """
 
 from __future__ import annotations
