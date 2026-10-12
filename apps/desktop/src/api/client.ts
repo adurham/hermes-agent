@@ -144,7 +144,14 @@ export class HermesGateway extends JsonRpcGatewayClient {
         void this.request(`${kind}.respond`, { session_id: sid, profile, request_id: id, ...answer })
           .catch(() => this.recoverCanonicalPrompt(id, sid, profile, generation))
       },
-      fail: () => { settled = true }
+      // A card this window declined (a stopped session) is not delivered: the next authoritative
+      // snapshot that still lists the prompt shows it again. Only answered prompts stay deduplicated.
+      fail: () => {
+        if (settled) { return }
+        settled = true
+
+        if (generation === this.connectionGeneration) { this.deliveredPrompts.delete(id) }
+      }
     }
 
     recordCanonicalOwner(request, this.displayProfiles.get(canonicalSessionKey(sid, profile)) ?? profile)
