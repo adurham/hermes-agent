@@ -359,7 +359,8 @@ class AuthorityConnection:
             row = self.authority.db.get_session(sid)
             # The human picker feed (TUI switcher): kanban workers, `--source tool` integrations and
             # finite one-shot runs are not conversations, as on every other picker.
-            if row.get('source') in INTERNAL_LISTING_SOURCES:
+            if row.get('source') in INTERNAL_LISTING_SOURCES or (
+                    not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                 continue
             sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
