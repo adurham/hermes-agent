@@ -465,6 +465,14 @@ export class CanonicalDesktopProtocol {
     // pending fanout is where a viewer learns the value its next mutation must present.
     if (event.type === 'session.info' && typeof payload.revision === 'number') { this.revisions.set(owner, payload.revision) }
 
+    // N91: another viewer's committed mutation broadcasts its receipt as session.updated. Adopt
+    // it monotonically (a replayed older receipt never rewinds) and settle superseded retained edits.
+    if (event.type === 'session.updated' && typeof payload.revision === 'number' && (payload.session_id ?? sid) === sid &&
+        payload.revision > (this.revisions.get(owner) ?? -1)) {
+      this.revisions.set(owner, payload.revision)
+      this.retireSupersededMutations({ session_id: sid, profile }, payload.revision)
+    }
+
     if (typeof payload.prompt_id === 'string') {
       if (event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile));
 
