@@ -102,6 +102,7 @@ class SessionAuthority:
         self.retiring = False
         self.retired = False
         self._classic_evict_at = {}  # route -> last leaked/reaped-slot eviction check (monotonic)
+        self.executing = {}  # session id -> generation whose execution is in progress (publish fence)
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -718,9 +719,10 @@ class SessionAuthority:
         """Worker callbacks never outlive their exact running claim."""
         live = self.sessions[session_id]
         with live.event_stream.lock:
-            try:
-                self.check_approval_generation(session_id, generation)
-            except RuntimeStoreError:
+            # The executing generation (set with the claim's stamp, cleared the moment its execution
+            # returns, before settlement): no per-token SQLite read under this lock, and a late
+            # callback (an agent thread outliving a timed-out turn) never follows the completion.
+            if self.executing.get(session_id) != generation:
                 return False
             delivered = live.event_stream.publish(session_id, payload, event_type=event_type)
             from gateway.session_api_turn import publish_api_event
@@ -828,6 +830,7 @@ class SessionAuthority:
                 live.event_stream.execution = {
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],
                     'admission_id': row['admission_id']}
+                self.executing[ref.session_id] = row['generation']
                 live.event_stream.publish(ref.session_id, {}, event_type='message.start')
                 self._publish_pending(ref)
         return row
@@ -892,8 +895,12 @@ class SessionAuthority:
                 return
             admission_id = row['admission_id']
             try:
-                response = await execute_finite_admission(self, ref, row)
-                outcome = 'completed'
+                try:
+                    response = await execute_finite_admission(self, ref, row)
+                    outcome = 'completed'
+                finally:
+                    with live.event_stream.lock:
+                        self.executing.pop(ref.session_id, None)
             except ManagedExecutionUnknown:
                 with live.event_stream.lock:
                     live.event_stream.execution = {}
