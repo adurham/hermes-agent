@@ -478,6 +478,12 @@ Runs accept a simple `input` string and optional `session_id`, `instructions`, `
 
 For safely retryable creation, send an `Idempotency-Key` header (1–255 visible ASCII characters). Hermes durably reserves the key before starting work. An identical retry returns the original `run_id` with HTTP 202 and `Idempotency-Replayed: true`, including after a gateway restart and after the run has completed, failed, or been cancelled. Reusing the same key with a different JSON payload returns HTTP 409 with code `idempotency_key_conflict`. Keys are isolated by authenticated API profile/credential and retained for 24 hours after their last status update; clients should use unique, unguessable keys and must not reuse them for unrelated operations. Requests without the header retain the legacy behavior and always create a new run.
 
+A run the gateway could not admit keeps no reservation, so an exact retry is safe. While the profile is
+draining or retiring, or when the state database stays locked past the write timeout, `POST /v1/runs`
+and the run controls answer HTTP 503 (`runtime_draining` or `storage_unavailable`) with `Retry-After`;
+a malformed control body answers 400 `invalid_params`; ownership, generation and identity refusals
+stay 409.
+
 When `session_id` identifies an existing Hermes session and no explicit
 `conversation_history` or `previous_response_id` is supplied, the run loads
 that session's active transcript. Session turn leases serialize concurrent
@@ -601,10 +607,16 @@ The request is authenticated and run-owner scoped like the other run controls;
 hosted-room callers need the existing `stop` grant. A successful response is the
 canonical terminal receipt (`outcome: "interrupted"`) plus `run_id`. It releases
 the FIFO once and schedules the queued follower without replaying the unknown
-head. Repeated resolution, a stale or non-integer generation, and a run that is
-not currently unknown return `409 stale_generation`; an admission ID that does
-not belong to the path run returns `409 not_found`. The body must contain exactly
-those two fields, or the server returns `409 invalid_params`.
+head. An exact repeat of a resolution that already committed returns the same
+receipt (200), so a retry after a lost response is safe. A stale or non-integer
+generation, or a run that is not currently unknown, returns `409 stale_generation`;
+an admission ID that does not belong to the path run returns `409 not_found`. The
+body must contain exactly those two fields, or the server returns `400 invalid_params`.
+
+Hosted-room homes resolve a member's `unknown` run this way on their next poll and
+settle the room task as interrupted ("member gateway restarted"). A room home on an
+older release does not know the `unknown` status and reports a mismatched run status
+until it is upgraded.
 
 This recovery control is advertised as `features.run_unknown_resolution` and as
 the `run_unknown_resolution` endpoint only when the canonical session authority
