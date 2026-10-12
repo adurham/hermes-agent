@@ -214,7 +214,6 @@ async def execute_admission(authority, ref, row):
     if provenance is not None:
         from gateway.session_ingress_context import restore_provenance
         home = restore_provenance(authority.runner, event.source, provenance)
-    scope = _execution_scope(authority, home)
     from gateway.config import Platform
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
@@ -229,7 +228,7 @@ async def execute_admission(authority, ref, row):
     event._turn_marker_handoff = True
     handed = False
     try:
-        with scope:
+        with await _execution_scope(authority, home):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
@@ -281,17 +280,19 @@ async def execute_admission(authority, ref, row):
         admission_author.reset(author_token)
 
 
-def _execution_scope(authority, home):
+async def _execution_scope(authority, home):
     """Under multiplex, owner-side execution runs under the OWNING profile's home (agent build,
     config, secrets, state.db), never the launch profile's ambient scope; native provenance
-    (``home``) refines it. A single-profile gateway keeps its ambient scope byte-for-byte."""
-    if home is not None:
-        from gateway.run import _profile_runtime_scope
-        return _profile_runtime_scope(home)
-    if getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False):
-        from gateway.session_authorities import owner_scope
-        return owner_scope(authority, hydrate_secrets=True)
-    return nullcontext()
+    (``home``) refines it. A single-profile gateway keeps its ambient scope byte-for-byte.
+    Secret sources (external CLIs) hydrate off the loop, as main's per-message scope does (#99519)."""
+    if home is None and getattr(getattr(authority.runner, 'config', None), 'multiplex_profiles', False):
+        from pathlib import Path
+        owner = Path(str(authority.profile_id))  # owner_scope's home: symbolic test ids keep ambient
+        home = owner if owner.is_absolute() and owner.is_dir() else None
+    if home is None:
+        return nullcontext()
+    from gateway.run import _load_profile_secret_scope, _profile_runtime_scope
+    return _profile_runtime_scope(home, await asyncio.to_thread(_load_profile_secret_scope, home))
 
 
 async def deliver_settled(authority, admission_id):
@@ -316,7 +317,7 @@ async def deliver_settled(authority, admission_id):
         return
     adapter, event, session_key, response, home = delivery
     try:
-        with _execution_scope(authority, home):
+        with await _execution_scope(authority, home):
             await deliver_response(adapter, event, session_key, response)
     except Exception:
         logger.exception('Delivery of settled admission %s failed', admission_id)
