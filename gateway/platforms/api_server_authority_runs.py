@@ -12,14 +12,19 @@ def _authority(adapter):
     return active_authority(adapter.gateway_runner)
 
 
+# Malformed input is 400 and a retryable refusal 503; every other reason (ownership, generation,
+# identity) keeps the documented 409, as /v1/runs clients already branch on it.
+_STORE_ERROR_STATUS = {'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
+
+
 def store_error_response(_openai_error, exc):
     """A refused store call -> HTTP: a ``RuntimeStoreError`` keeps its reason; any other failure
-    (SQLite writer patience exhausted, I/O) is ``storage_unavailable``, a retryable 503."""
+    (SQLite writer patience exhausted, I/O) is ``storage_unavailable``."""
     from aiohttp import web
-    if isinstance(exc, RuntimeStoreError):
-        return web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
-    return web.json_response(_openai_error('storage_unavailable', code='storage_unavailable'),
-                             status=503, headers={'Retry-After': '1'})
+    reason = exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable'
+    status = _STORE_ERROR_STATUS.get(reason, 409)
+    return web.json_response(_openai_error(reason, code=reason), status=status,
+                             headers={'Retry-After': '1'} if status == 503 else None)
 
 
 def run_admission(adapter, run_id):

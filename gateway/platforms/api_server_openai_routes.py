@@ -1036,7 +1036,8 @@ class OpenAICompatRoutesMixin:
             return (result, usage), None
         except RuntimeStoreError as exc:
             from gateway.platforms.api_server import _openai_error
-            return None, web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
+            from gateway.platforms.api_server_authority_runs import store_error_response
+            return None, store_error_response(_openai_error, exc)
         except Exception as e:
             logger.error("Error running agent for %s: %s", log_label, e, exc_info=True)
             message = "" if getattr(e, "_notification_presentation_suppressed", False) is True else f"Internal server error: {e}"
@@ -1302,7 +1303,8 @@ class OpenAICompatRoutesMixin:
                 self, request, body, gateway_session_key, durable_key, idempotency_scope, idempotency_key)
         except RuntimeStoreError as exc:
             from gateway.platforms.api_server import _openai_error
-            return web.json_response(_openai_error(exc.reason, code=exc.reason), status=409)
+            from gateway.platforms.api_server_authority_runs import store_error_response
+            return store_error_response(_openai_error, exc)
         if error is not None:
             return error
         session_id, user_message = context['session_id'], context['user_message']

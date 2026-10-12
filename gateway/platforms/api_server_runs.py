@@ -1337,13 +1337,13 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
 
 
 async def _respond_authority_run(self, run_id, body, *, kind, _api_server):
-    from gateway.platforms.api_server_authority_runs import respond_run
+    from gateway.platforms.api_server_authority_runs import respond_run, store_error_response
     from hermes_state_runtime import RuntimeStoreError
     try:
         result = await respond_run(self, run_id, body, kind=kind)
         return web.json_response({'run_id': run_id, **result})
     except RuntimeStoreError as exc:
-        return _json_error(_api_server._openai_error, exc.reason, code=exc.reason, status=409)
+        return store_error_response(_api_server._openai_error, exc)
 
 
 async def _handle_run_clarify(self, request, *, _api_server):
@@ -1428,12 +1428,12 @@ async def _handle_stop_run(self, request: web.Request, *, _api_server) -> web.Re
     # admission: its stop is the legacy in-process task cancel below, never ``stop_run``.
     if (getattr(self.gateway_runner, 'session_authority', None) is not None
             and not (task is not None and status.get("delivery_id"))):
-        from gateway.platforms.api_server_authority_runs import stop_run
+        from gateway.platforms.api_server_authority_runs import stop_run, store_error_response
         from hermes_state_runtime import RuntimeStoreError
         try:
             return web.json_response(await stop_run(self, run_id))
         except RuntimeStoreError as exc:
-            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
+            return store_error_response(_openai_error, exc)
     if status.get("status") in TERMINAL_STATUSES:
         return web.json_response(status)
     if agent is None and task is None:
@@ -1463,14 +1463,13 @@ async def _handle_resolve_unknown_run(
         body = await request.json()
     except (ValueError, LookupError):  # bad JSON/UTF-8 (ValueError) or unknown charset: no body
         body = None
-    from gateway.platforms.api_server_authority_runs import resolve_unknown_run
+    from gateway.platforms.api_server_authority_runs import resolve_unknown_run, store_error_response
     from hermes_state_runtime import RuntimeStoreError
     try:
         result = await resolve_unknown_run(self, run_id, body)
         return web.json_response({'run_id': run_id, **result})
     except RuntimeStoreError as exc:
-        return _json_error(
-            _api_server._openai_error, exc.reason, code=exc.reason, status=409)
+        return store_error_response(_api_server._openai_error, exc)
 
 
 async def _sweep_orphaned_runs(self) -> None:

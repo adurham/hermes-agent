@@ -230,7 +230,7 @@ async def test_http_resolve_unknown_refuses_stale_or_foreign_admission(
         )
         for body, code in attempts:
             response = await client.post(run_path, json=body, headers=_AUTH_HEADERS)
-            assert response.status == 409
+            assert response.status == (400 if code == "invalid_params" else 409)
             assert (await response.json())["error"]["code"] == code
 
         # A refused resolution must not release the FIFO: let any drain it scheduled run to the end
