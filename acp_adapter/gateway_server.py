@@ -128,8 +128,11 @@ class GatewayACPAgent(acp.Agent):
         # editor's retry (that session's next prompt, same content) reuses it, so the authority
         # returns the same admission.
         self._unacked = {}
-        # Admissions whose message.complete the pump is projecting right now.
+        # Admissions whose terminal reply one path (the pump's message.complete or a retry's
+        # terminal receipt) is delivering right now; the other path yields to the claim.
         self._settling = set()
+        # Admissions a terminal receipt already delivered: their late message.complete adds nothing.
+        self._receipted = {}
         self._pending_cancels = set()
         self._tool_args = {}
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
@@ -521,13 +524,21 @@ class GatewayACPAgent(acp.Agent):
                                  include_result=True)
         if admission_id in self._terminals or admission_id in self._settling:
             return  # this connection's pump carried the completion itself
-        text = (saved.get("result") or {}).get("final_response") or ""
-        if text and self._conn:
-            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(text))
-        outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
-        async with self._changed:
-            self._terminals[admission_id] = {"outcome": outcome}
-            self._changed.notify_all()
+        self._settling.add(admission_id)  # claimed before the first await; the pump yields to it
+        self._receipted[admission_id] = None
+        while len(self._receipted) > 256:
+            self._receipted.pop(next(iter(self._receipted)))
+        try:
+            outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
+            text = (saved.get("result") or {}).get("final_response") or ""
+            remainder = self._final_remainder(admission_id, {"text": text, "outcome": outcome})
+            if remainder and self._conn:
+                await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(remainder))
+            async with self._changed:
+                self._terminals[admission_id] = {"outcome": outcome}
+                self._changed.notify_all()
+        finally:
+            self._settling.discard(admission_id)
 
     def _unknown_recovery(self, session_id, admission_id=None, *, submitted=True):
         """The refusal for a FIFO blocked by a lost turn, naming the existing recovery control.
@@ -640,6 +651,11 @@ class GatewayACPAgent(acp.Agent):
                     await self._conn.session_update(session_id=editor_id,
                                                     update=acp.update_agent_message_text(text + "\n\n"))
         elif kind == "message.complete":
+            if aid in self._settling or aid in self._receipted:
+                # A retry's terminal receipt claimed this reply; it is shown once, from there.
+                self._streamed.pop(aid, None)
+                self._segments.pop(aid, None)
+                return
             self._settling.add(aid)
             try:
                 remainder = self._final_remainder(aid, payload)
