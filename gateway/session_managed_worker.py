@@ -3,6 +3,7 @@ import asyncio
 from contextlib import contextmanager, suppress
 from collections import deque
 from dataclasses import asdict, replace
+from functools import partial
 import json
 import os
 import queue
@@ -481,8 +482,10 @@ async def execute_managed(authority, ref, row, policy):
         if worker.stop.is_set():
             # Stopped before the child could receive controls: hello raced the latch; never bootstrap.
             raise RuntimeStoreError('managed_worker_stopped')
-        scope = reserve_admission_worker(authority, admission_id=row['admission_id'],
-                    process=process, principal_id=row['principal_id'], hello=hello)
+        # psutil + BEGIN IMMEDIATE: off-loop and retirement-tracked, like admission and claim.
+        from gateway.session_runtime_workers import tracked_write
+        scope = await tracked_write(authority, partial(reserve_admission_worker, authority,
+                    admission_id=row['admission_id'], process=process, principal_id=row['principal_id'], hello=hello))
         worker.worker = (scope['pid'], scope['birth'])
         # The child reads nothing else until the exact reservation has committed.
         frame = await asyncio.to_thread(_bootstrap, authority, ref, row, policy, scope)
@@ -534,7 +537,8 @@ async def execute_managed(authority, ref, row, policy):
                 return _interrupted_before_bootstrap(authority, row)
             raise
         from gateway.session_worker_reservation import lose_admission_worker
-        lose_admission_worker(authority, row, scope)
+        from gateway.session_runtime_workers import tracked_write
+        await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
         live = authority.sessions[ref.session_id]
         with live.event_stream.lock:
             live.controls.snapshot(ref.session_id, None)
