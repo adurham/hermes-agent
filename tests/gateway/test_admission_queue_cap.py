@@ -1,4 +1,4 @@
-"""A session's durable FIFO holds at most main's busy-queue cap of queued inputs (N62)."""
+"""A session's durable FIFO holds at most main's busy-queue cap of queued inputs (N62), paused or not (B2-07)."""
 import pytest
 
 from hermes_state_runtime import ADMISSION_QUEUE_MAX, RuntimeStoreError, list_session_admissions
@@ -19,7 +19,13 @@ async def test_queued_inputs_past_the_cap_are_refused_queue_full_and_retries_rep
         # An exact retry of accepted input is a replay, never a refusal.
         assert (await _submit(authority, 'r0')).status == 'queued'
 
-        # Paused behind an unknown turn: recovery owns the backlog, so input is still admitted.
+        # Paused behind an unknown turn (B2-07): main's cap still holds, so the backlog that runs after
+        # Discard stays bounded. The paused head is the in-flight turn (main never counted it either).
         db._execute_write(lambda conn: conn.execute(
             "UPDATE session_admissions SET status='unknown' WHERE request_id='r0'"))
-        assert (await _submit(authority, 'overflow')).status == 'queued'
+        assert (await _submit(authority, 'refill')).status == 'queued'
+        for request_id in ('paused-overflow', 'paused-overflow-2'):
+            with pytest.raises(RuntimeStoreError) as paused:
+                await _submit(authority, request_id)
+            assert paused.value.reason == 'queue_full'
+        assert len(list_session_admissions(db, session_id='s')) == ADMISSION_QUEUE_MAX + 1

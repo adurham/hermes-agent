@@ -126,10 +126,11 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             if old['payload_digest'] != digest:
                 raise RuntimeStoreError('admission_conflict')
             return _row(old)
-        counts = dict(conn.execute('''SELECT status, COUNT(*) FROM session_admissions WHERE target_session_id=?
-            AND status IN ('queued','unknown') GROUP BY status''', (session_id,)).fetchall())
-        # A FIFO paused behind an unknown turn keeps admitting: recovery decides that backlog.
-        if not counts.get('unknown') and counts.get('queued', 0) >= ADMISSION_QUEUE_MAX:
+        queued = conn.execute('''SELECT COUNT(*) FROM session_admissions WHERE target_session_id=?
+            AND status='queued' ''', (session_id,)).fetchone()[0]
+        # Main's cap holds in both states: a FIFO paused behind an unknown turn runs every accepted
+        # input after Discard, so it must not grow without bound while nobody resolves it.
+        if queued >= ADMISSION_QUEUE_MAX:
             raise RuntimeStoreError('queue_full')
         if _authorize_write is not None:
             _authorize_write(conn)
