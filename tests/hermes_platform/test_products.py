@@ -33,8 +33,16 @@ def test_nvidia_platform_from_host_facts(os_family, native_arch, cpu_model, gpu_
         nvidia_gpu_names=names) == expected
 
 
-def test_nvidia_platform_spawns_no_process(monkeypatch):
-    facts.clear_caches()
+@pytest.mark.platforms("linux")
+def test_linux_gpu_names_come_from_the_driver_files_without_a_process(monkeypatch, tmp_path):
+    (tmp_path / "000f:01:00.0").mkdir()
+    (tmp_path / "000f:01:00.0" / "information").write_text(_GB10_INFORMATION)
+    (tmp_path / "0000:02:00.0").mkdir()  # a bus directory without an information file is skipped
+    monkeypatch.setattr(facts, "_NVIDIA_PROC_GPUS", str(tmp_path))
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("nvidia_platform spawned a process"))
-    assert products.nvidia_platform() in ("rtx_spark", "dgx_spark", "discrete", None)
     facts.clear_caches()
+    try:
+        assert facts.nvidia_gpu_names() == ("NVIDIA GB10",)
+        assert products.nvidia_platform() in ("rtx_spark", "dgx_spark", "discrete", None)
+    finally:
+        facts.clear_caches()
