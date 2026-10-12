@@ -184,6 +184,8 @@ class GatewaySessionCommandsMixin:
 
         new_entry = await self.async_session_store.reset_session(session_key)
         _old_sid = old_entry.session_id if old_entry else None
+        from gateway.session_automation import move_route_wakes
+        await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
         # Scoped to the profile serving this source so a multiplexed /new banner reports the

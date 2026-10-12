@@ -225,6 +225,54 @@ async def admit_automation(authority, adapter, event, identity):
         after=partial(authority._schedule_admitted, ref))
 
 
+_ROUTE_WAKE_PRODUCERS = frozenset({'kanban-wake', 'loop-tick'})
+
+
+async def move_route_wakes(runner, session_key, old_session_id):
+    """After the route rotated (/new, /reset, compression-exhaustion reset), carry the old owner's
+    still-queued route wakes to the fresh session, as main's #114456 kept a parked internal wake
+    across /new. Left behind, the old drain refuses them (``admission_conflict``) and they stay
+    queued forever. Completions pinned to the closed conversation are not moved (they fail closed,
+    #55578), nor anything behind an ``unknown`` head (the operator's to resume)."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    entry = runner.session_store.lookup_by_session_key(session_key) if authority is not None else None
+    if entry is None or not old_session_id:
+        return
+    import asyncio
+    from functools import partial
+    from gateway.session_authority import LiveSession
+    from gateway.session_contract import Principal
+    from gateway.session_runtime_workers import tracked_write
+    from hermes_state_runtime import list_session_admissions
+    old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id))
+    new = SessionRef(authority.profile_id, authority.logical_owner(entry.session_id))
+    if old.session_id not in authority.sessions or old == new:
+        return
+    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=old.session_id)
+    if any(row['status'] == 'unknown' for row in rows):
+        return
+    actor = Principal('messaging-control', authority.profile_id, frozenset({'session:submit', 'session:control'}), 'reset')
+    for row in rows:
+        automation = row['payload'].get('native_text_v1', {}).get('automation', {})
+        identity = json.loads(row['request_id']) if automation and row['request_id'].startswith('[') else None
+        if (row['status'] != 'queued' or row['principal_id'] != 'automation:' + session_key
+                or not isinstance(identity, list) or identity[:1] not in ([p] for p in _ROUTE_WAKE_PRODUCERS)):
+            continue
+        try:
+            await authority.cancel_queued(actor, old, row['admission_id'])
+        except RuntimeStoreError:
+            continue  # claimed meanwhile: it runs where it is
+        payload = deepcopy(row['payload'])
+        payload['native_text_v1']['automation']['owner'] = new.session_id
+        authority.sessions.setdefault(new.session_id, LiveSession(authority.sessions[old.session_id].source, session_key))
+        await tracked_write(authority, partial(
+            admit_session_input, authority.db, epoch=authority.epoch, principal_id=row['principal_id'],
+            session_id=new.session_id, request_id=row['request_id'], payload=payload,
+            _authorize_write=authority._admission_gate()), then=partial(authority._admitted, new, None),
+            ordered=True, after=partial(authority._schedule_admitted, new))
+
+
 async def admit_route_wake(runner, adapter, source, text, producer, metadata=None):
     """Commit a producer wake (Kanban push wake, /loop tick) for ``source``'s route into the
     authority FIFO, like heartbeats and process completions, instead of a classic turn that
