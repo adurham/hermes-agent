@@ -9,11 +9,10 @@ import React from 'react'
 import { expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
-import { captureDestination } from '../app/submissionDestination.js'
 import { turnController } from '../app/turnController.js'
 import { $uiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { useSubmission } from '../app/useSubmission.js'
-import { canonicalEvent, canonicalResult } from '../canonicalGateway.js'
+import { canonicalEvent } from '../canonicalGateway.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { t } from '../i18n/runtime.js'
 
@@ -33,6 +32,7 @@ function mount(receiptHome: string, receiptSession = 'stored-owner', busyInputMo
   resetUiState()
 
   vi.stubEnv('HERMES_TUI_GATEWAY_URL', 'ws://remote.test/api/ws')
+
   const info = { model: 'test', skills: {}, tools: {}, profile_name: 'default', profile_id: '/srv/remote-owner/.hermes',
     stored_session_id: 'stored-owner', execution_epoch: '1', execution_generation: 1, running: true }
 

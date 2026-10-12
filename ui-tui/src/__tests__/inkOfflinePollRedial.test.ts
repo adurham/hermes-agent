@@ -18,10 +18,12 @@ afterEach(() => { for (const unmount of mounted.splice(0)) { unmount() } vi.useR
 it('an offline session stops the refresh poll and reports the lost connection once', async () => {
   vi.useFakeTimers()
   resetUiState()
+
   const gw = Object.assign(new EventEmitter(), {
     attached: true, isCanonical: true, drain: () => {}, getLogTail: () => '', kill: () => {}, recordLog: () => {},
     request: vi.fn((_method: string) => new Promise(() => {}))
   })
+
   let app!: ReturnType<typeof useMainApp>
 
   function Harness() {
