@@ -183,8 +183,12 @@ def restore_native(payload, runner=None):
         runner = runner or callback_runner()
         if runner is not None:
             restore_provenance(runner, source, envelope['provenance'])
-    event = MessageEvent(text=payload['text'], source=source,
-                        timestamp=datetime.fromisoformat(envelope['timestamp']),
+    timestamp = datetime.fromisoformat(envelope['timestamp'])
+    if timestamp.tzinfo is not None and timestamp.timestamp() == 0:
+        # Epoch 0 pins the retry fingerprint of producers with no provider time (relay, webhook,
+        # automation); the turn records local time, as main's arrival-stamped event did.
+        timestamp = datetime.now()
+    event = MessageEvent(text=payload['text'], source=source, timestamp=timestamp,
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))
