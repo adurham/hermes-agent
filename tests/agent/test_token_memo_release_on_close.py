@@ -42,3 +42,35 @@ def test_close_evicts_the_conversations_memo_entries_and_keeps_others():
     assert id(other) in _pinned_ids()
     # Eviction only drops a pure-function memo: the estimate is unchanged when recomputed.
     assert estimate_messages_tokens_rough(closed) == before
+
+
+def test_compression_evicts_the_bodies_the_summary_replaced(tmp_path, monkeypatch):
+    """close() only sees the compressed history, so the bodies compression dropped are released then."""
+    import os
+    from unittest.mock import MagicMock, patch
+
+    from agent import conversation_compression
+    from agent.conversation_compression import CompressionCommitFence
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("S", source="cli")
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model",
+                        platform="cli", quiet_mode=True, session_db=db, session_id="S",
+                        skip_context_files=True, skip_memory=True)
+    agent.context_compressor = MagicMock()
+    dropped = "pre-compression tool output " * 5000
+    kept = "kept tail reply " * 5000
+    history = [{"role": "user", "content": "q" * 80}, {"role": "tool", "content": dropped},
+               {"role": "assistant", "content": kept}]
+    estimate_messages_tokens_rough(history)
+    compressed = [{"role": "user", "content": "[summary] " + "s" * 80}, history[2]]
+    monkeypatch.setattr(conversation_compression, "compress_context",
+                        lambda *_a, **_kw: (compressed, "prompt"))
+    assert id(dropped) in _pinned_ids()
+
+    agent._compress_context(history, "sys", commit_fence=CompressionCommitFence())
+
+    assert id(dropped) not in _pinned_ids()
+    assert id(kept) in _pinned_ids()  # still live in the compressed history

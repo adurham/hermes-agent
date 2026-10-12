@@ -10,14 +10,8 @@ from __future__ import annotations
 from typing import Any
 
 
-def forget_message_token_memo(messages: Any) -> int:
-    """Evict memo entries pinning any long string value of ``messages``; return how many.
-
-    Eviction never changes an estimate: a later lookup recomputes the same value.
-    """
-    from agent.model_metadata import _MSG_TOKENS_CACHE
-
-    owned: set[int] = set()
+def _long_string_ids(messages: Any) -> set[int]:
+    ids: set[int] = set()
     stack = [messages]
     while stack:
         value = stack.pop()
@@ -26,7 +20,21 @@ def forget_message_token_memo(messages: Any) -> int:
         elif type(value) is list or type(value) is tuple:
             stack.extend(value)
         elif type(value) is str and len(value) > 64:  # short values ("assistant", tool names) are shared
-            owned.add(id(value))
+            ids.add(id(value))
+    return ids
+
+
+def forget_message_token_memo(messages: Any, *, keep: Any = None) -> int:
+    """Evict memo entries pinning any long string value of ``messages`` that ``keep`` does not also hold;
+    return how many.
+
+    Eviction never changes an estimate: a later lookup recomputes the same value.
+    """
+    from agent.model_metadata import _MSG_TOKENS_CACHE
+
+    owned = _long_string_ids(messages)
+    if owned and keep is not None:
+        owned -= _long_string_ids(keep)
     if not owned:
         return 0
     stale = [key for key, (pins, _text, _images) in list(_MSG_TOKENS_CACHE.items())
