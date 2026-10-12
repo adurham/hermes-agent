@@ -622,17 +622,28 @@ class SessionAuthority:
         handle = self._handle(ref)
         if handle.execution_generation != generation:
             raise RuntimeStoreError('stale_generation')
+        live, agent = self.sessions[ref.session_id], None
         if handle.execution_state == 'running':
-            adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
-            if adopted_generation != generation:
-                agent = self.agent(ref)
-            if agent is not None:
-                agent.interrupt()
-                self.delivered_stops[ref.session_id] = generation
-            if adopted_generation != generation and not self._runs_own_agent(ref):
-                # Accepted for this exact claim before its turn adopted an agent: whatever agent
-                # the turn adopts for this generation must not run the work as if no Stop arrived.
-                self.pending_stops[ref.session_id] = generation
+            # Latches are written under the lock adopt_agent takes on the executor thread, BEFORE the
+            # agent is called: an adoption racing the call consumes them. The agent is called outside it.
+            with live.event_stream.lock:
+                adopted_generation, agent = self.adopted.get(ref.session_id, (None, None))
+                if adopted_generation != generation:
+                    agent = self.agent(ref)
+                    if not self._runs_own_agent(ref):
+                        # Accepted for this exact claim before its turn adopted an agent: whatever agent
+                        # the turn adopts for this generation must not run the work as if no Stop arrived.
+                        self.pending_stops[ref.session_id] = generation
+                if agent is not None:
+                    self.delivered_stops[ref.session_id] = generation
+        # Main's Stop: hard-cancel (aborts compression too) and end the session's own background
+        # delegations (spawned by this session only: a viewer must not kill other gateway work).
+        from agent.interrupt_compat import request_hard_interrupt
+        from tools.async_delegation import interrupt_for_session
+        if agent is not None:
+            request_hard_interrupt(agent)
+        for parent in dict.fromkeys((ref.session_id, self.physical_target(ref))):
+            interrupt_for_session(session_key=live.route, parent_session_id=parent, reason='user_stop')
         return self._handle(ref)
 
     def _runs_own_agent(self, ref):
@@ -674,7 +685,8 @@ class SessionAuthority:
                 clear()
             if self.pending_stops.get(session_id) == generation:
                 del self.pending_stops[session_id]
-                agent.interrupt()
+                from agent.interrupt_compat import request_hard_interrupt
+                request_hard_interrupt(agent)
             latched, steers = self.pending_steers.pop(session_id, (None, ()))
             for text in steers if latched == generation else ():
                 agent.steer(text)
