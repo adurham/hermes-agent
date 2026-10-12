@@ -1006,7 +1006,7 @@ class AIAgent(
 
     @staticmethod
     def _trim_process_memory() -> None:
-        """Return freed heap pages to the OS on glibc; safe no-op elsewhere."""
+        """Collect cycles, then return freed heap pages to the OS (the page release is glibc-only)."""
         from hermes_cli.mem_trim import trim_memory
         trim_memory(force=True, reason="agent close")
 
