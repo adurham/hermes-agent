@@ -80,6 +80,7 @@ def _row(row):
     result['payload'] = json.loads(result.pop('payload_json'))
     result.pop('payload_digest')
     result.pop('lineage_json')
+    result.pop('retired_at', None)  # tombstone retention stamp, not admission state
     return result
 
 
