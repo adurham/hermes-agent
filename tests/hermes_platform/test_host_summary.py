@@ -1,4 +1,4 @@
-"""``hermes_platform.host.summary``: the machine and account facts the desktop questionnaire reads."""
+"""``hermes_platform.host.summary``: the machine and account facts desktop first-run onboarding reads."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _N1X = "NVIDIA RTX Spark N1X"
 def machine(monkeypatch):
     """Pin every hardware fact; returns a setter for the ones a case changes."""
     values = {"os_family": "linux", "native_arch": "amd64", "gpu_class": "unknown", "cpu_model": "",
-              "cpu_vendor": "", "ram_total_bytes": 16 * 2**30}
+              "cpu_vendor": "", "ram_total_bytes": 16 * 2**30, "nvidia_gpus": ()}
 
     def pin(**changes):
         values.update(changes)
@@ -31,7 +31,7 @@ def machine(monkeypatch):
 def test_shape(machine):
     result = machine()
 
-    assert set(result) == {"machine", "machine_kind", "has_nvidia_gpu", "is_spark", "locale", "full_name"}
+    assert set(result) == {"machine", "machine_kind", "has_nvidia_gpu", "nvidia_platform", "locale", "full_name"}
     assert result["machine"]["os_family"] == "linux"
     assert result["machine"]["ram_gb"] == 16
     assert "gpu_class" not in result["machine"]  # unmeasured keys are left out, not sent as null
@@ -39,15 +39,11 @@ def test_shape(machine):
     assert result["locale"] is None or isinstance(result["locale"], str)
 
 
-def test_n1x_cpu_string_is_a_spark(machine):
+def test_n1x_cpu_string_is_an_rtx_spark(machine):
     result = machine(os_family="win32", native_arch="arm64", cpu_model=_N1X, cpu_vendor="NVIDIA")
 
-    assert result["is_spark"] is True
+    assert result["nvidia_platform"] == "rtx_spark"
     assert result["machine_kind"] == "Spark"
-
-
-def test_dgx_spark_by_model_string(machine):
-    assert machine(native_arch="arm64", cpu_model="DGX_Spark GB10")["is_spark"] is True
 
 
 @pytest.mark.parametrize(("os_family", "arch", "gpu", "kind", "nvidia"), [
@@ -58,7 +54,7 @@ def test_dgx_spark_by_model_string(machine):
 def test_ordinary_machines_are_not_sparks(machine, os_family, arch, gpu, kind, nvidia):
     result = machine(os_family=os_family, native_arch=arch, gpu_class=gpu, cpu_model="Generic CPU")
 
-    assert result["is_spark"] is False
+    assert result["nvidia_platform"] == ("discrete" if nvidia else None)
     assert result["machine_kind"] == kind
     assert result["has_nvidia_gpu"] is nvidia
 

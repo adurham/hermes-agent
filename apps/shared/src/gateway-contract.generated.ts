@@ -1919,12 +1919,12 @@ export interface ClientCapabilitiesResult {
 }
 /** Client→server method params / server→client request params. Unknown keys are rejected. */
 export type Params = Record<string, never>
-/** ``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``full_name`` is the OS account's real name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none. */
+/** ``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is ``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``full_name`` is the OS account's real name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none. */
 export interface MachineFactsResult {
   machine: MachineInfo
   machine_kind: string
   has_nvidia_gpu: boolean
-  is_spark: boolean
+  nvidia_platform?: 'rtx_spark' | 'dgx_spark' | 'discrete' | null
   locale?: string | null
   full_name?: string | null
 }

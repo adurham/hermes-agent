@@ -22,7 +22,6 @@ _NON_NAMES = frozenset({
     "admin", "administrator", "default", "guest", "me", "owner", "root", "test", "user",
 })
 _HANDLE_CHARS = re.compile(r"[\d_@/\\]")
-_SPARK_MODEL = re.compile(r"\b(dgx|spark|gb10)\b", re.IGNORECASE)
 
 
 # --- account facts -----------------------------------------------------------------
@@ -135,14 +134,8 @@ def _locale() -> str:
 # --- the summary ----------------------------------------------------------------------
 
 
-def is_spark(os_family: str, arch: str, gpu: str, cpu: str) -> bool:
-    """RTX Sparks by platform, architecture and GPU; DGX Sparks by model string."""
-    rtx = os_family == "win32" and arch == "arm64" and gpu == "nvidia"
-    return rtx or products.is_nvidia_arm_soc() or bool(_SPARK_MODEL.search(cpu.replace("_", " ")))
-
-
-def _machine_kind(os_family: str, spark: bool) -> str:
-    if spark:
+def _machine_kind(os_family: str, nvidia: str | None) -> str:
+    if nvidia in ("rtx_spark", "dgx_spark"):
         return "Spark"
     return {"darwin": "Mac", "win32": "PC"}.get(os_family, "computer")
 
@@ -158,7 +151,7 @@ def summary() -> dict:
     ``locale`` and ``full_name`` are None when the OS has none to give."""
     os_family, arch, gpu, cpu = host.os_family(), host.native_arch(), host.gpu_class(), host.cpu_model()
     ram = host.ram_total_bytes()
-    spark = is_spark(os_family, arch, gpu, cpu)
+    nvidia = products.nvidia_platform()
     machine = {
         "os_family": os_family,
         "os_release": _os_release(os_family),
@@ -172,9 +165,9 @@ def summary() -> dict:
     }
     return {
         "machine": {key: value for key, value in machine.items() if value not in (None, "")},
-        "machine_kind": _machine_kind(os_family, spark),
+        "machine_kind": _machine_kind(os_family, nvidia),
         "has_nvidia_gpu": gpu == "nvidia",
-        "is_spark": spark,
+        "nvidia_platform": nvidia,
         "locale": _locale() or None,
         "full_name": full_name_from(*_account()),
     }

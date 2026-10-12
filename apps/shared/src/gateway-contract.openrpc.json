@@ -17976,7 +17976,7 @@
       },
       "MachineFactsResult": {
         "additionalProperties": false,
-        "description": "``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``full_name`` is the OS account's\nreal name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none.",
+        "description": "``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is\n``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``full_name`` is the OS account's\nreal name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none.",
         "properties": {
           "machine": {
             "$ref": "#/components/schemas/MachineInfo"
@@ -17989,9 +17989,22 @@
             "title": "Has Nvidia Gpu",
             "type": "boolean"
           },
-          "is_spark": {
-            "title": "Is Spark",
-            "type": "boolean"
+          "nvidia_platform": {
+            "anyOf": [
+              {
+                "enum": [
+                  "rtx_spark",
+                  "dgx_spark",
+                  "discrete"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nvidia Platform"
           },
           "locale": {
             "anyOf": [
@@ -18021,8 +18034,7 @@
         "required": [
           "machine",
           "machine_kind",
-          "has_nvidia_gpu",
-          "is_spark"
+          "has_nvidia_gpu"
         ],
         "title": "MachineFactsResult",
         "type": "object"

@@ -12,7 +12,8 @@ from hermes_platform.host import facts, summary
 @pytest.fixture
 def n1x(monkeypatch):
     pinned = {"os_family": "win32", "native_arch": "arm64", "gpu_class": "unknown",
-              "cpu_model": "NVIDIA RTX Spark N1X", "cpu_vendor": "NVIDIA", "ram_total_bytes": 128 * 2**30}
+              "cpu_model": "NVIDIA RTX Spark N1X", "cpu_vendor": "NVIDIA", "ram_total_bytes": 128 * 2**30,
+              "nvidia_gpus": ()}
     for name, value in pinned.items():
         monkeypatch.setattr(facts, name, lambda value=value: value)
     monkeypatch.setattr(summary, "_account", lambda: ("ada", "Ada Lovelace"))
@@ -28,7 +29,7 @@ def _call(params: dict) -> dict:
 def test_machine_facts_over_the_wire(n1x):
     result = _call({})["result"]
 
-    assert result["is_spark"] is True
+    assert result["nvidia_platform"] == "rtx_spark"
     assert result["machine_kind"] == "Spark"
     assert result["has_nvidia_gpu"] is False
     assert result["full_name"] == "Ada Lovelace"
