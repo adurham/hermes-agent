@@ -122,7 +122,10 @@ def test_reload_skills_rescans_in_the_gateway_session_and_prints_main_lines(gate
     from agent import skill_commands
     from hermes_cli.cli_info_mixin import CLIInfoMixin
     _agent, client = gateway
-    monkeypatch.setattr(skill_commands, "reload_skills", lambda: {"added": [], "removed": [], "total": 2})
+    # The gateway's first rescan diffs against an empty map (everything "added"); main's lines come
+    # from the CLI's own diff, which matches what the user installed.
+    monkeypatch.setattr(skill_commands, "reload_skills", lambda: {
+        "added": [{"name": "zeta-skill", "description": "Zeta."}], "removed": [], "total": 3})
     cli = type("C", (), {"_command_running": False})()
     CLIInfoMixin._reload_skills(cli)
     out = capsys.readouterr().out
