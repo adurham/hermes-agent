@@ -289,7 +289,7 @@ def test_branch_session_id_is_the_gateway_branch_child(store):
         return await base(method, _timeout=_timeout, **params)
     client.rpc = rpc
     db.open_session(cli("local-old", resumed=True))
-    host = types.SimpleNamespace(session_id="local-old", _session_db=db)
+    host = types.SimpleNamespace(session_id="local-old", _session_db=db, _gateway_session_open=True)
     assert CLIInitMixin._new_session_id(host, None, branch_of="local-old", title="fork") == "local-child"
     mutate = [p for m, p in client.calls if m == "session.mutate"][-1]
     assert mutate["payload"] == {"title": "fork"} and "expected_generation" in mutate
@@ -397,3 +397,12 @@ def test_yolo_toggle_persists_as_the_gateway_session_yolo(store):
     sets = [p for m, p in client.calls if m == "config.set"]
     assert sets == [{"session_id": "local-old", "key": "yolo", "value": "1"},
                     {"session_id": "local-old", "key": "yolo", "value": "0"}]
+
+
+def test_new_session_before_the_gateway_session_opened_is_mains_placeholder(store):
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from datetime import datetime
+    db, client = store
+    host = types.SimpleNamespace(session_id="x", _session_db=db, _gateway_session_open=False)
+    assert CLIInitMixin._new_session_id(host, datetime(2026, 10, 12, 1, 2, 3)).startswith("20261012_010203_")
+    assert not [c for c in client.calls if c[0] == "session.create"]

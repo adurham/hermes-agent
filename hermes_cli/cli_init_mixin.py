@@ -382,10 +382,11 @@ class CLIInitMixin:
         """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway
         store it is a session the gateway created: /new is a fresh ``session.create`` on the profile's
         default model (an explicit -m was for the previous session only), /branch the child of
-        ``session.mutate branch``. Off the gateway (tests) it is main's local mint."""
+        ``session.mutate branch``. Before this CLI opened its gateway session (or off the gateway) it is
+        main's local mint, which ``_ensure_gateway_session`` replaces on first use, as at startup."""
         from hermes_cli.gateway_session_store import GatewaySessionStore
         store = getattr(self, "_session_db", None)
-        if not isinstance(store, GatewaySessionStore):
+        if not isinstance(store, GatewaySessionStore) or not getattr(self, "_gateway_session_open", False):
             from hermes_state_ids import new_session_id
             return new_session_id(now)
         if branch_of:
