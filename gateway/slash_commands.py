@@ -1165,14 +1165,21 @@ class GatewaySlashCommandsMixin(
         from model_tools import get_tool_definitions
 
         def build() -> str:
+            from gateway.session_authorities import active_authority
+            from gateway.session_policy import policy_for_source
             with self._profile_scope_for_source(source):
-                enabled, disabled = self._resolve_turn_toolsets(
-                    _load_gateway_config(), source, _platform_config_key(source.platform))
+                config = _load_gateway_config()
+                enabled, disabled = self._resolve_turn_toolsets(config, source, _platform_config_key(source.platform))
+                # A local session runs its own surface (desktop/tui/cli) and toolsets, as its turns do.
+                policy = policy_for_source(self, source)
+                if policy is not None:
+                    enabled = list(policy.current_toolsets(policy.config(active_authority(self), secrets=False)))
                 tools = get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
                                              skip_tool_search_assembly=True)
                 return build_initiate_setup_prompt(
-                    source.platform.value, [tool["function"]["name"] for tool in tools],
-                    primary_profile(get_hermes_home()))
+                    policy.platform if policy is not None else source.platform.value,
+                    [tool["function"]["name"] for tool in tools], primary_profile(get_hermes_home()),
+                    source.chat_id if policy is not None else None)
 
         return await self._hm_rewrite_turn_to_prompt(
             event, source, "initiate-setup", t("gateway.initiate_setup.ack"), build)

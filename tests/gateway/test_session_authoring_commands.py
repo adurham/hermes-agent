@@ -110,7 +110,9 @@ def test_local_session_authoring_commands_run_the_gateway_handler(tmp_path):
     assert send('learn')['notice'], out['learn']
     init = send('init')
     assert str(work) in init['message'] and 'UPDATE the existing AGENTS.md' in init['message'], init
-    assert send('initiate-setup')['notice'], out['initiate-setup']
+    setup = send('initiate-setup')
+    # The session's own surface (a `cli` launch runs the cli surface), not the LOCAL transport name.
+    assert setup['notice'] and '"surface": "cli"' in setup['message'], setup
     assert send('moa compare')['message'] == 'compare', out['moa compare']
     assert out['moa']['type'] == 'exec' and '/moa' in out['moa']['output'], out['moa']
     assert out['blueprint']['type'] == 'exec' and out['blueprint']['output'], out['blueprint']
