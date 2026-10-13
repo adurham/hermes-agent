@@ -4971,7 +4971,7 @@ export interface CanonicalConfigGetResult {
 export interface CanonicalConfigSetParams {
   profile?: string | null
   session_id: string
-  key: 'busy' | 'verbose' | 'yolo' | 'model'
+  key: 'busy' | 'verbose' | 'yolo' | 'show_reasoning' | 'model'
   value?: unknown
   confirm_expensive_model?: boolean | null
 }

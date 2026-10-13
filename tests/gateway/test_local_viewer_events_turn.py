@@ -24,7 +24,8 @@ def _turn(platform, published, *, live=None):
         interim_assistant_messages_enabled=False, user_config={},
         resolve_display_setting=lambda *a: None, _run_still_current=lambda: True,
         _voice_ack_guild=[None], _native_slack_task_cards=False, progress_mode='all',
-        session_id='s', progress_queue=None,
+        session_id='s', progress_queue=None, _live_status_adapter=None, _live_status_mode='off',
+        log_queue=None,
     )
     turn._runner = SimpleNamespace(config=None, _delivery_adapter_for=lambda source: None)
     live = live or SimpleNamespace(tool_progress_mode=None)
@@ -102,3 +103,84 @@ def test_wire_contract_accepts_the_boundary_frame():
     EVENTS['tool.generating'].payload.model_validate({'name': 'terminal'})
     EVENTS['agent.print'].payload.model_validate({'text': 'line'})
     EVENTS['tool.complete'].payload.model_validate({'tool_id': 'c', 'name': 'n', 'duration_s': 0.1})
+
+
+def test_thinking_and_reaction_publish_and_reasoning_waits_for_the_session_flag():
+    from gateway import local_viewer_events
+    published = []
+    live = SimpleNamespace(tool_progress_mode=None)
+    turn = _turn(Platform.LOCAL, published, live=live)
+    agent = SimpleNamespace(tool_gen_callback=None, _print_fn=None, thinking_callback=None,
+                            reaction_callback=None, reasoning_callback=None)
+    previous = local_viewer_events.wire(turn, agent)
+    agent.thinking_callback('(◕‿◕) pondering...')
+    agent.thinking_callback('')
+    agent.reaction_callback('vibe')
+    # No sink unless the viewer asked: a reasoning callback changes the provider request.
+    assert agent.reasoning_callback is None
+    local_viewer_events.restore(agent, previous)
+    assert (agent.thinking_callback, agent.reaction_callback) == (None, None)
+    live.show_reasoning = True
+    local_viewer_events.wire(turn, agent)
+    agent.reasoning_callback('step 1')
+    assert published == [('thinking.delta', {'text': '(◕‿◕) pondering...'}), ('thinking.delta', {'text': ''}),
+                         ('reaction', {'kind': 'vibe'}), ('reasoning.delta', {'text': 'step 1'})]
+
+
+@pytest.mark.parametrize('classic', [True, False])
+def test_progress_projects_reasoning_available_and_moa(monkeypatch, classic):
+    from gateway import session_cli_turn
+    monkeypatch.setattr(session_cli_turn, 'classic_cli_turn', lambda turn: classic)
+    published = []
+    live = SimpleNamespace(tool_progress_mode=None)
+    turn = _turn(Platform.LOCAL, published, live=live)
+    turn.progress_callback('reasoning.available', '_thinking', 'because', None)
+    turn.progress_callback('moa.reference', 'gpt-x', 'ref answer', None, moa_index=1, moa_count=2)
+    turn.progress_callback('moa.progress', 'gpt-x', None, None, moa_refs_done=1, moa_refs_total=2)
+    turn.progress_callback('moa.phase', 'agg', None, None, moa_phase='aggregator', moa_refs_done=2, moa_refs_total=2)
+    turn.progress_callback('moa.aggregating', 'agg', None, None, moa_ref_count=2)
+    moa = [('moa.reference', {'label': 'gpt-x', 'text': 'ref answer', 'index': 1, 'count': 2}),
+           ('moa.progress', {'label': 'gpt-x', 'refs_done': 1, 'refs_total': 2}),
+           ('moa.phase', {'aggregator': 'agg', 'phase': 'aggregator', 'refs_done': 2, 'refs_total': 2}),
+           ('moa.aggregating', {'aggregator': 'agg'})]
+    # main's CLI renders MoA references whatever its reasoning display; reasoning.available only when shown.
+    assert published == (moa if classic else [])
+    published.clear()
+    live.show_reasoning = True
+    turn.progress_callback('reasoning.available', '_thinking', 'because', None)
+    assert published == [('reasoning.available', {'text': 'because'})]
+    from tui_gateway.contracts.registry import EVENTS
+    for kind, payload in moa:
+        EVENTS[kind].payload.model_validate(payload)
+
+
+def test_messaging_progress_never_publishes_reasoning():
+    published = []
+    turn = _turn(Platform.TELEGRAM, published, live=SimpleNamespace(tool_progress_mode=None, show_reasoning=True))
+    turn.progress_callback('reasoning.available', '_thinking', 'because', None)
+    turn.progress_callback('moa.aggregating', 'agg', None, None)
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_show_reasoning_is_a_session_scoped_config_key(tmp_path, monkeypatch):
+    from gateway.session_controls import AuthorityConnection
+    from tests.gateway.test_surface_admission import _authority
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        get = {'id': 2, 'method': 'config.get', 'params': {'session_id': 's', 'key': 'show_reasoning'}}
+        assert (await connection.dispatch(get))['result']['value'] == '0'
+        set_on = await connection.dispatch({'id': 3, 'method': 'config.set', 'params': {
+            'session_id': 's', 'key': 'show_reasoning', 'value': 'on'}})
+        assert set_on['result'] == {'key': 'show_reasoning', 'value': '1', 'scope': 'session'}, set_on
+        assert authority.sessions['s'].show_reasoning is True
+        bad = await connection.dispatch({'id': 4, 'method': 'config.set', 'params': {
+            'session_id': 's', 'key': 'show_reasoning', 'value': 'loud'}})
+        assert bad['error']['message'] == 'invalid_params', bad
+    finally:
+        await connection.close()

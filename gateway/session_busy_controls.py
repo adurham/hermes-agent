@@ -35,6 +35,8 @@ async def busy_config(connection, ref, params, *, write=False):
     allowed = {'session_id', 'profile', 'key'} | ({'value'} if write else set())
     if params.get('key') == 'verbose' and not set(params) - allowed and ref.session_id:
         return verbose_config(connection, ref, params, write)
+    if params.get('key') == 'show_reasoning' and not set(params) - allowed and ref.session_id:
+        return show_reasoning_config(connection, ref, params, write)
     if params.get('key') == 'yolo' and not set(params) - allowed and ref.session_id:
         return await yolo_config(connection, ref, params, write)
     if (set(params) - allowed or not ref.session_id or params.get('key') != 'busy'
@@ -74,6 +76,22 @@ def verbose_config(connection, ref, params, write):
         live.tool_progress_mode = current = (
             _VERBOSE_CYCLE[(_VERBOSE_CYCLE.index(current) + 1) % 4] if value == 'cycle' else value)
     return {'key': 'verbose', 'value': current, 'scope': 'session'}
+
+
+def show_reasoning_config(connection, ref, params, write):
+    """Session-scoped reasoning display (the classic CLI's ``/reasoning show|hide`` and verbose
+    reasoning): whether a local-viewer turn of this session streams ``reasoning.delta``. Off until
+    set, because a reasoning sink changes what the provider is asked for. Never a settings write."""
+    value = params.get('value')
+    word = str(value).strip().lower()
+    if write and word not in _YOLO_WORDS:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:control' if write else 'session:read')
+    live = connection.authority.sessions[ref.session_id]
+    if write:
+        live.show_reasoning = _YOLO_WORDS[word]
+    return {'key': 'show_reasoning', 'value': '1' if getattr(live, 'show_reasoning', None) is True else '0',
+            'scope': 'session'}
 
 
 _YOLO_WORDS = {'1': True, 'on': True, 'true': True, '0': False, 'off': False, 'false': False}

@@ -15,7 +15,12 @@ from __future__ import annotations
 import time
 
 # Attributes ``wire`` may overwrite on the cached agent for one local-viewer turn.
-_TURN_ATTRS = ("tool_gen_callback", "_print_fn")
+_TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_callback", "reasoning_callback")
+# MoA facade progress (agent/moa_loop._RELAY_EVENTS) -> the payload tui_gateway/tool_progress emits.
+_MOA_KEYS = {"moa.reference": {"moa_index": "index", "moa_count": "count"},
+             "moa.progress": {"moa_refs_done": "refs_done", "moa_refs_total": "refs_total"},
+             "moa.phase": {"moa_phase": "phase", "moa_refs_done": "refs_done", "moa_refs_total": "refs_total"},
+             "moa.aggregating": {}}
 
 
 def wire(turn, agent) -> dict:
@@ -27,7 +32,46 @@ def wire(turn, agent) -> dict:
     def print_fn(*args, **kwargs):
         publish("agent.print", {"text": str(kwargs.get("sep", " ")).join(str(a) for a in args)})
     agent._print_fn = print_fn
+    # Kawaii spinner text ("" clears it) and hearts; neither changes what the provider is sent.
+    agent.thinking_callback = lambda text: publish("thinking.delta", {"text": str(text or "")})
+    agent.reaction_callback = lambda kind: publish("reaction", {"kind": str(kind or "")})
+    if show_reasoning(turn):
+        # Only on request: a reasoning sink makes the agent ask the provider for reasoning.
+        agent.reasoning_callback = lambda text: publish("reasoning.delta", {"text": str(text or "")})
     return previous
+
+
+def show_reasoning(turn) -> bool:
+    """The session's ``show_reasoning`` display flag (``config.set``), off until a viewer sets it."""
+    owner = getattr(turn, "_approval_owner", None)
+    live = owner[0].sessions.get(owner[1]) if owner is not None else None
+    return getattr(live, "show_reasoning", None) is True
+
+
+def publish_progress(turn, event_type, name, preview, kwargs) -> None:
+    """``reasoning.available`` and the MoA facade events from the agent's progress callback. A
+    classic CLI renders MoA references whatever its reasoning display (main's ``_on_tool_progress``);
+    other viewers get them, like the TUI gateway's own emitters, only with reasoning shown."""
+    if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
+        return
+    from gateway.session_cli_turn import classic_cli_turn
+    if not (show_reasoning(turn) or (event_type != "reasoning.available" and classic_cli_turn(turn))):
+        return
+    if event_type == "reasoning.available":
+        payload = {"text": str(preview or "")}
+    elif event_type == "moa.reference":
+        payload = {"label": str(name or ""), "text": str(preview or "")}
+    elif event_type in ("moa.aggregating", "moa.phase"):
+        payload = {"aggregator": str(name or "")} if name or event_type == "moa.aggregating" else {}
+    else:
+        payload = {"label": str(name or "")}
+    payload.update({out: kwargs[key] for key, out in _MOA_KEYS.get(event_type, {}).items()
+                    if kwargs.get(key) is not None})
+    if event_type == "moa.progress" and not {"refs_done", "refs_total"} <= set(payload):
+        return
+    if event_type == "moa.phase" and not payload.get("phase"):
+        return
+    turn._publish_execution(event_type, payload)
 
 
 def restore(agent, previous: dict | None) -> None:

@@ -133,6 +133,9 @@ class GatewayTurnProgressMixin:
         if event_type == "subagent.complete":
             self._progress_subagent_notice(preview, kwargs)
             return
+        if local_viewer_turn(self):
+            from gateway import local_viewer_events
+            local_viewer_events.publish_progress(self, event_type, tool_name, preview, kwargs)
         self._progress_live_status(event_type, tool_name, args)
         # "log" mode: append tool.started lines to the log queue, silent in chat. Handled before
         # the progress_queue guard because log mode runs without a chat progress queue.
