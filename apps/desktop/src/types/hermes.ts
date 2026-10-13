@@ -1115,6 +1115,7 @@ export interface AutomationBlueprint {
 }
 
 export interface ProfileCreatePayload {
+  soul?: string
   clone_all?: boolean
   clone_from?: null | string
   clone_from_default?: boolean

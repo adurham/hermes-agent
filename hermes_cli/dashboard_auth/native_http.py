@@ -103,6 +103,23 @@ async def _check_profile_scope(request, profile_id):
                 raise PermissionError('profile_scope_mismatch')
 
 
+def _redeem_http_ticket(store, ticket, request):
+    try:
+        grant = store.redeem(ticket, profile_id=None, purpose='native-http')
+        expected = frozenset({'http:owner'})
+    except PermissionError:
+        # Only this host-management operation accepts the dedicated same-user grant.
+        # Wrong-purpose redemption does not consume a ticket; ordinary profile grants
+        # still reach _check_profile_scope and remain unable to create other profiles.
+        if request.method != 'POST' or request.url.path.rstrip('/') != '/api/profiles':
+            raise
+        grant = store.redeem(ticket, profile_id=None, purpose='native-profile-create')
+        expected = frozenset({'profiles:create'})
+    if grant['capabilities'] != expected:
+        raise PermissionError('invalid native grant')
+    return grant
+
+
 async def authenticate_native_http(request):
     """Return a rejection or stamp a one-request principal; absent header is inert."""
     tickets = request.headers.getlist(HEADER)
@@ -126,15 +143,14 @@ async def authenticate_native_http(request):
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
     try:
         # The ticket names the served profile it was minted for; that home's authority owns it.
-        grant = store.redeem(tickets[0], profile_id=None, purpose='native-http')
-        if grant['capabilities'] != frozenset({'http:owner'}):
-            raise PermissionError('invalid native grant')
+        grant = _redeem_http_ticket(store, tickets[0], request)
         if authority_for_profile_id(runner, grant['profile_id']) is None:
             raise PermissionError('unserved native grant')
     except PermissionError:
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
     try:
-        await _check_profile_scope(request, grant['profile_id'])
+        if grant['purpose'] != 'native-profile-create':
+            await _check_profile_scope(request, grant['profile_id'])
     except PermissionError:
         return JSONResponse({'detail': 'profile_scope_mismatch'}, status_code=403)
     request.state.native_http_principal = grant

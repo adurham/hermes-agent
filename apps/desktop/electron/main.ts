@@ -5378,7 +5378,7 @@ function fetchJson(url, token, options: any = {}) {
     async (requestState: any) => {
       // Mint inside each retry: a grant authorizes exactly one HTTP request.
       const nativeHeaders = options.gatewayDescriptor
-        ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url, HERMES_HOME)
+        ? await nativeGatewayHttpHeaders(options.gatewayDescriptor, url, HERMES_HOME, options.method || 'GET')
         : null
 
       return new Promise((resolve, reject) => {

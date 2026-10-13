@@ -91,6 +91,17 @@ test.skipIf(process.platform === 'win32').each([0o700, 0o750, 0o701])('native HT
     const { mintLocalGatewayTicket } = await import('./local-gateway')
     await mintLocalGatewayTicket(endpoint)
     expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose: 'interactive', scope: 'host' })
+
+    for (const [route, method, purpose] of [
+      ['/api/profiles', 'POST', 'native-profile-create'],
+      ['/api/profiles?unused=1', 'post', 'native-profile-create'],
+      ['/api/profiles', 'GET', 'native-http'],
+      ['/api/profiles/import', 'POST', 'native-http'],
+      ['/api/config', 'POST', 'native-http']
+    ]) {
+      await nativeGatewayHttpHeaders(descriptor, endpoint.api_origin + route, home, method)
+      expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose })
+    }
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
     await fs.rm(home, { recursive: true, force: true })

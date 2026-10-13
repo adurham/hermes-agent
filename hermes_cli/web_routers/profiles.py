@@ -804,7 +804,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         path = profiles_mod.create_profile(
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
             clone_config=clone_config, no_skills=body.no_skills, description=body.description,
-            clone_channels=body.clone_channels)
+            clone_channels=body.clone_channels, **({"soul": body.soul} if body.soul is not None else {}))
         # Match the CLI flow: fresh named profiles get the bundled skills (cloning already
         # copied the source's; no_skills wrote the opt-out marker so seeding no-ops) and a
         # ~/.local/bin wrapper when the alias is safe.
@@ -855,7 +855,7 @@ async def create_profile_endpoint(body: ProfileCreate):
 
     return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set, "model_error": model_error,
             "mcp_written": mcp_written, "skills_disabled": skills_disabled,
-            "hub_installs": hub_installs}
+            "hub_installs": hub_installs, "soul_set": body.soul is not None}
 
 
 @router.get("/api/profiles/active")
