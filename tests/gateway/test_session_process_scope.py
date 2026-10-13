@@ -23,7 +23,7 @@ def test_stop_is_session_scoped_and_global_verbs_keep_the_owner_refusal(tmp_path
                             cwd=root, env=env, capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((home / 'receipt.json').read_text())
-    assert receipt['stop'] == {'killed': 2}, receipt
+    assert receipt['stop'] == {'killed': 2, 'delegations': 0}, receipt
     assert receipt['exited'] == [True, True, False, False], receipt
     assert receipt['sessionless_stop'] == 4001, receipt
     assert receipt['exited_after_sessionless'] == [True, True, False, False], receipt
