@@ -3,7 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerLayoutPresets } from '@/app/contrib/layout-presets'
 import { group } from '@/components/pane-shell/tree/model'
 import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
-import { $activePresetId } from '@/components/pane-shell/tree/store'
+import { $activePresetId, $layoutTree } from '@/components/pane-shell/tree/store'
 import { applyAppearance } from '@/store/appearance-apply'
 import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { $sidebarOpen, setSidebarOpen } from '@/store/layout'
@@ -64,9 +64,24 @@ describe('first-run layout beat', () => {
 
     const kept = snapshotChatLayout()
     applyLayoutPreset('picked', group(['workspace']))
-    kept.keep()
+    kept.keep(() => applyAppearance({ layout: 'terminal-deck' }).success)
     expect(writes).toHaveBeenCalled()
     writes.mockRestore()
+  })
+
+  it("keeps the other mode's own layout when Continue switches modes after a preview", () => {
+    skipIntro()
+    setInterfaceMode('advanced')
+    applyLayoutPreset('mine', group(['workspace']))
+    const mine = $layoutTree.get()
+
+    const preview = snapshotChatLayout()
+    applyLayoutPreset('sidebar-left', group(['sessions', 'workspace']))
+    preview.keep(() => applyAppearance({ layout: 'sidebar-left' }).success)
+    expect($interfaceMode.get()).toBe('simple')
+
+    setInterfaceMode('advanced')
+    expect($layoutTree.get()).toEqual(mine)
   })
 
   it('sizes the window normal on Skip setup', () => {

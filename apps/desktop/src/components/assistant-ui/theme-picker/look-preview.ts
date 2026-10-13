@@ -22,7 +22,7 @@ const ACCENT: LiveLook = {
   snapshot: () => {
     const override = $accentOverride.get()
 
-    return { keep: () => undefined, revert: () => setAccentOverride(override) }
+    return { keep: send => send(), revert: () => setAccentOverride(override) }
   }
 }
 
@@ -91,13 +91,16 @@ export function useLookPreview(kind: 'accent' | 'layout', dark: boolean): LookPr
         return
       }
 
+      const baseline = baselines.get(live)
       settled.current = true
-      settled.current = send(staged.value)
+      settled.current = baseline ? baseline.undo.keep(() => send(staged.value)) : send(staged.value)
 
-      // The sent value is the new truth: no open card puts the old one back.
+      // The sent value is the new truth: no open card puts the old one back. A failed send keeps the
+      // card, so its preview goes back on screen.
       if (settled.current) {
-        baselines.get(live)?.undo.keep()
         baselines.delete(live)
+      } else if (baseline) {
+        live.apply(staged.value, dark)
       }
     },
     stage: value => {

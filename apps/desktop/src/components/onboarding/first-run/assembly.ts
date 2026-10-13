@@ -159,9 +159,9 @@ export function assembleChatOnboarding(id: string, tree: LayoutNode, mode?: Inte
   reconcileLayout(id, tree)
 }
 
-/** Continue keeps a preview; leaving without it reverts. */
+/** Continue keeps a preview through `send` (true once the pick is applied); leaving without it reverts. */
 export interface PreviewUndo {
-  keep: () => void
+  keep: (send: () => boolean) => boolean
   revert: () => void
 }
 
@@ -183,20 +183,32 @@ export function snapshotChatLayout(): PreviewUndo {
     holdLayout()
   }
 
+  const restore = () => {
+    if (snapshot.tree) {
+      $layoutTree.set(snapshot.tree)
+      $paneStates.set(snapshot.panes)
+      $userPlacedPanes.set(snapshot.placed)
+      markActivePreset(snapshot.id)
+    }
+  }
+
   return {
-    keep: () => {
-      settle()
-      modeLayout.flush()
+    // The pick applies over the user's own arrangement, so a Simple/Advanced switch remembers that one
+    // for the mode it leaves, not the preview.
+    keep: send => {
+      restore()
+      const sent = send()
+
+      if (sent) {
+        settle()
+        modeLayout.flush()
+      }
+
+      return sent
     },
     // Settled after the restore, so the restore's own changes do not read as the user leaving the intro.
     revert: () => {
-      if (snapshot.tree) {
-        $layoutTree.set(snapshot.tree)
-        $paneStates.set(snapshot.panes)
-        $userPlacedPanes.set(snapshot.placed)
-        markActivePreset(snapshot.id)
-      }
-
+      restore()
       settle()
     }
   }
