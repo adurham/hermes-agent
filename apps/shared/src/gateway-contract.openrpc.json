@@ -8587,6 +8587,18 @@
             "default": null,
             "title": "Cwd"
           },
+          "row_cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Cwd"
+          },
           "model": {
             "anyOf": [
               {

@@ -406,3 +406,41 @@ def test_new_session_before_the_gateway_session_opened_is_mains_placeholder(stor
     host = types.SimpleNamespace(session_id="x", _session_db=db, _gateway_session_open=False)
     assert CLIInitMixin._new_session_id(host, datetime(2026, 10, 12, 1, 2, 3)).startswith("20261012_010203_")
     assert not [c for c in client.calls if c[0] == "session.create"]
+
+
+def test_run_budget_flag_rides_session_create():
+    from hermes_cli.gateway_session_store import _creation_policy
+    assert _creation_policy({"run_budget": 90})["run_budget"] == 90.0
+    assert "run_budget" not in _creation_policy({"run_budget": None})
+
+
+def test_verbose_flag_rides_session_create():
+    from hermes_cli.gateway_session_store import _creation_policy
+    assert _creation_policy({"verbose": True})["verbose"] is True
+    assert "verbose" not in _creation_policy({"verbose": None})
+
+
+def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monkeypatch, tmp_path):
+    """Main's row cwd: the launching process's cwd on its first session (``-w`` never chdirs, so the
+    repo root), none on ``/new`` and ``--create-if-missing``. The execution cwd stays TERMINAL_CWD."""
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_cli import gateway_session_store as gss
+    db, client = store
+    repo, tree = tmp_path / "repo", tmp_path / "repo" / ".worktrees" / "wt"
+    tree.mkdir(parents=True)
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("TERMINAL_CWD", str(tree))
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db.open_session(cli(), {"toolsets": ["file"]})
+    first = [p for m, p in client.calls if m == "session.create"][-1]
+    assert first["cwd"] == str(tree.resolve()) and first["row_cwd"] == str(repo.resolve())
+    host = types.SimpleNamespace(session_id="local-new", _session_db=db, _gateway_session_open=True)
+    CLIInitMixin._new_session_id(host, None)
+    assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    gss.create_titled_session("Fresh Named")
+    assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
+    monkeypatch.setenv("TERMINAL_ENV", "docker")  # main stamps no host cwd for a remote backend
+    db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""

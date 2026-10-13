@@ -135,14 +135,19 @@ class GatewaySessionStore:
                 raise
         return self.create(launch)
 
-    def create(self, launch=None, title=None):
+    def create(self, launch=None, title=None, *, record_cwd=True):
         """``session.create`` with the launch policy (and ``title``: the owner's resolve -> create ->
-        title step); adopts and returns the new session id."""
-        from agent.session_source import session_source_for
+        title step); adopts and returns the new session id. ``record_cwd=False`` (``/new``,
+        ``--create-if-missing``) leaves the row's cwd empty, as main's explicit creates did."""
+        from agent.session_source import CLI_FAMILY_SOURCES, session_source_for
         params = _creation_policy(launch or {})
         params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
         params["source"] = session_source_for("cli")
+        # Main's row stamp (run_agent._launch_cwd_for_session): this process's cwd (``-w`` never
+        # chdirs, so the repo root), only for a CLI-family label on a local terminal backend.
+        local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
+        params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
         if title:
             params["title"] = title
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
@@ -398,4 +403,4 @@ def create_titled_session(title):
     """``chat -c NAME --create-if-missing`` (main's ``_create_titled_session``): the gateway creates the
     titled session; the CLI resumes the id it returns. Launch flags are applied by the CLI's own
     session open, as main's bare row took them at agent build."""
-    return session_store().create(title=title)
+    return session_store().create(title=title, record_cwd=False)

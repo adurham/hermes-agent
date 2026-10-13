@@ -393,7 +393,7 @@ class CLIInitMixin:
             return store.branch(branch_of, title)
         sid = store.create({"toolsets": getattr(self, "enabled_toolsets", None),
                             "pass_session_id": getattr(self, "pass_session_id", False) or None,
-                            "ignore_rules": getattr(self, "ignore_rules", False) or None})
+                            "ignore_rules": getattr(self, "ignore_rules", False) or None}, record_cwd=False)
         self.session_id = sid
         return sid
 
