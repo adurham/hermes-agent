@@ -228,3 +228,49 @@ def test_manual_compress_is_the_gateway_compress_mutation(make_agent):
     assert result.after_messages == [{"role": "user", "content": "summary"}, {"role": "assistant", "content": "ok"}]
     assert result.summary["headline"] == "Compressed: 6 → 2 messages"
     assert agent.context_compressor.compression_count == 1
+
+
+SESSION_USAGE = {"input_tokens": 500, "output_tokens": 80, "cache_read_tokens": 0, "cache_write_tokens": 0,
+                 "prompt_tokens": 500, "completion_tokens": 80, "total_tokens": 580, "reasoning_tokens": 0,
+                 "api_calls": 5, "last_prompt_tokens": 229, "context_tokens": 229, "context_length": 128000,
+                 "config_context_length": 128000, "context_source": "local_estimate", "compression_count": 0,
+                 "avg_latency_s": 0.2, "tokens_per_s": 116.0, "last_turn_tokens": 30, "rate_limit": None,
+                 "active_subagents": 0, "model": "fake-model", "provider": "custom", "fallback_model": None}
+
+
+def test_session_usage_event_feeds_mains_status_bar_attributes(make_agent):
+    """The wave_a2 `session.usage` frame (session-cumulative) lands on the attributes main's status
+    bar, spinner and /usage read: counters, pin, estimate marker, latency/velocity, rate limits."""
+    from agent.context_breakdown import context_display_source
+    from agent.context_pin import is_context_pinned
+    agent, _ = make_agent([frame("session.usage", {"usage": SESSION_USAGE}, admission=None),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    agent.run_conversation("q")
+    assert (agent.session_input_tokens, agent.session_output_tokens, agent.session_total_tokens) == (500, 80, 580)
+    assert agent.session_prompt_tokens == 500 and agent.session_completion_tokens == 80
+    assert agent.session_api_calls == 5
+    comp = agent.context_compressor
+    assert comp.last_prompt_tokens == 229 and comp.context_length == 128000
+    assert is_context_pinned(comp.context_length, comp._config_context_length)
+    assert is_context_pinned(comp.context_length, agent._config_context_length)
+    assert context_display_source(comp) == "local_estimate"
+    n = len(agent._api_latency_history)
+    assert n == 1 and round(sum(agent._api_output_history) / sum(agent._api_latency_history)) == 116
+    assert agent.get_rate_limit_state() is None
+
+
+def test_turn_end_reads_session_stats_cumulative(make_agent):
+    """/usage after a turn shows main's session-cumulative totals (session.stats), not the turn's."""
+    agent, client = make_agent([frame("message.complete", {"text": "x", "outcome": "completed"})],
+                               result={"final_response": "x", "api_calls": 1, "input_tokens": 100, "output_tokens": 10})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            client.calls.append((method, params))
+            return dict(SESSION_USAGE, rate_limit={"requests_min": {"limit": 10, "remaining": 9}, "captured_at": 5.0})
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.run_conversation("q")
+    assert agent.session_input_tokens == 500 and agent.session_api_calls == 5
+    assert agent.get_rate_limit_state().has_data and agent.get_rate_limit_state().requests_min.limit == 10

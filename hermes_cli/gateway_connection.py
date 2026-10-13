@@ -36,6 +36,10 @@ class SessionState:
         self.subscription_id = None
         self.execution_generation = None
         self.messages: list = []
+        self.usage: dict = {}
+        # Called (loop thread) with each ``session.usage`` payload; GatewayAgent maps it onto main's
+        # agent attributes, so a frame landing between turns is never dropped with the turn queue.
+        self.usage_listeners: list = []
 
     def adopt_snapshot(self, snapshot):
         self.info = dict(snapshot.get("info") or {})
@@ -53,6 +57,16 @@ class SessionState:
                 self.title = payload["title"]
         elif kind == "todo.updated" and isinstance(payload, dict):
             self.todos = list(payload.get("todos") or [])
+        elif kind == "session.usage" and isinstance(payload, dict):
+            self.apply_usage(payload.get("usage") if isinstance(payload.get("usage"), dict) else payload)
+
+    def apply_usage(self, usage):
+        """One session-cumulative usage dict (``session.usage`` payload or ``session.stats`` result)."""
+        if not isinstance(usage, dict):
+            return
+        self.usage = dict(usage)
+        for listener in list(self.usage_listeners):
+            listener(self.usage)
 
 
 class GatewayConnection:

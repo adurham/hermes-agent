@@ -31,12 +31,14 @@ _RESULT_DEFAULTS = {
     "response_transformed": False, "pre_transform_response": None, "billing_block": None,
     "auxiliary_usage": {},
 }
-# Usage counters the status bar / /usage read straight off the agent (cli_status_bar_mixin).
+# ``session.usage`` / ``session.stats`` (wave_a2 contract, session-cumulative) → the agent attributes
+# main's status bar, spinner (``↓ N tok``) and /usage read off ``AIAgent``.
 _COUNTER_FROM_USAGE = {
-    "session_prompt_tokens": "input_tokens", "session_input_tokens": "input_tokens",
-    "session_completion_tokens": "output_tokens", "session_output_tokens": "output_tokens",
-    "session_cache_read_tokens": "cache_read_tokens", "session_cache_write_tokens": "cache_write_tokens",
-    "session_reasoning_tokens": "reasoning_tokens",
+    "session_input_tokens": "input_tokens", "session_output_tokens": "output_tokens",
+    "session_prompt_tokens": "prompt_tokens", "session_completion_tokens": "completion_tokens",
+    "session_total_tokens": "total_tokens", "session_cache_read_tokens": "cache_read_tokens",
+    "session_cache_write_tokens": "cache_write_tokens", "session_reasoning_tokens": "reasoning_tokens",
+    "session_api_calls": "api_calls",
 }
 
 
@@ -138,7 +140,13 @@ class GatewayAgent:
         self._generation = None
         self._admission = None
         self._interrupt_sent_at = None
+        self._rate_limit_state = None
+        self._config_context_length = None
         self._apply_info(self._state().info)
+        state = self._state()
+        state.usage_listeners.append(self.apply_session_usage)
+        if state.usage:
+            self.apply_session_usage(state.usage)
 
     # -- snapshot-backed reads ---------------------------------------------------------------
     def _state(self):
@@ -165,7 +173,46 @@ class GatewayAgent:
         return {tool["function"]["name"] for tool in self.tools}
 
     def get_rate_limit_state(self):
-        return None
+        return self._rate_limit_state
+
+    def apply_session_usage(self, usage):
+        """Install one session-cumulative usage dict (the ``session.usage`` event / ``session.stats``
+        result) on main's attributes. Plain assignments: the render thread reads them lock-free."""
+        if not isinstance(usage, dict):
+            return
+        for attr, key in _COUNTER_FROM_USAGE.items():
+            value = usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                setattr(self, attr, value)
+        compressor = self.context_compressor
+        if isinstance(usage.get("last_prompt_tokens"), int):
+            compressor.last_prompt_tokens = usage["last_prompt_tokens"]
+        if usage.get("context_length"):
+            compressor.context_length = int(usage["context_length"])
+        if "config_context_length" in usage:
+            pin = usage.get("config_context_length")
+            compressor._config_context_length = self._config_context_length = pin if isinstance(pin, int) else None
+        if isinstance(usage.get("compression_count"), int):
+            compressor.compression_count = usage["compression_count"]
+        source = usage.get("context_source")
+        if source is not None:
+            # context_display_source(): a "local_estimate" reading is a shown value != the real one.
+            compressor.last_real_prompt_tokens = (
+                None if source == "provider_usage" else compressor.last_prompt_tokens + 1)
+        anchor = usage.get("usage_anchor")
+        if anchor is None or isinstance(anchor, dict):
+            self._turn_base_usage_anchor = anchor
+        latency, tps = usage.get("avg_latency_s"), usage.get("tokens_per_s")
+        if isinstance(latency, (int, float)) and latency > 0 and isinstance(tps, (int, float)):
+            # The bar averages these deques (mean latency, sum/sum velocity): one aligned sample each.
+            self._api_latency_history = [float(latency)]
+            self._api_output_history = [float(tps) * float(latency)]
+        if "rate_limit" in usage:
+            self._rate_limit_state = _rate_limit_state(usage.get("rate_limit"))
+        if usage.get("model"):
+            self.model = usage["model"]
+        if usage.get("provider"):
+            self.provider = usage["provider"]
 
     # -- no-ops: the gateway owns persistence, prompt cache, memory and clients --------------
     def _flush_messages_to_session_db(self, *a, **k):
@@ -534,26 +581,51 @@ class GatewayAgent:
         if not suffix and out.get("final_response") and not out.get("failed"):
             out["messages"].append({"role": "assistant", "content": out["final_response"]})
         out["session_id"] = self.session_id
-        self._apply_usage({**stored, **usage})
+        self._apply_usage(stored, usage)
         self._session_messages = out["messages"]
         return out
 
-    def _apply_usage(self, usage):
-        for attr, key in _COUNTER_FROM_USAGE.items():
-            if isinstance(usage.get(key), int):
-                setattr(self, attr, usage[key])
-        if isinstance(usage.get("total_tokens"), int):
-            self.session_total_tokens = usage["total_tokens"]
-        else:
-            self.session_total_tokens = self.session_prompt_tokens + self.session_completion_tokens
-        if isinstance(usage.get("api_calls"), int):
-            self.session_api_calls += usage["api_calls"]
-        if isinstance(usage.get("last_prompt_tokens"), int):
-            self.context_compressor.last_prompt_tokens = usage["last_prompt_tokens"]
-        if usage.get("context_length"):
-            self.context_compressor.context_length = int(usage["context_length"])
-        if usage.get("model"):
-            self.model = usage["model"]
+    def _apply_usage(self, stored, receipt_usage):
+        """Turn end: the session-cumulative ``session.stats`` (the same dict ``session.usage`` carries);
+        a gateway without the verb leaves the per-turn receipt figures as before."""
+        try:
+            stats = self.connection.call("session.stats", session_id=self.session_id, timeout=10)
+        except GatewayClientError as exc:
+            logger.debug("session.stats unavailable: %s", exc)
+            stats = None
+        stats = stats.get("usage") if isinstance(stats, dict) and isinstance(stats.get("usage"), dict) else stats
+        if isinstance(stats, dict) and isinstance(stats.get("api_calls"), int):
+            self._state().apply_usage(stats)
+            return
+        # Fallback: the classic-CLI result carries the gateway agent's session_* counters
+        # (turn_finalizer _SESSION_TOKEN_KEYS); per-turn receipt usage only accumulates what is missing.
+        usage = {key: stored[key] for key in _COUNTER_FROM_USAGE.values() if isinstance(stored.get(key), int)}
+        for key in ("input_tokens", "output_tokens"):
+            if key not in usage and isinstance(receipt_usage.get(key), int):
+                attr = "session_" + key
+                usage[key] = getattr(self, attr) + receipt_usage[key]
+        usage.setdefault("prompt_tokens", usage.get("input_tokens"))
+        usage.setdefault("completion_tokens", usage.get("output_tokens"))
+        if isinstance(usage.get("prompt_tokens"), int) and isinstance(usage.get("completion_tokens"), int):
+            usage.setdefault("total_tokens", usage["prompt_tokens"] + usage["completion_tokens"])
+        if isinstance(stored.get("api_calls"), int):
+            usage["api_calls"] = self.session_api_calls + stored["api_calls"]
+        for key in ("last_prompt_tokens", "context_length", "model"):
+            if receipt_usage.get(key) or stored.get(key):
+                usage[key] = receipt_usage.get(key) or stored.get(key)
+        self.apply_session_usage(usage)
+
+
+def _rate_limit_state(data):
+    """``get_rate_limit_state()`` rebuilt from its serialized dict (None stays None)."""
+    if not isinstance(data, dict):
+        return None
+    from agent.rate_limit_tracker import RateLimitBucket, RateLimitState
+    buckets = {name: RateLimitBucket(**{k: v for k, v in (data.get(name) or {}).items()
+                                        if k in {"limit", "remaining", "reset_seconds", "captured_at"}})
+               for name in ("requests_min", "requests_hour", "tokens_min", "tokens_hour")}
+    return RateLimitState(**buckets, captured_at=float(data.get("captured_at") or 0.0),
+                          provider=str(data.get("provider") or ""))
 
 
 def _moa_handler(kind):
