@@ -81,11 +81,55 @@ def restore(agent, previous: dict | None) -> None:
         setattr(agent, name, value)
 
 
-def note_tool_start(turn, call_id) -> None:
-    """Monotonic start time of one call, for ``tool.complete.duration_s``."""
-    turn.__dict__.setdefault("_local_tool_starts", {})[str(call_id or "")] = time.monotonic()
+def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:
+    """Monotonic start time of one call (``tool.complete.duration_s``) and, for a write-capable
+    tool, the before-state of its local files: the agent fires the start callback BEFORE the tool
+    writes, so the gateway owns the snapshot the classic CLI used to take in process."""
+    key = str(call_id or "")
+    turn.__dict__.setdefault("_local_tool_starts", {})[key] = time.monotonic()
+    if tool_name is None:
+        return
+    try:
+        from agent.display import capture_local_edit_snapshot
+        snapshot = capture_local_edit_snapshot(tool_name, args if isinstance(args, dict) else {},
+                                               task_id=turn._ctx.session_id)
+    except Exception:
+        snapshot = None
+    if snapshot is not None:
+        turn.__dict__.setdefault("_local_edit_snapshots", {})[key] = snapshot
 
 
-def complete_fields(turn, call_id) -> dict:
-    started = turn.__dict__.setdefault("_local_tool_starts", {}).pop(str(call_id or ""), None)
-    return {"duration_s": (time.monotonic() - started) if started is not None else None}
+def complete_fields(turn, call_id, tool_name=None, args=None, result=None) -> dict:
+    """``duration_s``, ``inline_diff`` (the rendered edit diff main's CLI printed after a write,
+    ``None`` when there is none) and, for the todo tool, the full ``todos`` snapshot."""
+    key = str(call_id or "")
+    started = turn.__dict__.setdefault("_local_tool_starts", {}).pop(key, None)
+    fields = {"duration_s": (time.monotonic() - started) if started is not None else None}
+    if tool_name is None:
+        return fields
+    snapshot = turn.__dict__.setdefault("_local_edit_snapshots", {}).pop(key, None)
+    rendered: list[str] = []
+    try:
+        from agent.display import render_edit_diff_with_delta
+        render_edit_diff_with_delta(tool_name, result, function_args=args if isinstance(args, dict) else {},
+                                    snapshot=snapshot, print_fn=rendered.append)
+    except Exception:
+        rendered = []
+    fields["inline_diff"] = "\n".join(rendered) if rendered else None
+    todo = todo_state(tool_name, result)
+    if todo is not None:
+        fields.update(todo)
+    return fields
+
+
+def todo_state(tool_name, result) -> dict | None:
+    """The client-safe ``{todos, revision}`` snapshot a todo tool's result carries, else None."""
+    from tools.todo_tool import is_todo_tool_name
+    if not is_todo_tool_name(tool_name):
+        return None
+    import json
+    from tui_gateway.tool_progress import _normalize_todo_state
+    try:
+        return _normalize_todo_state(json.loads(result) if isinstance(result, str) else result)
+    except (TypeError, ValueError):
+        return None

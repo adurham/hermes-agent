@@ -184,3 +184,45 @@ async def test_show_reasoning_is_a_session_scoped_config_key(tmp_path, monkeypat
         assert bad['error']['message'] == 'invalid_params', bad
     finally:
         await connection.close()
+
+
+def test_a_local_write_ships_its_inline_diff_snapshotted_before_the_tool_ran(tmp_path):
+    published = []
+    turn = _turn(Platform.LOCAL, published)
+    target = tmp_path / 'notes.txt'
+    target.write_text('alpha\nbeta\n')
+    args = {'path': str(target), 'content': 'alpha\ngamma\n'}
+    turn.combined_tool_start_callback('w1', 'write_file', args)
+    target.write_text(args['content'])  # the tool writes after the start callback
+    turn.combined_tool_complete_callback('w1', 'write_file', args, '{"bytes_written": 12}')
+    complete = next(payload for kind, payload in published if kind == 'tool.complete')
+    diff = complete['inline_diff']
+    assert isinstance(diff, str) and '-beta' in diff and '+gamma' in diff, diff
+    from tui_gateway.contracts.registry import EVENTS
+    EVENTS['tool.complete'].payload.model_validate({k: complete[k] for k in ('tool_id', 'name', 'duration_s', 'inline_diff')})
+
+
+def test_the_todo_tool_publishes_the_full_snapshot():
+    import json
+    published = []
+    turn = _turn(Platform.LOCAL, published)
+    todos = [{'id': '1', 'content': 'ship', 'status': 'in_progress'}]
+    turn.combined_tool_start_callback('t1', 'todo', {'todos': todos})
+    turn.combined_tool_complete_callback('t1', 'todo', {'todos': todos}, json.dumps({'todos': todos, 'revision': 3}))
+    kinds = [kind for kind, _ in published]
+    assert kinds == ['tool.start', 'tool.complete', 'todo.updated']
+    assert published[-1][1] == {'todos': todos, 'revision': 3}
+    assert published[1][1]['inline_diff'] is None and published[1][1]['todos'] == todos
+    from tui_gateway.contracts.registry import EVENTS
+    EVENTS['todo.updated'].payload.model_validate(published[-1][1])
+
+
+def test_messaging_tool_events_carry_no_diff_or_todo_frame():
+    import json
+    published = []
+    turn = _turn(Platform.TELEGRAM, published)
+    todos = [{'id': '1', 'content': 'ship', 'status': 'pending'}]
+    turn.combined_tool_start_callback('t1', 'todo', {'todos': todos})
+    turn.combined_tool_complete_callback('t1', 'todo', {'todos': todos}, json.dumps({'todos': todos, 'revision': 1}))
+    assert [kind for kind, _ in published] == ['tool.start', 'tool.complete']
+    assert 'inline_diff' not in published[1][1] and 'todos' not in published[1][1]
