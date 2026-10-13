@@ -299,3 +299,30 @@ def test_new_session_id_off_the_gateway_is_mains_mint():
     host = types.SimpleNamespace(_session_db=None)
     from datetime import datetime
     assert CLIInitMixin._new_session_id(host, datetime(2026, 10, 12, 1, 2, 3)).startswith("20261012_010203_")
+
+
+def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, monkeypatch):
+    """The gateway labels an interactive local row ``local`` (``created_source`` keeps the surface), so
+    main's ``source='cli'`` listings (/resume picker, /sessions, /history, bare -c) read both labels."""
+    import sqlite3
+    db, _ = store
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    from hermes_state import SessionDB
+    writer = SessionDB(db_path=tmp_path / "state.db")
+    rows = (("local-cli", "local", "cli"), ("local-tui", "local", "tui"), ("legacy", "cli", "cli"),
+            ("one", "oneshot", "oneshot"))
+    for sid, source, _created in rows:
+        writer.create_session(sid, source=source)
+        writer.append_message(sid, "user", "hi " + sid)
+    writer.close()
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.executemany("UPDATE sessions SET created_source=? WHERE id=?", [(c, sid) for sid, _s, c in rows])
+    conn.commit()
+    conn.close()
+    from hermes_cli.session_listing import query_session_listing
+    listed = query_session_listing(db, source="cli", include_unnamed=True, limit=10)
+    assert sorted(r["id"] for r in listed) == ["legacy", "local-cli"]
+    found = db.search_sessions(source=["cli", "oneshot"], limit=10)
+    assert sorted(r["id"] for r in found) == ["legacy", "local-cli", "one"]
+    assert [r["id"] for r in db.search_sessions(source="tui", limit=10)] == ["local-tui"]
+    assert len(db.list_sessions_rich(limit=10)) == 4

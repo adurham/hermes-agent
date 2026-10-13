@@ -77,7 +77,7 @@ class GatewaySessionStore:
                 return None
             try:
                 from hermes_state import SessionDB
-                self._reader = SessionDB(db_path=path, read_only=True)
+                self._reader = SurfaceLabelReader(SessionDB(db_path=path, read_only=True))
             except Exception as exc:  # health: allow BLE001 -- reads find nothing; retried on the next read
                 logger.debug("read-only state.db unavailable: %s", exc)
         return self._reader
@@ -297,6 +297,44 @@ class GatewaySessionStore:
             "tool_availability_warnings": info.get("tool_availability_warnings"),
             "browser_backend_notice": info.get("browser_backend_notice"),
         }
+
+
+# Interactive surfaces whose gateway rows are labelled ``local`` (``created_source`` keeps the surface;
+# gateway/session_a2a.storage_source). Producer labels (oneshot, tool, kanban, ...) are stored as is.
+_LOCAL_LABELLED = frozenset({"cli", "tui", "gui"})
+
+
+class SurfaceLabelReader:
+    """A read-only ``SessionDB`` whose source-filtered listings read main's labels: ``source='cli'``
+    also matches a gateway row labelled ``local`` that the CLI created (``created_source='cli'``), so
+    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made."""
+
+    def __init__(self, db):
+        self._wrapped = db
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+    def _labelled(self, method, requested, limit, offset, call):
+        wanted = {requested} if isinstance(requested, str) else set(requested or ())
+        surfaces = wanted & _LOCAL_LABELLED
+        if not surfaces:
+            return call(requested, limit, offset)
+        # Over-fetch, then keep only the local rows those surfaces created (ordering is the reader's own).
+        rows = call(sorted(wanted | {"local"}), (limit + offset) * 3 + 50, 0)
+        kept = [row for row in rows if row.get("source") != "local" or row.get("created_source") in surfaces]
+        return kept[offset:offset + limit]
+
+    def search_sessions(self, source=None, limit=20, offset=0, **kw):
+        return self._labelled("search_sessions", source, limit, offset,
+                              lambda src, lim, off: self._wrapped.search_sessions(source=src, limit=lim, offset=off, **kw))
+
+    def list_sessions_rich(self, source=None, sources=None, limit=20, offset=0, **kw):
+        requested = sources if sources else ([source] if source else None)
+        if not requested:
+            return self._wrapped.list_sessions_rich(limit=limit, offset=offset, **kw)
+        return self._labelled("list_sessions_rich", requested, limit, offset,
+                              lambda src, lim, off: self._wrapped.list_sessions_rich(sources=src, limit=lim, offset=off, **kw))
 
 
 _CANONICAL_LOCAL_ID = re.compile(r"^local-([0-9a-f]{8})[0-9a-f]{56}$")
