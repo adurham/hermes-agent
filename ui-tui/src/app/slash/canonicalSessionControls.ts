@@ -50,6 +50,8 @@ export type CanonicalOperation = 'model' | 'branch' | 'compress' | 'rename' | 'r
 /** The snapshot a mutation's CAS tuple was read from; `payload` may derive its target from it. */
 export interface MutationSnapshot {
   messages?: Array<Record<string, unknown>>
+  /** The stored rows (content + row_id) behind a display-projected `messages`. */
+  stored_messages?: Array<Record<string, unknown>>
   revision: number
   execution_generation: number
 }

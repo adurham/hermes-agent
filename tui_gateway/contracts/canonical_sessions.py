@@ -62,6 +62,9 @@ class CanonicalResumeParams(ProfileParams):
     defer_history: bool = False
     omit_messages: bool = False
     cols: int | None = None
+    # A renderer (the Ink TUI) asks for main's display projection of the same rows
+    # (``tui_gateway.session_history._history_to_messages``) as ``display_messages``.
+    display_projection: bool = False
 
 
 class CanonicalSessionHandle(Result):
@@ -118,6 +121,8 @@ class CanonicalSnapshot(Result):
     session_id: str
     stored_session_id: str
     messages: list[TranscriptMessage]
+    # Present only when ``display_projection`` was asked: the rows as main's TUI rendered them.
+    display_messages: list[TranscriptMessage] | None = None
     message_count: int
     running: bool
     authority_epoch: int

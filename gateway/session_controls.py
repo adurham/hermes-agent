@@ -21,6 +21,15 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
                                'approval.respond', 'clarify.respond'})
 
 
+def display_projection(history, profile_home):
+    """Main's TUI display rows for a snapshot's stored rows: the sidecar's own
+    ``_history_to_messages`` (compaction handoffs stripped, ``/steer`` unwrapped, tool rows
+    labelled from the paired assistant ``tool_calls``), never a re-implementation."""
+    from tui_gateway import server
+    rows = [{**row, '_row_id': row['row_id']} if 'row_id' in row else row for row in history]
+    return server._history_to_messages(rows, profile_home=profile_home)
+
+
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
@@ -427,8 +436,11 @@ class AuthorityConnection:
         source = self.authority.sessions[snapshot.handle.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL:
             info = await snapshot_info(self.authority, snapshot.handle.ref)
+        display = {}
+        if params.get('display_projection'):
+            display['display_messages'] = display_projection(snapshot.history, self.authority.profile_id)
         return {'session_id': ref.session_id, 'stored_session_id': ref.session_id,
-                'messages': list(snapshot.history), 'message_count': len(snapshot.history),
+                'messages': list(snapshot.history), **display, 'message_count': len(snapshot.history),
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,

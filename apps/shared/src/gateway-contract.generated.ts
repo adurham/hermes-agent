@@ -4817,6 +4817,7 @@ export interface CanonicalSnapshot {
   session_id: string
   stored_session_id: string
   messages: TranscriptMessage[]
+  display_messages?: TranscriptMessage[] | null
   message_count: number
   running: boolean
   authority_epoch: number
@@ -4901,6 +4902,7 @@ export interface CanonicalResumeParams {
   defer_history?: boolean
   omit_messages?: boolean
   cols?: number | null
+  display_projection?: boolean
 }
 export interface CanonicalListParams {
   profile?: string | null

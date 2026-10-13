@@ -24,7 +24,7 @@ const isUserTurn = (row: Record<string, unknown>) =>
 
 /** The rewind payload for the newest user turn in the snapshot the CAS tuple came from. */
 export function lastTurnRewind(snapshot: MutationSnapshot): null | { target_message_id: number } {
-  const target = (snapshot.messages ?? []).findLast(isUserTurn)
+  const target = (snapshot.stored_messages ?? snapshot.messages ?? []).findLast(isUserTurn)
 
   return target ? { target_message_id: target.row_id as number } : null
 }
@@ -56,7 +56,7 @@ function retryText(content: unknown): null | string {
 
 /** /retry's rewind payload: validated on the CAS snapshot, so a refusal archives nothing. */
 export function retryTurnRewind(snapshot: MutationSnapshot): null | { target_message_id: number } {
-  const target = (snapshot.messages ?? []).findLast(isUserTurn)
+  const target = (snapshot.stored_messages ?? snapshot.messages ?? []).findLast(isUserTurn)
   const text = target ? retryText(target.content) : ''
 
   if (text === null) {

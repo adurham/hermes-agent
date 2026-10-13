@@ -9578,6 +9578,11 @@
             ],
             "default": null,
             "title": "Cols"
+          },
+          "display_projection": {
+            "default": false,
+            "title": "Display Projection",
+            "type": "boolean"
           }
         },
         "title": "CanonicalResumeParams",
@@ -10341,6 +10346,21 @@
             },
             "title": "Messages",
             "type": "array"
+          },
+          "display_messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TranscriptMessage"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Messages"
           },
           "message_count": {
             "title": "Message Count",
