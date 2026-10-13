@@ -222,6 +222,7 @@ canonical_method("session.stats", params=SessionStatsParams, result=SessionStats
 class SessionDetachParams(Params):
     session_id: str
     subscription_id: str
+    end_reason: str | None = None
 
 
 class SessionDetachResult(Result):
@@ -231,7 +232,9 @@ class SessionDetachResult(Result):
 
 
 canonical_method("session.detach", params=SessionDetachParams, result=SessionDetachResult,
-                 doc="Drop this connection's subscription; a stale subscription id answers detached=false.")
+                 doc="Drop this connection's subscription; a stale subscription id answers detached=false. "
+                     "end_reason (snake_case): the viewer is closing the conversation; the last viewer "
+                     "leaving an idle local session ends its row with that reason.")
 
 
 class RuntimeDescribeParams(Params):

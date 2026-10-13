@@ -4586,6 +4586,7 @@ export interface SessionStats {
 export interface SessionDetachParams {
   session_id: string
   subscription_id: string
+  end_reason?: string | null
 }
 export interface SessionDetachResult {
   session_id: string
@@ -6531,7 +6532,7 @@ export interface CanonicalRpcMethods {
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
-  /** Drop this connection's subscription; a stale subscription id answers detached=false. */
+  /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
   'session.events.since': { params: CanonicalEventsParams; result: CanonicalEventsResult }
   /** Frozen launch policy projection of one local session. */

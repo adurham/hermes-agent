@@ -35102,6 +35102,18 @@
           "subscription_id": {
             "title": "Subscription Id",
             "type": "string"
+          },
+          "end_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "End Reason"
           }
         },
         "required": [
@@ -45758,7 +45770,7 @@
     },
     {
       "name": "session.detach",
-      "summary": "Drop this connection's subscription; a stale subscription id answers detached=false.",
+      "summary": "Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason.",
       "params": [
         {
           "name": "params",

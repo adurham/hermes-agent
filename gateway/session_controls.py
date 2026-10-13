@@ -1,5 +1,6 @@
 """Authenticated WS projection of the gateway authority; no TUI execution fallback."""
 import asyncio
+import re
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -11,6 +12,8 @@ from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, Sess
 from hermes_state_runtime import RuntimeStoreError
 
 
+# ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
+_END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
@@ -433,18 +436,24 @@ class AuthorityConnection:
                 'prompts': list(snapshot.prompts), 'info': info}
 
     async def detach(self, ref, params):
-        if set(params) != {'session_id', 'subscription_id'}:
+        if set(params) - {'end_reason'} != {'session_id', 'subscription_id'}:
             raise RuntimeStoreError('invalid_params')
         session_id = params['session_id']
         subscription_id = params['subscription_id']
+        # ``end_reason``: this viewer is CLOSING the conversation (main's classic CLI stamped its row
+        # ``cli_close`` / ``new_session`` / ``resumed_other`` / ``branched`` itself); the owner ends the
+        # idle local row once no viewer is left. Absent, a detach is only a viewer leaving.
+        end_reason = params.get('end_reason')
         if (not isinstance(session_id, str) or not session_id
-                or not isinstance(subscription_id, str) or not subscription_id):
+                or not isinstance(subscription_id, str) or not subscription_id
+                or (end_reason is not None
+                    and not (isinstance(end_reason, str) and _END_REASON.fullmatch(end_reason)))):
             raise RuntimeStoreError('invalid_params')
         result = {'session_id': session_id, 'subscription_id': subscription_id,
                   'detached': False}
         if self.subscriptions.get(session_id) != subscription_id:
             return result
-        await self.authority.detach(self.actor, subscription_id)
+        await self.authority.detach(self.actor, subscription_id, end_reason=end_reason)
         if self.subscriptions.get(session_id) == subscription_id:
             del self.subscriptions[session_id]
         result['detached'] = True
