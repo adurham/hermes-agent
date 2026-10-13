@@ -148,10 +148,10 @@ export function SetupBeatTool(props: ToolCallMessagePartProps) {
     }
   }
 
+  // The directory card has its own header and plug icon; a frame label above it would be a second header.
   if (request.beat === 'connectors') {
     return (
-      <div className="grid gap-1" data-setup-beat="connectors">
-        {request.question && <span className={cn(SETUP_BEAT_LABEL_CLASS, 'px-3.5')}>{request.question}</span>}
+      <div data-setup-beat="connectors">
         <ConnectorDirectoryCard
           onContinue={({ connected, newly_connected }) => answer({ connected, newly_connected })}
           suggested={Array.isArray(request.card.suggested) ? request.card.suggested : []}
