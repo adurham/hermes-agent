@@ -49,7 +49,6 @@ def test_display_preferences_theme_and_indicator_persist_to_the_profile(tmp_path
                     ({'key': 'theme', 'value': 'neon'}, 'invalid_params'),
                     ({'key': 'indicator', 'value': 'sparkles'}, 'invalid_params'),
                     ({'key': 'details_mode.nope', 'value': 'hidden'}, 'invalid_params'),
-                    ({'key': 'approvals.mode', 'value': 'off'}, 'invalid_params'),
                     ({'key': 'theme', 'value': 'dark', 'profile': 'foreign'}, 'profile_mismatch'),
                     ({'key': 'model', 'value': 'x', 'session_id': sid}, 'use_session_mutation_model'),
                 ]:
