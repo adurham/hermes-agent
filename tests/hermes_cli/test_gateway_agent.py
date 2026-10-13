@@ -363,3 +363,40 @@ def test_reasoning_sink_sets_the_sessions_show_reasoning_flag_on_attach_and_togg
     agent.reasoning_callback = shown.append  # /reasoning show
     values = [p["value"] for m, p in client.calls if m == "config.set" and p.get("key") == "show_reasoning"]
     assert values == ["1", "0", "1"]
+
+
+def test_gateway_sudo_request_opens_mains_sudo_panel_and_replies_with_the_value(make_agent):
+    """The gateway's ``sudo`` server→client request (a JSON-RPC request frame with an ``srq-`` id)
+    is answered by main's masked sudo panel (the turn's registered callback) as a response frame."""
+    from tools.terminal_tool import set_sudo_password_callback
+    request = {"jsonrpc": "2.0", "id": "srq-abc", "method": "sudo",
+               "params": {"session_id": SID, "command": "sudo true"}}
+    agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    asked = []
+    set_sudo_password_callback(lambda: asked.append(1) or "pw-from-panel")
+    try:
+        agent.run_conversation("run sudo")
+    finally:
+        set_sudo_password_callback(None)
+    assert asked == [1]
+    assert replies == [("srq-abc", {"value": "pw-from-panel"})]
+
+
+def test_connection_reply_sends_a_jsonrpc_response_frame():
+    sent = []
+
+    class WS:
+        async def send(self, raw):
+            sent.append(raw)
+    client = FakeClient([])
+    client.websocket = WS()
+    conn = GatewayConnection(connect=connect_with(client))
+    conn.start(5)
+    try:
+        assert conn.reply("srq-1", {"value": ""}) is True
+    finally:
+        conn.close()
+    import json
+    assert [json.loads(raw) for raw in sent] == [{"jsonrpc": "2.0", "id": "srq-1", "result": {"value": ""}}]

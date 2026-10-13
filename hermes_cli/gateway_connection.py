@@ -177,6 +177,21 @@ class GatewayConnection:
         self.closed = True
 
     # -- requests ----------------------------------------------------------------------------
+    def reply(self, request_id, result):
+        """Answer one of the gateway's server→client requests (the ``sudo`` prompt): a JSON-RPC
+        response frame with the request's own id. Never raises; a lost reply times out gateway-side."""
+        import json
+        client, loop = self.client, self.loop
+        if client is None or loop is None:
+            return False
+        frame = json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
+        try:
+            asyncio.run_coroutine_threadsafe(client.websocket.send(frame), loop).result(10)
+        except Exception as exc:  # health: allow BLE001 -- the gateway's own wait bounds a lost answer
+            logger.debug("server request reply failed: %s", exc)
+            return False
+        return True
+
     def call(self, method, *, timeout=None, **params):
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call() on the gateway loop thread would deadlock")

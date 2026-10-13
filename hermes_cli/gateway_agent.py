@@ -414,6 +414,9 @@ class GatewayAgent:
             params = frame.get("params") if isinstance(frame, dict) else None
             if not isinstance(params, dict) or params.get("session_id") != self.session_id:
                 continue
+            if frame.get("method") in _SERVER_REQUESTS and "id" in frame:
+                self._answer_request(frame)
+                continue
             kind, payload = params.get("type"), params.get("payload") or {}
             admission = params.get("admission_id") or (payload.get("admission_id") if isinstance(payload, dict) else None)
             if self._admission and admission and admission != self._admission:
@@ -579,6 +582,22 @@ class GatewayAgent:
                              execution_generation=payload.get("execution_generation", self._generation),
                              prompt_id=payload.get("prompt_id"), answer=str(answer))
 
+    def _answer_request(self, frame):
+        """A gateway server→client request (``sudo``): main's own modal answers it on this (agent)
+        thread, through the callback HermesCLI registered for the turn; the value travels only in the
+        JSON-RPC response frame."""
+        try:
+            value = _SERVER_REQUESTS[frame["method"]](self, frame.get("params") or {})
+        except Exception:  # health: allow BLE001 -- a broken modal is a skip, never a hung tool
+            logger.debug("server request %s failed", frame.get("method"), exc_info=True)
+            value = ""
+        self.connection.reply(frame["id"], {"value": value if isinstance(value, str) else ""})
+
+    def _ask_sudo(self, params):
+        from tools.terminal_tool import _get_sudo_password_callback
+        callback = _get_sudo_password_callback()
+        return (callback() or "") if callback is not None else ""
+
     # -- result --------------------------------------------------------------------------------
     def _user_row(self, user_message):
         staged = self._pending_cli_user_message
@@ -712,6 +731,10 @@ def _moa_handler(kind):
                                      payload.get("text") or payload.get("preview"), None, **extra)
     return handler
 
+
+_SERVER_REQUESTS = {
+    "sudo": GatewayAgent._ask_sudo,
+}
 
 _HANDLERS = {
     "message.delta": GatewayAgent._on_delta,
