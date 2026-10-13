@@ -127,6 +127,7 @@ class GatewayAgent:
         self._turn_base_usage_anchor = None
         self._context_tokens = 0
         self._turn_calls_base = 0
+        self._usage_stale = False
         self._current_task_id = self._current_turn_id = self._current_api_request_id = ""
         self._memory_manager = None
         self._memory_store = None
@@ -337,6 +338,7 @@ class GatewayAgent:
                          task_id=None, persist_user_message=None, turn_author=None, **_kw):
         history = list(conversation_history or [])
         self._turn_calls_base = self.session_api_calls
+        self._usage_stale = True
         self._interrupt_requested = False
         self._interrupt_sent_at = None
         self._drain_stale()
@@ -433,6 +435,12 @@ class GatewayAgent:
         args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
         call_id = payload.get("tool_id") or payload.get("tool_call_id") or ""
         starts[call_id] = time.monotonic()
+        if self._usage_stale:
+            # Main's counters move right after each API call, before its tools run (the spinner's
+            # `↓ N tok` beside a tool or approval); the gateway's next session.usage frame comes only
+            # at the next step, so the first tool of each batch reads session.stats once.
+            self._usage_stale = False
+            self._refresh_stats()
         if self.tool_progress_callback is not None:
             from agent.display import build_tool_preview
             self.tool_progress_callback("tool.started", name, build_tool_preview(name, args), args)
@@ -451,6 +459,7 @@ class GatewayAgent:
         if self.tool_progress_callback is not None:
             self.tool_progress_callback("tool.completed", name, None, None, duration=duration,
                                         is_error=bool(payload.get("is_error")), result=result)
+        self._usage_stale = True
         if name == "todo":
             self._todo_from_result(result)
         diff = payload.get("inline_diff")
@@ -616,17 +625,23 @@ class GatewayAgent:
         estimate = estimate_messages_tokens_rough(delta, charge_stale_thinking=False) if delta else 0
         self._turn_base_usage_anchor = capture_usage_anchor(max(1, tokens - estimate), 0, messages[:base])
 
-    def _apply_usage(self, stored, receipt_usage):
-        """Turn end: the session-cumulative ``session.stats`` (the same dict ``session.usage`` carries);
-        a gateway without the verb leaves the per-turn receipt figures as before."""
+    def _refresh_stats(self):
+        """``session.stats`` → the same attributes ``session.usage`` sets; False when unavailable."""
         try:
             stats = self.connection.call("session.stats", session_id=self.session_id, timeout=10)
         except GatewayClientError as exc:
             logger.debug("session.stats unavailable: %s", exc)
-            stats = None
+            return False
         stats = stats.get("usage") if isinstance(stats, dict) and isinstance(stats.get("usage"), dict) else stats
-        if isinstance(stats, dict) and isinstance(stats.get("api_calls"), int):
-            self._state().apply_usage(stats)
+        if not (isinstance(stats, dict) and isinstance(stats.get("api_calls"), int)):
+            return False
+        self._state().apply_usage(stats)
+        return True
+
+    def _apply_usage(self, stored, receipt_usage):
+        """Turn end: the session-cumulative ``session.stats`` (the same dict ``session.usage`` carries);
+        a gateway without the verb leaves the per-turn receipt figures as before."""
+        if self._refresh_stats():
             return
         # Fallback: the classic-CLI result carries the gateway agent's session_* counters
         # (turn_finalizer _SESSION_TOKEN_KEYS); per-turn receipt usage only accumulates what is missing.

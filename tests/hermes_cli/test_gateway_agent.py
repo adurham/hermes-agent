@@ -310,3 +310,27 @@ def test_status_bar_context_is_the_gateways_anchored_figure_with_mains_estimate_
     agent2.run_conversation("story", conversation_history=[{"role": "user", "content": "a"},
                                                            {"role": "assistant", "content": "b"}])
     assert agent2._turn_base_usage_anchor["base_count"] == 2  # the interrupted ask is estimated
+
+
+def test_first_tool_of_a_batch_reads_session_stats_for_mains_spinner_token_flow(make_agent):
+    """Main's `↓ N tok` beside a running tool/approval reads session_output_tokens right after the API
+    call that asked for the tool; the stand-in refreshes session.stats once per tool batch."""
+    seen = []
+    agent, client = make_agent(
+        [frame("tool.start", {"tool_id": "c1", "name": "terminal", "args": {"command": "ls"}}),
+         frame("tool.start", {"tool_id": "c2", "name": "terminal", "args": {"command": "pwd"}}),
+         frame("tool.complete", {"tool_id": "c1", "name": "terminal", "args": {}, "result": "{}"}),
+         frame("tool.complete", {"tool_id": "c2", "name": "terminal", "args": {}, "result": "{}"}),
+         frame("message.complete", {"text": "x", "outcome": "completed"})],
+        tool_progress_callback=lambda kind, *a, **k: seen.append((kind, agent.session_output_tokens)))
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            client.calls.append((method, params))
+            return dict(SESSION_USAGE, output_tokens=10)
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.run_conversation("q")
+    assert seen[0] == ("tool.started", 10)
+    assert [m for m, _ in client.calls].count("session.stats") == 2  # first tool.start + turn end
