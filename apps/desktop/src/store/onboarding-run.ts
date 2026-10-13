@@ -9,7 +9,6 @@
  */
 
 import type {
-  MachineFactsResult,
   OnboardingEndedPayload,
   OnboardingRunStateResult,
   OnboardingStartResult
@@ -22,7 +21,7 @@ import type { GatewayRequester } from '@/lib/yolo-session'
 import { ackFreeTierNotice } from './free-tier'
 import { clearFreeTierIntro } from './onboarding'
 import { $onboardingPhase } from './onboarding-phase'
-import { markOnboardingDecided, setOnboardingSurfaceActive } from './onboarding-presence'
+import { markOnboardingDecided, ONBOARDING_DECIDE_DEADLINE_MS, setOnboardingSurfaceActive } from './onboarding-presence'
 import { $onboardingSession } from './onboarding-session'
 import { ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
@@ -36,6 +35,7 @@ export type OnboardingRequest = <T = unknown>(
 ) => Promise<T>
 
 // A cold first boot answers onboarding.start late; the intro's way-out offer bounds the wait instead.
+// A start with no intro (Settings' Run again) has no way out on screen, so it keeps the request's default deadline.
 const NO_DEADLINE = 0
 
 /** Opens a stored session on screen, replacing the route (`useSessionActions().resumeSession`). */
@@ -77,27 +77,10 @@ $onboardingOnScreen.subscribe(onScreen => {
   }
 })
 
-/** Same machine as this app (`local`), or a backend somewhere else (`remote`). A local connection is
- *  this machine; any other compares the backend's OS and architecture with Electron's. */
-async function factsSource(request: OnboardingRequest): Promise<'local' | 'remote'> {
-  if ($connection.get()?.mode === 'local') {
-    return 'local'
-  }
-
-  const [profile, facts] = await Promise.all([
-    window.hermesDesktop?.getMachineProfile?.().catch(() => null),
-    request<MachineFactsResult>('machine.facts').catch(() => null)
-  ])
-
-  const arch = (value: null | string | undefined) => (value === 'x64' || value === 'amd64' ? 'x86_64' : value)
-
-  const same =
-    Boolean(profile && facts) &&
-    profile?.platform === facts?.machine.os_family &&
-    arch(profile?.arch) === arch(facts?.machine.native_arch)
-
-  return same ? 'local' : 'remote'
-}
+/** Same machine as this app (`local`), or a backend somewhere else (`remote`). Only the local
+ *  connection is this machine: a remote backend with the same OS and architecture is still another
+ *  computer. */
+const factsSource = (): 'local' | 'remote' => ($connection.get()?.mode === 'local' ? 'local' : 'remote')
 
 /** The first-run intro around a start (`components/onboarding/first-run/kickoff.ts`). */
 export interface OnboardingIntroHooks {
@@ -144,8 +127,8 @@ export async function startOnboarding(
     // The request stays alive past the way out: its answer names the run the skip ends.
     const started = await request<OnboardingStartResult>(
       'onboarding.start',
-      { facts_source: await factsSource(request), locale: getRuntimeI18nLocale(), rerun },
-      NO_DEADLINE
+      { facts_source: factsSource(), locale: getRuntimeI18nLocale(), rerun },
+      intro ? NO_DEADLINE : undefined
     )
 
     if (skipped) {
@@ -215,7 +198,8 @@ export function decideOnboarding(
 
 async function readAndStart(request: OnboardingRequest, resume: OnboardingResume, options?: StartOptions): Promise<void> {
   try {
-    const state = await request<OnboardingRunStateResult>('onboarding.state')
+    // One deadline for the due check: past it the app is released and a late answer opens nothing.
+    const state = await request<OnboardingRunStateResult>('onboarding.state', undefined, ONBOARDING_DECIDE_DEADLINE_MS)
 
     if (state.run && state.eligible) {
       await startOnboarding(request, resume, options)
