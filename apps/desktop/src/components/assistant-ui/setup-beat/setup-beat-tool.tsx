@@ -19,8 +19,6 @@ import {
   setupBeatResult
 } from '@/store/setup-beat'
 
-import { ToolFallback } from '../tool/fallback'
-
 import { NameCard, OptionsCard } from './beat-cards'
 import { PluginsCard } from './plugins-card'
 import {
@@ -104,8 +102,9 @@ export function SetupBeatTool(props: ToolCallMessagePartProps) {
   if (props.result !== undefined) {
     const result = setupBeatResult(props.result)
 
+    // A refusal is addressed to the model (e.g. a beat set_theme already settled); the user has nothing to act on.
     if (result.error !== undefined) {
-      return <ToolFallback {...props} />
+      return null
     }
 
     const outcome = setupBeatOutcome(result)
