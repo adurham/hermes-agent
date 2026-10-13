@@ -155,3 +155,20 @@ def process_registry():
         return view
     from tools.process_registry import process_registry as local
     return local
+
+
+def session_tools():
+    """``/tools`` / ``/initiate-setup``: the gateway session's tool catalog (``tools.show``) as
+    ``(tools, toolset_of)``: ``get_tool_definitions``-shaped rows (first description sentence) and
+    a name -> toolset lookup. None when the CLI is not gateway-backed."""
+    view = process_view()
+    if view is None:
+        return None
+    result = view.connection.call("tools.show", session_id=view.session_id) or {}
+    tools, toolset_of = [], {}
+    for section in result.get("sections") or []:
+        for row in section.get("tools") or []:
+            toolset_of[row["name"]] = section.get("name")
+            tools.append({"type": "function", "function": {"name": row["name"],
+                                                           "description": row.get("description") or ""}})
+    return tools, toolset_of.get

@@ -40,6 +40,10 @@ class FakeClient:
                 if row["status"] == "running":
                     row.update(status="exited", exited_at=time.time(), completion_reason="killed", exit_code=-15)
             return {"killed": 1, "delegations": 0}
+        if method == "tools.show":
+            return {"sections": [{"name": "mcp-demo", "tools": [{"name": "mcp_demo_ping", "description": "Ping."}]},
+                                 {"name": "terminal", "tools": [{"name": "terminal", "description": "Run."}]}],
+                    "total": 2}
         if method == "process.kill":
             return {"status": "killed", "session_id": params["process_id"]}
         return {}
@@ -96,3 +100,15 @@ def test_dock_stop_kills_one_process_through_the_gateway(gateway):
     dock.process_rows()
     assert dock.kill("proc_1")["status"] == "killed"
     assert ("process.kill", {"session_id": SID, "process_id": "proc_1"}) in client.calls
+
+
+def test_tools_lists_the_gateway_session_catalog_with_main_rendering(gateway, capsys):
+    """/tools prints the gateway session's tools (its MCP servers live there), in main's layout."""
+    from hermes_cli.cli_info_mixin import CLIInfoMixin
+    _agent, client = gateway
+    CLIInfoMixin.show_tools(type("C", (), {"enabled_toolsets": None, "disabled_toolsets": None})())
+    out = capsys.readouterr().out
+    assert "  [mcp-demo]\n    * mcp_demo_ping        - Ping.\n" in out
+    assert "  [terminal]\n    * terminal             - Run.\n" in out
+    assert "Total: 2 tools" in out
+    assert ("tools.show", {"session_id": SID}) in client.calls

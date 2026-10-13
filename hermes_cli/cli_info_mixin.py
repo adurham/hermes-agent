@@ -402,13 +402,18 @@ class CLIInfoMixin:
 
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
-        from cli import get_tool_definitions
-        from model_tools import get_toolset_for_tool
-        # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
-        # including tools deferred behind the tool_search bridge (users verify MCP installs here).
-        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
-                                     disabled_toolsets=self.disabled_toolsets, quiet_mode=True,
-                                     skip_tool_search_assembly=True)
+        from hermes_cli.gateway_tools import session_tools
+        remote = session_tools()  # the gateway session's catalog (its MCP + plugin tools included)
+        if remote is not None:
+            tools, get_toolset_for_tool = remote
+        else:
+            from cli import get_tool_definitions
+            from model_tools import get_toolset_for_tool
+            # Pre-assembly list: /tools is a discovery surface, so it must show the full catalog
+            # including tools deferred behind the tool_search bridge (users verify MCP installs here).
+            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
+                                         disabled_toolsets=self.disabled_toolsets, quiet_mode=True,
+                                         skip_tool_search_assembly=True)
         if not tools:
             print(t("cli.tools.none_available"))
             return

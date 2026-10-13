@@ -28,7 +28,7 @@ def handlers(connection):
         'approval.received': partial(approvals, connection, ack=True),
         'process.stop': partial(stop_processes, connection),
         'process.kill': partial(kill_process, connection), 'reload.mcp': partial(reload_mcp, connection),
-        'file.attach': partial(attach_file, connection),
+        'file.attach': partial(attach_file, connection), 'tools.show': partial(show_tools, connection),
         **{name: partial(subagent_control, connection, steer=name == 'subagent.steer')
            for name in ('subagent.steer', 'subagent.interrupt')}}
 
@@ -57,6 +57,49 @@ async def subagent_control(connection, ref, params, *, steer):
         queued = bool(child is not None and record and record.get('agent') is child and record.get('accepting_steer')
                       and child.steer(params['text']))
     return {'status': 'queued' if queued else 'rejected', 'subagent_id': sub, 'text': params['text']}
+
+
+async def show_tools(connection, ref, params):
+    """``/tools``: the session's catalog as main's CLI listed it (``get_tool_definitions`` with the
+    session's toolsets, pre tool_search assembly), resolved in the owner, where the MCP and plugin
+    tools live. Rows carry the first description sentence, grouped by toolset."""
+    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authority = connection.authority
+    if ref.session_id not in authority.sessions:
+        raise RuntimeStoreError('not_found')
+    authorize(connection, ref, params, 'session:read')
+    from gateway.session_authorities import owner_scope
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    agent = authority.agent(ref)
+
+    def build():
+        import model_tools
+        from agent.skill_utils import parse_config_string_list
+        from toolsets import session_disabled_toolsets
+        with owner_scope(authority):
+            if agent is not None:
+                enabled, disabled = getattr(agent, 'enabled_toolsets', None), getattr(agent, 'disabled_toolsets', None)
+            else:
+                config = policy.config(authority, secrets=False) if policy is not None else {}
+                enabled = list(policy.current_toolsets(config)) if policy is not None else None
+                disabled = session_disabled_toolsets(parse_config_string_list(
+                    (config.get('agent') or {}).get('disabled_toolsets')) or None,
+                    policy.platform if policy is not None else 'cli')
+            tools = model_tools.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
+                                                     quiet_mode=True, skip_tool_search_assembly=True)
+            sections = {}
+            for tool in sorted(tools or [], key=lambda item: item['function']['name']):
+                name = tool['function']['name']
+                desc = str(tool['function'].get('description', '') or '').split('\n')[0]
+                if '. ' in desc:
+                    desc = desc[:desc.index('. ') + 1]
+                sections.setdefault(model_tools.get_toolset_for_tool(name) or 'unknown', []).append(
+                    {'name': name, 'description': desc})
+        return {'sections': [{'name': n, 'tools': rows} for n, rows in sorted(sections.items())],
+                'total': len(tools or [])}
+    return await asyncio.to_thread(build)
 
 
 async def attach_file(connection, ref, params):
