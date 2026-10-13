@@ -1,9 +1,10 @@
-"""Ink's ``/bg`` (``prompt.background``) on the shared owner.
+"""Ink's ``/bg`` (``prompt.background``) and ``/btw`` (``prompt.btw``) on the shared owner.
 
-The verb replies ``{task_id}`` at once and the answer lands later on the parent session's event
-stream as ``background.complete`` ``{task_id, text}`` (``error: <exc>`` on failure) — the
-sidecar's contract (``tui_gateway/methods_prompt.py``). The side agent is detached: never an
-admission, never a FIFO turn, never a row in the parent transcript. It runs on a daemon thread
+Each verb replies ``{task_id}`` at once and the answer lands later on the parent session's event
+stream as ``background.complete`` ``{task_id, text}`` / ``btw.complete`` ``{task_id, question,
+text}`` (``error: <exc>`` on failure) — the sidecar's contract (``tui_gateway/methods_prompt.py``).
+The side agent is detached: never an admission, never a FIFO turn, never a row in the parent
+transcript. It runs on a daemon thread
 under the owning profile's scope and the session's frozen launch policy (cwd, terminal, model
 route, toolsets), so a session that never ran a turn (no resident agent) works the same.
 """
@@ -25,7 +26,7 @@ _RUNTIME_KEYS = ('api_key', 'base_url', 'provider', 'requested_provider', 'api_m
 
 
 def handlers(connection):
-    return {'prompt.background': partial(background, connection)}
+    return {'prompt.background': partial(background, connection), 'prompt.btw': partial(btw, connection)}
 
 
 def _admit(connection, ref, params, prefix):
@@ -136,3 +137,27 @@ async def background(connection, ref, params):
         return result.get('final_response', str(result)) if isinstance(result, dict) else str(result)
 
     return _spawn(authority, ref, task_id, 'background.complete', body)
+
+
+async def btw(connection, ref, params):
+    """``/btw <question>``: a side question over a snapshot of the conversation
+    (``agent/side_question.py``); the live history, FIFO and prompt cache stay untouched."""
+    _live, policy, text, task_id = _admit(connection, ref, params, 'btw')
+    authority = connection.authority
+    # The resident agent's conversation (a cache-parity fork replays it); a session with no
+    # resident agent (never ran a turn here, or evicted) answers from its stored transcript.
+    agent = authority.agent(ref)
+    snapshot = list(getattr(agent, '_session_messages', None) or [])
+    from gateway.session_local_recovery import transcript_target
+    target = None if snapshot else transcript_target(authority, ref)
+
+    def body():
+        from agent.side_question import answer_side_question
+        history = snapshot or authority.db.get_messages_as_conversation(target)
+        with _side_scope(authority, policy, task_id):
+            model, runtime = _resolve_runtime(authority, policy)
+            main_runtime = {'model': model, 'session_id': ref.session_id,
+                            **{key: runtime.get(key) for key in ('provider', 'base_url', 'api_key', 'api_mode')}}
+            return answer_side_question(text, history, parent_agent=agent, main_runtime=main_runtime) or ''
+
+    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': text})

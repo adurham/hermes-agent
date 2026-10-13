@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from tests.gateway.test_session_busy_controls import admissions, owner
+from tests.gateway.test_session_busy_controls import admissions, owner, settled
 from tests.gateway.fixtures.local_recovery_probe import rpc, websocket
 
 
@@ -55,4 +55,37 @@ def test_background_prompt_runs_a_detached_agent_and_reports_on_the_session(tmp_
                 assert not admissions(home)
                 resumed = (await rpc(ws, 'session.resume', session_id=sid))['result']
                 assert not resumed['messages'], resumed['messages']
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_btw_answers_over_a_snapshot_without_touching_the_conversation(tmp_path):
+    with owner(tmp_path) as (home, peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                # Lazy session (no resident agent): the stored transcript is the snapshot.
+                lazy = (await rpc(ws, 'session.create', request_id='lazy', source='tui', toolsets=[]))['result']['session_id']
+                reply, event = await call_and_await_event(ws, 'prompt.btw', 'btw.complete',
+                                                          session_id=lazy, text='LAZY_SIDE')
+                task = reply.get('result', {}).get('task_id', '')
+                assert task.startswith('btw_'), reply
+                assert event['payload'] == {'task_id': task, 'question': 'LAZY_SIDE', 'text': 'CONTROL_ACK'}, event
+                # A session that ran a turn: the resident agent's conversation is the snapshot.
+                sid = (await rpc(ws, 'session.create', request_id='btw', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='warm', text='WARM_TURN')
+                await settled(home)
+                before = (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
+                peer.requests.clear()
+                reply, event = await call_and_await_event(ws, 'prompt.btw', 'btw.complete',
+                                                          session_id=sid, text='SIDE_QUESTION')
+                task = reply['result']['task_id']
+                assert event['session_id'] == sid
+                assert event['payload'] == {'task_id': task, 'question': 'SIDE_QUESTION', 'text': 'CONTROL_ACK'}, event
+                side = [r for r in peer.requests if 'SIDE_QUESTION' in json.dumps(r['messages'])]
+                assert side and 'WARM_TURN' in json.dumps(side[0]['messages']), peer.requests
+                denied = await rpc(ws, 'prompt.btw', session_id=sid, text='')
+                assert denied.get('error', {}).get('message') == 'invalid_params', denied
+                # History, FIFO and transcript stay untouched.
+                assert [r[0] for r in admissions(home)] == ['warm']
+                assert (await rpc(ws, 'session.resume', session_id=sid))['result']['messages'] == before
         asyncio.run(probe())

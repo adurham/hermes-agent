@@ -161,31 +161,14 @@ it("/usage renders main's session totals from session.stats and /tools says what
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
 })
 
-it('/status reads through the gateway; /btw refuses instead of calling a sidecar-only RPC', async () => {
-  const { page, request, slash, sys } = harness()
+it('/status reads through the gateway', async () => {
+  const { page, request, slash } = harness()
 
   slash('/status')
   await flush()
   expect(request).toHaveBeenCalledWith('slash.exec', { command: 'status', session_id: 'owner' })
   expect(page).toHaveBeenCalledWith('Session: owner', expect.any(String))
-
-  for (const cmd of ['/btw what was that']) {
-    slash(cmd)
-  }
-
-  await flush()
-
-  const methods = request.mock.calls.map(([method]) => method)
-
-  for (const method of ['session.status', 'prompt.btw']) {
-    expect(methods).not.toContain(method)
-  }
-
-  const notices = sys.mock.calls.map(([text]) => String(text))
-
-  for (const name of ['btw']) {
-    expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
-  }
+  expect(request.mock.calls.map(([method]) => method)).not.toContain('session.status')
 })
 
 it('/stop is session-scoped; process-global /agents pause, /reload-mcp and /reload refuse on the shared gateway', async () => {

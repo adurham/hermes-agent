@@ -51,3 +51,14 @@ it('/bg starts prompt.background on the shared gateway and tracks the task', asy
   expect(sys.mock.calls.flat().join('\n')).not.toMatch(/not available/i)
   expect(getUiState().bgTasks.has('bg_abc123')).toBe(true)
 })
+
+it('/btw asks prompt.btw on the shared gateway and announces the task', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/btw what was that error')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('prompt.btw', { session_id: 'owner', text: 'what was that error' })
+  expect(sys).toHaveBeenCalledWith('btw btw_def456 — answering from a conversation snapshot')
+  expect(sys.mock.calls.flat().join('\n')).not.toMatch(/not available/i)
+})
