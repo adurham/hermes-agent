@@ -15,6 +15,7 @@ from agent.onboarding_first_tasks import (
     FIXED_ID, MAX_LABEL, MAX_PICKS, OWN_TASK, TASK_BY_ID, eligible_tasks, task_skills,
 )
 from agent.onboarding_flow import Facts, next_beat
+from tools.set_theme_tool import ACCENT_SWATCHES
 
 CHAT_TITLE = "Getting started"
 GREETING = "Hi, I'm Hermes. Let's set things up for you. Then we'll get something cool done."
@@ -29,7 +30,7 @@ QUESTIONS = {
     "build": "Know what you'd like me to make?",
 }
 
-_SET_THEME = 'tool_call {"calls":[{"name":"set_theme","arguments":{"accent":"Ultraviolet"}}]}'
+_SET_THEME = 'tool_call {"calls":[{"name":"set_theme","arguments":{"accent":"violet"}}]}'
 _TOUR_CALL = 'tool_call {"calls":[{"name":"gui_tour","arguments":{"action":"start","preset":"%s"}}]}'
 
 PROFILE_DIMENSIONS = (
@@ -83,7 +84,7 @@ Voice: every word you write is spoken to the user. Never think out loud. Never m
 If they ask what you know about them, answer truthfully: these machine basics and what they picked.
 
 Tools you reach through tool_call (their call shapes):
-- {_SET_THEME}. accent: a picker name or a hex colour; mode: light, dark or system; layout: sidebar-left (Basic) or terminal-deck (Elite).
+- {_SET_THEME}. accent: a swatch id ({", ".join(ACCENT_SWATCHES)}) or a hex colour #rrggbb; mode: light, dark or system; layout: sidebar-left (Basic) or terminal-deck (Elite).
 - {_TOUR_CALL % "quick"} (preset quick or full).
 
 Local models: the model picker chooses one. Explain the download and how it fits this hardware first, then point to Settings, Providers, Local Models. Never install a model runtime or download a model yourself.
@@ -106,7 +107,7 @@ _LOOK_AROUND = (
 # How a typed answer settles each beat without the card.
 _TYPED_ANSWER = {
     "name": 'setup_beat(beat="name", value="<their name>")',
-    "theme": _SET_THEME.replace('"accent":"Ultraviolet"', '"accent":"<colour>"'),
+    "theme": _SET_THEME.replace('"accent":"violet"', '"accent":"<colour>"'),
     "layout": 'tool_call {"calls":[{"name":"set_theme","arguments":{"layout":"sidebar-left" or "terminal-deck"}}]}',
     "connectors": 'setup_beat(beat="connectors", value="continue") for "done" or "continue", skip=true for "skip"',
     "plugins": 'setup_beat(beat="plugins", value="continue") for "done" or "continue", skip=true for "skip"',
