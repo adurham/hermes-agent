@@ -208,6 +208,7 @@ class CLIInitMixin:
             os.getenv("HERMES_MAX_ITERATIONS"),
         ))
         self.run_budget_seconds = run_budget if run_budget is not None else CLI_CONFIG["agent"].get("run_budget_seconds")
+        self._explicit_run_budget = run_budget  # `--run-budget`: session.create policy (the gateway runs the turn)
 
     def _init_toolsets(self, toolsets):
         from cli import CLI_CONFIG, validate_toolset
@@ -368,7 +369,8 @@ class CLIInitMixin:
                   "base_url": getattr(self, "_explicit_base_url", None),
                   "toolsets": self.enabled_toolsets,
                   "pass_session_id": getattr(self, "pass_session_id", False) or None,
-                  "ignore_rules": getattr(self, "ignore_rules", False) or None}
+                  "ignore_rules": getattr(self, "ignore_rules", False) or None,
+                  "run_budget": getattr(self, "_explicit_run_budget", None)}
         sid = store.open_session(self, launch)
         self._gateway_session_open = True
         if sid and sid != self.session_id:

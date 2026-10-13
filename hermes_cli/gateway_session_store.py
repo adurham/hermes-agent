@@ -359,6 +359,8 @@ def _creation_policy(launch):
         fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
     policy = _requested_policy(argparse.Namespace(**fields, source=None))
     policy.pop("source", None)
+    if launch.get("run_budget") is not None:  # main's `--run-budget` (the thin client refuses it)
+        policy["run_budget"] = float(launch["run_budget"])
     policy.update(env_launch_flags())
     return policy
 

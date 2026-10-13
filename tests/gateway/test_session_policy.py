@@ -346,3 +346,17 @@ def test_lazy_info_reports_the_free_tier_pinned_model(tmp_path, monkeypatch):
     assert _lazy_model(authority, build_policy({'cwd': str(tmp_path), 'model': 'pick'}, {})) == 'pick'
     monkeypatch.setattr(anon_auth, 'free_tier_route', lambda: False)
     assert _lazy_model(authority, configured) == 'cfg-model'
+
+
+def test_run_budget_is_a_frozen_launch_option(tmp_path):
+    """`hermes chat --run-budget N` (main: AIAgent(run_budget_seconds=N)): frozen as the session's
+    agent.run_budget_seconds; the profile's own value applies without the flag; junk is refused."""
+    from gateway.session_policy import build_policy
+    from hermes_state_runtime import RuntimeStoreError
+    cfg = {'agent': {'run_budget_seconds': 300}}
+    assert build_policy(dict(cwd=str(tmp_path), run_budget=120), cfg).run_budget_seconds == 120.0
+    assert build_policy(dict(cwd=str(tmp_path)), cfg).run_budget_seconds == 300.0
+    assert build_policy(dict(cwd=str(tmp_path)), {}).run_budget_seconds is None
+    for bad in (0, -5, True, 'soon'):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            build_policy(dict(cwd=str(tmp_path), run_budget=bad), cfg)

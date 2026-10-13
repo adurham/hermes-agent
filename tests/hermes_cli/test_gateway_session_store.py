@@ -337,3 +337,9 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     assert gss.create_titled_session("Fresh Named") == "local-new"
     method, params = [c for c in client.calls if c[0] == "session.create"][-1]
     assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]
+
+
+def test_run_budget_flag_rides_session_create():
+    from hermes_cli.gateway_session_store import _creation_policy
+    assert _creation_policy({"run_budget": 90})["run_budget"] == 90.0
+    assert "run_budget" not in _creation_policy({"run_budget": None})

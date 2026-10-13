@@ -11,7 +11,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit'})
+                           'service_tier', 'cwd_explicit', 'run_budget'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
@@ -191,6 +191,12 @@ class LocalSessionPolicy:
         return resolve_turn_limit(cfg.get('agent', {}).get('max_turns', cfg.get('max_turns')))
 
     @property
+    def run_budget_seconds(self):
+        """Frozen `agent.run_budget_seconds` (`--run-budget` folds into it); None = no budget."""
+        from agent.agent_init import _normalize_run_budget_seconds
+        return _normalize_run_budget_seconds(self.config().get('agent', {}).get('run_budget_seconds'))
+
+    @property
     def reasoning_config(self):
         from hermes_constants import resolve_reasoning_config
         return resolve_reasoning_config(self.config(), self.model or '')
@@ -321,6 +327,13 @@ def _apply_launch_overrides(params, config):
         if tier is None:
             raise RuntimeStoreError('invalid_params')
         config.setdefault('agent', {})['service_tier'] = tier or 'normal'
+    if 'run_budget' in params:
+        # `--run-budget SECONDS`: the wall-clock budget per run (80% wrap-up notice, capped provider
+        # timeouts), frozen as the session's `agent.run_budget_seconds` like main's CLI flag over config.
+        value = params['run_budget']
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+            raise RuntimeStoreError('invalid_params')
+        config.setdefault('agent', {})['run_budget_seconds'] = float(value)
     if params.get('checkpoints'):
         section = config.get('checkpoints')
         section = dict(section) if isinstance(section, dict) else {'enabled': bool(section)} if section else {}
