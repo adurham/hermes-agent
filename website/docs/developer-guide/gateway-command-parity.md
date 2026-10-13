@@ -90,7 +90,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/plugins` | refused | HermesCLI._cmd_plugins | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
 | `/profile` | read | HermesCLI._handle_profile_command | slash.exec | action: profile | refused |  |
 | `/prompt` (/compose) | refused | HermesCLI._handle_prompt_compose_command | local | slash.exec: refused | refused | client-local (cli_only) |
-| `/queue` (/q) | refused | HermesCLI._cmd_queue | local | slash.exec: refused | refused |  |
+| `/queue` (/q) | refused | HermesCLI._cmd_queue | local | action: queue | refused |  |
 | `/quit` (/exit) | refused | HermesCLI._cmd_exit | local | unavailable: terminal | refused | client-local (cli_only) |
 | `/reasoning` | control | HermesCLI._handle_reasoning_command | canonical route | action: reasoning | refused | per-session setting (gateway handler) |
 | `/redraw` | refused | HermesCLI._cmd_redraw | local | unavailable: terminal | refused | client-local (cli_only) |
@@ -100,7 +100,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/reload-skills` (/reload_skills) | refused | HermesCLI._cmd_reload_skills | commands.catalog, skills.reload | unavailable: advanced | refused |  |
 | `/restart` | refused | messaging-only: unknown command | slash.exec: refused | unavailable: terminal | refused | messaging-only |
 | `/resume` | refused | HermesCLI._handle_resume_command | local | picker: session | refused | switches the messaging chat's session; local clients resume by id |
-| `/retry` | refused | HermesCLI._cmd_retry | canonical route | slash.exec: refused | refused |  |
+| `/retry` | refused | HermesCLI._cmd_retry | canonical route | action: retry | refused |  |
 | `/review` | control | HermesCLI._handle_review_command | slash.exec | slash.exec | refused |  |
 | `/rollback` | refused | HermesCLI._handle_rollback_command | rollback.diff, rollback.list, rollback.restore | slash.exec: refused | refused | restores filesystem checkpoints |
 | `/save` | refused | HermesCLI.save_conversation | session.save | rpc session.save | refused | writes an export file on the gateway host |
@@ -112,7 +112,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/start` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging-only |
 | `/status` | read | HermesCLI._show_session_status | canonical route | slash.exec (rpc fallback) | refused | TUI session: main's `Hermes TUI Status` |
 | `/statusbar` (/sb) | refused | HermesCLI._cmd_statusbar | local (preference not saved) | unavailable: terminal | refused | client-local (cli_only) |
-| `/steer` (/s) | refused | HermesCLI._cmd_steer | canonical route | slash.exec: refused | refused |  |
+| `/steer` (/s) | refused | HermesCLI._cmd_steer | canonical route | action: steer | refused |  |
 | `/stop` | refused | HermesCLI._handle_stop_command | canonical route | action: stop | refused |  |
 | `/subgoal` | control | HermesCLI._handle_subgoal_command | slash.exec | slash.exec | refused |  |
 | `/subscription` (/upgrade) | refused | HermesCLI._show_subscription | sidecar: subscription.state | slash.exec: refused | refused | client-local (cli_only) |
@@ -123,7 +123,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/toolsets` | read | HermesCLI.show_toolsets | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
 | `/topic` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging-only |
 | `/topup` | read | HermesCLI._show_billing | sidecar: billing.state | slash.exec | refused |  |
-| `/undo` | refused | HermesCLI._cmd_undo | canonical route | slash.exec: refused | refused |  |
+| `/undo` | refused | HermesCLI._cmd_undo | canonical route | action: undo | refused |  |
 | `/update` | refused | HermesCLI._cmd_update | local | unavailable: terminal | refused |  |
 | `/usage` | read (bare only (`reset` refused)) | HermesCLI._handle_usage_command | canonical route | slash.exec | refused |  |
 | `/verbose` | control | HermesCLI._toggle_verbose | config.set | unavailable: terminal | refused | per-session setting (gateway handler) |
