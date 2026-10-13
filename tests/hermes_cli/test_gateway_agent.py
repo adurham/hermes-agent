@@ -578,3 +578,19 @@ def test_after_a_redirect_the_redirect_row_is_the_turns_ask_like_main(make_agent
     assert agent.redirect("redirect now") is True
     worker.join(5)
     assert agent._turn_base_usage_anchor["base_count"] == 3  # through the redirect row
+
+
+def test_voice_turn_flag_rides_prompt_submit(make_agent):
+    """Main sets agent._voice_turn_pending for a spoken turn (auxiliary.voice_chat route); the gateway
+    gets it as prompt.submit voice_turn=true, and a typed turn carries no flag."""
+    agent, client = make_agent([frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    agent._voice_turn_pending = True
+    agent.run_conversation("[Voice input — respond concisely] hi", persist_user_message="hi")
+    submit = dict(client.calls)["prompt.submit"]
+    assert submit["voice_turn"] is True and submit["text"] == "hi"
+    assert submit["api_text"].startswith("[Voice input")
+    client.calls.clear()
+    client.script = [frame("message.complete", {"text": "ok", "outcome": "completed"})]
+    agent._voice_turn_pending = False
+    agent.run_conversation("typed")
+    assert "voice_turn" not in dict(client.calls)["prompt.submit"]
