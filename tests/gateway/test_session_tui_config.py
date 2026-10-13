@@ -2,6 +2,7 @@
 /indicator) are written by the shared owner into the OWNING profile's config.yaml, like main's
 per-TUI sidecar ``config.set`` — never refused, never inference."""
 import asyncio
+import json
 
 import hermes_yaml as yaml
 import pytest
@@ -54,5 +55,54 @@ def test_display_preferences_theme_and_indicator_persist_to_the_profile(tmp_path
                 ]:
                     assert (await rpc(ws, 'config.set', **params)).get('error', {}).get('message') == reason, params
                 assert _display(home)['tui_theme'] == 'dark'
+                assert not admissions(home) and not peer.requests
+        asyncio.run(probe())
+
+
+async def _rpc_and_events(ws, method, **params):
+    """``rpc`` that keeps the event frames delivered before the reply (``rpc`` drops them)."""
+    await ws.send(json.dumps({'jsonrpc': '2.0', 'id': method, 'method': method, 'params': params}))
+    events = []
+    async with asyncio.timeout(20):
+        while True:
+            frame = json.loads(await ws.recv())
+            if frame.get('id') == method:
+                return frame, events
+            if frame.get('method') == 'event':
+                events.append(frame['params'])
+
+
+async def _skin_event(ws, sid, seen=()):
+    """The session's own frame: the owner's repaint of THIS profile (the process-wide change
+    watcher is session-less and only watches the launch profile)."""
+    for params in seen:
+        if params['type'] == 'skin.changed' and params['session_id'] == sid:
+            return params['payload']
+    async with asyncio.timeout(20):
+        while True:
+            frame = json.loads(await ws.recv())
+            if (frame.get('method') == 'event' and frame['params']['type'] == 'skin.changed'
+                    and frame['params']['session_id'] == sid):
+                return frame['params']['payload']
+
+
+@pytest.mark.platforms("linux")
+def test_skin_persists_and_repaints_every_attached_tui_of_the_profile(tmp_path):
+    with owner(tmp_path) as (home, peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws, websocket(home, desc) as other:
+                sid = (await rpc(ws, 'session.create', request_id='skin', source='tui',
+                                 toolsets=[]))['result']['session_id']
+                peer_sid = (await rpc(other, 'session.create', request_id='skin-peer', source='tui',
+                                      toolsets=[]))['result']['session_id']
+                result, seen = await _rpc_and_events(ws, 'config.set', key='skin', value='mono')
+                assert result.get('result') == {'key': 'skin', 'value': 'mono'}, result
+                # Main broadcast the resolved skin to every surface of the profile.
+                for socket, session, frames in ((ws, sid, seen), (other, peer_sid, ())):
+                    payload = await _skin_event(socket, session, frames)
+                    assert payload['name'] == 'mono' and payload['colors'], payload
+                assert _display(home)['skin'] == 'mono'
+                assert (await rpc(ws, 'config.get', key='skin'))['result']['value'] == 'mono'
+                assert (await rpc(ws, 'config.set', key='skin', value='')).get('error', {}).get('message') == 'invalid_params'
                 assert not admissions(home) and not peer.requests
         asyncio.run(probe())

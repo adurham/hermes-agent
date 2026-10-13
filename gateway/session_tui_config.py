@@ -104,6 +104,11 @@ def _set_display(cfg, key, value):
         return {'value': raw}
     if key == 'focus':
         return _set_focus(display, raw)
+    if key == 'skin':
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeStoreError('invalid_params')
+        display['skin'] = value.strip()
+        return {'value': value.strip()}
     raise RuntimeStoreError('invalid_params')
 
 
@@ -171,4 +176,24 @@ async def config_set(connection, ref, params):
     if key == 'focus' and ref.session_id and 'tool_progress' in result:
         # Main's session also took the focus mode at once: this session's /verbose state.
         connection.authority.sessions[ref.session_id].tool_progress_mode = result['tool_progress']
+    if key == 'skin':
+        await _broadcast_skin(connection)
     return {'key': key, **result}
+
+
+async def _broadcast_skin(connection):
+    """Main repainted every surface of the profile: ``skin.changed`` on each attached session."""
+    def resolve():
+        import sys
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.config import load_config
+        from tui_gateway.change_watcher import skin_payload
+        with _profile_runtime_scope(Path(connection.authority.profile_id)):
+            payload = skin_payload(load_config())
+        if (server := sys.modules.get('tui_gateway.server')) is not None:
+            server._note_skin_broadcast()  # as main: the config watcher must not repaint it again
+        return payload
+    payload = await asyncio.to_thread(resolve)
+    for session_id, live in list(connection.authority.sessions.items()):
+        if live.subscribers:
+            live.event_stream.publish(session_id, payload, event_type='skin.changed')
