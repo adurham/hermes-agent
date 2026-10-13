@@ -2,7 +2,7 @@
 """Regenerate website/docs/developer-guide/gateway-command-parity.md from the code.
 
 For every ``COMMAND_REGISTRY`` command it records what each local client does with it on the
-shared gateway -- the classic CLI view (``hermes_cli/gateway_chat_commands.py``), Ink
+shared gateway -- the classic CLI (main's ``HermesCLI`` dispatch table, ``cli.py``), Ink
 (``ui-tui/src/app/slash/commands/*.ts``), Desktop (``apps/desktop/src/lib/desktop-slash-commands.ts``
 + the registry's ``desktop=`` dump), ACP (``acp_adapter`` -> ``slash_mutation``) -- and the
 gateway's own ``slash.exec`` verdict for a local session (``gateway/session_commands.py``).
@@ -84,11 +84,15 @@ def _base_note(cmd):
     return ""
 
 
-def classic_cell(name, gateway):
-    from hermes_cli.gateway_chat_commands import VIEW_ROUTES
-    if name in VIEW_ROUTES:
-        return VIEW_ROUTES[name]
-    return "slash.exec" if gateway != "refused" else "refused: not available yet"
+def classic_cell(cmd):
+    """``hermes chat`` is main's ``HermesCLI`` with a gateway-backed agent and session store
+    (``hermes_cli/gateway_agent.py``, ``gateway_session_store.py``): every command runs main's own
+    handler in the CLI process. The cell names that handler; a gateway-only command has none."""
+    from cli import HermesCLI
+    entry = HermesCLI._slash_handler(cmd.name)
+    if entry is None:
+        return "messaging-only: unknown command" if cmd.gateway_only else "unknown command"
+    return f"HermesCLI.{entry[0]}"
 
 
 def acp_cell(name, gateway):
@@ -215,11 +219,16 @@ Every local client (classic CLI, Ink TUI, Desktop, ACP) attaches to the one gate
 the session. A slash command either runs in the client against a canonical verb
 (`session.mutate`, `session.create`, `prompt.receipt`, ...), or goes to the owner as
 `slash.exec`, where `gateway/session_commands.py` runs only the reviewed reads below and refuses
-the rest (`unsupported_command`). The classic CLI prints a refusal as
-"/x is not available on the shared gateway yet" with a link to this page.
+the rest (`unsupported_command`). The classic CLI (`hermes chat`) is main's `HermesCLI` with a
+gateway-backed agent and session store: its column names the main handler it runs in-process
+(turns, tools and session writes go to the gateway through `hermes_cli/gateway_agent.py` /
+`gateway_session_store.py`). The `--stream-json` / safe-mode transport client keeps its own
+narrower routes (`hermes_cli/gateway_chat_commands.py`).
 
 **Gateway (`slash.exec`)**: `read` = the real handler runs for a local session (proved by
-`tests/gateway/test_session_read_commands.py`); `control` = admission-fenced write; `refused`.
+`tests/gateway/test_session_read_commands.py`); `control` = admission-fenced write (`/approve`
+`/deny` resolve this session's waiting approval, `tests/gateway/test_session_approval_commands.py`);
+`refused`.
 **Notes**: `per-session setting (gateway handler)` = the messaging handler runs and applies the
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
@@ -239,7 +248,7 @@ def render() -> str:
         gateway = gateway_cell(cmd.name)
         counts[gateway.split(" ")[0]] = counts.get(gateway.split(" ")[0], 0) + 1
         aliases = f" ({', '.join('/' + a for a in cmd.aliases)})" if cmd.aliases else ""
-        cells = [f"`/{cmd.name}`{aliases}", gateway, classic_cell(cmd.name, gateway),
+        cells = [f"`/{cmd.name}`{aliases}", gateway, classic_cell(cmd),
                  ink_cell(cmd, gateway, ink, served), desktop_cell(cmd, gateway, specs, served),
                  acp_cell(cmd.name, gateway), port_note(cmd)]
         rows.append("| " + " | ".join(cell.replace("|", "\\|") for cell in cells) + " |")
