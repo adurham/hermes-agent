@@ -37,6 +37,8 @@ async def busy_config(connection, ref, params, *, write=False):
         return verbose_config(connection, ref, params, write)
     if params.get('key') == 'show_reasoning' and not set(params) - allowed and ref.session_id:
         return show_reasoning_config(connection, ref, params, write)
+    if params.get('key') == 'service_tier' and write and not set(params) - allowed and ref.session_id:
+        return service_tier_config(connection, ref, params)
     if params.get('key') == 'yolo' and not set(params) - allowed and ref.session_id:
         return await yolo_config(connection, ref, params, write)
     if (set(params) - allowed or not ref.session_id or params.get('key') != 'busy'
@@ -92,6 +94,23 @@ def show_reasoning_config(connection, ref, params, write):
         live.show_reasoning = _YOLO_WORDS[word]
     return {'key': 'show_reasoning', 'value': '1' if getattr(live, 'show_reasoning', None) is True else '0',
             'scope': 'session'}
+
+
+def service_tier_config(connection, ref, params):
+    """Session-scoped ``/fast`` (the classic CLI's tier pick, ``normal`` clears to normal): the
+    session's service-tier override the next turn's agent reads (``current_service_tier``), never a
+    settings write. ``--global`` persistence stays the client's own config.yaml write."""
+    from agent.fast_mode import parse_exact_service_tier
+    try:
+        tier = parse_exact_service_tier(params.get('value')) if isinstance(params.get('value'), str) else None
+    except ValueError:
+        tier = None
+    if tier is None:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:control')
+    live = connection.authority.sessions[ref.session_id]
+    connection.authority.runner._set_session_service_tier_override(live.route, tier or None)
+    return {'key': 'service_tier', 'value': tier or 'normal', 'scope': 'session'}
 
 
 _YOLO_WORDS = {'1': True, 'on': True, 'true': True, '0': False, 'off': False, 'false': False}

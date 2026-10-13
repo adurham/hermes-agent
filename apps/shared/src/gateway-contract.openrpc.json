@@ -8404,6 +8404,7 @@
               "verbose",
               "yolo",
               "show_reasoning",
+              "service_tier",
               "model"
             ],
             "title": "Key",

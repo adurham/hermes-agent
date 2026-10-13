@@ -91,6 +91,10 @@ class GatewayAgent:
         self.max_iterations = max_iterations
         self.quiet_mode = quiet_mode
         self.service_tier = service_tier
+
+        self.tool_progress_mode = tool_progress_mode
+        self.reasoning_config = reasoning_config
+        self._service_tier = None
         self.clarify_callback = clarify_callback
         self.connection_callback = connection_callback
         self._reasoning_callback = None
@@ -156,6 +160,7 @@ class GatewayAgent:
         self.reasoning_config = reasoning_config
         self._apply_info(self._state().info)
         self.reasoning_callback = reasoning_callback
+        self.service_tier = service_tier
         state = self._state()
         state.usage_listeners.append(self.apply_session_usage)
         if state.usage:
@@ -255,6 +260,30 @@ class GatewayAgent:
         self._apply_info(state.info)
         if state.usage:
             self.apply_session_usage(state.usage)
+
+    @property
+    def service_tier(self):
+        return self._service_tier
+
+    @service_tier.setter
+    def service_tier(self, tier):
+        """Main rebuilds AIAgent(service_tier=...) after ``/fast``; the gateway agent gets the same tier
+        as the session's override (``config.set service_tier``), sent when it differs from the last
+        one sent for this session. The session's own default (None at first build) is left alone."""
+        self._service_tier = tier
+        # Remembered on the session's shared state: /fast rebuilds this stand-in, the session stays.
+        state = self._state()
+        wanted = tier or "normal"
+        sent = getattr(state, "service_tier_sent", None)
+        if wanted == sent or (sent is None and not tier):
+            return
+        try:
+            self.connection.call("config.set", session_id=self.session_id, key="service_tier",
+                                 value=wanted, timeout=10)
+        except GatewayClientError as exc:
+            logger.debug("config.set service_tier failed: %s", exc)
+            return
+        state.service_tier_sent = wanted
 
     # -- snapshot-backed reads ---------------------------------------------------------------
     def _state(self):

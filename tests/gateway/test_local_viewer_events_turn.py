@@ -257,3 +257,41 @@ def test_prompts_carry_the_gateway_wait_window_only_for_local_viewers(monkeypatc
         CanonicalPendingPrompt.model_validate(clarify)
     else:
         assert 'timeout_s' not in approval and 'timeout_s' not in clarify
+
+
+@pytest.mark.asyncio
+async def test_service_tier_is_a_session_scoped_fast_override(tmp_path, monkeypatch):
+    """The classic CLI's /fast: config.set service_tier writes the session's tier override (what the
+    next turn's agent reads), never config.yaml; an unknown tier is refused."""
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_state import SERVICE_TIER_UNSET
+    from tests.gateway.test_surface_admission import _authority
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    # The fixture runner is a bare namespace: give it the real runner's per-session state methods.
+    from types import MethodType
+    from gateway.run import GatewayRunner
+    for name in ('_sessions_map', '_session_state', '_peek_session_state', '_set_session_service_tier_override'):
+        setattr(authority.runner, name, MethodType(getattr(GatewayRunner, name), authority.runner))
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        route = authority.sessions['s'].route
+
+        def override():
+            state = authority.runner._peek_session_state(route)
+            return SERVICE_TIER_UNSET if state is None else state.conversation.service_tier_override
+        res = await connection.dispatch({'id': 2, 'method': 'config.set', 'params': {
+            'session_id': 's', 'key': 'service_tier', 'value': 'priority'}})
+        assert res['result'] == {'key': 'service_tier', 'value': 'priority', 'scope': 'session'}, res
+        assert override() == 'priority'
+        await connection.dispatch({'id': 3, 'method': 'config.set', 'params': {
+            'session_id': 's', 'key': 'service_tier', 'value': 'normal'}})
+        assert override() is None
+        bad = await connection.dispatch({'id': 4, 'method': 'config.set', 'params': {
+            'session_id': 's', 'key': 'service_tier', 'value': 'warp'}})
+        assert bad['error']['message'] == 'invalid_params', bad
+    finally:
+        await connection.close()

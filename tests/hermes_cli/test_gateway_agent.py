@@ -628,3 +628,16 @@ def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     agent2 = GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": False})
     assert len([p for m, p in client.calls if m == "session.mutate"]) == 2  # already the session's effort
     assert agent2.reasoning_config == {"enabled": False}
+
+
+def test_fast_tier_reaches_the_session_on_each_rebuild_and_back_to_normal(make_agent):
+    """/fast: main rebuilds AIAgent(service_tier=tier). Each rebuilt stand-in sends the tier as the
+    session's override when it changed; /fast normal clears it; an unset tier never overrides."""
+    agent, client = make_agent([])  # first build, no tier: the session keeps its own default
+    assert not [p for m, p in client.calls if m == "config.set" and p.get("key") == "service_tier"]
+    fast = GatewayAgent(connection=agent.connection, session_id=SID, service_tier="priority")
+    again = GatewayAgent(connection=agent.connection, session_id=SID, service_tier="priority")
+    normal = GatewayAgent(connection=agent.connection, session_id=SID, service_tier=None)
+    assert fast and again and normal
+    sets = [p["value"] for m, p in client.calls if m == "config.set" and p.get("key") == "service_tier"]
+    assert sets == ["priority", "normal"]
