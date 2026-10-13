@@ -18,7 +18,6 @@ export const arOverrides = {
       allApps: 'كل التطبيقات',
       receiptConnected: apps => `متصلة: ${apps}`,
       receiptNone: 'لم يتم ربط تطبيقات جديدة',
-      receiptSaid: 'تمت الإجابة في الدردشة',
       receiptTimedOut: 'أُغلقت بعد 5 دقائق'
     }
   },

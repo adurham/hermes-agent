@@ -7,7 +7,6 @@ export const jaConnectors = {
       allApps: 'すべてのアプリ',
       receiptConnected: apps => `接続済み: ${apps}`,
       receiptNone: '新しく接続したアプリはありません',
-      receiptSaid: 'チャットで回答しました',
       receiptTimedOut: '5 分後に閉じました'
     }
   },

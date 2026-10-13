@@ -1,7 +1,6 @@
 """``manage_connections`` action ``display``: the desktop's browsable connector card.
 
-The card is an operation with no targets, so only Continue, a typed answer, the deadline or /stop
-settles it. Connecting from the card runs the Connectors page's own account operation, never this one."""
+The card is an operation with no targets, so only Continue, the deadline or /stop settles it. Connecting from the card runs the Connectors page's own account operation, never this one."""
 
 from __future__ import annotations
 
@@ -22,19 +21,13 @@ OFF_DESKTOP_NOTE = (
 @dataclass
 class DisplayOperation(ConnectionOperation):
     suggested: list[str] = field(default_factory=list)
-    # The user's typed words when they answered the card in the composer instead of pressing Continue.
-    said: Optional[str] = None
 
     def request_payload(self) -> dict[str, Any]:
         return {**super().request_payload(), "display": {"suggested": list(self.suggested)}}
 
 
 def apply_answer(operation: DisplayOperation, raw: str) -> None:
-    answer = json.loads(raw)
-    said = answer.get("said")
-    if said:
-        operation.said = str(said)
-    if said or answer.get("settled_by") == SettleReason.continue_.value:
+    if json.loads(raw).get("settled_by") == SettleReason.continue_.value:
         operation.settle(SettleReason.continue_)
 
 
@@ -44,12 +37,10 @@ def connected_slugs(client: Any) -> set[str]:
 
 
 def _result(client: Any, before: set[str], operation: DisplayOperation) -> dict[str, Any]:
-    if operation.settled_by == SettleReason.deadline:
-        return {"timed_out": True}
-    if operation.settled_by == SettleReason.continue_ and operation.said is not None:
-        return {"said": operation.said}
     after = connected_slugs(client)
-    return {"connected": sorted(after), "newly_connected": sorted(after - before), "suggested": operation.suggested}
+    result = {"connected": sorted(after), "newly_connected": sorted(after - before), "suggested": operation.suggested}
+    # A user who connected an app and walked away still gets it reported.
+    return {**result, "timed_out": True} if operation.settled_by == SettleReason.deadline else result
 
 
 def _unchanged(_operation: Any) -> None:

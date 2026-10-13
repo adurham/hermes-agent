@@ -1,13 +1,14 @@
 """``manage_connections`` action ``display``: the desktop directory card.
 
 Contracts:
-- on desktop the call emits a card with no targets, waits for Continue, and reports what is connected,
-  computed from the gateway list read at the start and at settle
+- on desktop the call emits a card with no targets, waits for Continue or the deadline, and reports what is
+  connected, computed from the gateway list read at the start and at settle; the deadline adds timed_out
 - without a card surface it returns at once with the status list and where to connect
 """
 
 import json
 import threading
+from unittest.mock import patch
 
 import pytest
 
@@ -38,24 +39,28 @@ def _display(gw, *, callback, card_surface):
     ))
 
 
-def test_display_waits_for_continue_and_reports_what_the_user_connected():
+@pytest.mark.parametrize("ending", ["continue", "deadline"])
+def test_display_waits_for_the_user_and_reports_what_they_connected(ending):
     gw = ListFake({"gmail"})
     seen = []
 
     def card(payload):
         seen.append(payload)
 
-        def user_connects_slack_then_continues():
+        def user_connects_slack():
             gw.connected.add("slack")
-            apply_answer(live.get("s1", payload["op_id"]), json.dumps({"settled_by": "continue"}))
+            if ending == "continue":
+                apply_answer(live.get("s1", payload["op_id"]), json.dumps({"settled_by": "continue"}))
 
-        threading.Timer(0.05, user_connects_slack_then_continues).start()
+        threading.Timer(0.05, user_connects_slack).start()
 
-    out = _display(gw, callback=card, card_surface=True)
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.5 if ending == "deadline" else 60):
+        out = _display(gw, callback=card, card_surface=True)
 
     (payload,) = seen
     assert payload["targets"] == [] and payload["display"] == {"suggested": ["slack", "linear"]}
-    assert out == {"connected": ["gmail", "slack"], "newly_connected": ["slack"], "suggested": ["slack", "linear"]}
+    expected = {"connected": ["gmail", "slack"], "newly_connected": ["slack"], "suggested": ["slack", "linear"]}
+    assert out == ({**expected, "timed_out": True} if ending == "deadline" else expected)
     assert live.current("s1") is None
 
 

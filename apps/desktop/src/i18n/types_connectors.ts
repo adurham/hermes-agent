@@ -40,7 +40,6 @@ export interface ConnectorDirectoryTranslations {
   allApps: string
   receiptConnected: (apps: string) => string
   receiptNone: string
-  receiptSaid: string
   receiptTimedOut: string
 }
 

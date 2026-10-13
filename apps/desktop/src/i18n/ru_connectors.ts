@@ -7,7 +7,6 @@ export const ruConnectors = {
       allApps: 'Все приложения',
       receiptConnected: apps => `Подключены: ${apps}`,
       receiptNone: 'Новые приложения не подключены',
-      receiptSaid: 'Ответ дан в чате',
       receiptTimedOut: 'Закрыто через 5 минут'
     }
   },

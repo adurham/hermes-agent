@@ -513,19 +513,6 @@ export const skipConnectionTarget = (request: ConnectionRequest, name: string): 
 export const continueConnectionRequest = (request: ConnectionRequest): Promise<boolean> =>
   respondToConnectionRequest(request, { settled_by: 'continue' })
 
-/** The composer's words answer an open display card: the tool returns them as `said`. True when a card took them. */
-export function answerConnectorDirectory(sessionId: string, text: string): boolean {
-  const request = $connectionRequests.get()[keyFor(sessionId)]
-
-  if (!request?.display || request.settled || !text.trim()) {
-    return false
-  }
-
-  void respondToConnectionRequest(request, { said: text.trim(), settled_by: 'continue' }).catch(() => undefined)
-
-  return true
-}
-
 // Typing a message while the card is open ends the operation, otherwise the typed message waits behind
 // the blocked tool until the deadline.
 export async function skipConnectionRequest(sessionId: string | null | undefined): Promise<boolean> {

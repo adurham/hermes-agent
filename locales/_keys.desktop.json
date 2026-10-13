@@ -1023,7 +1023,6 @@
     "connectors.directory.allApps",
     "connectors.directory.receiptConnected",
     "connectors.directory.receiptNone",
-    "connectors.directory.receiptSaid",
     "connectors.directory.receiptTimedOut",
     "connectors.directory.suggested",
     "connectors.disabled",

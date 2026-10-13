@@ -262,8 +262,6 @@ class ConnectionAnswer(Params):
 
     targets: list[ConnectionAnswerTarget] = Field(default_factory=list)
     settled_by: ConnectionSettleReason | None = None
-    # A display card answered by the user's typed words; it settles the card like Continue.
-    said: str | None = None
 
 
 class ConnectionRespondParams(ConnectionOperationParams):

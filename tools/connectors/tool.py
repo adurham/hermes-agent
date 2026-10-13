@@ -60,12 +60,10 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "catalog entry; otherwise the target is hosted. 'connect' and 'reconnect' are hosted "
         "actions; 'install', 'enable' and 'authorize' are MCP actions. A target the other side "
         "owns is refused with the call that does work. "
-        "Hosted actions: 'display' (desktop app) shows the user a card with every connector, most used apps "
-        "first, clicking one starts its sign-in, and waits until they press Continue or 300 s pass; slugs in "
-        "'connectors' are pinned at the top as Suggested. It returns connected, newly_connected and "
-        "suggested slugs, or 'said' when the user typed an answer instead, or timed_out. Use it when the "
-        "user wants to browse apps; use 'connect' when they name one. Outside the desktop app it returns "
-        "the status list. 'status' lists connectors and whether each is connected; 'connect' "
+        "Hosted actions: 'display' (desktop only; elsewhere returns status) shows every connector, "
+        "'connectors' pinned as Suggested, waits for Continue (300 s); returns connected/newly_connected, "
+        "plus timed_out on the deadline. Use it to browse; use 'connect' when the user names an app. "
+        "'status' lists connectors and whether each is connected; 'connect' "
         "starts an authorization for the given connectors; 'reconnect' checks each one and "
         "repairs only what is not connected ('force': true restarts even a working one, for an "
         "account switch). A second account of one app is 'connect' with a new 'alias': pick a short "
@@ -96,7 +94,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
                 "type": "string",
                 "enum": list(ALL_ACTIONS),
                 "description": (
-                    "Defaults to status. display, connect, reconnect and rename take hosted connector slugs only. "
+                    "Defaults to status. connect, reconnect and rename take hosted connector slugs only. "
                     "install, enable and authorize take mcp:true targets only."
                 ),
             },
@@ -138,7 +136,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
                 "description": (
                     "Targets. REQUIRED for every action but status and display "
                     "(e.g. [\"gmail\", {\"name\": \"linear\", \"mcp\": true}]); optional filter for "
-                    "status and the Suggested rows for display. A bare slug is a hosted connector, so an MCP server needs the object "
+                    "status. A bare slug is a hosted connector, so an MCP server needs the object "
                     "form with \"mcp\": true."
                 ),
             },

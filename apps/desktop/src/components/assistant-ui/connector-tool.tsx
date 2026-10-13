@@ -187,16 +187,13 @@ function ConnectorDirectoryTool({ live, part, request }: ConnectorDirectoryToolP
   )
 }
 
+// A timed-out card still names what the user connected before walking away.
 function receiptText(copy: ConnectorCopy['directory'], outcome: ReturnType<typeof recordOf>, added: string[]): string {
-  if (outcome.timed_out === true) {
-    return copy.receiptTimedOut
+  if (added.length > 0) {
+    return copy.receiptConnected(added.map(connectorTitle).join(', '))
   }
 
-  if (connectorText(outcome.said) !== undefined) {
-    return copy.receiptSaid
-  }
-
-  return added.length > 0 ? copy.receiptConnected(added.map(connectorTitle).join(', ')) : copy.receiptNone
+  return outcome.timed_out === true ? copy.receiptTimedOut : copy.receiptNone
 }
 
 export function ConnectorDirectoryReceipt({ result }: { result: unknown }) {

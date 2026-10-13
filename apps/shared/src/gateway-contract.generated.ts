@@ -1115,7 +1115,6 @@ export interface ConnectionRespondParams {
 export interface ConnectionAnswer {
   targets?: ConnectionAnswerTarget[]
   settled_by?: ConnectionSettleReason | null
-  said?: string | null
 }
 /** One row's answer from the card. ``env`` carries the credential values an install asked for through ``required_env``. */
 export interface ConnectionAnswerTarget {

@@ -19,7 +19,6 @@ export const zhHantOverrides = {
       allApps: '全部應用程式',
       receiptConnected: apps => `已連接：${apps}`,
       receiptNone: '未連接新的應用程式',
-      receiptSaid: '已在聊天中回覆',
       receiptTimedOut: '5 分鐘後已關閉'
     }
   },

@@ -37,7 +37,6 @@ export const zhConnectorCard: TranslationOverrides['connectors'] = {
     allApps: '全部应用',
     receiptConnected: apps => `已连接：${apps}`,
     receiptNone: '未连接新应用',
-    receiptSaid: '已在聊天中回复',
     receiptTimedOut: '5 分钟后已关闭'
   }
 }
