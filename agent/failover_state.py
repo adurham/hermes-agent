@@ -61,7 +61,7 @@ EFFECTIVE_MODEL_KEYS = (
 )
 
 
-def _empty_state() -> Dict[str, Any]:
+def _empty_state() -> dict[str, Any]:
     return {
         "model": None,
         "provider": None,
@@ -124,7 +124,7 @@ def _clean_bool(value: Any) -> bool:
     return False
 
 
-def resolve_effective_model(agent: Any) -> Dict[str, Any]:
+def resolve_effective_model(agent: Any) -> dict[str, Any]:
     """Live-read an agent's actually-active model/provider + fallback state.
 
     Returns a dict with exactly :data:`EFFECTIVE_MODEL_KEYS`::
@@ -244,7 +244,7 @@ def effective_model_fields(
     snapshot_model: Any = None,
     snapshot_provider: Any = None,
     compact: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """The full six-key wire payload for one subagent surface.
 
     :func:`resolve_effective_model` plus the rendered ``model_label``, with a

@@ -128,7 +128,7 @@ def maybe_restore_primary_mid_run(agent: Any) -> bool:
     fallback_label = f"{getattr(agent, 'model', '?')} ({getattr(agent, 'provider', '?')})"
     try:
         restored = bool(agent._restore_primary_runtime())
-    except Exception:  # noqa: BLE001 — a restore probe must never break the loop
+    except Exception:  #   # a restore probe must never break the loop
         logger.warning("Mid-run primary restore raised", exc_info=True)
         restored = False
     if not restored:

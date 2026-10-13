@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -106,7 +106,7 @@ _PATH_PATTERN = re.compile(r"(~/[\w./-]+|/Users/[\w./-]+)")
 _HOT_TIER_FILES = ("MEMORY.md", "USER.md")
 
 
-def _read_entries(path: Path) -> List[str]:
+def _read_entries(path: Path) -> list[str]:
     """Read and split a hot-tier file into entries on ENTRY_DELIMITER.
 
     Mirrors ``scripts/migrate_memory_to_warm.py``'s ``_read_entries``.
@@ -119,7 +119,7 @@ def _read_entries(path: Path) -> List[str]:
     return [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
 
 
-def _write_entries(path: Path, entries: List[str]) -> None:
+def _write_entries(path: Path, entries: list[str]) -> None:
     """Write entries back to a hot-tier file, delimiter-joined.
 
     Mirrors ``scripts/migrate_memory_to_warm.py``'s ``_write_entries``.
@@ -130,12 +130,12 @@ def _write_entries(path: Path, entries: List[str]) -> None:
     path.write_text(ENTRY_DELIMITER.join(entries), encoding="utf-8")
 
 
-def _extract_paths(entry: str) -> List[str]:
+def _extract_paths(entry: str) -> list[str]:
     """Extract path-shaped tokens from an entry's text (raw, unexpanded)."""
     return _PATH_PATTERN.findall(entry)
 
 
-def classify_entries(entries: List[str]) -> List[Dict[str, Any]]:
+def classify_entries(entries: list[str]) -> list[dict[str, Any]]:
     """Classify each entry for stale-path candidacy.
 
     Returns a list of dicts, one per entry:
@@ -145,7 +145,7 @@ def classify_entries(entries: List[str]) -> List[Dict[str, Any]]:
 
     Deterministic/heuristic-only — no LLM review in this pass.
     """
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for entry in entries:
         raw_paths = _extract_paths(entry)
         is_stale = False
@@ -167,7 +167,7 @@ def classify_entries(entries: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
-def _load_all_entries(memories_dir: Path) -> List[Dict[str, Any]]:
+def _load_all_entries(memories_dir: Path) -> list[dict[str, Any]]:
     """Read every hot-tier file and return a flat, globally-indexed list.
 
     Each element: {id, filename, local_index, content}. ``id`` is a stable
@@ -175,7 +175,7 @@ def _load_all_entries(memories_dir: Path) -> List[Dict[str, Any]]:
     (read order matches ``_HOT_TIER_FILES``) — used to correlate LLM
     classification responses back to a specific (file, local position).
     """
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     gid = 0
     for filename in _HOT_TIER_FILES:
         entries = _read_entries(memories_dir / filename)
@@ -192,9 +192,9 @@ def _load_all_entries(memories_dir: Path) -> List[Dict[str, Any]]:
     return out
 
 
-def _build_classification_prompt(entries_meta: List[Dict[str, Any]]) -> str:
+def _build_classification_prompt(entries_meta: list[dict[str, Any]]) -> str:
     """Render the numbered entry listing sent to the LLM classifier."""
-    lines: List[str] = [
+    lines: list[str] = [
         f"Review these {len(entries_meta)} hot-tier memory entries. For "
         "each, a heuristic pre-flag (stale_path_hint) is given — treat it "
         "as a hint only, per the rules above.\n"
@@ -211,7 +211,7 @@ def _build_classification_prompt(entries_meta: List[Dict[str, Any]]) -> str:
 
 def _parse_llm_classification(
     response_text: str, expected_ids: set,
-) -> Optional[Dict[int, Dict[str, str]]]:
+) -> Optional[dict[int, dict[str, str]]]:
     """Parse and validate the LLM's fenced-JSON classification response.
 
     Returns ``{id: {"classification": ..., "reason": ...}}`` covering every
@@ -233,7 +233,7 @@ def _parse_llm_classification(
     if not isinstance(data, list):
         return None
 
-    out: Dict[int, Dict[str, str]] = {}
+    out: dict[int, dict[str, str]] = {}
     for item in data:
         if not isinstance(item, dict):
             return None
@@ -264,8 +264,8 @@ def _parse_llm_classification(
 
 
 def _llm_classify_entries(
-    entries_meta: List[Dict[str, Any]],
-) -> Optional[Dict[int, Dict[str, str]]]:
+    entries_meta: list[dict[str, Any]],
+) -> Optional[dict[int, dict[str, str]]]:
     """Run the LLM keep/demote/stale/dead classification pass.
 
     Reuses the same aux-model resolution the skill curator's LLM review
@@ -296,7 +296,7 @@ def _llm_classify_entries(
         return None
 
     prompt = _build_classification_prompt(entries_meta)
-    call_kwargs: Dict[str, Any] = {
+    call_kwargs: dict[str, Any] = {
         "task": "curator",
         "provider": binding.provider,
         "model": binding.model,
@@ -322,13 +322,13 @@ def _llm_classify_entries(
     return _parse_llm_classification(content, expected_ids)
 
 
-def _run_dry_run(memories_dir: Path, consolidate: bool) -> Dict[str, Any]:
+def _run_dry_run(memories_dir: Path, consolidate: bool) -> dict[str, Any]:
     entries_meta = _load_all_entries(memories_dir)
     contents = [m["content"] for m in entries_meta]
     classified = classify_entries(contents)
     stale_candidates = [c for c in classified if c["is_stale_path_candidate"]]
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "entries_checked": len(entries_meta),
         "stale_path_candidates": stale_candidates,
         "written_report_path": None,
@@ -362,7 +362,7 @@ def _run_dry_run(memories_dir: Path, consolidate: bool) -> Dict[str, Any]:
     return result
 
 
-def _run_live_heuristic(memories_dir: Path) -> Dict[str, Any]:
+def _run_live_heuristic(memories_dir: Path) -> dict[str, Any]:
     """Live-mode mutation: demote stale-path candidates to the warm tier.
 
     Snapshot-first: a memory snapshot is taken before any file is touched.
@@ -380,9 +380,9 @@ def _run_live_heuristic(memories_dir: Path) -> Dict[str, Any]:
     # Read + classify each file separately so we know provenance per entry
     # (which file to remove it from) while keeping a combined entries_checked
     # count for the summary.
-    per_file_entries: Dict[str, List[str]] = {}
+    per_file_entries: dict[str, list[str]] = {}
     total_checked = 0
-    all_stale_candidates: List[Dict[str, Any]] = []
+    all_stale_candidates: list[dict[str, Any]] = []
     demoted_count = 0
 
     for filename in _HOT_TIER_FILES:
@@ -400,8 +400,8 @@ def _run_live_heuristic(memories_dir: Path) -> Dict[str, Any]:
         if not stale_indices:
             continue
 
-        kept: List[str] = []
-        stale_entries: List[str] = []
+        kept: list[str] = []
+        stale_entries: list[str] = []
         for i, entry in enumerate(entries):
             if i in stale_indices:
                 stale_entries.append(entry)
@@ -439,7 +439,7 @@ def _run_live_heuristic(memories_dir: Path) -> Dict[str, Any]:
     }
 
 
-def _run_live_llm(memories_dir: Path, prune_builtins: bool) -> Dict[str, Any]:
+def _run_live_llm(memories_dir: Path, prune_builtins: bool) -> dict[str, Any]:
     """Live-mode mutation driven by the LLM keep/demote/stale/dead pass.
 
     Snapshot-first, same as the heuristic path. The LLM call happens AFTER
@@ -506,7 +506,7 @@ def _run_live_llm(memories_dir: Path, prune_builtins: bool) -> Dict[str, Any]:
 
     demoted_count = 0
     deleted_count = 0
-    classifications_report: List[Dict[str, Any]] = []
+    classifications_report: list[dict[str, Any]] = []
 
     for filename in _HOT_TIER_FILES:
         path = memories_dir / filename
@@ -515,9 +515,9 @@ def _run_live_llm(memories_dir: Path, prune_builtins: bool) -> Dict[str, Any]:
             continue
         original_entries = [m["content"] for m in file_metas]
 
-        kept: List[str] = []
-        to_demote: List[str] = []
-        to_delete: List[str] = []
+        kept: list[str] = []
+        to_demote: list[str] = []
+        to_delete: list[str] = []
 
         for meta in file_metas:
             verdict = llm_result.get(meta["id"], {"classification": "keep", "reason": ""})
@@ -595,8 +595,8 @@ def _hot_tier_reports_root() -> Path:
     return root
 
 
-def _render_hot_tier_report_markdown(result: Dict[str, Any], *, dry_run: bool, consolidate: bool) -> str:
-    lines: List[str] = ["# Hot-tier audit run", ""]
+def _render_hot_tier_report_markdown(result: dict[str, Any], *, dry_run: bool, consolidate: bool) -> str:
+    lines: list[str] = ["# Hot-tier audit run", ""]
     lines.append(f"- mode: {'dry-run' if dry_run else 'live'}")
     lines.append(f"- consolidate (LLM classification): {consolidate}")
     lines.append(f"- entries checked: {result.get('entries_checked', 0)}")
@@ -628,10 +628,10 @@ def _render_hot_tier_report_markdown(result: Dict[str, Any], *, dry_run: bool, c
     return "\n".join(lines) + "\n"
 
 
-def _write_hot_tier_report(result: Dict[str, Any], *, dry_run: bool, consolidate: bool) -> Optional[Path]:
+def _write_hot_tier_report(result: dict[str, Any], *, dry_run: bool, consolidate: bool) -> Optional[Path]:
     """Write run.json + REPORT.md for a hot-tier audit pass. Best-effort."""
     root = _hot_tier_reports_root()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_dir = root / stamp
     suffix = 1
     while run_dir.exists():
@@ -664,7 +664,7 @@ def _write_hot_tier_report(result: Dict[str, Any], *, dry_run: bool, consolidate
     return run_dir
 
 
-def run_hot_tier_audit(dry_run: bool, consolidate: Optional[bool] = None) -> Dict[str, Any]:
+def run_hot_tier_audit(dry_run: bool, consolidate: Optional[bool] = None) -> dict[str, Any]:
     """Run a hot-tier audit pass.
 
     ``consolidate`` selects the review mode (defaults to

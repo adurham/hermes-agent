@@ -26,17 +26,19 @@ equivalent on exo; we prefer OMITTING the key.
 Scope: the change is ADDITIVE and provider-scoped to the exo backend (the
 provider identity the client already resolves as ``agent.provider == \"exo\"``).
 It is NOT a global config flag, NOT a blocklist, and defaults SAFE: every other
-provider keeps today's behavior byte-for-byte. In particular ollama-cloud
+provider keeps its send-side behavior. In particular ollama-cloud
 (which, like exo, runs a DeepSeek model and is a require-side thinking mode)
-MUST keep emitting the \" \" pad, and strict/unknown providers (anthropic,
-custom) MUST keep stripping the key exactly as they do today.
+MUST keep emitting the " " pad.
 
-Notes on \"byte-for-byte unchanged from today's behavior\": today's real code
-ships no reasoning_content key for anthropic or an unknown/custom provider
-(their ``_needs_thinking_reasoning_pad()`` is False, so the policy strips the
-field). This change does NOT add a pad there — doing so would itself be a
-behavior change. The non-exo behavior this change locks in is exactly what runs
-today.
+NOTE (v0.21.7 sync): reasoning-replay shaping now rides upstream's route model.
+Strict table-known schemas (mistral/groq/cerebras/sambanova) strip every
+reasoning key; the de-facto default chat route — including anthropic-via-chat
+and unknown/custom endpoints — carries ``reasoning_content`` when the stored
+message has one (see tests/agent/test_reasoning_replay_routes.py's "everyone
+else" rows). The pre-route-model strip-everything stance for those two classes
+was retired with the route-model adoption (FORK.md v0.21.7 close-out entry);
+the empty-pad and no-pad cases below pin behavior that is identical under both
+models.
 
 Refs: exo prefix-cache Fix B LCP defeat (cached_tokens 351 vs 0).
 """
@@ -228,7 +230,15 @@ class TestOllamaCloudKeepsPad:
 
 
 class TestStrictAndUnknownProvidersUnchanged:
-    """anthroopic and unknown providers keep stripping (today's behavior)."""
+    """Strict/unknown routes follow the ADOPTED v0.21.7 route model.
+
+    Pre-route-model the fork stripped every reasoning key on these routes (the old
+    ``_needs_thinking_reasoning_pad()``-only policy). The merged tree rides upstream's
+    carrier model, where only table-known strict schemas (mistral/groq/cerebras/sambanova)
+    strip and the de-facto default chat route carries ``reasoning_content``. The empty-pad
+    and no-pad cases pin behavior that is identical under both models; the non-empty case
+    pins the adopted default.
+    """
 
     @pytest.mark.parametrize(
         "provider,model,base_url",
@@ -257,7 +267,7 @@ class TestStrictAndUnknownProvidersUnchanged:
         "provider,model,base_url",
         [_ANTHROPIC, _UNKNOWN],
     )
-    def test_strict_unknown_non_empty_reasoning_unchanged(
+    def test_strict_unknown_non_empty_reasoning_follows_the_adopted_route_model(
         self, provider, model, base_url
     ) -> None:
         agent = _make_agent(provider, model, base_url)
@@ -266,4 +276,6 @@ class TestStrictAndUnknownProvidersUnchanged:
             {"role": "assistant", "content": "hi", "reasoning_content": " real chain "},
             api_msg,
         )
-        assert "reasoning_content" not in api_msg
+        # Adopted route model (see the class docstring): the default chat route replays the
+        # stored reasoning text; only strict-schema providers strip it.
+        assert api_msg["reasoning_content"] == " real chain "

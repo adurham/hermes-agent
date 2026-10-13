@@ -72,7 +72,7 @@ def _cluster_width(run: str, j: int) -> tuple[int, int]:
 
 
 def _is_emoji_base(ch: str) -> bool:
-    """Coarse \p{Emoji} membership for the cluster rule: the codepoints we emit
+    r"""Coarse \p{Emoji} membership for the cluster rule: the codepoints we emit
     with VS16 are all in the emoji-block ranges; symbol bases (>= U+2190) count."""
     return ord(ch) >= 0x2190
 
@@ -126,7 +126,7 @@ def replay(data: str, columns: int, rows: int = 10) -> list[str]:
                             grid[y][xx] = " "
                 elif final == "K":
                     mode = n0 if n0 is not None else 0
-                    span = range(x, columns) if mode == 0 else range(0, columns)
+                    span = range(x, columns) if mode == 0 else range(columns)
                     for xx in span:
                         grid[y][xx] = " "
                 i = m.end()

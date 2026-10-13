@@ -721,7 +721,7 @@ class CLIInfoMixin:
         # FORK: cost reporting is a deliberate divergence from upstream (fd2a35b16).
         from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
         # Account limits are agent-independent — fetched here so the early returns can show them.
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines  # noqa: F401
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
 
         def _credits_or(fallback: str) -> None:
             # Account limits (e.g. Codex subscription windows) need only the configured provider
@@ -762,7 +762,7 @@ class CLIInfoMixin:
         if hasattr(compressor, "display_prompt_tokens"):
             last_prompt = compressor.display_prompt_tokens()
         else:
-            last_prompt = compressor.last_prompt_tokens
+            last_prompt = max(0, compressor.last_prompt_tokens)
         ctx_len = compressor.context_length
         pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())

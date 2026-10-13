@@ -875,7 +875,7 @@ class TestConvertMessages:
             },
             {"role": "user", "content": "Hi"},
         ]
-        system, result = convert_messages_to_anthropic(messages)
+        system, _result = convert_messages_to_anthropic(messages)
         # When cache_control is present, system should be a list of blocks
         assert isinstance(system, list)
         assert system[0]["cache_control"] == {"type": "ephemeral"}
@@ -910,7 +910,7 @@ class TestConvertMessages:
         ], native_anthropic=True)
 
         _, result = convert_messages_to_anthropic(messages)
-        assistant_msg = [m for m in result if m["role"] == "assistant"][0]
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
         tool_use = assistant_msg["content"][-1]
 
         assert tool_use["type"] == "tool_use"
@@ -999,7 +999,7 @@ class TestConvertMessages:
         ], native_anthropic=True)
 
         _, result = convert_messages_to_anthropic(messages)
-        assistant_msg = [m for m in result if m["role"] == "assistant"][0]
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
         thinking, tool_use = assistant_msg["content"]
 
         assert thinking["type"] == "thinking"
@@ -2783,7 +2783,6 @@ class TestCreateAnthropicMessageBetaRouting:
 
         # Monkey-patch .beta.messages.stream to capture the call
         captured = {}
-        original_stream = client.beta.messages.stream
         def _capture_stream(**kw):
             captured["namespace"] = "beta"
             captured["kwargs"] = kw
@@ -2808,7 +2807,6 @@ class TestCreateAnthropicMessageBetaRouting:
             kwargs[k] = "dummy"
 
         captured = {}
-        original_stream = client.messages.stream
         def _capture_stream(**kw):
             captured["kwargs"] = kw
             return _StreamContextManager(kw)

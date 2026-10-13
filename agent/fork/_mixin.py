@@ -35,6 +35,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Set
 
+from agent.rate_limit_tracker import RateLimitState
+
 
 class ForkForwardersMixin:
     """See module docstring."""
@@ -59,12 +61,12 @@ class ForkForwardersMixin:
         from agent.fork.rate_limit_tracker import capture_rate_limits_from_headers
         return capture_rate_limits_from_headers(self, headers)
 
-    def _log_rate_limit_first_capture(self, state: "RateLimitState") -> None:
+    def _log_rate_limit_first_capture(self, state: RateLimitState) -> None:
         """Forwarder — see ``agent.fork.rate_limit_tracker.log_rate_limit_first_capture``."""
         from agent.fork.rate_limit_tracker import log_rate_limit_first_capture
         return log_rate_limit_first_capture(self, state)
 
-    def _log_rate_limit_transitions(self, state: "RateLimitState") -> None:
+    def _log_rate_limit_transitions(self, state: RateLimitState) -> None:
         """Forwarder — see ``agent.fork.rate_limit_tracker.log_rate_limit_transitions``."""
         from agent.fork.rate_limit_tracker import log_rate_limit_transitions
         return log_rate_limit_transitions(self, state)

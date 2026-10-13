@@ -62,7 +62,7 @@ class TestSetRuntimeMainCustomProvider:
 
             with patch.object(mod, "resolve_provider_client") as mock_resolve:
                 mock_resolve.return_value = (MagicMock(), "test-model")
-                client, resolved, _provider = mod._resolve_auto_route(main_runtime=None)
+                _client, _resolved, _provider = mod._resolve_auto_route(main_runtime=None)
 
                 mock_resolve.assert_called_once()
                 call_args = mock_resolve.call_args
@@ -162,7 +162,7 @@ class TestResolveAutoCustomEndToEnd:
         mod.clear_runtime_main()
         try:
             mod.set_runtime_main("custom:openclaw", "glm-5.1")
-            client, resolved = mod.resolve_provider_client("auto", None)
+            client, _resolved = mod.resolve_provider_client("auto", None)
             assert client is not None
             base = self._client_base_url(client)
             assert base and base.rstrip("/") == "https://withcfg.example/v1"

@@ -187,7 +187,7 @@ def heartbeat_if_due(agent: Any, *, now: Optional[float] = None) -> bool:
     if (ts - last) < CROSS_SESSION_HEARTBEAT_SECONDS:
         return False
     try:
-        setattr(agent, "_cross_session_last_heartbeat", ts)
+        agent._cross_session_last_heartbeat = ts
     except Exception:
         pass
 
@@ -244,7 +244,7 @@ def _drain(
     *,
     on_held: Optional[Callable[[str], None]],
     now: Optional[float],
-) -> List[_tb.DrainedMessage]:
+) -> list[_tb.DrainedMessage]:
     try:
         return _tb.drain_inbox(
             session_id=session_id,
@@ -330,7 +330,7 @@ def drain_into_pending_steer(
     if turn_state is None:
         turn_state = _tb.TurnMessageState()
         try:
-            setattr(agent, "_cross_session_turn_state", turn_state)
+            agent._cross_session_turn_state = turn_state
         except Exception:
             turn_state = None
 

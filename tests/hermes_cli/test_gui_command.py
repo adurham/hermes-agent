@@ -346,7 +346,7 @@ def test_launch_installed_macos_desktop_app_gates_on_bundle_and_platform(tmp_pat
     monkeypatch.setattr(main_desktop.Path, "is_file", lambda self: exists if self == exe else Path.is_file(self))
     calls = []
     if exists and platform == "darwin":
-        import hermes_cli.bundled_app as bundled_app
+        from hermes_cli import bundled_app
         monkeypatch.setattr(bundled_app, "launch_detached", lambda argv, **kw: calls.append(argv) or 4321)
 
     assert main_desktop._launch_installed_macos_desktop_app() is (exists and platform == "darwin")
@@ -413,7 +413,7 @@ def test_desktop_force_build_overrides_stamp(tmp_path, monkeypatch):
     ``_desktop_build_needed`` returning False.
     """
     root = _make_desktop_tree(tmp_path)
-    desktop_dir = root / "apps" / "desktop"
+    root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
 
@@ -1049,7 +1049,6 @@ def test_promote_staged_desktop_app_refuses_an_unsigned_staging(tmp_path, monkey
 
     def fake_swap(dir_, st_):
         swapped.append(st_)
-        return None
 
     monkeypatch.setattr(main_desktop, "_desktop_macos_relaunchable_fixup", fake_fixup)
     monkeypatch.setattr(main_desktop, "_swap_staged_desktop_app", fake_swap)

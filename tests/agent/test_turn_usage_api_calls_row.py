@@ -189,7 +189,7 @@ def test_a_usage_less_response_writes_no_row(agent_with_store) -> None:
 
 def test_telemetry_failure_never_breaks_the_turn(agent_with_store) -> None:
     """Per-call telemetry is best-effort: a broken sink must not propagate."""
-    agent, db, db_path = agent_with_store
+    agent, _db, _db_path = agent_with_store
 
     def _boom(*_args, **_kwargs):
         raise RuntimeError("simulated telemetry sink failure")

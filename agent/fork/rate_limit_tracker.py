@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 
+from agent.rate_limit_tracker import RateLimitState
+
 logger = logging.getLogger("run_agent")
 
 
@@ -49,7 +51,7 @@ def capture_rate_limits_from_headers(agent, headers: Any) -> None:
         pass  # Never let header parsing break the agent loop
 
 
-def log_rate_limit_first_capture(agent, state: "RateLimitState") -> None:
+def log_rate_limit_first_capture(agent, state: RateLimitState) -> None:
     """Emit a one-shot INFO when the tracker first sees rate-limit data.
 
     Useful for confirming the tracker is wired against the active
@@ -73,7 +75,7 @@ def log_rate_limit_first_capture(agent, state: "RateLimitState") -> None:
     agent._rate_limit_first_logged = True
 
 
-def log_rate_limit_transitions(agent, state: "RateLimitState") -> None:
+def log_rate_limit_transitions(agent, state: RateLimitState) -> None:
     """Warn when buckets cross the 80% line; info when they drop back.
 
     Tracks per-bucket "currently hot" state in

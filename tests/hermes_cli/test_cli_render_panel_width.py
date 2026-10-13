@@ -102,11 +102,7 @@ def test_clarify_panel_borders_align_with_cjk_question_and_emoji_choices():
         pass
 
     host = _Host()
-    setattr(host, "_clarify_state", {
-        "question": "日本語の質問: どちらにしますか?",
-        "choices": ["✅ Yes", "❌ No"],
-        "selected": 0,
-    })
-    setattr(host, "_clarify_freetext", False)
+    host._clarify_state = {"question": "日本語の質問: どちらにしますか?", "choices": ["✅ Yes", "❌ No"], "selected": 0}
+    host._clarify_freetext = False
     lines = _rendered(host._get_clarify_display_fragments())
     assert len({HermesCLI._panel_cwidth(line) for line in lines}) == 1, lines

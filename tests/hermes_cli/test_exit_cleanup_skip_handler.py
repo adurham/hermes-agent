@@ -60,7 +60,7 @@ def test_skip_handler_calls_os_exit_immediately(monkeypatch):
     ``except Exception`` blocks that would otherwise swallow a raised
     KeyboardInterrupt and keep running, defeating the fast-exit purpose."""
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    before = signal.getsignal(signal.SIGINT)
+    signal.getsignal(signal.SIGINT)
     restore = cli_mod._install_cleanup_skip_handler()
     try:
         handler = signal.getsignal(signal.SIGINT)

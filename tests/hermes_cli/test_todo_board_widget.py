@@ -196,7 +196,7 @@ def test_layout_children_places_board_above_spinner():
     kw = {k: None for k in ("sudo_widget", "secret_widget", "approval_widget", "clarify_widget",
                             "spacer", "status_bar", "input_rule_top", "image_bar", "input_area",
                             "input_rule_bot", "voice_status_bar", "completions_menu")}
-    cli = SimpleNamespace(_get_extra_tui_widgets=lambda: [])
+    cli = SimpleNamespace(_get_extra_tui_widgets=list)
     children = m.CLITuiMixin._build_tui_layout_children(
         cli, todo_board_widget=sentinel_board, spinner_widget=sentinel_spinner, **kw)
     assert children.index(sentinel_board) == children.index(sentinel_spinner) - 1

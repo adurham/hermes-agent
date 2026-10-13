@@ -34,14 +34,14 @@ STAMP_RE = re.compile(r"stash@\{(\d+)\}")
 
 
 def git(*args, cwd, check=True):
-    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, check=False)
     if check and r.returncode != 0:
         raise SystemExit(f"git {' '.join(args)} failed: {r.stderr.strip()}")
     return r.stdout.strip()
 
 
 def rev_parse(cwd, rev):
-    r = subprocess.run(["git", "rev-parse", "--verify", "-q", rev], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(["git", "rev-parse", "--verify", "-q", rev], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, check=False)
     return r.stdout.strip() or None
 
 
@@ -57,7 +57,7 @@ def entries(cwd):
             "selector": sel,
             "idx": int(idx.group(1)),
             "sha": sha,
-            "commit_time": datetime.datetime.fromtimestamp(int(ct), datetime.timezone.utc),
+            "commit_time": datetime.datetime.fromtimestamp(int(ct), datetime.UTC),
             "subject": subj,
         })
     return res
@@ -70,7 +70,7 @@ def stamp_of(subject):
         return None
     raw = subject[pos + len(PREFIX):][:15]
     try:
-        return datetime.datetime.strptime(raw, "%Y%m%d-%H%M%S").replace(tzinfo=datetime.timezone.utc)
+        return datetime.datetime.strptime(raw, "%Y%m%d-%H%M%S").replace(tzinfo=datetime.UTC)
     except ValueError:
         return None
 
@@ -131,11 +131,12 @@ def archive(cwd, victims, dest_dir):
             git("update-ref", ref, e["sha"], cwd=cwd)
             refs.append(ref)
         git("bundle", "create", str(bundle), *refs, cwd=cwd)
-        verify = subprocess.run(["git", "bundle", "verify", str(bundle)], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        verify = subprocess.run(["git", "bundle", "verify", str(bundle)], cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, check=False)
         if "complete history" not in verify.stdout + verify.stderr:
             raise SystemExit(f"bundle verify failed:\n{verify.stdout}{verify.stderr}")
         heads = subprocess.run(["git", "bundle", "list-heads", str(bundle)], cwd=cwd,
-                               capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+                               capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=120, check=False).stdout
         missing = [e["sha"] for e in victims if e["sha"] not in heads]
         if missing:
             raise SystemExit(f"bundle is missing {missing}")
@@ -149,7 +150,7 @@ def write_manifest(bundle, cwd, records):
     manifest = bundle.with_suffix(".json")
     manifest.write_text(json.dumps({
         "repo": str(cwd),
-        "archived_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "archived_at_utc": datetime.datetime.now(datetime.UTC).isoformat(),
         "bundle": bundle.name,
         "entries": records,
     }, indent=1), encoding="utf-8")
@@ -157,7 +158,7 @@ def write_manifest(bundle, cwd, records):
 
 
 def warn_count(cwd, keep_days):
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=keep_days)
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=keep_days)
     n = 0
     for e in entries(cwd):
         when = stamp_of(e["subject"]) or e["commit_time"]
@@ -183,7 +184,7 @@ def main():
     head_before = git("rev-parse", "HEAD", cwd=cwd)
     all_entries = entries(cwd)
 
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=args.keep_days)
+    cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=args.keep_days)
     stale, kept_fresh, manual = [], [], []
     for e in all_entries:
         if PREFIX not in e["subject"]:
@@ -232,7 +233,7 @@ def main():
             lines.append(f"       {item['path']}  blob {item['blob']}   inspect: git show {u['sha']}:{item['path']}")
     for r in removed_all:
         lines.append(f"    ?? {r['selector']} touches paths absent from HEAD - SUPERSEDED-BY-REMOVAL only if that")
-        lines.append(f"       deletion was intentional; verify, then re-run with --allow-removed:")
+        lines.append("       deletion was intentional; verify, then re-run with --allow-removed:")
         for item in r["removed"]:
             lines.append(f"       {item['path']}  blob {item['blob']}   inspect: git show {r['sha']}:{item['path']}"
                          f"   (deleted since {item['base'][:10]}; git log --oneline --diff-filter=D -- {item['path']})")

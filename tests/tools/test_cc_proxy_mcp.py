@@ -11,7 +11,7 @@ import pytest
 
 import mcp.client.streamable_http
 import mcp_types
-import tools.bridges.cc_proxy_mcp as cc_proxy_mcp
+from tools.bridges import cc_proxy_mcp
 
 
 def _fake_run_result(returncode=0, stdout="", stderr=""):

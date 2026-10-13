@@ -103,7 +103,7 @@ def extract_query_candidate(
     if not user_msg or not user_msg.strip():
         user_msg = ""
 
-    candidates: List[str] = []
+    candidates: list[str] = []
     seen_lower: set[str] = set()
 
     def _consume(text: str) -> None:
@@ -183,7 +183,7 @@ def _get_warm_count() -> int:
         return 0
 
 
-def _run_warm_recall(query: str, top_k: int) -> List[Dict[str, Any]]:
+def _run_warm_recall(query: str, top_k: int) -> list[dict[str, Any]]:
     """Run a warm-tier recall query and return the result rows.
 
     Best-effort: a failure (DB locked, FTS5 missing, etc.) returns an
@@ -211,7 +211,7 @@ def _has_explicit_directive(user_msg: str) -> bool:
 def _format_hint_message(
     interval: int,
     query: str,
-    auto_results: Optional[List[Dict[str, Any]]] = None,
+    auto_results: Optional[list[dict[str, Any]]] = None,
 ) -> str:
     """Format the one-line reminder string injected into the tool result."""
     base = (

@@ -81,7 +81,7 @@ def _strip_frontmatter(text: str) -> str:
     return after.lstrip("\n")
 
 
-def _parse_frontmatter(text: str) -> Dict[str, str]:
+def _parse_frontmatter(text: str) -> dict[str, str]:
     """Extract simple flat key/value pairs from YAML frontmatter.
 
     Multi-line values (continuation lines indented under the previous key)
@@ -95,7 +95,7 @@ def _parse_frontmatter(text: str) -> Dict[str, str]:
     if closer < 0:
         return {}
     block = rest[:closer].strip()
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     current_key: Optional[str] = None
     for raw_line in block.splitlines():
         line = raw_line.rstrip()
@@ -180,7 +180,7 @@ def discover_personas(
     if not base.is_dir():
         return []
 
-    seen: Dict[str, Persona] = {}
+    seen: dict[str, Persona] = {}
     for md in base.rglob("*.md"):
         if not md.is_file():
             continue
@@ -229,9 +229,9 @@ def lookup_persona(
 
 def group_by_category(
     personas: Iterable[Persona],
-) -> Dict[str, list[Persona]]:
+) -> dict[str, list[Persona]]:
     """Group personas by category, preserving sort order within each bucket."""
-    out: Dict[str, list[Persona]] = {}
+    out: dict[str, list[Persona]] = {}
     for p in personas:
         out.setdefault(p.category, []).append(p)
     return out

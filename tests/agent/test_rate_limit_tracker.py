@@ -1,7 +1,7 @@
 """Tests for agent.rate_limit_tracker — header parsing and formatting."""
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 from agent.rate_limit_tracker import (
@@ -131,8 +131,7 @@ class TestAgentIntegration:
         headers as a 200.  Verify the parser handles that path so the agent's
         capture-on-429 hook can refresh state through throttle events.
         """
-        from datetime import datetime, timedelta, timezone
-        reset = (datetime.now(timezone.utc) + timedelta(seconds=45)).strftime(
+        reset = (datetime.now(UTC) + timedelta(seconds=45)).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
         # Headers as they arrive on a 429 — same shape as 200 OK + retry-after.
@@ -159,7 +158,7 @@ class TestAgentIntegration:
 
 def _iso(seconds_from_now: float) -> str:
     """Build an ISO-8601 reset timestamp ``seconds_from_now`` into the future."""
-    dt = datetime.now(timezone.utc) + timedelta(seconds=seconds_from_now)
+    dt = datetime.now(UTC) + timedelta(seconds=seconds_from_now)
     # Anthropic emits with "Z" suffix.
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -197,7 +196,7 @@ class TestIso8601ResetParser:
 
     def test_offset_suffix(self):
         # Anthropic always uses Z, but tolerate explicit "+00:00" too.
-        dt = datetime.now(timezone.utc) + timedelta(seconds=30)
+        dt = datetime.now(UTC) + timedelta(seconds=30)
         ts = dt.isoformat()  # "+00:00" suffix, not Z
         now = time.time()
         secs = _parse_iso8601_reset_to_seconds(ts, now=now)

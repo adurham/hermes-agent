@@ -124,7 +124,7 @@ AUTO_AGENT_TYPE = "auto"
 # tier → role defaults; overridable via delegation.auto_route.tier_roles.
 # The role then resolves to a model via delegation.model_by_role — reusing the
 # user's existing per-role pins rather than inventing a second model map.
-DEFAULT_TIER_ROLES: Dict[str, str] = {
+DEFAULT_TIER_ROLES: dict[str, str] = {
     "light": "researcher",
     "standard": "coder",
     "deep": "system-architect",
@@ -194,7 +194,7 @@ Respond with ONLY a JSON array, no prose, one entry per task:
 [{{"index": <int>, "tier": "light"|"standard"|"deep", "agent_type": "<persona-name-or-empty>", "reason": "<one short clause>"}}]"""
 
 
-_PERSONA_CATALOG_CACHE: Optional[List[Tuple[str, str, str]]] = None
+_PERSONA_CATALOG_CACHE: Optional[list[tuple[str, str, str]]] = None
 
 
 def _entry_model(value: Any) -> str:
@@ -213,7 +213,7 @@ def _entry_model(value: Any) -> str:
     return ""
 
 
-def _persona_catalog(role_model_map: Dict[str, Any]) -> List[Tuple[str, str, str]]:
+def _persona_catalog(role_model_map: dict[str, Any]) -> list[tuple[str, str, str]]:
     """Return ``(name, category, description)`` tuples for classifiable personas.
 
     Discovered once per process (filesystem walk) and cached at module scope.
@@ -243,7 +243,7 @@ def _persona_catalog(role_model_map: Dict[str, Any]) -> List[Tuple[str, str, str
     return [entry for entry in _PERSONA_CATALOG_CACHE if entry[0] in routable]
 
 
-def _excerpt(task: Dict[str, Any], max_chars: int) -> str:
+def _excerpt(task: dict[str, Any], max_chars: int) -> str:
     goal = str(task.get("goal") or "").strip()
     context = str(task.get("context") or "").strip()
     # Goal carries the intent; give it priority, then fill with context.
@@ -260,7 +260,7 @@ def _auto_route_cfg(cfg: dict) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _parse_classifier_json(text: str) -> Optional[List[dict]]:
+def _parse_classifier_json(text: str) -> Optional[list[dict]]:
     """Parse the classifier reply defensively.
 
     Accepts a bare JSON array, or an array embedded in fenced/prose output
@@ -296,7 +296,7 @@ def _norm_model(model: Any) -> str:
     return m
 
 
-def _rank_maps() -> Tuple[Dict[str, int], Dict[str, int]]:
+def _rank_maps() -> tuple[dict[str, int], dict[str, int]]:
     """Return ``(anthropic_ranks, local_ranks)`` resolved once per delegation.
 
     Both ladders live in :mod:`hermes_cli.model_tiers` and both resolve from
@@ -322,8 +322,8 @@ def _rank_maps() -> Tuple[Dict[str, int], Dict[str, int]]:
 
 def _model_rank(
     model: str,
-    anthropic_ranks: Dict[str, int],
-    local_ranks: Dict[str, int],
+    anthropic_ranks: dict[str, int],
+    local_ranks: dict[str, int],
 ) -> Optional[int]:
     """Rank ``model`` on whichever ladder recognizes it, else ``None``.
 
@@ -358,9 +358,9 @@ def _model_rank(
 
 def _role_rank(
     role: str,
-    role_model_map: Dict[str, Any],
-    anthropic_ranks: Dict[str, int],
-    local_ranks: Dict[str, int],
+    role_model_map: dict[str, Any],
+    anthropic_ranks: dict[str, int],
+    local_ranks: dict[str, int],
 ) -> Optional[int]:
     """Rank the model a role resolves to, or ``None`` when unrankable.
 
@@ -376,12 +376,12 @@ def _role_rank(
 
 
 def route_task_models(
-    task_list: List[Dict[str, Any]],
-    role_model_map: Dict[str, Any],
+    task_list: list[dict[str, Any]],
+    role_model_map: dict[str, Any],
     delegation_cfg: dict,
     active_provider: Optional[str],
-    diagnostics: Optional[Dict[str, Any]] = None,
-) -> Dict[int, Dict[str, Any]]:
+    diagnostics: Optional[dict[str, Any]] = None,
+) -> dict[int, dict[str, Any]]:
     """Classify unrouted tasks and return per-index model/persona routing.
 
     Args:
@@ -429,7 +429,7 @@ def route_task_models(
         equal-or-lower recommendation yields no entry at all, leaving the
         stated choice untouched.
     """
-    def _skip(reason: str, **extra: Any) -> Dict[int, Dict[str, Any]]:
+    def _skip(reason: str, **extra: Any) -> dict[int, dict[str, Any]]:
         if diagnostics is not None:
             diagnostics.clear()
             diagnostics.update({"skipped": reason, **extra})
@@ -468,8 +468,8 @@ def route_task_models(
         #
         # An explicit per-task model is in NEITHER population — a stated
         # model is intent and always wins, so it is never even classified.
-        pending: List[int] = []
-        escalate: Dict[int, str] = {}
+        pending: list[int] = []
+        escalate: dict[int, str] = {}
         for i, t in enumerate(task_list):
             if str(t.get("model") or "").strip():
                 continue
@@ -514,7 +514,7 @@ def route_task_models(
         # with full-route tasks, so adding the check costs zero extra API
         # calls and zero extra latency.
         classify_indices = sorted(set(pending) | set(escalate))
-        classify_failure: Dict[str, Any] = {}
+        classify_failure: dict[str, Any] = {}
         results = _classify(
             [(i, _excerpt(task_list[i], max_chars)) for i in classify_indices],
             timeout=float(timeout),
@@ -529,12 +529,12 @@ def route_task_models(
 
         # Ladder maps resolved ONCE per delegation (each is a live config
         # read), only when there is actually an escalate-check to run.
-        _anthropic_ranks: Dict[str, int] = {}
-        _local_ranks: Dict[str, int] = {}
+        _anthropic_ranks: dict[str, int] = {}
+        _local_ranks: dict[str, int] = {}
         if escalate:
             _anthropic_ranks, _local_ranks = _rank_maps()
 
-        routes: Dict[int, Dict[str, Any]] = {}
+        routes: dict[int, dict[str, Any]] = {}
         for idx, result in results.items():
             # Tolerate legacy 2-tuple (tier, reason) results — e.g. tests or
             # callers that monkeypatch _classify pre-persona-support — as
@@ -596,7 +596,7 @@ def route_task_models(
                     idx, tier, role,
                 )
                 continue
-            route: Dict[str, str] = {
+            route: dict[str, str] = {
                 "model": model,
                 "tier": tier,
                 "role": role,
@@ -626,12 +626,12 @@ def route_task_models(
 
 
 def _classify(
-    pending: List[Tuple[int, str]],
+    pending: list[tuple[int, str]],
     *,
     timeout: float,
-    persona_catalog: Optional[List[Tuple[str, str, str]]] = None,
-    failure: Optional[Dict[str, Any]] = None,
-) -> Dict[int, Tuple[str, str, str]]:
+    persona_catalog: Optional[list[tuple[str, str, str]]] = None,
+    failure: Optional[dict[str, Any]] = None,
+) -> dict[int, tuple[str, str, str]]:
     """One auxiliary LLM call classifying every pending task.
 
     Returns ``{index: (tier, reason, agent_type)}``; ``agent_type`` is ""
@@ -645,7 +645,7 @@ def _classify(
     Deliberately does NOT change the classifier model, prompt, max_tokens or
     timeout — this function's job is the routing decision, not the model.
     """
-    def _failed(reason: str) -> Dict[int, Tuple[str, str, str]]:
+    def _failed(reason: str) -> dict[int, tuple[str, str, str]]:
         if failure is not None:
             failure["error"] = reason
         _warn_classifier_failure(reason)
@@ -697,7 +697,7 @@ def _classify(
         logger.debug("delegation auto-route: unparsable classifier reply: %.200s", text)
         return _failed(f"unparsable classifier reply: {text[:200]!r}")
 
-    out: Dict[int, Tuple[str, str, str]] = {}
+    out: dict[int, tuple[str, str, str]] = {}
     for item in parsed:
         if not isinstance(item, dict):
             continue

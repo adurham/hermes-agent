@@ -71,7 +71,7 @@ def _fake_runtime_provider(requested=None, target_model=None, **_kw):
 
 @pytest.fixture
 def runtime(monkeypatch):
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
 
     monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", _fake_runtime_provider)
 

@@ -43,14 +43,14 @@ def _verdict(kind: str = "NEW", **kw: Any) -> ConflictVerdict:
     return ConflictVerdict(verdict=kind, rationale=kw.pop("rationale", f"{kind} verdict"), **kw)
 
 
-def _proposal(content: str, verdict: ConflictVerdict | None = None, **kw: Any) -> Dict[str, Any]:
-    p: Dict[str, Any] = {"content": content, "category": kw.pop("category", "general")}
+def _proposal(content: str, verdict: ConflictVerdict | None = None, **kw: Any) -> dict[str, Any]:
+    p: dict[str, Any] = {"content": content, "category": kw.pop("category", "general")}
     p.update(kw)
     p["verdict"] = verdict or _verdict("NEW")
     return p
 
 
-def _payload_of(pending_id: str) -> Dict[str, Any]:
+def _payload_of(pending_id: str) -> dict[str, Any]:
     rec = wa.get_pending(wa.MEMORY, pending_id)
     assert rec is not None
     return rec["payload"]
@@ -293,7 +293,7 @@ class TestEditCommand:
 
 class TestSessionExit:
     @staticmethod
-    def _wire(monkeypatch, proposals: List[Dict[str, Any]]):
+    def _wire(monkeypatch, proposals: list[dict[str, Any]]):
         from tools.memory_extraction import extractor as _ex
         import tools.memory_extraction.buffer as _buf
         monkeypatch.setattr(_ex, "is_enabled", lambda: True)

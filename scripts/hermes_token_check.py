@@ -33,7 +33,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 CREDS_PATH = Path(os.environ.get("HERMES_CREDS_PATH",
@@ -142,6 +142,7 @@ def native_login_state() -> tuple[bool | None, str, str]:
         run = subprocess.run([exe, "auth", "status"], env=_native_env(),
                              stdin=subprocess.DEVNULL, capture_output=True,
                              text=True, encoding="utf-8", errors="replace",
+                             check=False,
                              timeout=20)
     except (OSError, subprocess.SubprocessError) as e:
         return None, "", f"native-store check failed to run: {e}"
@@ -175,7 +176,7 @@ def _check_env_token(timeout: int) -> int:
         print(f"ERROR: HTTP request failed: {e}", file=sys.stderr)
         return 2
 
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
 
     if r.status_code == 401:
         print(f"CRITICAL ({now}): token from {source} returned 401 — "
@@ -219,7 +220,7 @@ def main() -> int:
     rc = _check_env_token(args.timeout)
 
     if not args.skip_native:
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = datetime.now(UTC).isoformat(timespec="seconds")
         logged_in, method, detail = native_login_state()
         if logged_in is None:
             print(f"SKIP ({now}): {detail}")

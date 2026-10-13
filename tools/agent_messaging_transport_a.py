@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # equivalent existing home.
 
 _session_lock = threading.Lock()
-_session_participants: Dict[str, Dict[str, Any]] = {}
+_session_participants: dict[str, dict[str, Any]] = {}
 
 # Fallback lock for agent stubs built via ``object.__new__`` that never ran
 # ``AIAgent.__init__`` and therefore have no ``_pending_steer_lock``. Mirrors
@@ -138,7 +138,7 @@ def _reset_for_tests() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _subagent_record(recipient_id: str) -> Optional[Dict[str, Any]]:
+def _subagent_record(recipient_id: str) -> Optional[dict[str, Any]]:
     """Look up a live subagent record in delegate_tool's existing registry.
 
     Imported lazily: ``delegate_tool`` imports plenty of heavy machinery and
@@ -239,7 +239,7 @@ def _append_steer_atomically(agent: Any, marked: str) -> None:
         agent._pending_steer = combined
 
 
-def _append_idle_atomically(entry: Dict[str, Any], marked: str) -> None:
+def _append_idle_atomically(entry: dict[str, Any], marked: str) -> None:
     """Cap-check and enqueue onto the idle recipient's ``_pending_input``.
 
     Same atomicity requirement as the active branch: the byte accounting and
@@ -274,7 +274,7 @@ def note_idle_delivery_consumed(participant_id: str, nbytes: int) -> None:
         entry["pending_bytes"] = max(0, int(entry.get("pending_bytes", 0) or 0) - nbytes)
 
 
-def _recipient_is_active(entry: Dict[str, Any]) -> bool:
+def _recipient_is_active(entry: dict[str, Any]) -> bool:
     """Is the recipient session's own turn currently running?
 
     Mirrors ``cli.py``'s ``/steer`` command (``canonical == "steer"``), which

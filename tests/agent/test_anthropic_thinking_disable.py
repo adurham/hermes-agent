@@ -142,6 +142,15 @@ class TestEnablePathIsUnchanged:
         kwargs = _kwargs("anthropic/claude-haiku-4.5", {"enabled": True, "effort": "high"})
         assert "thinking" not in kwargs
 
+    def test_haiku_55_thinks_adaptively(self) -> None:
+        """Haiku 5.5 is an adaptive-thinking model (Anthropic/Bedrock model tables); a blanket 'haiku'
+        skip sent it no thinking at all.
+
+        Fork: ``display`` is omitted for CC wire-shape parity — see the FORK DIVERGENCE note above."""
+        kwargs = _kwargs("anthropic/claude-haiku-5.5", {"enabled": True, "effort": "high"})
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "display" not in kwargs["thinking"]
+
     def test_no_reasoning_config_defaults_to_adaptive_medium(self) -> None:
         """Fork: an unset reasoning_config means "use the default wire shape",
         NOT "no thinking" — see note above. Upstream omits ``thinking`` here.

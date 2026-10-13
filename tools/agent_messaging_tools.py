@@ -57,7 +57,7 @@ from tools.agent_messaging_contract import (
 # This module is imported at tool-registration time, so this is what makes
 # in-process recipients resolvable. Transport B registers itself separately,
 # via cross_session_integration -> cross_session_transport.register_lookup().
-import tools.agent_messaging_transport_a  # noqa: F401
+import tools.agent_messaging_transport_a
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
@@ -256,7 +256,7 @@ def send_to_parent(body: str = "", *, agent: Any = None, **_kw) -> str:
     return _send(sender, parent_id, body)
 
 
-SEND_AGENT_MESSAGE_SCHEMA: Dict[str, Any] = {
+SEND_AGENT_MESSAGE_SCHEMA: dict[str, Any] = {
     "name": TOOL_NAME_SEND_AGENT_MESSAGE,
     "description": (
         "Send a short coordination message to one of your own running "
@@ -283,7 +283,7 @@ SEND_AGENT_MESSAGE_SCHEMA: Dict[str, Any] = {
     },
 }
 
-SEND_TO_PARENT_SCHEMA: Dict[str, Any] = {
+SEND_TO_PARENT_SCHEMA: dict[str, Any] = {
     "name": TOOL_NAME_SEND_TO_PARENT,
     "description": (
         "Send a short progress or coordination message to the parent that "

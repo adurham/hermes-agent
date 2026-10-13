@@ -162,8 +162,7 @@ def _parse_github_origin(repo_dir: Path) -> Optional[tuple]:
         path = ""
 
     if path:
-        if path.endswith(".git"):
-            path = path[:-4]
+        path = path.removesuffix(".git")
         parts = path.split("/")
         if len(parts) >= 2 and parts[0] and parts[1]:
             parsed = (parts[0], parts[1])

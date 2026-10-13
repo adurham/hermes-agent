@@ -16,9 +16,9 @@ from typing import Any
 __all__ = [
     "TurnSummaryCollector",
     "TurnTally",
-    "format_turn_summary",
-    "format_token_flow",
     "format_elapsed",
+    "format_token_flow",
+    "format_turn_summary",
 ]
 
 
@@ -155,7 +155,7 @@ def format_elapsed(seconds: float) -> str:
     seconds = max(seconds, 0.0)
     if seconds < 60:
         return f"{seconds:.1f}s"
-    total = int(round(seconds))
+    total = round(seconds)
     hours, rem = divmod(total, 3600)
     if hours:
         return f"{hours}h{rem // 60:02d}m"

@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Mapping, Optional
 
 # (state attribute, header tag) for the four windows.
@@ -108,7 +108,7 @@ class RateLimitState:
         return time.time() - self.captured_at if self.has_data else float("inf")
 
     @property
-    def hottest_bucket(self) -> Optional[tuple[str, "RateLimitBucket"]]:
+    def hottest_bucket(self) -> Optional[tuple[str, RateLimitBucket]]:
         """The bucket closest to its limit, by usage_pct.  None if no data.
 
         Used by the streaming heartbeat to surface a single most-relevant
@@ -167,7 +167,7 @@ def _parse_iso8601_reset_to_seconds(value: Any, *, now: float) -> float:
     except ValueError:
         return 0.0
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     delta = dt.timestamp() - now
     return max(0.0, delta)
 

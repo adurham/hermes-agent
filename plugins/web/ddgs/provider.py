@@ -59,7 +59,7 @@ def _plugins_path_entry() -> str:
         import plugins as plugins_pkg
         if pkg_file := getattr(plugins_pkg, "__file__", None):
             return os.path.dirname(os.path.dirname(os.path.abspath(pkg_file)))
-    except Exception:  # noqa: BLE001 — fall through to path-walk fallback
+    except Exception:
         pass
     return os.path.abspath(os.path.join(__file__, *([os.pardir] * 4)))
 
@@ -85,7 +85,7 @@ def _terminate_and_reap(proc: Optional[subprocess.Popen], *, grace: float = _TER
                 alive = not _wait_until_dead()
         if alive:
             logger.warning("DDGS worker pid=%s did not exit after kill", proc.pid)
-    except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+    except Exception as exc:
         logger.debug("DDGS worker reap error: %s", exc)
 
 
@@ -170,7 +170,7 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
         if not fut.done():
             try:
                 raw = raw or fut.result(timeout=_TERMINATE_GRACE_SECS)[0] or ""
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         pool.shutdown(wait=False, cancel_futures=True)
     if interrupted:
@@ -209,15 +209,15 @@ class DDGSWebSearchProvider(BaseWebSearchProvider):
             from tools.web_tools import _ddgs_package_importable
 
             return _ddgs_package_importable()
-        except Exception:  # noqa: BLE001 — standalone plugin load; probe directly
+        except Exception:  #   # standalone plugin load; probe directly
             try:
-                import ddgs  # noqa: F401
+                import ddgs
 
                 return True
             except ImportError:
                 return False
 
-    def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         """Run the search in a disposable child with a hard wall-clock timeout so a
         hung native ``primp`` call cannot freeze the Hermes process.
 
@@ -237,13 +237,13 @@ class DDGSWebSearchProvider(BaseWebSearchProvider):
         except _SearchInterrupted:
             logger.info("DDGS search interrupted for query: %r", query)
             return search_fail("DuckDuckGo search interrupted")
-        except Exception as exc:  # noqa: BLE001 — ddgs raises its own exceptions
+        except Exception as exc:
             logger.warning("DDGS search error: %s", exc)
             return search_fail(f"DuckDuckGo search failed: {exc}")
         logger.info("DDGS search '%s': %d results (limit %d)", query, len(web_results), limit)
         return search_ok(web_results)
 
-    def get_setup_schema(self) -> Dict[str, Any]:
+    def get_setup_schema(self) -> dict[str, Any]:
         # post_setup triggers `_run_post_setup("ddgs")` so the package gets pip-installed on first pick.
         return setup_schema(
             "DuckDuckGo (ddgs)", "free · no key · search only",

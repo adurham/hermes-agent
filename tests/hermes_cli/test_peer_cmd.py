@@ -72,7 +72,7 @@ def test_add_list_remove_roundtrip(monkeypatch, capsys):
 
 
 def test_add_rejects_bad_name_and_url(monkeypatch):
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {})
+    monkeypatch.setattr(peer_cmd, "_load_peers", dict)
     monkeypatch.setattr(peer_cmd, "_save_peers", lambda peers: None)
 
     assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="add", name="Bad Name!", url="http://x", key="", note="")) == 2
@@ -172,7 +172,7 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         return self._json({"error": {"message": "not found"}}, 404)
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 
@@ -537,7 +537,7 @@ class _AttackerOrigin(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 
@@ -553,7 +553,7 @@ class _RedirectingPeer(BaseHTTPRequestHandler):
         self.send_header("Location", type(self).redirect_target + self.path)
         self.end_headers()
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 
@@ -816,7 +816,7 @@ def no_gateway_env(monkeypatch):
                  "HERMES_PEER_DEFAULT_KEY", "HERMES_PEER_SPARK_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("hermes_cli.config.get_env_value", lambda name, default="": "")
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {})
+    monkeypatch.setattr(peer_cmd, "_load_peers", dict)
 
 
 def test_resolve_registered_peer_path_is_unchanged(monkeypatch, no_gateway_env):
@@ -983,7 +983,7 @@ def test_default_target_end_to_end_without_any_registry(monkeypatch, capsys, fak
     """The full `hermes submit` replacement: no bot_peers entry anywhere, the
     gateway URL + key come from the environment alone."""
     _FakePeer.sessions = ["bc_existing"]
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {})
+    monkeypatch.setattr(peer_cmd, "_load_peers", dict)
     monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "")
     monkeypatch.setattr("hermes_cli.config.get_env_value", lambda name, default="": "")
     monkeypatch.setenv("HERMES_GATEWAY_URL", fake_peer_server)

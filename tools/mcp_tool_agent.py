@@ -61,7 +61,7 @@ def _latch_tool_search_sticky(agent, new_defs: list) -> None:
         from tools.tool_search import tool_defs_show_bridge
         if tool_defs_show_bridge(new_defs):
             agent._tool_search_ever_activated = True
-    except Exception:  # noqa: BLE001 - observability latch, never fatal
+    except Exception:  # observability latch, never fatal
         logger.debug("tool_search sticky latch skipped", exc_info=True)
 
 
@@ -69,9 +69,9 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
     """Byte-level diff of the serialized tool arrays (dynamic schemas change CONTENT under
     stable names); False if either side fails to serialize."""
     try:
-        dump = lambda defs: json.dumps(defs, sort_keys=True, separators=(",", ":"), default=str)  # noqa: E731
+        dump = lambda defs: json.dumps(defs, sort_keys=True, separators=(",", ":"), default=str)
         return dump(_agent_tool_defs(agent)) != dump(new_defs)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -161,7 +161,7 @@ def refresh_agent_mcp_tools(
     if preserve_prefix:
         try:
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
@@ -200,7 +200,7 @@ def persist_agent_tool_names(agent) -> None:
         return
     try:
         db.update_session_tool_names(session_id, {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)})
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.debug("tool_names persist skipped", exc_info=True)
 
 

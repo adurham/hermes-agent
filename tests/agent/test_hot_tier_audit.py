@@ -310,9 +310,9 @@ def curator_env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    import agent.curator as curator
+    from agent import curator
     importlib.reload(curator)
-    monkeypatch.setattr(curator, "_load_config", lambda: {})
+    monkeypatch.setattr(curator, "_load_config", dict)
     return {"home": home, "curator": curator}
 
 

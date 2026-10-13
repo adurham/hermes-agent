@@ -126,7 +126,6 @@ def _manager(monkeypatch):
 
     manager = SessionManager(db=None)
 
-    real_make_agent = SessionManager._make_agent
 
     def _stub_make_agent(self, *, session_id, cwd, **kwargs):
         agent = MagicMock(name="MockAIAgent")

@@ -35,7 +35,7 @@ def _shorten(text: str, width: int = 90) -> str:
     return text if len(text) <= width else text[: width - 3] + "..."
 
 
-def _classify_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _classify_proposals(proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Annotate each proposal with a ``verdict`` (ConflictVerdict).
 
     Shows a spinner: each entry can trigger its own LLM classification call
@@ -54,7 +54,7 @@ def _classify_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     except Exception:
         spinner = None
 
-    annotated: List[Dict[str, Any]] = []
+    annotated: list[dict[str, Any]] = []
     try:
         for p in proposals:
             try:
@@ -72,7 +72,7 @@ def _classify_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return annotated
 
 
-def stage_proposal(proposal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def stage_proposal(proposal: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Stage one classified proposal into the write-approval pending store.
 
     The payload is exactly what ``apply_memory_pending`` needs to replay the
@@ -111,14 +111,14 @@ def stage_proposal(proposal: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def confirm_and_commit(
     session_id: str,
-    final_messages: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
+    final_messages: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
     """Run the session-end extraction pass and stage its proposals for review.
 
     Returns the ``on_session_end`` summary dict. Safe to call with no pending
     proposals — returns all-zero counts. Never blocks on user input.
     """
-    summary: Dict[str, Any] = {
+    summary: dict[str, Any] = {
         "session_id": session_id, "buffered": 0, "final_proposed": 0, "committed": 0,
         "skipped": 0, "cleanup_proposed": 0, "cleanup_applied": 0, "cleanup_skipped": 0,
         "actions": [], "cleanup_actions": [], "staged": 0,
@@ -138,7 +138,7 @@ def confirm_and_commit(
     if not _buf.get_session_entries(session_id) and not final_messages:
         return summary
 
-    staged: List[Dict[str, Any]] = []
+    staged: list[dict[str, Any]] = []
 
     # The session-end extraction pass makes a real LLM call that can take several
     # seconds; without a spinner the process reads as frozen.
@@ -151,9 +151,9 @@ def confirm_and_commit(
         _spinner = None
 
     def _stage_callback(
-        proposals: List[Dict[str, Any]],
-        cleanup: Optional[List[Dict[str, Any]]] = None,
-    ) -> Dict[str, Any]:
+        proposals: list[dict[str, Any]],
+        cleanup: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
         # Stop the extraction spinner before _classify_proposals starts its own,
         # so two spinners never animate over the same terminal line.
         if _spinner is not None:
@@ -190,7 +190,7 @@ def confirm_and_commit(
     return summary
 
 
-def _print_staged_notice(staged: List[Dict[str, Any]], summary: Dict[str, Any]) -> None:
+def _print_staged_notice(staged: list[dict[str, Any]], summary: dict[str, Any]) -> None:
     """Non-blocking exit notice: what was staged, and how to review it.
 
     Deliberately a notice and not a prompt — session exit never waits on a human.

@@ -121,7 +121,7 @@ def _record_api_call_row(agent: Any, response: Any, canonical_usage, *, api_dura
         ended_at = time.time()
         # OpenRouter reports the upstream that actually served the request; upstream's
         # own log line surfaces it as `upstream=`, so keep it next to the cache split.
-        routing: Dict[str, Any] = {}
+        routing: dict[str, Any] = {}
         served_by = getattr(response, "provider", None)
         if isinstance(served_by, str) and served_by:
             routing["upstream"] = served_by
@@ -147,7 +147,7 @@ def _record_api_call_row(agent: Any, response: Any, canonical_usage, *, api_dura
 
 
 def record_response_usage(
-    agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
+    agent: Any, response: Any, *, messages: list[dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
 ) -> ResponseUsageOutcome:
     """Fold ``response.usage`` into compressor, anchors, session counters, state.db

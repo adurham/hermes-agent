@@ -15,7 +15,10 @@ import pytest
 from hermes_cli.config import get_config_path
 from pm import receipt
 from pm.package import InstallError
-from tests.pm.test_pm_core import pm_env as pm_env, served as served  # noqa: F401  (fixtures)
+from tests.pm.test_pm_core import pm_env, served  # fixtures
+
+# Fixture re-exports for pytest collection (an explicit use, so the imports are not "unused"):
+__all__ = ["pm_env", "served"]
 
 BLOCKED_MESSAGE = "blocked by security.blocked_features in config.yaml"
 
@@ -27,7 +30,7 @@ def _write_config(text: str) -> None:
 
 
 def test_lazy_ensure_of_blocked_package_is_refused_and_receipted(pm_env):
-    import pm.install as install
+    from pm import install
 
     _write_config("security:\n  blocked_features:\n    - faketool\n")
     token = receipt.begin("sync")
@@ -51,7 +54,7 @@ def test_lazy_ensure_of_blocked_package_is_refused_and_receipted(pm_env):
 
 
 def test_lazy_ensure_of_unlisted_package_still_installs(pm_env):
-    import pm.install as install
+    from pm import install
 
     _write_config("security:\n  blocked_features:\n    - tts-premium\n")
     token = receipt.begin("sync")
@@ -70,7 +73,7 @@ class _Reached(Exception):
 
 
 def _stop_after_veto(monkeypatch):
-    import pm.install as install
+    from pm import install
 
     def reached(*args, **kwargs):
         raise _Reached()

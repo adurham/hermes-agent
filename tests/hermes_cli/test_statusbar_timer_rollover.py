@@ -114,7 +114,7 @@ def test_kawaii_spinner_repaint_covers_previous_line_width(monkeypatch):
     the written bytes erase at least the previous frame's display width (so no
     stale digit/glyph survives), using terminal cells not ``len()``.
     """
-    import agent.display as display
+    from agent import display
 
     class _FakeOut:
         def __init__(self):

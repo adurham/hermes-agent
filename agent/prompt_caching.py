@@ -48,8 +48,8 @@ def strip_volatile_sentinel(text: str) -> str:
 class PromptCachePlan:
     """Request-local message and tool sections with their cache markers."""
 
-    messages: List[Dict[str, Any]]
-    tools: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]]
 
 
 def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: str | None) -> bool:
@@ -102,7 +102,7 @@ def _scaffold_parts(msg: dict, cache_marker: dict | None = None) -> list | None:
     return None if prefix is None else [_text_part(prefix, cache_marker), _text_part(content[len(prefix):])]
 
 
-def _split_unmarked_scaffolds(messages: List[Dict[str, Any]]) -> None:
+def _split_unmarked_scaffolds(messages: list[dict[str, Any]]) -> None:
     """Send every registered scaffold message as [scaffold, tail] parts, marked or not (in place).
 
     Provider caches key on content, and two text parts are different content from one string:
@@ -131,7 +131,7 @@ def _can_carry_marker(msg: dict, native_anthropic: bool, tool_part_markers: bool
     return isinstance(content[-1], dict) if isinstance(content, list) and content else isinstance(content, str) and content != ""
 
 
-def _build_marker(ttl: str) -> Dict[str, str]:
+def _build_marker(ttl: str) -> dict[str, str]:
     """Build a cache_control marker dict for the given TTL ('5m' or '1h')."""
     return {"type": "ephemeral", "ttl": "1h"} if ttl == "1h" else {"type": "ephemeral"}
 
@@ -220,7 +220,7 @@ def _has_part_marker(content: Any) -> bool:
     return isinstance(content, list) and any(isinstance(part, dict) and "cache_control" in part for part in content)
 
 
-def strip_anthropic_cache_control(api_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Remove ``cache_control`` markers and undo decoration-produced list shapes (in place).
 
     Used before re-decorating after a mid-turn failover. Flattening to a string is restricted
@@ -261,7 +261,7 @@ def strip_anthropic_cache_control(api_messages: List[Dict[str, Any]]) -> List[Di
     return api_messages
 
 
-def _strip_prior_decoration(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_prior_decoration(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Re-canonicalise planner output before re-planning (in place on the list, copy-on-write per message).
 
     Every list-content message is stripped, not just marked ones: an UNMARKED skill split (outside
@@ -275,7 +275,7 @@ def _strip_prior_decoration(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return messages
 
 
-def strip_anthropic_tool_cache_control(tools: List[Dict[str, Any]] | None) -> List[Dict[str, Any]]:
+def strip_anthropic_tool_cache_control(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Return copied tools without request-local Anthropic cache markers."""
     cleaned = copy.deepcopy(tools or [])
     for tool in cleaned:
@@ -284,13 +284,13 @@ def strip_anthropic_tool_cache_control(tools: List[Dict[str, Any]] | None) -> Li
     return cleaned
 
 
-def _count_cache_markers(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> int:
+def _count_cache_markers(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
     """Count the wire-visible cache markers in a request-local plan."""
     parts = [p for m in messages if isinstance(m, dict) and isinstance(m.get("content"), list) for p in m["content"]]
     return sum(1 for item in [*messages, *parts, *tools] if isinstance(item, dict) and "cache_control" in item)
 
 
-def _completed_transaction_endpoint_indexes(messages: List[Dict[str, Any]], *, native_anthropic: bool) -> List[int]:
+def _completed_transaction_endpoint_indexes(messages: list[dict[str, Any]], *, native_anthropic: bool) -> list[int]:
     """Select legal ends of completed tool runs and ordinary turns."""
 
     def _tool_run_end(start: int) -> int:
@@ -299,7 +299,7 @@ def _completed_transaction_endpoint_indexes(messages: List[Dict[str, Any]], *, n
             end += 1
         return end
 
-    endpoints: List[int] = []
+    endpoints: list[int] = []
     index = 0
     while index < len(messages):
         message = messages[index]
@@ -328,7 +328,7 @@ def _completed_transaction_endpoint_indexes(messages: List[Dict[str, Any]], *, n
 
 
 def build_prompt_cache_plan(
-    api_messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] | None, *,
+    api_messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, *,
     cache_ttl: str = "5m", native_anthropic: bool = False, static_system_prefix: str | None = None,
     direct_native_tool_cache: bool = False, tool_part_markers: bool = True,
     downstream_tools_marker: bool | None = None,
@@ -373,14 +373,11 @@ def build_prompt_cache_plan(
 
 
 def apply_anthropic_cache_control(
-    api_messages: List[Dict[str, Any]],
-    cache_ttl: str = "5m",
-    native_anthropic: bool = False,
+    api_messages: list[dict[str, Any]], cache_ttl: str = "5m", native_anthropic: bool = False,
     reserve_tools_breakpoint: bool = True,
-    static_system_prefix: str | None = None,
-    tool_part_markers: bool = True,
-) -> List[Dict[str, Any]]:
-    """Apply caching strategy to messages for Anthropic models.
+    static_system_prefix: str | None = None, tool_part_markers: bool = True,
+) -> list[dict[str, Any]]:
+    """Apply Anthropic cache-control markers to API messages.
 
     Places cache_control breakpoints on the system prompt + the last
     non-system messages. When ``reserve_tools_breakpoint`` is True, only
@@ -435,9 +432,9 @@ def apply_anthropic_cache_control(
 
 
 def apply_anthropic_tools_cache_control(
-    anthropic_tools: List[Dict[str, Any]],
+    anthropic_tools: list[dict[str, Any]],
     cache_ttl: str = "5m",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Mark the last entry in ``tools[]`` with ``cache_control`` so the
     ``system + tools`` prefix is cached as a unit.
 

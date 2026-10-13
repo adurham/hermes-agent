@@ -128,7 +128,7 @@ def test_get_cached_client_evicts_and_rebuilds_stale_anthropic_client():
     with patch.object(aux, "_select_pool_entry", return_value=(False, None)), \
          patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="new-token"), \
          patch("agent.auxiliary_client.resolve_provider_client", return_value=(fresh_client, "claude-sonnet-5")):
-        client, model = aux._get_cached_client("anthropic")
+        client, _model = aux._get_cached_client("anthropic")
 
     assert client is fresh_client
     stale_client.close.assert_called_once()

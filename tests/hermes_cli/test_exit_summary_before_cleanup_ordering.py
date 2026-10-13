@@ -81,9 +81,7 @@ def _bare_call_positions(call_text: str, src: str) -> list[int]:
     prefix = call_text[:-1] if accept_kwargs else None  # e.g. "foo("
     for line in src.splitlines(keepends=True):
         stripped = line.strip()
-        if stripped == call_text:
-            positions.append(offset)
-        elif accept_kwargs and prefix and stripped.startswith(prefix) and stripped.endswith(")"):
+        if stripped == call_text or accept_kwargs and prefix and stripped.startswith(prefix) and stripped.endswith(")"):
             positions.append(offset)
         offset += len(line)
     return positions

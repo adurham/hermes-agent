@@ -503,7 +503,7 @@ def test_run_single_child_writes_and_clears_durable_subagent_registry(cst, home)
         "durable cross_session_subagents row was not written before the "
         "child started running"
     )
-    matching = [r for r in mid_run_rows if r.subagent_id == "sa-0-durabletest"][0]
+    matching = next(r for r in mid_run_rows if r.subagent_id == "sa-0-durabletest")
     assert matching.owner_session_id == "sess-durable-registry"
     assert matching.goal == "durable registry regression test goal"
 

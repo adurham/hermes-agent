@@ -94,7 +94,7 @@ class TestCompressionAttemptsTotalIsAPositiveSignal:
         legitimately idle."""
         db = _db(tmp_path)
         db.create_session("s1", source="subagent")
-        cc = _compressor(db, "s1")
+        _compressor(db, "s1")
 
         # Never call record_completed_compaction — simulates a session whose
         # real usage never reached threshold_tokens.

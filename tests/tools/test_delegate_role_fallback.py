@@ -136,7 +136,7 @@ def dispatch(monkeypatch):
     test can inspect ``parent._emitted_status``).
     """
     import hermes_cli.personas as ruflo
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
     import tools.delegate_tool as dt
 
     def _run(
@@ -473,7 +473,7 @@ class TestEndToEndWithRealEntryMapAndTempHermesHome:
         self, tmp_path, monkeypatch
     ):
         import hermes_cli.config as hc
-        import hermes_cli.runtime_provider as runtime_provider
+        from hermes_cli import runtime_provider
         import tools.delegate_tool as dt
         import tools.delegation_router as dr
 
@@ -550,7 +550,7 @@ class TestEndToEndWithRealEntryMapAndTempHermesHome:
         """A config.yaml with no ``fallback`` sub-key at all behaves
         byte-for-byte like before this feature shipped."""
         import hermes_cli.config as hc
-        import hermes_cli.runtime_provider as runtime_provider
+        from hermes_cli import runtime_provider
         import tools.delegate_tool as dt
         import tools.delegation_router as dr
 

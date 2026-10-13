@@ -95,12 +95,12 @@ class TestBudget:
         assert guard.empty_retry_budget(agent, _zero_usage()) == guard.DEFAULT_EMPTY_RETRY_BUDGET
 
     def test_t2_transient_budget_overrides_cost_reduction(self, transient_profile, monkeypatch):
-        monkeypatch.setattr(guard, "_estimate_attempt_cost", lambda a, r: Decimal("5"))
+        monkeypatch.setattr(guard, "_estimate_attempt_cost", lambda a, r: Decimal(5))
         assert guard.empty_retry_budget(_agent(), _zero_usage()) == guard.DEFAULT_TRANSIENT_MAX_RETRIES
 
     def test_t5_refusal_like_budget_unchanged(self, transient_profile, monkeypatch):
         assert guard.empty_retry_budget(_agent(provider="other"), _zero_usage()) == 3
-        monkeypatch.setattr(guard, "_estimate_attempt_cost", lambda a, r: Decimal("5"))
+        monkeypatch.setattr(guard, "_estimate_attempt_cost", lambda a, r: Decimal(5))
         assert guard.empty_retry_budget(_agent(provider="other"), _zero_usage()) == 1
 
 

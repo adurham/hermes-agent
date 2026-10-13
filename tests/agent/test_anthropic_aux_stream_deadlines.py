@@ -290,7 +290,7 @@ def test_consult_bypasses_the_generic_executor_deadline():
     be True while consult's in-band ceiling exceeds the generic bound, otherwise
     the 420s pre-emption returns.
     """
-    import tools.consult_tool  # noqa: F401  (registers the tool)
+    import tools.consult_tool  # registers the tool
     from tools.registry import registry
     from agent.auxiliary_client import _aux_stream_total_ceiling, _get_task_timeout
     from agent.tool_executor import _resolve_sequential_tool_timeout

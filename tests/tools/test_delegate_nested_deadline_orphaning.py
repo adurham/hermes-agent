@@ -85,7 +85,7 @@ def _mock_response(content="child work done"):
     )
 
 
-def _make_agent(tmp_path: Path, *, depth: int) -> "object":
+def _make_agent(tmp_path: Path, *, depth: int) -> object:
     """A real AIAgent standing in for the orchestrator subagent (depth > 0).
 
     ``_delegate_depth`` is the exact signal the sync/async decision

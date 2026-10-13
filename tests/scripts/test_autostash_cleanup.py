@@ -26,7 +26,7 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import autostash_cleanup as asc  # noqa: E402
+import autostash_cleanup as asc
 
 STAMP_A = "20260801-120000"  # superseded by a later commit
 STAMP_B = "20260802-110000"  # superseded by removal (path tracked, then deleted)

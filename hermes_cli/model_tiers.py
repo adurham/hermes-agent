@@ -38,7 +38,7 @@ from typing import Dict, Iterator, Optional
 # install, all-local setup, sandboxed tests). They live in exactly ONE
 # place. When the roster moves to a new generation, update ONLY these three
 # literals — every consumer derives through them.
-LAST_KNOWN_GOOD_TIERS: Dict[str, str] = {
+LAST_KNOWN_GOOD_TIERS: dict[str, str] = {
     "haiku": "claude-haiku-4-5",
     "sonnet": "claude-sonnet-4-6",
     "opus": "claude-opus-4-7",
@@ -49,7 +49,7 @@ TIER_NAMES: tuple[str, ...] = ("haiku", "sonnet", "opus")
 
 # Family -> regex recognizing a model string as belonging to that tier.
 # Matched against the provider-prefix-stripped, lowercased model id.
-_FAMILY_PATTERNS: Dict[str, re.Pattern[str]] = {
+_FAMILY_PATTERNS: dict[str, re.Pattern[str]] = {
     "haiku": re.compile(r"^claude-haiku-"),
     "sonnet": re.compile(r"^claude-sonnet-"),
     "opus": re.compile(r"^claude-opus-"),
@@ -165,7 +165,7 @@ def resolve_tier_model(tier: str) -> str:
     return LAST_KNOWN_GOOD_TIERS[tier]
 
 
-def tier_rank_map() -> Dict[str, int]:
+def tier_rank_map() -> dict[str, int]:
     """Return ``{current_model: rank}`` for the three tiers (call-time).
 
     Rank 0 = haiku (cheapest), 1 = sonnet, 2 = opus. Built fresh on every
@@ -174,7 +174,7 @@ def tier_rank_map() -> Dict[str, int]:
     return {resolve_tier_model(t): i for i, t in enumerate(TIER_NAMES)}
 
 
-def rank_tier_map() -> Dict[int, str]:
+def rank_tier_map() -> dict[int, str]:
     """Return ``{rank: current_model}`` for the three tiers (call-time)."""
     return {i: resolve_tier_model(t) for i, t in enumerate(TIER_NAMES)}
 
@@ -208,7 +208,7 @@ ROLE_TIER_GROUPS: tuple[tuple[str, int], ...] = (
 _VARIANT_SUFFIXES: tuple[str, ...] = ("-flash", "-mini", "-fast")
 
 
-def _read_model_by_role() -> Dict[str, object]:
+def _read_model_by_role() -> dict[str, object]:
     """Return the raw ``delegation.model_by_role`` dict, or ``{}``.
 
     Same load path as :func:`_iter_roster_models` (live ``load_config`` on
@@ -230,7 +230,7 @@ def _read_model_by_role() -> Dict[str, object]:
     return mbr if isinstance(mbr, dict) else {}
 
 
-def _role_primary_model(mbr: Dict[str, object], role: str) -> Optional[str]:
+def _role_primary_model(mbr: dict[str, object], role: str) -> Optional[str]:
     """Return the PRIMARY model string for ``role``, or ``None``.
 
     A bare-string entry is its own model; a dict entry contributes its
@@ -249,7 +249,7 @@ def _role_primary_model(mbr: Dict[str, object], role: str) -> Optional[str]:
     return None
 
 
-def _role_fallback_model(mbr: Dict[str, object], role: str) -> Optional[str]:
+def _role_fallback_model(mbr: dict[str, object], role: str) -> Optional[str]:
     """Return the nested ``fallback.model`` for ``role``, or ``None``.
 
     Only a dict entry with a nested ``fallback`` dict carrying a usable
@@ -267,7 +267,7 @@ def _role_fallback_model(mbr: Dict[str, object], role: str) -> Optional[str]:
     return None
 
 
-def local_ladder() -> Dict[str, int]:
+def local_ladder() -> dict[str, int]:
     """Return ``{model: rank}`` for the local (non-Anthropic) ladder.
 
     Ranks come from :data:`ROLE_TIER_GROUPS`: each anchor role's PRIMARY
@@ -296,7 +296,7 @@ def local_ladder() -> Dict[str, int]:
     out of the local ladder, which this achieves.
     """
     mbr = _read_model_by_role()
-    ranks: Dict[str, int] = {}
+    ranks: dict[str, int] = {}
     for role, rank in ROLE_TIER_GROUPS:
         model = _role_primary_model(mbr, role)
         if model is not None and family_of(model) is None:
@@ -319,7 +319,7 @@ def local_ladder() -> Dict[str, int]:
     return ranks
 
 
-def local_ladder_models() -> Dict[int, str]:
+def local_ladder_models() -> dict[int, str]:
     """Return ``{rank: model}`` for the local ladder (call-time).
 
     When multiple models share a rank (e.g. two anchors resolving to the
