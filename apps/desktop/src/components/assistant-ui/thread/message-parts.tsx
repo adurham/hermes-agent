@@ -26,7 +26,6 @@ import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/compone
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
-import { useOnboardingChatActive } from '@/components/onboarding/first-run/assembly'
 import { useI18n } from '@/i18n'
 import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
@@ -368,10 +367,6 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   const showReasoning = useStore($showReasoning)
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
-  // The guide's reasoning is it reading its own runbook ("Now step 4: offer
-  // the layout picker"), and a first-time user reading that alongside the
-  // greeting breaks the one conversation the guide is trying to have.
-  const guidedChat = useOnboardingChatActive()
 
   const pending = useAuiState(
     s =>
@@ -410,7 +405,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent || guidedChat || !showReasoning) {
+  if (!hasContent || !showReasoning) {
     return null
   }
 
