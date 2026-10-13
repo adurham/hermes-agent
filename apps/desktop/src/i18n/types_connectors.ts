@@ -41,6 +41,10 @@ export interface ConnectorDirectoryTranslations {
   receiptConnected: (apps: string) => string
   receiptNone: string
   receiptTimedOut: string
+  /** A tile whose sign-in is open in the browser. */
+  finishInBrowser: string
+  /** A tile whose sign-in failed; clicking it starts the same sign-in again. */
+  signInFailed: string
 }
 
 export interface ConnectorAccountsTranslations {

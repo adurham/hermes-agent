@@ -19,7 +19,9 @@ export const zhHantOverrides = {
       allApps: '全部應用程式',
       receiptConnected: apps => `已連接：${apps}`,
       receiptNone: '未連接新的應用程式',
-      receiptTimedOut: '5 分鐘後已關閉'
+      receiptTimedOut: '5 分鐘後已關閉',
+      finishInBrowser: '請在瀏覽器中完成',
+      signInFailed: '連接失敗，點擊重試'
     }
   },
   skillDeepLink: {

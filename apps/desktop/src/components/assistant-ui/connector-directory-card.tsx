@@ -1,7 +1,12 @@
 import { useStore } from '@nanostores/react'
 import { useMemo, useState } from 'react'
 
-import { $abandonedConnects } from '@/app/capabilities/connectors/data/account-operations'
+import {
+  $abandonedConnects,
+  $accountOperations,
+  accountOperationFor,
+  retryable
+} from '@/app/capabilities/connectors/data/account-operations'
 import { useHostedActions } from '@/app/capabilities/connectors/data/hosted-actions'
 import { useHostedConnectors } from '@/app/capabilities/connectors/data/queries'
 import { deriveCards, forgetAbandoned } from '@/app/capabilities/connectors/derive'
@@ -102,6 +107,7 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
   const copy = t.connectors
   const hosted = useHostedConnectors(owner)
   const abandoned = useStore($abandonedConnects)
+  const operations = useStore($accountOperations)
   const freeTier = useStore($freeTierStatus)
   const actions = useHostedActions(owner, hosted.accounts, { returnRoute })
   const [query, setQuery] = useState('')
@@ -130,12 +136,23 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
     })
   }
 
+  // An open sign-in shows on its tile; a failed one says so, and clicking the tile starts the same sign-in again.
+  const signInSub = (card: ConnectorCardModel): string | undefined => {
+    const operation = accountOperationFor(operations, card.slug, owner)
+
+    if (!operation || operation.settled) {
+      return undefined
+    }
+
+    return retryable(operation) ? copy.directory.signInFailed : copy.directory.finishInBrowser
+  }
+
   const tileSub = (card: ConnectorCardModel, busy: boolean): string | undefined => {
     if (busy) {
       return copy.opening
     }
 
-    return card.state === 'available' ? undefined : t.connectorsPage.card.state[card.stateWord]
+    return signInSub(card) ?? (card.state === 'available' ? undefined : t.connectorsPage.card.state[card.stateWord])
   }
 
   const tile = (card: ConnectorCardModel) => {

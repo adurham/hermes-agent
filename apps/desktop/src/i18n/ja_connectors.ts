@@ -7,7 +7,9 @@ export const jaConnectors = {
       allApps: 'すべてのアプリ',
       receiptConnected: apps => `接続済み: ${apps}`,
       receiptNone: '新しく接続したアプリはありません',
-      receiptTimedOut: '5 分後に閉じました'
+      receiptTimedOut: '5 分後に閉じました',
+      finishInBrowser: 'ブラウザーで完了してください',
+      signInFailed: '接続できませんでした。クリックして再試行'
     }
   },
   sessionImport: {
