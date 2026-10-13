@@ -15,7 +15,6 @@ import {
 } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
-import { activeGatewayConnectionId } from '@/store/gateway'
 import {
   $localModelOfferPending,
   LOCAL_MODEL_OFFERED_KEY,
@@ -75,15 +74,11 @@ export function OnboardingEnd() {
       }
 
       checking = true
-      const connection = activeGatewayConnectionId()
       const { fit } = await readLocalSetupEligibility()
       checking = false
 
-      // The read is async: the moment may have stopped being quiet, or the window moved to another
-      // connection, while it ran.
-      const stale = cancelled || activeGatewayConnectionId() !== connection
-
-      if (stale || !fit || readKey(LOCAL_MODEL_OFFERED_KEY) || !appIsQuiet(lastTypedAt)) {
+      // The read is async: the moment may have stopped being quiet while it ran.
+      if (cancelled || !fit || readKey(LOCAL_MODEL_OFFERED_KEY) || !appIsQuiet(lastTypedAt)) {
         return
       }
 
