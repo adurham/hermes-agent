@@ -596,10 +596,6 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.save.noActiveSession'))
       }
 
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'save'))
-      }
-
       ctx.gateway
         .rpc<SessionSaveResponse>('session.save', { session_id: ctx.sid })
         .then(

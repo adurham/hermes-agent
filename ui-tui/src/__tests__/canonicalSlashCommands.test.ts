@@ -161,7 +161,7 @@ it("/usage renders main's session totals from session.stats and /tools says what
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
 })
 
-it('/status reads through the gateway; /save, /bg and /btw refuse instead of calling sidecar-only RPCs', async () => {
+it('/status reads through the gateway; /bg and /btw refuse instead of calling sidecar-only RPCs', async () => {
   const { page, request, slash, sys } = harness()
 
   slash('/status')
@@ -169,7 +169,7 @@ it('/status reads through the gateway; /save, /bg and /btw refuse instead of cal
   expect(request).toHaveBeenCalledWith('slash.exec', { command: 'status', session_id: 'owner' })
   expect(page).toHaveBeenCalledWith('Session: owner', expect.any(String))
 
-  for (const cmd of ['/save', '/bg check the logs', '/btw what was that']) {
+  for (const cmd of ['/bg check the logs', '/btw what was that']) {
     slash(cmd)
   }
 
@@ -177,13 +177,13 @@ it('/status reads through the gateway; /save, /bg and /btw refuse instead of cal
 
   const methods = request.mock.calls.map(([method]) => method)
 
-  for (const method of ['session.status', 'session.save', 'prompt.background', 'prompt.btw']) {
+  for (const method of ['session.status', 'prompt.background', 'prompt.btw']) {
     expect(methods).not.toContain(method)
   }
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
-  for (const name of ['save', 'bg', 'btw']) {
+  for (const name of ['bg', 'btw']) {
     expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
   }
 })
