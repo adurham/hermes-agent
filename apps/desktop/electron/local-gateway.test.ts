@@ -492,3 +492,12 @@ test('a session write that names its owner only in the body gets a grant for tha
     expect(nativeGrantRoute(url, body)).toBe(url)
   }
 })
+
+test('an ensure refusal names its remedy instead of only a status pointer', async () => {
+  // A gateway another install owns is refused, not replaced; ensure says what to do in `detail`.
+  const detail = "another Hermes install's gateway owns this profile; stop it there: hermes gateway stop"
+
+  await expect(ensureLocalGateway(async () => ({
+    code: 3, stdout: JSON.stringify({ state: 'incompatible', reason_code: 'runtime_protocol', detail, endpoint: null })
+  }))).rejects.toThrow(`Gateway incompatible (runtime_protocol). ${detail}. Use hermes gateway status for recovery.`)
+})
