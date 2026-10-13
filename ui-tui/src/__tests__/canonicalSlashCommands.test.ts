@@ -55,8 +55,14 @@ function harness() {
       return { status: 'terminal', result: { model: 'm', input_tokens: 5, output_tokens: 7, total_tokens: 12, api_calls: 1 } }
     }
 
-    if (method === 'session.info') {
-      return { launch_request: { toolsets: ['terminal', 'web'] } }
+    if (method === 'tools.show') {
+      return {
+        sections: [
+          { name: 'file', tools: [{ name: 'read_file', description: 'Read a text file.' }] },
+          { name: 'terminal', tools: [{ name: 'terminal', description: 'Run a shell command.' }] }
+        ],
+        total: 2
+      }
     }
 
     if (method === 'config.get') {
@@ -133,8 +139,8 @@ it('/title renames and /undo, /retry rewind through session.mutate with the snap
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
 })
 
-it("/usage renders main's session totals from session.stats and /tools says what the shared gateway lacks", async () => {
-  const { panel, request, slash, sys } = harness()
+it("/usage renders main's session totals from session.stats and /tools lists the owner's tools.show", async () => {
+  const { page, panel, request, slash, sys } = harness()
 
   noteCanonicalCompletion('owner', 'adm-1')
   slash('/usage')
@@ -159,8 +165,25 @@ it("/usage renders main's session totals from session.stats and /tools says what
 
   slash('/tools')
   await flush()
-  expect(sys).toHaveBeenCalledWith('toolsets fixed at session launch: terminal, web')
-  expect(sys).toHaveBeenCalledWith('/tools is not available on the shared gateway yet')
+  // Main's /tools listing (cli_info_mixin.show_tools layout) from the owner's tools.show, in the pager.
+  expect(request).toHaveBeenCalledWith('tools.show', { session_id: 'owner' })
+  expect(page).toHaveBeenCalledWith(
+    [
+      '+------------------------------------------------------------------------------+',
+      '|                            (^_^)/ Available Tools                            |',
+      '+------------------------------------------------------------------------------+',
+      '',
+      '  [file]',
+      '    * read_file            - Read a text file.',
+      '',
+      '  [terminal]',
+      '    * terminal             - Run a shell command.',
+      '',
+      '  Total: 2 tools  ヽ(^o^)ノ'
+    ].join('\n'),
+    'Tools'
+  )
+  expect(sys.mock.calls.some(([line]) => /not available on the shared gateway/.test(line))).toBe(false)
   expect(sys.mock.calls.some(([line]) => /request_failed|unsupported_command|unknown_method/.test(line))).toBe(false)
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
 })

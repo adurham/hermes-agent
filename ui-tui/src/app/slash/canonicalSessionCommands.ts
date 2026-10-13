@@ -220,25 +220,53 @@ export function canonicalUsage(ctx: SlashRunCtx) {
     .catch(ctx.guardedErr)
 }
 
-/** `/tools`: a canonical session's toolsets are frozen at launch (`session.info.launch_request`);
- * listing and toggling them live has no canonical verb yet. */
+interface ToolsShowResult {
+  sections?: { name: string; tools?: { description?: string; name: string }[] }[]
+  total?: number
+}
+
+/** Main's `/tools` text (hermes_cli/cli_info_mixin.py show_tools): kawaii header box, one
+ *  `[toolset]` block per section with the first description sentence, then the total. */
+export function renderToolsListing(result: ToolsShowResult): string {
+  const sections = result.sections ?? []
+
+  if (!sections.some(section => section.tools?.length)) {
+    return '(;_;) No tools available'
+  }
+
+  const title = '(^_^)/ Available Tools'
+  const pad = 78 - title.length
+  const rule = `+${'-'.repeat(78)}+`
+  const lines = [rule, `|${' '.repeat(Math.floor(pad / 2))}${title}${' '.repeat(pad - Math.floor(pad / 2))}|`, rule, '']
+
+  for (const section of sections) {
+    lines.push(`  [${section.name}]`)
+
+    for (const tool of section.tools ?? []) {
+      lines.push(`    * ${tool.name.padEnd(20)} - ${tool.description ?? ''}`)
+    }
+
+    lines.push('')
+  }
+
+  lines.push(`  Total: ${result.total ?? 0} tools  ヽ(^o^)ノ`)
+
+  return lines.join('\n')
+}
+
+/** `/tools`: the session's catalog from the owner's `tools.show` (its toolsets, MCP and plugin
+ *  tools), rendered as main's listing in the pager. */
 export function canonicalTools(ctx: SlashRunCtx) {
   const sid = ctx.sid!
 
   void ctx.gateway.gw
-    .request<{ launch_request?: { toolsets?: unknown } }>('session.info', { session_id: sid })
-    .then(info => {
+    .request<ToolsShowResult>('tools.show', { session_id: sid })
+    .then(raw => {
       if (ctx.stale()) {
         return
       }
 
-      const toolsets = info?.launch_request?.toolsets
-
-      if (Array.isArray(toolsets) && toolsets.length) {
-        ctx.transcript.sys(t('canonical.controls.launchToolsets', toolsets.join(', ')))
-      }
-
-      ctx.transcript.sys(t('canonical.controls.notAvailable', 'tools'))
+      ctx.transcript.page(renderToolsListing(asRpcResult<ToolsShowResult>(raw) ?? {}), t('slashCmd.ops.slashWorker.toolsTitle'))
     })
     .catch(ctx.guardedErr)
 }
