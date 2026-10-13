@@ -11,6 +11,8 @@ import { useI18n } from '@/i18n'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 
+import { CARD_DETAIL_CLASS, CARD_OPTION_CLASS } from '../setup-beat/card-type'
+
 export interface LayoutPickerCardProps {
   onPick: (preset: string) => void
 }
@@ -45,10 +47,16 @@ export function LayoutPickerCard({ onPick }: LayoutPickerCardProps) {
               {isLayoutNode(tree) && <TreeThumbnail node={tree} resting={layoutPresetResting(choice.id)} />}
             </span>
             <span className="flex flex-col gap-0.5">
-              <span className={cn('text-xs font-medium', active ? 'text-foreground' : 'text-(--ui-text-secondary)')}>
+              <span
+                className={cn(
+                  CARD_OPTION_CLASS,
+                  'font-medium',
+                  active ? 'text-foreground' : 'text-(--ui-text-secondary)'
+                )}
+              >
                 {copy[choice.name]}
               </span>
-              <span className="text-[0.68rem] text-(--ui-text-tertiary)">{copy[choice.detail]}</span>
+              <span className={cn(CARD_DETAIL_CLASS, 'text-(--ui-text-tertiary)')}>{copy[choice.detail]}</span>
             </span>
           </button>
         )

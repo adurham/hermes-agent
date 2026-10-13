@@ -18,6 +18,7 @@ import { useTheme } from '@/themes'
 import { accentName, resolveAccentPick } from '@/themes/accents'
 import type { ThemeMode } from '@/themes/context'
 
+import { CARD_LABEL_CLASS } from '../setup-beat/card-type'
 import { ToolFallback } from '../tool/fallback'
 import { TypedAnswer } from '../typed-answer'
 
@@ -25,7 +26,10 @@ import { AccentPickerCard } from './accent-picker-card'
 import { setThemeCall } from './args'
 import { LayoutPickerCard } from './layout-picker-card'
 
-const SHELL_CLASS = cn(WIDGET_SHELL_CLASS, 'my-1.5 text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)')
+const SHELL_CLASS = cn(
+  WIDGET_SHELL_CLASS,
+  'my-1.5 text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)'
+)
 
 const MODES: readonly ThemeMode[] = ['light', 'dark', 'system']
 
@@ -139,7 +143,7 @@ export function ThemeTool(props: ToolCallMessagePartProps) {
   return (
     <div className={cn(SHELL_CLASS, 'grid gap-2')} data-theme-picker={picker}>
       <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">{copy[picker]}</span>
+        <span className={CARD_LABEL_CLASS}>{copy[picker]}</span>
         <button
           aria-label={copy.noPick}
           className="grid size-6 place-items-center rounded-md text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"

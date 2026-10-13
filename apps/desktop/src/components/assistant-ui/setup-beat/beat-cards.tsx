@@ -6,7 +6,10 @@ import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
+import { cn } from '@/lib/utils'
 import type { BeatOption } from '@/store/setup-beat'
+
+import { CARD_ACTION_CLASS, CARD_CHIP_CLASS, CARD_INPUT_CLASS } from './card-type'
 
 /** A text box for the name. The OS account's full name is offered as a row and is sent only when picked. */
 export function NameCard({ onName, suggested }: { onName: (name: string) => void; suggested?: string }) {
@@ -16,7 +19,15 @@ export function NameCard({ onName, suggested }: { onName: (name: string) => void
 
   return (
     <div className="grid gap-2">
-      {suggested && <Chip label={t.firstRun.useName(suggested)} on={false} onToggle={() => onName(suggested)} variant="pill" />}
+      {suggested && (
+        <Chip
+          className={CARD_CHIP_CLASS}
+          label={t.firstRun.useName(suggested)}
+          on={false}
+          onToggle={() => onName(suggested)}
+          variant="pill"
+        />
+      )}
       <form
         className="flex items-center gap-2"
         onSubmit={event => {
@@ -30,12 +41,12 @@ export function NameCard({ onName, suggested }: { onName: (name: string) => void
         <Input
           aria-label={t.firstRun.namePlaceholder}
           autoFocus
-          className="flex-1"
+          className={cn('flex-1', CARD_INPUT_CLASS)}
           onChange={event => setName(event.target.value)}
           placeholder={t.firstRun.namePlaceholder}
           value={name}
         />
-        <Button disabled={!typed} size="sm" type="submit">
+        <Button className={CARD_ACTION_CLASS} disabled={!typed} size="sm" type="submit">
           {t.common.continue}
         </Button>
       </form>
@@ -48,7 +59,14 @@ export function OptionsCard({ onPick, options }: { onPick: (option: BeatOption) 
   return (
     <div className="flex flex-wrap gap-2" role="group">
       {options.map(option => (
-        <Chip key={option.id} label={option.label} on={false} onToggle={() => onPick(option)} variant="pill" />
+        <Chip
+          className={CARD_CHIP_CLASS}
+          key={option.id}
+          label={option.label}
+          on={false}
+          onToggle={() => onPick(option)}
+          variant="pill"
+        />
       ))}
     </div>
   )

@@ -11,16 +11,24 @@ import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { useI18n } from '@/i18n'
 import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
+import { cn } from '@/lib/utils'
 import { $agentPlugins } from '@/store/agent-plugins'
 import type { ConnectionOwner } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 
+import { CARD_ACTION_CLASS, CARD_CHIP_CLASS, CARD_LABEL_CLASS } from './card-type'
+
 async function readPresence(owner: ConnectionOwner, names: string[]): Promise<CatalogPluginPresence[]> {
-  const result = await requestGatewayForAgent<PluginsManageResult>(owner.connectionId, owner.profile, 'plugins.manage', {
-    action: 'presence',
-    names
-  })
+  const result = await requestGatewayForAgent<PluginsManageResult>(
+    owner.connectionId,
+    owner.profile,
+    'plugins.manage',
+    {
+      action: 'presence',
+      names
+    }
+  )
 
   return result.presence ?? []
 }
@@ -69,11 +77,11 @@ export function PluginsCard({
   return (
     <div className="grid gap-3">
       {presence.isPending && names.length > 0 ? (
-        <p className="text-xs text-(--ui-text-tertiary)" role="status">
+        <p className={CARD_LABEL_CLASS} role="status">
           {copy.loading}
         </p>
       ) : rows.length === 0 ? (
-        <p className="text-xs text-(--ui-text-tertiary)">{copy.noPlugins}</p>
+        <p className={CARD_LABEL_CLASS}>{copy.noPlugins}</p>
       ) : (
         <div className="grid grid-cols-2 gap-2 p-1">
           {rows.map(row => {
@@ -81,7 +89,7 @@ export function PluginsCard({
 
             return (
               <Chip
-                className="w-full"
+                className={cn('w-full', CARD_CHIP_CLASS)}
                 icon={PLUGIN_ICON}
                 key={row.name}
                 label={row.title || row.name}
@@ -99,6 +107,7 @@ export function PluginsCard({
       )}
       <div>
         <Button
+          className={CARD_ACTION_CLASS}
           onClick={() => {
             const done = names.filter(name => installed.has(name))
             const title = (name: string) => rows.find(row => row.name === name)?.title || name

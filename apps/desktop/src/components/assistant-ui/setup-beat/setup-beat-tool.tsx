@@ -23,14 +23,9 @@ import {
 } from '@/store/setup-beat'
 
 import { NameCard, OptionsCard } from './beat-cards'
+import { CARD_LABEL_CLASS } from './card-type'
 import { PluginsCard } from './plugins-card'
-import {
-  SETUP_BEAT_LABEL_CLASS,
-  SETUP_BEAT_SHELL_CLASS,
-  type SetupBeatOutcome,
-  setupBeatOutcome,
-  SetupBeatReceipt
-} from './receipt'
+import { SETUP_BEAT_SHELL_CLASS, type SetupBeatOutcome, setupBeatOutcome, SetupBeatReceipt } from './receipt'
 
 /** The card body for one beat; `answer` sends the beat's picks and settles the card. */
 function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => void; request: SetupBeatRequest }) {
@@ -76,10 +71,17 @@ function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => voi
       )
 
     case 'tour':
-      return <OptionsCard onPick={option => answer({ label: option.label, tour: option.id })} options={card.options ?? []} />
+      return (
+        <OptionsCard onPick={option => answer({ label: option.label, tour: option.id })} options={card.options ?? []} />
+      )
 
     case 'build':
-      return <OptionsCard onPick={option => answer({ build: option.id, label: option.label })} options={card.options ?? []} />
+      return (
+        <OptionsCard
+          onPick={option => answer({ build: option.id, label: option.label })}
+          options={card.options ?? []}
+        />
+      )
 
     case 'connectors':
       return null
@@ -103,7 +105,7 @@ function BeatShell({ beat, children, question }: { beat: SetupBeat; children: Re
   return (
     <div className={cn(SETUP_BEAT_SHELL_CLASS, 'grid gap-3')} data-setup-beat={beat}>
       <div className="flex items-start gap-2">
-        <span className={cn(SETUP_BEAT_LABEL_CLASS, 'flex-1')}>{question}</span>
+        <span className={cn(CARD_LABEL_CLASS, 'flex-1')}>{question}</span>
         <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
       </div>
       {children}

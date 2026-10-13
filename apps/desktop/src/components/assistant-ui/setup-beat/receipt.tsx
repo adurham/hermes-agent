@@ -17,8 +17,6 @@ export const SETUP_BEAT_SHELL_CLASS = cn(
   'my-1.5 text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)'
 )
 
-export const SETUP_BEAT_LABEL_CLASS = 'text-[0.6875rem] leading-4 text-(--ui-text-tertiary)'
-
 /** What a settled card shows: the beat's pick, or how the card closed without one. */
 export type SetupBeatOutcome =
   | { answer: SetupBeatAnswer; beat: SetupBeat; kind: 'answer' }
