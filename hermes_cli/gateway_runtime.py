@@ -221,8 +221,7 @@ def _update_fenced(homes) -> bool:
     return False
 
 
-_REPLACE_FAILED_DETAIL = ("an older Hermes gateway owns this profile and is still running after a stop; "
-                          "stop it (hermes gateway stop) and retry")
+_REPLACE_FAILED_DETAIL = "an older Hermes gateway still owns this profile after a stop; run: hermes gateway stop"
 
 
 def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT_ENSURE_TIMEOUT,

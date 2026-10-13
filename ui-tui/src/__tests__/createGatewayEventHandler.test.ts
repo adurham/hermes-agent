@@ -785,6 +785,28 @@ describe('createGatewayEventHandler', () => {
     expect(messages.some(m => m.includes('[startup] timed out'))).toBe(false)
   })
 
+  it('echoes the canonical bootstrap verdict so a refused gateway is never a silent retry loop', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        cwd: '',
+        python: 'gateway ensure',
+        stderr_tail:
+          'Command failed: python gateway_bootstrap.py --start\ngateway incompatible: runtime_protocol\n' +
+          "gateway incompatible: another Hermes install's gateway owns this profile; stop it there: hermes gateway stop"
+      },
+      type: 'gateway.start_timeout'
+    } as any)
+
+    const messages = getTurnState().activity.map(a => a.text)
+
+    expect(messages).toContain('gateway incompatible: runtime_protocol')
+    expect(messages.some(m => m.includes('another Hermes install'))).toBe(true)
+    expect(messages.some(m => m.startsWith('Command failed'))).toBe(false)
+  })
+
   it('prefers raw text over Rich-rendered ANSI on message.complete (#16391)', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

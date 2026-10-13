@@ -37,6 +37,19 @@ def owner_crashed(home: Path) -> bool:
     return idle_exited or record.get("gateway_state") in _LIVE_CLAIMS
 
 
+def failure_message(receipt) -> str:
+    """What the TUI shows when there is no owner to attach: the bounded verdict, then its detail
+    (a refusal's remedy, or a start that died's own redacted output), each line still a verdict."""
+    head = f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}"
+    detail = getattr(receipt, "detail", None)
+    if not detail:
+        return head
+    if receipt.reason_code == "runtime_exited":
+        return f"{head}\n{detail}"
+    lines = [line.strip() for line in str(detail).splitlines() if line.strip()]
+    return "\n".join([head, *(f"gateway {receipt.state}: {line}" for line in lines)])
+
+
 def bootstrap(start: bool, recover: bool = False) -> dict:
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
@@ -57,8 +70,7 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     if not start and recover and receipt.state == "absent" and owner_crashed(home):
         receipt = ensure_gateway_runtime(home, timeout=30, idle_exit=True)
     if receipt.state != "ready" or receipt.endpoint is None:
-        detail = f"\n{receipt.detail}" if receipt.reason_code == "runtime_exited" and receipt.detail else ""
-        raise RuntimeError(f"gateway {receipt.state}: {receipt.reason_code or 'not ready'}{detail}")
+        raise RuntimeError(failure_message(receipt))
     endpoint = receipt.endpoint
     # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.
     control = control_home_for(home, endpoint)

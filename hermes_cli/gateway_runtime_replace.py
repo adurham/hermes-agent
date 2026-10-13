@@ -25,17 +25,13 @@ from typing import Any
 _GRACEFUL_STOP_SECONDS = 10.0
 _FORCED_STOP_SECONDS = 5.0
 
+# One line each, short enough for the TUI's activity row after its "gateway incompatible: " prefix.
 REFUSAL_DETAIL = {
-    "owner_newer": "a gateway from a newer Hermes owns this profile; update this Hermes or stop it "
-                   "(hermes gateway stop)",
-    "foreign_install": "the gateway that owns this profile belongs to another Hermes install; stop it "
-                       "there (hermes gateway stop)",
-    "owner_unverified": "an older Hermes gateway owns this profile but could not be verified; stop it "
-                        "(hermes gateway stop) and retry",
-    "owner_did_not_exit": "an older Hermes gateway owns this profile and did not stop; stop it "
-                          "(hermes gateway stop) and retry",
-    "owner_unreachable": "an older Hermes gateway owns this profile; stop it (hermes gateway stop) "
-                         "and retry",
+    "owner_newer": "a newer Hermes's gateway owns this profile; update Hermes or run: hermes gateway stop",
+    "foreign_install": "another Hermes install's gateway owns this profile; stop it there: hermes gateway stop",
+    "owner_unverified": "an older Hermes gateway owns this profile and was not verified; run: hermes gateway stop",
+    "owner_did_not_exit": "an older Hermes gateway owns this profile and did not stop; run: hermes gateway stop",
+    "owner_unreachable": "an older Hermes gateway owns this profile; run: hermes gateway stop",
 }
 
 

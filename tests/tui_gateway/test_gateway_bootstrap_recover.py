@@ -60,6 +60,22 @@ def test_recover_reensures_only_a_crashed_owner(monkeypatch, tmp_path, record, e
     assert calls == []
 
 
+def test_failure_names_the_reason_and_its_remedy(monkeypatch, tmp_path):
+    """The TUI echoes this text; a refusal's detail (what to do) must travel with the verdict."""
+    module = _load_bootstrap()
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", lambda h, timeout=30, idle_exit=False:
+                        SimpleNamespace(state="incompatible", endpoint=None, reason_code="runtime_protocol",
+                                        detail="the gateway belongs to another Hermes install; stop it there"))
+    with pytest.raises(RuntimeError) as err:
+        module.bootstrap(True)
+    assert str(err.value).splitlines() == [
+        "gateway incompatible: runtime_protocol",
+        "gateway incompatible: the gateway belongs to another Hermes install; stop it there"]
+
+
 def test_started_daemon_does_not_inherit_the_launch_time_kanban_board(monkeypatch, tmp_path):
     """`hermes --tui` pins HERMES_KANBAN_BOARD for its own launch; the shared daemon this bootstrap
     starts (spawn_unmanaged_gateway copies os.environ) must keep the profile's current board."""
