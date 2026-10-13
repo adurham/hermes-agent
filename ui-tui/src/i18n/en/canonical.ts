@@ -15,11 +15,7 @@ export const canonicalEn = {
       notAvailable: (command: string) => `/${command} is not available on the shared gateway yet`,
       prefNotSaved: (command: string) => `/${command} applies to this view only; not saved on the shared gateway`,
       launchToolsets: (toolsets: string) => `toolsets fixed at session launch: ${toolsets}`,
-      usageLastTurnTitle: 'Usage · last turn',
-      usageNoTurn: 'no completed turn in this view yet',
-      usageTotalsUnavailable: 'session totals are not available on the shared gateway yet',
-      retryUnsupported: '/retry: retry does not support media or unknown content parts',
-      rowCost: 'Estimated cost'
+      retryUnsupported: '/retry: retry does not support media or unknown content parts'
     },
     // app/submissionCore.ts — durable admission receipts.
     submit: {

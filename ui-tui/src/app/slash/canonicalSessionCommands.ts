@@ -3,14 +3,14 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
-import type { SlashExecResponse } from '../../gatewayTypes.js'
+import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
-import type { PanelSection } from '../../types.js'
-import { getUiState, patchUiState } from '../uiStore.js'
+import { patchUiState } from '../uiStore.js'
 
 import { mutateCanonical, type MutationSnapshot } from './canonicalSessionControls.js'
 import type { SlashRunCtx } from './types.js'
+import { usageTotalsSections } from './usagePanel.js'
 
 const COMPACTION_MARKERS = ['[CONTEXT COMPACTION', '[CONTEXT SUMMARY]:', '[END OF PRIOR CONTEXT']
 
@@ -190,61 +190,32 @@ interface CommittedResult {
   total_tokens?: number
 }
 
-/** `/usage`: session totals are the owner's own `/usage` report for this session (a reviewed read,
- * as the classic CLI shows it); every settled turn also commits its own usage with the admission,
- * so the last one this view saw follows. */
+/** `/usage`: main's session totals panel. The owner's `session.stats` is the same session-cumulative
+ * dict its `session.usage` ticks carry (`gateway/session_usage.py`), mapped onto main's `Usage` shape
+ * and rendered exactly as main's sidecar `/usage` did (Usage panel, or "no API calls yet", then the
+ * plan CTA). */
 export function canonicalUsage(ctx: SlashRunCtx) {
   const sid = ctx.sid!
-  const admissionId = lastAdmission.get(sid)
-  const unavailable = () => !ctx.stale() && ctx.transcript.sys(t('canonical.controls.usageTotalsUnavailable'))
 
-  const totals = ctx.gateway.gw
-    .request<SlashExecResponse>('slash.exec', { command: 'usage', session_id: sid })
-    .then(r => {
-      if (!r?.output) {
-        return unavailable()
-      }
-
-      if (!ctx.stale()) {
-        ctx.transcript.page(r.output, t('slashCmd.session.usage.usageTitle'))
-      }
-    }, unavailable)
-
-  if (!admissionId) {
-    return void totals.then(() => !ctx.stale() && ctx.transcript.sys(t('canonical.controls.usageNoTurn')))
-  }
-
-  void totals
-    .then(() =>
-      ctx.gateway.gw.request('prompt.receipt', { admission_id: admissionId, include_result: true, session_id: sid })
-    )
+  void ctx.gateway.gw
+    .request('session.stats', { session_id: sid })
     .then(raw => {
       if (ctx.stale()) {
         return
       }
 
-      const result = asRpcResult<{ result?: CommittedResult }>(raw)?.result
+      const usage = usageFromTick(asRpcResult<Record<string, unknown>>(raw))
 
-      if (!result) {
-        return ctx.transcript.sys(t('canonical.controls.usageNoTurn'))
+      if (!usage?.calls) {
+        ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))
+        ctx.transcript.sys(t('slashCmd.session.usage.cta'))
+
+        return
       }
 
-      const f = (value: number | undefined) => (value ?? 0).toLocaleString()
-
-      const rows: [string, string][] = [
-        [t('slashCmd.session.usage.rowModel'), result.model ?? getUiState().info?.model ?? ''],
-        [t('slashCmd.session.usage.rowInputTokens'), f(result.input_tokens)],
-        [t('slashCmd.session.usage.rowOutputTokens'), f(result.output_tokens)],
-        [t('slashCmd.session.usage.rowTotalTokens'), f(result.total_tokens)],
-        [t('slashCmd.session.usage.rowApiCalls'), f(result.api_calls)],
-        ...(typeof result.estimated_cost_usd === 'number'
-          ? ([[t('canonical.controls.rowCost'), `$${result.estimated_cost_usd.toFixed(4)}`]] as [string, string][])
-          : [])
-      ]
-
-      const sections: PanelSection[] = [{ rows }]
-
-      ctx.transcript.panel(t('canonical.controls.usageLastTurnTitle'), sections)
+      patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
+      ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(usage))
+      ctx.transcript.sys(t('slashCmd.session.usage.cta'))
     })
     .catch(ctx.guardedErr)
 }

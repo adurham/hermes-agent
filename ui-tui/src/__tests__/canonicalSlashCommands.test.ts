@@ -43,6 +43,14 @@ function harness() {
       return { session_id: 'owner', operation: 'reasoning', revision: 8, execution_generation: 4, effort: params.payload.effort }
     }
 
+    if (method === 'session.stats') {
+      return {
+        api_calls: 2, compression_count: 0, context_length: 128000, context_source: 'provider_usage',
+        input_tokens: 200, last_prompt_tokens: 100, model: 'fake-model', output_tokens: 40, prompt_tokens: 200,
+        total_tokens: 240
+      }
+    }
+
     if (method === 'prompt.receipt') {
       return { status: 'terminal', result: { model: 'm', input_tokens: 5, output_tokens: 7, total_tokens: 12, api_calls: 1 } }
     }
@@ -121,33 +129,36 @@ it('/title renames and /undo, /retry rewind through session.mutate with the snap
   expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
 })
 
-it('/usage renders the committed turn result and /tools says what the shared gateway lacks', async () => {
+it("/usage renders main's session totals from session.stats and /tools says what the shared gateway lacks", async () => {
   const { panel, request, slash, sys } = harness()
-
-  slash('/usage')
-  await flush()
-  expect(sys).toHaveBeenCalledWith('no completed turn in this view yet')
 
   noteCanonicalCompletion('owner', 'adm-1')
   slash('/usage')
   await flush()
-  expect(request).toHaveBeenCalledWith('prompt.receipt', { admission_id: 'adm-1', include_result: true, session_id: 'owner' })
-  expect(panel).toHaveBeenCalledWith('Usage · last turn', [
-    { rows: expect.arrayContaining([['Total tokens', '12'], ['API calls', '1']]) }
+  expect(request).toHaveBeenCalledWith('session.stats', { session_id: 'owner' })
+  // Main's one Usage panel with session totals and the context line; no "last turn" panel.
+  expect(panel).toHaveBeenCalledTimes(1)
+  expect(panel).toHaveBeenCalledWith('Usage', [
+    {
+      rows: [
+        ['Model', 'fake-model'],
+        ['Input tokens', '200'],
+        ['Output tokens', '40'],
+        ['Total tokens', '240'],
+        ['API calls', '2']
+      ]
+    },
+    { text: expect.stringContaining('100 / 128,000 (0%)') }
   ])
-  expect(sys).toHaveBeenCalledWith('session totals are not available on the shared gateway yet')
+  expect(sys.mock.calls.some(([line]) => /not available on the shared gateway/.test(line))).toBe(false)
+  expect(getUiState().usage).toMatchObject({ calls: 2, total: 240, context_max: 128000 })
 
   slash('/tools')
   await flush()
   expect(sys).toHaveBeenCalledWith('toolsets fixed at session launch: terminal, web')
   expect(sys).toHaveBeenCalledWith('/tools is not available on the shared gateway yet')
   expect(sys.mock.calls.some(([line]) => /request_failed|unsupported_command|unknown_method/.test(line))).toBe(false)
-  // Session totals are the owner's reviewed /usage read; no other legacy route.
-  expect(
-    request.mock.calls.some(
-      ([method, params]) => LEGACY.includes(method) && !(method === 'slash.exec' && params.command === 'usage')
-    )
-  ).toBe(false)
+  expect(request.mock.calls.some(([method]) => LEGACY.includes(method))).toBe(false)
 })
 
 it('/status reads through the gateway; /save, /bg and /btw refuse instead of calling sidecar-only RPCs', async () => {

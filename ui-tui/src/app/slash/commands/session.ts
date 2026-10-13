@@ -23,6 +23,7 @@ import { getUiState, patchUiState } from '../../uiStore.js'
 import { canonicalReasoning, canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
+import { usageTotalsSections } from '../usagePanel.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const REASONING_SESSION_FLAGS = new Set(['--session'])
@@ -889,35 +890,7 @@ export const sessionCommands: SlashCommand[] = [
           return
         }
 
-        const f = (v: number | undefined) => (v ?? 0).toLocaleString()
-
-        const rows: [string, string][] = [
-          [t('slashCmd.session.usage.rowModel'), r.model ?? ''],
-          [t('slashCmd.session.usage.rowInputTokens'), f(r.input)],
-          [t('slashCmd.session.usage.rowOutputTokens'), f(r.output)],
-          [t('slashCmd.session.usage.rowTotalTokens'), f(r.total)],
-          [t('slashCmd.session.usage.rowApiCalls'), f(r.calls)]
-        ]
-
-        const sections: PanelSection[] = [{ rows }]
-
-        if (r.context_max) {
-          const mark = r.context_estimated ? '~' : ''
-          sections.push({
-            text: t(
-              'slashCmd.session.usage.context',
-              `${mark}${f(r.context_used)}`,
-              f(r.context_max),
-              `${mark}${r.context_percent}`
-            )
-          })
-        }
-
-        if (r.compressions) {
-          sections.push({ text: t('slashCmd.session.usage.compressions', String(r.compressions)) })
-        }
-
-        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), sections)
+        ctx.transcript.panel(t('slashCmd.session.usage.usageTitle'), usageTotalsSections(r))
 
         sys(t('slashCmd.session.usage.cta'))
       })
