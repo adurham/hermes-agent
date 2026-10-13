@@ -1468,32 +1468,6 @@ def _tour_request(sid: str, payload: dict) -> str:
     return answer or _TOUR_BRIDGE_UNAVAILABLE
 
 
-# Applying a theme is a store write the renderer answers in ms; a picker waits for a person.
-_THEME_TIMEOUT_S = 15
-_THEME_PICK_TIMEOUT_S = 300
-
-_THEME_UNANSWERED = {"success": False, "error": "No Hermes Desktop window answered the theme request."}
-
-
-def _theme_request(sid: str, payload: dict) -> dict:
-    """Bridge set_theme onto ``theme.apply`` (values; the renderer answers with what it applied) or
-    ``theme.pick`` (a card that waits for the user; a dismissed card and an expired one are told apart)."""
-    if "picker" not in payload:
-        answer = _ask("theme.apply", sid, dict(payload), timeout=_THEME_TIMEOUT_S)
-        return json.loads(answer) if answer else dict(_THEME_UNANSWERED)
-    from tui_gateway import server_requests
-
-    started = time.monotonic()
-    result = server_requests.send("theme.pick", sid, dict(payload), timeout=_THEME_PICK_TIMEOUT_S)
-    if result is None:
-        return {"timed_out": True} if time.monotonic() - started >= _THEME_PICK_TIMEOUT_S else {"cancelled": True}
-    if isinstance(result.get("picked"), dict):
-        return {"success": True, "picked": result["picked"]}
-    if isinstance(result.get("said"), str) and result["said"].strip():
-        return {"said": result["said"].strip()}
-    return {"cancelled": True}
-
-
 _PREVIEW_ACTION_TIMEOUT_S = 45
 # Until a session's client has proven it answers preview.act at all, hold it to a
 # deadline a working renderer cannot miss (same ladder as the tour probe).

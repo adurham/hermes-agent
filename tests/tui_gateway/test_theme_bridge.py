@@ -1,11 +1,11 @@
 """``set_theme`` picker bridge: the model can tell a pick, a dismissed card and an expired one apart.
-See tui_gateway.server._theme_request."""
+See tui_gateway.theme_bridge.theme_request."""
 
 from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import server, server_requests
+from tui_gateway import server, server_requests, theme_bridge
 
 
 @pytest.mark.parametrize(("answer", "elapsed", "result"), [
@@ -13,7 +13,7 @@ from tui_gateway import server, server_requests
     ({"said": " make it pink "}, 4.0, {"said": "make it pink"}),
     ({"cancelled": True}, 4.0, {"cancelled": True}),
     (None, 4.0, {"cancelled": True}),
-    (None, server._THEME_PICK_TIMEOUT_S, {"timed_out": True}),
+    (None, theme_bridge.THEME_PICK_TIMEOUT_S, {"timed_out": True}),
 ])
 def test_pick_outcomes(monkeypatch, answer, elapsed, result):
     clock = iter((0.0, elapsed))
@@ -24,8 +24,8 @@ def test_pick_outcomes(monkeypatch, answer, elapsed, result):
         return answer
 
     monkeypatch.setattr(server_requests, "send", fake_send)
-    monkeypatch.setattr(server, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    monkeypatch.setattr(theme_bridge, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     monkeypatch.setitem(server._sessions, "s1", {})
 
-    assert server._theme_request("s1", {"picker": "accent"}) == result
-    assert sent == [("theme.pick", "s1", {"picker": "accent"}, server._THEME_PICK_TIMEOUT_S)]
+    assert theme_bridge.theme_request("s1", {"picker": "accent"}) == result
+    assert sent == [("theme.pick", "s1", {"picker": "accent"}, theme_bridge.THEME_PICK_TIMEOUT_S)]
