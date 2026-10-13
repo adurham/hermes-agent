@@ -15,6 +15,7 @@ import contextlib
 import enum
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -248,12 +249,35 @@ def _registry_home() -> Iterable[Path]:
 
 
 def _service_homes() -> Iterable[Path]:
+    """The ``HERMES_HOME`` of every gateway service this OS user runs: its own definitions, and the
+    machine-wide units that run as it. Another account's gateway is that account's install."""
     from hermes_cli.gateway_service_owner import service_definition_homes
     from hermes_platform.resolver import known_dirs
 
-    for definition in _expand_all(known_dirs.gateway_service_definition_globs()):
-        with contextlib.suppress(OSError, UnicodeError, ValueError):
-            yield from (Path(home.strip().strip('"')) for home in service_definition_homes(_read_text(definition)))
+    for machine_wide, globs in ((False, known_dirs.gateway_service_definition_globs()),
+                                (True, known_dirs.system_gateway_service_definition_globs())):
+        for definition in _expand_all(globs):
+            with contextlib.suppress(OSError, UnicodeError, ValueError):
+                text = _read_text(definition)
+                account = _unit_account(text) or ("root" if machine_wide else None)
+                if account is None or _is_this_account(account):
+                    yield from (Path(home.strip().strip('"')) for home in service_definition_homes(text))
+
+
+def _unit_account(unit: str) -> str | None:
+    """The account a systemd unit runs as (its last ``User=``), or None when it names none."""
+    accounts = re.findall(r"^\s*User=\s*(\S+)\s*$", unit, flags=re.MULTILINE)
+    return accounts[-1] if accounts else None
+
+
+def _is_this_account(account: str) -> bool:
+    import pwd
+
+    try:
+        uid = int(account) if account.isdigit() else pwd.getpwnam(account).pw_uid
+    except KeyError:  # no such account: the unit cannot run as anyone here
+        return False
+    return uid == os.getuid()  # windows-footgun: ok — only systemd units name a User=
 
 
 def _launcher_root() -> Iterable[Path]:
