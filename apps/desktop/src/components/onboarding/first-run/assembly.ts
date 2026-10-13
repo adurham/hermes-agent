@@ -150,32 +150,17 @@ export function assembleChatOnboarding(id: string, tree: LayoutNode, mode?: Inte
   reconcileLayout(id, tree)
 }
 
+/** A layout preview's undo: the arrangement it replaced. A preview never switches Simple/Advanced and
+ *  never ends the intro, so the arrangement is all there is to put back. */
 export function snapshotChatLayout(): () => void {
   const snapshot = {
     id: $activePresetId.get(),
-    mode: $interfaceMode.get(),
     panes: $paneStates.get(),
-    picked: $chatLayoutPicked.get(),
     placed: $userPlacedPanes.get(),
-    previous: previousLayout,
-    solo: $chatOnboardingSolo.get(),
     tree: $layoutTree.get()
   }
 
   return () => {
-    if (snapshot.mode !== $interfaceMode.get()) {
-      setInterfaceMode(snapshot.mode)
-    }
-
-    // A pick made in the demo ended the intro, so undoing it lands on the user's own layout.
-    if (snapshot.solo) {
-      previousLayout = snapshot.previous
-      restorePreviousLayout()
-      $chatLayoutPicked.set(snapshot.picked)
-
-      return
-    }
-
     if (snapshot.tree) {
       $layoutTree.set(snapshot.tree)
       $paneStates.set(snapshot.panes)
@@ -183,9 +168,6 @@ export function snapshotChatLayout(): () => void {
       markActivePreset(snapshot.id)
       persistTree()
     }
-
-    previousLayout = snapshot.previous
-    $chatLayoutPicked.set(snapshot.picked)
   }
 }
 

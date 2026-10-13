@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
+import { onLayoutCommit } from '@/store/appearance-apply'
 import { $sidebarOpen, CHAT_SIDEBAR_PANE_ID } from '@/store/layout'
 import { $introView } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -61,6 +62,10 @@ function endIntroView(keepLayout = false): boolean {
 
   return true
 }
+
+// A committed layout (the layout card's Continue, a set_theme layout) ends the intro on the user's own
+// layout before it applies, so the pick lands at normal size over the user's layout, never the demo's.
+onLayoutCommit(() => void endIntroView())
 
 /** Any leave action (sidebar, another chat, a profile, a Cmd-K command) ends the intro. */
 export function leaveIntro(): void {

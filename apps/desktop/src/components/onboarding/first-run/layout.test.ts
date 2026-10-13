@@ -1,14 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registerLayoutPresets } from '@/app/contrib/layout-presets'
 import { group } from '@/components/pane-shell/tree/model'
 import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
 import { $activePresetId } from '@/components/pane-shell/tree/store'
+import { applyAppearance } from '@/store/appearance-apply'
+import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
 import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
 
 import { openDemoLayout } from './assembly'
 import { openIntro, skipIntro } from './intro'
 
 const size = vi.fn()
+
+beforeAll(() => {
+  registerLayoutPresets()
+})
 
 beforeEach(() => {
   Object.defineProperty(window, 'hermesDesktop', {
@@ -22,13 +29,19 @@ beforeEach(() => {
 })
 
 describe('first-run layout beat', () => {
-  it('grows the window to normal size on the picked layout when a layout is applied', () => {
+  it('keeps the intro through a preview and grows the window when a layout is committed', () => {
+    setInterfaceMode('advanced')
     applyLayoutPreset('picked', group(['workspace']))
+    expect($introView.get()).toBe('intro')
+    expect(size).not.toHaveBeenCalled()
+
+    expect(applyAppearance({ layout: 'sidebar-left' }).success).toBe(true)
 
     expect(size).toHaveBeenCalledWith('normal')
     expect($chatOnboardingSolo.get()).toBe(false)
     expect($introView.get()).toBe('ended')
-    expect($activePresetId.get()).toBe('picked')
+    expect($interfaceMode.get()).toBe('simple')
+    expect($activePresetId.get()).toBe('sidebar-left')
   })
 
   it('sizes the window normal on Skip setup', () => {

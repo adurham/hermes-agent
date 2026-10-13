@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { snapshotChatLayout } from '@/components/onboarding/first-run/assembly'
-import { applyAppearance } from '@/store/appearance-apply'
+import { applyDesktopLayoutPreset } from '@/store/pane-focus'
 import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 import { NOUS_ACCENT, resolveAccentPick } from '@/themes/accents'
 
@@ -26,13 +26,38 @@ const ACCENT: LiveLook = {
   }
 }
 
+// A layout previews as an arrangement in the current mode; Continue applies it for real (switching
+// Simple/Advanced when the preset needs it), so a cancelled preview never touches either mode's saved layout.
 const LAYOUT: LiveLook = {
   apply: value => {
     if (value) {
-      applyAppearance({ layout: value })
+      applyDesktopLayoutPreset(value)
     }
   },
   snapshot: snapshotChatLayout
+}
+
+// One undo per look while any card previews it: two open cards share the value from before the first
+// preview, and only the last card to close without Continue puts it back.
+/** One open card's claim on a look's undo. */
+interface PreviewOwner {
+  readonly card: symbol
+}
+
+interface Baseline {
+  owners: Set<PreviewOwner>
+  revert: () => void
+}
+
+const baselines = new Map<LiveLook, Baseline>()
+
+function release(live: LiveLook, owner: PreviewOwner): void {
+  const baseline = baselines.get(live)
+
+  if (baseline?.owners.delete(owner) && baseline.owners.size === 0) {
+    baselines.delete(live)
+    baseline.revert()
+  }
 }
 
 export interface LookPreview {
@@ -42,23 +67,21 @@ export interface LookPreview {
   staged: null | StagedLook
 }
 
-/** Click previews a look live and keeps the value it replaced; a card that unmounts without `settle`
- *  (cancel, timeout, Skip setup, words in the composer) puts that value back. */
+/** Click previews a look live; a card that unmounts without Continue (cancel, timeout, Skip setup,
+ *  words in the composer) puts back the value from before the preview. */
 export function useLookPreview(kind: 'accent' | 'layout', dark: boolean): LookPreview {
   const live = kind === 'accent' ? ACCENT : LAYOUT
   const [staged, setStaged] = useState<null | StagedLook>(null)
-  const revert = useRef<(() => void) | null>(null)
+  const owner = useRef<PreviewOwner>({ card: Symbol('look-preview') }).current
   const settled = useRef(false)
 
   useEffect(
     () => () => {
       if (!settled.current) {
-        revert.current?.()
+        release(live, owner)
       }
-
-      revert.current = null
     },
-    []
+    [live, owner]
   )
 
   return {
@@ -70,9 +93,17 @@ export function useLookPreview(kind: 'accent' | 'layout', dark: boolean): LookPr
 
       settled.current = true
       settled.current = send(staged.value)
+
+      // The sent value is the new truth: no open card puts the old one back.
+      if (settled.current) {
+        baselines.delete(live)
+      }
     },
     stage: value => {
-      revert.current ??= live.snapshot()
+      const baseline = baselines.get(live) ?? { owners: new Set<PreviewOwner>(), revert: live.snapshot() }
+
+      baseline.owners.add(owner)
+      baselines.set(live, baseline)
       live.apply(value, dark)
       setStaged({ value })
     },

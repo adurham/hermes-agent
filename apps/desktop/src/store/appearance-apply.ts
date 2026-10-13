@@ -55,7 +55,17 @@ function paintsDark(mode: ThemeMode | undefined): boolean {
   return mode === undefined ? document.documentElement.classList.contains('dark') : mode === 'dark'
 }
 
+// The first-run demo layout is borrowed (components/onboarding/first-run/intro.ts registers this): a
+// committed layout ends it first, so a Simple/Advanced switch saves the user's own layout, not the demo.
+let releaseBorrowedLayout = (): void => {}
+
+export function onLayoutCommit(release: () => void): void {
+  releaseBorrowedLayout = release
+}
+
 function applyLayout(id: string): void {
+  releaseBorrowedLayout()
+
   // A user's saved layouts are Advanced, like the layout picker's Custom section.
   const mode = layoutPresetTier(id) === 'simple' ? 'simple' : 'advanced'
 
