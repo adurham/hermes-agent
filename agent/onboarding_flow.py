@@ -233,8 +233,7 @@ def _build_picks_error(record: dict, event: Shown, facts: Facts) -> str | None:
 def _shown(record: dict, event: Shown, facts: Facts, now: float) -> Step:
     if not BEAT_BY_ID[event.beat].when(facts, record["picks"]):
         record["beats"][event.beat] = SKIPPED
-        return Step(record, {"beat": event.beat, "skipped": True, "next": _next_field(record)},
-                    f"after_{event.beat}")
+        return Step(record, {"beat": event.beat, "skipped": True, "next": _next_field(record)}, "moved_on")
     if event.beat == "build" and (error := _build_picks_error(record, event, facts)):
         return Step(record, {"beat": "build", "error": error})
     # A later card on screen means the user moved on from an earlier card left open.
@@ -352,13 +351,16 @@ def _applied_beats(event: Applied) -> list[tuple[str, dict]]:
 
 def _applied(record: dict, event: Applied, facts: Facts, now: float) -> Step:
     """The reminder names the last beat this result newly settled, so the model moves on instead of
-    recording it again with setup_beat. ``after_<beat>``, not ``Beat.after``: the tour already started."""
-    settled = ""
+    recording it again with setup_beat. ``after_<beat>``, not ``Beat.after``: the tour already started.
+    A repeat apply of a theme or layout already settled gets ``already_<beat>``, so it stops re-applying."""
+    settled, repeated = "", ""
     for beat, patch in _applied_beats(event):
         if record["beats"][beat] != DONE:
             settled = beat
+        elif beat in APPLIED_BY:
+            repeated = beat
         _settle(record, beat, patch)
-    return Step(record, {}, f"after_{settled}" if settled else "")
+    return Step(record, {}, f"after_{settled}" if settled else f"already_{repeated}" if repeated else "")
 
 
 _HANDLERS: dict[type, Callable[[dict, Any, Facts, float], Step]] = {

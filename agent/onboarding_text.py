@@ -11,7 +11,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from agent.onboarding_first_tasks import MAX_LABEL, MAX_PICKS, TASK_BY_ID, eligible_tasks, task_skills
+from agent.onboarding_first_tasks import (
+    FIXED_ID, MAX_LABEL, MAX_PICKS, OWN_TASK, TASK_BY_ID, eligible_tasks, task_skills,
+)
 from agent.onboarding_flow import Facts, next_beat
 
 CHAT_TITLE = "Getting started"
@@ -117,13 +119,17 @@ _CLOSE = ('When the first thing is built and shown, ask with clarify: "How does 
           '"Looks right", "Change something" and "Take it further", exactly. Put the next-step idea in your text. '
           'After they answer, call setup_beat(beat="done").')
 
-_BUILD_RULES = (
-    "Rules: real data only (connected apps, or tools signed in on this computer); never mock or invented data, "
-    "never route around a connector. Visible work within a minute, a first result within five. First reply: one "
-    "line and a tool call. At most two checks and one question before work. Connect or install once each, with "
-    "exact ids, no searching. Never search the whole disk. Save every file in ~/hermes-first-task/ and say where "
-    "it is; no test files. A page is one self-contained HTML file opened with desktop_preview, unless the "
-    "task says otherwise.")
+_HOW_TO_WORK = (
+    "Real data only: their connected apps, or tools signed in on this computer. Never mock or invent data, and "
+    "never route around a connector.",
+    "Show visible progress within a minute and a first result within five.",
+    "Your first reply is one line, then a tool call.",
+    "At most two checks and one question before you start working.",
+    "Connect or install anything once, with exact ids and no searching, then use it.",
+    "Never search the whole disk.",
+    "Save every file in ~/hermes-first-task/ and say where it is. No test files.",
+    "A page is one self-contained HTML file shown with desktop_preview, unless the task says otherwise.",
+)
 
 _CONNECTORS = (
     'Reading a connected app: check it with manage_connections(action="status"). Find its tools with tool_search '
@@ -132,10 +138,6 @@ _CONNECTORS = (
     '"arguments": {...}}]). Resolve names to ids before acting. Read only; ask before any write, and say that a '
     "write may run as the connector's bot.")
 _CONNECTOR_TASKS = ("brief", "week")
-
-_OWN_TASK = ("They named their own task; also load the skills that fit what they asked. If you know what it is, "
-             "start now: one line on the first slice, then build it. If not, ask one short question (clarify with "
-             "three concrete options is fine), then build. Cut a big ask to a first slice and say so in one line.")
 
 _OS_LINES = {
     "macos": ("This Mac: check with `which brew` and `ls -d /Applications/<App>.app`; install with "
@@ -149,6 +151,7 @@ _OS_LINES = {
 _ARM_WINDOWS = ("On Windows on Arm, read arm64 vs x64 from winget's install output, not the manifest, and say when "
                 "an app is x64 only.")
 _SPARK_LINE = "This machine is built for local models; say so once when it fits what they asked."
+_REMOTE_LINE = "Hermes runs on another computer than the user's: say which machine anything is installed on."
 
 
 _OPEN = {"macos": "`open <file>`", "windows": '`start "" <file>`'}
@@ -160,23 +163,33 @@ def _open_line(facts: Facts) -> str:
     return f"open it in the default browser with {_OPEN.get(facts.os, '`xdg-open <file>`')}"
 
 
-def _task_lines(option: str, facts: Facts, has_skill: Callable[[str], bool]) -> list[str]:
-    task = TASK_BY_ID.get(option)
-    lines = [f"Load these skills with skill_view first: {', '.join(task_skills(option, has_skill))}.",
-             task.skeleton.replace("<open>", _open_line(facts)) if task else _OWN_TASK]
-    return [*lines, _CONNECTORS] if option in _CONNECTOR_TASKS else lines
+def _task_prompt(option: str, label: str, facts: Facts, has_skill: Callable[[str], bool]) -> list[str]:
+    task = TASK_BY_ID.get(option, OWN_TASK)
+    picked = f'They picked "{label or task.label}". ' if (label or task.label) else ""
+    steps = [f"{n}. {step.replace('<open>', _open_line(facts))}" for n, step in enumerate(task.steps, 1)]
+    return [f"{picked}Your job: {task.goal}.",
+            f"Load these skills with skill_view first: {', '.join(task_skills(option, has_skill))}.",
+            "Steps:", *steps, f"Output: {task.output}", f"Quality bar: {task.quality}", f"Done when: {task.done}"]
 
 
-def build_guidance(option: str, facts: Facts, has_skill: Callable[[str], bool] = lambda name: True) -> str:
-    """The reminder once a first task is picked; ``has_skill`` says whether a bundled skill is on this install."""
-    lines = [*_task_lines(option, facts, has_skill), _BUILD_RULES, _OS_LINES.get(facts.os, _OS_LINES["linux"])]
+def _bullets(title: str, lines) -> str:
+    return "\n".join([f"{title}:", *(f"- {line}" for line in lines)])
+
+
+def build_guidance(option: str, facts: Facts, has_skill: Callable[[str], bool] = lambda name: True,
+                   label: str = "") -> str:
+    """The prompt once a first task is picked; ``label`` is the card text they clicked, ``has_skill``
+    says whether a bundled skill is on this install."""
+    work = [*_HOW_TO_WORK, *((_CONNECTORS,) if option in _CONNECTOR_TASKS else ())]
+    host = [_OS_LINES.get(facts.os, _OS_LINES["linux"])]
     if facts.os == "windows" and facts.arch == "arm64":
-        lines.append(_ARM_WINDOWS)
+        host.append(_ARM_WINDOWS)
     if facts.nvidia_platform in ("rtx_spark", "dgx_spark"):
-        lines.append(_SPARK_LINE)
+        host.append(_SPARK_LINE)
     if facts.facts_source == "remote":
-        lines.append("Hermes runs on another computer than the user's: say which machine anything is installed on.")
-    return "\n".join([*lines, _CLOSE])
+        host.append(_REMOTE_LINE)
+    return "\n\n".join(["\n".join(_task_prompt(option, label, facts, has_skill)), _bullets("How to work", work),
+                         _bullets("This computer", host), f"When it is shown:\n{_CLOSE}"])
 
 
 def _names(values) -> str:
@@ -186,11 +199,12 @@ def _names(values) -> str:
 def _build_menu(record: Mapping[str, Any]) -> str:
     """The rows the model picks the build card from."""
     rows = eligible_tasks(Facts.from_stored(record["facts"]), record["picks"])
-    listed = "\n".join(f"- {task.id} ({task.label}): {task.skeleton}" for task in rows)
+    listed = "\n".join(f"- {task.id} ({task.label}): {task.goal}." for task in rows)
     return (f"For the build card, pick up to {MAX_PICKS} of these that fit what you learned about them, earlier rows "
             f'first when they fit, and call setup_beat(beat="build", options=[{{"id": ..., "label": ...}}]). Reword '
-            f"each label to fit them, {MAX_LABEL} characters max; ids only from this list. How Hermes works is added "
-            f"last by itself.\n{listed}")
+            f"each label to fit them and keep its energy: a short, specific action they would want to click, "
+            f"{MAX_LABEL} characters max. Ids only from this list. \"{TASK_BY_ID[FIXED_ID].label}\" is added last "
+            f"by itself.\n{listed}")
 
 
 def _next(record: Mapping[str, Any]) -> str:
@@ -204,7 +218,20 @@ def _next(record: Mapping[str, Any]) -> str:
 def _after_layout(record, facts) -> str:
     label = {"sidebar-left": "Basic", "terminal-deck": "Elite"}.get(record["picks"]["layout"], record["picks"]["layout"])
     offer = f" {_LOOK_AROUND}" if record["look_around"] == "not_offered" else ""
-    return f"Layout {label} is on. {_next(record)}{offer}"
+    return f"Layout {label} is on, already applied. Do not call set_theme for it again. {_next(record)}{offer}"
+
+
+def _after_connectors(record, facts) -> str:
+    picks = record["picks"]
+    again = " These are already connected; do not connect them again." if picks["connected"] else ""
+    return (f"Connected: {_names(picks['connected'])}; newly connected: {_names(picks['newly_connected'])}."
+            f"{again} {_next(record)}")
+
+
+def _after_plugins(record, facts) -> str:
+    installed = record["picks"]["installed"]
+    again = " They are already installed; do not install them again." if installed else ""
+    return f"Installed plugins: {_names(installed)}.{again} {_next(record)}"
 
 
 def _tour(preset: str):
@@ -219,12 +246,12 @@ def _waiting_beat(record) -> str | None:
 
 _REMINDERS = {
     "after_name": lambda r, f: f"They go by {r['picks']['name']}. Greet them by name in a few words. {_next(r)}",
-    "after_theme": lambda r, f: f"Accent {r['picks']['accent'] or 'Nous blue'} is on. React in three words or fewer. {_next(r)}",
+    "after_theme": lambda r, f: (f"Accent {r['picks']['accent'] or 'Nous blue'} is on, already applied. Do not call "
+                                 f"set_theme for it again. React in three words or fewer. {_next(r)}"),
     "after_layout": _after_layout,
-    "after_connectors": lambda r, f: (f"Connected: {_names(r['picks']['connected'])}; newly connected: "
-                                      f"{_names(r['picks']['newly_connected'])}. {_next(r)}"),
-    "after_plugins": lambda r, f: f"Installed plugins: {_names(r['picks']['installed'])}. {_next(r)}",
-    "after_tour": lambda r, f: _next(r),
+    "after_connectors": _after_connectors,
+    "after_plugins": _after_plugins,
+    "after_tour": lambda r, f: f"The tour is already running; do not start it again. {_next(r)}",
     "after_build": lambda r, f: _next(r),
     "tour_quick": _tour("quick"),
     "tour_full": _tour("full"),
@@ -235,6 +262,12 @@ _REMINDERS = {
     "complete": lambda r, f: ("Onboarding is complete. Its rules no longer apply; this is a normal chat. Close in "
                               "one short line: whenever they are stuck, they can just ask."),
 }
+
+
+def _already(record, beat: str) -> str:
+    """A repeat apply of a settled beat: steer the model forward instead of drawing another receipt."""
+    return (f"The {beat} was already set by the card or an earlier call. Do not apply it again unless they ask "
+            f"for a change. {_next(record)}")
 
 
 def _said(record, facts, beat: str) -> str:
@@ -257,7 +290,11 @@ def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None
     if key in ("said", "timed_out"):
         return (_said if key == "said" else _timed_out)(record, facts, beat or _waiting_beat(record) or "build")
     if key.startswith("build_"):
-        return build_guidance(key.removeprefix("build_"), facts, has_skill)
+        option = key.removeprefix("build_")
+        label = next((o["label"] for o in record["picks"].get("build_options") or () if o["id"] == option), "")
+        return build_guidance(option, facts, has_skill, label)
+    if key.startswith("already_"):
+        return _already(record, key.removeprefix("already_"))
     return _REMINDERS[key](record, facts)
 
 

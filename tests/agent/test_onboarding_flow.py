@@ -116,8 +116,27 @@ def test_set_theme_settling_the_layout_beat_tells_the_model_the_next_beat():
     settled, again = steps[-2], steps[-1]
     assert settled.reminder == "after_layout"
     text = reminder(settled.reminder, settled.record, facts)
-    assert text.startswith("Layout Basic is on.") and 'setup_beat(beat="next") shows the connectors card' in text
-    assert again.reminder == ""
+    assert text.startswith("Layout Basic is on, already applied.") and "Do not call set_theme" in text
+    assert 'setup_beat(beat="next") shows the connectors card' in text
+    # A second set_theme on the settled layout steers forward instead of returning nothing.
+    assert again.reminder == "already_layout" and again.record["picks"]["layout"] == "terminal-deck"
+
+
+def test_live_run_a_set_theme_after_the_theme_card_is_told_it_is_already_set():
+    """Sid's run: the theme card applied green, then the model called set_theme(accent=green) again and a
+    second receipt drew. The card's reminder says it is applied; a repeat call names the next step."""
+    facts = MACHINES["mac"]
+    steps = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"),
+                Answered("theme", {"accent": "green"}),
+                Applied("set_theme", {"accent": "green"}, {"success": True, "applied": {"accent": "green"}}))
+
+    answered, repeat = steps[-2], steps[-1]
+    card_text = reminder(answered.reminder, answered.record, facts)
+    assert "already applied" in card_text and "Do not call set_theme" in card_text
+    assert repeat.reminder == "already_theme"
+    text = reminder(repeat.reminder, repeat.record, facts)
+    assert "The theme was already set" in text and "Do not apply it again" in text
+    assert 'setup_beat(beat="next") shows the layout card' in text
 
 
 def test_run_hrs0_off_script_questions_keep_one_card_and_continue_settles_it():
@@ -246,7 +265,7 @@ def test_results_that_pick_nothing_settle_nothing(tool, args, result):
 
 @pytest.mark.parametrize("options", [
     None, [], [{"id": "games", "label": "Games"}], [{"id": "scan", "label": "Scan"}],
-    [{"id": "hermes", "label": "How Hermes works"}], [{"id": x, "label": x} for x in ("notes", "site", "repo", "watch", "explain")],
+    [{"id": "hermes", "label": "Explain how Hermes works"}], [{"id": x, "label": x} for x in ("notes", "site", "repo", "watch", "explain")],
     [{"id": "notes", "label": "A"}, {"id": "notes", "label": "B"}], [{"id": "notes", "label": "x" * 33}],
     [{"id": "notes", "label": " "}], ["notes"],
 ])
@@ -263,7 +282,7 @@ def test_valid_picks_are_the_card_with_how_hermes_works_last_and_any_card_id_ans
     shown = run(facts, Shown("build", "call_b", picks))[-1]
     card = flow.BEAT_BY_ID["build"].card(facts, shown.record["picks"])
 
-    assert card == {"options": [*picks, {"id": "hermes", "label": "How Hermes works"}]}
+    assert card == {"options": [*picks, {"id": "hermes", "label": "Explain how Hermes works"}]}
     # Brought back without picks, the same card returns.
     assert apply(shown.record, Shown("build", "call_c"), facts).result == {}
     for value in ("repo", "hermes", "own"):

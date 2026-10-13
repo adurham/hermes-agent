@@ -115,7 +115,7 @@ def test_done_ends_the_run_only_after_the_build_card(db, desktop):
     assert "notes" in no_picks["error"] and desktop.shown == []
     desktop.replies.append({"answer": {"build": "notes"}})
     build = call(db, desktop, beat="build", options=[{"id": "notes", "label": "Notes to wiki"}])
-    assert desktop.shown[-1]["card"]["options"][-1] == {"id": "hermes", "label": "How Hermes works"}
+    assert desktop.shown[-1]["card"]["options"][-1] == {"id": "hermes", "label": "Explain how Hermes works"}
     done = call(db, desktop, beat="done")
 
     assert "error" in refused
