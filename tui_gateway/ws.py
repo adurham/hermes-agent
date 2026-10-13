@@ -104,6 +104,8 @@ class WSTransport:
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
+        #: The served profile home whose skin this peer follows (None = the launch home); see change_watcher.
+        self.skin_home: str | None = None
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
@@ -434,6 +436,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
             server._ensure_lease_watcher()  # cross-process lease moves → display.lease
+            if authority_connection is not None:
+                # A served profile's TUI repaints from ITS home's skin, never the launch home's.
+                transport.skin_home = server._skin_home_for(authority_connection.authority.profile_id)
             server.register_live_transport(transport)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the

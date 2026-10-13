@@ -73,23 +73,71 @@ def _skin_sig() -> tuple[str, float | None]:
         return name, None
 
 
+# A multiplexed gateway serves other profiles' TUIs from this one watcher thread (no profile
+# override): their baselines live here, keyed by home, and their repaints go to their own peers only
+# (main ran one gateway per profile, so a work TUI never saw the launch home's skin).
+_skin_sig_by_home: dict[str, tuple[str, float | None]] = {}
+
+
+def _skin_home_for(profile_id) -> str | None:
+    """The profile home a peer's skin follows, or None for the launch home (the ambient scope)."""
+    with contextlib.suppress(Exception):
+        home = Path(str(profile_id))
+        if home.is_absolute() and home.is_dir() and home.resolve() != Path(_hermes_home).resolve():
+            return str(home)
+    return None
+
+
+def _under_home(home: str, fn):
+    token = set_hermes_home_override(home)
+    try:
+        return fn()
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _note_skin_broadcast() -> None:
     """Sync the baseline after the /skin RPC emits so the watcher doesn't re-broadcast it."""
     global _last_skin_sig
     with contextlib.suppress(Exception):
-        _last_skin_sig = _skin_sig()
+        if home := _skin_home_for(get_hermes_home_override()):
+            _skin_sig_by_home[home] = _skin_sig()
+        else:
+            _last_skin_sig = _skin_sig()
+
+
+def _skin_peers_by_home() -> dict[str, list]:
+    with _live_transports_lock:
+        targets = list(_live_transports)
+    peers: dict[str, list] = {}
+    for transport in targets:
+        if home := getattr(transport, "skin_home", None):
+            peers.setdefault(home, []).append(transport)
+    return peers
 
 
 def _broadcast_skin_if_changed() -> None:
     """Emit ``skin.changed`` when the active skin moved, via the SAME live path as
-    ``/skin`` so every surface repaints. The check is a dict lookup + one stat."""
+    ``/skin`` so every surface repaints. The check is a dict lookup + one stat per home."""
     global _last_skin_sig
+    by_home = _skin_peers_by_home()
     with contextlib.suppress(Exception):
         sig = _skin_sig()
-        if sig == _last_skin_sig:
-            return
-        _last_skin_sig = sig
-        _broadcast_global_event("skin.changed", resolve_skin())
+        if sig != _last_skin_sig:
+            _last_skin_sig = sig
+            _broadcast_global_event("skin.changed", resolve_skin(),
+                                    skip={peer for peers in by_home.values() for peer in peers})
+    for home, peers in by_home.items():
+        with contextlib.suppress(Exception):
+            sig = _under_home(home, _skin_sig)
+            seen = _skin_sig_by_home.get(home)
+            _skin_sig_by_home[home] = sig
+            if seen is None or sig == seen:
+                continue  # first sight seeds: the attach's runtime.describe already carried this skin
+            frame = _event_frame("skin.changed", "", _under_home(home, resolve_skin))
+            for peer in peers:
+                with contextlib.suppress(Exception):
+                    peer.write(frame)
 
 
 def _active_pet():
