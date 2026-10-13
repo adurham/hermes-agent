@@ -22,12 +22,13 @@ _POLL_S = 0.25
 
 
 class _Pending:
-    __slots__ = ("event", "session_id", "value")
+    __slots__ = ("event", "result", "session_id", "value")
 
     def __init__(self, session_id):
         self.event = threading.Event()
         self.session_id = session_id
         self.value = ""
+        self.result = None
 
 
 _lock = threading.Lock()
@@ -48,9 +49,10 @@ def resolve(frame, *, session_ok=lambda session_id: True) -> bool:
         if pending is None or not session_ok(pending.session_id):
             return False
         _open.pop(frame["id"], None)
-    result = frame.get("result")
-    value = result.get("value") if isinstance(result, dict) and "error" not in frame else ""
+    result = frame.get("result") if "error" not in frame else None
+    value = result.get("value") if isinstance(result, dict) else ""
     pending.value = value if isinstance(value, str) else ""
+    pending.result = result if isinstance(result, dict) else None
     pending.event.set()
     return True
 
@@ -64,8 +66,20 @@ def ask_sudo(events, session_id, command, *, cancelled=lambda: False, timeout=SU
 def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S) -> str:
     """Send one one-string server→client request (``sudo``, ``secret``: ``ValueResult``) to the
     session's attached viewers and wait for its ``value``; "" on skip, interrupt, timeout or no viewer."""
+    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout)
+    return pending.value if pending is not None else ""
+
+
+def ask_viewer_result(events, session_id, method, params, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S):
+    """The same round trip for a structured answer (``clarify``: ``ClarifyResult``): the viewer's
+    ``result`` dict, or None on interrupt, timeout, an error response or no attached viewer."""
+    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout)
+    return pending.result if pending is not None else None
+
+
+def _ask(events, session_id, method, params, *, cancelled, timeout):
     if not events.fanout.transports():
-        return ""
+        return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
     pending = _Pending(session_id)
     with _lock:
@@ -79,7 +93,7 @@ def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, t
         if cancelled():
             reason = "interrupted"
             break
-        if waited >= timeout:
+        if timeout is not None and waited >= timeout:
             break
     with _lock:
         still_open = _open.pop(request_id, None) is pending
@@ -89,8 +103,8 @@ def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, t
         with contextlib.suppress(Exception):
             events.publish(session_id, {"id": request_id, "method": method, "reason": reason},
                            event_type="request.cancel")
-        return ""
-    return pending.value
+        return None
+    return pending
 
 
 @contextlib.contextmanager

@@ -10,6 +10,7 @@ Event contract: wave_a.md (frozen). Every frame is a gateway ``event`` with para
 """
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -501,7 +502,6 @@ class GatewayAgent:
             self.tool_complete_callback(call_id, name, args, result)
 
     def _todo_from_result(self, result):
-        import json
         try:
             data = json.loads(result) if isinstance(result, str) else result
         except ValueError:
@@ -584,15 +584,36 @@ class GatewayAgent:
                              prompt_id=payload.get("prompt_id"), answer=str(answer))
 
     def _answer_request(self, frame):
-        """A gateway server→client request (``sudo``): main's own modal answers it on this (agent)
-        thread, through the callback HermesCLI registered for the turn; the value travels only in the
-        JSON-RPC response frame."""
+        """A gateway server→client request (``sudo``, ``secret``, ``clarify``): main's own modal
+        answers it on this (agent) thread, through the callback HermesCLI registered for the turn; the
+        answer travels only in the JSON-RPC response frame."""
+        method = frame["method"]
         try:
-            value = _SERVER_REQUESTS[frame["method"]](self, frame.get("params") or {})
+            answer = _SERVER_REQUESTS[method](self, frame.get("params") or {})
         except Exception:  # health: allow BLE001 -- a broken modal is a skip, never a hung tool
-            logger.debug("server request %s failed", frame.get("method"), exc_info=True)
-            value = ""
-        self.connection.reply(frame["id"], {"value": value if isinstance(value, str) else ""})
+            logger.debug("server request %s failed", method, exc_info=True)
+            answer = {"outcome": "cancelled"} if method == "clarify" else ""
+        if method == "clarify":
+            self.connection.reply(frame["id"], answer)
+        else:
+            self.connection.reply(frame["id"], {"value": answer if isinstance(answer, str) else ""})
+
+    def _ask_clarify(self, params):
+        """Main's batch clarify panel (``clarify_callback(questions)``) for the whole question set."""
+        questions = [{"qid": q.get("qid"), "question": q.get("question") or "",
+                      "choices": list(q.get("choices") or []), "multi_select": bool(q.get("multi_select"))}
+                     for q in params.get("questions") or [] if isinstance(q, dict) and q.get("qid")]
+        if self.clarify_callback is None or not questions:
+            return {"outcome": "cancelled"}
+        reply = self.clarify_callback(questions)
+        if not isinstance(reply, dict):
+            return {"outcome": "cancelled"}
+        answers = {qid: (value if isinstance(value, str) or value is None else json.dumps(value))
+                   for qid, value in (reply.get("answers") or {}).items()}
+        out = {"answers": answers}
+        if reply.get("outcome") in ("submitted", "timed_out", "cancelled"):
+            out["outcome"] = reply["outcome"]
+        return out
 
     def _ask_sudo(self, params):
         from tools.terminal_tool import _get_sudo_password_callback
@@ -759,6 +780,7 @@ _SECRET_LOCK = threading.Lock()
 _SERVER_REQUESTS = {
     "sudo": GatewayAgent._ask_sudo,
     "secret": GatewayAgent._ask_secret,
+    "clarify": GatewayAgent._ask_clarify,
 }
 
 _HANDLERS = {

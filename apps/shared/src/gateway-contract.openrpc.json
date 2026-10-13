@@ -11362,7 +11362,7 @@
       },
       "ClarifyResult": {
         "additionalProperties": false,
-        "description": "``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response\nwithout ``answers`` is cancel-all.",
+        "description": "``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response\nwithout ``answers`` is cancel-all. ``outcome`` (optional): how the viewer's own panel ended, as\nmain's classic CLI reports it (``timed_out`` keeps the answers locked before its deadline).",
         "properties": {
           "answers": {
             "anyOf": [
@@ -11385,6 +11385,23 @@
             ],
             "default": null,
             "title": "Answers"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "submitted",
+                  "timed_out",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Outcome"
           }
         },
         "title": "ClarifyResult",

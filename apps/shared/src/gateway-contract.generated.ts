@@ -5118,9 +5118,10 @@ export interface ClarifyQuestion {
   choices?: string[] | null
   multi_select?: boolean
 }
-/** ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response without ``answers`` is cancel-all. */
+/** ``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response without ``answers`` is cancel-all. ``outcome`` (optional): how the viewer's own panel ended, as main's classic CLI reports it (``timed_out`` keeps the answers locked before its deadline). */
 export interface ClarifyResult {
   answers?: Record<string, string | null> | null
+  outcome?: 'submitted' | 'timed_out' | 'cancelled' | null
 }
 export interface SetupChooseRequestParams {
   session_id: string

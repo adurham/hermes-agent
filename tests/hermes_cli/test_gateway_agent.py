@@ -427,3 +427,22 @@ def test_gateway_secret_request_opens_mains_secret_panel_and_the_gateway_saves(m
     assert seen and seen[0].startswith("Enter it")
     assert replies == [("srq-sec", {"value": "sekrit"})]
     assert local_writes == []  # the gateway saves; this process never writes .env
+
+
+def test_gateway_clarify_batch_request_opens_mains_batch_panel(make_agent):
+    """All questions arrive in one ``clarify`` request; main's batch panel answers the set."""
+    request = {"jsonrpc": "2.0", "id": "srq-clr", "method": "clarify", "params": {"session_id": SID, "questions": [
+        {"qid": "q0", "question": "colour?", "choices": ["red", "blue"]},
+        {"qid": "q1", "question": "size?", "choices": ["s", "l"], "multi_select": True}]}}
+    shown = []
+
+    def panel(questions):
+        shown.append(questions)
+        return {"answers": {"q0": "red", "q1": ["s", "l"]}, "outcome": "submitted"}
+    agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+                          clarify_callback=panel)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    agent.run_conversation("ask")
+    assert [q["qid"] for q in shown[0]] == ["q0", "q1"] and shown[0][1]["multi_select"] is True
+    assert replies == [("srq-clr", {"answers": {"q0": "red", "q1": '["s", "l"]'}, "outcome": "submitted"})]
