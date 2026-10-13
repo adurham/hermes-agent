@@ -40,6 +40,17 @@ function recordToolPreview(ctx: GatewayEventContext, sessionId: string, cwd: str
   }
 }
 
+/** What a completed tool leaves behind outside its row: a preview target, or the end of an onboarding run. */
+function noteToolOutcome(ctx: GatewayEventContext, sessionId: string, cwd: string, pendingProduction: boolean): void {
+  if (!ctx.deps.sessionInterrupted(sessionId)) {
+    recordToolPreview(ctx, sessionId, cwd, pendingProduction)
+  }
+
+  if (ctx.payload?.name === 'setup_beat' && !ctx.event.replayed) {
+    noteSetupBeatResult(setupBeatResult(ctx.payload.result))
+  }
+}
+
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
@@ -103,13 +114,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 
-      if (!sessionInterrupted(sessionId)) {
-        recordToolPreview(ctx, sessionId, state?.cwd ?? '', pendingProduction)
-      }
-
-      if (payload?.name === 'setup_beat' && !event.replayed) {
-        noteSetupBeatResult(setupBeatResult(payload.result))
-      }
+      noteToolOutcome(ctx, sessionId, state?.cwd ?? '', pendingProduction)
 
       if (isActiveEvent) {
         setPetActivity({ toolRunning: false })
