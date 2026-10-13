@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import threading
 import time
 import uuid
 
@@ -598,6 +599,28 @@ class GatewayAgent:
         callback = _get_sudo_password_callback()
         return (callback() or "") if callback is not None else ""
 
+    def _ask_secret(self, params):
+        """Main's masked "Skill Setup Required" panel (the CLI's registered secret-capture callback,
+        ``hermes_cli.callbacks.prompt_for_secret``) collects the value and prints main's lines; the
+        gateway, not this process, saves it in the profile ``.env``, so the panel's save is captured."""
+        from tools import skills_tool
+        callback = skills_tool._secret_capture_callback
+        if callback is None:
+            return ""
+        from hermes_cli import callbacks
+        captured = []
+
+        def capture(key, value):
+            captured.append(value)
+            return {"success": True, "stored_as": key, "validated": False}
+        with _SECRET_LOCK:
+            saver, callbacks.save_env_value_secure = callbacks.save_env_value_secure, capture
+            try:
+                callback(params.get("env_var") or "", params.get("prompt") or "", params.get("metadata"))
+            finally:
+                callbacks.save_env_value_secure = saver
+        return captured[0] if captured else ""
+
     # -- result --------------------------------------------------------------------------------
     def _user_row(self, user_message):
         staged = self._pending_cli_user_message
@@ -732,8 +755,10 @@ def _moa_handler(kind):
     return handler
 
 
+_SECRET_LOCK = threading.Lock()
 _SERVER_REQUESTS = {
     "sudo": GatewayAgent._ask_sudo,
+    "secret": GatewayAgent._ask_secret,
 }
 
 _HANDLERS = {

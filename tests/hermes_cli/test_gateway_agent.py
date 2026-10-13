@@ -400,3 +400,30 @@ def test_connection_reply_sends_a_jsonrpc_response_frame():
         conn.close()
     import json
     assert [json.loads(raw) for raw in sent] == [{"jsonrpc": "2.0", "id": "srq-1", "result": {"value": ""}}]
+
+
+def test_gateway_secret_request_opens_mains_secret_panel_and_the_gateway_saves(make_agent, monkeypatch):
+    """``secret`` (skill env var): main's panel collects the value and prints its lines, but the CLI
+    process never writes ``.env`` — the value goes back to the gateway, which saves it."""
+    from hermes_cli import callbacks
+    from tools import skills_tool
+    request = {"jsonrpc": "2.0", "id": "srq-sec", "method": "secret",
+               "params": {"session_id": SID, "env_var": "HAB_KEY", "prompt": "Enter it",
+                          "metadata": {"skill_name": "hab"}}}
+    agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    local_writes = []
+    monkeypatch.setattr(callbacks, "save_env_value_secure", lambda k, v: local_writes.append((k, v)))
+    monkeypatch.setattr(callbacks, "cprint", lambda *a, **k: None)
+    seen = []
+
+    class Cli:  # no prompt_toolkit app: main's prompt_for_secret reads the masked prompt
+        pass
+    monkeypatch.setattr(callbacks, "masked_secret_prompt", lambda prompt: seen.append(prompt) or "sekrit")
+    monkeypatch.setattr(skills_tool, "_secret_capture_callback",
+                        lambda var, prompt, metadata=None: callbacks.prompt_for_secret(Cli(), var, prompt, metadata))
+    agent.run_conversation("view the skill")
+    assert seen and seen[0].startswith("Enter it")
+    assert replies == [("srq-sec", {"value": "sekrit"})]
+    assert local_writes == []  # the gateway saves; this process never writes .env

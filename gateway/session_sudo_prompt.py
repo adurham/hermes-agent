@@ -58,14 +58,20 @@ def resolve(frame, *, session_ok=lambda session_id: True) -> bool:
 def ask_sudo(events, session_id, command, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S) -> str:
     """Send one ``sudo`` request to the session's attached viewers and wait for its ``value``.
     "" when nobody is attached, the viewer skipped, the turn was interrupted, or it timed out."""
+    return ask_viewer(events, session_id, "sudo", {"command": command}, cancelled=cancelled, timeout=timeout)
+
+
+def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S) -> str:
+    """Send one one-string server→client request (``sudo``, ``secret``: ``ValueResult``) to the
+    session's attached viewers and wait for its ``value``; "" on skip, interrupt, timeout or no viewer."""
     if not events.fanout.transports():
         return ""
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
     pending = _Pending(session_id)
     with _lock:
         _open[request_id] = pending
-    events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": "sudo",
-                         "params": {"session_id": session_id, "command": command}})
+    events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method,
+                         "params": {"session_id": session_id, **params}})
     waited = 0.0
     reason = "timeout"
     while not pending.event.wait(_POLL_S):
@@ -81,7 +87,7 @@ def ask_sudo(events, session_id, command, *, cancelled=lambda: False, timeout=SU
         # The same teardown main's renderers key on (``request.cancel``): the card closes and a
         # timed-out password prompt says so.
         with contextlib.suppress(Exception):
-            events.publish(session_id, {"id": request_id, "method": "sudo", "reason": reason},
+            events.publish(session_id, {"id": request_id, "method": method, "reason": reason},
                            event_type="request.cancel")
         return ""
     return pending.value
