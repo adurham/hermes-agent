@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.onboarding_first_tasks import FIRST_TASKS, eligible_tasks
+from agent.onboarding_first_tasks import FIRST_TASKS, eligible_tasks, pick_error
 from agent.onboarding_flow import Facts, new_record
 from agent.onboarding_text import reminder
 
@@ -90,3 +90,11 @@ def test_the_app_tasks_carry_the_connectors_playbook_and_the_menu_lists_only_eli
     assert "connectors__" not in reminder("build_site", new_record(PC), PC)
     menu = reminder("tour_skip", new_record(MAC), MAC)
     assert "- mac (Set up my Mac helpers)" in menu and "keep its energy" in menu and "- brief" not in menu and "- hermes" not in menu
+
+
+def test_every_too_long_label_is_named_with_its_length_in_one_refusal():
+    long_a, long_b = "Today's brief from Linear and Slack", "My whole week laid out on one page"
+    error = pick_error([{"id": "brief", "label": long_a}, {"id": "week", "label": long_b},
+                        {"id": "repo", "label": "Map one of my repos"}], MAC, {"connected": ["slack"]})
+    assert f'"{long_a}" is {len(long_a)} characters; the limit is 32' in error
+    assert f'"{long_b}" is {len(long_b)} characters' in error

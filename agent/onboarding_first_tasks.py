@@ -266,27 +266,32 @@ def _option_error(option: Any, eligible: set[str], seen: set[str]) -> str | None
     if option["id"] in seen:
         return f"{option['id']!r} is picked twice"
     label = option.get("label")
-    if not isinstance(label, str) or not label.strip() or len(label) > MAX_LABEL:
-        return f"the label for {option['id']} must be 1 to {MAX_LABEL} characters"
+    if not isinstance(label, str) or not label.strip():
+        return f"the label for {option['id']} is empty"
+    if len(label) > MAX_LABEL:
+        return f'"{label}" is {len(label)} characters; the limit is {MAX_LABEL}. Shorten it'
     return None
 
 
 def pick_error(options: Any, facts: Facts, picks: Mapping[str, Any]) -> str | None:
     """Why the model's build picks are refused, naming the eligible ids; None when they are valid."""
     eligible = [task.id for task in eligible_tasks(facts, picks)]
-    problem = None
+    problems: list[str] = []
     if not isinstance(options, list) or not options:
-        problem = "options is required"
+        problems.append("options is required")
     elif len(options) > MAX_PICKS:
-        problem = f"pick at most {MAX_PICKS}"
+        problems.append(f"pick at most {MAX_PICKS}")
     else:
+        # Every bad option is named at once, so one retry can fix them all.
         seen: set[str] = set()
         for option in options:
             if problem := _option_error(option, set(eligible), seen):
-                break
-            seen.add(option["id"])
-    if problem is None:
+                problems.append(problem)
+            elif isinstance(option, Mapping):
+                seen.add(option["id"])
+    if not problems:
         return None
+    problem = "; ".join(problems)
     return (f'{problem}. Call setup_beat(beat="build", options=[{{"id": ..., "label": ...}}]) with up to '
             f"{MAX_PICKS} of these ids: {', '.join(eligible)}.")
 
