@@ -6,6 +6,7 @@ import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { LAYOUTS_AREA } from '@/components/pane-shell/tree/presets'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { connectorTitle } from '@/lib/connector-tools'
 import { cn } from '@/lib/utils'
 import type { SetupBeatAnswer, SetupBeatToolResult } from '@/store/setup-beat'
 import { accentName } from '@/themes/accents'
@@ -59,13 +60,14 @@ function answerText(beat: SetupBeat, answer: SetupBeatAnswer, names: AnswerNames
 
     case 'layout':
       return names.layout(answer.layout ?? '')
+    case 'connectors': {
+      const connected = answer.connected ?? []
 
-    case 'connectors':
-    case 'plugins': {
-      const picked = (beat === 'connectors' ? answer.connected : answer.installed) ?? []
-
-      return picked.length > 0 ? picked.join(', ') : names.none
+      return connected.length > 0 ? connected.map(connectorTitle).join(', ') : names.none
     }
+
+    case 'plugins':
+      return answer.label || (answer.installed?.length ? answer.installed.join(', ') : names.none)
 
     case 'name':
       return answer.name ?? ''

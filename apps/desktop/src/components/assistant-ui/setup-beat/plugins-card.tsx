@@ -34,7 +34,14 @@ async function openInstall(name: string, profile: string): Promise<void> {
 
 /** The plugins this OS runs, from the card payload; Install opens the reviewed install dialog in place,
  *  Continue answers with the ones installed. */
-export function PluginsCard({ names, onContinue }: { names: string[]; onContinue: (installed: string[]) => void }) {
+export function PluginsCard({
+  names,
+  onContinue
+}: {
+  names: string[]
+  /** The installed catalog names, and the titles the card showed for them. */
+  onContinue: (installed: string[], titles: string[]) => void
+}) {
   const { t } = useI18n()
   const copy = t.firstRun
   const storedId = useStore(useSessionView().$storedId)
@@ -84,7 +91,12 @@ export function PluginsCard({ names, onContinue }: { names: string[]; onContinue
       )}
       <div>
         <Button
-          onClick={() => onContinue(names.filter(name => installed.has(name)))}
+          onClick={() => {
+            const done = names.filter(name => installed.has(name))
+            const title = (name: string) => rows.find(row => row.name === name)?.title || name
+
+            onContinue(done, done.map(title))
+          }}
           size="xs"
           variant="textStrong"
         >

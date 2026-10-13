@@ -67,17 +67,18 @@ function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => voi
       )
 
     case 'plugins':
-      return <PluginsCard names={card.plugins ?? []} onContinue={installed => answer({ installed })} />
-
-    case 'tour':
-
-    case 'build':
       return (
-        <OptionsCard
-          onPick={option => answer({ [request.beat]: option.id, label: option.label })}
-          options={beatOptions(card)}
+        <PluginsCard
+          names={card.plugins ?? []}
+          onContinue={(installed, titles) => answer({ installed, label: titles.join(', ') })}
         />
       )
+
+    case 'tour':
+      return <OptionsCard onPick={option => answer({ label: option.label, tour: option.id })} options={card.options ?? []} />
+
+    case 'build':
+      return <OptionsCard onPick={option => answer({ build: option.id, label: option.label })} options={card.options ?? []} />
 
     case 'connectors':
       return null
