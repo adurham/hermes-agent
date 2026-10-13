@@ -438,7 +438,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             server._ensure_lease_watcher()  # cross-process lease moves → display.lease
             if authority_connection is not None:
                 # A served profile's TUI repaints from ITS home's skin, never the launch home's.
-                transport.skin_home = server._skin_home_for(authority_connection.authority.profile_id)
+                transport.skin_home = server._skin_home_for(authority_connection.actor.profile_id)
             server.register_live_transport(transport)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the
