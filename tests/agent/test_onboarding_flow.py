@@ -264,7 +264,7 @@ def test_valid_picks_are_the_card_with_how_hermes_works_last_and_any_card_id_ans
     ("remote", "another computer", "brew"),
 ])
 def test_build_guidance_carries_only_this_hosts_commands(machine, present, absent):
-    text = reminder("build_machine", new_record(MACHINES[machine]), MACHINES[machine])
+    text = reminder("build_notes", new_record(MACHINES[machine]), MACHINES[machine])
 
     assert present in text and absent not in text
     assert 'setup_beat(beat="done")' in text

@@ -8,9 +8,10 @@ stays byte-stable); reminders say only what was picked and what comes next.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
+from agent.onboarding_first_tasks import MAX_LABEL, MAX_PICKS, TASK_BY_ID, eligible_tasks, task_skills
 from agent.onboarding_flow import Facts, next_beat
 
 CHAT_TITLE = "Getting started"
@@ -121,36 +122,20 @@ _BUILD_RULES = (
     "never route around a connector. Visible work within a minute, a first result within five. First reply: one "
     "line and a tool call. At most two checks and one question before work. Connect or install once each, with "
     "exact ids, no searching. Never search the whole disk. Save every file in ~/hermes-first-task/ and say where "
-    "it is; no test files. A page is one self-contained HTML file opened with desktop_preview.")
+    "it is; no test files. A page is one self-contained HTML file opened with desktop_preview, unless the "
+    "task says otherwise.")
 
-_BUILD = {
-    "games": ("First move: install the NVIDIA App and NVIDIA Broadcast plugins with manage_catalog through "
-              "tool_call if they are not installed, then set up what they play and stream with them."),
-    "blender": "First move: make one small thing in Blender with its plugin, from a short script, and show it.",
-    "brief": ("First move: find the connected apps' tools with tool_search, then write today's brief from the real "
-              "data: what needs attention, what changed, what is next. Make it a page if it reads better. If "
-              "nothing answers, say so in one line, run one check (gh auth status) and brief from GitHub if it "
-              "is signed in; otherwise make a start page that needs no account."),
-    "week": ("First move: pull the past seven days from what is connected (find their tools with tool_search), then "
-             "build a one-page summary of their week: meetings, threads, work shipped, open loops. If nothing is "
-             "connected, say so in one line, run one check (gh auth status) and use GitHub if it is signed in; "
-             "otherwise offer to connect Calendar or Gmail and make a start page meanwhile."),
-    "scan": ("A deeper look: ask permission for each scope before reading it (installed apps, developer tools, "
-             "the home folder's top level). Never read personal files, browser data or messages. Then suggest "
-             "three things you could build and build the one they pick."),
-    "mind": ("They have something in mind. If you know what it is, start now: one line on the first slice, then "
-             "build it. If not, ask one short question (clarify with three concrete options is fine), then build. "
-             "Cut a big ask to a first slice and say so in one line."),
-    "machine": ("Machine setup: one clarify card with three to five everyday apps that fit them, multi-select. "
-                "Then one check of which are already installed, and install only the missing picks, one per "
-                "command. List anything that needs a password, licence or payment. Never install a model runtime: "
-                "local models live in the model picker."),
-    "together": ("Vague ask: one clarify card with three options, each makes a thing in five minutes. Name only apps "
-                 "they connected. The first option always makes a page or a file. Never offer find, review, audit or "
-                 "clean up. If they say \"surprise me\", start the first option now. A script goes in "
-                 "~/hermes-first-task/, previews by default (--apply makes changes), and runs once on the real "
-                 "folder."),
-}
+_CONNECTORS = (
+    'Reading a connected app: check it with manage_connections(action="status"). Find its tools with tool_search '
+    "using the app slug, then the slug plus an action (a bare slug misses actions). tool_describe every action you "
+    'need in one batch, then call them through tool_call(calls=[{"name": "connectors__<slug>__<ACTION>", '
+    '"arguments": {...}}]). Resolve names to ids before acting. Read only; ask before any write, and say that a '
+    "write may run as the connector's bot.")
+_CONNECTOR_TASKS = ("brief", "week")
+
+_OWN_TASK = ("They named their own task; also load the skills that fit what they asked. If you know what it is, "
+             "start now: one line on the first slice, then build it. If not, ask one short question (clarify with "
+             "three concrete options is fine), then build. Cut a big ask to a first slice and say so in one line.")
 
 _OS_LINES = {
     "macos": ("This Mac: check with `which brew` and `ls -d /Applications/<App>.app`; install with "
@@ -166,8 +151,25 @@ _ARM_WINDOWS = ("On Windows on Arm, read arm64 vs x64 from winget's install outp
 _SPARK_LINE = "This machine is built for local models; say so once when it fits what they asked."
 
 
-def build_guidance(option: str, facts: Facts) -> str:
-    lines = [_BUILD.get(option, _BUILD["mind"]), _BUILD_RULES, _OS_LINES.get(facts.os, _OS_LINES["linux"])]
+_OPEN = {"macos": "`open <file>`", "windows": '`start "" <file>`'}
+
+
+def _open_line(facts: Facts) -> str:
+    if facts.facts_source == "remote":
+        return "show it with desktop_preview"
+    return f"open it in the default browser with {_OPEN.get(facts.os, '`xdg-open <file>`')}"
+
+
+def _task_lines(option: str, facts: Facts, has_skill: Callable[[str], bool]) -> list[str]:
+    task = TASK_BY_ID.get(option)
+    lines = [f"Load these skills with skill_view first: {', '.join(task_skills(option, has_skill))}.",
+             task.skeleton.replace("<open>", _open_line(facts)) if task else _OWN_TASK]
+    return [*lines, _CONNECTORS] if option in _CONNECTOR_TASKS else lines
+
+
+def build_guidance(option: str, facts: Facts, has_skill: Callable[[str], bool] = lambda name: True) -> str:
+    """The reminder once a first task is picked; ``has_skill`` says whether a bundled skill is on this install."""
+    lines = [*_task_lines(option, facts, has_skill), _BUILD_RULES, _OS_LINES.get(facts.os, _OS_LINES["linux"])]
     if facts.os == "windows" and facts.arch == "arm64":
         lines.append(_ARM_WINDOWS)
     if facts.nvidia_platform in ("rtx_spark", "dgx_spark"):
@@ -181,11 +183,22 @@ def _names(values) -> str:
     return ", ".join(values) if values else "none"
 
 
+def _build_menu(record: Mapping[str, Any]) -> str:
+    """The rows the model picks the build card from."""
+    rows = eligible_tasks(Facts.from_stored(record["facts"]), record["picks"])
+    listed = "\n".join(f"- {task.id} ({task.label}): {task.skeleton}" for task in rows)
+    return (f"For the build card, pick up to {MAX_PICKS} of these that fit what you learned about them, earlier rows "
+            f'first when they fit, and call setup_beat(beat="build", options=[{{"id": ..., "label": ...}}]). Reword '
+            f"each label to fit them, {MAX_LABEL} characters max; ids only from this list. How Hermes works is added "
+            f"last by itself.\n{listed}")
+
+
 def _next(record: Mapping[str, Any]) -> str:
     beat = next_beat(record)
     if beat is None:
         return 'Every beat is settled; after the build is shown and its close card answered, call setup_beat(beat="done").'
-    return f'Next: setup_beat(beat="next") shows the {beat} card.'
+    line = f'Next: setup_beat(beat="next") shows the {beat} card.'
+    return f"{line} {_build_menu(record)}" if beat == "build" else line
 
 
 def _after_layout(record, facts) -> str:
@@ -196,8 +209,8 @@ def _after_layout(record, facts) -> str:
 
 def _tour(preset: str):
     return lambda record, facts: (
-        f'Say "Here\'s where things live." Then, in this same turn, call {_TOUR_CALL % preset} and then '
-        'setup_beat(beat="next"): the build card waits under the tour. Never bring the tour up again.')
+        f'Say "Here\'s where things live." Then, in this same turn, call {_TOUR_CALL % preset} and then show the '
+        f"build card: it waits under the tour. Never bring the tour up again. {_build_menu(record)}")
 
 
 def _waiting_beat(record) -> str | None:
@@ -215,7 +228,7 @@ _REMINDERS = {
     "after_build": lambda r, f: _next(r),
     "tour_quick": _tour("quick"),
     "tour_full": _tour("full"),
-    "tour_skip": lambda r, f: 'No tour. In this same turn, setup_beat(beat="next") shows the build card.',
+    "tour_skip": lambda r, f: f"No tour. In this same turn, show the build card. {_build_menu(r)}",
     "moved_on": lambda r, f: f"That beat is skipped; take its default and do not ask it again. {_next(r)}",
     "skip_all": lambda r, f: ("They ended setup. In one line, say they can ask you anything any time, then stop "
                               "guiding. The onboarding rules no longer apply; this is a normal chat."),
@@ -235,14 +248,16 @@ def _timed_out(record, facts, beat: str) -> str:
             f'whenever they are back, then stop. When they return, bring it back with setup_beat(beat="{beat}").')
 
 
-def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None = None) -> str:
-    """The text for a reminder key; ``beat`` names the card a ``said`` / ``timed_out`` result is about."""
+def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None = None,
+             has_skill: Callable[[str], bool] = lambda name: True) -> str:
+    """The text for a reminder key; ``beat`` names the card a ``said`` / ``timed_out`` result is about;
+    ``has_skill`` drops a first task's bundled skill missing on this install."""
     if not key:
         return ""
     if key in ("said", "timed_out"):
         return (_said if key == "said" else _timed_out)(record, facts, beat or _waiting_beat(record) or "build")
     if key.startswith("build_"):
-        return build_guidance(key.removeprefix("build_"), facts)
+        return build_guidance(key.removeprefix("build_"), facts, has_skill)
     return _REMINDERS[key](record, facts)
 
 

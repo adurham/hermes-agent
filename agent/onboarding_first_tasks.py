@@ -137,3 +137,16 @@ def pick_error(options: Any, facts: Facts, picks: Mapping[str, Any]) -> str | No
         return None
     return (f'{problem}. Call setup_beat(beat="build", options=[{{"id": ..., "label": ...}}]) with up to '
             f"{MAX_PICKS} of these ids: {', '.join(eligible)}.")
+
+
+def task_skills(option: str, has_skill: Callable[[str], bool]) -> list[str]:
+    """The skills a task loads first, humanizer last. A bundled skill missing here is dropped; a plugin
+    skill (``plugin:skill``) is kept, since the plugin being installed is the row's gate."""
+    task = TASK_BY_ID.get(option)
+    names = [*(task.skills if task else ("hermes-agent",)), EVERY_TASK_SKILL]
+    kept = []
+    for entry in names:
+        found = [name for name in entry.split("|") if ":" in name or has_skill(name)]
+        if found:
+            kept.append(" or ".join(found))
+    return kept

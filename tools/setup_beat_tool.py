@@ -40,9 +40,17 @@ def _reply_event(beat: str, reply: Mapping[str, Any] | None) -> flow.Event:
     return flow.Answered(beat, answer) if isinstance(answer, dict) and answer else flow.TimedOut(beat)
 
 
+def _installed_skills() -> Callable[[str], bool]:
+    from tools.skills_tool import _find_all_skills
+
+    return {skill["name"] for skill in _find_all_skills()}.__contains__
+
+
 def _result(step: flow.Step, beat: str | None = None) -> str:
     facts = flow.Facts.from_stored(step.record["facts"])
-    text = reminder(step.reminder, step.record, facts, beat)
+    # Only a first task's reminder names skills; the skills scan is skipped for every other result.
+    has_skill = _installed_skills() if step.reminder.startswith("build_") else (lambda name: True)
+    text = reminder(step.reminder, step.record, facts, beat, has_skill)
     return json.dumps({**step.result, **({"reminder": text} if text else {})}, ensure_ascii=False)
 
 
