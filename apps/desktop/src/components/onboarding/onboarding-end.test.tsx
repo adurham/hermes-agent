@@ -74,4 +74,16 @@ describe('OnboardingEnd', () => {
     await act(() => vi.advanceTimersByTimeAsync(SETTLED_MS))
     expect(screen.queryByText(TITLE)).toBeNull()
   })
+
+  it('resumes the settle wait after a restart that came before the offer opened', async () => {
+    const first = render(<OnboardingEnd />)
+
+    act(() => $onboardingSettleFrom.set(Date.now()))
+    first.unmount()
+    act(() => $onboardingSettleFrom.set(null))
+
+    render(<OnboardingEnd />)
+    await act(() => vi.advanceTimersByTimeAsync(SETTLED_MS))
+    expect(screen.getByText(TITLE)).toBeTruthy()
+  })
 })

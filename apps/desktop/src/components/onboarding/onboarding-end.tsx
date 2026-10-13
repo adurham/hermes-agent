@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { readLocalSetupEligibility } from '@/store/local-setup-offer'
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
 import { requestRoute } from '@/store/recovery-requests'
@@ -22,6 +23,18 @@ import type { LocalCatalogModel } from '@/types/hermes'
 
 /** Install-level: the local-model offer opens at most once per install, and a dismiss is final. */
 export const LOCAL_MODEL_OFFERED_KEY = 'hermes.desktop.firstRun.localModelOffered.v1'
+/** When the offer's settle wait started, so a restart before it opens resumes the wait. */
+const LOCAL_MODEL_PENDING_KEY = 'hermes.desktop.firstRun.localModelPendingFrom.v1'
+
+function settleStart(settleFrom: null | number): null | number {
+  if (settleFrom !== null) {
+    writeKey(LOCAL_MODEL_PENDING_KEY, readKey(LOCAL_MODEL_PENDING_KEY) ?? String(settleFrom))
+  }
+
+  const pending = Number(readKey(LOCAL_MODEL_PENDING_KEY))
+
+  return Number.isFinite(pending) && pending > 0 ? pending : null
+}
 
 /**
  * The local-model offer after first-run onboarding: armed when a run ends or the user first leaves
@@ -33,11 +46,13 @@ export function OnboardingEnd() {
   const [offer, setOffer] = useState<LocalCatalogModel | null>(null)
 
   useEffect(() => {
-    if (settleFrom === null || readKey(LOCAL_MODEL_OFFERED_KEY)) {
+    const from = settleStart(settleFrom)
+
+    if (from === null || readKey(LOCAL_MODEL_OFFERED_KEY)) {
       return
     }
 
-    const settledAt = settleFrom + SETTLE_MIN_MS + Math.random() * SETTLE_SPREAD_MS
+    const settledAt = from + SETTLE_MIN_MS + Math.random() * SETTLE_SPREAD_MS
     let lastTypedAt = 0
     let checking = false
     let cancelled = false
@@ -52,11 +67,15 @@ export function OnboardingEnd() {
       }
 
       checking = true
+      const connection = activeGatewayConnectionId()
       const { fit } = await readLocalSetupEligibility()
       checking = false
 
-      // The read is async: the moment may have stopped being quiet while it ran.
-      if (cancelled || !fit || readKey(LOCAL_MODEL_OFFERED_KEY) || !appIsQuiet(lastTypedAt)) {
+      // The read is async: the moment may have stopped being quiet, or the window moved to another
+      // connection, while it ran.
+      const stale = cancelled || activeGatewayConnectionId() !== connection
+
+      if (stale || !fit || readKey(LOCAL_MODEL_OFFERED_KEY) || !appIsQuiet(lastTypedAt)) {
         return
       }
 
