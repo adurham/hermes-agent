@@ -37,29 +37,6 @@ const LAYOUT: LiveLook = {
   snapshot: snapshotChatLayout
 }
 
-// One undo per look while any card previews it: two open cards share the value from before the first
-// preview, and only the last card to close without Continue puts it back.
-/** One open card's claim on a look's undo. */
-interface PreviewOwner {
-  readonly card: symbol
-}
-
-interface Baseline {
-  owners: Set<PreviewOwner>
-  undo: PreviewUndo
-}
-
-const baselines = new Map<LiveLook, Baseline>()
-
-function release(live: LiveLook, owner: PreviewOwner): void {
-  const baseline = baselines.get(live)
-
-  if (baseline?.owners.delete(owner) && baseline.owners.size === 0) {
-    baselines.delete(live)
-    baseline.undo.revert()
-  }
-}
-
 export interface LookPreview {
   /** Answer with the staged pick; leaving keeps it when `send` returns true. */
   commit: (send: (value: null | string) => boolean) => void
@@ -72,16 +49,17 @@ export interface LookPreview {
 export function useLookPreview(kind: 'accent' | 'layout', dark: boolean): LookPreview {
   const live = kind === 'accent' ? ACCENT : LAYOUT
   const [staged, setStaged] = useState<null | StagedLook>(null)
-  const owner = useRef<PreviewOwner>({ card: Symbol('look-preview') }).current
+  // The value from before this card's first preview.
+  const undo = useRef<null | PreviewUndo>(null)
   const settled = useRef(false)
 
   useEffect(
     () => () => {
       if (!settled.current) {
-        release(live, owner)
+        undo.current?.revert()
       }
     },
-    [live, owner]
+    []
   )
 
   return {
@@ -91,23 +69,16 @@ export function useLookPreview(kind: 'accent' | 'layout', dark: boolean): LookPr
         return
       }
 
-      const baseline = baselines.get(live)
       settled.current = true
-      settled.current = baseline ? baseline.undo.keep(() => send(staged.value)) : send(staged.value)
+      settled.current = undo.current ? undo.current.keep(() => send(staged.value)) : send(staged.value)
 
-      // The sent value is the new truth: no open card puts the old one back. A failed send keeps the
-      // card, so its preview goes back on screen.
-      if (settled.current) {
-        baselines.delete(live)
-      } else if (baseline) {
+      // A failed send keeps the card, so its preview goes back on screen.
+      if (!settled.current && undo.current) {
         live.apply(staged.value, dark)
       }
     },
     stage: value => {
-      const baseline = baselines.get(live) ?? { owners: new Set<PreviewOwner>(), undo: live.snapshot() }
-
-      baseline.owners.add(owner)
-      baselines.set(live, baseline)
+      undo.current ??= live.snapshot()
       live.apply(value, dark)
       setStaged({ value })
     },
