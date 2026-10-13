@@ -179,3 +179,26 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
     expect(getUiState().info?.model).toBe(accept ? 'pricey' : 'old')
   }
 })
+
+it('a /compress that removes nothing prints main\'s "No changes" report without re-hydrating', async () => {
+  const { ctx, request, slash } = harness()
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      return { session_id: 'owner', revision: 8, execution_generation: 4, info, messages: [] } as any
+    }
+
+    return {
+      session_id: 'owner', operation: 'compress', status: 'noop',
+      summary: { headline: 'No changes from compression: 2 messages', noop: true,
+                 token_line: 'Approx request size: ~6,547 tokens (unchanged)' }
+    } as any
+  })
+
+  slash('/compress')
+  await flush()
+  await flush()
+  expect(ctx.transcript.sys).toHaveBeenCalledWith('No changes from compression: 2 messages')
+  expect(ctx.transcript.sys).toHaveBeenCalledWith('  Approx request size: ~6,547 tokens (unchanged)')
+  expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+  expect(request.mock.calls.filter(([method]) => method === 'session.resume')).toHaveLength(1)
+})

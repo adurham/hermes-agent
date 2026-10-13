@@ -155,9 +155,10 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
             prepare = {'model': prepare_model, 'compress': prepare_compress, **PREPARE}[operation]
             prepared = await prepare(authority, live, params['payload'], prepared)
             applied = False
-            if prepared.get('status') in {'preview', 'confirmation_required'}:
-                # ``--preview`` is a read-only report and a guarded model target awaits the user's
-                # confirmation: no receipt, no publication, no eviction.
+            if prepared.get('status') in {'preview', 'noop', 'confirmation_required'}:
+                # ``--preview`` and a compress that removes nothing are read-only reports, and a
+                # guarded model target awaits the user's confirmation: no receipt, no publication,
+                # no eviction.
                 return {'session_id': ref.session_id, 'operation': operation, **prepared}
     async with commit_lock or nullcontext():
         if prepared is not None and 'snapshot' not in prepared:

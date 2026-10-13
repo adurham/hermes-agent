@@ -277,6 +277,12 @@ class GatewayChatView:
                 self.mutations.acknowledge(original, operation, payload)
                 print('\n'.join(result['lines']))
                 return True
+            if result.get('status') == 'noop':
+                # Nothing removable: main's report, nothing committed (gateway/session_mutation_compress.py).
+                self.mutations.acknowledge(original, operation, payload)
+                summary = result.get('summary') or {}
+                print('\n'.join(filter(None, (summary.get('headline'), summary.get('token_line'), summary.get('note')))))
+                return True
             target = result.get('branched_session_id', original)
             await self.adopt(await self.client.rpc('session.resume', session_id=target))
             self.mutations.acknowledge(original, operation, payload)

@@ -236,6 +236,19 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
   ctx.transcript.sys(t('session.main.modelSwitched', result.model))
 }
 
+type CompressSummary = { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
+
+/** The authority's report (headline, token line, note), as the native /compress prints it. */
+function printCompressSummary(summary: CompressSummary, ctx: SlashRunCtx) {
+  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed'))
+
+  for (const line of [summary?.token_line, summary?.note]) {
+    if (line) {
+      ctx.transcript.sys(`  ${line}`)
+    }
+  }
+}
+
 async function applyCompressResult(gw: MutationGateway, sid: string, result: CanonicalControlResult, ctx: SlashRunCtx) {
   const before = getUiState()
   const snapshot = asRpcResult(await gw.request('session.resume', { session_id: sid }))
@@ -259,16 +272,7 @@ async function applyCompressResult(gw: MutationGateway, sid: string, result: Can
 
   ctx.transcript.setHistoryItems([introMsg(info), ...toTranscriptMessages(snapshot.messages)])
   patchUiState({ info })
-  // The authority's report (headline, token line, note), as the native /compress prints it.
-  const summary = result.summary as { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
-
-  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed'))
-
-  for (const line of [summary?.token_line, summary?.note]) {
-    if (line) {
-      ctx.transcript.sys(`  ${line}`)
-    }
-  }
+  printCompressSummary(result.summary as CompressSummary, ctx)
 }
 
 export async function runCanonicalSessionControl(
@@ -309,6 +313,9 @@ export async function runCanonicalSessionControl(
     } else if (result.status === 'preview') {
       // `--preview` is a read-only report; nothing to re-hydrate.
       ctx.transcript.sys((result.lines as string[]).join('\n'))
+    } else if (result.status === 'noop') {
+      // Nothing removable: main's "No changes from compression" report; the transcript is untouched.
+      printCompressSummary(result.summary as CompressSummary, ctx)
     } else {
       await applyCompressResult(gw, ctx.sid, result, ctx)
     }
