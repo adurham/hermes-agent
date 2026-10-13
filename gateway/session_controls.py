@@ -113,6 +113,8 @@ class AuthorityConnection:
         handlers.update(shell_handlers(self))
         from gateway.session_tui_ops import handlers as tui_ops_handlers
         handlers.update(tui_ops_handlers(self))
+        from gateway.session_tui_side import handlers as side_handlers
+        handlers.update(side_handlers(self))
         from gateway.session_images import attach_bytes
         from functools import partial
         handlers['image.attach_bytes'] = partial(attach_bytes, self)

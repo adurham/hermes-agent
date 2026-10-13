@@ -117,10 +117,6 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.session.bg.usage'))
       }
 
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'bg'))
-      }
-
       ctx.gateway.rpc<BackgroundStartResponse>('prompt.background', { session_id: ctx.sid, text: arg }).then(
         ctx.guarded<BackgroundStartResponse>(r => {
           if (!r.task_id) {
