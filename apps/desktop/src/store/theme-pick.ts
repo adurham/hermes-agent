@@ -52,15 +52,6 @@ function answer(sessionId: string, result: ThemePickResult): boolean {
   return true
 }
 
-/** The set_theme call finished: its picker is done here too, wherever it was answered. */
-export function dropThemePick(sessionId: string): void {
-  const request = $themePicks.get()[sessionId]
-
-  if (request) {
-    clearThemePick(request.requestId, sessionId)
-  }
-}
-
 /** Apply the user's pick and answer the session's card with it. False when no card waits or the value is unknown. */
 export function pickTheme(sessionId: string, values: AppearanceValues): boolean {
   const applied = applyAppearance(values)

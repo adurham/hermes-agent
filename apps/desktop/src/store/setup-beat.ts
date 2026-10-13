@@ -98,15 +98,6 @@ export function dropSetupBeat(sessionId: string): void {
   }
 }
 
-/** The setup_beat call `toolCallId` finished: its card is done here too, wherever it was answered. */
-export function dropSetupBeatForCall(sessionId: string, toolCallId: string | undefined): void {
-  const request = $setupBeatRequests.get()[sessionId]
-
-  if (request && toolCallId && request.toolCallId === toolCallId) {
-    clearSetupBeat(request.requestId, sessionId)
-  }
-}
-
 // The card clears only once the answer is sent, so a failed send leaves it on screen to answer again.
 function respond(
   sessionId: string,

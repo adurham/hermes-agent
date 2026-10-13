@@ -6,7 +6,7 @@ import { setupBeatOutcome } from '@/components/assistant-ui/setup-beat/receipt'
 import { $onboardingSession } from './onboarding-session'
 import { answerParkedCard, parkedCardWaiting, sessionOnboardingCardWaiting } from './parked-card-answers'
 import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
-import { $setupBeatRequests, answerSetupBeat, clearSetupBeat, dropSetupBeatForCall, parkSetupBeat } from './setup-beat'
+import { $setupBeatRequests, answerSetupBeat, clearSetupBeat, parkSetupBeat } from './setup-beat'
 
 function parkNameCard(requestId: string, open = true) {
   const respond = vi.fn()
@@ -68,16 +68,11 @@ describe('setup_beat card', () => {
     off()
   })
 
-  it('keeps a card whose answer could not be sent, and drops it once its call finishes elsewhere', () => {
+  it('keeps a card whose answer could not be sent', () => {
     parkNameCard('srq-4', false)
 
     expect(answerSetupBeat('rt-1', { name: 'Sid' })).toBe(false)
     expect($setupBeatRequests.get()['rt-1']?.requestId).toBe('srq-4')
-
-    dropSetupBeatForCall('rt-1', 'call-other')
-    expect($setupBeatRequests.get()['rt-1']).toBeDefined()
-    dropSetupBeatForCall('rt-1', 'call-srq-4')
-    expect($setupBeatRequests.get()['rt-1']).toBeUndefined()
   })
 
   it('collapses every way a card can close to a receipt, and draws nothing for a card-less call', () => {
