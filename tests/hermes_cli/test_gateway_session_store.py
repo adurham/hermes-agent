@@ -67,6 +67,27 @@ def test_new_session_is_created_on_the_gateway_and_its_id_adopted(store, monkeyp
     assert db.connection.state("local-new").info["model"] == "fake-model"
 
 
+def test_a_finite_run_creates_mains_oneshot_session_so_bare_c_finds_it(store, monkeypatch):
+    """Main labels a `chat -q` / `-Q` session ``oneshot`` (agent.session_source.session_source_for), which
+    `hermes -c` / `--resume latest` count as CLI history; created as ``cli`` the owner stores the
+    transport's ``local`` and the next bare `-c` finds nothing."""
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE_EXPLICIT", raising=False)
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+    db, client = store
+    db.open_session(cli(), {})
+    assert client.calls[-1][1]["source"] == "oneshot"
+    # An explicit `--source tool` still wins, and an interactive session stays `cli`.
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "tool")
+    monkeypatch.setenv("HERMES_SESSION_SOURCE_EXPLICIT", "1")
+    GatewaySessionStore(db.connection).open_session(cli(), {})
+    assert client.calls[-1][1]["source"] == "tool"
+    for name in ("HERMES_SINGLE_QUERY_SESSION", "HERMES_SESSION_SOURCE", "HERMES_SESSION_SOURCE_EXPLICIT"):
+        monkeypatch.delenv(name)
+    GatewaySessionStore(db.connection).open_session(cli(), {})
+    assert client.calls[-1][1]["source"] == "cli"
+
+
 def test_resume_attaches_and_unknown_target_is_left_to_mains_not_found_path(store):
     db, client = store
     assert db.open_session(cli("local-old", resumed=True)) == "local-old"

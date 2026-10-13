@@ -133,7 +133,10 @@ class GatewaySessionStore:
                 raise
         params = _creation_policy(launch or {})
         params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
-        params["source"] = os.environ.get("HERMES_SESSION_SOURCE") or "cli"
+        # Main's label for this row (a finite `-q`/`-Q` run is ``oneshot``, which `hermes -c` and
+        # `--resume latest` count as CLI history; `--source` wins), the rule run_agent applies.
+        from agent.session_source import session_source_for
+        params["source"] = session_source_for("cli")
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
         return self._adopt(snapshot)
 
@@ -244,3 +247,4 @@ def _creation_policy(launch):
 
 def session_store():
     return GatewaySessionStore()
+
