@@ -88,9 +88,7 @@ def _active_run() -> dict:
     from agent.onboarding_record import active_session_id, load
     with _profile_db(_ONBOARDING_PROFILE) as db:
         session_id = None if db is None else active_session_id(db)
-        # "" for a run started before runs had ids, the same value onboarding.start returns for it.
-        return {"session_id": session_id,
-                "run_id": (load(db, session_id) or {}).get("run_id") or "" if session_id else None}
+        return {"session_id": session_id, "run_id": (load(db, session_id) or {}).get("run_id") if session_id else None}
 
 
 @method("onboarding.start")
