@@ -49,7 +49,7 @@ const PLUGIN_ICON = (
 )
 
 /** The plugins this OS runs, from the card payload; Install opens the reviewed install dialog in place,
- *  Continue answers with the ones installed. */
+ *  Continue answers with the ones installed; it reads Skip until one is. */
 export function PluginsCard({
   names,
   onContinue
@@ -117,7 +117,7 @@ export function PluginsCard({
           }}
           size="sm"
         >
-          {t.common.continue}
+          {names.some(name => installed.has(name)) ? t.common.continue : t.common.skip}
         </Button>
       </div>
     </div>
