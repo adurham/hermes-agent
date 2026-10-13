@@ -69,5 +69,26 @@ def test_runner_routes_a_classic_cli_turn_to_the_batch(monkeypatch):
     monkeypatch.setattr(run_turn_runner, '_finite_viewer_turn', lambda: False)
     monkeypatch.setattr(batch, 'ask_clarify_batch', lambda turn, qs: {'answers': {'q0': 'blue'}, 'outcome': 'submitted'})
     runner = run_turn_runner.TurnRunner.__new__(run_turn_runner.TurnRunner)
+    runner._ctx = SimpleNamespace(inbound_message_id='adm-1', source=SimpleNamespace(platform=Platform.LOCAL))
     runner._ask_clarify_question = lambda *a, **k: (_ for _ in ()).throw(AssertionError('per-card path used'))
-    assert runner._clarify_callback_sync(QUESTIONS) == {'answers': {'q0': 'blue'}, 'outcome': 'submitted'}
+    with session_cli_turn.cli_turn_scope('adm-1', {'clarify_batch': True}):
+        assert runner._clarify_callback_sync(QUESTIONS) == {'answers': {'q0': 'blue'}, 'outcome': 'submitted'}
+
+
+def test_a_cli_source_turn_the_classic_cli_did_not_submit_keeps_one_card_per_question(monkeypatch):
+    """A ``cli``-source session is also driven by editors (ACP) and raw WebSocket viewers that answer
+    ``clarify.request`` cards, never the batch ``clarify`` server request: only a turn the classic
+    CLI submitted with ``clarify_batch`` goes to main's batch panel."""
+    from gateway import run_turn_runner, session_cli_turn
+    import gateway.session_clarify_batch as batch
+    monkeypatch.setattr(session_cli_turn, 'classic_cli_turn', lambda turn: True)
+    monkeypatch.setattr(run_turn_runner, '_finite_viewer_turn', lambda: False)
+    monkeypatch.setattr(batch, 'ask_clarify_batch', lambda *a: (_ for _ in ()).throw(AssertionError('batch path used')))
+    runner = run_turn_runner.TurnRunner.__new__(run_turn_runner.TurnRunner)
+    runner._ctx = SimpleNamespace(inbound_message_id='adm-1', source=SimpleNamespace(platform=Platform.LOCAL))
+    asked = []
+    runner._ask_clarify_question = lambda question, *a, **k: asked.append(question) or ('blue', True)
+    with session_cli_turn.cli_turn_scope('adm-1', {'api_text': 'x'}):
+        reply = runner._clarify_callback_sync(QUESTIONS)
+    assert asked == ['colour?', 'size?']
+    assert reply == {'answers': {'q0': 'blue', 'q1': 'blue'}, 'outcome': 'submitted'}

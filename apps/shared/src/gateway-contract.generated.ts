@@ -5017,6 +5017,7 @@ export interface CanonicalSubmitParams {
   turn_author?: CanonicalTurnAuthor | null
   api_text?: string | null
   model_override?: CanonicalModelOverride | null
+  clarify_batch?: boolean
 }
 export interface CanonicalAttachment {
   path: string

@@ -11054,6 +11054,11 @@
               }
             ],
             "default": null
+          },
+          "clarify_batch": {
+            "default": false,
+            "title": "Clarify Batch",
+            "type": "boolean"
           }
         },
         "required": [

@@ -32,7 +32,7 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
     try:
         await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
         for rid, extra in (
-                ('full', {'turn_author': author, 'api_text': '[voice] hi',
+                ('full', {'turn_author': author, 'api_text': '[voice] hi', 'clarify_batch': True,
                           'model_override': {'model': ' gpt-x ', 'provider': 'openrouter'}}),
                 ('plain', {})):
             reply = await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {
@@ -42,7 +42,8 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
         for rid, bad in (('no-model', {'model_override': {'provider': 'x'}}),
                          ('extra-key', {'model_override': {'model': 'm', 'base_url': 'http://x'}}),
                          ('bad-text', {'api_text': 7}),
-                         ('bad-author', {'turn_author': 'not json'})):
+                         ('bad-author', {'turn_author': 'not json'}),
+                         ('bad-batch', {'clarify_batch': 'yes'})):
             refused = await connection.dispatch({'id': 3, 'method': 'prompt.submit', 'params': {
                 'session_id': 's', 'submission_id': rid, 'text': 'x', **bad}})
             assert refused['error']['message'] == 'invalid_params', (rid, refused)
@@ -51,10 +52,10 @@ async def test_cli_turn_fields_are_admitted_and_bound_to_their_own_turn(tmp_path
 
     rows = {row['request_id']: row for row in list_session_admissions(authority.db, session_id='s', pending_only=False)}
     assert rows['full']['payload']['cli_turn_v1'] == {
-        'turn_author': author, 'api_text': '[voice] hi',
+        'turn_author': author, 'api_text': '[voice] hi', 'clarify_batch': True,
         'model_override': {'model': 'gpt-x', 'provider': 'openrouter'}}
     assert 'cli_turn_v1' not in rows['plain']['payload']
-    assert not {'no-model', 'extra-key', 'bad-text', 'bad-author'} & set(rows)
+    assert not {'no-model', 'extra-key', 'bad-text', 'bad-author', 'bad-batch'} & set(rows)
     assert seen[0] == ('full', rows['full']['payload']['cli_turn_v1'], {}, author)
     # The next admission never inherits the previous turn's fields.
     assert seen[1][:3] == ('plain', {}, {})

@@ -476,6 +476,9 @@ class GatewayAgent:
             params["display_kind"] = staged["display_kind"]
         if getattr(self, "_finite", False):
             params["finite"] = True
+        if self.clarify_callback is not None:
+            # Main's batch panel answers the clarify tool's whole question set (one ``clarify`` request).
+            params["clarify_batch"] = True
         return params
 
     def _stage_content_parts(self, parts):

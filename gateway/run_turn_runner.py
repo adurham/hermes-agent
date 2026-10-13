@@ -510,8 +510,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Answer headless at once, as main's _single_query_clarify_callback did in process.
             from gateway.session_finite import finite_clarify_reply
             return finite_clarify_reply()
-        from gateway.session_cli_turn import classic_cli_turn
-        if classic_cli_turn(self):
+        from gateway.session_cli_turn import clarify_batch_turn
+        if clarify_batch_turn(self):
             # Main's classic CLI shows every question at once in its batch panel: one request.
             from gateway.session_clarify_batch import ask_clarify_batch
             return ask_clarify_batch(self, questions)

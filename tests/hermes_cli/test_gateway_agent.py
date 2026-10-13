@@ -507,13 +507,15 @@ def test_gateway_clarify_batch_request_opens_mains_batch_panel(make_agent):
     def panel(questions):
         shown.append(questions)
         return {"answers": {"q0": "red", "q1": ["s", "l"]}, "outcome": "submitted"}
-    agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+    agent, client = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})],
                           clarify_callback=panel)
     replies = []
     agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
     agent.run_conversation("ask")
     assert [q["qid"] for q in shown[0]] == ["q0", "q1"] and shown[0][1]["multi_select"] is True
     assert replies == [("srq-clr", {"answers": {"q0": "red", "q1": '["s", "l"]'}, "outcome": "submitted"})]
+    # The turn is marked as answered by main's batch panel: the gateway sends this viewer the batch.
+    assert dict(client.calls)["prompt.submit"]["clarify_batch"] is True
 
 
 def test_a_mid_turn_steer_row_is_estimated_delta_like_main(make_agent):

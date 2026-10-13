@@ -12,7 +12,7 @@ from contextvars import ContextVar
 
 from hermes_state_runtime import RuntimeStoreError
 
-_SUBMIT_FIELDS = ('turn_author', 'api_text', 'model_override')
+_SUBMIT_FIELDS = ('turn_author', 'api_text', 'model_override', 'clarify_batch')
 _API_TEXT_LIMIT = 1_000_000
 _cli_turn: ContextVar[tuple | None] = ContextVar('cli_turn', default=None)
 
@@ -45,6 +45,14 @@ def admit_cli_turn(params):
             raise RuntimeStoreError('invalid_params')
         committed['model_override'] = {'model': override['model'].strip(),
                                        **({'provider': override['provider']} if override.get('provider') else {})}
+    batch = params.get('clarify_batch')
+    if batch is not None and type(batch) is not bool:
+        raise RuntimeStoreError('invalid_params')
+    if batch:
+        # The submitting viewer is main's HermesCLI, which answers the clarify tool's whole batch
+        # in one ``clarify`` server request (its batch panel). Other viewers of a ``cli``-source
+        # session (an ACP editor, a raw WebSocket client) answer per-question cards.
+        committed['clarify_batch'] = True
     return {'cli_turn_v1': committed} if committed else {}
 
 
@@ -112,6 +120,12 @@ def classic_cli_turn(turn):
     except RuntimeStoreError:  # a route whose frozen policy is not restored: not a CLI viewer turn
         return False
     return policy is not None and policy.platform == 'cli'
+
+
+def clarify_batch_turn(turn):
+    """The clarify tool's batch goes to main's batch panel as one request: a classic-CLI turn that
+    the classic CLI itself submitted (``clarify_batch`` committed with its admission)."""
+    return classic_cli_turn(turn) and bool(cli_turn(getattr(turn._ctx, 'inbound_message_id', None)).get('clarify_batch'))
 
 
 def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_id=None):

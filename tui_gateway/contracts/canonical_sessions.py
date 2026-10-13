@@ -201,6 +201,9 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     turn_author: CanonicalTurnAuthor | None = None
     api_text: str | None = None
     model_override: CanonicalModelOverride | None = None
+    # The submitter answers the clarify tool's whole batch in one ``clarify`` server request (main's
+    # batch panel); without it the turn's viewers get one ``clarify.request`` card per question.
+    clarify_batch: bool = False
 
 
 class CanonicalControlParams(CanonicalSessionParams):
