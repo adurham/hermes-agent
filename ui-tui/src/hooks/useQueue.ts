@@ -203,7 +203,10 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
 
   const queuedDisplay = [
     ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
-    ...serverRows.map(row => t('canonical.queue.serverRow', String(row.status), String(row.user)))
+    // A queued row reads as main's plain queue line; only an unknown execution keeps its status tag.
+    ...serverRows.map(row =>
+      row.status === 'queued' ? String(row.user) : t('canonical.queue.serverRow', String(row.status), String(row.user))
+    )
   ]
 
   // Indexes past the local items address server rows (read live, not from

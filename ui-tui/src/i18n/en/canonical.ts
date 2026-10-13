@@ -39,7 +39,7 @@ export const canonicalEn = {
     // hooks/useQueue.ts, app/useSubmission.ts, app/useComposerState.ts — the local input journal.
     queue: {
       unconfirmedPrefix: '[unconfirmed · Alt+K retry] ',
-      // {0}=admission status identifier (queued/started/unknown), {1}=input text
+      // {0}=admission status identifier (unknown; queued rows render plain), {1}=input text
       serverRow: (status: string, text: string) => `[${status}] ${text}`,
       discardFailed: (message: string) => `discard failed: ${message}`,
       journalCleanupFailed: (message: string) => `input delivered; journal cleanup failed: ${message}`,
