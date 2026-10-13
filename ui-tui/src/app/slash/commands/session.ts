@@ -529,12 +529,6 @@ export const sessionCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.session.theme.usage'))
       }
 
-      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
-      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'theme'))
-      }
-
       // Apply only after the write is confirmed (mirrors /indicator): a
       // failed config.set must not leave the session showing a theme that
       // reverts on restart. A few ms later than an optimistic flip, but the
@@ -604,12 +598,6 @@ export const sessionCommands: SlashCommand[] = [
 
       if (!(INDICATOR_STYLES as readonly string[]).includes(value)) {
         return ctx.transcript.sys(t('slashCmd.session.indicator.usage', INDICATOR_STYLES.join('|')))
-      }
-
-      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
-      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'indicator'))
       }
 
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'indicator', value }).then(

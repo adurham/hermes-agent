@@ -1,0 +1,174 @@
+"""Owner ``config.set`` for the TUI's profile preferences.
+
+Main served these from the per-TUI sidecar (``tui_gateway/methods_config_set.py``); on the shared
+owner they write the OWNING profile's config.yaml (raw round-trip, off-loop, under its runtime
+scope) with main's per-key semantics. The session controls (busy/verbose/yolo/show_reasoning/
+service_tier, the refused ``model``) stay in ``gateway.session_busy_controls``; any other key is
+``invalid_params``.
+"""
+import asyncio
+import copy
+from functools import partial
+from pathlib import Path
+import threading
+
+from hermes_state_runtime import RuntimeStoreError
+
+_SESSION_CONTROL_KEYS = frozenset({'busy', 'verbose', 'yolo', 'show_reasoning', 'service_tier', 'model'})
+_DETAIL_SECTIONS = ('thinking', 'tools', 'subagents', 'activity')
+_DETAIL_MODES = frozenset({'hidden', 'collapsed', 'expanded'})
+_STATUSBAR_MODES = ('off', 'top', 'bottom')
+_BOOL_WORDS = {'on': True, 'true': True, 'yes': True, 'off': False, 'false': False, 'no': False}
+_WRITE_LOCK = threading.Lock()  # one read-modify-write of config.yaml at a time
+
+
+def handlers(connection):
+    return {'config.set': partial(config_set, connection)}
+
+
+def _word(value):
+    return ('' if value is None else str(value)).strip().lower()
+
+
+def _statusbar(raw):
+    return 'off' if raw is False else raw.strip().lower() if (
+        isinstance(raw, str) and raw.strip().lower() in _STATUSBAR_MODES) else 'top'
+
+
+def _toggles():
+    """key -> (display field, word -> value, flipped(display), report(value)); '' / toggle flips."""
+    from tui_gateway.agent_factory import _MOUSE_TRACKING_ALIASES, _display_mouse_tracking
+
+    def on_off(value):
+        return 'on' if value else 'off'
+
+    return {
+        'density': ('tui_compact', {'on': True, 'off': False},
+                    lambda d: not bool(d.get('tui_compact', False)), on_off),
+        'battery': ('battery', _BOOL_WORDS, lambda d: not bool(d.get('battery', False)), on_off),
+        'statusbar': ('tui_statusbar', {'on': 'top', **{m: m for m in _STATUSBAR_MODES}},
+                      lambda d: 'top' if _statusbar(d.get('tui_statusbar', 'top')) == 'off' else 'off', str),
+        'mouse': ('mouse_tracking', _MOUSE_TRACKING_ALIASES,
+                  lambda d: 'all' if _display_mouse_tracking(d) == 'off' else 'off', str)}
+
+
+def _words():
+    """key -> (display field, accepted words)."""
+    from hermes_constants import INDICATOR_STYLES
+    return {'theme': ('tui_theme', frozenset({'auto', 'light', 'dark'})),
+            'indicator': ('tui_status_indicator', frozenset(INDICATOR_STYLES))}
+
+
+def _display(cfg):
+    if not isinstance(cfg.get('display'), dict):
+        cfg['display'] = {}
+    return cfg['display']
+
+
+def _sections(display):
+    if not isinstance(display.get('sections'), dict):
+        display['sections'] = {}
+    return display['sections']
+
+
+def _set_display(cfg, key, value):
+    """One display preference on the raw config, main's semantics; returns the result extras."""
+    display, raw = _display(cfg), _word(value)
+    if key in (toggles := _toggles()):
+        field, aliases, flipped, report = toggles[key]
+        new = flipped(display) if raw in ('', 'toggle') else aliases.get(raw)
+        if new is None:
+            raise RuntimeStoreError('invalid_params')
+        display[field] = new
+        return {'value': report(new)}
+    if key in (words := _words()):
+        field, allowed = words[key]
+        if raw not in allowed:
+            raise RuntimeStoreError('invalid_params')
+        display[field] = raw
+        return {'value': raw}
+    if key == 'details_mode':
+        if raw not in _DETAIL_MODES:
+            raise RuntimeStoreError('invalid_params')
+        display['details_mode'] = raw
+        _sections(display).update(dict.fromkeys(_DETAIL_SECTIONS, raw))
+        return {'value': raw}
+    if key.startswith('details_mode.'):
+        section = key.split('.', 1)[1]
+        if section not in _DETAIL_SECTIONS or (raw and raw not in _DETAIL_MODES):
+            raise RuntimeStoreError('invalid_params')
+        if raw:
+            _sections(display)[section] = raw
+        else:  # empty clears the override (the client falls back to its section default)
+            _sections(display).pop(section, None)
+        return {'value': raw}
+    if key == 'focus':
+        return _set_focus(display, raw)
+    raise RuntimeStoreError('invalid_params')
+
+
+def _set_focus(display, raw):
+    """/focus on stashes the configured tool-progress mode and pins it off; off restores it."""
+    from hermes_cli.focus_view import FOCUS_TOOL_PROGRESS_MODE, normalize_tool_progress_mode, resolve_focus_arg
+    current = bool(display.get('focus_view', False))
+    configured = normalize_tool_progress_mode(display.get('tool_progress', 'all'))
+    action, target = resolve_focus_arg(raw, current)
+    if action == 'usage':
+        raise RuntimeStoreError('invalid_params')
+    if action == 'status' or target is None:
+        return {'value': 'on' if current else 'off', 'tool_progress': configured}
+    if target:
+        display['focus_saved_tool_progress'] = normalize_tool_progress_mode(
+            (current and display.get('focus_saved_tool_progress')) or configured)
+        effective = FOCUS_TOOL_PROGRESS_MODE
+    else:
+        effective = normalize_tool_progress_mode(display.get('focus_saved_tool_progress') or 'all')
+    display['tool_progress'], display['focus_view'] = effective, bool(target)
+    return {'value': 'on' if target else 'off', 'tool_progress': effective}
+
+
+def _write_profile_config(connection, edit):
+    """``edit(raw_cfg)`` on the owning profile's config.yaml EXACTLY as written (no defaults or
+    overlay persisted); saved only when it changed. Runs off the loop."""
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import atomic_config_replace, get_config_path, read_user_config_raw
+    with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
+        path = get_config_path()
+        try:
+            cfg = read_user_config_raw(path)
+        except Exception as exc:  # unparseable: never overwrite the user's file
+            raise RuntimeStoreError('storage_unavailable') from exc
+        before = copy.deepcopy(cfg)
+        result = edit(cfg)
+        if cfg != before:
+            try:
+                atomic_config_replace(path, cfg)
+            except Exception as exc:
+                raise RuntimeStoreError('storage_unavailable') from exc
+        return result
+
+
+def _authorize_write(connection, ref, params):
+    """Profile-level like ``config.get`` (a session is optional), plus the control capability."""
+    from gateway.session_config import _authorize
+    policy = _authorize(connection, ref, params)
+    if 'session:control' not in connection.actor.capabilities:
+        raise RuntimeStoreError('permission_denied')
+    return policy
+
+
+async def config_set(connection, ref, params):
+    key = params.get('key')
+    if key in _SESSION_CONTROL_KEYS or not isinstance(key, str):
+        from gateway.session_busy_controls import busy_config
+        return await busy_config(connection, ref, params, write=True)
+    if set(params) - {'session_id', 'profile', 'key', 'value'}:
+        raise RuntimeStoreError('invalid_params')
+    _authorize_write(connection, ref, params)
+    value = params.get('value')
+    result = await asyncio.to_thread(_write_profile_config, connection,
+                                     lambda cfg: _set_display(cfg, key, value))
+    if key == 'focus' and ref.session_id and 'tool_progress' in result:
+        # Main's session also took the focus mode at once: this session's /verbose state.
+        connection.authority.sessions[ref.session_id].tool_progress_mode = result['tool_progress']
+    return {'key': key, **result}

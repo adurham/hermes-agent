@@ -5056,11 +5056,11 @@ export interface CanonicalConfigGetResult {
   key?: string | null
   scope?: string | null
 }
-/** ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
+/** Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which need ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``; ``session_id`` optional). ``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation, never a config write. */
 export interface CanonicalConfigSetParams {
   profile?: string | null
-  session_id: string
-  key: 'busy' | 'verbose' | 'yolo' | 'show_reasoning' | 'service_tier' | 'model'
+  session_id?: string | null
+  key: string
   value?: unknown
   confirm_expensive_model?: boolean | null
 }

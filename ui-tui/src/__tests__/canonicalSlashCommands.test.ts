@@ -63,6 +63,10 @@ function harness() {
       return { value: params.key === 'skin' ? 'default' : 'auto' }
     }
 
+    if (method === 'config.set') {
+      return { key: params.key, value: params.value }
+    }
+
     if (method === 'slash.exec' && params.command === 'status') {
       return { output: 'Session: owner' }
     }
@@ -199,8 +203,7 @@ it('/stop is session-scoped; process-global /reload-mcp refuses on the shared ga
 it('setting writes the shared gateway has no verb for say so instead of a bare invalid_params; reads still work', async () => {
   const { request, slash, sys } = harness()
 
-  // dokterdok P3: the canonical config.set accepts only busy / verbose / yolo / model.
-  for (const cmd of ['/theme dark', '/skin mono', '/indicator ascii', '/reasoning high --global', '/fast fast', '/personality pirate', '/skin']) {
+  for (const cmd of ['/reasoning high --global', '/skin mono', '/fast fast', '/personality pirate', '/skin']) {
     slash(cmd)
   }
 
@@ -211,11 +214,29 @@ it('setting writes the shared gateway has no verb for say so instead of a bare i
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
-  for (const name of ['theme', 'skin', 'indicator', 'reasoning', 'fast', 'personality']) {
+  for (const name of ['reasoning', 'skin', 'fast', 'personality']) {
     expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
   }
 
   expect(notices.some(line => /skin: default/.test(line))).toBe(true)
+})
+
+it('/theme and /indicator write the profile through the owner\'s config.set like main', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/theme dark')
+  await flush()
+  slash('/indicator ascii')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'theme', value: 'dark' })
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'indicator', value: 'ascii' })
+
+  const notices = sys.mock.calls.map(([text]) => String(text))
+
+  expect(notices).toEqual(expect.arrayContaining(['theme → dark', 'indicator → ascii']))
+  expect(notices.some(line => /not available/.test(line))).toBe(false)
+  expect(getUiState().indicatorStyle).toBe('ascii')
 })
 
 it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); display words still refuse', async () => {

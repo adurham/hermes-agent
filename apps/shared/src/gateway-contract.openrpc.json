@@ -8380,7 +8380,7 @@
       },
       "CanonicalConfigSetParams": {
         "additionalProperties": false,
-        "description": "``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is\nthe revision-fenced ``session.mutate`` operation, never a config write.",
+        "description": "Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which\nneed ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``;\n``session_id`` optional). ``model`` is recognised only to be refused with\n``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation,\nnever a config write.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -8395,18 +8395,18 @@
             "title": "Profile"
           },
           "session_id": {
-            "title": "Session Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
           },
           "key": {
-            "enum": [
-              "busy",
-              "verbose",
-              "yolo",
-              "show_reasoning",
-              "service_tier",
-              "model"
-            ],
             "title": "Key",
             "type": "string"
           },
@@ -8428,7 +8428,6 @@
           }
         },
         "required": [
-          "session_id",
           "key"
         ],
         "title": "CanonicalConfigSetParams",

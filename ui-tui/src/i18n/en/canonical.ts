@@ -13,7 +13,6 @@ export const canonicalEn = {
       compressedStale: 'compressed transcript is stale; reopen the session',
       compressed: '✓ transcript compressed',
       notAvailable: (command: string) => `/${command} is not available on the shared gateway yet`,
-      prefNotSaved: (command: string) => `/${command} applies to this view only; not saved on the shared gateway`,
       launchToolsets: (toolsets: string) => `toolsets fixed at session launch: ${toolsets}`,
       retryUnsupported: '/retry: retry does not support media or unknown content parts'
     },

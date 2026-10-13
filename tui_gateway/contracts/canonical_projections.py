@@ -16,11 +16,15 @@ class CanonicalConfigGetResult(ConfigGetResult):
     scope: str | None = None
 
 
-class CanonicalConfigSetParams(CanonicalSessionParams):
-    """``model`` is recognised only to be refused with ``use_session_mutation_model``: a model pick is
-    the revision-fenced ``session.mutate`` operation, never a config write."""
+class CanonicalConfigSetParams(ProfileParams):
+    """Session controls (``busy`` / ``verbose`` / ``yolo`` / ``show_reasoning`` / ``service_tier``, which
+    need ``session_id``) and the TUI's profile preferences (``gateway/session_tui_config.py``;
+    ``session_id`` optional). ``model`` is recognised only to be refused with
+    ``use_session_mutation_model``: a model pick is the revision-fenced ``session.mutate`` operation,
+    never a config write."""
 
-    key: Literal['busy', 'verbose', 'yolo', 'show_reasoning', 'service_tier', 'model']
+    session_id: str | None = None
+    key: str
     value: JsonValue = None
     confirm_expensive_model: bool | None = None
 
