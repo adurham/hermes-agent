@@ -382,7 +382,7 @@ class MemoryStore:
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars; adding this entry ({len(content)} chars) "
                     f"would exceed the limit by {new_total - limit:,} chars. Retry as ONE 'operations' batch that "
-                    f"removes or shortens (replace) stale entries from current_entries below to free at least "
+                    f"removes or shortens (patch) stale entries from current_entries below to free at least "
                     f"{new_total - limit:,} chars AND adds this entry — the limit is checked only on the batch result."))
             return entries + [content], "Entry added."
         # Append-only: skip the drift guard (appending never clobbers foreign
@@ -505,7 +505,7 @@ class MemoryStore:
                 working.append(content)
             return None, None, "none", None
         if act not in ("replace", "remove", "patch"):
-            return f"{pos}: unknown action. Use add, replace, patch, or remove.", None, "invalid_args", None
+            return f"{pos}: unknown action. Use add, patch, or remove.", None, "invalid_args", None
         if not old_text.strip():
             return f"{pos}: old_text is required.", None, "missing_old_text", None
         if act == "replace" and not content:
@@ -594,7 +594,7 @@ class MemoryStore:
             if new_total > limit:
                 return self._batch_failure(target, (
                     f"Applying all {len(operations)} operations {_over_limit(new_total, limit)} more. Add "
-                    f"removes or shorter replacements of other stale entries to the same batch, then retry."),
+                    f"removes or shortening patches of other stale entries to the same batch, then retry."),
                     "over_budget")
             if not commit:
                 return {"success": True, "matched_entries": matched}

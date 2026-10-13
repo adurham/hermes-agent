@@ -223,7 +223,7 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
     from tools import write_approval as wa
     store, pid = _review_stages_remove(shape)
     newer = "Staging DB: pg-staging-3 (migrated 2026-09-20, creds in vault 'stg')"
-    assert json.loads(memory_tool(action="replace", old_text="pg-staging-2", content=newer, store=store))["success"]
+    assert json.loads(memory_tool(action="patch", old_text=_REVIEWED, content=newer, store=store))["success"]
 
     out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
 

@@ -2,7 +2,7 @@
 """Memory Tool - persistent curated memory (MEMORY.md = agent notes, USER.md = user
 profile). Both enter the system prompt as a FROZEN snapshot at session start;
 mid-session writes hit disk but never change the prompt (prefix cache intact).
-Single `memory` tool: add/replace/remove or a batch `operations` list."""
+Single `memory` tool: add/patch/remove or a batch `operations` list."""
 
 import copy
 import json
@@ -102,7 +102,8 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
                       ensure_ascii=False)
 
 
-# action -> (store call, gate (summary, detail) text) for the live tool path and staged replay.
+# action -> (store call, gate (summary, detail) text) for the live tool path and staged replay
+# ('replace' only replays writes staged before it was removed from the tool).
 _STORE_ACTIONS = {
     "add": (lambda store, target, content, old_text, entry=None: store.add(target, content),
             lambda label, content, old_text: (f"add to {label}", content or "")),
@@ -124,9 +125,7 @@ def _batch_op_line(op: dict[str, Any]) -> str:
         return f"- remove: {old}"
     if act == "patch":
         return f"- patch span '{old}' -> '{content}' (rest of the entry is kept)"
-    # Whole-entry contract (#117952): the approver must not read this as a span patch.
-    return (f"- replace entry matching '{old}' -> whole entry becomes: {content}" if act == "replace"
-            else f"- {act}: {content}")
+    return f"- {act}: {content}"
 
 
 def _apply_write_gate(store: MemoryStore, action: str, target: str, content: Optional[str],
@@ -148,20 +147,14 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     if action == "add" and not content:
         FAILURE_CLASS.set("missing_content")
         return tool_error("Content is required for 'add' action.", success=False)
-    if action in ("replace", "remove", "patch") and not old_text:
+    if action in ("remove", "patch") and not old_text:
         FAILURE_CLASS.set("missing_old_text")
-        replace_hint = (" For 'replace', content is the COMPLETE new entry -- the whole "
-                        "matched entry is overwritten, not just the old_text span."
-                        if action == "replace" else "")
         return json.dumps({
             "success": False,
             "error": (f"'{action}' needs old_text -- a short unique substring of the entry "
                       f"to {action}. None was provided. Reissue the {action} with old_text "
-                      f"set to part of one of the current_entries below.{replace_hint}"),
+                      f"set to part of one of the current_entries below."),
             "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
-    if action == "replace" and not content:
-        FAILURE_CLASS.set("missing_content")
-        return tool_error("content is required for 'replace' action.", success=False)
     if action == "patch" and not content:
         FAILURE_CLASS.set("missing_content")
         return tool_error(f"content (the new text for the old_text span) is required for 'patch' action. "
@@ -169,7 +162,12 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     return None
 
 
+# 'replace' is no longer offered to the model; it stays here so writes staged before its
+# removal still pin, display and replay.
 _BG_DELETE_ACTIONS = ("replace", "remove", "patch")
+_REPLACE_REMOVED = ("'replace' is not available; use 'patch'. old_text is the exact span to change and "
+                    "content is its new text; the rest of the entry is kept. To rewrite a whole entry, "
+                    "set old_text to the whole entry. Nothing was written.")
 
 
 def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -181,7 +179,7 @@ def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
+    stays available (it is all any review prompt asks for), while ``patch``/``remove`` —
     single or inside a batch — are never applied unattended. The op is staged in the pending
     store instead of merely denied: the fork's own review summary is never published back, so
     a plain denial would drop the consolidation request with no surfacing path at all. A
@@ -217,7 +215,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         FAILURE_CLASS.set("gate_refused")
         return tool_error(
-            "Background review may not delete memory entries ('replace'/'remove', including in a "
+            "Background review may not delete memory entries ('patch'/'remove', including in a "
             "batch); 'add' is still available.", success=False)
 
 
@@ -226,8 +224,7 @@ def memory_tool(action: str | None = None, target: str = "memory", content: str 
                 store: Optional[MemoryStore] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
-    aliases ``content`` -- for 'replace' both mean the COMPLETE new entry (the
-    whole matched entry is overwritten; old_text only locates it)."""
+    aliases ``content``."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     token = FAILURE_CLASS.set("other")
@@ -261,6 +258,8 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     if operations:
         if not isinstance(operations, list):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
+        if any(isinstance(op, dict) and op.get("action") == "replace" for op in operations):
+            return _invalid(_REPLACE_REMOVED)
         denied = _background_delete_gate(store, action, operations, target)
         if denied is not None:
             return "rejected", denied
@@ -275,11 +274,13 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     # *why* the call was malformed and can trigger repeated retries. (#64291)
     if not action and not operations:
         return _invalid(
-            "Missing required parameter: provide 'action' (add/replace/patch/remove) "
+            "Missing required parameter: provide 'action' (add/patch/remove) "
             "or 'operations' (batch list). Got neither."
         )
+    if action == "replace":
+        return _invalid(_REPLACE_REMOVED)
     if action not in _STORE_ACTIONS:
-        return _invalid(f"Unknown action '{action}'. Use: add, replace, patch, remove")
+        return _invalid(f"Unknown action '{action}'. Use: add, patch, remove")
     invalid = (_validate_single_op(store, action, target, content, old_text)
                or _background_delete_gate(store, action, None, target, content, old_text)
                or _apply_write_gate(store, action, target, content, old_text))
@@ -372,11 +373,9 @@ MEMORY_SCHEMA = {
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make your changes in ONE call PER STORE via an 'operations' array (each item: "
-        "{action, content?, old_text?}). Always supply target at the top level, never inside "
-        "an operation. Use separate calls for different stores. The batch applies atomically "
-        "and the char limit is "
-        "checked only on the FINAL result — so a single call can remove/replace stale entries "
+        "HOW: make ALL your changes to one target in ONE call via an 'operations' array (each "
+        "item: {action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "checked only on the FINAL result — so a single call can remove/patch stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
@@ -400,28 +399,25 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "patch", "remove"],
-                "description": ("The action to perform (single-op shape). Omit when using 'operations'. "
-                                "'patch' edits ONE SPAN inside the matched entry (old_text -> content, rest of the "
-                                "entry kept) -- prefer it when changing part of a multi-fact entry instead of "
-                                "rewriting the whole entry with 'replace'.")
+                "enum": ["add", "patch", "remove"],
+                "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Required at the top level: 'memory' for personal notes, 'user' for user profile. Applies to every operation in the call; never put target inside an operation."
+                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add', 'replace' and 'patch'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. For 'patch' it is only the NEW SPAN TEXT that replaces old_text inside the matched entry. Alias: 'new_text' is also accepted."
+                "description": "For 'add', the new entry. For 'patch', the text that replaces old_text; the rest of the entry is kept. Alias: 'new_text'."
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace', 'patch' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry ('patch' also replaces exactly this span, which must occur once in the entry; 'replace'/'remove' do not splice it). Omit only for 'add'."
+                "description": "REQUIRED for 'patch' and 'remove': text from one entry. 'patch' replaces exactly this span (it must occur once in the entry); 'remove' deletes the whole entry. Omit for 'add'."
             },
             "new_text": {
                 "type": "string",
-                "description": "Alias for 'content' (single-op shape): the COMPLETE new entry for 'replace', not a patch of old_text. If both are set, 'content' wins."
+                "description": "Alias for 'content'. If both are set, 'content' wins."
             },
             "operations": {
                 "type": "array",
@@ -433,12 +429,13 @@ MEMORY_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["add", "replace", "patch", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten); for patch, the NEW SPAN TEXT replacing old_text inside the entry. Alias: 'new_text'."},
+                        "action": {"type": "string", "enum": ["add", "patch", "remove"]},
+                        "content": {"type": "string", "description": "As 'content' above."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
-                        "old_text": {"type": "string", "description": "Substring identifying the entry for replace/patch/remove; for patch, also the span replaced (must occur once in the entry)."},
+                        "old_text": {"type": "string", "description": "As 'old_text' above."},
                     },
                     "required": ["action"],
+                    "additionalProperties": False,
                 },
             },
         },
