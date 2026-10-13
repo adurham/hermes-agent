@@ -109,6 +109,13 @@ class AuthorityConnection:
         return handlers
 
     async def dispatch(self, request):
+        from gateway.session_sudo_prompt import is_response_frame
+        if is_response_frame(request):
+            # A viewer answering one of the owner's server→client requests (the sudo prompt): a
+            # response gets no reply (JSON-RPC), and only a viewer entitled to respond on that
+            # session settles it.
+            self._resolve_response(request)
+            return None
         rid = request.get('id')
         method = request.get('method')
         params = request.get('params') or {}
@@ -525,6 +532,19 @@ class AuthorityConnection:
         if interrupt_managed(self.authority, self.actor, ref, params.get('execution_generation')):
             return asdict(self.authority._handle(ref))
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
+
+    def _resolve_response(self, frame):
+        from gateway.session_sudo_prompt import resolve
+
+        def entitled(session_id):
+            try:
+                self.authority.authorize(self.actor, SessionRef(self.actor.profile_id, session_id), 'session:respond')
+            except RuntimeStoreError:
+                return False
+            return True
+        if not resolve(frame, session_ok=entitled):
+            import logging
+            logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))
 
     async def respond(self, ref, params):
         if set(params) != {"session_id", "execution_generation", "prompt_id", "choice"}:

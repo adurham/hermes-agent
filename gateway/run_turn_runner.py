@@ -1238,8 +1238,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             persist_msg, persist_ts = self._prepare_turn_message(agent_history)
             compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
             from gateway.session_cli_turn import run_classic_cli_turn
-            result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
-                agent, agent_history, observed_group_context, persist_msg, persist_ts))
+            from gateway.session_sudo_prompt import sudo_prompt_scope
+            with sudo_prompt_scope(self, agent):
+                result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
+                    agent, agent_history, observed_group_context, persist_msg, persist_ts))
         finally:
             if local_sinks is not None:
                 from gateway import local_viewer_events
