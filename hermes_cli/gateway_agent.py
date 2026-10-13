@@ -231,6 +231,35 @@ class GatewayAgent:
             return False
         return (result or {}).get("status") in {"queued", "redirected"}
 
+    def _compress_context(self, messages, system_message=None, *, approx_tokens=None, focus_topic=None,
+                          force=True, verbatim_tail=None, **_kw):
+        """Main's manual ``/compress`` seam (``compress_now``) as ``session.mutate compress``: the
+        gateway summarizes and commits; the returned transcript is the gateway's compacted history.
+        ``verbatim_tail`` rows are stamped as stored, so ``compress_now`` does not rejoin them."""
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from agent.conversation_compression import COMPACTION_STATUS
+        from hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT
+        payload = {}
+        if focus_topic:
+            payload["focus"] = focus_topic
+        if verbatim_tail:
+            payload["partial"] = True
+            payload["keep_last"] = max(1, sum(1 for m in verbatim_tail if m.get("role") == "user"))
+        self._emit_print(COMPACTION_STATUS)
+        snapshot = self.connection.call("session.resume", session_id=self.session_id)
+        self.connection.call("session.mutate", timeout=COMPRESS_RPC_TIMEOUT, session_id=self.session_id,
+                             request_id=uuid.uuid4().hex, expected_revision=snapshot["revision"],
+                             operation="compress", payload=payload)
+        for row in verbatim_tail or ():
+            row[_DB_PERSISTED_MARKER] = True
+        after = self.connection.call("session.resume", session_id=self.session_id)
+        self._state().adopt_snapshot(after)
+        compressor = self.context_compressor
+        compressor.compression_count += 1
+        compressor.last_prompt_tokens = -1
+        self._turn_base_usage_anchor = None
+        return [{k: v for k, v in m.items() if k != "row_id"} for m in after.get("messages") or []], system_message
+
     def steer(self, text):
         return self._correct("steer", text)
 
