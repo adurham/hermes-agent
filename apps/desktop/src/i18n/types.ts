@@ -59,8 +59,6 @@ export type ToolTitleKey =
   | 'read_file'
   | 'search_files'
   | 'session_search_recall'
-  | 'setup_choose'
-  | 'start_chat'
   | 'terminal'
   | 'todo'
   | 'vision_analyze'

@@ -5438,12 +5438,6 @@ export const esOverrides = {
           pending: 'Buscar en el historial de sesiones',
           pendingAction: 'Buscando'
         },
-        setup_choose: {
-          done: 'Hizo una pregunta de configuración',
-          pending: 'Haciendo una pregunta de configuración',
-          pendingAction: 'Preguntando'
-        },
-        start_chat: { done: 'Inició un chat', pending: 'Iniciando un chat', pendingAction: 'Iniciando' },
         terminal: {
           done: 'Comando ejecutado',
           pending: 'Ejecutar comando',

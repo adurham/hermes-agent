@@ -3875,12 +3875,6 @@ export const ruOverrides = {
           pending: 'Ищу в истории сеансов',
           pendingAction: 'Ищу'
         },
-        setup_choose: {
-          done: 'Задан вопрос о настройке',
-          pending: 'Задаю вопрос о настройке',
-          pendingAction: 'Спрашиваю'
-        },
-        start_chat: { done: 'Чат запущен', pending: 'Запускаю чат', pendingAction: 'Запускаю' },
         terminal: { done: 'Команда выполнена', pending: 'Выполняю команду', pendingAction: 'Выполняю' },
         todo: { done: 'Todo обновлены', pending: 'Обновляю todo', pendingAction: 'Обновляю' },
         vision_analyze: {

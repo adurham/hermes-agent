@@ -4924,8 +4924,6 @@ export const en: Translations = {
           pending: 'Searching session history',
           pendingAction: 'Searching'
         },
-        setup_choose: { done: 'Asked a setup question', pending: 'Asking a setup question', pendingAction: 'Asking' },
-        start_chat: { done: 'Started a chat', pending: 'Starting a chat', pendingAction: 'Starting' },
         terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
         todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
         vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },

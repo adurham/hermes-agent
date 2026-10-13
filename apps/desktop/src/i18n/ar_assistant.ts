@@ -185,8 +185,6 @@ export const arAssistant = {
         runningTool: action => `جار تشغيل ${action.toLowerCase()}`
       },
       titles: {
-        setup_choose: { done: 'طرح سؤال إعداد', pending: 'يطرح سؤال إعداد', pendingAction: 'يسأل' },
-        start_chat: { done: 'بدأ محادثة', pending: 'يبدأ محادثة', pendingAction: 'يبدأ' },
         browser_click: {
           done: 'تم النقر على عنصر الصفحة',
           pending: 'جار النقر على عنصر الصفحة',

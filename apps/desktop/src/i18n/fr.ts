@@ -5451,12 +5451,6 @@ export const frOverrides = {
           pending: "Recherche dans l'historique de session en cours",
           pendingAction: 'Recherche en cours'
         },
-        setup_choose: {
-          done: 'Question de configuration posée',
-          pending: 'Pose une question de configuration',
-          pendingAction: 'Question en cours'
-        },
-        start_chat: { done: 'Chat démarré', pending: 'Démarrage d’un chat', pendingAction: 'Démarrage' },
         terminal: {
           done: 'Commande exécutée',
           pending: 'Exécution de la commande en cours',

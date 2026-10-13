@@ -5442,12 +5442,6 @@ export const deOverrides = {
           pending: 'Durchsucht Session-Verlauf',
           pendingAction: 'Durchsucht'
         },
-        setup_choose: {
-          done: 'Einrichtungsfrage gestellt',
-          pending: 'Stellt eine Einrichtungsfrage',
-          pendingAction: 'Fragt'
-        },
-        start_chat: { done: 'Chat gestartet', pending: 'Startet einen Chat', pendingAction: 'Startet' },
         terminal: {
           done: 'Befehl ausgeführt',
           pending: 'Führt Befehl aus',

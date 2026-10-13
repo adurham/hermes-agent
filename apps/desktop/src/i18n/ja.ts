@@ -3660,8 +3660,6 @@ export const jaOverrides = {
           pending: 'セッション履歴を検索中',
           pendingAction: '検索中'
         },
-        setup_choose: { done: '設定の質問をしました', pending: '設定の質問をしています', pendingAction: '質問中' },
-        start_chat: { done: 'チャットを開始しました', pending: 'チャットを開始中', pendingAction: '開始中' },
         terminal: { done: 'コマンドを実行しました', pending: 'コマンドを実行中', pendingAction: '実行中' },
         todo: { done: 'Todo を更新しました', pending: 'Todo を更新中', pendingAction: '更新中' },
         vision_analyze: { done: '画像を分析しました', pending: '画像を分析中', pendingAction: '分析中' },
