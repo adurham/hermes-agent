@@ -115,7 +115,7 @@ def is_enabled() -> bool:
         return False
 
 
-def _get_extraction_config() -> Dict[str, Any]:
+def _get_extraction_config() -> dict[str, Any]:
     """Read auxiliary.memory_extraction.* config with defaults.
 
     Two ``auxiliary`` schemas are supported:
@@ -200,7 +200,7 @@ def _call_extraction_llm(
     """
     from agent.auxiliary_client import call_llm
     cfg = _get_extraction_config()
-    call_kwargs: Dict[str, Any] = {
+    call_kwargs: dict[str, Any] = {
         "task": "memory_extraction",
         "messages": [
             {"role": "system", "content": system},
@@ -239,7 +239,7 @@ def _call_extraction_llm(
         content = str(content) if content else ""
     # Telemetry: log token usage
     _log_telemetry({
-        "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "ts": _dt.datetime.now(_dt.UTC).isoformat(),
         "max_tokens": max_tokens,
         "input_chars": len(system) + len(user),
         "output_chars": len(content),
@@ -272,7 +272,7 @@ def _call_extraction_llm(
     return content.strip()
 
 
-def _maybe_extract_usage(response: Any) -> Optional[Dict[str, int]]:
+def _maybe_extract_usage(response: Any) -> Optional[dict[str, int]]:
     try:
         usage = getattr(response, "usage", None)
         if usage is None:
@@ -286,7 +286,7 @@ def _maybe_extract_usage(response: Any) -> Optional[Dict[str, int]]:
         return None
 
 
-def _log_telemetry(record: Dict[str, Any]) -> None:
+def _log_telemetry(record: dict[str, Any]) -> None:
     """Append a one-line jsonl record to memory_extraction.log."""
     try:
         from hermes_constants import get_hermes_home
@@ -363,7 +363,7 @@ def on_turn_end(
 
 def on_pre_compress(
     session_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
 ) -> None:
     """Pre-compress extraction. Runs inline on the compression slow path.
 
@@ -427,8 +427,8 @@ _CLEANUP_CANDIDATE_LIMIT = 25
 
 
 def _cleanup_seed_text(
-    messages: List[Dict[str, Any]],
-    entries: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
+    entries: list[dict[str, Any]],
 ) -> str:
     """Build the FTS5 seed describing what this session was about.
 
@@ -436,7 +436,7 @@ def _cleanup_seed_text(
     content, so they lead. The tail of the conversation backfills topics that
     didn't produce a proposal.
     """
-    parts: List[str] = [str(e.get("content") or "") for e in entries]
+    parts: list[str] = [str(e.get("content") or "") for e in entries]
     for msg in reversed(messages or []):
         if not isinstance(msg, dict):
             continue
@@ -451,10 +451,10 @@ def _cleanup_seed_text(
 
 
 def _gather_cleanup_candidates(
-    messages: List[Dict[str, Any]],
-    entries: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
+    entries: list[dict[str, Any]],
     warm_store: Any,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Recall existing warm facts topically related to this session."""
     seed = _cleanup_seed_text(messages, entries)
     if not seed.strip():
@@ -464,7 +464,7 @@ def _gather_cleanup_candidates(
     except Exception as e:
         logger.debug("memory cleanup: recall_related failed: %s", e)
         return []
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     seen: set = set()
     for row in rows or []:
         fact_id = row.get("fact_id")
@@ -476,13 +476,13 @@ def _gather_cleanup_candidates(
 
 
 def propose_cleanup(
-    messages: List[Dict[str, Any]],
-    entries: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
+    entries: list[dict[str, Any]],
     *,
     warm_store: Any = None,
     llm_caller: Any = None,
     max_tokens: int = 1024,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Propose cleanup actions on EXISTING warm facts for this session.
 
     Returns a list of action dicts, each annotated with the existing fact's
@@ -528,7 +528,7 @@ def propose_cleanup(
         response_text, valid_fact_ids=set(by_id.keys()),
     )
 
-    annotated: List[Dict[str, Any]] = []
+    annotated: list[dict[str, Any]] = []
     for action in actions:
         source = by_id.get(action["fact_id"])
         if source is None:
@@ -555,10 +555,10 @@ def propose_cleanup(
 
 
 def apply_cleanup_action(
-    action: Dict[str, Any],
+    action: dict[str, Any],
     *,
     warm_store: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Apply one approved cleanup action to the warm tier.
 
     ``remove`` deletes the fact. ``merge`` writes the merged text onto the
@@ -606,8 +606,8 @@ def apply_cleanup_action(
 
 def _invoke_confirm_callback(
     confirm_callback: Callable[..., Any],
-    entries: List[Dict[str, Any]],
-    cleanup: List[Dict[str, Any]],
+    entries: list[dict[str, Any]],
+    cleanup: list[dict[str, Any]],
 ) -> tuple:
     """Call the confirm callback and normalize its return value.
 
@@ -637,11 +637,11 @@ def _invoke_confirm_callback(
 
 def on_session_end(
     session_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     *,
     interactive: bool = False,
     confirm_callback: Optional[Callable[..., Any]] = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Session-end extraction + commit.
 
     Args:
@@ -679,7 +679,7 @@ def on_session_end(
     Failures degrade gracefully — on any error the buffer is preserved
     so the next session can retry.
     """
-    summary: Dict[str, Any] = {
+    summary: dict[str, Any] = {
         "session_id": session_id,
         "buffered": 0,
         "final_proposed": 0,
@@ -700,7 +700,7 @@ def on_session_end(
     cfg = _get_extraction_config()
 
     # Step 1: final extraction pass — reconcile buffer + final messages.
-    final_entries: List[Dict[str, Any]] = []
+    final_entries: list[dict[str, Any]] = []
     try:
         response_text = _call_extraction_llm(
             system=_prompts.SESSION_END_SYSTEM,
@@ -723,7 +723,7 @@ def on_session_end(
     # above, unconditionally auto-applied immediately below (Step 1c)
     # regardless of interactive/confirm_callback/auto_commit_session_end —
     # there is no review gate on cleanup anymore.
-    cleanup_proposals: List[Dict[str, Any]] = []
+    cleanup_proposals: list[dict[str, Any]] = []
     try:
         cleanup_proposals = propose_cleanup(messages or [], final_entries)
     except Exception as e:

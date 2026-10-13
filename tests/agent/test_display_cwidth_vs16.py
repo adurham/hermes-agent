@@ -159,7 +159,7 @@ class TestNoRegisteredEmojiUsesVS16:
     def _registry_vs16_offenders(self):
         # Import first: tool discovery runs on model_tools import, and
         # without it ``registry._tools`` is empty (making the scan vacuous).
-        import model_tools  # noqa: F401
+        import model_tools
         from tools.registry import discover_builtin_tools, registry
 
         if not registry._tools:
@@ -174,7 +174,7 @@ class TestNoRegisteredEmojiUsesVS16:
     def test_tool_registry_is_actually_populated(self):
         # Guards the guard: an empty registry means the emoji scan below can
         # never fail -- which is exactly how the VS-16 regression survived.
-        import model_tools  # noqa: F401
+        import model_tools
         from tools.registry import discover_builtin_tools, registry
 
         if not registry._tools:
@@ -213,7 +213,7 @@ class TestNoRegisteredEmojiUsesVS16:
         # drive_preview/desktop_preview were never covered). Assert each is
         # in the live registry with its bare base codepoint, so a merge that
         # drops the strip fails here even if the broad scan is bypassed.
-        import model_tools  # noqa: F401
+        import model_tools
         from tools.registry import registry
 
         expected = {

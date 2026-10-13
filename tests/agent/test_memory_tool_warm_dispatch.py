@@ -61,7 +61,7 @@ class TestMemoryRecallForwardsQuery:
         """_invoke_tool must pass `query` through to memory_tool for recall."""
         agent = _make_agent()
 
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
 
         def _stub_memory_tool(**kwargs) -> str:
             captured.update(kwargs)
@@ -91,7 +91,7 @@ class TestMemoryRecallForwardsQuery:
         """Every warm-tier kwarg in function_args must reach memory_tool."""
         agent = _make_agent()
 
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
 
         def _stub_memory_tool(**kwargs) -> str:
             captured.update(kwargs)
@@ -116,7 +116,7 @@ class TestMemoryRecallForwardsQuery:
         """Hot-tier `add` path must still reach memory_tool with target/content."""
         agent = _make_agent()
 
-        captured: Dict[str, Any] = {}
+        captured: dict[str, Any] = {}
 
         def _stub_memory_tool(**kwargs) -> str:
             captured.update(kwargs)

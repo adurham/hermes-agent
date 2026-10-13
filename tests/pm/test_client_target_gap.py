@@ -18,7 +18,7 @@ def _isolate_store(monkeypatch, tmp_path):
     probes ``repo_root().parent/manifest.json``, which the repo's home-I/O
     guard refuses in tests.
     """
-    import pm.paths as paths
+    from pm import paths
 
     store = tmp_path / "store"
     store.mkdir(exist_ok=True)

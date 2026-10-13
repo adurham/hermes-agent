@@ -200,8 +200,7 @@ def row_activity(row, width=None):
     glyph = _STATUS_GLYPH.get(status, '🔀')
     count = row.get('tool_count')
     tool = str(row.get('last_tool') or '').strip()
-    if tool.startswith('mcp_'):
-        tool = tool[4:]
+    tool = tool.removeprefix('mcp_')
 
     # (segment, droppable) in render order; dropped right-to-left by priority.
     tally = f"{count} tool{'' if count == 1 else 's'}" if isinstance(count, int) else None

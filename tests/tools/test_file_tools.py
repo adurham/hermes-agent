@@ -540,7 +540,7 @@ class TestCCArgSlipThroughGuards:
             result = json.loads(_handle_search_files({"pattern": "foo", "path": "/tmp"}))
         assert "matches" in result
         mock_search.assert_called_once()
-        args, kwargs = mock_search.call_args
+        _args, kwargs = mock_search.call_args
         assert kwargs["pattern"] == "foo"
         assert kwargs["path"] == "/tmp"
 
@@ -1062,7 +1062,7 @@ class TestSecretFileReadRedaction:
     @pytest.fixture
     def hermes_home(self, tmp_path, monkeypatch):
         """A Hermes home with no ``.hermes`` segment, like ``%LOCALAPPDATA%\\hermes``."""
-        import agent.file_safety as file_safety
+        from agent import file_safety
 
         home = tmp_path / "hermes"
         home.mkdir()

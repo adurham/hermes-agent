@@ -34,7 +34,7 @@ _DEFAULT_MAX_CHARS = 2000
 # ---------------------------------------------------------------------------
 
 
-def _fetch_warm_fact(fact_id: int) -> Optional[Dict[str, Any]]:
+def _fetch_warm_fact(fact_id: int) -> Optional[dict[str, Any]]:
     """Return the warm-tier row for ``fact_id`` or ``None``.
 
     Best-effort: any DB / import failure returns None and the caller
@@ -59,7 +59,7 @@ def _total_pinned_chars(agent) -> int:
     return sum(len(row.get("content", "") or "") for row in pinned.values())
 
 
-def pin_fact(agent, fact_id: int) -> Dict[str, Any]:
+def pin_fact(agent, fact_id: int) -> dict[str, Any]:
     """Pin a warm fact to the session prompt.
 
     Returns a status dict with ``success`` and either ``message`` or
@@ -75,7 +75,7 @@ def pin_fact(agent, fact_id: int) -> Dict[str, Any]:
     except (TypeError, ValueError):
         return {"success": False, "error": "fact_id must be an integer."}
 
-    pinned: Optional[Dict[int, Dict[str, Any]]] = getattr(
+    pinned: Optional[dict[int, dict[str, Any]]] = getattr(
         agent, "_session_pinned_facts", None,
     )
     if pinned is None:
@@ -123,7 +123,7 @@ def pin_fact(agent, fact_id: int) -> Dict[str, Any]:
         # We can choose to evict oldest pins to make room — same LRU
         # logic as count-based eviction. Walk in insertion order until
         # the new fact fits OR we'd evict everything.
-        evicted: List[int] = []
+        evicted: list[int] = []
         for evict_id in list(pinned.keys()):
             if _total_pinned_chars(agent) + incoming <= max_chars:
                 break
@@ -157,7 +157,7 @@ def pin_fact(agent, fact_id: int) -> Dict[str, Any]:
     }
 
     msg = f"Pinned fact {fact_id} to this session."
-    out: Dict[str, Any] = {
+    out: dict[str, Any] = {
         "success": True,
         "fact_id": fact_id,
         "message": msg,
@@ -169,7 +169,7 @@ def pin_fact(agent, fact_id: int) -> Dict[str, Any]:
     return out
 
 
-def unpin_fact(agent, fact_id: int) -> Dict[str, Any]:
+def unpin_fact(agent, fact_id: int) -> dict[str, Any]:
     """Remove a session pin.
 
     Soft no-op when the fact isn't pinned — returns success=False with
@@ -180,7 +180,7 @@ def unpin_fact(agent, fact_id: int) -> Dict[str, Any]:
     except (TypeError, ValueError):
         return {"success": False, "error": "fact_id must be an integer."}
 
-    pinned: Optional[Dict[int, Dict[str, Any]]] = getattr(
+    pinned: Optional[dict[int, dict[str, Any]]] = getattr(
         agent, "_session_pinned_facts", None,
     )
     if not pinned or fact_id not in pinned:
@@ -198,7 +198,7 @@ def unpin_fact(agent, fact_id: int) -> Dict[str, Any]:
     }
 
 
-def list_pinned(agent) -> Dict[str, Any]:
+def list_pinned(agent) -> dict[str, Any]:
     """Return the list of currently pinned facts in pin order."""
     pinned = getattr(agent, "_session_pinned_facts", None) or {}
     rows = list(pinned.values())
@@ -236,7 +236,7 @@ def render_pinned_block(agent) -> Optional[str]:
     header = (
         f"SESSION-PINNED FACTS ({len(pinned)} pinned, {total:,} chars)"
     )
-    body_lines: List[str] = []
+    body_lines: list[str] = []
     for fact_id, row in pinned.items():
         content = (row.get("content") or "").strip()
         trust = row.get("trust_score")

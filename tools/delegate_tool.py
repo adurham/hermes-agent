@@ -18,46 +18,44 @@ import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
+from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
 # The delegate_tool_* siblings hold the pieces split out of this module; every name callers or patching tests reach as
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
-from tools.delegate_tool_child_run import (  # noqa: F401
+from tools.delegate_tool_child_run import (
     _ChildRun, _attach_child, _build_child_goal_message,
     _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry, _record_delegation_stat,
     _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
 )
-from tools.delegate_tool_config import (  # noqa: F401
+from tools.delegate_tool_config import (
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
 )
-from tools.delegate_tool_dispatch import (  # noqa: F401
-    _Batch, _announce_batch, _capture_origin, _run_batch,
-)
-from tools.delegate_tool_progress import (  # noqa: F401
+from tools.delegate_tool_dispatch import _Batch, _announce_batch, _capture_origin, _run_batch
+from tools.delegate_tool_progress import (
     DelegateEvent, SUBAGENT_FAILURE_STATUSES, _batch_prefix, _build_child_progress_callback,
     _build_child_system_prompt, _clean_error_text, _emit_parent_console, _quiet, _resolve_workspace_hint,
     _safe_progress, format_batch_tag, format_subagent_failure_line,
 )
-from tools.delegate_tool_registry import (  # noqa: F401
+from tools.delegate_tool_registry import (
     _CONTROL_ACTIONS, _active_subagents, _active_subagents_lock, _capture_gateway_steer_authority,
     _handle_control_action, _is_descendant_of, _owns_subagent_record, _register_subagent, _unregister_subagent,
     get_subagent_attribution, interrupt_subagent, is_spawn_paused, list_active_subagents, set_spawn_paused,
     steer_subagent,
 )
-from tools.delegate_tool_tasks import (  # noqa: F401
+from tools.delegate_tool_tasks import (
     _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
 )
-from tools.delegate_tool_toolsets import (  # noqa: F401
+from tools.delegate_tool_toolsets import (
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
 )
-from tools.delegate_tool_results import (  # noqa: F401
+from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _MIN_SUMMARY_CHARS, _parent_summary_char_budget,
     _run_child_lifecycle, _summarize_tool_arguments,
 )
@@ -159,7 +157,7 @@ def _apply_child_cache_ttl(child) -> None:
 _CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
 
 
-def _child_compression_cap_tokens(raw) -> "int | None":
+def _child_compression_cap_tokens(raw) -> int | None:
     """Validated ``delegation.compression_threshold_tokens``: an int >= 16000, or None for "no cap".
 
     Unset / ``0`` / ``false`` / ``null`` mean no subagent-specific cap: the child compacts at the
@@ -200,7 +198,7 @@ def _build_child_agent(
     task_index: int,
     goal: str,
     context: Optional[str],
-    toolsets: Optional[List[str]],
+    toolsets: Optional[list[str]],
     model: Optional[str],
     max_iterations: int,
     task_count: int,
@@ -210,14 +208,14 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    override_request_overrides: Optional[Dict[str, Any]] = None,
+    override_request_overrides: Optional[dict[str, Any]] = None,
     # Per-role max output tokens: a role pinned to another provider carries that
     # provider's own max_output_tokens, which must not be replaced by the parent's.
     override_max_tokens: Optional[int] = None,
 
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
-    override_acp_args: Optional[List[str]] = None,
+    override_acp_args: Optional[list[str]] = None,
     # Per-role fallback (delegation.model_by_role.<role>.fallback): a ONE-ENTRY runtime
     # fallback chain (the same {provider, model, ...} shape AIAgent.fallback_model accepts),
     # carrying THIS role's own fallback bundle. When given (even as an empty list) it
@@ -225,11 +223,11 @@ def _build_child_agent(
     # it — a role's fallback is independent of whatever the parent session happens to use.
     # ``None`` (the default, what every pre-existing caller passes) leaves the existing
     # precedence untouched, so this parameter is purely additive.
-    override_fallback_chain: Optional[List[Dict[str, Any]]] = None,
+    override_fallback_chain: Optional[list[dict[str, Any]]] = None,
     # Configuration block that owns the selected provider/model route. Internal
     # callers such as /review pass auxiliary.review here so fallback policy is
     # not accidentally read from the general delegation block.
-    routing_cfg: Optional[Dict[str, Any]] = None,
+    routing_cfg: Optional[dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
     # Optional ruflo agent persona (e.g. "researcher", "code-analyzer").
@@ -324,11 +322,11 @@ def _build_child_agent(
 
     # Shared ref: session_id once the child exists, delegation_id once
     # delegate_task stamps it — both ride on every relayed event.
-    child_session_ref: Dict[str, Any] = {}
+    child_session_ref: dict[str, Any] = {}
     # Same late-binding slot for the child object itself: the relay is built before the
     # child exists, and every relayed event re-reads its LIVE model/provider so a mid-run
     # failover shows up on the wire instead of the dispatch-time snapshot.
-    child_agent_ref: Dict[str, Any] = {}
+    child_agent_ref: dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
         depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
@@ -458,7 +456,7 @@ def _build_child_agent(
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
     owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run a pre-built child agent (called from a worker thread) and return its result entry.
 
     Contract, derived from the child's structured completion fields:
@@ -543,7 +541,7 @@ def _resolve_role_credentials(entry: dict, parent_agent, cache: dict) -> dict:
     Raises ValueError (never swallowed) when resolution fails — the caller must refuse
     the spawn rather than silently fall back.
     """
-    synthetic_cfg: Dict[str, Any] = {"model": entry.get("model"), "provider": entry.get("provider")}
+    synthetic_cfg: dict[str, Any] = {"model": entry.get("model"), "provider": entry.get("provider")}
     for key in ("base_url", "api_key", "api_mode"):
         value = entry.get(key)
         if value:
@@ -559,7 +557,7 @@ def _resolve_role_credentials(entry: dict, parent_agent, cache: dict) -> dict:
     return resolved
 
 
-def _load_role_maps() -> tuple[Dict[str, Any], Dict[str, Any]]:
+def _load_role_maps() -> tuple[dict[str, Any], dict[str, Any]]:
     """``(role_model_map, role_entry_map)`` for one delegate_task call.
 
     Two independent guards on purpose: a missing/failing entry-map API must never take
@@ -580,8 +578,8 @@ def _load_role_maps() -> tuple[Dict[str, Any], Dict[str, Any]]:
 
 
 def _auto_route_batch(
-    task_list, role_model_map, cfg, creds, parent_agent, diagnostics: Optional[Dict[str, Any]] = None,
-) -> Dict[int, Dict[str, Any]]:
+    task_list, role_model_map, cfg, creds, parent_agent, diagnostics: Optional[dict[str, Any]] = None,
+) -> dict[int, dict[str, Any]]:
     """Auto-route verdicts for the whole batch in ONE classifier call.
 
     Serves two distinct populations (see tools/delegation_router.py's module docstring):
@@ -616,7 +614,7 @@ def _auto_route_batch(
         return {}
 
 
-def _auto_route_skip_cause(diagnostics: Optional[Dict[str, Any]]) -> str:
+def _auto_route_skip_cause(diagnostics: Optional[dict[str, Any]]) -> str:
     """Human-readable reason auto-route produced no routing decision, or "" when it
     produced routes / was never asked. Built from ``route_task_models``'s diagnostics
     so the delegation result NAMES the cause instead of only the fallback that ran."""
@@ -659,7 +657,7 @@ def _persona_exists(name: str) -> bool:
 
 def _resolve_task_routes(
     task_list, creds, *, cfg, parent_agent, top_role, roster_warnings,
-) -> tuple[List[Dict[str, Any]], Optional[str]]:
+) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Per-task routing decisions for a whole batch, resolved BEFORE any child is built.
 
     Returns ``(routes, None)`` — one dict per task carrying its final ``agent_type``,
@@ -673,7 +671,7 @@ def _resolve_task_routes(
       → auto-route tier→role→model → ``delegation.model``/``by_provider`` → parent's model
     """
     role_model_map, role_entry_map = _load_role_maps()
-    auto_route_diag: Dict[str, Any] = {}
+    auto_route_diag: dict[str, Any] = {}
     auto_routes = _auto_route_batch(task_list, role_model_map, cfg, creds, parent_agent, auto_route_diag)
     # The literal agent_type meaning "auto-route this task" — imported from the router
     # (single source of truth) with a literal fallback so a partially-loaded router
@@ -683,8 +681,8 @@ def _resolve_task_routes(
     except Exception:
         AUTO_AGENT_TYPE = "auto"
 
-    role_creds_cache: Dict[tuple, dict] = {}
-    routes: List[Dict[str, Any]] = []
+    role_creds_cache: dict[tuple, dict] = {}
+    routes: list[dict[str, Any]] = []
     for i, t in enumerate(task_list):
         effective_role = _normalize_role(t.get("role") or top_role)
         # agent_type="auto" is NOT a persona: it is the explicit opt-in to auto-routing,
@@ -796,7 +794,7 @@ def _resolve_task_routes(
         auto_route_model = route.get("model") if (route and not stated_survived) else None
 
         task_creds = creds
-        task_fallback_chain: Optional[List[Dict[str, Any]]] = None
+        task_fallback_chain: Optional[list[dict[str, Any]]] = None
         role_entry = role_entry_map.get(role_cfg_key) if role_cfg_key else None
         role_provider = str(role_entry.get("provider") or "").strip() if isinstance(role_entry, dict) else ""
         # Per-role fallback: a second full {model, provider, ...} bundle, consulted at
@@ -925,11 +923,11 @@ def _resolve_task_routes(
 
 
 def _build_children(
-    task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
-    top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
-    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
-    cfg: Optional[Dict[str, Any]] = None, roster_warnings: Optional[List[str]] = None,
-) -> tuple[List[tuple], Optional[str]]:
+    task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
+    top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
+    live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
+    cfg: Optional[dict[str, Any]] = None, roster_warnings: Optional[list[str]] = None,
+) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
@@ -999,7 +997,7 @@ def _build_children(
             child.tool_progress_callback = wrap_progress_callback(getattr(child, "tool_progress_callback", None), _writer)
             child._live_transcript_path = str(_writer.path)
         if live_deleg_id:
-            setattr(child, "_delegation_id", live_deleg_id)
+            child._delegation_id = live_deleg_id
             _ident_ref = getattr(child, "_progress_identity_ref", None)
             if isinstance(_ident_ref, dict):
                 _ident_ref["delegation_id"] = live_deleg_id
@@ -1026,8 +1024,8 @@ def _normalize_roster_model(model: Any) -> Optional[str]:
 
 
 def _build_model_roster(
-    cfg: Dict[str, Any], creds: Dict[str, Any], parent_agent
-) -> tuple[Set[str], bool]:
+    cfg: dict[str, Any], creds: dict[str, Any], parent_agent
+) -> tuple[set[str], bool]:
     """Build the 'known current models' roster for one delegate_task call.
 
     Returns ``(known_models, has_config_roster)`` where ``known_models`` is
@@ -1049,7 +1047,7 @@ def _build_model_roster(
     Every lookup is individually exception-guarded so a broken config can
     never take delegation down.
     """
-    known: Set[str] = set()
+    known: set[str] = set()
     has_config_roster = False
 
     # (a) delegation.by_provider.<p>.model for every provider block.
@@ -1117,9 +1115,9 @@ def _build_model_roster(
 
 
 def _guard_task_models(
-    task_list: List[Dict[str, Any]], *, depth: int, known_models: Set[str],
-    has_config_roster: bool, roster_warnings: List[str],
-) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    task_list: list[dict[str, Any]], *, depth: int, known_models: set[str],
+    has_config_roster: bool, roster_warnings: list[str],
+) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Validate caller-supplied ``model=`` strings against the live config roster at EVERY
     delegation depth; ``(guarded_task_list, None)`` or ``([], error)``.
 
@@ -1136,7 +1134,7 @@ def _guard_task_models(
     the roster — they fire unconditionally. Builds a FRESH list so a model-drop never
     rewrites the caller's own task dicts.
     """
-    guarded: List[Dict[str, Any]] = []
+    guarded: list[dict[str, Any]] = []
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             guarded.append(task)
@@ -1209,12 +1207,12 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
 
 
 def delegate_task(
-    goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
+    goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[list[dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     model: Optional[str] = None, agent_type: Optional[str] = None,
-    output_schema: Optional[Dict[str, Any]] = None, images: Optional[List[str]] = None, action: Optional[str] = None,
+    output_schema: Optional[dict[str, Any]] = None, images: Optional[list[str]] = None, action: Optional[str] = None,
     subagent_id: Optional[str] = None, message: Optional[str] = None, parent_agent=None,
-    credentials_cfg: Optional[Dict[str, Any]] = None, cancel: Optional[str] = None,
+    credentials_cfg: Optional[dict[str, Any]] = None, cancel: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -1357,7 +1355,7 @@ def delegate_task(
     # (e.g. a deprecated slug typed from assistant memory) was silently accepted and a
     # real subagent ran on it. Warnings ride the same channel as the routing decisions
     # below, so they land in BOTH the immediate response and the completion event.
-    _roster_warnings: List[str] = []
+    _roster_warnings: list[str] = []
     _known_models, _has_config_roster = _build_model_roster(cfg, creds, parent_agent)
     if not _has_config_roster:
         logger.debug("delegate_task: no config model roster found; depth-0 model roster validation skipped (fail-open)")

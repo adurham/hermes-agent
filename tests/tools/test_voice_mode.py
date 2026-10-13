@@ -97,7 +97,7 @@ def fake_clock(monkeypatch):
     """
     import time as real_time
 
-    import tools.voice_mode as voice_mode
+    from tools import voice_mode
 
     clock = _FakeTime(real_time)
     monkeypatch.setattr(voice_mode, "time", clock)
@@ -686,7 +686,7 @@ class TestPlayBeep:
     def test_beep_calls_sounddevice_play(self, mock_sd, monkeypatch):
         np = pytest.importorskip("numpy")
 
-        import tools.voice_mode as voice_mode
+        from tools import voice_mode
         from tools.voice_mode import play_beep
 
         # Fork gates sounddevice OUTPUT off on macOS (TCC safety — beeps route

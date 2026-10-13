@@ -216,7 +216,7 @@ def test_group_by_category_preserves_within_group_order(fake_ruflo: Path):
 def test_get_role_model_map_empty_when_no_delegation(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
-        lambda: {},
+        dict,
     )
     assert ruflo_agents.get_role_model_map() == {}
 
@@ -263,7 +263,7 @@ def test_get_role_model_map_filters_non_string_values(monkeypatch):
 
 def test_set_role_model_writes_through(monkeypatch, tmp_path):
     """`set_role_model` writes to the active config.yaml via the inline saver."""
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     # Redirect HERMES_HOME so the inline saver writes to a tmp file, not
     # the real ~/.hermes/config.yaml.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -315,7 +315,7 @@ def test_lookup_model_for_role_returns_none_when_unset(monkeypatch):
 def test_get_role_reasoning_map_empty_when_no_delegation(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
-        lambda: {},
+        dict,
     )
     assert ruflo_agents.get_role_reasoning_map() == {}
 
@@ -364,7 +364,7 @@ def test_get_role_reasoning_map_filters_non_string_values(monkeypatch):
 
 def test_set_role_reasoning_writes_through(monkeypatch, tmp_path):
     """`set_role_reasoning` writes to the active config.yaml via the inline saver."""
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert ruflo_agents.set_role_reasoning("orchestrator", "max") is True
     written = (tmp_path / "config.yaml").read_text(encoding="utf-8")

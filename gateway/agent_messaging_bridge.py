@@ -103,7 +103,7 @@ class _GatewayPendingInputSink:
             )
             return
 
-        def _log_outcome(fut: "asyncio.Future") -> None:
+        def _log_outcome(fut: asyncio.Future) -> None:
             try:
                 result = fut.result()
             except Exception:
@@ -134,7 +134,7 @@ class GatewaySessionAgentSink:
     gateway's real per-session state rather than duplicated here.
     """
 
-    __slots__ = ("_runner", "_session_key", "_pending_input")
+    __slots__ = ("_pending_input", "_runner", "_session_key")
 
     def __init__(self, runner: Any, session_key: str) -> None:
         self._runner = runner

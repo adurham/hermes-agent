@@ -48,7 +48,7 @@ class _FakeAsyncResp:
 class _FakeAsyncClient:
     def __init__(self, *, response: _FakeAsyncResp):
         self._response = response
-        self.calls: List[Dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
     async def __aenter__(self):
         return self
@@ -130,7 +130,7 @@ async def test_submit_via_local_api_returns_none_on_5xx(monkeypatch):
 class _ReplayingAsyncClient:
     """AsyncClient that returns a fixed list of responses one per .get() call."""
 
-    def __init__(self, responses: List[_FakeAsyncResp]):
+    def __init__(self, responses: list[_FakeAsyncResp]):
         self._responses = list(responses)
         self.call_count = 0
 

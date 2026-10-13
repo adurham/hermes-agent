@@ -297,7 +297,7 @@ class TestSchemaAndRegistration:
 
     def test_tool_registered(self):
         from tools import registry as r
-        import tools.skills_tool  # noqa: F401 -- trigger registration
+        import tools.skills_tool  # trigger registration
 
         entry = r.registry.get_entry("skill_pitfalls")
         assert entry is not None
@@ -305,7 +305,7 @@ class TestSchemaAndRegistration:
 
     def test_dispatch_via_registry(self, fake_skills):
         from tools import registry as r
-        import tools.skills_tool  # noqa: F401
+        import tools.skills_tool
 
         result = r.registry.dispatch("skill_pitfalls", {"name": "has-pitfalls"})
         parsed = json.loads(result)

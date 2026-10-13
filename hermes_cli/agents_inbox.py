@@ -49,7 +49,7 @@ def _preview(body: Any) -> str:
     return text[:_PREVIEW_CHARS] + "…"
 
 
-def _format_rows(rows: List[Dict[str, Any]], *, held_only: bool) -> str:
+def _format_rows(rows: list[dict[str, Any]], *, held_only: bool) -> str:
     if not rows:
         scope = "held for approval" if held_only else "in the inbox"
         return (

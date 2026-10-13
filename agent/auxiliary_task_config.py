@@ -13,7 +13,7 @@ from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 
-def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> Dict[str, Any]:
+def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dict[str, Any]:
     """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
     declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG.
     A task registered with ``inherit_from`` is resolved here, at read time, over the base task's
@@ -55,7 +55,7 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> Dic
     return _apply_singular_aux_fallback_shorthand(task_config)
 
 
-def _own_task_config(task: str, aux: Dict[str, Any], config: Any) -> Dict[str, Any]:
+def _own_task_config(task: str, aux: dict[str, Any], config: Any) -> dict[str, Any]:
     """FORK: the task's own ``auxiliary`` entry, flattened to the legacy task-first shape.
 
     Two ``auxiliary`` schemas are supported transparently, always returning the same flat
@@ -99,7 +99,7 @@ _AUX_ROUTE_KEYS = frozenset({"provider", "model", "base_url", "api_key", "api_mo
                              "api_key_env", "reasoning_effort"})
 
 
-def _layer_over_inherited(inherited: Dict[str, Any], user: Dict[str, Any]) -> Dict[str, Any]:
+def _layer_over_inherited(inherited: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     """Merge a task's own ``auxiliary.<task>`` block over its inherited base.
 
     The picker, "reset to auto" and the dashboard persist ``provider: auto`` plus ``""`` for

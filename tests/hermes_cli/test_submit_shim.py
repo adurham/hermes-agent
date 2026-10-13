@@ -43,7 +43,7 @@ def _run(capsys, **kw) -> str:
 def test_submit_module_is_gone():
     """The implementation is deleted, not merely unreferenced."""
     with pytest.raises(ImportError):
-        import hermes_cli.submit  # noqa: F401
+        import hermes_cli.submit
 
 
 def test_shim_names_the_replacement_command(capsys):

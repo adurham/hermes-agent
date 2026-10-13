@@ -71,7 +71,7 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
     # raising stub, because ``speak_text`` wraps its whole body in
     # ``except Exception`` and would swallow an AssertionError, quietly
     # turning this test green whether or not the guard is doing anything.
-    import tools.tts_tool as tts_tool
+    from tools import tts_tool
 
     calls = []
     monkeypatch.setattr(
@@ -108,7 +108,7 @@ def test_voice_env_does_not_leak_into_the_next_test():
 
 def test_guard_can_be_opted_out_of_explicitly():
     """The stub is a guard, not a lobotomy — the real function is reachable."""
-    import hermes_cli.voice as voice
+    from hermes_cli import voice
 
     assert voice.speak_text.__name__ == "_blocked_speak_text"
 
@@ -119,7 +119,7 @@ def test_bypass_marker_restores_the_real_speak_text():
 
     Asserts identity only — it does not call it, which would speak aloud.
     """
-    import hermes_cli.voice as voice
+    from hermes_cli import voice
 
     assert voice.speak_text.__name__ == "speak_text"
 
@@ -137,7 +137,7 @@ def test_source_module_play_audio_file_is_blocked_too():
 
     This calls the source module directly, exactly as those call sites do.
     """
-    import tools.voice_mode as voice_mode
+    from tools import voice_mode
 
     assert voice_mode.play_audio_file("/tmp/does-not-matter.wav") is False
 
@@ -153,6 +153,6 @@ def test_text_to_speech_tool_itself_is_left_unstubbed_by_design():
     local-speaker path (``tools.voice_mode.play_audio_file``, asserted
     above) is the actual vulnerability.
     """
-    import tools.tts_tool as tts_tool
+    from tools import tts_tool
 
     assert tts_tool.text_to_speech_tool.__name__ == "text_to_speech_tool"

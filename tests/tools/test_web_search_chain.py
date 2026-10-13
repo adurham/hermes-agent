@@ -31,7 +31,7 @@ from tests.tools.conftest import register_all_web_providers
 class TestGetSearchChain:
     def test_returns_empty_when_unset(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.web_tools._load_web_config", lambda: {}
+            "tools.web_tools._load_web_config", dict
         )
         from tools.web_tools import _get_search_chain
         assert _get_search_chain() == ()

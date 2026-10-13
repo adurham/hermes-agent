@@ -73,7 +73,7 @@ class TestConsultToolGracefulDegradation:
             result = json.loads(consult_tool("q"))
         assert result["unavailable"] is True
         assert result["answer"] is None
-        assert "reason" in result and result["reason"]
+        assert result.get("reason")
 
     def test_whitespace_only_content_is_unavailable(self):
         resp = _fake_response("   \n\t  ")
@@ -207,7 +207,7 @@ class TestConsultToolValidation:
 
 class TestConsultToolRegistration:
     def test_registered_in_registry(self):
-        import model_tools  # noqa: F401  (triggers discover_builtin_tools)
+        import model_tools  # triggers discover_builtin_tools
         from tools.registry import registry
 
         entry = registry.get_entry("consult")
@@ -218,7 +218,7 @@ class TestConsultToolRegistration:
         assert entry.schema["parameters"]["required"] == ["question"]
 
     def test_dispatch_through_registry(self):
-        import model_tools  # noqa: F401
+        import model_tools
         from tools.registry import registry
 
         resp = _fake_response("dispatched ok")
@@ -274,7 +274,7 @@ class TestConsultToolModelOverride:
         assert "ctx here" in user_msg["content"]
 
     def test_dispatch_through_registry_with_model_override(self):
-        import model_tools  # noqa: F401
+        import model_tools
         from tools.registry import registry
 
         resp = _fake_response("dispatched ok")
@@ -365,7 +365,7 @@ class TestConsultToolEffortOverride:
         }
 
     def test_dispatch_through_registry_with_effort_override(self):
-        import model_tools  # noqa: F401
+        import model_tools
         from tools.registry import registry
 
         resp = _fake_response("dispatched ok")

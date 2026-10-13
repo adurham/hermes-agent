@@ -122,7 +122,7 @@ class TestResolveAutoMainFirst:
 
             from agent.auxiliary_client import _resolve_auto_route
 
-            client, model, _provider = _resolve_auto_route(
+            client, _model, _provider = _resolve_auto_route(
                 main_runtime={
                     "provider": "moa",
                     "model": "opus-gpt",
@@ -190,7 +190,7 @@ class TestResolveAutoMainFirst:
             # and discard the provider slot this test doesn't check.
             from agent.auxiliary_client import _resolve_auto_route
 
-            client, model, _provider = _resolve_auto_route()
+            client, _model, _provider = _resolve_auto_route()
 
         assert client is chain_client
 
@@ -556,7 +556,7 @@ class TestResolveVisionMainFirst:
 
             import agent.auxiliary_client as _aux_mod
             _aux_mod._clear_vision_resolution_cache()
-            provider, client, model = resolve_vision_provider_client()
+            provider, _client, _model = resolve_vision_provider_client()
 
         # Explicit "nous" override → uses strict backend, NOT main model path
         assert provider == "nous"
@@ -641,7 +641,7 @@ class TestResolveVisionCustomProvider:
 
             import agent.auxiliary_client as _aux_mod
             _aux_mod._clear_vision_resolution_cache()
-            provider, client, model = resolve_vision_provider_client()
+            provider, client, _model = resolve_vision_provider_client()
 
         assert provider == "custom:copilot-gateway"
         assert client is mock_client
@@ -678,7 +678,7 @@ class TestResolveVisionCustomProvider:
 
             import agent.auxiliary_client as _aux_mod
             _aux_mod._clear_vision_resolution_cache()
-            provider, client, model = resolve_vision_provider_client()
+            _provider, client, _model = resolve_vision_provider_client()
 
         assert client is mock_client
         kwargs = mock_resolve.call_args.kwargs
@@ -742,7 +742,7 @@ class TestExoScopedAuxDelegation:
 
             from agent.auxiliary_client import _resolve_task_provider_model
 
-            provider, model, base_url, api_key, api_mode = (
+            provider, model, base_url, api_key, _api_mode = (
                 _resolve_task_provider_model(task="compression")
             )
 
@@ -779,7 +779,7 @@ class TestExoScopedAuxDelegation:
         ):
             from agent.auxiliary_client import _resolve_task_provider_model
 
-            provider, model, base_url, api_key, api_mode = (
+            provider, model, base_url, api_key, _api_mode = (
                 _resolve_task_provider_model(task="compression")
             )
 
@@ -830,7 +830,7 @@ class TestAnthropicAuxModel:
 
             from agent.auxiliary_client import _try_anthropic
 
-            client, model = _try_anthropic(explicit_api_key="not-needed")
+            client, _model = _try_anthropic(explicit_api_key="not-needed")
 
         # The placeholder key must have been discarded; resolve_anthropic_token
         # must have been consulted for the real credential.
@@ -905,7 +905,7 @@ class TestAnthropicAuxModel:
 
             from agent.auxiliary_client import _resolve_task_provider_model
 
-            provider, model, base_url, api_key, api_mode = (
+            provider, model, _base_url, _api_key, _api_mode = (
                 _resolve_task_provider_model(task="compression")
             )
 
@@ -939,7 +939,7 @@ class TestAnthropicAuxModel:
             # and discard the provider slot this test doesn't check.
             from agent.auxiliary_client import _resolve_auto_route
 
-            client, model, _provider = _resolve_auto_route()
+            client, _model, _provider = _resolve_auto_route()
 
         assert client is mock_client
         # The exo main model must be forwarded unchanged — no sonnet substitution.
@@ -1041,7 +1041,7 @@ class TestAnthropicAuxModel:
                 return_value=mock_built_client,
             ) as mock_build:
                 prov, model, *_ = _resolve_task_provider_model(task="compression")
-                client, resolved = resolve_provider_client(prov, model)
+                _client, resolved = resolve_provider_client(prov, model)
 
             assert resolved == _ANTHROPIC_DEFAULT_AUX_MODEL, (
                 f"Expected {_ANTHROPIC_DEFAULT_AUX_MODEL!r}, got {resolved!r} — "

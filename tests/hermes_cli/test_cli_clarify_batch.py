@@ -216,7 +216,7 @@ class TestClarifyBatchPanel:
             _q(0, "Color?", ["red", "blue"]),
             _q(1, "Size?", ["small", "large"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         state = cli._clarify_state
 
         cli._clarify_batch_enter(state)
@@ -287,7 +287,7 @@ class TestClarifyBatchPanel:
             _q(0, "Color?", ["red", "blue"]),
             _q(1, "Size?", ["small", "large"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         _wait_for_attention(cli)
 
         cli._fire_attention_signals.assert_called_once()
@@ -308,7 +308,7 @@ class TestClarifyBatchPanel:
             _q(0, long_q, ["a", "b"]),
             _q(1, "Size?", ["small", "large"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         _wait_for_attention(cli)
 
         cli._fire_attention_signals.assert_called_once()
@@ -333,7 +333,7 @@ class TestClarifyBatchNavigation:
             _q(1, "Size?", ["small", "large"]),
             _q(2, "Speed?", ["slow", "fast"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         state = cli._clarify_state
 
         # Shift-Tab from question 0 wraps to the last question.
@@ -351,7 +351,7 @@ class TestClarifyBatchNavigation:
             _q(0, "Color?", ["red", "blue"]),
             _q(1, "Size?", ["small", "large"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         state = cli._clarify_state
 
         # Lock "blue" (index 1) on q0; the cursor advances to q1.
@@ -372,7 +372,7 @@ class TestClarifyBatchNavigation:
             _q(0, "Color?", ["red", "blue"]),
             _q(1, "Size?", ["small", "large"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         state = cli._clarify_state
 
         # Answer q0 via Other: select the Other row, then the freetext

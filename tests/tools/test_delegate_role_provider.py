@@ -100,7 +100,7 @@ def dispatch(monkeypatch):
     (parsed_result, captured_child_kwargs).
     """
     import hermes_cli.personas as ruflo
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
     import tools.delegate_tool as dt
 
     def _run(tasks, entry_map, model_map=None, known=None, batch_cfg=None,
@@ -314,7 +314,7 @@ class TestFailureIsLoud:
             "jr-coder": {"model": "qwen3-coder:480b-cloud", "provider": "no-such-provider"},
             "researcher": {"model": "claude-haiku-4-5"},
         }
-        result, captured = dispatch([TASK_ROLE_PINNED, TASK_BARE], entry_map)
+        result, _captured = dispatch([TASK_ROLE_PINNED, TASK_BARE], entry_map)
 
         assert "error" in result, result
         assert "jr-coder" in result["error"]
@@ -354,7 +354,7 @@ class TestRoleCredentialMemoization:
 
         cache = {}
         entry = {"model": "qwen3-coder:480b-cloud", "provider": ROLE_PROVIDER}
-        import hermes_cli.runtime_provider as runtime_provider
+        from hermes_cli import runtime_provider
 
         monkeypatch.setattr(
             runtime_provider, "resolve_runtime_provider", _fake_runtime_provider()
@@ -429,7 +429,7 @@ class TestEndToEndWithRealEntryMap:
     def test_raw_config_dict_entry_routes_child_to_its_provider(
         self, monkeypatch
     ):
-        import hermes_cli.runtime_provider as runtime_provider
+        from hermes_cli import runtime_provider
         import tools.delegate_tool as dt
         import tools.delegation_router as dr
 

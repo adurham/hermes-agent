@@ -99,7 +99,7 @@ def test_aggregate_groups_by_role_and_model():
         ("r", "sonnet"),
         ("r", "haiku"),
     ]
-    haiku = [a for a in aggs if a.model == "haiku"][0]
+    haiku = next(a for a in aggs if a.model == "haiku")
     assert haiku.n == 2
     assert haiku.total_cost == pytest.approx(0.03)
     assert haiku.avg_duration == 15.0

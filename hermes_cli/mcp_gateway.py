@@ -92,7 +92,7 @@ def _read_hermes_env(name: str) -> str:
     return ""
 
 
-def _headers() -> Dict[str, str]:
+def _headers() -> dict[str, str]:
     bearer = _resolve_bearer()
     out = {"Content-Type": "application/json"}
     if bearer:
@@ -100,7 +100,7 @@ def _headers() -> Dict[str, str]:
     return out
 
 
-def _http_error(prefix: str, status: int, body: str) -> Dict[str, Any]:
+def _http_error(prefix: str, status: int, body: str) -> dict[str, Any]:
     return {
         "ok": False,
         "error": f"{prefix}: gateway returned HTTP {status}",
@@ -114,7 +114,7 @@ mcp = FastMCP("hermes-gateway")
 
 
 @mcp.tool()
-def submit_task(prompt: str, instructions: Optional[str] = None) -> Dict[str, Any]:
+def submit_task(prompt: str, instructions: Optional[str] = None) -> dict[str, Any]:
     """Submit a fire-and-forget task to the remote hermes gateway.
 
     The run executes server-side on the LXC; this call returns
@@ -132,7 +132,7 @@ def submit_task(prompt: str, instructions: Optional[str] = None) -> Dict[str, An
     """
     import httpx
 
-    payload: Dict[str, Any] = {"input": prompt}
+    payload: dict[str, Any] = {"input": prompt}
     if instructions:
         payload["instructions"] = instructions
 
@@ -164,7 +164,7 @@ def submit_task(prompt: str, instructions: Optional[str] = None) -> Dict[str, An
 
 
 @mcp.tool()
-def get_run_status(run_id: str) -> Dict[str, Any]:
+def get_run_status(run_id: str) -> dict[str, Any]:
     """Poll a run's status / output / token usage.
 
     Args:
@@ -195,7 +195,7 @@ def get_run_status(run_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def tail_run_events(run_id: str, max_events: int = 30, timeout_seconds: float = 10.0) -> Dict[str, Any]:
+def tail_run_events(run_id: str, max_events: int = 30, timeout_seconds: float = 10.0) -> dict[str, Any]:
     """Pull recent SSE events from a run's event stream.
 
     The stream is unbounded server-side; this tool reads up to
@@ -218,7 +218,7 @@ def tail_run_events(run_id: str, max_events: int = 30, timeout_seconds: float = 
 
     url = f"{_resolve_base_url()}/v1/runs/{run_id}/events"
     headers = {**_headers(), "Accept": "text/event-stream"}
-    events: List[Any] = []
+    events: list[Any] = []
     deadline = _time.time() + max(0.1, timeout_seconds)
 
     try:
@@ -244,7 +244,7 @@ def tail_run_events(run_id: str, max_events: int = 30, timeout_seconds: float = 
 
 
 @mcp.tool()
-def stop_run(run_id: str) -> Dict[str, Any]:
+def stop_run(run_id: str) -> dict[str, Any]:
     """Stop an in-flight run.
 
     Sends POST /v1/runs/{id}/stop. The run becomes ``cancelled`` and
@@ -276,7 +276,7 @@ def stop_run(run_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def list_recent_runs(limit: int = 20) -> Dict[str, Any]:
+def list_recent_runs(limit: int = 20) -> dict[str, Any]:
     """Read recent /v1/runs submissions from the gateway's audit log.
 
     The audit log is server-side at /var/log/hermes-gateway/audit.log.
@@ -303,6 +303,7 @@ def list_recent_runs(limit: int = 20) -> Dict[str, Any]:
         result = subprocess.run(
             cmd, capture_output=True, timeout=15, text=True,
             encoding="utf-8", errors="replace",
+            check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         return {"ok": False, "error": f"list_recent_runs: {type(e).__name__}: {e}"}

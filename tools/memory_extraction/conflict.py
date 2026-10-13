@@ -28,7 +28,7 @@ class ConflictVerdict:
     matched_content: Optional[str] = None
     rationale: str = ""
     merged_content: Optional[str] = None
-    candidates: List[Dict[str, Any]] = field(default_factory=list)
+    candidates: list[dict[str, Any]] = field(default_factory=list)
 
 
 # Verdicts cross a process boundary now: the session-exit extraction review stages
@@ -41,14 +41,14 @@ class ConflictVerdict:
 _VERDICT_FIELDS = ("verdict", "matched_id", "matched_content", "rationale", "merged_content")
 
 
-def verdict_to_dict(verdict: ConflictVerdict) -> Dict[str, Any]:
+def verdict_to_dict(verdict: ConflictVerdict) -> dict[str, Any]:
     """JSON-safe dict for a ConflictVerdict (round-trips via ``verdict_from_dict``).
 
     ``candidates`` is capped at the 3 nearest matches: the full FTS5 candidate list is
     only needed to *make* the call, while the reviewer only ever sees the closest one,
     and the whole record is written to disk on every staged proposal.
     """
-    data: Dict[str, Any] = {f: getattr(verdict, f) for f in _VERDICT_FIELDS}
+    data: dict[str, Any] = {f: getattr(verdict, f) for f in _VERDICT_FIELDS}
     data["candidates"] = [
         {"fact_id": c.get("fact_id"), "content": c.get("content")}
         for c in (verdict.candidates or [])[:3]
@@ -57,7 +57,7 @@ def verdict_to_dict(verdict: ConflictVerdict) -> Dict[str, Any]:
     return data
 
 
-def verdict_from_dict(data: Optional[Dict[str, Any]]) -> ConflictVerdict:
+def verdict_from_dict(data: Optional[dict[str, Any]]) -> ConflictVerdict:
     """Rebuild a ConflictVerdict from ``verdict_to_dict`` output.
 
     Tolerant by design — a pending record hand-edited or written by an older build
@@ -111,7 +111,7 @@ def classify(
     # recall (AND-semantics): for conflict detection we want any meaningful
     # token overlap, not all-tokens-must-match. A strict recall would miss
     # paraphrased duplicates ("TDS uses cdsdb" vs "cdsdb is the TDS storage").
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     try:
         candidates = warm_store.recall_related(content, top_k=5)
     except Exception as e:
@@ -172,11 +172,11 @@ def classify(
 
 def apply_verdict(
     verdict: ConflictVerdict,
-    proposal: Dict[str, Any],
+    proposal: dict[str, Any],
     *,
     warm_store: Any = None,
     auto_commit: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Apply a verdict to the warm tier.
 
     Returns a dict describing what happened:

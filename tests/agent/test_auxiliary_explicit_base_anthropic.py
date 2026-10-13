@@ -99,7 +99,7 @@ def test_explicit_base_anthropic_messages_openai_fallback_uses_v1():
         "agent.anthropic_adapter.build_anthropic_client",
         side_effect=ImportError("anthropic package not installed"),
     ):
-        client, model = resolve_provider_client(
+        client, _model = resolve_provider_client(
             "custom",
             model="claude-opus-4-8",
             explicit_base_url=_DUAL_SURFACE_BASE,
@@ -118,7 +118,7 @@ def test_explicit_base_without_anthropic_mode_preserves_v1_rewrite():
     OpenAI-wire rewrite is preserved for known dual-surface hosts."""
     from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
 
-    client, model = resolve_provider_client(
+    client, _model = resolve_provider_client(
         "custom",
         model="my-model",
         explicit_base_url=_DUAL_SURFACE_BASE,
@@ -137,7 +137,7 @@ def test_explicit_base_unknown_host_keeps_anthropic_path():
     path even on the OpenAI wire — rewriting to /v1 404s (#83642)."""
     from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
 
-    client, model = resolve_provider_client(
+    client, _model = resolve_provider_client(
         "custom",
         model="my-model",
         explicit_base_url=_ANTHROPIC_BASE,

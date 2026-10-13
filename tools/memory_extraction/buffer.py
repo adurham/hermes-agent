@@ -58,10 +58,10 @@ def _buffer_path() -> Path:
 
 
 def _now_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+    return _dt.datetime.now(_dt.UTC).isoformat()
 
 
-def _load() -> Dict[str, Any]:
+def _load() -> dict[str, Any]:
     """Load the buffer file, returning an empty dict on any error."""
     path = _buffer_path()
     if not path.exists():
@@ -79,7 +79,7 @@ def _load() -> Dict[str, Any]:
         return {}
 
 
-def _save(data: Dict[str, Any]) -> None:
+def _save(data: dict[str, Any]) -> None:
     """Atomically write the buffer file."""
     path = _buffer_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,17 +100,17 @@ def _save(data: Dict[str, Any]) -> None:
         raise
 
 
-def _prune_stale(data: Dict[str, Any]) -> Dict[str, Any]:
+def _prune_stale(data: dict[str, Any]) -> dict[str, Any]:
     """Drop buffers older than _PRUNE_AFTER_DAYS that haven't been touched."""
-    cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=_PRUNE_AFTER_DAYS)
-    pruned: Dict[str, Any] = {}
+    cutoff = _dt.datetime.now(_dt.UTC) - _dt.timedelta(days=_PRUNE_AFTER_DAYS)
+    pruned: dict[str, Any] = {}
     for sid, sess in data.items():
         if not isinstance(sess, dict):
             continue
         try:
             updated = _dt.datetime.fromisoformat(sess.get("updated_at", ""))
             if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=_dt.timezone.utc)
+                updated = updated.replace(tzinfo=_dt.UTC)
             if updated < cutoff:
                 continue
         except ValueError:
@@ -125,7 +125,7 @@ def _prune_stale(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def append(
     session_id: str,
-    entries: List[Dict[str, Any]],
+    entries: list[dict[str, Any]],
     *,
     source: str,
 ) -> int:
@@ -167,7 +167,7 @@ def append(
         return appended
 
 
-def get_session(session_id: str) -> Optional[Dict[str, Any]]:
+def get_session(session_id: str) -> Optional[dict[str, Any]]:
     """Return the buffer for one session, or None."""
     if not session_id:
         return None
@@ -176,7 +176,7 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
         return data.get(session_id)
 
 
-def get_session_entries(session_id: str) -> List[Dict[str, Any]]:
+def get_session_entries(session_id: str) -> list[dict[str, Any]]:
     """Return just the entries list for one session (or empty)."""
     sess = get_session(session_id)
     if sess is None:
@@ -199,7 +199,7 @@ def clear_session(session_id: str) -> int:
 
 def replace_session_entries(
     session_id: str,
-    entries: List[Dict[str, Any]],
+    entries: list[dict[str, Any]],
 ) -> None:
     """Replace one session's buffer entries (used after session-end reconciliation)."""
     if not session_id:
@@ -221,7 +221,7 @@ def replace_session_entries(
         _save(data)
 
 
-def all_sessions() -> List[str]:
+def all_sessions() -> list[str]:
     """List session ids that have a buffer (for debug / cleanup commands)."""
     with _lock:
         return sorted(_load().keys())

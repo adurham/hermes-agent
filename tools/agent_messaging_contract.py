@@ -103,7 +103,7 @@ class TransportResolution:
 
     kind: TransportKind
     participant: Optional[Participant] = None
-    send: Optional["TransportSendFn"] = None
+    send: Optional[TransportSendFn] = None
 
 
 def resolve_transport(sender: Participant, recipient_id: str) -> TransportResolution:

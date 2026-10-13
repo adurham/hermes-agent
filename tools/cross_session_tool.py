@@ -112,7 +112,7 @@ def list_agents(*, agent: Any = None, **_kw) -> str:
             for rec in list_registered_subagents()
             if rec.subagent_id != caller_subagent_id
         ]
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive
         logger.debug("list_agents subagent listing failed", exc_info=True)
         subagents = []
 
@@ -218,7 +218,7 @@ def _sent_message_lines(caller_session_id: str, caller_is_subagent: bool) -> lis
     return lines
 
 
-LIST_AGENTS_SCHEMA: Dict[str, Any] = {
+LIST_AGENTS_SCHEMA: dict[str, Any] = {
     "name": TOOL_NAME_LIST_AGENTS,
     "description": (
         "List every other live Hermes session AND subagent on this "

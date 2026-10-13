@@ -132,6 +132,7 @@ def _resolve_keychain_service() -> Optional[str]:
         result = subprocess.run(
             ["security", "dump-keychain"],
             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -157,6 +158,7 @@ def _resolve_keychain_service() -> Optional[str]:
             out = subprocess.run(
                 ["security", "find-generic-password", "-s", service],
                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5,
+                check=False,
             ).stdout
         except (OSError, subprocess.TimeoutExpired):
             return ""
@@ -175,6 +177,7 @@ def _keychain_account(service: str) -> Optional[str]:
         result = subprocess.run(
             ["security", "find-generic-password", "-s", service],
             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -251,6 +254,7 @@ class CredStore:
                 ["security", "find-generic-password",
                  "-s", self._service, "-w"],
                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5,
+                check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise FileNotFoundError(
@@ -292,6 +296,7 @@ class CredStore:
                  "-a", account,
                  "-w", payload],
                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10,
+                check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             raise RuntimeError(
@@ -671,7 +676,7 @@ def main() -> int:
         return asyncio.run(main_async(args))
     except KeyboardInterrupt:
         return 130
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.exception("fatal: %s", e)
         return 1
 

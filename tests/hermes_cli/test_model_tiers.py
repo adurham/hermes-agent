@@ -53,7 +53,7 @@ def test_family_of_returns_none_for_non_anthropic():
 
 
 def test_resolve_falls_back_to_last_known_good_when_roster_empty(monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     assert mt.resolve_tier_model("haiku") == mt.LAST_KNOWN_GOOD_TIERS["haiku"]
     assert mt.resolve_tier_model("sonnet") == mt.LAST_KNOWN_GOOD_TIERS["sonnet"]
     assert mt.resolve_tier_model("opus") == mt.LAST_KNOWN_GOOD_TIERS["opus"]
@@ -251,7 +251,7 @@ def test_drift_suggest_retunes_fires_for_gen6(monkeypatch, tmp_path):
 def test_fallback_suggest_retunes_uses_last_known_good(monkeypatch):
     """Empty roster → suggest_retunes still recognizes the last-known-good
     literals (the pre-refactor behavior)."""
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     stats = [
         ds.DelegationStat(role="coder", model="claude-sonnet-4-6", hit_max_iter=True)
         for _ in range(5)

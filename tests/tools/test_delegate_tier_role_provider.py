@@ -67,7 +67,7 @@ TIER_ONLY_ROUTE = {
 
 @pytest.fixture
 def harness(monkeypatch):
-    import hermes_cli.runtime_provider as runtime_provider
+    from hermes_cli import runtime_provider
     import tools.delegation_router as dr
 
     def _resolve(requested=None, target_model=None, **_kw):
@@ -118,7 +118,7 @@ class TestTierOnlyRouteCarriesProviderPin:
             f"tier-only route sent {route['model']!r} to provider "
             f"{route['creds']['provider']!r}; the role pins {ROLE_PROVIDER!r}"
         )
-        assert route["creds"]["base_url"] == f"https://role.example/v1"
+        assert route["creds"]["base_url"] == "https://role.example/v1"
 
     def test_tier_only_route_whole_bundle_travels(self, harness):
         """No mixing: the tier-role's endpoint/key travel with its provider."""

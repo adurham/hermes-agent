@@ -136,7 +136,7 @@ def test_nested_model_dropped_when_agent_type_present():
     """model= alongside agent_type= is dropped in favor of role resolution:
     the child is built with agent_type= and NO model, so the role map picks
     the model."""
-    result, captured = _dispatch(
+    _result, captured = _dispatch(
         [
             {"goal": _G0, "model": "claude-sonnet-4-6", "agent_type": "coder"},
             {"goal": _G1},
@@ -153,7 +153,7 @@ def test_nested_model_dropped_when_agent_type_present():
 def test_nested_agent_type_alone_is_allowed():
     """A nested child with agent_type= and no model= is the sanctioned path
     and must pass through untouched."""
-    result, captured = _dispatch(
+    _result, captured = _dispatch(
         [{"goal": _G0, "agent_type": "coder"}, {"goal": _G1}], depth=1
     )
     assert len(captured) == 2, captured
@@ -178,7 +178,7 @@ def test_nested_batch_mixed_rejects_bare_model_task():
 def test_nested_batch_model_dropped_per_task():
     """In a batch, model= is dropped per-task when agent_type= is present,
     and a sibling with only agent_type= is untouched."""
-    result, captured = _dispatch(
+    _result, captured = _dispatch(
         [
             {"goal": _G0, "model": "claude-sonnet-4-6", "agent_type": "coder"},
             {"goal": _G1, "agent_type": "researcher"},
@@ -212,7 +212,7 @@ def test_nested_guardrail_does_not_mutate_caller_tasks():
 def test_top_level_bare_model_still_allowed():
     """A top-level dispatcher may still pass a bare model= — the guardrail
     must not touch depth-0 dispatches."""
-    result, captured = _dispatch(
+    _result, captured = _dispatch(
         [{"goal": _G0, "model": "claude-opus-5"}, {"goal": _G1}], depth=0
     )
     assert len(captured) == 2, captured
@@ -224,7 +224,7 @@ def test_top_level_bare_model_still_allowed():
 def test_top_level_model_with_agent_type_keeps_model():
     """At depth 0, model= alongside agent_type= is NOT dropped — the
     existing precedence (per-task model wins) is preserved."""
-    result, captured = _dispatch(
+    _result, captured = _dispatch(
         [
             {"goal": _G0, "model": "claude-opus-5", "agent_type": "coder"},
             {"goal": _G1},

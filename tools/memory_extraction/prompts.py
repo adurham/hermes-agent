@@ -185,7 +185,7 @@ back-and-forth with no durable facts.
 """
 
 
-def pre_compress_user(messages: List[Dict[str, Any]]) -> str:
+def pre_compress_user(messages: list[dict[str, Any]]) -> str:
     """Build the user message for pre-compression extraction."""
     body = _format_messages_for_review(messages, max_chars=20000)
     return f"""Conversation slice about to be compressed:
@@ -222,8 +222,8 @@ short one still yields zero.
 
 
 def session_end_user(
-    final_messages: List[Dict[str, Any]],
-    buffered_entries: List[Dict[str, Any]],
+    final_messages: list[dict[str, Any]],
+    buffered_entries: list[dict[str, Any]],
 ) -> str:
     """Build the user message for session-end extraction."""
     body = _format_messages_for_review(final_messages, max_chars=30000)
@@ -304,9 +304,9 @@ Rules:
 
 
 def session_end_cleanup_user(
-    final_messages: List[Dict[str, Any]],
-    proposed_entries: List[Dict[str, Any]],
-    existing_facts: List[Dict[str, Any]],
+    final_messages: list[dict[str, Any]],
+    proposed_entries: list[dict[str, Any]],
+    existing_facts: list[dict[str, Any]],
 ) -> str:
     """Build the user message for the session-end cleanup pass."""
     body = _format_messages_for_review(final_messages, max_chars=20000)
@@ -339,7 +339,7 @@ def parse_cleanup_response(
     *,
     valid_fact_ids: Optional[Any] = None,
     max_actions: int = 10,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Parse a cleanup response into a list of cleanup-action dicts.
 
     Returns an empty list on any parse failure — cleanup is best-effort and
@@ -359,7 +359,7 @@ def parse_cleanup_response(
     if not isinstance(raw_actions, list):
         return []
 
-    cleaned: List[Dict[str, Any]] = []
+    cleaned: list[dict[str, Any]] = []
     for raw in raw_actions:
         if not isinstance(raw, dict):
             continue
@@ -372,7 +372,7 @@ def parse_cleanup_response(
         if valid_fact_ids is not None and fact_id not in valid_fact_ids:
             continue
 
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "fact_id": fact_id,
             "action": action,
             "reason": (raw.get("reason") or "").strip(),
@@ -394,7 +394,7 @@ def parse_cleanup_response(
 
     # Drop duplicate actions on the same fact — first one wins.
     seen: set = set()
-    deduped: List[Dict[str, Any]] = []
+    deduped: list[dict[str, Any]] = []
     for entry in cleaned:
         if entry["fact_id"] in seen:
             continue
@@ -454,7 +454,7 @@ verdicts cause data loss.
 
 def conflict_user(
     new_content: str,
-    existing: List[Dict[str, Any]],
+    existing: list[dict[str, Any]],
 ) -> str:
     """Build the user message for conflict classification."""
     if not existing:
@@ -485,7 +485,7 @@ def parse_extraction_response(
     text: str,
     *,
     max_entries: Optional[int] = None,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Parse an extraction response into a list of entry dicts.
 
     ``max_entries`` caps the returned list. Defaults to
@@ -503,7 +503,7 @@ def parse_extraction_response(
     raw_entries = obj.get("entries", [])
     if not isinstance(raw_entries, list):
         return []
-    cleaned: List[Dict[str, Any]] = []
+    cleaned: list[dict[str, Any]] = []
     for raw in raw_entries:
         if not isinstance(raw, dict):
             continue
@@ -520,7 +520,7 @@ def parse_extraction_response(
     return cleaned[: max(0, cap)]
 
 
-def parse_conflict_response(text: str) -> Optional[Dict[str, Any]]:
+def parse_conflict_response(text: str) -> Optional[dict[str, Any]]:
     """Parse a conflict-classification response. Returns None on failure."""
     if not text or not text.strip():
         return None
@@ -538,7 +538,7 @@ def parse_conflict_response(text: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
     """Pull a top-level JSON object out of free-form text, tolerating fences."""
     # Strip code fences first
     cleaned = text.strip()
@@ -601,7 +601,7 @@ def _truncate_for_extraction(text: Any, max_chars: int) -> str:
 
 
 def _format_messages_for_review(
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     max_chars: int = 20000,
 ) -> str:
     """Format a message list for inclusion in an extraction prompt.
@@ -610,7 +610,7 @@ def _format_messages_for_review(
     (they're noisy and rarely contain durable facts; tool RESULTS that the
     assistant cites are already in the assistant's own text).
     """
-    out: List[str] = []
+    out: list[str] = []
     total = 0
     # Iterate in reverse so we keep the LATEST messages within budget
     for msg in reversed(messages):

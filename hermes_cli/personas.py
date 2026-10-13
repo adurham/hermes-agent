@@ -170,9 +170,7 @@ def _save_to_config_yaml(key_path: str, value: object) -> bool:
     home = home_env or os.path.expanduser("~/.hermes")
     user_path = Path(home) / "config.yaml"
     project_path = Path(__file__).resolve().parent.parent / "cli-config.yaml"
-    if home_env:
-        cfg_path = user_path
-    elif user_path.exists():
+    if home_env or user_path.exists():
         cfg_path = user_path
     elif project_path.exists():
         cfg_path = project_path
@@ -312,7 +310,7 @@ def _normalize_entry_fields(v: dict) -> dict[str, str]:
     return entry
 
 
-def get_role_entry_map() -> dict[str, dict[str, "str | dict[str, str]"]]:
+def get_role_entry_map() -> dict[str, dict[str, str | dict[str, str]]]:
     """Read ``delegation.model_by_role`` as normalized per-role entries.
 
     Every entry is normalized to a dict.  A bare-string value ``"foo"``
@@ -443,7 +441,7 @@ def set_role_model(
     return _save_to_config_yaml("delegation.model_by_role", by_role)
 
 
-def lookup_role_entry(role: Optional[str]) -> dict[str, "str | dict[str, str]"]:
+def lookup_role_entry(role: Optional[str]) -> dict[str, str | dict[str, str]]:
     """Return the normalized ``model_by_role`` entry for ``role``.
 
     A plain read of :func:`get_role_entry_map` keyed by the stripped role

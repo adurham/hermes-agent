@@ -237,7 +237,7 @@ def test_sync_missing_root_raises(tmp_path: Path):
 
 
 def test_get_role_model_map_empty_when_no_delegation(monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     assert personas.get_role_model_map() == {}
 
 
@@ -282,7 +282,7 @@ def test_get_role_model_map_filters_non_string_values(monkeypatch):
 
 
 def test_set_role_model_writes_through(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert personas.set_role_model("researcher", "claude-haiku-4-5") is True
     written = (tmp_path / "config.yaml").read_text(encoding="utf-8")
@@ -453,7 +453,7 @@ def test_garbage_entries_are_dropped_without_raising(monkeypatch):
 
 
 def test_set_role_model_without_provider_writes_bare_string(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert personas.set_role_model("coder", "claude-opus-5") is True
     written = _read_by_role(tmp_path)
@@ -461,7 +461,7 @@ def test_set_role_model_without_provider_writes_bare_string(monkeypatch, tmp_pat
 
 
 def test_set_role_model_with_provider_writes_dict_form(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.load_config", dict)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert (
         personas.set_role_model(

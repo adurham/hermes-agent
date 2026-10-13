@@ -77,7 +77,7 @@ def _load_holo() -> type:
     return _HoloMemoryStore
 
 
-def _holo_plugin_config() -> Dict[str, Any]:
+def _holo_plugin_config() -> dict[str, Any]:
     """The holographic plugin's own config section, or ``{}``.
 
     Read through the same key the plugin reads (``plugins.hermes-memory-store``) so
@@ -171,7 +171,7 @@ class WarmStore:
         content: str,
         category: str = DEFAULT_CATEGORY,
         tags: str = "",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Add a fact to warm memory.
 
         Returns a dict with ``fact_id`` and a status (``"created"`` or
@@ -200,7 +200,7 @@ class WarmStore:
         content: Optional[str] = None,
         tags: Optional[str] = None,
         category: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Update an existing fact. Returns success + updated row."""
         ok = self._inner.update_fact(
             fact_id=fact_id,
@@ -212,14 +212,14 @@ class WarmStore:
             return {"success": False, "error": f"No warm fact with id {fact_id}."}
         return {"success": True, "fact_id": fact_id}
 
-    def remove(self, fact_id: int) -> Dict[str, Any]:
+    def remove(self, fact_id: int) -> dict[str, Any]:
         """Delete a warm fact by id."""
         ok = self._inner.remove_fact(fact_id=fact_id)
         if not ok:
             return {"success": False, "error": f"No warm fact with id {fact_id}."}
         return {"success": True, "fact_id": fact_id, "status": "removed"}
 
-    def record_feedback(self, fact_id: int, helpful: bool) -> Dict[str, Any]:
+    def record_feedback(self, fact_id: int, helpful: bool) -> dict[str, Any]:
         """Record helpful/unhelpful feedback. Used to train trust scores."""
         try:
             r = self._inner.record_feedback(fact_id=fact_id, helpful=helpful)
@@ -236,7 +236,7 @@ class WarmStore:
         top_k: int = 5,
         category: Optional[str] = None,
         min_trust: float = 0.0,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Search warm memory for facts matching ``query``.
 
         Backed by upstream's ``FactRetriever.search``: FTS5 pulls ``top_k * 3``
@@ -268,7 +268,7 @@ class WarmStore:
         self,
         seed: str,
         top_k: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Find facts structurally related to a seed string.
 
         Delegates to upstream's ``FactRetriever.related``, which unbinds the seed's
@@ -291,7 +291,7 @@ class WarmStore:
         self._after_recall(rows)
         return rows
 
-    def _after_recall(self, rows: List[Dict[str, Any]]) -> None:
+    def _after_recall(self, rows: list[dict[str, Any]]) -> None:
         """Retrieval bookkeeping for rows we actually handed back to a caller.
 
         ``FactRetriever`` deliberately doesn't touch ``retrieval_count`` (it ranks;
@@ -315,11 +315,11 @@ class WarmStore:
         self,
         category: Optional[str] = None,
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Browse warm facts ordered by trust score descending."""
         return self._inner.list_facts(category=category, limit=max(1, min(int(limit), 200)))
 
-    def get(self, fact_id: int) -> Optional[Dict[str, Any]]:
+    def get(self, fact_id: int) -> Optional[dict[str, Any]]:
         """Fetch a single fact by id, or None."""
         return self._inner.get_fact(int(fact_id))
 
@@ -348,7 +348,7 @@ class WarmStore:
 # ---------------------------------------------------------------------------
 
 
-def _record_recall_for_auto_feedback(rows: List[Dict[str, Any]]) -> None:
+def _record_recall_for_auto_feedback(rows: list[dict[str, Any]]) -> None:
     """Tell the auto-feedback layer about recall results, if it's enabled.
 
     Best-effort: import + dispatch are both wrapped in try/except.

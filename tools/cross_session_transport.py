@@ -567,7 +567,7 @@ def _row_to_registered_subagent(row: Any) -> RegisteredSubagent:
 
 def list_registered_subagents(
     *, owner_session_id: Optional[str] = None
-) -> List[RegisteredSubagent]:
+) -> list[RegisteredSubagent]:
     """Machine-wide live subagents, optionally filtered to one owner.
 
     No staleness filter of its own (unlike ``list_registered_sessions``):
@@ -621,7 +621,7 @@ def _cwd_overlaps(a: Optional[str], b: Optional[str]) -> bool:
 
 def find_cwd_collisions(
     cwd: Optional[str], *, exclude_subagent_id: Optional[str] = None
-) -> List[RegisteredSubagent]:
+) -> list[RegisteredSubagent]:
     """Live subagents (any owner, machine-wide) whose cwd overlaps ``cwd``.
 
     Used at ``delegate_task`` dispatch time (``tools/delegate_tool.py``) to
@@ -650,7 +650,7 @@ def list_registered_sessions(
     *,
     exclude_session_id: Optional[str] = None,
     now: Optional[float] = None,
-) -> List[RegisteredSession]:
+) -> list[RegisteredSession]:
     """Live sessions in this profile, staleness-filtered by heartbeat age."""
     ts = float(now if now is not None else time.time())
     cutoff = ts - CROSS_SESSION_REGISTRY_REAP_SECONDS
@@ -1065,7 +1065,7 @@ def sent_message_status(
     message_id: Optional[int] = None,
     limit: int = 20,
     now: Optional[float] = None,
-) -> List[SentMessageStatus]:
+) -> list[SentMessageStatus]:
     """Look up the delivery status of messages THIS session sent.
 
     Closes the sender-visibility gap: ``send_message`` only ever reported a
@@ -1090,7 +1090,7 @@ def sent_message_status(
         "SELECT id, to_session_id, status, created_at, delivered_at "
         "FROM cross_session_inbox WHERE from_session_id = ?"
     )
-    params: List[Any] = [from_session_id]
+    params: list[Any] = [from_session_id]
     if message_id is not None:
         sql += " AND id = ?"
         params.append(int(message_id))
@@ -1150,7 +1150,7 @@ class TurnMessageState:
     """
 
     def __init__(self) -> None:
-        self._delivered_hops: List[int] = []
+        self._delivered_hops: list[int] = []
         self._sends_this_turn = 0
 
     def reset(self) -> None:
@@ -1208,7 +1208,7 @@ def drain_inbox(
     limit: int = 10,
     now: Optional[float] = None,
     on_held: Optional[Any] = None,
-) -> List[DrainedMessage]:
+) -> list[DrainedMessage]:
     """Claim and frame this session's pending messages.
 
     Policy is evaluated HERE, against this session's own current config —
@@ -1227,7 +1227,7 @@ def drain_inbox(
         return []
     ts = float(now if now is not None else time.time())
     policy = resolve_inbound_policy(session_origin=session_origin)
-    out: List[DrainedMessage] = []
+    out: list[DrainedMessage] = []
     held_count = 0
 
     try:
@@ -1308,10 +1308,10 @@ def drain_inbox(
 
 def list_inbox(
     *, session_id: Optional[str] = None, status: Optional[str] = STATUS_HELD
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Rows for the CLI listing. ``status=None`` lists every status."""
     sql = "SELECT * FROM cross_session_inbox"
-    params: List[Any] = []
+    params: list[Any] = []
     clauses = []
     if session_id:
         clauses.append("to_session_id = ?")

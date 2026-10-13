@@ -107,7 +107,7 @@ class DelegateEvent(str, enum.Enum):
     TASK_TOOL_COMPLETED = "delegate.tool_completed"
 
 # Legacy child-agent event strings → DelegateEvent.
-_LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
+_LEGACY_EVENT_MAP: dict[str, DelegateEvent] = {
     "_thinking": DelegateEvent.TASK_THINKING,
     "reasoning.available": DelegateEvent.TASK_THINKING,
     "tool.started": DelegateEvent.TASK_TOOL_STARTED,
@@ -119,7 +119,7 @@ _LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
 # DelegateEvent). Any other DelegateEvent (TASK_TOOL_STARTED and the reserved TASK_* values) takes the tool-started
 # path; None means "recognised but ignored".
 _LIFECYCLE_EVENTS = frozenset({"subagent.start", "subagent.complete", "subagent.text"})
-_EVENT_HANDLERS: Dict[Any, Optional[str]] = {
+_EVENT_HANDLERS: dict[Any, Optional[str]] = {
     "subagent.start": "_on_start",
     "subagent.complete": "_on_complete",
     "subagent.text": "_on_text",
@@ -196,7 +196,7 @@ def _build_child_system_prompt(
     The goal is NOT part of this system prompt: it is the child's first user turn (see ``_ChildRun.await_child``).
     Keeping it out of the system prompt avoids sending OAuth Anthropic the same task in both roles, while
     preserving the normal user-turn contract (upstream commit 0aa178736a, v2026.9.21)."""
-    parts: List[str] = []
+    parts: list[str] = []
     # Optional ruflo persona prefix, read from the discovered .md body (frontmatter stripped).
     if agent_type:
         persona = None
@@ -257,7 +257,7 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
                 return text
     return None
 
-_BATCH_ORDINALS: Dict[str, Dict[str, int]] = {}
+_BATCH_ORDINALS: dict[str, dict[str, int]] = {}
 _BATCH_ORDINALS_LOCK = threading.Lock()
 
 def format_batch_tag(delegation_id: Optional[str], parent_agent: Any = None) -> str:
@@ -349,11 +349,11 @@ class _ChildProgressRelay:
         # since the relay is constructed BEFORE the child agent exists) into which the
         # caller drops a weakref to the child. Keep the identity, never copy.
         self.agent_ref = agent_ref
-        self.batch: List[str] = []
+        self.batch: list[str] = []
         self.parent_scope: Any = None  # owning parent agent; set by _build_child_progress_callback
         self.tool_count = 0  # per-subagent running counter
 
-    def _live_identity(self) -> Dict[str, Any]:
+    def _live_identity(self) -> dict[str, Any]:
         """The child's CURRENT model/provider + fallback state.
 
         Re-read per event, never cached: ``try_activate_fallback()`` swaps
@@ -404,8 +404,8 @@ class _ChildProgressRelay:
             parent_agent=self.session_ref.get("_parent_scope"),
         )
 
-    def _identity_kwargs(self) -> Dict[str, Any]:
-        kw: Dict[str, Any] = {"task_index": self.task_index, "task_count": self.task_count, "goal": self.goal_label}
+    def _identity_kwargs(self) -> dict[str, Any]:
+        kw: dict[str, Any] = {"task_index": self.task_index, "task_count": self.task_count, "goal": self.goal_label}
         kw.update({k: getattr(self, k) for k in ("subagent_id", "parent_id", "depth") if getattr(self, k) is not None})
         # Live model identity (see _live_identity). ``model`` keeps its existing
         # "omit when unknown" contract so a caller that passed no model and has no
@@ -426,7 +426,7 @@ class _ChildProgressRelay:
         kw["tool_count"] = self.tool_count
         return kw
 
-    def _relay(self, event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+    def _relay(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
         if self.parent_cb:
             # kwargs override identity (e.g. status, duration_seconds).
             with _quiet("Parent callback failed: %s"):
@@ -527,7 +527,7 @@ class _ChildProgressRelay:
             if len(self.batch) >= self._BATCH_SIZE:
                 self._flush()
 
-    def __call__(self, event_type, tool_name: str = None, preview: str = None, args=None, **kwargs):
+    def __call__(self, event_type, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
         key = _normalize_event(event_type)
         method = None if key is None else _EVENT_HANDLERS.get(key, "_on_tool_started")
         if method is not None:
@@ -536,8 +536,8 @@ class _ChildProgressRelay:
 def _build_child_progress_callback(
     task_index: int, goal: str, parent_agent, task_count: int = 1, *, subagent_id: Optional[str] = None,
     parent_id: Optional[str] = None, depth: Optional[int] = None, model: Optional[str] = None,
-    toolsets: Optional[List[str]] = None, session_ref: Optional[Dict[str, Any]] = None,
-    agent_ref: Optional[Dict[str, Any]] = None,
+    toolsets: Optional[list[str]] = None, session_ref: Optional[dict[str, Any]] = None,
+    agent_ref: Optional[dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Relay for one child's events (see ``_ChildProgressRelay``), or None when the parent has neither a spinner nor a
     progress callback — the child then runs with no progress callback at all (zero behavior change)."""

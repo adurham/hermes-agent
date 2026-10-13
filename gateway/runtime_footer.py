@@ -69,7 +69,7 @@ def _format_latency(seconds: float) -> str:
     grew minutes without bound (``60m01s`` / ``284m41s``)."""
     if seconds < 1:
         return "<1s"
-    total = int(round(seconds))
+    total = round(seconds)
     if total < 60:
         return f"{total}s"
     hours, rem = divmod(total, 3600)

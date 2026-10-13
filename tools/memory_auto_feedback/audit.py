@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _get_config() -> Dict[str, Any]:
+def _get_config() -> dict[str, Any]:
     """Return the ``memory.auto_feedback*`` config slice with defaults applied.
 
     Defaults: feature OFF. Opt-in via ``memory.auto_feedback: true``.
@@ -74,13 +74,13 @@ def is_enabled() -> bool:
 @dataclass
 class _RecallEntry:
     fact_id: int
-    fingerprints: Tuple[str, ...]
+    fingerprints: tuple[str, ...]
     turn_age: int  # 0 = recalled this turn; increments on each on_turn_end
 
 
-_session_windows: Dict[str, Deque[_RecallEntry]] = {}
-_credited: Dict[str, Set[int]] = {}
-_session_locks: Dict[str, threading.RLock] = {}
+_session_windows: dict[str, deque[_RecallEntry]] = {}
+_credited: dict[str, set[int]] = {}
+_session_locks: dict[str, threading.RLock] = {}
 _state_lock = threading.RLock()
 
 # Set by run_agent.py at turn start; read by WarmStore.recall() so the
@@ -146,7 +146,7 @@ _STOPWORDS = frozenset({
 _WORD_RE = re.compile(r"\b[A-Za-z0-9_./:-]+\b")
 
 
-def _tokenize(text: str) -> List[str]:
+def _tokenize(text: str) -> list[str]:
     """Return whitespace-normalized tokens, preserving case + identifiers."""
     if not text:
         return []
@@ -178,7 +178,7 @@ def _is_distinctive(token: str) -> bool:
     return len(token) >= 5
 
 
-def fingerprint_fact(content: str, min_words: int = 4, max_fp: int = 3) -> Tuple[str, ...]:
+def fingerprint_fact(content: str, min_words: int = 4, max_fp: int = 3) -> tuple[str, ...]:
     """Compute up to ``max_fp`` distinctive n-gram fingerprints for a fact.
 
     A fingerprint is a normalized run of ``min_words`` consecutive
@@ -201,8 +201,8 @@ def fingerprint_fact(content: str, min_words: int = 4, max_fp: int = 3) -> Tuple
     if len(distinctive) < min_words:
         return ()
 
-    fps: List[str] = []
-    seen: Set[str] = set()
+    fps: list[str] = []
+    seen: set[str] = set()
     # Slide a window of min_words across the distinctive-token stream.
     for i in range(len(distinctive) - min_words + 1):
         window = distinctive[i : i + min_words]
@@ -223,7 +223,7 @@ def fingerprint_fact(content: str, min_words: int = 4, max_fp: int = 3) -> Tuple
 
 def record_recall(
     session_id: Optional[str],
-    results: List[Dict[str, Any]],
+    results: list[dict[str, Any]],
 ) -> None:
     """Stash recall results in the session window.
 
@@ -241,7 +241,7 @@ def record_recall(
         min_fp_words = cfg["min_fingerprint_words"]
         cap = cfg["max_facts_per_session"]
 
-        new_entries: List[_RecallEntry] = []
+        new_entries: list[_RecallEntry] = []
         for row in results:
             try:
                 fid = int(row.get("fact_id"))
@@ -293,7 +293,7 @@ def record_recall(
 # ---------------------------------------------------------------------------
 
 
-def on_turn_end(session_id: Optional[str], assistant_text: Optional[str]) -> Dict[str, Any]:
+def on_turn_end(session_id: Optional[str], assistant_text: Optional[str]) -> dict[str, Any]:
     """Audit the recall window for ``session_id`` against ``assistant_text``.
 
     For every fact whose fingerprint appears (case-insensitive substring)
@@ -312,7 +312,7 @@ def on_turn_end(session_id: Optional[str], assistant_text: Optional[str]) -> Dic
     Always safe to call. Returns the zero-summary on any failure or
     when the feature is disabled.
     """
-    summary: Dict[str, Any] = {
+    summary: dict[str, Any] = {
         "session_id": session_id or "",
         "checked": 0,
         "upvoted": 0,
@@ -335,7 +335,7 @@ def on_turn_end(session_id: Optional[str], assistant_text: Optional[str]) -> Dic
             summary["checked"] = len(window)
 
             haystack = assistant_text.lower()
-            to_credit: List[int] = []
+            to_credit: list[int] = []
             for entry in list(window):
                 if entry.fact_id in credited:
                     continue
@@ -374,7 +374,7 @@ def on_turn_end(session_id: Optional[str], assistant_text: Optional[str]) -> Dic
         with lock:
             window = _session_windows.get(session_id)
             if window:
-                survivors: List[_RecallEntry] = []
+                survivors: list[_RecallEntry] = []
                 for entry in window:
                     entry.turn_age += 1
                     if entry.turn_age <= window_turns:
@@ -424,7 +424,7 @@ def _reset_state_for_testing() -> None:
         _session_locks.clear()
 
 
-def _snapshot_window(session_id: str) -> List[Dict[str, Any]]:
+def _snapshot_window(session_id: str) -> list[dict[str, Any]]:
     """Return a snapshot of the current recall window for ``session_id``.
 
     For tests + debugging. Read-only.

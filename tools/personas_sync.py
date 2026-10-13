@@ -107,7 +107,7 @@ def _get_bundled_dir() -> Path:
     return get_bundled_personas_dir(Path(__file__).parent.parent / "personas")
 
 
-def _read_manifest() -> Dict[str, str]:
+def _read_manifest() -> dict[str, str]:
     """
     Read the manifest as a dict of {persona_name: origin_hash}.
 
@@ -129,11 +129,11 @@ def _read_manifest() -> Dict[str, str]:
                 # Plain name (no hash) — empty hash triggers re-baseline.
                 result[line] = ""
         return result
-    except (OSError, IOError):
+    except OSError:
         return {}
 
 
-def _write_manifest(entries: Dict[str, str]):
+def _write_manifest(entries: dict[str, str]):
     """Write the manifest file atomically in "name:hash" format."""
     _manifest_file().parent.mkdir(parents=True, exist_ok=True)
     data = "\n".join(f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())) + "\n"
@@ -149,7 +149,7 @@ def _write_manifest(entries: Dict[str, str]):
         logger.debug("Failed to write personas manifest %s: %s", _manifest_file(), e, exc_info=True)
 
 
-def _discover_bundled_personas(bundled_dir: Path) -> List[Tuple[str, Path]]:
+def _discover_bundled_personas(bundled_dir: Path) -> list[tuple[str, Path]]:
     """
     Find all persona files in the bundled directory.
 
@@ -189,7 +189,7 @@ def _file_hash(path: Path) -> str:
     hasher = hashlib.md5()
     try:
         hasher.update(path.read_bytes())
-    except (OSError, IOError):
+    except OSError:
         pass
     return hasher.hexdigest()
 
@@ -271,7 +271,7 @@ def sync_personas(quiet: bool = False) -> dict:
                     manifest[persona_name] = bundled_hash
                     if not quiet:
                         print(f"  + {persona_name}")
-            except (OSError, IOError) as e:
+            except OSError as e:
                 if not quiet:
                     print(f"  ! Failed to copy {persona_name}: {e}")
                 # Do NOT add to manifest — next sync should retry
@@ -319,16 +319,16 @@ def sync_personas(quiet: bool = False) -> dict:
                         # Remove backup after successful copy
                         try:
                             backup.unlink()
-                        except (OSError, IOError):
+                        except OSError:
                             logger.debug("Could not remove backup %s", backup, exc_info=True)
-                    except (OSError, IOError):
+                    except OSError:
                         # Restore from backup. A partially-written dest must
                         # not shadow the user's copy or block the restore.
                         if backup.exists():
                             if dest.exists():
                                 try:
                                     dest.unlink()
-                                except (OSError, IOError):
+                                except OSError:
                                     logger.warning(
                                         "Could not clear partial copy %s during restore",
                                         dest, exc_info=True,
@@ -336,7 +336,7 @@ def sync_personas(quiet: bool = False) -> dict:
                             if not dest.exists():
                                 shutil.move(str(backup), str(dest))
                         raise
-                except (OSError, IOError) as e:
+                except OSError as e:
                     if not quiet:
                         print(f"  ! Failed to update {persona_name}: {e}")
             else:
@@ -426,7 +426,7 @@ def reset_bundled_persona(name: str, restore: bool = False) -> dict:
             try:
                 dest.unlink()
                 deleted_user_copy = True
-            except (OSError, IOError) as e:
+            except OSError as e:
                 return {
                     "ok": False,
                     "action": "not_reset",
@@ -462,7 +462,7 @@ def reset_bundled_persona(name: str, restore: bool = False) -> dict:
     return {"ok": True, "action": action, "message": message, "synced": synced}
 
 
-def list_user_modified_bundled_personas() -> List[dict]:
+def list_user_modified_bundled_personas() -> list[dict]:
     """Return the bundled personas that sync keeps because the user edited them locally.
 
     A persona counts as user-modified when its on-disk copy no longer matches
@@ -478,7 +478,7 @@ def list_user_modified_bundled_personas() -> List[dict]:
     if not manifest:
         return []
     bundled_dir = _get_bundled_dir()
-    modified: List[dict] = []
+    modified: list[dict] = []
     for persona_name, persona_src in _discover_bundled_personas(bundled_dir):
         origin_hash = manifest.get(persona_name, "")
         # No entry, or an un-baselined entry (empty hash): not a tracked
@@ -496,7 +496,7 @@ def list_user_modified_bundled_personas() -> List[dict]:
     return modified
 
 
-def _read_for_diff(path: Path) -> Tuple[Optional[bytes], Optional[str]]:
+def _read_for_diff(path: Path) -> tuple[Optional[bytes], Optional[str]]:
     """Read a file once for diffing.
 
     Returns ``(raw_bytes, text)`` where ``text`` is ``None`` if the file is
@@ -558,7 +558,7 @@ def diff_bundled_persona(name: str) -> dict:
     user_bytes, user_text = _read_for_diff(dest)
     stock_bytes, stock_text = _read_for_diff(bundled_src)
 
-    diffs: List[dict] = []
+    diffs: list[dict] = []
     if user_text is None or stock_text is None:
         # At least one side is binary — report only if bytes differ.
         if user_bytes != stock_bytes:
