@@ -2,11 +2,14 @@ import type { ConnectionState } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { DecodeText } from '@/components/ui/decode-text'
 import { prefersReducedMotion } from '@/hooks/use-media-query'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { $introStartExit, $introView } from '@/store/onboarding-intro'
 import { $onboardingDecided, ONBOARDING_DECIDE_DEADLINE_MS } from '@/store/onboarding-presence'
 import { $gatewayState } from '@/store/session'
 import { isMainWindow } from '@/store/windows'
@@ -57,10 +60,26 @@ function isInitialConnect(
 
 interface ConnectingOverlayViewProps {
   decoding: boolean
+  onExit: (() => void) | null
   phase: Phase
 }
 
-function ConnectingOverlayView({ decoding, phase }: ConnectingOverlayViewProps) {
+/** The first-run start outlasted the boot budget: it keeps waiting, and the person may go on without setup. */
+function SlowSetupStart({ onExit }: { onExit: () => void }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="grid max-w-xs justify-items-center gap-3 text-center" role="status">
+      <div className="text-sm font-medium text-foreground">{t.onboarding.setupSlowTitle}</div>
+      <div className="text-xs text-muted-foreground">{t.onboarding.setupSlowBody}</div>
+      <Button onClick={onExit} size="sm" type="button" variant="secondary">
+        {t.onboarding.continueWithoutSetup}
+      </Button>
+    </div>
+  )
+}
+
+function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayViewProps) {
   const leaving = phase !== 'live'
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
 
@@ -75,28 +94,61 @@ function ConnectingOverlayView({ decoding, phase }: ConnectingOverlayViewProps) 
       // in styles.css.
       data-glass-opaque=""
     >
-      <DecodeText
-        active={decoding}
-        className={cn(
-          'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
-          leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
-        )}
-        cursor
-        loop
-        prefix={4}
-        text={TEXT}
-      />
+      {onExit ? (
+        <SlowSetupStart onExit={onExit} />
+      ) : (
+        <DecodeText
+          active={decoding}
+          className={cn(
+            'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
+            leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
+          )}
+          cursor
+          loop
+          prefix={4}
+          text={TEXT}
+        />
+      )}
     </div>
   )
+}
+
+/**
+ * Held until the app knows whether onboarding runs, so the chat never flashes before it: a short
+ * deadline, never the free account. Once onboarding runs, the first-run intro's `starting` screen is
+ * this overlay and stays up until its chat is open, offering a way out when the start is slow.
+ */
+function useOnboardingHold(gatewayState: ConnectionState, previewing: boolean) {
+  const onboardingDecided = useStore($onboardingDecided)
+  const introView = useStore($introView)
+  const introStartExit = useStore($introStartExit)
+  const [decideExpired, setDecideExpired] = useState(false)
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || onboardingDecided) {
+      return
+    }
+
+    const id = window.setTimeout(() => setDecideExpired(true), ONBOARDING_DECIDE_DEADLINE_MS)
+
+    return () => window.clearTimeout(id)
+  }, [gatewayState, onboardingDecided])
+
+  const watching = !previewing && isMainWindow()
+  const introStarting = watching && introView === 'starting'
+
+  return {
+    holds: introStarting || (watching && !onboardingDecided && !decideExpired),
+    onExit: introStarting ? introStartExit : null
+  }
 }
 
 export function GatewayConnectingOverlay() {
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
-  const onboardingDecided = useStore($onboardingDecided)
-  const [decideExpired, setDecideExpired] = useState(false)
   const [previewing] = useState(forcedPreview)
+  const { holds: onboardingHolds, onExit } = useOnboardingHold(gatewayState, previewing)
   const reduce = prefersReducedMotion()
   // Under reduced motion, skip the multi-phase exit choreography (text-out →
   // hold → overlay fade) and jump straight to gone so the overlay unmounts
@@ -121,20 +173,6 @@ export function GatewayConnectingOverlay() {
   if (previewing || connecting) {
     shownRef.current = true
   }
-
-  // Held until the app knows whether onboarding runs, so the chat never flashes before it.
-  // A short deadline, never the free account: onboarding does not wait for the mint.
-  const onboardingHolds = !previewing && isMainWindow() && !onboardingDecided && !decideExpired
-
-  useEffect(() => {
-    if (gatewayState !== 'open' || onboardingDecided) {
-      return
-    }
-
-    const id = window.setTimeout(() => setDecideExpired(true), ONBOARDING_DECIDE_DEADLINE_MS)
-
-    return () => window.clearTimeout(id)
-  }, [gatewayState, onboardingDecided])
 
   // Kick off the exit when connected: real connect, or a faked timer in preview.
   useEffect(() => {
@@ -197,6 +235,7 @@ export function GatewayConnectingOverlay() {
   return (
     <ConnectingOverlayView
       decoding={phase === 'live' && (previewing || connecting)}
+      onExit={onExit}
       phase={phase}
     />
   )

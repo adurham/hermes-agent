@@ -2,7 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { setModeContext } from '@/store/interface-mode'
 
-type OnboardingSurface = 'onboarding'
+type OnboardingSurface = 'intro' | 'onboarding'
 
 const EMPTY: ReadonlySet<OnboardingSurface> = new Set()
 

@@ -14,6 +14,7 @@ import {
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
+import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
 import { OnboardingSkip } from '@/components/onboarding/skip-setup'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
@@ -31,6 +32,7 @@ import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
+import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -181,9 +183,15 @@ export function ChatBar({
   // queue uses the stored-session fallback key (prompts can queue pre-resume).
   const statusSessionId = sessionId ?? null
 
-  // The git row (branch / worktree / PR / review) is a coding instrument;
-  // Simple mode hides it everywhere.
-  const codingRowShown = useStore($showsAdvancedChrome)
+  // The guide's conversational steps have no use for the model pill and git
+  // controls. Solo covers startup before the guide's session ids are known.
+  // Once the intro has ended the onboarding chat is a normal chat again.
+  const guidedChat = useSetupChatView()
+  const chatOnboardingSolo = useStore($chatOnboardingSolo)
+  // The git row (branch / worktree / PR / review) is the coding instrument the
+  // guide already hides; Simple mode hides it for the same reason, everywhere.
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
+  const codingRowShown = !guidedChat && showsAdvancedChrome
 
   const composerTourMarker = useTourMarker('composer')
 
@@ -1114,7 +1122,8 @@ export function ChatBar({
       disabled={disabled}
       foldVoice={foldVoice}
       hasComposerPayload={hasComposerPayload}
-      minimal={minimal}
+      hideModelPill={guidedChat}
+      minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
       onQueue={queueDraft}
       onToggleAutoSpeak={handleToggleAutoSpeak}
@@ -1424,7 +1433,7 @@ export function ChatBar({
               />
             )}
             <div className="relative w-full rounded-[inherit]">
-              {!hudMode && (
+              {!hudMode && !guidedChat && (
                 <StatusDrawerToggle
                   collapsed={statusDrawerCollapsed}
                   controls={`${statusDrawerId} ${codingDrawerId}`}
