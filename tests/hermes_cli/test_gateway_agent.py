@@ -223,6 +223,7 @@ def test_manual_compress_is_the_gateway_compress_mutation(make_agent):
     result = compress_now(agent, history, CompressRequest(), task_id=SID)
     mutate = dict(client.calls)["session.mutate"]
     assert mutate["operation"] == "compress" and mutate["expected_revision"] == 9 and mutate["payload"] == {}
+    assert mutate["expected_generation"] == 7
     assert result.status == "compressed"
     assert result.after_messages == [{"role": "user", "content": "summary"}, {"role": "assistant", "content": "ok"}]
     assert result.summary["headline"] == "Compressed: 6 → 2 messages"

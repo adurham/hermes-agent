@@ -249,6 +249,7 @@ class GatewayAgent:
         snapshot = self.connection.call("session.resume", session_id=self.session_id)
         self.connection.call("session.mutate", timeout=COMPRESS_RPC_TIMEOUT, session_id=self.session_id,
                              request_id=uuid.uuid4().hex, expected_revision=snapshot["revision"],
+                             expected_generation=snapshot["execution_generation"],
                              operation="compress", payload=payload)
         for row in verbatim_tail or ():
             row[_DB_PERSISTED_MARKER] = True
