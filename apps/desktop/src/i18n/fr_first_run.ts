@@ -18,6 +18,12 @@ export const frFirstRun: FirstRunCopy = {
   noPlugins: 'Aucun plugin à afficher pour le moment.',
   noneChosen: 'Aucun',
   noAnswer: 'Pas de réponse',
+  answerRefused: 'Réponse non acceptée',
+  tours: {
+    quick: 'Visite rapide',
+    full: 'Montre-moi tout',
+    skip: 'Passer, construisons quelque chose'
+  },
   skippedAll: 'Configuration ignorée',
   skip: 'Ignorer la configuration',
   skipTip: 'Termine la configuration guidée et ouvre une nouvelle discussion.',

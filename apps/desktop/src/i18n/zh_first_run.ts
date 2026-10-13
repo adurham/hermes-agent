@@ -18,6 +18,12 @@ export const zhFirstRun: FirstRunCopy = {
   noPlugins: '暂时没有可显示的插件。',
   noneChosen: '无',
   noAnswer: '未回答',
+  answerRefused: '未接受该回答',
+  tours: {
+    quick: '快速导览',
+    full: '全部展示给我',
+    skip: '跳过，来做点东西'
+  },
   skippedAll: '已跳过设置',
   skip: '跳过设置',
   skipTip: '结束引导设置并打开新对话。',

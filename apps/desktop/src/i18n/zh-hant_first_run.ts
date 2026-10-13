@@ -18,6 +18,12 @@ export const zhHantFirstRun: FirstRunCopy = {
   noPlugins: '目前沒有可顯示的外掛。',
   noneChosen: '無',
   noAnswer: '未回答',
+  answerRefused: '未接受該回答',
+  tours: {
+    quick: '快速導覽',
+    full: '全部展示給我',
+    skip: '略過，來做點東西'
+  },
   skippedAll: '已略過設定',
   skip: '略過設定',
   skipTip: '結束引導設定並開啟新對話。',

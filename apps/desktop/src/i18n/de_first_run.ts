@@ -18,6 +18,12 @@ export const deFirstRun: FirstRunCopy = {
   noPlugins: 'Gerade keine Plugins verfügbar.',
   noneChosen: 'Keine',
   noAnswer: 'Keine Antwort',
+  answerRefused: 'Antwort nicht angenommen',
+  tours: {
+    quick: 'Kurze Tour',
+    full: 'Zeig mir alles',
+    skip: 'Überspringen, lass uns etwas bauen'
+  },
   skippedAll: 'Einrichtung übersprungen',
   skip: 'Einrichtung überspringen',
   skipTip: 'Beendet die geführte Einrichtung und öffnet einen neuen Chat.',

@@ -11,7 +11,7 @@ import { SetupBeatTool } from './setup-beat-tool'
 
 const view: SessionView = { ...PRIMARY_SESSION_VIEW, $runtimeId: atom('beat-session'), $storedId: atom('stored-beat') }
 
-function renderRow(result: SetupBeatToolResult) {
+function renderRow(result: SetupBeatToolResult | undefined) {
   // SAFETY: SetupBeatTool reads only result (and the session's requests when result is absent).
   const row = { args: {}, result, toolCallId: 'call-1', toolName: 'setup_beat' } as ToolCallMessagePartProps
 
@@ -39,5 +39,14 @@ describe('SetupBeatTool', () => {
     const { container } = renderRow({ error: 'Apply the layout with set_theme; its result settles this beat.' })
 
     expect(container.innerHTML).toBe('')
+  })
+
+  it('says a card answer was not accepted, and a row left without a card once the turn ended was not answered', () => {
+    renderRow({ beat: 'layout', error: 'The card sent an answer this beat does not accept.' })
+    expect(screen.getByText('Answer not accepted')).not.toBeNull()
+    cleanup()
+
+    renderRow(undefined)
+    expect(screen.getByText('No answer')).not.toBeNull()
   })
 })

@@ -21,6 +21,14 @@ export interface FirstRunCopy {
   /** A receipt for a card that settled with nothing chosen (no apps connected, no plugin installed). */
   noneChosen: string
   noAnswer: string
+  /** A card answer the backend refused; the model brings the card back. */
+  answerRefused: string
+  /** The tour card's options by id; the backend's labels are English. */
+  tours: {
+    quick: string
+    full: string
+    skip: string
+  }
   skippedAll: string
   skip: string
   skipTip: string

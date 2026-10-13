@@ -25,11 +25,18 @@ import {
 import { NameCard, OptionsCard } from './beat-cards'
 import { CARD_LABEL_CLASS } from './card-type'
 import { PluginsCard } from './plugins-card'
-import { SETUP_BEAT_SHELL_CLASS, type SetupBeatOutcome, setupBeatOutcome, SetupBeatReceipt } from './receipt'
+import {
+  SETUP_BEAT_SHELL_CLASS,
+  type SetupBeatOutcome,
+  setupBeatOutcome,
+  SetupBeatReceipt,
+  useTourLabel
+} from './receipt'
 
 /** The card body for one beat; `answer` sends the beat's picks and settles the card. */
 function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => boolean; request: SetupBeatRequest }) {
   const { card } = request
+  const tourLabel = useTourLabel()
 
   const commit = (applied: boolean, picks: SetupBeatAnswer): boolean => applied && answer(picks)
 
@@ -62,7 +69,10 @@ function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => boo
 
     case 'tour':
       return (
-        <OptionsCard onPick={option => answer({ label: option.label, tour: option.id })} options={card.options ?? []} />
+        <OptionsCard
+          onPick={option => answer({ label: option.label, tour: option.id })}
+          options={(card.options ?? []).map(option => ({ ...option, label: tourLabel(option.id) ?? option.label }))}
+        />
       )
 
     case 'build':
@@ -106,19 +116,14 @@ function BeatShell({ beat, children, question }: { beat: SetupBeat; children: Re
 /** The setup_beat tool row: the beat's card while its request waits, then a one-line receipt where the
  *  choice happened. A card closed by words in the composer or by the deadline collapses the same way. */
 export function SetupBeatTool(props: ToolCallMessagePartProps) {
-  const sessionId = useStore(useSessionView().$runtimeId)
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
+  const busy = useStore(view.$busy)
   const requests = useStore($setupBeatRequests)
   const [settled, setSettled] = useState<null | SetupBeatOutcome>(null)
 
   if (props.result !== undefined) {
-    const result = setupBeatResult(props.result)
-
-    // A refusal is addressed to the model (e.g. a beat set_theme already settled); the user has nothing to act on.
-    if (result.error !== undefined) {
-      return null
-    }
-
-    const outcome = setupBeatOutcome(result)
+    const outcome = setupBeatOutcome(setupBeatResult(props.result))
 
     return outcome ? <SetupBeatReceipt outcome={outcome} /> : null
   }
@@ -128,10 +133,12 @@ export function SetupBeatTool(props: ToolCallMessagePartProps) {
     return <SetupBeatReceipt outcome={settled} />
   }
 
-  const request = sessionId ? requests[sessionId] : undefined
+  const pending = sessionId ? requests[sessionId] : undefined
+  const request = pending && (pending.toolCallId ?? props.toolCallId) === props.toolCallId ? pending : undefined
 
   if (!sessionId || !request) {
-    return null
+    // A row left without a result and no card for it once the turn is over (a crash, a restart).
+    return busy ? null : <SetupBeatReceipt outcome={{ beat: null, kind: 'timed_out' }} />
   }
 
   const answer = (picks: SetupBeatAnswer): boolean => {

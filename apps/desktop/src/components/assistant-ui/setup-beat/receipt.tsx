@@ -2,6 +2,7 @@
 
 import type { SetupBeat } from '@hermes/shared'
 
+import { FIRST_RUN_LAYOUTS } from '@/components/assistant-ui/theme-picker/layout-picker-card'
 import { TypedAnswer } from '@/components/assistant-ui/typed-answer'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { LAYOUTS_AREA } from '@/components/pane-shell/tree/presets'
@@ -21,10 +22,11 @@ export const SETUP_BEAT_SHELL_CLASS = cn(
 export type SetupBeatOutcome =
   | { answer: SetupBeatAnswer; beat: SetupBeat; kind: 'answer' }
   | { beat: SetupBeat; kind: 'said'; said: string }
-  | { beat: SetupBeat | null; kind: 'skipped_all' | 'timed_out' }
+  | { beat: SetupBeat | null; kind: 'refused' | 'skipped_all' | 'timed_out' }
 
 /** The receipt a setup_beat result calls for; null for a result that showed no card (a value given in
- *  words, a skip, `done`), which draws nothing. */
+ *  words, a skip, `done`, a refused call), which draws nothing. An error naming the beat is a card
+ *  answer the backend refused. */
 export function setupBeatOutcome(result: SetupBeatToolResult): null | SetupBeatOutcome {
   const beat = result.beat ?? null
 
@@ -34,6 +36,10 @@ export function setupBeatOutcome(result: SetupBeatToolResult): null | SetupBeatO
 
   if (!beat) {
     return null
+  }
+
+  if (result.error !== undefined) {
+    return { beat, kind: 'refused' }
   }
 
   if (result.answer) {
@@ -51,6 +57,14 @@ interface AnswerNames {
   layout: (id: string) => string
   none: string
   themeAccent: string
+  tour: (answer: SetupBeatAnswer) => string
+}
+
+/** The tour card's label for an option id, in the app's language. */
+export function useTourLabel(): (id: string) => string | undefined {
+  const { t } = useI18n()
+
+  return id => Object.entries(t.firstRun.tours).find(([key]) => key === id)?.[1]
 }
 
 function answerText(beat: SetupBeat, answer: SetupBeatAnswer, names: AnswerNames): string {
@@ -73,7 +87,7 @@ function answerText(beat: SetupBeat, answer: SetupBeatAnswer, names: AnswerNames
       return answer.name ?? ''
 
     case 'tour':
-      return answer.label ?? answer.tour ?? ''
+      return names.tour(answer)
 
     case 'build':
       return answer.label ?? answer.build ?? ''
@@ -90,15 +104,25 @@ function ReceiptLine({ outcome }: { outcome: Exclude<SetupBeatOutcome, { kind: '
   const { t } = useI18n()
   const copy = t.firstRun
   const presets = useContributions(LAYOUTS_AREA)
+  const tour = useTourLabel()
+  const themeCopy = t.assistant.themePicker
 
-  const closed = { skipped_all: copy.skippedAll, timed_out: copy.noAnswer }
+  const closed = { refused: copy.answerRefused, skipped_all: copy.skippedAll, timed_out: copy.noAnswer }
+
+  // The first-run layouts read as the card named them (Basic, Elite), not by their preset titles.
+  const layout = (id: string) => {
+    const choice = FIRST_RUN_LAYOUTS.find(row => row.id === id)
+
+    return choice ? themeCopy[choice.name] : (presets.find(preset => preset.id === id)?.title ?? id)
+  }
 
   const text =
     outcome.kind === 'answer'
       ? answerText(outcome.beat, outcome.answer, {
-          layout: id => presets.find(preset => preset.id === id)?.title ?? id,
+          layout,
           none: copy.noneChosen,
-          themeAccent: t.assistant.themePicker.themeAccent
+          themeAccent: themeCopy.themeAccent,
+          tour: answer => tour(answer.tour ?? '') ?? answer.label ?? ''
         })
       : closed[outcome.kind]
 

@@ -6,15 +6,25 @@ import { setupBeatOutcome } from '@/components/assistant-ui/setup-beat/receipt'
 import { $onboardingSession } from './onboarding-session'
 import { answerParkedCard, parkedCardWaiting, sessionOnboardingCardWaiting } from './parked-card-answers'
 import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
-import { $setupBeatRequests, clearSetupBeat, parkSetupBeat } from './setup-beat'
+import { $setupBeatRequests, answerSetupBeat, clearSetupBeat, dropSetupBeatForCall, parkSetupBeat } from './setup-beat'
 
-function parkNameCard(requestId: string) {
+function parkNameCard(requestId: string, open = true) {
   const respond = vi.fn()
 
   const request: ServerRequest = { fail: vi.fn(), id: requestId, method: 'setup_beat', params: { session_id: 'rt-1' }, respond }
 
-  rememberServerRequest(request)
-  parkSetupBeat({ beat: 'name', card: {}, question: 'What should I call you?', requestId, sessionId: 'rt-1' })
+  if (open) {
+    rememberServerRequest(request)
+  }
+
+  parkSetupBeat({
+    beat: 'name',
+    card: {},
+    question: 'What should I call you?',
+    requestId,
+    sessionId: 'rt-1',
+    toolCallId: `call-${requestId}`
+  })
 
   return respond
 }
@@ -58,11 +68,24 @@ describe('setup_beat card', () => {
     off()
   })
 
+  it('keeps a card whose answer could not be sent, and drops it once its call finishes elsewhere', () => {
+    parkNameCard('srq-4', false)
+
+    expect(answerSetupBeat('rt-1', { name: 'Sid' })).toBe(false)
+    expect($setupBeatRequests.get()['rt-1']?.requestId).toBe('srq-4')
+
+    dropSetupBeatForCall('rt-1', 'call-other')
+    expect($setupBeatRequests.get()['rt-1']).toBeDefined()
+    dropSetupBeatForCall('rt-1', 'call-srq-4')
+    expect($setupBeatRequests.get()['rt-1']).toBeUndefined()
+  })
+
   it('collapses every way a card can close to a receipt, and draws nothing for a card-less call', () => {
     expect(setupBeatOutcome({ answer: { name: 'Sid' }, beat: 'name' })).toMatchObject({ kind: 'answer' })
     expect(setupBeatOutcome({ beat: 'theme', said: 'make it violet' })).toMatchObject({ kind: 'said' })
     expect(setupBeatOutcome({ beat: 'layout', timed_out: true })).toMatchObject({ kind: 'timed_out' })
     expect(setupBeatOutcome({ skipped_all: true })).toMatchObject({ kind: 'skipped_all' })
+    expect(setupBeatOutcome({ beat: 'build', error: 'not accepted' })).toMatchObject({ kind: 'refused' })
     expect(setupBeatOutcome({ completed: true })).toBeNull()
   })
 })

@@ -18,6 +18,12 @@ export const enFirstRun: FirstRunCopy = {
   noPlugins: 'No plugins to show right now.',
   noneChosen: 'None',
   noAnswer: 'No answer',
+  answerRefused: 'Answer not accepted',
+  tours: {
+    quick: 'Quick tour',
+    full: 'Show me everything',
+    skip: 'Skip, let\'s build something'
+  },
   skippedAll: 'Setup skipped',
   skip: 'Skip setup',
   skipTip: 'End the guided setup and open a new chat.',

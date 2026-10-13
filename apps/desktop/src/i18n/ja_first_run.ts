@@ -18,6 +18,12 @@ export const jaFirstRun: FirstRunCopy = {
   noPlugins: '現在表示できるプラグインはありません。',
   noneChosen: 'なし',
   noAnswer: '回答なし',
+  answerRefused: '回答は受け付けられませんでした',
+  tours: {
+    quick: 'クイックツアー',
+    full: 'すべて見せて',
+    skip: 'スキップして何か作ろう'
+  },
   skippedAll: 'セットアップをスキップしました',
   skip: 'セットアップをスキップ',
   skipTip: 'ガイド付きセットアップを終了し、新しいチャットを開きます。',

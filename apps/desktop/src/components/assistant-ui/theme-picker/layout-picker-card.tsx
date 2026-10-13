@@ -22,7 +22,7 @@ export interface LayoutPickerCardProps {
 }
 
 /** Basic is the Simple shell's sidebar-left; Elite is the Advanced terminal deck. */
-const CHOICES = [
+export const FIRST_RUN_LAYOUTS = [
   { id: 'sidebar-left', name: 'basic', detail: 'basicDetail' },
   { id: 'terminal-deck', name: 'elite', detail: 'eliteDetail' }
 ] as const
@@ -39,7 +39,7 @@ export function LayoutPickerCard({ onContinue }: LayoutPickerCardProps) {
   return (
     <div className="grid gap-3">
       <div className="grid grid-cols-2 gap-3 p-1" role="group">
-        {CHOICES.map(choice => {
+        {FIRST_RUN_LAYOUTS.map(choice => {
           const tree = presets.find(preset => preset.id === choice.id)?.data
           const active = choice.id === (staged ?? activeId)
 

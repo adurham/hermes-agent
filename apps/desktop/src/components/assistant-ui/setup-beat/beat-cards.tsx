@@ -40,7 +40,6 @@ export function NameCard({ onName, suggested }: { onName: (name: string) => void
       >
         <Input
           aria-label={t.firstRun.namePlaceholder}
-          autoFocus
           className={cn('flex-1', CARD_INPUT_CLASS)}
           onChange={event => setName(event.target.value)}
           placeholder={t.firstRun.namePlaceholder}

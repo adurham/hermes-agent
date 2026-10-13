@@ -18,6 +18,12 @@ export const arFirstRun: FirstRunCopy = {
   noPlugins: 'لا توجد إضافات لعرضها الآن.',
   noneChosen: 'لا شيء',
   noAnswer: 'لا توجد إجابة',
+  answerRefused: 'لم تُقبل الإجابة',
+  tours: {
+    quick: 'جولة سريعة',
+    full: 'أرني كل شيء',
+    skip: 'تخطَّ، لنصنع شيئًا'
+  },
   skippedAll: 'تم تخطي الإعداد',
   skip: 'تخطي الإعداد',
   skipTip: 'إنهاء الإعداد الموجَّه وفتح محادثة جديدة.',

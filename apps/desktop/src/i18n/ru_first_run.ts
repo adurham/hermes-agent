@@ -18,6 +18,12 @@ export const ruFirstRun: FirstRunCopy = {
   noPlugins: 'Сейчас нет плагинов для показа.',
   noneChosen: 'Нет',
   noAnswer: 'Нет ответа',
+  answerRefused: 'Ответ не принят',
+  tours: {
+    quick: 'Быстрый тур',
+    full: 'Покажи всё',
+    skip: 'Пропустить, давай что-нибудь сделаем'
+  },
   skippedAll: 'Настройка пропущена',
   skip: 'Пропустить настройку',
   skipTip: 'Завершить пошаговую настройку и открыть новый чат.',
