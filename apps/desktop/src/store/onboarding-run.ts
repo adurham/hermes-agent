@@ -22,9 +22,11 @@ import type { GatewayRequester } from '@/lib/yolo-session'
 
 import { ackFreeTierNotice } from './free-tier'
 import { activeGatewayConnectionId } from './gateway'
+import { $gatewayReadyAt } from './live-sync'
 import { clearFreeTierIntro } from './onboarding'
+import { $decideExit } from './onboarding-intro'
 import { $onboardingPhase } from './onboarding-phase'
-import { markOnboardingDecided, ONBOARDING_DECIDE_DEADLINE_MS, setOnboardingSurfaceActive } from './onboarding-presence'
+import { markOnboardingDecided, ONBOARDING_DECIDE_OFFER_MS, setOnboardingSurfaceActive } from './onboarding-presence'
 import { $onboardingSession } from './onboarding-session'
 import { ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
@@ -40,8 +42,9 @@ export type OnboardingRequest = <T = unknown>(
 // The generated param interfaces carry no index signature; the requester's own param type supplies it.
 type RequestParams = NonNullable<Parameters<OnboardingRequest>[1]>
 
-// A cold first boot answers onboarding.start late; the intro's way-out offer bounds the wait instead.
-// A start with no intro (Settings' Run again) has no way out on screen, so it keeps the request's default deadline.
+// A cold first boot answers onboarding.state and onboarding.start late; a way-out offer on screen bounds
+// the wait instead of a deadline. The launch and Settings' Run again both pass the intro, so both starts
+// get the intro's way out; a start with no intro keeps the request's default deadline.
 const NO_DEADLINE = 0
 
 /** Opens a stored session on screen, replacing the route (`useSessionActions().resumeSession`). */
@@ -230,6 +233,15 @@ export function decideOnboarding(
 }
 
 async function readAndStart(request: OnboardingRequest, resume: OnboardingResume, options?: StartOptions): Promise<void> {
+  // Continue on the boot overlay released this launch: a late answer opens nothing, and onboarding
+  // stays due on the backend for the next launch or Settings' Run onboarding again.
+  let released = false
+
+  const disarm = offerDecideExit(() => {
+    released = true
+    markOnboardingDecided()
+  })
+
   try {
     const params: OnboardingStateParams & RequestParams = {}
 
@@ -237,17 +249,46 @@ async function readAndStart(request: OnboardingRequest, resume: OnboardingResume
       params.assume_fresh = true
     }
 
-    // One deadline for the due check: past it the app is released and a late answer opens nothing.
-    const state = await request<OnboardingRunStateResult>('onboarding.state', params, ONBOARDING_DECIDE_DEADLINE_MS)
+    const state = await request<OnboardingRunStateResult>('onboarding.state', params, NO_DEADLINE)
+    disarm()
 
-    if (state.run && state.eligible) {
+    if (!released && state.run && state.eligible) {
       await startOnboarding(request, resume, { ...options, freshLaunch: true })
     }
   } catch (error) {
     console.warn('[onboarding] state could not be read', error)
   } finally {
+    disarm()
     markOnboardingDecided()
   }
+}
+
+/** The due check's way out, armed like the intro's (`kickoff.ts`): `ONBOARDING_DECIDE_OFFER_MS` after
+ *  the backend said ready, the boot overlay offers `release` through `$decideExit`. Returns the disarm. */
+function offerDecideExit(release: () => void): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopWatching = (): void => undefined
+
+  const disarm = (): void => {
+    stopWatching()
+    clearTimeout(timer)
+    $decideExit.set(null)
+  }
+
+  const takeExit = (): void => {
+    disarm()
+    release()
+  }
+
+  stopWatching = $gatewayReadyAt.subscribe(readyAt => {
+    clearTimeout(timer)
+
+    if (readyAt !== null) {
+      timer = setTimeout(() => $decideExit.set(takeExit), readyAt + ONBOARDING_DECIDE_OFFER_MS - Date.now())
+    }
+  })
+
+  return disarm
 }
 
 /** The run ended: the model finished it or the user skipped. Later calls for the same run do nothing. */
