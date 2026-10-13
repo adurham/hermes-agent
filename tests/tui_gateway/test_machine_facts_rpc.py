@@ -32,7 +32,7 @@ def test_machine_facts_over_the_wire(n1x):
     assert result["nvidia_platform"] == "rtx_spark"
     assert result["machine_kind"] == "Spark"
     assert result["has_nvidia_gpu"] is False
-    assert result["full_name"] == "Ada Lovelace"
+    assert "full_name" not in result
     assert result["machine"]["native_arch"] == "arm64"
     assert result["machine"]["ram_gb"] == 128
 

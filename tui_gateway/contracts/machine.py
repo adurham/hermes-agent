@@ -28,15 +28,14 @@ class MachineInfo(Result):
 
 class MachineFactsResult(Result):
     """``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is
-    ``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``full_name`` is the OS account's
-    real name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none."""
+    ``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``locale`` is the OS
+    account's first UI language, null when the OS has none."""
 
     machine: MachineInfo
     machine_kind: str
     has_nvidia_gpu: bool
     nvidia_platform: NvidiaPlatform | None = None
     locale: str | None = None
-    full_name: str | None = None
 
 
 method("machine.facts", params=Params, result=MachineFactsResult,

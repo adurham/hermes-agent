@@ -15,7 +15,8 @@ method = _registry.method
 @method("machine.facts")
 def _(rid, params: dict) -> dict:
     from hermes_platform.host.summary import summary
-    return _ok(rid, summary())
+    # The account's name reaches the desktop only on the onboarding name card.
+    return _ok(rid, {key: value for key, value in summary().items() if key != "full_name"})
 
 
 def register(server) -> None:
