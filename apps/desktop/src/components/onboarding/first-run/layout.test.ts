@@ -6,9 +6,10 @@ import { applyLayoutPreset } from '@/components/pane-shell/tree/presets'
 import { $activePresetId } from '@/components/pane-shell/tree/store'
 import { applyAppearance } from '@/store/appearance-apply'
 import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
+import { $sidebarOpen, setSidebarOpen } from '@/store/layout'
 import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
 
-import { openDemoLayout } from './assembly'
+import { openDemoLayout, snapshotChatLayout } from './assembly'
 import { openIntro, skipIntro } from './intro'
 
 const size = vi.fn()
@@ -42,6 +43,30 @@ describe('first-run layout beat', () => {
     expect($introView.get()).toBe('ended')
     expect($interfaceMode.get()).toBe('simple')
     expect($activePresetId.get()).toBe('sidebar-left')
+  })
+
+  it('keeps the intro while a preview opens the sidebar itself', () => {
+    const undo = snapshotChatLayout()
+    setSidebarOpen(!$sidebarOpen.get())
+    undo.revert()
+
+    expect($introView.get()).toBe('intro')
+  })
+
+  it('saves a previewed layout only when Continue keeps it', () => {
+    skipIntro()
+    const writes = vi.spyOn(window.localStorage, 'setItem')
+
+    const cancelled = snapshotChatLayout()
+    applyLayoutPreset('picked', group(['workspace']))
+    cancelled.revert()
+    expect(writes).not.toHaveBeenCalled()
+
+    const kept = snapshotChatLayout()
+    applyLayoutPreset('picked', group(['workspace']))
+    kept.keep()
+    expect(writes).toHaveBeenCalled()
+    writes.mockRestore()
   })
 
   it('sizes the window normal on Skip setup', () => {

@@ -146,6 +146,10 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
     hold(next: boolean) {
       held = next
     },
+    /** Write every value as it is now, so a change made while held is kept. */
+    flush() {
+      entries.forEach(entry => entry.capture())
+    },
     has(key: string) {
       return snapshots.has(keyFor(key))
     },

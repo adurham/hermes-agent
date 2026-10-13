@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { snapshotChatLayout } from '@/components/onboarding/first-run/assembly'
+import { type PreviewUndo, snapshotChatLayout } from '@/components/onboarding/first-run/assembly'
 import { applyDesktopLayoutPreset } from '@/store/pane-focus'
 import { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 import { NOUS_ACCENT, resolveAccentPick } from '@/themes/accents'
@@ -12,7 +12,7 @@ export interface StagedLook {
 
 interface LiveLook {
   apply: (value: null | string, dark: boolean) => void
-  snapshot: () => () => void
+  snapshot: () => PreviewUndo
 }
 
 // The accent previews through the unsaved override so nothing is persisted before Continue; the theme's own
@@ -22,7 +22,7 @@ const ACCENT: LiveLook = {
   snapshot: () => {
     const override = $accentOverride.get()
 
-    return () => setAccentOverride(override)
+    return { keep: () => undefined, revert: () => setAccentOverride(override) }
   }
 }
 
@@ -46,7 +46,7 @@ interface PreviewOwner {
 
 interface Baseline {
   owners: Set<PreviewOwner>
-  revert: () => void
+  undo: PreviewUndo
 }
 
 const baselines = new Map<LiveLook, Baseline>()
@@ -56,7 +56,7 @@ function release(live: LiveLook, owner: PreviewOwner): void {
 
   if (baseline?.owners.delete(owner) && baseline.owners.size === 0) {
     baselines.delete(live)
-    baseline.revert()
+    baseline.undo.revert()
   }
 }
 
@@ -96,11 +96,12 @@ export function useLookPreview(kind: 'accent' | 'layout', dark: boolean): LookPr
 
       // The sent value is the new truth: no open card puts the old one back.
       if (settled.current) {
+        baselines.get(live)?.undo.keep()
         baselines.delete(live)
       }
     },
     stage: value => {
-      const baseline = baselines.get(live) ?? { owners: new Set<PreviewOwner>(), revert: live.snapshot() }
+      const baseline = baselines.get(live) ?? { owners: new Set<PreviewOwner>(), undo: live.snapshot() }
 
       baseline.owners.add(owner)
       baselines.set(live, baseline)

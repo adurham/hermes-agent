@@ -9,7 +9,7 @@ import { $activeGatewayProfile } from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
 import { retireTips } from '@/store/tips'
 
-import { $chatOnboardingThreadIds, endChatOnboardingSolo, keepChatOnboardingLayout } from './assembly'
+import { $chatOnboardingThreadIds, endChatOnboardingSolo, isLayoutPreviewing, keepChatOnboardingLayout } from './assembly'
 
 /**
  * The intro copy over an empty onboarding chat: it types centred (`playing`), springs up and waits at
@@ -100,7 +100,8 @@ function watchLeaveActions(): () => void {
 
   const stops = [
     () => window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onReveal),
-    $sidebarOpen.listen(() => leaveIntro()),
+    // A layout preview opens and closes the sidebar itself (Basic places it); only the user's toggle leaves.
+    $sidebarOpen.listen(() => !isLayoutPreviewing() && leaveIntro()),
     $activeGatewayProfile.listen(profile => profile !== introProfile && leaveIntro()),
     $selectedStoredSessionId.listen(id => (!id || !$chatOnboardingThreadIds.get().includes(id)) && leaveIntro())
   ]
