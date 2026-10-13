@@ -104,7 +104,7 @@ _LOOK_AROUND = (
 _TYPED_ANSWER = {
     "name": 'setup_beat(beat="name", value="<their name>")',
     "theme": _SET_THEME.replace('"accent":"Ultraviolet"', '"accent":"<colour>"'),
-    "layout": 'setup_beat(beat="layout", value="sidebar-left" or "terminal-deck")',
+    "layout": 'tool_call {"calls":[{"name":"set_theme","arguments":{"layout":"sidebar-left" or "terminal-deck"}}]}',
     "connectors": 'setup_beat(beat="connectors", value="continue") for "done" or "continue", skip=true for "skip"',
     "plugins": 'setup_beat(beat="plugins", value="continue") for "done" or "continue", skip=true for "skip"',
     "tour": 'setup_beat(beat="tour", value="quick", "full" or "skip"), bucketing their words into one of the three',

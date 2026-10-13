@@ -247,8 +247,12 @@ def _is_names(value: Any) -> bool:
 
 
 def valid_answer(beat: str, answer: Mapping[str, Any], facts: Facts, picks: Mapping[str, Any]) -> bool:
-    """A card answer carries only its beat's pick keys, with ids from the card's own options."""
+    """A card answer carries only its beat's pick keys, with ids from the card's own options. ``label``
+    is the text the card showed, kept for the transcript and never recorded."""
     spec = BEAT_BY_ID[beat]
+    if not isinstance(answer.get("label", ""), str):
+        return False
+    answer = {key: value for key, value in answer.items() if key != "label"}
     if not answer or not set(answer) <= set(spec.picks):
         return False
     if spec.values is not None:
@@ -282,8 +286,16 @@ def _timed_out(record: dict, event: TimedOut, facts: Facts, now: float) -> Step:
     return Step(record, {"beat": event.beat, "timed_out": True}, "timed_out")
 
 
+# Beats a general tool applies; their result settles the beat, so a value given in words would only
+# record a pick that never reaches the screen.
+APPLIED_BY = {"theme": "set_theme", "layout": "set_theme"}
+
+
 def _recorded(record: dict, event: Recorded, facts: Facts, now: float) -> Step:
     beat = BEAT_BY_ID[event.beat]
+    if tool := APPLIED_BY.get(event.beat):
+        return Step(record, {"error": f"Apply the {event.beat} with {tool}; its result settles this beat.",
+                             "next": _next_field(record)})
     accepted = beat.values(facts, record["picks"]) if beat.values else None
     if accepted is not None and event.value not in accepted:
         return Step(record, {"error": f"value for {event.beat} must be one of: {', '.join(accepted)}.",

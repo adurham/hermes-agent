@@ -280,6 +280,24 @@ def test_a_card_answer_outside_the_cards_options_is_refused_and_the_beat_stays_o
         assert "error" in apply(new_record(facts), Answered(beat, answer), facts, now=1.0).result
 
 
+def test_a_click_carries_the_option_label_for_the_transcript_and_only_the_id_is_recorded():
+    facts = MACHINES["mac"]
+    record = run(facts, Shown("tour", "call_t"))[-1].record
+    step = apply(record, Answered("tour", {"tour": "quick", "label": "Quick look"}), facts, now=2.0)
+
+    assert step.result["answer"] == {"tour": "quick", "label": "Quick look"} and step.reminder == "tour_quick"
+    assert step.record["picks"]["tour"] == "quick" and "label" not in step.record["picks"]
+    assert "error" in apply(record, Answered("tour", {"tour": "quick", "label": 3}), facts, now=2.0).result
+
+
+def test_a_layout_or_theme_given_in_words_is_applied_by_set_theme_not_recorded():
+    facts = MACHINES["mac"]
+    for beat, value in [("layout", "terminal-deck"), ("theme", "Ultraviolet")]:
+        step = apply(new_record(facts), Recorded(beat, value), facts, now=1.0)
+        assert "set_theme" in step.result["error"] and step.record["beats"][beat] == PENDING
+    assert '"name":"set_theme"' in reminder("said", new_record(facts), facts, "layout")
+
+
 def test_no_turn_note_once_every_card_is_settled():
     facts = MACHINES["linux"]
     steps = run(facts, *answer_all(facts)[:-1])

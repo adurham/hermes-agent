@@ -161,14 +161,17 @@ class SetupConnectorsAnswer(Result):
 
 class SetupPluginsAnswer(Result):
     installed: list[str]
+    label: str | None = None  # what the card showed, for the transcript; never recorded
 
 
 class SetupTourAnswer(Result):
     tour: str
+    label: str | None = None
 
 
 class SetupBuildAnswer(Result):
     build: str
+    label: str | None = None
 
 
 class SetupBeatResult(Result):

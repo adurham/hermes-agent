@@ -4603,12 +4603,15 @@ export interface SetupConnectorsAnswer {
 }
 export interface SetupPluginsAnswer {
   installed: string[]
+  label?: string | null
 }
 export interface SetupTourAnswer {
   tour: string
+  label?: string | null
 }
 export interface SetupBuildAnswer {
   build: string
+  label?: string | null
 }
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
