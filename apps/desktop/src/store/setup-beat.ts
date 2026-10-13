@@ -89,6 +89,15 @@ export function clearSetupBeat(requestId: string, sessionId: string): boolean {
   return true
 }
 
+/** The run ended: the session's card, if one still waits, is done. */
+export function dropSetupBeat(sessionId: string): void {
+  const request = $setupBeatRequests.get()[sessionId]
+
+  if (request) {
+    clearSetupBeat(request.requestId, sessionId)
+  }
+}
+
 /** The setup_beat call `toolCallId` finished: its card is done here too, wherever it was answered. */
 export function dropSetupBeatForCall(sessionId: string, toolCallId: string | undefined): void {
   const request = $setupBeatRequests.get()[sessionId]

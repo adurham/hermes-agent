@@ -6,7 +6,6 @@ import { toolCallOwnerMessageId } from '@/lib/chat-messages'
 import { connectorText, recordOf } from '@/lib/connector-tools'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
-import { noteSetupBeatResult } from '@/store/onboarding-run'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
@@ -52,17 +51,13 @@ const SETTLED_CARDS = new Map([
   ['setup_beat', dropSetupBeatForCall]
 ])
 
-/** What a completed tool leaves behind outside its row: a preview target, or the end of an onboarding run. */
+/** What a completed tool leaves behind outside its row: a preview target, a settled card, or a committed layout. */
 function noteToolOutcome(ctx: GatewayEventContext, sessionId: string, cwd: string, pendingProduction: boolean): void {
   if (!ctx.deps.sessionInterrupted(sessionId)) {
     recordToolPreview(ctx, sessionId, cwd, pendingProduction)
   }
 
   SETTLED_CARDS.get(ctx.payload?.name ?? '')?.(sessionId, ctx.payload?.tool_id)
-
-  if (ctx.payload?.name === 'setup_beat' && !ctx.event.replayed) {
-    noteSetupBeatResult([sessionId, storedSessionIdForRuntimeId(sessionId)], setupBeatResult(ctx.payload.result))
-  }
 
   if (!ctx.event.replayed && appliedLayout(ctx.payload?.name, ctx.payload?.result)) {
     leaveIntroOnLayout()

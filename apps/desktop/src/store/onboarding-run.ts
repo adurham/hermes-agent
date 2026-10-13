@@ -10,6 +10,7 @@
 
 import type {
   MachineFactsResult,
+  OnboardingEndedPayload,
   OnboardingRunStateResult,
   OnboardingStartResult
 } from '@hermes/shared'
@@ -24,8 +25,8 @@ import { $onboardingPhase } from './onboarding-phase'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from './onboarding-presence'
 import { $onboardingSession } from './onboarding-session'
 import { ensureGatewayProfile, newSessionInProfile } from './profile'
-import { $connection, $selectedStoredSessionId } from './session'
-import type { SetupBeatToolResult } from './setup-beat'
+import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
+import { dropSetupBeat } from './setup-beat'
 
 export type OnboardingRequest = <T = unknown>(
   method: string,
@@ -157,7 +158,8 @@ export async function startOnboarding(
 
     // The chat is on screen before the run names it, so the presence never sees a gap.
     await resume(started.stored_session_id, true)
-    $onboardingSession.set({ runtimeId: started.session_id, storedId: started.stored_session_id })
+    $onboardingSession.set({ runId: started.run_id, runtimeId: started.session_id, storedId: started.stored_session_id })
+    watchRunEnd(request)
 
     if (intro) {
       intro.opened(started)
@@ -244,18 +246,49 @@ export async function skipOnboarding(request: OnboardingRequest, runtimeId: stri
   leaveSkipped()
 }
 
-/** A `setup_beat` result that ends the run: `completed` (the first-task card answered) or `skipped_all`. `ids`:
- *  the event's runtime and stored session; a rerun closes the old chat's card, which must not end the new run. */
-export function noteSetupBeatResult(ids: readonly (null | string)[], result: SetupBeatToolResult): void {
+/** `onboarding.ended` from the backend, sent to every window: the run this window shows ended (the
+ *  first-task card answered, Skip setup in any window, a rerun, its chat deleted). Another run's end,
+ *  like the old run a rerun closed, does nothing here. */
+export function noteOnboardingEnded({ outcome, run_id }: OnboardingEndedPayload): void {
   const session = $onboardingSession.get()
 
-  if (!session || !ids.some(id => id === session.runtimeId || id === session.storedId)) {
+  if (!session || session.runId !== run_id) {
     return
   }
 
-  if (result.completed) {
-    endOnboarding('done')
-  } else if (result.skipped_all) {
+  dropSetupBeat(session.runtimeId)
+  endOnboarding(outcome === 'done' ? 'done' : 'skipped')
+}
+
+/** An end this window missed (a reconnect, a backend restart): the run it shows is no longer the run
+ *  in progress. */
+export async function reconcileOnboarding(request: OnboardingRequest): Promise<void> {
+  const session = $onboardingSession.get()
+
+  if (!session || $onboardingPhase.get() !== 'shown') {
+    return
+  }
+
+  const state = await request<OnboardingRunStateResult>('onboarding.state')
+
+  if ($onboardingSession.get() === session && state.run_id !== session.runId) {
     endOnboarding('skipped')
+  }
+}
+
+let stopWatching: (() => void) | null = null
+
+// Re-read the run on every reconnect and window focus while this window shows one.
+function watchRunEnd(request: OnboardingRequest): void {
+  stopWatching?.()
+
+  const check = () => void reconcileOnboarding(request).catch(error => console.warn('[onboarding] reconcile', error))
+  const offGateway = $gatewayState.listen(state => state === 'open' && check())
+
+  window.addEventListener('focus', check)
+
+  stopWatching = () => {
+    offGateway()
+    window.removeEventListener('focus', check)
   }
 }

@@ -6,12 +6,15 @@ import {
   $onboardingEnded,
   $onboardingSettleFrom,
   decideOnboarding,
-  noteSetupBeatResult,
+  noteOnboardingEnded,
+  reconcileOnboarding,
   skipOnboarding,
   startOnboarding
 } from './onboarding-run'
+import { isOnboardingChat } from './onboarding-session'
 import { $activeGatewayProfile, $freshSessionRequest, $newChatProfile } from './profile'
 import { $connection, $selectedStoredSessionId } from './session'
+import { $sessionTiles } from './session-states'
 
 const ensureProfile = async (): Promise<void> => undefined
 
@@ -20,7 +23,7 @@ const resume = vi.fn(async (storedId: string) => $selectedStoredSessionId.set(st
 
 function backend(state: { eligible: boolean; run: boolean }) {
   const calls: string[] = []
-  const started = { resumed: false, session_id: 'rt-1', stored_session_id: 'st-1' }
+  const started = { resumed: false, run_id: 'run-1', session_id: 'rt-1', stored_session_id: 'st-1' }
 
   const request = async <T,>(method: string): Promise<T> => {
     calls.push(method)
@@ -56,12 +59,12 @@ describe('onboarding run', () => {
     expect(clear).not.toContain(true)
   })
 
-  it('ends once on the model finishing, and frees the first-run surfaces', async () => {
+  it('ends once when the backend reports the run done, and frees the first-run surfaces', async () => {
     const { request } = backend({ eligible: true, run: true })
 
     await startOnboarding(request, resume, { ensureProfile })
-    noteSetupBeatResult(['rt-1', 'st-1'], { completed: true })
-    noteSetupBeatResult(['rt-1', 'st-1'], { skipped_all: true })
+    noteOnboardingEnded({ outcome: 'done', run_id: 'run-1', stored_session_id: 'st-1' })
+    noteOnboardingEnded({ outcome: 'skipped', run_id: 'run-1', stored_session_id: 'st-1' })
 
     expect($onboardingPhase.get()).toBe('done')
     expect($onboardingEnded.get()).toBe('done')
@@ -81,14 +84,40 @@ describe('onboarding run', () => {
     expect($onboardingSettleFrom.get()).not.toBeNull()
   })
 
-  it('ignores a setup_beat result from another chat, like the old run a rerun closed', async () => {
+  it('ignores the end of another run, like the old run a rerun closed', async () => {
     const { request } = backend({ eligible: true, run: true })
     await startOnboarding(request, resume, { ensureProfile })
 
-    noteSetupBeatResult(['rt-old', 'st-old'], { skipped_all: true })
+    noteOnboardingEnded({ outcome: 'replaced', run_id: 'run-old', stored_session_id: 'st-old' })
 
     expect($onboardingPhase.get()).toBe('shown')
     expect($onboardingEnded.get()).toBeNull()
+  })
+
+  it('knows the onboarding chat under the new runtime id a reconnect gives it', async () => {
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+    // SAFETY: storedSessionIdForRuntimeId reads only these two tile fields.
+    $sessionTiles.set([{ runtimeId: 'rt-after-restart', storedSessionId: 'st-1' } as never])
+
+    expect(isOnboardingChat('rt-after-restart')).toBe(true)
+    expect(isOnboardingChat('rt-other')).toBe(false)
+    $sessionTiles.set([])
+  })
+
+  it('ends a run the backend no longer has open when it re-reads the state', async () => {
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+
+    // SAFETY: the fakes answer onboarding.state with its contract result shape.
+    const open = async <T,>(): Promise<T> => ({ eligible: true, run: true, run_id: 'run-1', session_id: 'st-1' }) as T
+    // SAFETY: as above.
+    const reread = async <T,>(): Promise<T> => ({ eligible: true, run: false, run_id: null, session_id: null }) as T
+
+    await reconcileOnboarding(open)
+    expect($onboardingPhase.get()).toBe('shown')
+    await reconcileOnboarding(reread)
+    expect($onboardingEnded.get()).toBe('skipped')
   })
 
   it('stays on the default profile when the start fails', async () => {
@@ -132,11 +161,11 @@ describe('onboarding run', () => {
     // The backend withdraws the old card while the rerun's start is still answering.
     const rerun = async <T,>(method: string): Promise<T> => {
       if (method === 'onboarding.start') {
-        noteSetupBeatResult(['rt-1', 'st-1'], { skipped_all: true })
+        noteOnboardingEnded({ outcome: 'replaced', run_id: 'run-1', stored_session_id: 'st-1' })
       }
 
       // SAFETY: the fake answers onboarding.start with its contract result shape.
-      return { resumed: false, session_id: 'rt-2', stored_session_id: 'st-2' } as T
+      return { resumed: false, run_id: 'run-2', session_id: 'rt-2', stored_session_id: 'st-2' } as T
     }
 
     await startOnboarding(rerun, resume, { ensureProfile, rerun: true })

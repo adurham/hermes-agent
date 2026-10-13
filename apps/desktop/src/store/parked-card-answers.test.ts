@@ -55,7 +55,7 @@ describe('parked card answers', () => {
     expect(answerParkedCard('session-a', 'hello')).toBe(false)
     expect($waiting.get()).toBe(false)
 
-    $onboardingSession.set({ runtimeId: 'session-a', storedId: 'stored-a' })
+    $onboardingSession.set({ runId: 'run-1', runtimeId: 'session-a', storedId: 'stored-a' })
     expect($waiting.get()).toBe(true)
     expect(answerParkedCard('session-a', 'hello')).toBe(true)
     expect(answerParkedCard('session-b', 'hello')).toBe(false)

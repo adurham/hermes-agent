@@ -11,7 +11,7 @@ import { $introCopy } from './intro'
 import { firstRunIntro } from './kickoff'
 
 const size = vi.fn()
-const started: OnboardingStartResult = { resumed: false, session_id: 'rt-1', stored_session_id: 'st-1' }
+const started: OnboardingStartResult = { resumed: false, run_id: 'run-1', session_id: 'rt-1', stored_session_id: 'st-1' }
 const ensureProfile = async (): Promise<void> => undefined
 
 // SAFETY: the fake answers onboarding.start with its contract result; nothing else reads the answer.

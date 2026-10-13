@@ -30,7 +30,7 @@ function parkNameCard(requestId: string, open = true) {
 }
 
 beforeEach(() => {
-  $onboardingSession.set({ runtimeId: 'rt-1', storedId: 'stored-1' })
+  $onboardingSession.set({ runId: 'run-1', runtimeId: 'rt-1', storedId: 'stored-1' })
 })
 
 afterEach(() => {
