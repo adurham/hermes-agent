@@ -1032,6 +1032,8 @@ class CLIInfoMixin:
             if not self._command_running:
                 print(t("cli.reload_skills.reloading"))
             result = reload_skills()
+            from hermes_cli.gateway_tools import reload_gateway_skills
+            result = reload_gateway_skills() or result  # the gateway that runs the turn rescans too
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])
             total = result.get("total", 0)

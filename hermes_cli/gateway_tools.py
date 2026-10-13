@@ -183,3 +183,24 @@ def session_tools():
             tools.append({"type": "function", "function": {"name": row["name"],
                                                            "description": row.get("description") or ""}})
     return tools, toolset_of.get
+
+
+def reload_gateway_skills():
+    """Rescan skills in the gateway session too (its skill-command map serves this session's
+    ``/<skill>`` and bundle invocations); the CLI's own rescan still drives main's output."""
+    view = process_view()
+    if view is None:
+        return None
+    try:
+        return (view.connection.call("skills.reload", session_id=view.session_id) or {}).get("result")
+    except GatewayClientError as exc:
+        logger.debug("skills.reload failed: %s", exc)
+        return None
+
+
+def handle_skills_slash(cmd, console):
+    """Main's ``/skills`` (hub search / install / uninstall write the local skills tree), then the
+    gateway's rescan so an install reaches the skill map the session's turns use."""
+    from hermes_cli.skills_hub import handle_skills_slash as local
+    local(cmd, console)
+    reload_gateway_skills()

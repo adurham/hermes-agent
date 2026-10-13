@@ -29,6 +29,7 @@ def handlers(connection):
         'process.stop': partial(stop_processes, connection),
         'process.kill': partial(kill_process, connection), 'reload.mcp': partial(reload_mcp, connection),
         'file.attach': partial(attach_file, connection), 'tools.show': partial(show_tools, connection),
+        'skills.reload': partial(reload_skills, connection),
         **{name: partial(subagent_control, connection, steer=name == 'subagent.steer')
            for name in ('subagent.steer', 'subagent.interrupt')}}
 
@@ -100,6 +101,35 @@ async def show_tools(connection, ref, params):
         return {'sections': [{'name': n, 'tools': rows} for n, rows in sorted(sections.items())],
                 'total': len(tools or [])}
     return await asyncio.to_thread(build)
+
+
+async def reload_skills(connection, ref, params):
+    """``/reload-skills`` (and the CLI's ``/skills install``): rescan the skill dirs in the owner,
+    whose skill-command map serves this session's skill and bundle invocations. The CLI renders
+    main's lines from ``result`` and queues main's next-turn note itself."""
+    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authority = connection.authority
+    if ref.session_id not in authority.sessions:
+        raise RuntimeStoreError('not_found')
+    authorize(connection, ref, params, 'session:control')
+    from gateway.session_authorities import owner_scope
+    from gateway.session_policy import policy_for_source, policy_scope
+    policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+
+    def rescan():
+        from agent.skill_commands import reload_skills as rescan_skills
+        with owner_scope(authority), policy_scope(policy, authority=authority):
+            return rescan_skills()
+    result = await asyncio.to_thread(rescan)
+    added, removed = result.get('added') or [], result.get('removed') or []
+    lines = ['Reloading skills...'] + ([] if added or removed else ['No new skills detected.'])
+    for label, items in (('Added skills:', added), ('Removed skills:', removed)):
+        if items:
+            lines.append(label)
+            lines.extend(f"  - {item.get('name', '')}" for item in items)
+    lines.append(f"{int(result.get('total') or 0)} skill(s) available")
+    return {'output': '\n'.join(lines), 'result': result}
 
 
 async def attach_file(connection, ref, params):

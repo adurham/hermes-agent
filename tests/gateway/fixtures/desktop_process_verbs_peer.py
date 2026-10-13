@@ -43,6 +43,13 @@ async def probe():
             # The classic CLI's /tools: the session's catalog from the owner (toolsets=[] -> none).
             shown = await rpc(ws, 'tools.show', session_id=sid)
             receipt['tools_show'] = shown.get('result', shown.get('error'))
+            # The classic CLI's /reload-skills: the owner rescans (a skill added on disk shows as added).
+            skill = home / 'skills' / 'test' / 'zeta-skill'
+            skill.mkdir(parents=True)
+            (skill / 'SKILL.md').write_text('---\nname: zeta-skill\ndescription: Zeta.\n---\nZETA\n')
+            reloaded = await rpc(ws, 'skills.reload', session_id=sid)
+            receipt['skills_reload'] = [a.get('name') for a in reloaded.get('result', {}).get('result', {}).get('added', [])] \
+                if 'result' in reloaded else reloaded.get('error')
             # composer-status.ts: per-process Stop.
             kill = await rpc(ws, 'process.kill', process_id=own.id, session_id=sid)
             await asyncio.to_thread(own._completion_event.wait, 10)

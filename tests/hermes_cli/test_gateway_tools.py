@@ -44,6 +44,9 @@ class FakeClient:
             return {"sections": [{"name": "mcp-demo", "tools": [{"name": "mcp_demo_ping", "description": "Ping."}]},
                                  {"name": "terminal", "tools": [{"name": "terminal", "description": "Run."}]}],
                     "total": 2}
+        if method == "skills.reload":
+            return {"output": "", "result": {"added": [{"name": "zeta-skill", "description": "Zeta."}],
+                                             "removed": [], "total": 3}}
         if method == "process.kill":
             return {"status": "killed", "session_id": params["process_id"]}
         return {}
@@ -112,3 +115,17 @@ def test_tools_lists_the_gateway_session_catalog_with_main_rendering(gateway, ca
     assert "  [terminal]\n    * terminal             - Run.\n" in out
     assert "Total: 2 tools" in out
     assert ("tools.show", {"session_id": SID}) in client.calls
+
+
+def test_reload_skills_rescans_in_the_gateway_session_and_prints_main_lines(gateway, capsys, monkeypatch):
+    """/reload-skills rescans where the turn runs; main's lines print from the gateway's diff."""
+    from agent import skill_commands
+    from hermes_cli.cli_info_mixin import CLIInfoMixin
+    _agent, client = gateway
+    monkeypatch.setattr(skill_commands, "reload_skills", lambda: {"added": [], "removed": [], "total": 2})
+    cli = type("C", (), {"_command_running": False})()
+    CLIInfoMixin._reload_skills(cli)
+    out = capsys.readouterr().out
+    assert "zeta-skill" in out and "3 skill(s) available" in out
+    assert ("skills.reload", {"session_id": SID}) in client.calls
+    assert "zeta-skill" in cli._pending_skills_reload_note

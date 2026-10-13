@@ -1576,7 +1576,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             )
             if out is not None:
                 return print(out)
-        from hermes_cli.skills_hub import handle_skills_slash
+        from hermes_cli.gateway_tools import handle_skills_slash  # + the gateway's rescan
         handle_skills_slash(cmd, ChatConsole())
 
     def _handle_memory_command(self, cmd: str):
