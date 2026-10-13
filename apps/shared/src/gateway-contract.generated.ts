@@ -4938,6 +4938,7 @@ export interface CanonicalSessionListRow {
   started_at: number | null
   message_count: number
   running: boolean
+  model?: string | null
   resolved_id?: string | null
   root_title?: string | null
 }

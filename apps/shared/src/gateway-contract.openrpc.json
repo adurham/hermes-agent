@@ -10242,6 +10242,18 @@
             "title": "Running",
             "type": "boolean"
           },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
           "resolved_id": {
             "anyOf": [
               {

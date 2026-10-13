@@ -593,7 +593,22 @@ export function useMainApp(gw: GatewayClient) {
 
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
+  // Exit closes this view's canonical sessions first (main stamped `tui_shutdown` at sidecar exit),
+  // bounded so a dead socket never holds the terminal.
+  const dieFlight = useRef(false)
+  const closeForExitRef = useRef<() => Promise<void>>(async () => undefined)
+
+  const closeViewsForExit = () =>
+    Promise.race([closeForExitRef.current().catch(() => undefined), new Promise(resolve => setTimeout(resolve, 1500))])
+
   const die = useCallback(() => {
+    if (gw.isCanonical && !dieFlight.current) {
+      dieFlight.current = true
+      void closeViewsForExit().then(() => die())
+
+      return
+    }
+
     gw.kill('app.die')
     exit()
     // Ink's exit() calls unmount() which resets terminal modes but does NOT
@@ -607,6 +622,13 @@ export function useMainApp(gw: GatewayClient) {
 
   const dieWithCode = useCallback(
     (code: number) => {
+      if (gw.isCanonical && !dieFlight.current) {
+        dieFlight.current = true
+        void closeViewsForExit().then(() => dieWithCode(code))
+
+        return
+      }
+
       gw.kill(`app.dieWithCode:${code}`)
       exit()
       process.exit(code)
@@ -630,6 +652,8 @@ export function useMainApp(gw: GatewayClient) {
     setVoiceRecording,
     sys
   })
+
+  closeForExitRef.current = session.closeForExit
 
   useEffect(() => {
     if (dashboardFreshSessionId) {

@@ -151,6 +151,7 @@ class CanonicalSessionListRow(Result):
     started_at: float | None
     message_count: int
     running: bool
+    model: str | None = None
     resolved_id: str | None = None
     root_title: str | None = None
 

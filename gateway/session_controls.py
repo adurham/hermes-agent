@@ -394,9 +394,14 @@ class AuthorityConnection:
             if row.get('source') in INTERNAL_LISTING_SOURCES or (
                     not params.get('include_hidden') and (row.get('hidden') or row.get('archived'))):
                 continue
+            from gateway.session_local_close import closed_and_unviewed
+            if closed_and_unviewed(self.authority, sid, handle):
+                # Closed by its last viewer and idle: main lists it as resumable (the stored
+                # feed), not as a live session.
+                continue
             sessions.append({'session_id': sid, 'id': sid, 'title': row.get('title') or '',
                              'source': row.get('source'), 'started_at': row.get('started_at'),
-                             'message_count': row.get('message_count', 0),
+                             'message_count': row.get('message_count', 0), 'model': row.get('model'),
                              'running': handle.execution_state == 'running'})
         sessions.sort(key=lambda row: row['started_at'] or 0, reverse=True)
         return {'sessions': sessions[:limit], 'scope': 'live'}
