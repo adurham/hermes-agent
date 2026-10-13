@@ -20,7 +20,7 @@ export const enFirstRun: FirstRunCopy = {
   noAnswer: 'No answer',
   skippedAll: 'Setup skipped',
   skip: 'Skip setup',
-  skipTip: 'End the guided setup. You can keep chatting here.',
+  skipTip: 'End the guided setup and open a new chat.',
   skipFailed: 'Could not skip setup',
   localModel: {
     title: 'This computer can run a model locally',

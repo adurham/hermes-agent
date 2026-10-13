@@ -20,7 +20,7 @@ export const zhFirstRun: FirstRunCopy = {
   noAnswer: '未回答',
   skippedAll: '已跳过设置',
   skip: '跳过设置',
-  skipTip: '结束引导设置。你可以继续在这里对话。',
+  skipTip: '结束引导设置并打开新对话。',
   skipFailed: '无法跳过设置',
   localModel: {
     title: '这台电脑可以在本地运行模型',

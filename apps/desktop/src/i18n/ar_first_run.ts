@@ -20,7 +20,7 @@ export const arFirstRun: FirstRunCopy = {
   noAnswer: 'لا توجد إجابة',
   skippedAll: 'تم تخطي الإعداد',
   skip: 'تخطي الإعداد',
-  skipTip: 'إنهاء الإعداد الموجَّه. يمكنك متابعة المحادثة هنا.',
+  skipTip: 'إنهاء الإعداد الموجَّه وفتح محادثة جديدة.',
   skipFailed: 'تعذّر تخطي الإعداد',
   localModel: {
     title: 'يمكن لهذا الكمبيوتر تشغيل نموذج محليًا',

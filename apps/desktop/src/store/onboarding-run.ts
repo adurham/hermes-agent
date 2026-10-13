@@ -17,7 +17,7 @@ import type { GatewayRequester } from '@/lib/yolo-session'
 import { activeGatewayConnectionId } from './gateway'
 import { $onboardingPhase } from './onboarding-phase'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from './onboarding-presence'
-import { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile } from './profile'
+import { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $selectedStoredSessionId } from './session'
 import type { SetupBeatToolResult } from './setup-beat'
 
@@ -231,11 +231,13 @@ export function endOnboarding(outcome: 'done' | 'skipped'): void {
   $onboardingSettleFrom.set($onboardingSettleFrom.get() ?? Date.now())
 }
 
-/** Skip setup: the backend ends the run and closes the card that waits. A failed skip leaves the run
- *  going, so Skip setup stays on offer; the caller reports the error. */
+/** Skip setup: the backend ends the run and closes the card that waits, and a new chat opens in the
+ *  profile the window launched on (main's rule). A failed skip leaves the run going, so Skip setup
+ *  stays on offer; the caller reports the error. */
 export async function skipOnboarding(request: OnboardingRequest, runtimeId: string): Promise<void> {
   await request('onboarding.skip', { session_id: runtimeId })
   endOnboarding('skipped')
+  newSessionInProfile(launch?.profile ?? ONBOARDING_PROFILE)
 }
 
 /** A `setup_beat` result that ends the run: `completed` (the model said done) or `skipped_all`. `ids`:

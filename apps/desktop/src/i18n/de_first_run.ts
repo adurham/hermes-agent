@@ -20,7 +20,7 @@ export const deFirstRun: FirstRunCopy = {
   noAnswer: 'Keine Antwort',
   skippedAll: 'Einrichtung übersprungen',
   skip: 'Einrichtung überspringen',
-  skipTip: 'Beendet die geführte Einrichtung. Du kannst hier weiterchatten.',
+  skipTip: 'Beendet die geführte Einrichtung und öffnet einen neuen Chat.',
   skipFailed: 'Einrichtung konnte nicht übersprungen werden',
   localModel: {
     title: 'Dieser Computer kann ein Modell lokal ausführen',

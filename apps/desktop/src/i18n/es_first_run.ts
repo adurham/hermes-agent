@@ -20,7 +20,7 @@ export const esFirstRun: FirstRunCopy = {
   noAnswer: 'Sin respuesta',
   skippedAll: 'Configuración omitida',
   skip: 'Omitir configuración',
-  skipTip: 'Termina la configuración guiada. Puedes seguir chateando aquí.',
+  skipTip: 'Termina la configuración guiada y abre un chat nuevo.',
   skipFailed: 'No se pudo omitir la configuración',
   localModel: {
     title: 'Este ordenador puede ejecutar un modelo localmente',

@@ -10,7 +10,7 @@ import {
   skipOnboarding,
   startOnboarding
 } from './onboarding-run'
-import { $activeGatewayProfile } from './profile'
+import { $activeGatewayProfile, $freshSessionRequest, $newChatProfile } from './profile'
 import { $connection, $selectedStoredSessionId } from './session'
 
 const ensureProfile = async (): Promise<void> => undefined
@@ -99,6 +99,20 @@ describe('onboarding run', () => {
     expect(await startOnboarding(refuse, resume, { ensureProfile: switched })).toBe(false)
     expect(switched.mock.calls).toEqual([['default'], ['work']])
     $activeGatewayProfile.set('default')
+  })
+
+  it('opens a new chat in the launch profile on Skip setup', async () => {
+    $activeGatewayProfile.set('work')
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+    const fresh = $freshSessionRequest.get()
+
+    await skipOnboarding(request, 'rt-1')
+    $activeGatewayProfile.set('default')
+
+    expect($onboardingEnded.get()).toBe('skipped')
+    expect($freshSessionRequest.get()).toBe(fresh + 1)
+    expect($newChatProfile.get()).toBe('work')
   })
 
   it('keeps the run when the backend refuses the skip', async () => {

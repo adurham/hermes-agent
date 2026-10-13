@@ -20,7 +20,7 @@ export const jaFirstRun: FirstRunCopy = {
   noAnswer: '回答なし',
   skippedAll: 'セットアップをスキップしました',
   skip: 'セットアップをスキップ',
-  skipTip: 'ガイド付きセットアップを終了します。このままチャットを続けられます。',
+  skipTip: 'ガイド付きセットアップを終了し、新しいチャットを開きます。',
   skipFailed: 'セットアップをスキップできませんでした',
   localModel: {
     title: 'このコンピューターはモデルをローカルで実行できます',
