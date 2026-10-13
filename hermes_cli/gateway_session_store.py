@@ -387,20 +387,16 @@ def session_store():
 def create_titled_session(title):
     """``chat -c <title> --create-if-missing`` for the classic CLI: the gateway's ``session.create``
     with ``title`` (it resolves-or-creates under one owner lock), so this process writes no row.
-    Main's ``_create_titled_session`` minted the id and wrote the row itself. Returns the id, or
-    None when the gateway refused (the caller prints main's "could not be created" copy)."""
+    Main's ``_create_titled_session`` minted the id and wrote the row itself, with no cwd stamp
+    (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
+    "could not be created" copy)."""
     params = _creation_policy({})
     params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
+    params["row_cwd"] = ""
     try:
-        snapshot = GatewayConnection.shared().call("session.create", request_id=uuid.uuid4().hex,
-                                                   title=title, **params)
+        snapshot = session_store().call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None
     return snapshot["stored_session_id"]
-
-    """``chat -c NAME --create-if-missing`` (main's ``_create_titled_session``): the gateway creates the
-    titled session; the CLI resumes the id it returns. Launch flags are applied by the CLI's own
-    session open, as main's bare row took them at agent build."""
-    return session_store().create(title=title, record_cwd=False)

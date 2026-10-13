@@ -348,6 +348,72 @@ def test_moa_reference_maps_index_and_count_to_mains_kwargs(make_agent):
     assert seen[0][1] == {"moa_index": 1, "moa_count": 2}
 
 
+def test_agent_follows_mains_session_id_switch(make_agent):
+    """/new, /resume and /branch point ``agent.session_id`` at another session: the agent attaches to it
+    (``session.resume``) and reads that session's state."""
+    agent, client = make_agent([])
+    agent.connection.state("local-other").info = {"model": "other-model"}
+    agent.session_id = "local-other"
+    assert agent.session_id == "local-other"
+    assert ("session.resume", {"session_id": "local-other"}) in client.calls
+    agent.connection.state("local-other").apply_usage({"api_calls": 3, "input_tokens": 9})
+    assert agent.session_api_calls == 3
+
+
+def test_turn_after_a_rewind_anchors_on_its_first_response(make_agent):
+    """/undo and /retry bump the session's runtime generation, so the gateway rebuilds its agent and the
+    cumulative counters restart below this viewer's turn base. The turn still completed an API call:
+    the bar anchors on its reply (no `~`), as main's does after /retry."""
+    usage = dict(SESSION_USAGE, context_tokens=120, api_calls=1)
+    agent, client = make_agent([frame("message.complete", {"text": "done", "outcome": "completed"})],
+                               result={"final_response": "done", "api_calls": 1})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.session_api_calls = 4  # the previous agent's cumulative count
+    agent.run_conversation("again", conversation_history=[{"role": "user", "content": "a"},
+                                                          {"role": "assistant", "content": "b"}])
+    msgs = agent._session_messages
+    assert agent._turn_base_usage_anchor["base_count"] == len(msgs) - 1  # through the ask; reply follows
+
+
+def test_verbose_mode_reaches_the_gateway_session(make_agent):
+    """``/verbose`` / ``/focus`` write ``agent.tool_progress_mode``: the gateway renders tool events in
+    that mode (``config.set verbose`` with the explicit mode, never ``cycle``)."""
+    agent, client = make_agent([])
+    agent.tool_progress_mode = "verbose"
+    agent.tool_progress_mode = "verbose"
+    agent.tool_progress_mode = "off"
+    # Own key only: the stand-in also sends show_reasoning at build (the reasoning-sink test above).
+    sets = [p for m, p in client.calls if m == "config.set" and p.get("key") == "verbose"]
+    assert sets == [{"session_id": SID, "key": "verbose", "value": "verbose"},
+                    {"session_id": SID, "key": "verbose", "value": "off"}]
+
+
+def test_a_non_default_verbose_mode_is_sent_when_the_agent_is_built(make_agent):
+    _agent, client = make_agent([], tool_progress_mode="new")
+    assert {"session_id": SID, "key": "verbose", "value": "new"} in [p for m, p in client.calls if m == "config.set"]
+
+
+def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
+    """``/reasoning high`` sets ``reasoning_config`` and rebuilds the agent: the rebuilt agent commits
+    the effort as ``session.mutate reasoning`` (session scope, as main's), once."""
+    agent, client = make_agent([], reasoning_config={"enabled": True, "effort": "high"})
+    mut = [p for m, p in client.calls if m == "session.mutate"]
+    assert len(mut) == 1 and mut[0]["operation"] == "reasoning" and mut[0]["payload"] == {"effort": "high"}
+    agent.reasoning_config = {"enabled": False}
+    mut = [p for m, p in client.calls if m == "session.mutate"]
+    assert mut[-1]["payload"] == {"effort": "none"}
+    agent.connection.state(SID).info["reasoning_effort"] = "none"
+    agent2 = GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": False})
+    assert len([p for m, p in client.calls if m == "session.mutate"]) == 2  # already the session's effort
+    assert agent2.reasoning_config == {"enabled": False}
+
+
 def test_reasoning_sink_sets_the_sessions_show_reasoning_flag_on_attach_and_toggle(make_agent):
     """Main: a reasoning sink on the agent (show_reasoning, or verbose) makes the agent request and
     stream reasoning. The gateway session gets the same switch at construction and on every toggle."""
@@ -450,27 +516,6 @@ def test_gateway_clarify_batch_request_opens_mains_batch_panel(make_agent):
     assert replies == [("srq-clr", {"answers": {"q0": "red", "q1": '["s", "l"]'}, "outcome": "submitted"})]
 
 
-def test_agent_follows_mains_session_id_switch(make_agent):
-    """/new, /resume and /branch point ``agent.session_id`` at another session: the agent attaches to it
-    (``session.resume``) and reads that session's state."""
-    agent, client = make_agent([])
-    agent.connection.state("local-other").info = {"model": "other-model"}
-    agent.session_id = "local-other"
-    assert agent.session_id == "local-other"
-    assert ("session.resume", {"session_id": "local-other"}) in client.calls
-    agent.connection.state("local-other").apply_usage({"api_calls": 3, "input_tokens": 9})
-    assert agent.session_api_calls == 3
-
-
-def test_turn_after_a_rewind_anchors_on_its_first_response(make_agent):
-    """/undo and /retry bump the session's runtime generation, so the gateway rebuilds its agent and the
-    cumulative counters restart below this viewer's turn base. The turn still completed an API call:
-    the bar anchors on its reply (no `~`), as main's does after /retry."""
-    usage = dict(SESSION_USAGE, context_tokens=120, api_calls=1)
-    agent, client = make_agent([frame("message.complete", {"text": "done", "outcome": "completed"})],
-                               result={"final_response": "done", "api_calls": 1})
-
-
 def test_a_mid_turn_steer_row_is_estimated_delta_like_main(make_agent):
     """Main anchors the bar on the turn's first response priced over the history through the turn's
     own ask; a /steer delivered mid-turn is a later user-role row, so it is delta and the bar shows `~`."""
@@ -489,13 +534,6 @@ def test_a_mid_turn_steer_row_is_estimated_delta_like_main(make_agent):
             return usage
         return await original(method, _timeout=_timeout, **params)
     client.rpc = rpc
-    agent.session_api_calls = 4  # the previous agent's cumulative count
-    agent.run_conversation("again", conversation_history=[{"role": "user", "content": "a"},
-                                                          {"role": "assistant", "content": "b"}])
-    msgs = agent._session_messages
-    assert agent._turn_base_usage_anchor["base_count"] == len(msgs) - 1  # through the ask; reply follows
-
-
     agent.run_conversation("slow", conversation_history=[{"role": "user", "content": "a"},
                                                           {"role": "assistant", "content": "b"}])
     assert agent._turn_base_usage_anchor["base_count"] == 3  # history + the ask, not the steer row
@@ -596,38 +634,6 @@ def test_voice_turn_flag_rides_prompt_submit(make_agent):
     agent._voice_turn_pending = False
     agent.run_conversation("typed")
     assert "voice_turn" not in dict(client.calls)["prompt.submit"]
-
-
-def test_verbose_mode_reaches_the_gateway_session(make_agent):
-    """``/verbose`` / ``/focus`` write ``agent.tool_progress_mode``: the gateway renders tool events in
-    that mode (``config.set verbose`` with the explicit mode, never ``cycle``)."""
-    agent, client = make_agent([])
-    agent.tool_progress_mode = "verbose"
-    agent.tool_progress_mode = "verbose"
-    agent.tool_progress_mode = "off"
-    sets = [p for m, p in client.calls if m == "config.set"]
-    assert sets == [{"session_id": SID, "key": "verbose", "value": "verbose"},
-                    {"session_id": SID, "key": "verbose", "value": "off"}]
-
-
-def test_a_non_default_verbose_mode_is_sent_when_the_agent_is_built(make_agent):
-    _agent, client = make_agent([], tool_progress_mode="new")
-    assert {"session_id": SID, "key": "verbose", "value": "new"} in [p for m, p in client.calls if m == "config.set"]
-
-
-def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
-    """``/reasoning high`` sets ``reasoning_config`` and rebuilds the agent: the rebuilt agent commits
-    the effort as ``session.mutate reasoning`` (session scope, as main's), once."""
-    agent, client = make_agent([], reasoning_config={"enabled": True, "effort": "high"})
-    mut = [p for m, p in client.calls if m == "session.mutate"]
-    assert len(mut) == 1 and mut[0]["operation"] == "reasoning" and mut[0]["payload"] == {"effort": "high"}
-    agent.reasoning_config = {"enabled": False}
-    mut = [p for m, p in client.calls if m == "session.mutate"]
-    assert mut[-1]["payload"] == {"effort": "none"}
-    agent.connection.state(SID).info["reasoning_effort"] = "none"
-    agent2 = GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": False})
-    assert len([p for m, p in client.calls if m == "session.mutate"]) == 2  # already the session's effort
-    assert agent2.reasoning_config == {"enabled": False}
 
 
 def test_fast_tier_reaches_the_session_on_each_rebuild_and_back_to_normal(make_agent):

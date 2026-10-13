@@ -133,9 +133,6 @@ def test_classic_view_title_and_usage_match_main(tmp_path):
 
 
 @pytest.mark.platforms("linux")
-@pytest.mark.xfail(strict=True, reason="not on the gateway session yet: GatewaySessionStore.rewind_user_turn "
-                   "refuses (/retry, /undo) and /new <title>'s rename is not_found. Main's behaviour is "
-                   "asserted so the gap stays visible.")
 def test_classic_view_retry_undo_new_match_main(tmp_path):
     with classic_session(tmp_path) as (send, screen, db, session_id):
         send("first question", "RECOVERY_ACK_first question")

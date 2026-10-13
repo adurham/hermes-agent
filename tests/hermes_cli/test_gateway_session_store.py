@@ -341,12 +341,6 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]
 
 
-def test_run_budget_flag_rides_session_create():
-    from hermes_cli.gateway_session_store import _creation_policy
-    assert _creation_policy({"run_budget": 90})["run_budget"] == 90.0
-    assert "run_budget" not in _creation_policy({"run_budget": None})
-
-
 def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):
     """Bare ``-c`` (main.py ``_resolve_last_session``) reads main's labels too: a gateway row labelled
     ``local`` that the CLI created is CLI history."""
@@ -379,12 +373,6 @@ def test_start_and_quit_closes_the_gateway_session_with_no_agent():
     assert CLITuiRuntimeMixin._closing_session_id(host) is None
     host.agent = types.SimpleNamespace(session_id="local-agent")
     assert CLITuiRuntimeMixin._closing_session_id(host) == "local-agent"
-
-
-def test_verbose_flag_rides_session_create():
-    from hermes_cli.gateway_session_store import _creation_policy
-    assert _creation_policy({"verbose": True})["verbose"] is True
-    assert "verbose" not in _creation_policy({"verbose": None})
 
 
 def test_yolo_toggle_persists_as_the_gateway_session_yolo(store):

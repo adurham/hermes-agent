@@ -90,10 +90,6 @@ class GatewayAgent:
         self.api_key = None  # never on this side of the wire
         self.max_iterations = max_iterations
         self.quiet_mode = quiet_mode
-        self.service_tier = service_tier
-
-        self.tool_progress_mode = tool_progress_mode
-        self.reasoning_config = reasoning_config
         self._service_tier = None
         self.clarify_callback = clarify_callback
         self.connection_callback = connection_callback
@@ -165,28 +161,6 @@ class GatewayAgent:
         state.usage_listeners.append(self.apply_session_usage)
         if state.usage:
             self.apply_session_usage(state.usage)
-
-    # -- reasoning display -------------------------------------------------------------------
-    @property
-    def reasoning_callback(self):
-        return self._reasoning_callback
-
-    @reasoning_callback.setter
-    def reasoning_callback(self, callback):
-        """Main installs a reasoning sink at construction and on ``/reasoning show|hide`` / verbose; the
-        sink's presence is what makes the agent ask the provider for reasoning. The gateway agent
-        gets the same switch: the session's ``show_reasoning`` display flag, sent on each change."""
-        self._reasoning_callback = callback
-        wanted = (self.session_id, callback is not None)
-        if wanted == self._show_reasoning_sent:  # per session: a rotated id gets its own flag
-            return
-        try:
-            self.connection.call("config.set", session_id=self.session_id, key="show_reasoning",
-                                 value="1" if wanted[1] else "0", timeout=10)
-        except GatewayClientError as exc:
-            logger.debug("config.set show_reasoning failed: %s", exc)
-            return
-        self._show_reasoning_sent = wanted
 
     # -- session-scope settings ------------------------------------------------------------------
     @property
@@ -260,6 +234,28 @@ class GatewayAgent:
         self._apply_info(state.info)
         if state.usage:
             self.apply_session_usage(state.usage)
+
+    # -- reasoning display -------------------------------------------------------------------
+    @property
+    def reasoning_callback(self):
+        return self._reasoning_callback
+
+    @reasoning_callback.setter
+    def reasoning_callback(self, callback):
+        """Main installs a reasoning sink at construction and on ``/reasoning show|hide`` / verbose; the
+        sink's presence is what makes the agent ask the provider for reasoning. The gateway agent
+        gets the same switch: the session's ``show_reasoning`` display flag, sent on each change."""
+        self._reasoning_callback = callback
+        wanted = (self.session_id, callback is not None)
+        if wanted == self._show_reasoning_sent:  # per session: a rotated id gets its own flag
+            return
+        try:
+            self.connection.call("config.set", session_id=self.session_id, key="show_reasoning",
+                                 value="1" if wanted[1] else "0", timeout=10)
+        except GatewayClientError as exc:
+            logger.debug("config.set show_reasoning failed: %s", exc)
+            return
+        self._show_reasoning_sent = wanted
 
     @property
     def service_tier(self):
@@ -854,24 +850,18 @@ class GatewayAgent:
         # Main anchors on the turn's FIRST response, priced over the transcript through the turn's ask.
         # A turn with no completed call (interrupted before a response) keeps the previous anchor, so
         # its ask is estimated delta too.
-        last_user = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
-                         len(messages) - 1)
-        # The gateway rebuilds its agent after a rewind (/undo, /retry bump the runtime generation), so
-        # its cumulative counter can restart below this viewer's turn base: a lower count is a new agent
-        # that made calls this turn, never "no call".
-        calls = self.session_api_calls
-        base = last_user + 1 if calls > self._turn_calls_base or 0 < calls < self._turn_calls_base else last_user
-
         # The turn's own ask, never a later user-role row of the same turn (a mid-turn /steer row).
         ask = getattr(self, "_turn_ask_index", None)
         last_user = ask if isinstance(ask, int) and 0 <= ask < len(messages) and messages[ask].get("role") == "user" \
             else next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
                       len(messages) - 1)
         # Did this turn complete an API call? The turn result's own count when the gateway sent one: a
-        # rebuilt gateway agent (/personality, /model) restarts its session counters, so the cumulative
-        # delta can read "no call" for a turn that answered.
+        # rebuilt gateway agent (/personality, /model, and /undo, /retry bumping the runtime generation)
+        # restarts its session counters, so the cumulative delta can read "no call" for a turn that
+        # answered; without that count a LOWER cumulative is a new agent that made calls, never "no call".
         turn_calls = self._turn_api_calls
-        made_call = turn_calls > 0 if isinstance(turn_calls, int) else self.session_api_calls > self._turn_calls_base
+        calls, turn_base = self.session_api_calls, self._turn_calls_base
+        made_call = turn_calls > 0 if isinstance(turn_calls, int) else (calls > turn_base or 0 < calls < turn_base)
         base = last_user + 1 if made_call else last_user
         if base <= 0:
             self._turn_base_usage_anchor = None
