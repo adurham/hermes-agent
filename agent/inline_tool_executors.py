@@ -227,12 +227,16 @@ def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
-    # The run record lives on the session row and the card callback on the agent.
+    # The run record lives on the session row and the card callback on the agent. A card the user wrote
+    # past ends the turn as a new message does: setup_beat runs inline (never parallel), so its result is
+    # kept and the loop stops before the next model call.
+    from agent.interrupt_control import _REASON_NEW_MESSAGE
     from tools.setup_beat_tool import setup_beat_tool
 
     return setup_beat_tool(
         args, db=getattr(agent, "_session_db", None), session_id=getattr(agent, "session_id", None) or "",
         tool_call_id=ctx.tool_call_id or "", callback=getattr(agent, "setup_beat_callback", None),
+        end_turn=lambda: agent.interrupt(tool_reason=_REASON_NEW_MESSAGE),
     )
 
 

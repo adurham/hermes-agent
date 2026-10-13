@@ -10,8 +10,8 @@ import pytest
 
 from agent import onboarding_flow as flow
 from agent.onboarding_flow import (
-    DONE, PENDING, SHOWN, SKIPPED, Answered, Applied, Done, Facts, End, Recorded, Said, Shown, Skipped,
-    TimedOut, apply, new_record, next_beat,
+    DONE, PENDING, SHOWN, SKIPPED, Answered, Applied, Done, Facts, End, Recorded, Shown, Skipped,
+    TimedOut, Wrote, apply, new_record, next_beat,
 )
 from agent.onboarding_first_tasks import eligible_tasks
 from agent.onboarding_text import _LOOK_AROUND, opening_prompt, reminder, turn_note
@@ -90,18 +90,18 @@ def test_the_full_name_never_reaches_the_record_or_the_opening(machine):
 
 
 def test_run_hrs0_typed_answer_is_applied_and_never_reshows_the_card():
-    """hrs0: "elite sounds like my type ;)" got a second layout picker. Typed words close the card;
-    the model applies them with set_theme and the hook settles the beat."""
+    """hrs0: "elite sounds like my type ;)" got a second layout picker. A message closes the card and
+    comes as the next turn; the model applies it with set_theme and the hook settles the beat."""
     facts = MACHINES["mac"]
     steps = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"),
-                Answered("theme", {"accent": "Ultraviolet"}), Shown("layout"),
-                Said("layout", "elite sounds like my type ;)"),
+                Answered("theme", {"accent": "Ultraviolet"}), Shown("layout"), Wrote("layout"),
                 Applied("set_theme", {"layout": "terminal-deck"}, {"success": True, "applied": {"layout": "terminal-deck"}}))
 
-    said, applied = steps[-2], steps[-1]
-    assert said.result == {"beat": "layout", "said": "elite sounds like my type ;)"}
-    assert said.record["waiting"] is None and said.record["beats"]["layout"] == SHOWN
-    assert "apply it yourself" in reminder("said", said.record, facts, "layout")
+    wrote, applied = steps[-2], steps[-1]
+    assert wrote.result == {"beat": "layout", "wrote_instead": True}
+    assert wrote.record["waiting"] is None and wrote.record["beats"]["layout"] == SHOWN
+    assert "wrote a message instead" in reminder(wrote.reminder, wrote.record, facts, "layout")
+    assert "apply it yourself" in turn_note(wrote.record)
     assert applied.record["beats"]["layout"] == DONE and applied.record["picks"]["layout"] == "terminal-deck"
     assert next_beat(applied.record) == "connectors"
 
@@ -110,7 +110,7 @@ def test_set_theme_settling_the_layout_beat_tells_the_model_the_next_beat():
     """Without a reminder the model recorded the applied layout with setup_beat and was refused."""
     facts = MACHINES["mac"]
     steps = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"),
-                Answered("theme", {"accent": "Ultraviolet"}), Shown("layout"), Said("layout", "basic"),
+                Answered("theme", {"accent": "Ultraviolet"}), Shown("layout"), Wrote("layout"),
                 Applied("set_theme", {"layout": "sidebar-left"}, {"success": True, "applied": {"layout": "sidebar-left"}}),
                 Applied("set_theme", {"layout": "terminal-deck"}, {"success": True, "applied": {"layout": "terminal-deck"}}))
 
@@ -147,11 +147,11 @@ def test_run_hrs0_off_script_questions_keep_one_card_and_continue_settles_it():
     facts = MACHINES["mac"]
     events = [Shown("name"), Answered("name", {"name": "Sid"}), Skipped("theme"), Skipped("layout")]
     for question in ("tell me about SpaceX first", "who runs it?"):
-        events += [Shown("connectors", question), Said("connectors", question)]
-    events += [Shown("connectors"), Said("connectors", "continue"), Recorded("connectors", "continue")]
+        events += [Shown("connectors", question), Wrote("connectors")]
+    events += [Shown("connectors"), Wrote("connectors"), Recorded("connectors", "continue")]
     steps = run(facts, *events)
 
-    assert all(step.record["waiting"] is None for step in steps if isinstance(step.result.get("said"), str))
+    assert all(step.record["waiting"] is None for step in steps if step.result.get("wrote_instead"))
     assert steps[-1].result == {"recorded": "connectors", "next": "plugins"}
     assert steps[-1].record["beats"]["connectors"] == DONE
 
@@ -165,7 +165,7 @@ def test_run_3ofn_pick_for_me_applies_layout_and_the_look_around_offer_waits_for
     """3ofn: "look around and pick one for me" ended in Elite through set_theme. The offer no longer
     rides the layout result: it comes back on the first try to show the connectors card."""
     facts = MACHINES["mac"]
-    steps = run(facts, *TO_LAYOUT, Said("layout", "look around and pick one for me"), LAYOUT_SET)
+    steps = run(facts, *TO_LAYOUT, Wrote("layout"), LAYOUT_SET)
 
     assert steps[-1].record["beats"]["layout"] == DONE and steps[-1].record["look_around"] == "not_offered"
     assert "look around" not in reminder("after_layout", steps[-1].record, facts)
@@ -254,7 +254,7 @@ def test_out_of_order_card_leaves_earlier_pending_beats_for_next():
 
 def test_a_later_card_settles_an_earlier_card_left_open():
     facts = MACHINES["mac"]
-    step = run(facts, Shown("name"), Said("name", "hi"), Shown("theme"))[-1]
+    step = run(facts, Shown("name"), Wrote("name"), Shown("theme"))[-1]
 
     assert step.record["beats"]["name"] == DONE and step.record["beats"]["theme"] == SHOWN
 
@@ -401,7 +401,8 @@ def test_a_layout_or_theme_given_in_words_is_applied_by_set_theme_not_recorded()
     for beat, value in [("layout", "terminal-deck"), ("theme", "Ultraviolet")]:
         step = apply(new_record(facts), Recorded(beat, value), facts, now=1.0)
         assert "set_theme" in step.result["error"] and step.record["beats"][beat] == PENDING
-    assert '"name":"set_theme"' in reminder("said", new_record(facts), facts, "layout")
+    record = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Skipped("theme"), Shown("layout"))[-1].record
+    assert '"name":"set_theme"' in turn_note(record)
 
 
 def test_no_turn_note_once_every_card_is_settled():

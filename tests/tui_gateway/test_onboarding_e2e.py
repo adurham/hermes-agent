@@ -34,8 +34,10 @@ def chat(tmp_path, monkeypatch):
     db.create_session(STORED, "desktop")
     onboarding_record.start(db, STORED, FACTS)
     monkeypatch.setitem(server._sessions, SID, {"session_key": STORED, "source": "desktop"})
+    ended = []
     agent = SimpleNamespace(_session_db=db, session_id=STORED, valid_tool_names={"setup_beat", "set_theme"},
-                            setup_beat_callback=server._agent_cbs(SID)["setup_beat_callback"])
+                            setup_beat_callback=server._agent_cbs(SID)["setup_beat_callback"],
+                            interrupt=lambda **kw: ended.append(kw), _gateway_turn_context_notes="")
     desktop = SimpleNamespace(cards=[], replies=[])
 
     def answer(frame):
@@ -47,7 +49,7 @@ def chat(tmp_path, monkeypatch):
     monkeypatch.setattr(server_requests, "_answerable", lambda _sid: True)
     monkeypatch.setattr(server_requests, "_write", answer)
     monkeypatch.setattr(server_requests, "_emit", lambda *a: None)
-    return SimpleNamespace(db=db, agent=agent, desktop=desktop, home=home)
+    return SimpleNamespace(db=db, agent=agent, desktop=desktop, home=home, ended=ended)
 
 
 def beat(chat, reply=None, **args):
@@ -63,9 +65,10 @@ def test_every_beat_from_the_name_card_to_done(chat):
 
     assert beat(chat, {"answer": {"accent": "Ultraviolet"}}, beat="next")["next"] == "layout"
 
-    # Typed instead of picking: the card closes, the model applies the pick itself through set_theme.
-    typed = beat(chat, {"said": "elite please"}, beat="next")
-    assert typed["said"] == "elite please"
+    # Typed instead of picking: the card closes, the words are the next turn, the model applies the pick
+    # itself through set_theme.
+    typed = beat(chat, {"wrote_instead": True}, beat="next")
+    assert typed["wrote_instead"] is True
     observe_tool_result(chat.agent, "set_theme", {"layout": "terminal-deck"},
                         json.dumps({"success": True, "applied": {"layout": "terminal-deck"}}))
 
@@ -91,6 +94,22 @@ def test_every_beat_from_the_name_card_to_done(chat):
     onboarding = read_user_config_raw(chat.home / "config.yaml")["onboarding"]
     assert onboarding["run"] is False and onboarding["seen"]["profile_build_offered"] is True
     assert "error" in beat(chat, beat="next")
+
+
+def test_a_message_written_while_a_card_waits_ends_the_turn_and_the_next_turn_brings_the_card_back(chat):
+    beat(chat, {"answer": {"name": "Sid"}}, beat="name")
+    beat(chat, {"answer": {"accent": "Ultraviolet"}}, beat="next")
+
+    closed = beat(chat, {"wrote_instead": True}, beat="next")
+
+    assert closed["beat"] == "layout" and closed["wrote_instead"] is True and "said" not in closed
+    assert chat.ended == [{"tool_reason": "user sent a new message"}]
+    # Their message starts the next turn; its note names the closed card, how a typed answer applies it,
+    # and how to bring it back.
+    server._stage_onboarding_turn_note(SID, chat.agent, history_empty=False)
+    note = chat.agent._gateway_turn_context_notes
+    assert "the layout card is closed" in note and 'setup_beat(beat="layout")' in note
+    assert '"layout":"sidebar-left" or "terminal-deck"' in note
 
 
 def test_skip_setup_on_the_card_ends_onboarding(chat, monkeypatch):

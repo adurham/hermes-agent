@@ -64,10 +64,12 @@ def _direct_event(beat: str, args: Mapping[str, Any]) -> flow.Event | None:
 def _reply_event(beat: str, reply: Mapping[str, Any] | None) -> flow.Event:
     reply = reply or {}
     said = reply.get("said")
-    if isinstance(said, str) and said.strip():
+    if beat == "name" and isinstance(said, str) and said.strip():
         # Words typed while the name card waits are the name, like its own text box.
-        return (flow.Answered(beat, {"name": said.strip()}, said.strip()) if beat == "name"
-                else flow.Said(beat, said.strip(), _present(beat)))
+        return flow.Answered(beat, {"name": said.strip()}, said.strip())
+    if reply.get("wrote_instead"):
+        # A message sent instead of answering: the desktop sends it as the user's next turn.
+        return flow.Wrote(beat, _present(beat))
     answer = reply.get("answer")
     return flow.Answered(beat, answer) if isinstance(answer, dict) and answer else flow.TimedOut(beat, _present(beat))
 
@@ -100,9 +102,11 @@ def _card(beat: str, step: flow.Step, args: Mapping[str, Any]) -> dict:
 
 
 def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", tool_call_id: str = "",
-                    callback: Callable[[dict], dict | None] | None = None) -> str:
-    """``callback(payload) -> {answer?, said?} | {timed_out: true} | None`` asks the desktop to show
-    ``{beat, question, card}`` and blocks until the user answers or the card closes."""
+                    callback: Callable[[dict], dict | None] | None = None,
+                    end_turn: Callable[[], object] | None = None) -> str:
+    """``callback(payload) -> {answer?} | {said} | {wrote_instead: true} | None`` asks the desktop to show
+    ``{beat, question, card}`` and blocks until the user answers or the card closes. ``end_turn`` ends the
+    agent's turn once this result is in: a card the user wrote past, whose message is the next turn."""
     from agent import onboarding_record as records
 
     beat = args.get("beat")
@@ -130,7 +134,12 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
     if after is not None and after["phase"] == flow.PHASE_SKIPPED:
         # Skip setup closed the card (onboarding.skip already wrote the record).
         return _result(flow.Step(after, {"skipped_all": True}, "skip_all"))
-    return _result(records.advance(db, session_id, _reply_event(beat, reply)), beat)
+    event = _reply_event(beat, reply)
+    result = _result(records.advance(db, session_id, event), beat)
+    if isinstance(event, flow.Wrote) and end_turn is not None:
+        # Otherwise the model answers a card the user moved past while their message waits for the turn to end.
+        end_turn()
+    return result
 
 
 SETUP_BEAT_SCHEMA = {

@@ -40,17 +40,19 @@ def machine(monkeypatch):
 
 @pytest.fixture
 def desktop():
-    """A card answerer: replies come off a queue; every payload it was shown is kept."""
-    shown, replies = [], []
+    """A card answerer: replies come off a queue; every payload it was shown is kept, and every time the
+    tool ended the agent's turn."""
+    shown, replies, ended = [], [], []
 
     def answer(payload):
         shown.append(payload)
         return replies.pop(0) if replies else None
-    return SimpleNamespace(shown=shown, replies=replies, answer=answer)
+    return SimpleNamespace(shown=shown, replies=replies, answer=answer, ended=ended)
 
 
 def call(db, desktop, call_id="call_1", **args):
-    agent = SimpleNamespace(_session_db=db, session_id=SID, setup_beat_callback=desktop.answer)
+    agent = SimpleNamespace(_session_db=db, session_id=SID, setup_beat_callback=desktop.answer,
+                            interrupt=lambda **kw: desktop.ended.append(kw))
     return json.loads(INLINE_TOOL_EXECUTORS["setup_beat"](agent, args, InlineToolContext("task", call_id)))
 
 
@@ -78,28 +80,33 @@ def test_next_shows_the_first_open_beat_and_the_name_card_offers_the_account_nam
     # Words typed while the name card waits are the name; the account name reaches the model only if picked.
     assert result["answer"] == {"name": "Ada"} and "Ada Lovelace" not in json.dumps(result)
     assert result["said"] == "Ada"  # drawn as the user's bubble, not a receipt
+    assert desktop.ended == []  # the name answered the card: the turn goes on
 
 
-def test_no_answer_closes_the_card_and_typed_words_come_back_as_said(db, desktop):
+def test_a_message_sent_while_a_card_waits_closes_it_unanswered_and_ends_the_turn(db, desktop):
     onboarding_record.start(db, SID, FACTS)
     timed_out = call(db, desktop, beat="layout")
-    desktop.replies.append({"said": "what is Elite?"})
-    said = call(db, desktop, beat="layout", call_id="call_2")
+    desktop.replies.append({"wrote_instead": True})
+    wrote = call(db, desktop, beat="layout", call_id="call_2")
 
     assert timed_out["timed_out"] is True and "closed without an answer" in timed_out["reminder"]
-    assert said["said"] == "what is Elite?" and 'setup_beat(beat="layout")' in said["reminder"]
-    assert onboarding_record.load(db, SID)["waiting"] is None
+    # The message is the user's own next turn: the result carries none of it, and the turn ends on it.
+    assert wrote["beat"] == "layout" and wrote["wrote_instead"] is True and "said" not in wrote
+    assert "wrote a message instead" in wrote["reminder"]
+    assert desktop.ended == [{"tool_reason": "user sent a new message"}]
+    record = onboarding_record.load(db, SID)
+    assert record["waiting"] is None and record["beats"]["layout"] == "shown"
 
 
 def test_a_card_closed_by_words_a_value_or_the_deadline_reports_what_is_connected_and_installed(db, desktop):
     onboarding_record.start(db, SID, FACTS)
     timed_out = call(db, desktop, beat="plugins")
     call(db, desktop, beat="connectors", call_id="call_2")  # refused once: the look-around offer
-    desktop.replies.append({"said": "done"})
-    said = call(db, desktop, beat="connectors", call_id="call_3")
+    desktop.replies.append({"wrote_instead": True})
+    wrote = call(db, desktop, beat="connectors", call_id="call_3")
     continued = call(db, desktop, beat="connectors", value="continue")
 
-    assert timed_out["installed"] == ["blender"] and said["connected"] == ["slack"]
+    assert timed_out["installed"] == ["blender"] and wrote["connected"] == ["slack"]
     assert continued["connected"] == ["slack"] and "Connected: slack" in continued["reminder"]
     assert onboarding_record.load(db, SID)["picks"]["installed"] == ["blender"]
 

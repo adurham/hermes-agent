@@ -33619,7 +33619,7 @@
       },
       "SetupBeatResult": {
         "additionalProperties": false,
-        "description": "``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend\nrejects any other answer). ``said`` is composer text typed while the card waited. A response\nwith neither, or none within 300 s, closes the card unanswered.",
+        "description": "``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend\nrejects any other answer). ``said`` is composer text typed while the name card waited: the name.\n``wrote_instead``: the user sent a message instead of answering; the backend ends the turn and the\nclient sends that message as the next one. A response with none of these, or none within 300 s,\ncloses the card unanswered.",
         "properties": {
           "answer": {
             "anyOf": [
@@ -33662,6 +33662,11 @@
             ],
             "default": null,
             "title": "Said"
+          },
+          "wrote_instead": {
+            "default": false,
+            "title": "Wrote Instead",
+            "type": "boolean"
           }
         },
         "title": "SetupBeatResult",

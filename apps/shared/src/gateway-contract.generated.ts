@@ -4585,10 +4585,11 @@ export interface SetupConnectorsCard {
 export interface SetupPluginsCard {
   plugins: string[]
 }
-/** ``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend rejects any other answer). ``said`` is composer text typed while the card waited. A response with neither, or none within 300 s, closes the card unanswered. */
+/** ``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend rejects any other answer). ``said`` is composer text typed while the name card waited: the name. ``wrote_instead``: the user sent a message instead of answering; the backend ends the turn and the client sends that message as the next one. A response with none of these, or none within 300 s, closes the card unanswered. */
 export interface SetupBeatResult {
   answer?: SetupNameAnswer | SetupThemeAnswer | SetupLayoutAnswer | SetupConnectorsAnswer | SetupPluginsAnswer | SetupTourAnswer | SetupBuildAnswer | null
   said?: string | null
+  wrote_instead?: boolean
 }
 export interface SetupNameAnswer {
   name: string

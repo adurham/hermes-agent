@@ -80,9 +80,11 @@ class Answered:
 
 
 @dataclass(frozen=True)
-class Said:
+class Wrote:
+    """The user sent a message instead of answering the card. The message is their own next turn, so the
+    result carries none of it."""
+
     beat: str
-    text: str
     present: Any = None
 
 
@@ -127,7 +129,7 @@ class Applied:
     result: Mapping[str, Any]
 
 
-Event = Shown | Answered | Said | TimedOut | Recorded | Skipped | End | Done | Applied
+Event = Shown | Answered | Wrote | TimedOut | Recorded | Skipped | End | Done | Applied
 
 
 @dataclass(frozen=True)
@@ -297,16 +299,16 @@ def _answered(record: dict, event: Answered, facts: Facts, now: float) -> Step:
                 BEAT_BY_ID[event.beat].after(record["picks"]))
 
 
-def _note_present(record: dict, event: Said | TimedOut | Recorded | Skipped) -> dict:
+def _note_present(record: dict, event: Wrote | TimedOut | Recorded | Skipped) -> dict:
     """Record the beat's picks as the machine has them now; returns them for the result."""
     present = {key: value for key, value in (event.present or {}).items() if key in BEAT_BY_ID[event.beat].picks}
     record["picks"].update(present)
     return present
 
 
-def _said(record: dict, event: Said, facts: Facts, now: float) -> Step:
+def _wrote(record: dict, event: Wrote, facts: Facts, now: float) -> Step:
     record["waiting"] = None
-    return Step(record, {"beat": event.beat, "said": event.text, **_note_present(record, event)}, "said")
+    return Step(record, {"beat": event.beat, "wrote_instead": True, **_note_present(record, event)}, "wrote")
 
 
 def _timed_out(record: dict, event: TimedOut, facts: Facts, now: float) -> Step:
@@ -389,7 +391,7 @@ def _applied(record: dict, event: Applied, facts: Facts, now: float) -> Step:
 
 
 _HANDLERS: dict[type, Callable[[dict, Any, Facts, float], Step]] = {
-    Shown: _shown, Answered: _answered, Said: _said, TimedOut: _timed_out, Recorded: _recorded,
+    Shown: _shown, Answered: _answered, Wrote: _wrote, TimedOut: _timed_out, Recorded: _recorded,
     Skipped: _skipped, End: _end, Done: _done, Applied: _applied,
 }
 _ENDED = "Onboarding is over in this chat; it is a normal chat now."

@@ -73,7 +73,7 @@ How it works:
 - setup_beat shows a beat's card and waits for the user. setup_beat(beat="next") shows the next beat. Its result carries their answer and a reminder of what to do next. Follow the reminder.
 - Before a card, acknowledge in a few words and at most one more sentence. The card asks its own question and shows its own options: never ask it yourself, never list the options in text.
 - After a pick, say it by its label in three words or fewer. No opinion, no praise, never the same words twice.
-- If they answer in words while a card waits, the card closes and you get their words. If the words answer the card, apply it yourself and move on. Otherwise answer them properly and briefly, then bring the card back in one line with setup_beat(beat=<that beat>). Never show a card again unless you are bringing it back.
+- If they write a message while a card waits, the card closes unanswered and their message comes as their next turn (words typed on the name card are the name). If the message answers the card, apply it yourself and move on. Otherwise answer it properly and briefly, then bring the card back in one line with setup_beat(beat=<that beat>). Never show a card again unless you are bringing it back.
 - If they ask you to pick (a colour, a layout), pick from what you know and say why in one line.
 - If they skip a beat in words, call setup_beat(beat=<that beat>, skip=true), take the default, and never ask it again in the same form. If they want to stop altogether, say in one line that the Skip setup button ends it, then carry on; only they can end it, with that button.
 - Off-script requests are done now, then you bring the card back.
@@ -291,14 +291,14 @@ def _already(record, beat: str) -> str:
             f"for a change. {_next(record)}")
 
 
-def _said(record, facts, beat: str) -> str:
-    return (f"They typed this while the {beat} card waited; the card is closed. If their words answer it, apply it "
-            f"yourself ({_TYPED_ANSWER[beat]}) and move on. Otherwise answer them properly and briefly, then bring "
-            f'the card back in one line with setup_beat(beat="{beat}").')
+def _wrote(record, facts, beat: str) -> str:
+    # The turn ends on this result; the turn note on their message says how to go on.
+    return (f"The {beat} card closed unanswered: they wrote a message instead. It comes next as their own turn; "
+            "write nothing until it does.")
 
 
 def _timed_out(record, facts, beat: str) -> str:
-    # Also the result when they sent a file or a slash command while the card waited.
+    # Also the result when they ran a slash command while the card waited.
     return (f"The {beat} card closed without an answer. If a message from them comes next, answer it first. "
             f"Otherwise say one short line that they can pick up whenever they are back, then stop. When they "
             f'return, bring it back with setup_beat(beat="{beat}").')
@@ -306,12 +306,12 @@ def _timed_out(record, facts, beat: str) -> str:
 
 def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None = None,
              has_skill: Callable[[str], bool] = lambda name: True) -> str:
-    """The text for a reminder key; ``beat`` names the card a ``said`` / ``timed_out`` result is about;
+    """The text for a reminder key; ``beat`` names the card a ``wrote`` / ``timed_out`` result is about;
     ``has_skill`` drops a first task's bundled skill missing on this install."""
     if not key:
         return ""
-    if key in ("said", "timed_out"):
-        return (_said if key == "said" else _timed_out)(record, facts, beat or _waiting_beat(record) or "build")
+    if key in ("wrote", "timed_out"):
+        return (_wrote if key == "wrote" else _timed_out)(record, facts, beat or _waiting_beat(record) or "build")
     if key.startswith("build_"):
         option = key.removeprefix("build_")
         label = next((o["label"] for o in record["picks"].get("build_options") or () if o["id"] == option), "")
@@ -322,12 +322,14 @@ def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None
 
 
 def turn_note(record: Mapping[str, Any]) -> str:
-    """The note on a user turn while no card waits: which card is closed and how to bring it back.
-    Empty once every card is settled: the build is under way and nothing is left to reopen."""
+    """The note on a user turn while no card waits: which card is closed, how their message applies it
+    when it answers it, and how to bring it back. Empty once every card is settled: the build is under
+    way and nothing is left to reopen."""
     if (beat := _waiting_beat(record)) is None:
         return ""
-    return (f"[System note: Onboarding continues; the {beat} card is closed. Answer their message first, then bring "
-            f'the card back in one line with setup_beat(beat="{beat}").]')
+    return (f"[System note: Onboarding continues; the {beat} card is closed. If their message answers it, apply it "
+            f"yourself ({_TYPED_ANSWER[beat]}) and move on. Otherwise answer their message first, then bring the card "
+            f'back in one line with setup_beat(beat="{beat}").]')
 
 
 def finish_reminder(record: Mapping[str, Any]) -> str:
