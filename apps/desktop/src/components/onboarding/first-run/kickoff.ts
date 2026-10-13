@@ -20,10 +20,10 @@ function hasAssistantWords(runtimeId: null | string): boolean {
 /**
  * Main's first-run start around `onboarding.start`: the boot overlay holds, the window takes the demo
  * layout once the start answers, and the intro opens once the returned chat is the one on screen.
- * Past the boot budget the starting screen offers a way out; the chat then stays closed this launch.
+ * `onboarding.start` has no deadline: past the boot budget the starting screen offers a way out, which
+ * fails the start (`failed` below) so the chat stays closed this launch.
  */
 export function firstRunIntro(): OnboardingIntroHooks {
-  let abandoned = false
   let offerExit: ReturnType<typeof setTimeout> | undefined
 
   const clearExit = () => {
@@ -32,29 +32,14 @@ export function firstRunIntro(): OnboardingIntroHooks {
   }
 
   return {
-    starting: () => {
+    starting: abandon => {
       startIntro()
       $introTurnSent.set(false)
-      offerExit = setTimeout(
-        () =>
-          $introStartExit.set(() => {
-            abandoned = true
-            clearExit()
-            failIntro()
-          }),
-        BACKEND_BOOT_WAIT_TIMEOUT_MS
-      )
+      offerExit = setTimeout(() => $introStartExit.set(abandon), BACKEND_BOOT_WAIT_TIMEOUT_MS)
     },
     started: () => {
       clearExit()
-
-      if (abandoned) {
-        return false
-      }
-
       openDemoLayout()
-
-      return true
     },
     opened: (started: OnboardingStartResult) => {
       const runtimeId = $activeSessionId.get()

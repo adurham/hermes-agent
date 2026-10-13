@@ -20,7 +20,15 @@ import { ensureGatewayProfile } from './profile'
 import { $connection, $selectedStoredSessionId } from './session'
 import type { SetupBeatToolResult } from './setup-beat'
 
-export type OnboardingRequest = GatewayRequester
+export type OnboardingRequest = <T = unknown>(
+  method: string,
+  params?: Parameters<GatewayRequester>[1],
+  timeoutMs?: number,
+  signal?: AbortSignal
+) => Promise<T>
+
+// A cold first boot answers onboarding.start late; the intro's way-out offer bounds the wait instead.
+const NO_DEADLINE = 0
 
 /** Opens a stored session on screen, replacing the route (`useSessionActions().resumeSession`). */
 export type OnboardingResume = (storedId: string, replaceRoute?: boolean) => Promise<void>
@@ -92,10 +100,11 @@ async function factsSource(request: OnboardingRequest): Promise<'local' | 'remot
 
 /** The first-run intro around a start (`components/onboarding/first-run/kickoff.ts`). */
 export interface OnboardingIntroHooks {
-  /** Before `onboarding.start`: the boot overlay holds. */
-  starting: () => void
-  /** The start answered, the chat not open yet. False: the user went on without setup, so it stays closed. */
-  started: (started: OnboardingStartResult) => boolean
+  /** Before `onboarding.start`: the boot overlay holds. `abandon`: the user went on without setup; the
+   *  start fails and the chat stays closed. */
+  starting: (abandon: () => void) => void
+  /** The start answered, the chat not open yet. */
+  started: (started: OnboardingStartResult) => void
   /** The chat is the one on screen. */
   opened: (started: OnboardingStartResult) => void
   failed: () => void
@@ -117,23 +126,21 @@ export async function startOnboarding(
   $onboardingPhase.set('shown')
   $onboardingEnded.set(null)
   $onboardingChatSeen.set(false)
-  intro?.starting()
+
+  const abandon = new AbortController()
+  intro?.starting(() => abandon.abort())
 
   try {
     await ensureProfile(ONBOARDING_PROFILE)
 
-    const started = await request<OnboardingStartResult>('onboarding.start', {
-      facts_source: await factsSource(request),
-      locale: getRuntimeI18nLocale(),
-      rerun
-    })
+    const started = await request<OnboardingStartResult>(
+      'onboarding.start',
+      { facts_source: await factsSource(request), locale: getRuntimeI18nLocale(), rerun },
+      NO_DEADLINE,
+      abandon.signal
+    )
 
-    if (intro && !intro.started(started)) {
-      $onboardingSession.set(null)
-      $onboardingPhase.set('failed')
-
-      return false
-    }
+    intro?.started(started)
 
     // The chat is on screen before the run names it, so the presence never sees a gap.
     await resume(started.stored_session_id, true)
@@ -142,7 +149,11 @@ export async function startOnboarding(
 
     return true
   } catch (error) {
-    console.warn('[onboarding] could not start', error)
+    // Going on without setup is the user's choice, not an error.
+    if (!abandon.signal.aborted) {
+      console.warn('[onboarding] could not start', error)
+    }
+
     $onboardingSession.set(null)
     $onboardingPhase.set('failed')
     intro?.failed()

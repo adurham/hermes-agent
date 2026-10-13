@@ -1,9 +1,10 @@
 import type { OnboardingStartResult } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
+import { $chatOnboardingSolo, $introStartExit, $introView } from '@/store/onboarding-intro'
 import { $onboardingPhase } from '@/store/onboarding-phase'
-import { startOnboarding } from '@/store/onboarding-run'
+import { type OnboardingRequest, startOnboarding } from '@/store/onboarding-run'
 import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { $introCopy } from './intro'
@@ -51,5 +52,27 @@ describe('first-run kickoff', () => {
     expect(size).toHaveBeenCalledWith('onboarding')
     // A blank chat plays main's intro copy; the backend's greeting row replaces it.
     expect($introCopy.get()).toBe('playing')
+  })
+
+  it('waits on a slow start with no deadline, and the way out fails it', async () => {
+    vi.useFakeTimers()
+    const deadlines: (number | undefined)[] = []
+
+    // A cold start that answers only when abandoned.
+    const slow: OnboardingRequest = async <T>(...[, , timeoutMs, signal]: Parameters<OnboardingRequest>): Promise<T> => {
+      deadlines.push(timeoutMs)
+
+      return new Promise<T>((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+    }
+
+    const opening = startOnboarding(slow, adopt, { ensureProfile, intro: firstRunIntro() })
+    await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
+    $introStartExit.get()?.()
+    vi.useRealTimers()
+
+    expect(await opening).toBe(false)
+    expect(deadlines).toEqual([0])
+    expect($introView.get()).toBe('off')
+    expect($onboardingPhase.get()).toBe('failed')
   })
 })
