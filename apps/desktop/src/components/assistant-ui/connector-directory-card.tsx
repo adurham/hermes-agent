@@ -158,16 +158,19 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
 
   // Failed: the same request again. Waiting: the link again. Otherwise the app's own verb.
   const press = (card: ConnectorCardModel, open: AccountOperation | null) => {
-    if (open && retryable(open)) {
-      actions.retry(card, open)
-    } else if (open) {
-      const url = open.targets.find(target => target.connectUrl)?.connectUrl
-
-      if (url) {
-        void window.hermesDesktop?.openExternal?.(url)
-      }
-    } else {
+    if (!open) {
       actions.runHostedVerb(card)
+
+      return
+    }
+
+    // Read before `retryable`: its type guard narrows `open` to never on the false branch.
+    const url = open.targets.find(target => target.connectUrl)?.connectUrl
+
+    if (retryable(open)) {
+      actions.retry(card, open)
+    } else if (url) {
+      void window.hermesDesktop?.openExternal?.(url)
     }
   }
 
