@@ -9367,6 +9367,18 @@
               }
             ],
             "default": null
+          },
+          "said": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Said"
           }
         },
         "title": "ConnectionAnswer",

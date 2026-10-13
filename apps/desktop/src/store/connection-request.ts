@@ -24,6 +24,7 @@ import type { SetupField } from '@/components/ui/setup-field-list'
 import { connectorText } from '@/lib/connector-tools'
 
 import { $gateway, requestGatewayForAgent } from './gateway'
+import { registerParkedCardAnswer } from './parked-card-answers'
 import { $activeGatewayProfile } from './profile'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import { isSessionOwnerRoute } from './session-request-router'
@@ -512,6 +513,21 @@ export const skipConnectionTarget = (request: ConnectionRequest, name: string): 
 /** Continue: end the operation now with whatever is unresolved. */
 export const continueConnectionRequest = (request: ConnectionRequest): Promise<boolean> =>
   respondToConnectionRequest(request, { settled_by: 'continue' })
+
+/** The composer's words answer an open connector directory card; the tool returns them as `said`. */
+export function answerConnectorDirectory(sessionId: string, text: string): boolean {
+  const request = $connectionRequests.get()[keyFor(sessionId)]
+
+  if (!request?.display || request.settled || !text.trim()) {
+    return false
+  }
+
+  void respondToConnectionRequest(request, { said: text.trim(), settled_by: 'continue' }).catch(() => undefined)
+
+  return true
+}
+
+registerParkedCardAnswer('connector-directory', answerConnectorDirectory)
 
 // Typing a message while the card is open ends the operation, otherwise the typed message waits behind
 // the blocked tool until the deadline.
