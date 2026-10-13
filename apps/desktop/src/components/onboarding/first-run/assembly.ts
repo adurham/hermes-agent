@@ -25,20 +25,11 @@ import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
 import { $paneStates, type PaneStateSnapshot } from '@/store/panes'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
-// Layout previews open now; until Continue or cancel their arrangement stays in memory.
-let previews = 0
-
-// The demo and a preview are borrowed: nothing they change is persisted as the user's layout.
-function holdLayout(): void {
-  modeLayout.hold($chatOnboardingSolo.get() || previews > 0)
-}
-
+// The demo is borrowed: nothing it changes is persisted as the user's layout.
 $chatOnboardingSolo.subscribe(solo => {
-  holdLayout()
+  modeLayout.hold(solo)
   document.documentElement.toggleAttribute('data-onboarding-demo', solo)
 })
-
-export const isLayoutPreviewing = (): boolean => previews > 0
 
 export const $chatOnboardingThreadIds = atom<readonly string[]>([])
 
@@ -166,7 +157,7 @@ export interface PreviewUndo {
 }
 
 /** A layout preview's undo. A preview never switches Simple/Advanced and never ends the intro, so the
- *  arrangement is all there is to put back; nothing is saved until Continue keeps it. */
+ *  arrangement is all there is to put back. */
 export function snapshotChatLayout(): PreviewUndo {
   const snapshot = {
     id: $activePresetId.get(),
@@ -175,20 +166,13 @@ export function snapshotChatLayout(): PreviewUndo {
     tree: $layoutTree.get()
   }
 
-  previews += 1
-  holdLayout()
-
-  const settle = () => {
-    previews -= 1
-    holdLayout()
-  }
-
   const restore = () => {
     if (snapshot.tree) {
       $layoutTree.set(snapshot.tree)
       $paneStates.set(snapshot.panes)
       $userPlacedPanes.set(snapshot.placed)
       markActivePreset(snapshot.id)
+      persistTree()
     }
   }
 
@@ -197,20 +181,10 @@ export function snapshotChatLayout(): PreviewUndo {
     // for the mode it leaves, not the preview.
     keep: send => {
       restore()
-      const sent = send()
 
-      if (sent) {
-        settle()
-        modeLayout.flush()
-      }
-
-      return sent
+      return send()
     },
-    // Settled after the restore, so the restore's own changes do not read as the user leaving the intro.
-    revert: () => {
-      restore()
-      settle()
-    }
+    revert: restore
   }
 }
 
