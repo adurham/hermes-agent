@@ -14,6 +14,16 @@ def finite_turn_required():
     return _finite_turn.get()
 
 
+FINITE_CLARIFY_NOTICE = (
+    "single-query mode: no user available to answer. Pick the best choices using your own "
+    "judgment, or make the most reasonable assumption you can, and continue.")
+
+
+def finite_clarify_reply():
+    """clarify_tool's reply on a finite turn (``chat -q`` / ``-z``): main's headless answer."""
+    return {"answers": {}, "outcome": "undelivered", "notice": FINITE_CLARIFY_NOTICE}
+
+
 def unattended_turn():
     # `hermes -z`: nobody can answer a prompt, so the classic one-shot contract auto-approves
     # (legacy oneshot.py set HERMES_YOLO_MODE). `-q` stays single-query (approvals.single_query_mode).

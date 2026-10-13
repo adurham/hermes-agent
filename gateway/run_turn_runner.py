@@ -503,6 +503,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         last question — between two cards it only opens a bubble the next boundary closes."""
         from gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
         from tools.clarify_gateway import CANCELLED, SKIPPED
+        if _finite_viewer_turn():
+            # `chat -q` / `-z`: the viewer detaches on the first prompt, so nobody can answer.
+            # Answer headless at once, as main's _single_query_clarify_callback did in process.
+            from gateway.session_finite import finite_clarify_reply
+            return finite_clarify_reply()
         answers: dict[str, Any] = {}
         reply: dict[str, Any] = {"answers": answers, "outcome": "submitted"}
         last = len(questions) - 1

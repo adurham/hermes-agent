@@ -215,3 +215,26 @@ def test_only_a_classic_cli_surface_session_is_a_classic_cli_turn():
             assert classic_cli_turn(turn) is expected
     turn._ctx.source.platform = Platform.TELEGRAM
     assert classic_cli_turn(turn) is False
+
+
+def test_a_finite_turn_answers_clarify_headless_at_once():
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session_finite import FINITE_CLARIFY_NOTICE, finite_turn_scope
+    turn = object.__new__(TurnRunner)
+    turn._ask_clarify_question = lambda *a, **k: pytest.fail("a finite viewer can never answer")
+    questions = [{"qid": "q1", "question": "Which env?", "choices": ["dev", "prod"], "multi_select": False}]
+    with finite_turn_scope(True):
+        reply = turn._clarify_callback_sync(questions)
+    assert reply == {"answers": {}, "outcome": "undelivered", "notice": FINITE_CLARIFY_NOTICE}
+    # main's -q text, verbatim
+    from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
+    assert reply == _single_query_clarify_callback(questions)
+
+
+def test_a_finite_managed_worker_answers_clarify_headless():
+    from agent.managed_worker import WorkerControls
+    from gateway.session_finite import finite_turn_scope
+    controls = object.__new__(WorkerControls)
+    controls._ask = lambda *a: pytest.fail("a finite viewer can never answer")
+    with finite_turn_scope(True):
+        assert controls.clarify([{"qid": "q", "question": "?", "choices": [], "multi_select": False}])["outcome"] == "undelivered"

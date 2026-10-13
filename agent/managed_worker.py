@@ -212,7 +212,11 @@ class WorkerControls:
     def clarify(self, questions):
         """clarify_tool's batch contract: ``callback(questions) -> {answers, outcome, notice?}``.
         One owner prompt per question, stopping at the first that is interrupted or unanswered;
-        an empty answer is a skip (``None``), as on the other surfaces."""
+        an empty answer is a skip (``None``), as on the other surfaces. A finite turn (``chat -q`` /
+        ``-z``, bound by worker_turn_scope) answers headless at once: its viewer cannot answer."""
+        from gateway.session_finite import finite_clarify_reply, finite_turn_required
+        if finite_turn_required() is True:
+            return finite_clarify_reply()
         answers = {}
         reply = {'answers': answers, 'outcome': 'submitted'}
         for entry in questions:
