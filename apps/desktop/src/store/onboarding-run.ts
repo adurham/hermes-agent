@@ -14,9 +14,10 @@ import { atom, computed } from 'nanostores'
 import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import type { GatewayRequester } from '@/lib/yolo-session'
 
+import { activeGatewayConnectionId } from './gateway'
 import { $onboardingPhase } from './onboarding-phase'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from './onboarding-presence'
-import { ensureGatewayProfile } from './profile'
+import { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile } from './profile'
 import { $connection, $selectedStoredSessionId } from './session'
 import type { SetupBeatToolResult } from './setup-beat'
 
@@ -50,6 +51,14 @@ export const $onboardingSettleFrom = atom<null | number>(null)
 
 // The backend runs onboarding in its root profile whichever profile the app was on.
 const ONBOARDING_PROFILE = 'default'
+
+/** The profile (and registry source) the window was on before the run moved it to the default profile. */
+interface LaunchSource {
+  connectionId: null | string
+  profile: string
+}
+
+let launch: LaunchSource | null = null
 
 /** The run's chat has been on screen at least once; until then a route still opening is not a leave. */
 const $onboardingChatSeen = atom(false)
@@ -129,6 +138,7 @@ export async function startOnboarding(
 
   const abandon = new AbortController()
   intro?.starting(() => abandon.abort())
+  launch = { connectionId: activeGatewayConnectionId(), profile: $activeGatewayProfile.get() }
 
   try {
     await ensureProfile(ONBOARDING_PROFILE)
@@ -157,8 +167,24 @@ export async function startOnboarding(
     $onboardingSession.set(null)
     $onboardingPhase.set('failed')
     intro?.failed()
+    await returnToLaunchProfile(ensureProfile)
 
     return false
+  }
+}
+
+// Like main's failed kickoff: the window goes back to where it was before the switch.
+async function returnToLaunchProfile(ensureProfile: (profile: string) => Promise<void>): Promise<void> {
+  if (!launch) {
+    return
+  }
+
+  const { connectionId, profile } = launch
+
+  try {
+    await (connectionId ? ensureGatewayAgent(connectionId, profile) : ensureProfile(profile))
+  } catch (error) {
+    console.warn('[onboarding] could not return to the launch profile', error)
   }
 }
 

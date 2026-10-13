@@ -10,6 +10,7 @@ import {
   skipOnboarding,
   startOnboarding
 } from './onboarding-run'
+import { $activeGatewayProfile } from './profile'
 import { $connection, $selectedStoredSessionId } from './session'
 
 const ensureProfile = async (): Promise<void> => undefined
@@ -88,6 +89,16 @@ describe('onboarding run', () => {
 
     expect($onboardingPhase.get()).toBe('shown')
     expect($onboardingEnded.get()).toBeNull()
+  })
+
+  it('returns the window to the profile it launched on when the start fails', async () => {
+    $activeGatewayProfile.set('work')
+    const switched = vi.fn(async (_profile: string) => undefined)
+    const refuse = async (): Promise<never> => Promise.reject(new Error('backend down'))
+
+    expect(await startOnboarding(refuse, resume, { ensureProfile: switched })).toBe(false)
+    expect(switched.mock.calls).toEqual([['default'], ['work']])
+    $activeGatewayProfile.set('default')
   })
 
   it('keeps the run when the backend refuses the skip', async () => {
