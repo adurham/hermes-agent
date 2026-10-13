@@ -274,3 +274,39 @@ def test_turn_end_reads_session_stats_cumulative(make_agent):
     agent.run_conversation("q")
     assert agent.session_input_tokens == 500 and agent.session_api_calls == 5
     assert agent.get_rate_limit_state().has_data and agent.get_rate_limit_state().requests_min.limit == 10
+
+
+def test_status_bar_context_is_the_gateways_anchored_figure_with_mains_estimate_marker(make_agent):
+    """Main's bar re-derives context_tokens from _turn_base_usage_anchor over _session_messages and
+    shows `~` when rows follow the turn's first response; an interrupted turn (no response) is `~`."""
+    from agent.usage_anchor import anchored_context_tokens
+    usage = dict(SESSION_USAGE, context_tokens=700, api_calls=2)
+    suffix = [{"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+               "function": {"name": "read_file", "arguments": "{}"}}]},
+              {"role": "tool", "tool_call_id": "c1", "content": "x" * 400},
+              {"role": "assistant", "content": "done"}]
+    agent, client = make_agent([frame("message.complete", {"text": "done", "outcome": "completed"})],
+                               result={"final_response": "done", "api_calls": 2, "messages": suffix})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.run_conversation("read it")
+    msgs = agent._session_messages
+    assert anchored_context_tokens(msgs, agent._turn_base_usage_anchor, charge_stale_thinking=False) == 700
+    assert len(msgs) > agent._turn_base_usage_anchor["base_count"] + 1  # rows after the first reply: `~`
+    agent2, client2 = make_agent([frame("message.complete", {"text": "", "outcome": "cancelled", "status": "interrupted"})])
+    original2 = client2.rpc
+
+    async def rpc2(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original2(method, _timeout=_timeout, **params)
+    client2.rpc = rpc2
+    agent2.session_api_calls = 2
+    agent2.run_conversation("story", conversation_history=[{"role": "user", "content": "a"},
+                                                           {"role": "assistant", "content": "b"}])
+    assert agent2._turn_base_usage_anchor["base_count"] == 2  # the interrupted ask is estimated

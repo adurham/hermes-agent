@@ -125,6 +125,8 @@ class GatewayAgent:
         self._api_latency_history: list = []
         self._api_output_history: list = []
         self._turn_base_usage_anchor = None
+        self._context_tokens = 0
+        self._turn_calls_base = 0
         self._current_task_id = self._current_turn_id = self._current_api_request_id = ""
         self._memory_manager = None
         self._memory_store = None
@@ -199,9 +201,9 @@ class GatewayAgent:
             # context_display_source(): a "local_estimate" reading is a shown value != the real one.
             compressor.last_real_prompt_tokens = (
                 None if source == "provider_usage" else compressor.last_prompt_tokens + 1)
-        anchor = usage.get("usage_anchor")
-        if anchor is None or isinstance(anchor, dict):
-            self._turn_base_usage_anchor = anchor
+        if isinstance(usage.get("context_tokens"), int):
+            self._context_tokens = usage["context_tokens"]
+            self._anchor_display()
         latency, tps = usage.get("avg_latency_s"), usage.get("tokens_per_s")
         if isinstance(latency, (int, float)) and latency > 0 and isinstance(tps, (int, float)):
             # The bar averages these deques (mean latency, sum/sum velocity): one aligned sample each.
@@ -334,6 +336,7 @@ class GatewayAgent:
     def run_conversation(self, user_message, conversation_history=None, stream_callback=None,
                          task_id=None, persist_user_message=None, turn_author=None, **_kw):
         history = list(conversation_history or [])
+        self._turn_calls_base = self.session_api_calls
         self._interrupt_requested = False
         self._interrupt_sent_at = None
         self._drain_stale()
@@ -581,9 +584,37 @@ class GatewayAgent:
         if not suffix and out.get("final_response") and not out.get("failed"):
             out["messages"].append({"role": "assistant", "content": out["final_response"]})
         out["session_id"] = self.session_id
-        self._apply_usage(stored, usage)
         self._session_messages = out["messages"]
+        self._apply_usage(stored, usage)
         return out
+
+    def _anchor_display(self):
+        """Main's bar shows the anchored ``context_tokens`` by re-deriving it from
+        ``_turn_base_usage_anchor`` over ``_session_messages`` (``anchored_context_tokens``), and marks
+        it ``~`` when the turn appended rows after its first response. Rebuild an anchor over this
+        viewer's transcript that yields the gateway's figure: rows after the first API call of a
+        multi-call turn are the estimated delta (main's ``~``); a single reply is covered by the anchor."""
+        from agent.model_metadata import estimate_messages_tokens_rough
+        from agent.usage_anchor import capture_usage_anchor
+        messages = self._session_messages if isinstance(self._session_messages, list) else []
+        tokens = getattr(self, "_context_tokens", 0) or 0
+        if tokens <= 0 or not messages or self._generation is not None:
+            self._turn_base_usage_anchor = None  # mid-turn: the bar falls back to last_prompt_tokens
+            return
+        # Main anchors on the turn's FIRST response, priced over the transcript through the turn's ask.
+        # A turn with no completed call (interrupted before a response) keeps the previous anchor, so
+        # its ask is estimated delta too.
+        last_user = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
+                         len(messages) - 1)
+        base = last_user + 1 if self.session_api_calls > self._turn_calls_base else last_user
+        if base <= 0:
+            self._turn_base_usage_anchor = None
+            return
+        delta = messages[base:]
+        if delta and delta[0].get("role") == "assistant":
+            delta = delta[1:]
+        estimate = estimate_messages_tokens_rough(delta, charge_stale_thinking=False) if delta else 0
+        self._turn_base_usage_anchor = capture_usage_anchor(max(1, tokens - estimate), 0, messages[:base])
 
     def _apply_usage(self, stored, receipt_usage):
         """Turn end: the session-cumulative ``session.stats`` (the same dict ``session.usage`` carries);
