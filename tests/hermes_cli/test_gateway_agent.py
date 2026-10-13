@@ -458,3 +458,24 @@ def test_agent_follows_mains_session_id_switch(make_agent):
     assert ("session.resume", {"session_id": "local-other"}) in client.calls
     agent.connection.state("local-other").apply_usage({"api_calls": 3, "input_tokens": 9})
     assert agent.session_api_calls == 3
+
+
+def test_turn_after_a_rewind_anchors_on_its_first_response(make_agent):
+    """/undo and /retry bump the session's runtime generation, so the gateway rebuilds its agent and the
+    cumulative counters restart below this viewer's turn base. The turn still completed an API call:
+    the bar anchors on its reply (no `~`), as main's does after /retry."""
+    usage = dict(SESSION_USAGE, context_tokens=120, api_calls=1)
+    agent, client = make_agent([frame("message.complete", {"text": "done", "outcome": "completed"})],
+                               result={"final_response": "done", "api_calls": 1})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.session_api_calls = 4  # the previous agent's cumulative count
+    agent.run_conversation("again", conversation_history=[{"role": "user", "content": "a"},
+                                                          {"role": "assistant", "content": "b"}])
+    msgs = agent._session_messages
+    assert agent._turn_base_usage_anchor["base_count"] == len(msgs) - 1  # through the ask; reply follows

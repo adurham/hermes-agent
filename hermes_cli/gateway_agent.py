@@ -733,7 +733,11 @@ class GatewayAgent:
         # its ask is estimated delta too.
         last_user = next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
                          len(messages) - 1)
-        base = last_user + 1 if self.session_api_calls > self._turn_calls_base else last_user
+        # The gateway rebuilds its agent after a rewind (/undo, /retry bump the runtime generation), so
+        # its cumulative counter can restart below this viewer's turn base: a lower count is a new agent
+        # that made calls this turn, never "no call".
+        calls = self.session_api_calls
+        base = last_user + 1 if calls > self._turn_calls_base or 0 < calls < self._turn_calls_base else last_user
         if base <= 0:
             self._turn_base_usage_anchor = None
             return
