@@ -467,6 +467,19 @@ def test_turn_after_a_rewind_anchors_on_its_first_response(make_agent):
     usage = dict(SESSION_USAGE, context_tokens=120, api_calls=1)
     agent, client = make_agent([frame("message.complete", {"text": "done", "outcome": "completed"})],
                                result={"final_response": "done", "api_calls": 1})
+
+
+def test_a_mid_turn_steer_row_is_estimated_delta_like_main(make_agent):
+    """Main anchors the bar on the turn's first response priced over the history through the turn's
+    own ask; a /steer delivered mid-turn is a later user-role row, so it is delta and the bar shows `~`."""
+    usage = dict(SESSION_USAGE, context_tokens=900, api_calls=2)
+    suffix = [{"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
+               "function": {"name": "terminal", "arguments": "{}"}}]},
+              {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+              {"role": "user", "content": "[USER STEER] also this", "display_kind": "steer"},
+              {"role": "assistant", "content": "done"}]
+    agent, client = make_agent([frame("message.complete", {"text": "done", "outcome": "completed"})],
+                               result={"final_response": "done", "api_calls": 2, "messages": suffix})
     original = client.rpc
 
     async def rpc(method, *, _timeout=None, **params):
@@ -479,3 +492,8 @@ def test_turn_after_a_rewind_anchors_on_its_first_response(make_agent):
                                                           {"role": "assistant", "content": "b"}])
     msgs = agent._session_messages
     assert agent._turn_base_usage_anchor["base_count"] == len(msgs) - 1  # through the ask; reply follows
+
+
+    agent.run_conversation("slow", conversation_history=[{"role": "user", "content": "a"},
+                                                          {"role": "assistant", "content": "b"}])
+    assert agent._turn_base_usage_anchor["base_count"] == 3  # history + the ask, not the steer row

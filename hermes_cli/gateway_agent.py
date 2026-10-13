@@ -130,6 +130,7 @@ class GatewayAgent:
         self._turn_base_usage_anchor = None
         self._context_tokens = 0
         self._turn_calls_base = 0
+        self._turn_ask_index = None
         self._usage_stale = False
         self._current_task_id = self._current_turn_id = self._current_api_request_id = ""
         self._memory_manager = None
@@ -394,6 +395,7 @@ class GatewayAgent:
     def run_conversation(self, user_message, conversation_history=None, stream_callback=None,
                          task_id=None, persist_user_message=None, turn_author=None, **_kw):
         history = list(conversation_history or [])
+        self._turn_ask_index = len(history)  # the staged ask's row in this turn's transcript
         self._turn_calls_base = self.session_api_calls
         self._usage_stale = True
         self._interrupt_requested = False
@@ -738,6 +740,13 @@ class GatewayAgent:
         # that made calls this turn, never "no call".
         calls = self.session_api_calls
         base = last_user + 1 if calls > self._turn_calls_base or 0 < calls < self._turn_calls_base else last_user
+
+        # The turn's own ask, never a later user-role row of the same turn (a mid-turn /steer row).
+        ask = getattr(self, "_turn_ask_index", None)
+        last_user = ask if isinstance(ask, int) and 0 <= ask < len(messages) and messages[ask].get("role") == "user" \
+            else next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
+                      len(messages) - 1)
+        base = last_user + 1 if self.session_api_calls > self._turn_calls_base else last_user
         if base <= 0:
             self._turn_base_usage_anchor = None
             return
