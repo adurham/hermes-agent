@@ -203,11 +203,6 @@ async def _broadcast_skin(connection):
             live.event_stream.publish(session_id, payload, event_type='skin.changed')
 
 
-# /fast word -> stored tier (main's ``_FAST_WORDS``; None = explicit normal).
-_FAST_TIERS = {'fast': 'priority', 'on': 'priority', 'normal': None, 'off': None, 'auto': 'auto',
-               'cold': 'cold', 'ultrafast': 'ultrafast', 'ultra': 'ultrafast'}
-
-
 def current_tier(connection, ref, policy):
     """The tier this session's next turn runs: its /fast pin, else its policy's (or the profile's)."""
     runner, live = connection.authority.runner, connection.authority.sessions[ref.session_id]
@@ -218,8 +213,10 @@ def current_tier(connection, ref, policy):
 
 async def _set_fast(connection, ref, policy, value):
     """Session-scoped /fast like main's: validated against the session's route, never config.yaml.
-    The pin is the runner's per-session override the next turn reads (``current_service_tier``)."""
-    from agent.fast_mode import STATIC_TIERS, service_tier_word
+    The words parse through the shared tier table (``parse_exact_service_tier``, as the classic CLI's
+    ``config.set service_tier`` does); the pin is the same per-session override the next turn reads
+    (``current_service_tier``). TUI-only on top: ``toggle`` / ``status`` and the route check."""
+    from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier, service_tier_word
     if not ref.session_id:
         raise RuntimeStoreError('invalid_params')
     raw, current = _word(value), current_tier(connection, ref, policy)
@@ -227,9 +224,10 @@ async def _set_fast(connection, ref, policy, value):
         return {'key': 'fast', 'value': service_tier_word(current)}
     if raw in ('', 'toggle'):
         raw = 'normal' if current in STATIC_TIERS else 'fast'
-    if raw not in _FAST_TIERS:
-        raise RuntimeStoreError('invalid_params')
-    tier = _FAST_TIERS[raw]
+    try:
+        tier = parse_exact_service_tier(raw) or None
+    except ValueError:
+        raise RuntimeStoreError('invalid_params') from None
     if tier in STATIC_TIERS:
         agent = connection.authority.agent(ref)
         model = getattr(agent, 'model', None) or (policy.current_model(connection.authority) if policy else None)
