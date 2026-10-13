@@ -76,14 +76,14 @@ def _approve(subsystem: str, rest: list[str], memory_store) -> str:
             return f"No pending {subsystem} write with id '{target}'."
         targets = [rec]
 
-    applied, failed, overwritten, removed = 0, [], [], []
+    applied, failed, overwritten, patched, removed = 0, [], [], [], []
     for rec in targets:
         ok, msg, result = _apply_one(subsystem, rec, memory_store)
         if ok:
             wa.discard_pending(subsystem, rec["id"])
             applied += 1
             overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "replaced"))
-            overwritten.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "patched"))
+            patched.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "patched"))
             removed.extend(f"  {rec['id']}: {text}" for text in _changed_entries(result, "removed"))
         else:
             failed.append(f"{rec['id']}: {msg}")
@@ -94,6 +94,10 @@ def _approve(subsystem: str, rest: list[str], memory_store) -> str:
         # is the last person who can notice a clause went missing, so show what was lost.
         out.append("Overwrote entire entry (re-add anything you still need):")
         out.extend(overwritten)
+    if patched:
+        # A patch keeps the rest of the entry, so show it as it was, not as lost text.
+        out.append("Patched entry (as it was before the edit):")
+        out.extend(patched)
     if removed:
         out.append("Removed entry (re-add anything you still need):")
         out.extend(removed)
