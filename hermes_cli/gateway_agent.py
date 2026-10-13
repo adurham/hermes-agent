@@ -481,12 +481,19 @@ class GatewayAgent:
         self._usage_stale = True
         self._interrupt_requested = False
         self._interrupt_sent_at = None
-        self._drain_stale()
-        try:
-            receipt = self.connection.call("prompt.submit", **self._submit_params(
-                user_message, persist_user_message, turn_author))
-        except GatewayClientError as exc:
-            return self._failed(history, user_message, str(exc))
+        from hermes_cli.gateway_tools_notify import take_admitted_turn
+        adopted = take_admitted_turn(self, persist_user_message if isinstance(persist_user_message, str)
+                                     else user_message)
+        if adopted is not None:
+            # A notification turn the gateway already admitted and is running (its frames are queued).
+            receipt = adopted
+        else:
+            self._drain_stale()
+            try:
+                receipt = self.connection.call("prompt.submit", **self._submit_params(
+                    user_message, persist_user_message, turn_author))
+            except GatewayClientError as exc:
+                return self._failed(history, user_message, str(exc))
         self._admission = (receipt or {}).get("admission_id")
         if receipt and receipt.get("execution_generation") is not None:
             self._generation = receipt["execution_generation"]

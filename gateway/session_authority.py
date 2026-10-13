@@ -836,7 +836,9 @@ class SessionAuthority:
                     'authority_epoch': self.epoch, 'execution_generation': row['generation'],
                     'admission_id': row['admission_id']}
                 self.executing[ref.session_id] = row['generation']
-                live.event_stream.publish(ref.session_id, {}, event_type='message.start')
+                from gateway.session_automation import admission_display
+                live.event_stream.publish(ref.session_id, admission_display(row.get('payload') or {}),
+                                          event_type='message.start')
                 self._publish_pending(ref)
         return row
 

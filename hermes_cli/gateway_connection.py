@@ -40,6 +40,8 @@ class SessionState:
         # Called (loop thread) with each ``session.usage`` payload; GatewayAgent maps it onto main's
         # agent attributes, so a frame landing between turns is never dropped with the turn queue.
         self.usage_listeners: list = []
+        # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
+        self.admitted_turn: dict | None = None
 
     def adopt_snapshot(self, snapshot):
         self.info = dict(snapshot.get("info") or {})

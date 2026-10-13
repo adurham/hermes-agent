@@ -91,6 +91,21 @@ _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', '
     'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids'})
 
 
+def admission_display(payload):
+    """An automation admission's async-result card (plus its model text) for the claim's
+    ``message.start``: a viewer that did not submit the turn (the classic CLI, idle while a
+    background process it started finishes in the gateway) paints the same header the submitting
+    surface would. ``{}`` for every other input."""
+    descriptor = payload.get('local_automation_v1') or (payload.get('native_text_v1') or {}).get('automation') or {}
+    kind, text = descriptor.get('display_kind'), descriptor.get('display_text')
+    if not kind or not isinstance(text, str) or not text.strip():
+        return {}
+    card = {'display_kind': kind, 'display_text': text, 'text': str(payload.get('text') or '')}
+    if descriptor.get('notification_category') == 'diagnostic':
+        card['notification_category'] = 'diagnostic'
+    return card
+
+
 def snapshot_automation(authority, adapter, event, identity):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
