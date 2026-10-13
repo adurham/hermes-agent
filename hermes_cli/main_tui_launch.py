@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 
@@ -50,7 +51,7 @@ def _short_resume_id(db, session_id: str) -> str:
     short = session_id[:_SHORT_RESUME_LEN]
     try:
         return short if db.resolve_session_id(short) == session_id else session_id
-    except Exception:
+    except sqlite3.Error:  # an unreadable store prints the whole id
         return session_id
 
 

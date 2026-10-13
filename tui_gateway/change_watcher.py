@@ -31,7 +31,7 @@ def skin_payload(config: dict) -> dict:
             "help_header": (skin.branding or {}).get("help_header", ""),
             # Raw user CSS for the desktop GUI's <style> tag (32 KiB cap in the skin engine).
             "customCSS": skin.custom_css}
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved unchanged from resolve_skin (main keeps the same handler): a broken skin file boots the default theme
         return {}
 
 
