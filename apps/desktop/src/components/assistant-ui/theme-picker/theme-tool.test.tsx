@@ -8,6 +8,7 @@ import { registerLayoutPresets } from '@/app/contrib/layout-presets'
 import { I18nProvider } from '@/i18n'
 import { rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $themePicks, parkThemePick } from '@/store/theme-pick'
+import { $accentOverride } from '@/themes/accent-override'
 import { ThemeProvider } from '@/themes/context'
 
 import { ThemeTool } from './theme-tool'
@@ -16,19 +17,23 @@ const SESSION = 'theme-session'
 
 const view: SessionView = { ...PRIMARY_SESSION_VIEW, $runtimeId: atom(SESSION), $storedId: atom('stored-theme') }
 
-function renderRow(props: Partial<ToolCallMessagePartProps>) {
+function row(props: Partial<ToolCallMessagePartProps>) {
   // SAFETY: ThemeTool reads only args, result, toolName and toolCallId; the rest of the part API is unused.
-  const row = { args: {}, toolCallId: 'call-1', toolName: 'set_theme', ...props } as ToolCallMessagePartProps
+  const part = { args: {}, toolCallId: 'call-1', toolName: 'set_theme', ...props } as ToolCallMessagePartProps
 
-  return render(
+  return (
     <I18nProvider configClient={null} initialLocale="en">
       <ThemeProvider>
         <SessionViewProvider value={view}>
-          <ThemeTool {...row} />
+          <ThemeTool {...part} />
         </SessionViewProvider>
       </ThemeProvider>
     </I18nProvider>
   )
+}
+
+function renderRow(props: Partial<ToolCallMessagePartProps>) {
+  return render(row(props))
 }
 
 function park(picker: 'accent' | 'layout') {
@@ -48,17 +53,36 @@ describe('ThemeTool', () => {
   afterEach(() => {
     cleanup()
     $themePicks.set({})
+    $accentOverride.set(null)
     resetServerRequestsForTests()
   })
 
-  it('answers the waiting card with the swatch the user clicked, then shows the receipt', () => {
+  it('previews a clicked swatch without answering, then Continue answers with the last one staged', () => {
     const respond = park('accent')
 
     renderRow({ args: { picker: 'accent' } })
     fireEvent.click(screen.getByRole('button', { name: 'Ultraviolet' }))
 
+    expect(respond).not.toHaveBeenCalled()
+    expect($accentOverride.get()).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+
     expect(respond).toHaveBeenCalledWith({ picked: { accent: 'violet' } })
     expect(screen.getByText('Ultraviolet').closest('[data-theme-settled]')).not.toBeNull()
+  })
+
+  it('puts the previous accent back when the card settles without a pick', () => {
+    const respond = park('accent')
+
+    const { rerender } = renderRow({ args: { picker: 'accent' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ultraviolet' }))
+    // The backend's cancel or timeout settles the row with a result and no pick.
+    rerender(row({ args: { picker: 'accent' }, result: { cancelled: true } }))
+
+    expect(respond).not.toHaveBeenCalled()
+    expect($accentOverride.get()).toBeNull()
   })
 
   it('draws the layout card for a call made through the tool_call bridge', () => {
@@ -69,6 +93,10 @@ describe('ThemeTool', () => {
       toolName: 'tool_call'
     })
     fireEvent.click(screen.getByRole('button', { name: /Elite/ }))
+
+    expect(respond).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
     expect(respond).toHaveBeenCalledWith({ picked: { layout: 'terminal-deck' } })
   })

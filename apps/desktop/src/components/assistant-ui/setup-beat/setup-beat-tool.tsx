@@ -28,8 +28,10 @@ import { PluginsCard } from './plugins-card'
 import { SETUP_BEAT_SHELL_CLASS, type SetupBeatOutcome, setupBeatOutcome, SetupBeatReceipt } from './receipt'
 
 /** The card body for one beat; `answer` sends the beat's picks and settles the card. */
-function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => void; request: SetupBeatRequest }) {
+function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => boolean; request: SetupBeatRequest }) {
   const { card } = request
+
+  const commit = (applied: boolean, picks: SetupBeatAnswer): boolean => applied && answer(picks)
 
   switch (request.beat) {
     case 'name':
@@ -43,24 +45,12 @@ function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => voi
     case 'theme':
       return (
         <AccentPickerCard
-          onPick={accent => {
-            if (applyAppearance({ accent: accent ?? 'theme' }).success) {
-              answer({ accent })
-            }
-          }}
+          onContinue={accent => commit(applyAppearance({ accent: accent ?? 'theme' }).success, { accent })}
         />
       )
 
     case 'layout':
-      return (
-        <LayoutPickerCard
-          onPick={layout => {
-            if (applyAppearance({ layout }).success) {
-              answer({ layout })
-            }
-          }}
-        />
-      )
+      return <LayoutPickerCard onContinue={layout => commit(applyAppearance({ layout }).success, { layout })} />
 
     case 'plugins':
       return (
@@ -144,10 +134,14 @@ export function SetupBeatTool(props: ToolCallMessagePartProps) {
     return null
   }
 
-  const answer = (picks: SetupBeatAnswer) => {
-    if (answerSetupBeat(sessionId, picks)) {
-      setSettled({ answer: picks, beat: request.beat, kind: 'answer' })
+  const answer = (picks: SetupBeatAnswer): boolean => {
+    if (!answerSetupBeat(sessionId, picks)) {
+      return false
     }
+
+    setSettled({ answer: picks, beat: request.beat, kind: 'answer' })
+
+    return true
   }
 
   // The directory card has its own header and plug icon; a frame label above it would be a second header.

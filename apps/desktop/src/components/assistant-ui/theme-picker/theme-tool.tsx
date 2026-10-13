@@ -134,10 +134,14 @@ export function ThemeTool(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
-  const answer = (values: AppliedAppearance, apply: () => boolean) => {
-    if (apply()) {
-      setPicked(values)
+  const answer = (values: AppliedAppearance, apply: () => boolean): boolean => {
+    if (!apply()) {
+      return false
     }
+
+    setPicked(values)
+
+    return true
   }
 
   return (
@@ -155,10 +159,10 @@ export function ThemeTool(props: ToolCallMessagePartProps) {
       </div>
       {picker === 'accent' ? (
         <AccentPickerCard
-          onPick={accent => answer({ accent }, () => pickTheme(sessionId, { accent: accent ?? 'theme' }))}
+          onContinue={accent => answer({ accent }, () => pickTheme(sessionId, { accent: accent ?? 'theme' }))}
         />
       ) : (
-        <LayoutPickerCard onPick={layout => answer({ layout }, () => pickTheme(sessionId, { layout }))} />
+        <LayoutPickerCard onContinue={layout => answer({ layout }, () => pickTheme(sessionId, { layout }))} />
       )}
     </div>
   )
