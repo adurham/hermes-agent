@@ -344,3 +344,22 @@ def test_moa_reference_maps_index_and_count_to_mains_kwargs(make_agent):
     agent.run_conversation("q")
     assert seen[0][0][:3] == ("moa.reference", "gpt-x", "ref")
     assert seen[0][1] == {"moa_index": 1, "moa_count": 2}
+
+
+def test_reasoning_sink_sets_the_sessions_show_reasoning_flag_on_attach_and_toggle(make_agent):
+    """Main: a reasoning sink on the agent (show_reasoning, or verbose) makes the agent request and
+    stream reasoning. The gateway session gets the same switch at construction and on every toggle."""
+    shown = []
+    agent, client = make_agent(
+        [frame("reasoning.delta", {"text": "thinking hard"}),
+         frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        reasoning_callback=shown.append)
+    sets = [p for m, p in client.calls if m == "config.set"]
+    assert sets == [{"session_id": SID, "key": "show_reasoning", "value": "1"}]
+    agent.run_conversation("q")
+    assert shown == ["thinking hard"]
+    agent.reasoning_callback = None  # /reasoning hide
+    agent.reasoning_callback = None  # unchanged: no second RPC
+    agent.reasoning_callback = shown.append  # /reasoning show
+    values = [p["value"] for m, p in client.calls if m == "config.set" and p.get("key") == "show_reasoning"]
+    assert values == ["1", "0", "1"]

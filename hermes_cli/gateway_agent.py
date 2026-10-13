@@ -93,7 +93,8 @@ class GatewayAgent:
         self.service_tier = service_tier
         self.clarify_callback = clarify_callback
         self.connection_callback = connection_callback
-        self.reasoning_callback = reasoning_callback
+        self._reasoning_callback = None
+        self._show_reasoning_sent = None
         self.thinking_callback = thinking_callback
         self.tool_progress_callback = tool_progress_callback
         self.tool_start_callback = tool_start_callback
@@ -146,10 +147,33 @@ class GatewayAgent:
         self._rate_limit_state = None
         self._config_context_length = None
         self._apply_info(self._state().info)
+        self.reasoning_callback = reasoning_callback
         state = self._state()
         state.usage_listeners.append(self.apply_session_usage)
         if state.usage:
             self.apply_session_usage(state.usage)
+
+    # -- reasoning display -------------------------------------------------------------------
+    @property
+    def reasoning_callback(self):
+        return self._reasoning_callback
+
+    @reasoning_callback.setter
+    def reasoning_callback(self, callback):
+        """Main installs a reasoning sink at construction and on ``/reasoning show|hide`` / verbose; the
+        sink's presence is what makes the agent ask the provider for reasoning. The gateway agent
+        gets the same switch: the session's ``show_reasoning`` display flag, sent on each change."""
+        self._reasoning_callback = callback
+        wanted = (self.session_id, callback is not None)
+        if wanted == self._show_reasoning_sent:  # per session: a rotated id gets its own flag
+            return
+        try:
+            self.connection.call("config.set", session_id=self.session_id, key="show_reasoning",
+                                 value="1" if wanted[1] else "0", timeout=10)
+        except GatewayClientError as exc:
+            logger.debug("config.set show_reasoning failed: %s", exc)
+            return
+        self._show_reasoning_sent = wanted
 
     # -- snapshot-backed reads ---------------------------------------------------------------
     def _state(self):
