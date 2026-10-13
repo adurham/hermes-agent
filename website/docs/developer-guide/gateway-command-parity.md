@@ -77,7 +77,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/palette` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
 | `/paste` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
 | `/pause` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging-only |
-| `/personality` | control | slash.exec | config.set | slash.exec | refused | per-session setting (gateway handler) |
+| `/personality` | control | slash.exec | canonical route | slash.exec | refused | per-session setting (gateway handler) |
 | `/pet` | refused | refused: not available yet | slash.exec | action: pet | refused | client-local (cli_only) |
 | `/plan` | control | slash.exec | slash.exec | slash.exec | refused |  |
 | `/platform` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging adapters; `pause`/`resume` mutate them |

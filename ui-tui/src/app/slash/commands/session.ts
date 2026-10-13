@@ -257,6 +257,14 @@ export const sessionCommands: SlashCommand[] = [
     help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
+      // The bare form is the owner's /personality listing (one behaviour on every surface).
+      if (!arg && ctx.gateway.gw?.isCanonical) {
+        return ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: 'personality', session_id: ctx.sid })
+          .then(ctx.guarded<SlashExecResponse>(r => r.output && ctx.transcript.sys(r.output)))
+          .catch(ctx.guardedErr)
+      }
+
       if (!arg) {
         return
       }

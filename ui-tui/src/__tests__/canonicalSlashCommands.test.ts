@@ -77,6 +77,10 @@ function harness() {
       return { output: 'Session: owner' }
     }
 
+    if (method === 'slash.exec' && params.command === 'personality') {
+      return { type: 'exec', output: '🎭 **Available Personalities**' }
+    }
+
     if (method === 'slash.exec' && params.command === 'voice tts') {
       return { type: 'exec', output: 'Auto-TTS enabled.' }
     }
@@ -253,6 +257,16 @@ it('/voice tts sets the session\'s voice state through the owner\'s /voice handl
 
   expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice tts', session_id: 'owner' })
   expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['Auto-TTS enabled.'])
+})
+
+it('bare /personality lists through the owner\'s /personality handler', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/personality')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'personality', session_id: 'owner' })
+  expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['🎭 **Available Personalities**'])
 })
 
 it('/personality <name> is the owner\'s config.set like main', async () => {
