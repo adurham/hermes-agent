@@ -77,6 +77,10 @@ function harness() {
       return { output: 'Session: owner' }
     }
 
+    if (method === 'slash.exec' && params.command === 'voice tts') {
+      return { type: 'exec', output: 'Auto-TTS enabled.' }
+    }
+
     throw new Error(`unknown_method: ${method}`)
   })
 
@@ -223,7 +227,7 @@ it('/stop is session-scoped; process-global /reload-mcp refuses on the shared ga
   }
 })
 
-it('/reasoning --global still says the shared gateway has no verb for it; /skin reads still work', async () => {
+it('/reasoning --global is the owner\'s /reasoning handler behind config.set; /skin reads still work', async () => {
   const { request, slash, sys } = harness()
 
   for (const cmd of ['/reasoning high --global', '/skin']) {
@@ -232,13 +236,23 @@ it('/reasoning --global still says the shared gateway has no verb for it; /skin 
 
   await flush()
 
-  expect(request.mock.calls.map(([method]) => method)).not.toContain('config.set')
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'reasoning', scope: 'global', session_id: 'owner', value: 'high' })
   expect(request).toHaveBeenCalledWith('config.get', { key: 'skin' })
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
-  expect(notices).toContain('/reasoning is not available on the shared gateway yet')
+  expect(notices.some(line => /not available/.test(line))).toBe(false)
   expect(notices.some(line => /skin: default/.test(line))).toBe(true)
+})
+
+it('/voice tts sets the session\'s voice state through the owner\'s /voice handler', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/voice tts')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice tts', session_id: 'owner' })
+  expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['Auto-TTS enabled.'])
 })
 
 it('/personality <name> is the owner\'s config.set like main', async () => {
@@ -290,7 +304,7 @@ it('/theme and /indicator write the profile through the owner\'s config.set like
   expect(getUiState().indicatorStyle).toBe('ascii')
 })
 
-it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); display words still refuse', async () => {
+it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); display words are its /reasoning handler', async () => {
   const { request, slash, sys } = harness()
 
   slash('/reasoning high')
@@ -301,10 +315,11 @@ it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); 
   expect(request).toHaveBeenCalledWith('session.mutate', expect.objectContaining({
     session_id: 'owner', operation: 'reasoning', payload: { effort: 'high' }, expected_revision: 7, expected_generation: 3
   }))
-  expect(request.mock.calls.map(([method]) => method)).not.toContain('config.set')
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'reasoning', session_id: 'owner', value: 'show' })
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
   expect(notices.some(line => /high/.test(line))).toBe(true)
-  expect(notices).toContain('/reasoning is not available on the shared gateway yet')
+  expect(notices.some(line => /not available/.test(line))).toBe(false)
+  expect(getUiState().showReasoning).toBe(true)
 })

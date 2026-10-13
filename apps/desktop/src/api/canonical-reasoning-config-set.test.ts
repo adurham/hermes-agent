@@ -5,8 +5,8 @@ import { HermesGateway } from './client'
 
 // B14: main's Desktop /reasoning <level> changed the session's reasoning through legacy config.set.
 // On the shared owner the session scope is the revision-fenced `session.mutate operation=reasoning`;
-// `--global` (a config.yaml write the owner has no verb for) stays a named refusal.
-test('typed /reasoning sets the session level through the owner mutation; --global is refused by name', async () => {
+// `--global` is the owner's `/reasoning` handler behind `config.set reasoning scope=global`.
+test('typed /reasoning sets the session level through the owner mutation; --global reaches the owner', async () => {
   const wsPackage = 'ws'
   const { WebSocketServer } = await import(wsPackage)
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
@@ -30,7 +30,7 @@ test('typed /reasoning sets the session level through the owner mutation; --glob
                 effort: p.payload.effort
               }
             : frame.method === 'config.set'
-              ? null
+              ? { key: 'reasoning', value: p.value, scope: p.scope }
               : { value: 'medium' }
 
       socket.send(
@@ -63,7 +63,7 @@ test('typed /reasoning sets the session level through the owner mutation; --glob
     ).resolves.toMatchObject({ value: 'low' })
     await expect(
       client.request('config.set', { key: 'reasoning', session_id: 's', value: 'high', scope: 'global' })
-    ).rejects.toThrow(/reasoning \(global\) is not available on the shared gateway yet/)
+    ).resolves.toMatchObject({ value: 'high', scope: 'global' })
 
     const mutations = sent.filter(frame => frame.method === 'session.mutate').map(frame => frame.params)
     expect(mutations).toMatchObject([
@@ -76,7 +76,9 @@ test('typed /reasoning sets the session level through the owner mutation; --glob
       },
       { session_id: 's', operation: 'reasoning', payload: { effort: 'low' }, expected_revision: 5 }
     ])
-    expect(sent.filter(frame => frame.method === 'config.set')).toEqual([])
+    expect(sent.filter(frame => frame.method === 'config.set').map(frame => frame.params)).toEqual([
+      { key: 'reasoning', session_id: 's', value: 'high', scope: 'global' }
+    ])
     // The bare form's read still reaches the owner.
     await expect(client.request('config.get', { key: 'reasoning', session_id: 's' })).resolves.toEqual({
       value: 'medium'

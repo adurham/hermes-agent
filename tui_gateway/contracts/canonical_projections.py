@@ -27,6 +27,8 @@ class CanonicalConfigSetParams(ProfileParams):
     key: str
     value: JsonValue = None
     confirm_expensive_model: bool | None = None
+    # ``reasoning`` (``global`` = ``/reasoning --global``) and ``yolo`` (``global`` = approvals.mode).
+    scope: Literal['session', 'global'] | None = None
 
 
 class CanonicalAttachedImageResult(AttachedImageResult):

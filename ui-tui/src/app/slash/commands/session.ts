@@ -386,10 +386,13 @@ export const sessionCommands: SlashCommand[] = [
           ? normalized
           : 'status'
 
-      // Read-aloud ran in the sidecar's own turn; a shared-gateway turn runs on the owner, which
-      // never speaks a TUI reply, so the toggle would say "on" and stay silent.
+      // `/voice tts` is the session's voice state, held by the owner's `/voice` handler (one behaviour
+      // on every surface); recording and playback stay in this terminal.
       if (action === 'tts' && ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'voice tts'))
+        return ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: 'voice tts', session_id: ctx.sid })
+          .then(ctx.guarded<SlashExecResponse>(r => r.output && ctx.transcript.sys(r.output)))
+          .catch(ctx.guardedErr)
       }
 
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
@@ -636,10 +639,10 @@ export const sessionCommands: SlashCommand[] = [
 
       const payload = reasoningConfigPayload(arg, ctx.sid ?? '')
 
-      // The shared owner sets a session level through its frozen-policy mutation; it has no verb for
-      // the config.yaml writes (`--global`, the display words): say so instead of a bare invalid_params.
-      if (ctx.gateway.gw?.isCanonical) {
-        return canonicalReasoning(payload, ctx) || ctx.transcript.sys(t('canonical.controls.notAvailable', 'reasoning'))
+      // The shared owner sets a session level through its frozen-policy mutation; `--global`, `reset`
+      // and the display words are the owner's `/reasoning` handler behind `config.set reasoning`.
+      if (ctx.gateway.gw?.isCanonical && canonicalReasoning(payload, ctx)) {
+        return
       }
 
       ctx.gateway.rpc<ConfigSetResponse>('config.set', payload).then(

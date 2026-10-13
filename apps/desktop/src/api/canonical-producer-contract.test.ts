@@ -106,7 +106,7 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     'reasoning-slash.ts /reasoning --global',
     'config.set',
     { key: 'reasoning', session_id: 's', value: 'high', scope: 'global' },
-    /reasoning .*not available/
+    ['config.set']
   ],
   [
     'reasoning-step.ts keybind step (B14)',
@@ -115,29 +115,29 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     ['session.mutate']
   ],
   [
-    'reasoning-slash.ts /reasoning show (display word, config.yaml)',
+    'reasoning-slash.ts /reasoning show (display word: the /reasoning handler)',
     'config.set',
     { key: 'reasoning', session_id: 's', value: 'show' },
-    /reasoning is not available/
+    ['config.set']
   ],
-  ['model-presets.ts fast', 'config.set', { key: 'fast', session_id: 's', value: 'fast' }, /fast is not available/],
+  ['model-presets.ts fast', 'config.set', { key: 'fast', session_id: 's', value: 'fast' }, ['config.set']],
   [
     'approval-mode.ts menu',
     'config.set',
     { key: 'approvals.mode', value: 'manual', profile: 'default' },
-    /approvals\.mode is not available/
+    ['config.set']
   ],
   [
     'voice-live.ts engine',
     'config.set',
     { key: 'voice.voice_chat_mode', value: 'chained' },
-    /voice\.voice_chat_mode is not available/
+    ['config.set']
   ],
   [
     'yolo-session.ts Shift+click zap',
     'config.set',
     { key: 'yolo', scope: 'global', value: '1' },
-    /yolo \(global\) is not available/
+    ['config.set']
   ],
   ['yolo-session.ts session toggle', 'config.set', { key: 'yolo', session_id: 's', value: '1' }, ['config.set']],
   [

@@ -87,7 +87,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/prompt` (/compose) | refused | refused: not available yet | local | slash.exec: refused | refused | client-local (cli_only) |
 | `/queue` (/q) | refused | refused: not available yet | local | slash.exec: refused | refused |  |
 | `/quit` (/exit) | refused | detach | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/reasoning` | control | slash.exec | config.get; change refused: not available yet | action: reasoning | refused | per-session setting (gateway handler) |
+| `/reasoning` | control | slash.exec | canonical route | action: reasoning | refused | per-session setting (gateway handler) |
 | `/redraw` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
 | `/refine` | control | slash.exec | slash.exec | slash.exec | refused |  |
 | `/reload` | refused | refused: not available yet | canonical route | unavailable: terminal | refused | client-local (cli_only) |
@@ -123,7 +123,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/usage` | read (bare only (`reset` refused)) | slash.exec + last-turn receipt | canonical route | slash.exec | refused |  |
 | `/verbose` | control | slash.exec | config.set | unavailable: terminal | refused | per-session setting (gateway handler) |
 | `/version` (/v) | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/voice` | control | slash.exec | sidecar: voice.toggle; `tts` refused | unavailable: composer-voice | refused | per-session setting (gateway handler) |
+| `/voice` | control | slash.exec | canonical route | unavailable: composer-voice | refused | per-session setting (gateway handler) |
 | `/wake` | refused | refused: not available yet | local | action: wake | refused | client-local (cli_only) |
 | `/whoami` | read | slash.exec | slash.exec | slash.exec | refused |  |
 | `/worktree` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |

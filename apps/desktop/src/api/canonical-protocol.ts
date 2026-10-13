@@ -139,15 +139,22 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
 // reaped runtime). Refused by name until the owner serves them.
 const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail', 'preview.restart'])
 
-// `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams).
-const CANONICAL_CONFIG_KEYS = new Set(['busy', 'verbose', 'yolo', 'model'])
+// `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams;
+// gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
+// Shift+click global yolo zap).
+const CANONICAL_CONFIG_KEYS = new Set([
+  'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
+  'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'
+])
+
+const SCOPED_CONFIG_KEYS = new Set(['reasoning', 'yolo'])
 
 // The one guard between a Desktop producer and the owner's closed contracts: translate a legacy
 // shape the owner has a canonical form for, refuse by name what it does not serve.
 function canonicalProducerFrame(method: string, params: Record<string, unknown>): Record<string, unknown> {
-  // No verb for other settings (reasoning display words, fast, approvals.mode, voice, display.*)
-  // nor a global scope: refuse before the wire, like Ink, instead of a bare invalid_params.
-  if (method === 'config.set' && (!CANONICAL_CONFIG_KEYS.has(String(params.key)) || 'scope' in params)) {
+  // Any other key, or a scope on a key without one: refuse before the wire, like Ink, instead of a
+  // bare invalid_params.
+  if (method === 'config.set' && (!CANONICAL_CONFIG_KEYS.has(String(params.key)) || ('scope' in params && !SCOPED_CONFIG_KEYS.has(String(params.key))))) {
     throw new Error(`Changing ${params.key}${'scope' in params ? ` (${params.scope})` : ''} is not available on the shared gateway yet`)
   }
 

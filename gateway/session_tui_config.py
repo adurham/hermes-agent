@@ -162,8 +162,16 @@ def _authorize_write(connection, ref, params):
     return policy
 
 
+# Profile settings main's sidecar wrote for Desktop's toggles (``tui_gateway/server.py::_DISPLAY_TOGGLE_KEYS``)
+# and its voice-engine pick: config.yaml leaves with main's validation.
+_DISPLAY_TOGGLE_KEYS = frozenset({'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'})
+_VOICE_CHAT_MODES = frozenset({'chained', 'gpt-live'})
+
+
 async def config_set(connection, ref, params):
     key = params.get('key')
+    if key == 'reasoning' or (key == 'yolo' and 'scope' in params):
+        return await _set_command_setting(connection, ref, params)
     if key in _SESSION_CONTROL_KEYS or not isinstance(key, str):
         from gateway.session_busy_controls import busy_config
         return await busy_config(connection, ref, params, write=True)
@@ -175,6 +183,11 @@ async def config_set(connection, ref, params):
         return await _set_fast(connection, ref, policy, value)
     if key == 'personality':
         return await asyncio.to_thread(_set_personality, connection, value)
+    if key in ('approvals.mode', 'approval_mode'):
+        return await asyncio.to_thread(_set_approval_mode, connection, value)
+    if key in _DISPLAY_TOGGLE_KEYS or key == 'voice.voice_chat_mode':
+        return {'key': key, **await asyncio.to_thread(_write_profile_config, connection,
+                                                      lambda cfg: _set_profile_leaf(cfg, key, value))}
     result = await asyncio.to_thread(_write_profile_config, connection,
                                      lambda cfg: _set_display(cfg, key, value))
     if key == 'focus' and ref.session_id and 'tool_progress' in result:
@@ -264,3 +277,75 @@ def _set_personality(connection, value):
         if not persist_personality(name):
             raise RuntimeStoreError('storage_unavailable')
     return {'key': 'personality', 'value': str(value or 'none'), 'history_reset': False}
+
+
+def _set_profile_leaf(cfg, key, value):
+    section, leaf = key.split('.', 1)
+    if key == 'voice.voice_chat_mode':
+        new = _word(value)
+        if new not in _VOICE_CHAT_MODES:
+            raise RuntimeStoreError('invalid_params')
+    else:
+        new = {**_BOOL_WORDS, '1': True, '0': False}.get(_word(value))
+        if new is None:
+            raise RuntimeStoreError('invalid_params')
+    if not isinstance(cfg.get(section), dict):
+        cfg[section] = {}
+    cfg[section][leaf] = new
+    return {'value': new}
+
+
+def _set_approval_mode(connection, value):
+    """``/approvals <mode>``'s own write (``hermes_cli.approval_mode``) for this profile."""
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.approval_mode import run_approval_mode_command
+    with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
+        result = run_approval_mode_command(_word(value) or None)
+    if not result.ok:
+        raise RuntimeStoreError('invalid_params' if _word(value) not in ('manual', 'smart', 'off')
+                                else 'storage_unavailable')
+    return {'key': 'approvals.mode', 'value': result.mode}
+
+
+async def _set_command_setting(connection, ref, params):
+    """``config.set`` for a setting a slash command owns: the same handler code, so the picker, the
+    keybind and the typed command agree. ``reasoning`` is ``/reasoning`` (``scope=global`` =
+    ``--global``; show/hide/reset/levels), ``yolo`` with ``scope=global`` is main's Shift+click zap
+    (``approvals.mode`` off / manual)."""
+    if (set(params) - {'session_id', 'profile', 'key', 'value', 'scope'} or not ref.session_id
+            or params.get('scope', 'session') not in ('session', 'global')):
+        raise RuntimeStoreError('invalid_params')
+    _authorize_write(connection, ref, params)
+    connection.authority.authorize(connection.actor, ref, 'session:control')
+    value, scope = _word(params.get('value')), params.get('scope', 'session')
+    if params['key'] == 'yolo':
+        if scope != 'global':
+            raise RuntimeStoreError('invalid_params')
+        on = {**_BOOL_WORDS, '1': True, '0': False}.get(value)
+        if on is None and value not in ('', 'toggle'):
+            raise RuntimeStoreError('invalid_params')
+
+        def flip():
+            from tools.approval_context import _get_approval_mode
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(Path(connection.authority.profile_id)):
+                enable = (_get_approval_mode() != 'off') if on is None else on
+            return enable, _set_approval_mode(connection, 'off' if enable else 'manual')
+        enable, _ = await asyncio.to_thread(flip)
+        return {'key': 'yolo', 'value': '1' if enable else '0', 'scope': 'global'}
+    if not value:
+        raise RuntimeStoreError('invalid_params')
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import parse_reasoning_effort
+    from gateway.slash_commands_model import _REASONING_DISPLAY_TOGGLES
+    if value not in _REASONING_DISPLAY_TOGGLES and value != 'reset' and parse_reasoning_effort(value) is None:
+        raise RuntimeStoreError('invalid_params')
+    live, runner = connection.authority.sessions[ref.session_id], connection.authority.runner
+
+    def apply():
+        with _profile_runtime_scope(Path(connection.authority.profile_id)):
+            return runner._apply_reasoning_selection(live.route, 'cli', value, persist_global=scope == 'global')
+    await asyncio.to_thread(apply)
+    show = _REASONING_DISPLAY_TOGGLES.get(value)
+    reported = ('show' if show else 'hide') if show is not None else value
+    return {'key': 'reasoning', 'value': reported, 'scope': scope}

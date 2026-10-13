@@ -8425,6 +8425,22 @@
             ],
             "default": null,
             "title": "Confirm Expensive Model"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "session",
+                  "global"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scope"
           }
         },
         "required": [

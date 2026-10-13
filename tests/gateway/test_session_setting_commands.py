@@ -151,3 +151,34 @@ def test_local_session_settings_run_the_messaging_handlers_and_read_back_through
     # /fast on a custom endpoint: the handler's own refusal, not unsupported_command.
     assert '/fast' in out['fast'] and not out['fast'].startswith('ERR:'), out['fast']
     assert saved['model'] == config['model']
+
+
+def _set(label, key, value, **extra):
+    return (label, 'config.set', {'key': key, 'value': value, **extra})
+
+
+@pytest.mark.platforms("linux")
+def test_config_set_serves_the_settings_desktop_and_ink_write_through_the_same_handlers(tmp_path):
+    steps = [
+        _set('global high', 'reasoning', 'high', scope='global'), _get('get global', 'reasoning'),
+        _turn('turn global', 'TURN_GLOBAL'),
+        _set('hide', 'reasoning', 'hide'), _get('get hide', 'show_reasoning'),
+        _set('approvals', 'approvals.mode', 'smart'), _get('get approvals', 'approvals.mode'),
+        _set('bad approvals', 'approvals.mode', 'nope'),
+        _set('zap on', 'yolo', '1', scope='global'), _get('get approvals zap', 'approvals.mode'),
+        _set('zap off', 'yolo', '0', scope='global'),
+        _set('tips', 'display.in_app_tips', 'false'), _set('engine', 'voice.voice_chat_mode', 'gpt-live'),
+        _set('bad engine', 'voice.voice_chat_mode', 'loud'),
+    ]
+    out, home, _ = _run(tmp_path, steps)
+    saved = _yaml(home)
+    assert out['global high'] == {'key': 'reasoning', 'value': 'high', 'scope': 'global'}, out['global high']
+    assert out['get global']['value'] == 'high' and saved['agent']['reasoning_effort'] == 'high', out
+    assert out['turn global'].get('reasoning_effort') == 'high', out['turn global']
+    assert out['hide']['value'] == 'hide' and out['get hide']['value'] == '0', out
+    assert out['get approvals']['value'] == 'smart' and out['bad approvals'] == 'ERR:invalid_params', out
+    assert isinstance(out['zap on'], dict) and out['zap on']['value'] == '1', out['zap on']
+    assert out['get approvals zap']['value'] == 'off', out['get approvals zap']
+    assert out['zap off']['value'] == '0' and saved['approvals']['mode'] == 'manual', out
+    assert saved['display']['in_app_tips'] is False and saved['voice']['voice_chat_mode'] == 'gpt-live'
+    assert out['bad engine'] == 'ERR:invalid_params', out['bad engine']

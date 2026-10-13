@@ -5064,6 +5064,7 @@ export interface CanonicalConfigSetParams {
   key: string
   value?: unknown
   confirm_expensive_model?: boolean | null
+  scope?: 'session' | 'global' | null
 }
 export interface CanonicalProfilesParams {
   profile?: string | null
