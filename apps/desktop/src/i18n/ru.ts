@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruConnectors } from './ru_connectors'
+import { ruFirstRun } from './ru_first_run'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
@@ -36,6 +37,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 export const ruOverrides = {
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
+  firstRun: ruFirstRun,
   sessionImport: ruConnectors.sessionImport,
   common: {
     apply: 'Применить',

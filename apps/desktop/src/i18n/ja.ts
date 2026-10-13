@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
 import { jaConnectors } from './ja_connectors'
+import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -23,6 +24,7 @@ export const jaOverrides = {
     close: '閉じる'
   },
   sharedMetrics: jaSharedMetrics,
+  firstRun: jaFirstRun,
   intro: introJa,
   sessionImport: jaConnectors.sessionImport,
   common: {
