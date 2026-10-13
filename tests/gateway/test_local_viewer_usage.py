@@ -120,3 +120,27 @@ def test_local_viewer_turn_end_records_stats_for_the_completion():
     finally:
         execution_result.reset(token)
     assert captured['session_usage'] == published[-1][1]
+
+
+def test_turn_end_publishes_the_agents_banner_info():
+    """Main re-emitted ``session.info`` at every turn end; the first turn's carries the built agent's
+    ``system_prompt`` (the banner's ``▸ System Prompt — N chars`` row, FINDINGS row 2) and tools."""
+    from gateway.session_local_inventory import publish_settled_info
+    published = []
+    agent = _agent()
+    agent._cached_system_prompt = 'You are Hermes.' * 10
+    agent.tools = [{'function': {'name': 'terminal'}}]
+    turn = _turn(Platform.LOCAL, published, agent)
+    turn._approval_owner = (SimpleNamespace(profile_id='p'), 's', 1)
+    from gateway import session_local
+    original = session_local.local_session_info
+    session_local.local_session_info = lambda authority, ref: {'model': 'fake-model', 'lazy': False}
+    try:
+        publish_settled_info(turn, agent)
+    finally:
+        session_local.local_session_info = original
+    kind, info = published[-1]
+    assert kind == 'session.info'
+    assert info['system_prompt'] == agent._cached_system_prompt
+    assert info['tools'] == {'terminal': ['terminal']} and info['context_length'] == 128000
+    assert info['model'] == 'fake-model'

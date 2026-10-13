@@ -188,3 +188,35 @@ async def snapshot_info(authority, ref):
         # A lazy session: the tools its first turn loads (the banner's own count).
         info['tool_count'] = sum(len(names) for names in (inventory.get('tools') or {}).values())
     return {**inventory, **info}
+
+
+def agent_inventory(agent) -> dict:
+    """The banner fields only a built agent knows (main's ``_session_info`` read them off it): the
+    tools it loaded, its cached system prompt (the ``▸ System Prompt`` row), provider and context
+    length. Cheap attribute reads, safe on the agent thread at turn end."""
+    info: dict = {}
+    with contextlib.suppress(Exception):
+        from agent.voice_turn_route import session_runtime_view
+        info["provider"] = getattr(session_runtime_view(agent), "provider", "") or ""
+    with contextlib.suppress(Exception):
+        info["tools"] = _grouped(getattr(agent, "tools", None))
+    info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is not None and getattr(compressor, "context_length", None):
+        info["context_length"] = compressor.context_length
+    return info
+
+
+def publish_settled_info(turn, agent) -> None:
+    """Main's end-of-turn ``session.info`` (``session_workdir._emit_settled_session_info``) for a local
+    viewer: the first turn builds the agent, so this is when the banner's ``▸ System Prompt`` row, the
+    agent's tool list and provider first become known. Never breaks the turn."""
+    if agent is None:
+        return
+    with contextlib.suppress(Exception):
+        from gateway.session_contract import SessionRef
+        from gateway.session_local import local_session_info
+        authority, session_id, _generation = turn._approval_owner
+        info = {**agent_inventory(agent),
+                **local_session_info(authority, SessionRef(authority.profile_id, session_id))}
+        turn._publish_execution("session.info", info)
