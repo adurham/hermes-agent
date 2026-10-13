@@ -90,61 +90,59 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
         const api = (window as any).hermesDesktop.api
         const out: Record<string, unknown> = {}
         const q = 'limit=40&offset=0&min_messages=1&archived=exclude&order=recent'
-
-        const calls: Record<string, string> = {
-          'sidebar:default': '/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=40&cron_limit=5&messaging_limit=5',
-          'sidebar:developer': '/api/profiles/sessions/sidebar?recents_profile=developer&recents_limit=40&cron_limit=5&messaging_limit=5',
-          'sidebar:all': '/api/profiles/sessions/sidebar?recents_profile=all&recents_limit=40&cron_limit=5&messaging_limit=5',
-          'sessions:all': `/api/profiles/sessions?${q}&profile=all`
-        }
-
         // The same all-profiles read as the renderer sends it on its registry route.
         const registry = { profile: 'default', connectionId: 'local' }
-        calls['sidebar:all:registry'] = calls['sidebar:all']
 
-        for (const [name, path] of Object.entries(calls)) {
+        // One probe: its result, or the error text, under `name`.
+        const probe = async (name: string, read: () => Promise<unknown>) => {
           try {
-            const r = await api({ path, ...(name.endsWith(':registry') ? registry : {}) })
-            const rows = r?.recents ? r.recents.sessions : r?.sessions
-            out[name] = { ids: (rows ?? []).map((x: any) => `${x.profile}:${x.id}`).sort(), errors: r?.errors ?? [] }
+            out[name] = await read()
           } catch (e) {
             out[name] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
           }
         }
 
-        // The all-profiles Projects view and PR badges: which profiles' sessions each read covers.
-        for (const [name, scope] of [['projects:all', {}], ['projects:all:registry', registry]] as const) {
-          try {
-            const r = await api({ path: '/api/profiles/projects/tree?preview_limit=10', ...scope })
-            const profiles = new Set<string>()
+        const sessionIds = (r: any) => {
+          const rows = r?.recents ? r.recents.sessions : r?.sessions
 
-            for (const project of r?.projects ?? []) {
-              for (const session of project.previewSessions ?? []) {
-                profiles.add(session.profile)
-              }
+          return { ids: (rows ?? []).map((x: any) => `${x.profile}:${x.id}`).sort(), errors: r?.errors ?? [] }
+        }
+
+        const previewProfiles = (r: any) => {
+          const profiles = new Set<string>()
+
+          for (const project of r?.projects ?? []) {
+            for (const session of project.previewSessions ?? []) {
+              profiles.add(session.profile)
             }
-
-            out[name] = { profiles: [...profiles].sort(), errors: r?.errors ?? [] }
-          } catch (e) {
-            out[name] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
           }
+
+          return { profiles: [...profiles].sort(), errors: r?.errors ?? [] }
         }
 
-        // The all-profiles cron list, on both routes.
-        for (const [name, scope] of [['cron:all', {}], ['cron:all:registry', registry]] as const) {
-          try {
-            const r = await api({ path: '/api/cron/jobs?profile=all', ...scope })
-            out[name] = (Array.isArray(r) ? r : []).map((job: any) => `${job.profile}:${job.name}`).sort()
-          } catch (e) {
-            out[name] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
-          }
-        }
+        const cronNames = (r: any) => (Array.isArray(r) ? r : []).map((job: any) => `${job.profile}:${job.name}`).sort()
 
-        try {
-          const r = await api({ path: '/api/profiles/sessions/pull-requests', method: 'POST', body: { ids: ['legacy-desktop-anon'] } })
-          out['prs:all'] = { scanned: r?.scanned ?? null }
-        } catch (e) {
-          out['prs:all'] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
+        // The cross-profile lists the sidebar and Sessions view read, through main's transport.
+        const sidebarAll = '/api/profiles/sessions/sidebar?recents_profile=all&recents_limit=40&cron_limit=5&messaging_limit=5'
+
+        const reads: [string, Record<string, unknown>, (r: any) => unknown][] = [
+          ['sidebar:default', { path: '/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=40&cron_limit=5&messaging_limit=5' }, sessionIds],
+          ['sidebar:developer', { path: '/api/profiles/sessions/sidebar?recents_profile=developer&recents_limit=40&cron_limit=5&messaging_limit=5' }, sessionIds],
+          ['sidebar:all', { path: sidebarAll }, sessionIds],
+          ['sessions:all', { path: `/api/profiles/sessions?${q}&profile=all` }, sessionIds],
+          ['sidebar:all:registry', { path: sidebarAll, ...registry }, sessionIds],
+          // The all-profiles Projects view and PR badges: which profiles' sessions each read covers.
+          ['projects:all', { path: '/api/profiles/projects/tree?preview_limit=10' }, previewProfiles],
+          ['projects:all:registry', { path: '/api/profiles/projects/tree?preview_limit=10', ...registry }, previewProfiles],
+          // The all-profiles cron list, on both routes.
+          ['cron:all', { path: '/api/cron/jobs?profile=all' }, cronNames],
+          ['cron:all:registry', { path: '/api/cron/jobs?profile=all', ...registry }, cronNames],
+          ['prs:all', { path: '/api/profiles/sessions/pull-requests', method: 'POST', body: { ids: ['legacy-desktop-anon'] } },
+            (r: any) => ({ scanned: r?.scanned ?? null })]
+        ]
+
+        for (const [name, request, shape] of reads) {
+          await probe(name, async () => shape(await api(request)))
         }
 
         return out

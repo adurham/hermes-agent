@@ -1198,6 +1198,23 @@ function mergeTreeById(into: Map<string, any>, entries: any[], childKey: string)
   }
 }
 
+// One folder's group from a second profile folded into the first: repos/groups by id, totals added,
+// the newest activity and the newest previews across both.
+function mergeProjectInto(existing: any, project: any, previewLimit: number) {
+  const repos = new Map<string, any>((existing.repos ?? []).map((repo: any) => [repo.id, repo]))
+  mergeTreeById(repos, project.repos ?? [], 'groups')
+  existing.repos = [...repos.values()]
+
+  for (const total of ['sessionCount', 'totalTokens', 'totalCostUsd']) {
+    existing[total] = (existing[total] || 0) + (project[total] || 0)
+  }
+
+  existing.lastActive = Math.max(existing.lastActive || 0, project.lastActive || 0)
+  existing.previewSessions = [...(existing.previewSessions ?? []), ...(project.previewSessions ?? [])]
+    .sort((a, b) => recencyOf(b) - recencyOf(a))
+    .slice(0, previewLimit)
+}
+
 // The gateway's own cross-profile merge (`_merge_profile_tree`), keyed by the folder key each
 // per-profile read reports: one group per folder, a declared project wins over another
 // profile's auto entry, totals add up, and the previews are the newest across profiles.
@@ -1232,18 +1249,7 @@ function mergeProfileProjectTrees(reads: ProfileRead[], previewLimit: number) {
         merged.set(key, existing)
       }
 
-      const repos = new Map<string, any>((existing.repos ?? []).map((repo: any) => [repo.id, repo]))
-      mergeTreeById(repos, project.repos ?? [], 'groups')
-      existing.repos = [...repos.values()]
-
-      for (const total of ['sessionCount', 'totalTokens', 'totalCostUsd']) {
-        existing[total] = (existing[total] || 0) + (project[total] || 0)
-      }
-
-      existing.lastActive = Math.max(existing.lastActive || 0, project.lastActive || 0)
-      existing.previewSessions = [...(existing.previewSessions ?? []), ...(project.previewSessions ?? [])]
-        .sort((a, b) => recencyOf(b) - recencyOf(a))
-        .slice(0, previewLimit)
+      mergeProjectInto(existing, project, previewLimit)
     }
   }
 
