@@ -90,9 +90,21 @@ async function factsSource(request: OnboardingRequest): Promise<'local' | 'remot
   return same ? 'local' : 'remote'
 }
 
+/** The first-run intro around a start (`components/onboarding/first-run/kickoff.ts`). */
+export interface OnboardingIntroHooks {
+  /** Before `onboarding.start`: the boot overlay holds. */
+  starting: () => void
+  /** The start answered, the chat not open yet. False: the user went on without setup, so it stays closed. */
+  started: (started: OnboardingStartResult) => boolean
+  /** The chat is the one on screen. */
+  opened: (started: OnboardingStartResult) => void
+  failed: () => void
+}
+
 interface StartOptions {
   /** Points the window's gateway at the profile onboarding runs in (`store/profile.ts::ensureGatewayProfile`). */
   ensureProfile?: (profile: string) => Promise<void>
+  intro?: OnboardingIntroHooks
   rerun?: boolean
 }
 
@@ -100,11 +112,12 @@ interface StartOptions {
 export async function startOnboarding(
   request: OnboardingRequest,
   resume: OnboardingResume,
-  { ensureProfile = ensureGatewayProfile, rerun = false }: StartOptions = {}
+  { ensureProfile = ensureGatewayProfile, intro, rerun = false }: StartOptions = {}
 ): Promise<boolean> {
   $onboardingPhase.set('shown')
   $onboardingEnded.set(null)
   $onboardingChatSeen.set(false)
+  intro?.starting()
 
   try {
     await ensureProfile(ONBOARDING_PROFILE)
@@ -115,15 +128,24 @@ export async function startOnboarding(
       rerun
     })
 
+    if (intro && !intro.started(started)) {
+      $onboardingSession.set(null)
+      $onboardingPhase.set('failed')
+
+      return false
+    }
+
     // The chat is on screen before the run names it, so the presence never sees a gap.
     await resume(started.stored_session_id, true)
     $onboardingSession.set({ runtimeId: started.session_id, storedId: started.stored_session_id })
+    intro?.opened(started)
 
     return true
   } catch (error) {
     console.warn('[onboarding] could not start', error)
     $onboardingSession.set(null)
     $onboardingPhase.set('failed')
+    intro?.failed()
 
     return false
   }

@@ -23,6 +23,7 @@ import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
+import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import {
@@ -600,15 +601,38 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [startSessionInWorkspace, startWorkSessionRequest])
 
-  // The main window asks the backend whether first-run onboarding is due and opens it; every other
-  // window never runs it, so its first-run surfaces are free at once.
+  // Opens a stored chat on screen: resume it, then route to it (resume alone selects it, the route
+  // stays where it was). Throws when the chat did not become the selected one.
+  const adoptSessionRoute = useCallback(
+    async (storedSessionId: string) => {
+      creatingSessionRef.current = true
+
+      try {
+        await resumeSession(storedSessionId, true)
+
+        if ($selectedStoredSessionId.get() !== storedSessionId) {
+          throw new Error('The onboarding chat could not be opened.')
+        }
+
+        navigate(sessionRoute(storedSessionId), { replace: true })
+      } finally {
+        window.setTimeout(() => {
+          creatingSessionRef.current = false
+        }, 0)
+      }
+    },
+    [navigate, resumeSession]
+  )
+
+  // The main window asks the backend whether first-run onboarding is due and opens it with main's
+  // intro around it; every other window never runs it, so its first-run surfaces are free at once.
   useEffect(() => {
     if (!isMainWindow()) {
       markOnboardingDecided()
     } else if (gatewayState === 'open') {
-      void decideOnboarding(requestGateway, resumeSession)
+      void decideOnboarding(requestGateway, adoptSessionRoute, { intro: firstRunIntro() })
     }
-  }, [gatewayState, requestGateway, resumeSession])
+  }, [adoptSessionRoute, gatewayState, requestGateway])
 
   // "New project" DRAG completion: the dialog created a project that was
   // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
