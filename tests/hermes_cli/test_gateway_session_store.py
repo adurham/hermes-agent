@@ -107,7 +107,9 @@ def test_title_rename_delete_and_detach_are_gateway_verbs(store):
     assert client.calls[-1] == ("session.detach", {"session_id": "local-old", "subscription_id": "sub-local-old",
                                                    "end_reason": "cli_close"})
     db.delete_session("local-old")
-    assert [p for m, p in client.calls if m == "session.mutate"][-1]["operation"] == "delete"
+    delete = [p for m, p in client.calls if m == "session.mutate"][-1]
+    # The owner refuses a delete without the generation it was read at (invalid_params).
+    assert delete["operation"] == "delete" and delete["expected_generation"] == 0
 
 
 def test_gateway_owned_writes_are_noops_and_unknown_writes_refuse(store):

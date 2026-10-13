@@ -40,6 +40,8 @@ _GATEWAY_OWNED = frozenset({
     "update_session_model", "patch_session_model_config", "maybe_auto_archive",
     "maybe_auto_prune_and_vacuum", "set_meta", "update_token_counts", "close",
 })
+# Mutations the owner refuses without the execution generation they were read at (hermes_state_runtime).
+_GENERATION_FENCED = frozenset({"delete", "rewind", "reset", "branch", "model", "compress"})
 _COUNTED_REPAIRS = frozenset({"prune_empty_ghost_sessions", "finalize_orphaned_compression_sessions"})
 # Launch options main's ``cli.main`` takes that are creation policy on the gateway session.
 _LAUNCH_POLICY = ("model", "provider", "toolsets", "reasoning", "api_key", "base_url", "max_turns",
@@ -161,12 +163,13 @@ class GatewaySessionStore:
         self._adopt(self.attach(child))
         return child
 
-    def _revision(self, session_id):
-        return self.call("session.resume", session_id=session_id)["revision"]
-
     def _mutate(self, session_id, operation, payload):
+        snapshot = self.call("session.resume", session_id=session_id)
+        fence = {}
+        if operation in _GENERATION_FENCED:
+            fence["expected_generation"] = snapshot["execution_generation"]
         return self.call("session.mutate", session_id=session_id, request_id=uuid.uuid4().hex,
-                         expected_revision=self._revision(session_id), operation=operation, payload=payload)
+                         expected_revision=snapshot["revision"], operation=operation, payload=payload, **fence)
 
     def set_session_title(self, session_id, title):
         try:
