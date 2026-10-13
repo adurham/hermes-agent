@@ -55,7 +55,7 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
             for command in ('usage', 'insights', 'profile', 'topup', 'diff', 'memory', 'kanban list',
                             'suggestions', 'bundles', 'usage reset', 'memory approval on', 'kanban create x',
                             'suggestions catalog', 'agents', 'sessions', 'platform',
-                            'toolsets', 'platforms'):
+                            'toolsets', 'platforms', 'skills pending', 'skills reject nope', 'skills install x'):
                 try:
                     reply = await rpc(ws, 'slash.exec', session_id=sid, command=command)
                 except TimeoutError:
@@ -88,6 +88,10 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
     # Reports with no messaging handler: the classic CLI's text for this session's toolsets.
     assert '(*) todo ' in out['toolsets'] and '    web ' in out['toolsets'], out['toolsets']
     assert 'Telegram' in out['platforms'] and 'TELEGRAM_BOT_TOKEN' in out['platforms'], out['platforms']
+    # The skill write-approval queue: the messaging handler's review verbs; the hub stays refused.
+    assert 'No pending' in out['skills pending'] or 'pending' in out['skills pending'].lower(), out['skills pending']
+    assert out['skills reject nope'] != 'unsupported_command', out['skills reject nope']
+    assert out['skills install x'] == 'unsupported_command', out['skills install x']
     # Write forms, messaging-model state and gateway-wide views stay refused (the per-session settings
     # run: tests/gateway/test_session_setting_commands.py).
     for command in ('usage reset', 'memory approval on', 'kanban create x', 'suggestions catalog',

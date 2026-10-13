@@ -16,7 +16,7 @@ from hermes_state_runtime import RuntimeStoreError
 # gateway-command-parity.md); a handler that reads messaging-only state or writes config is not here.
 _READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 'whoami',
                             'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',
-                            'suggestions', 'bundles'})
+                            'suggestions', 'bundles', 'skills'})
 _CONTROL_COMMANDS = frozenset({'title'})
 # Authoring/workflow commands whose messaging handler (``_command_handler_table``) runs as-is for a
 # local session: goal/loop/heartbeat state on the session's row, the review/refine forks of its
@@ -58,6 +58,7 @@ def _first_token(arg):
 # redeems a credit, ``/memory approve|approval`` applies writes / edits config.yaml,
 # ``/suggestions accept|catalog`` schedules cron jobs delivering to this (non-messaging) chat.
 _READ_ARGUMENTS = {
+    'skills': lambda arg: _first_token(arg) in {'', 'pending', 'diff'},
     'usage': lambda arg: not arg.strip(),
     'memory': lambda arg: arg.strip().lower() in {'', 'pending'},
     'suggestions': lambda arg: not arg.strip(),
@@ -65,10 +66,19 @@ _READ_ARGUMENTS = {
 }
 
 
+# The write forms of a command whose reads are above: the messaging handler's own review verbs,
+# applied for this session's profile (`/skills approve|reject` the staged queue, `/skills approval`
+# its config.yaml switch, as main's CLI wrote it).
+_CONTROL_ARGUMENTS = {
+    'skills': lambda arg: _first_token(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
+}
+
+
 def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
     if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
-            or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS):
+            or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS
+            or _CONTROL_ARGUMENTS.get(name, lambda _a: False)(arg)):
         return 'control'
     if name in _INFO_READS or (name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg)):
         return 'read'

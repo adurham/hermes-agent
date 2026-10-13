@@ -34,10 +34,10 @@ NOT_A_LOCAL_READ = {
     "save": "writes an export file on the gateway host",
     "rollback": "restores filesystem checkpoints",
     "resume": "switches the messaging chat's session; local clients resume by id",
-    "skills": "write-approval queue; `/skills approve|approval` write",
 }
 # The read-only argument forms of a read whose other subcommands write.
 READ_FORMS = {"usage": "bare only (`reset` refused)", "memory": "bare / `pending`",
+              "skills": "bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused",
               "suggestions": "bare only", "kanban": "list/show/stats/assignees/context/runs/log/diagnostics"}
 
 

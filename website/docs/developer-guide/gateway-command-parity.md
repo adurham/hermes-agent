@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-103 registry commands: 29 control, 17 read, 57 refused.
+103 registry commands: 29 control, 18 read, 56 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -106,7 +106,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/save` | refused | HermesCLI.save_conversation | session.save | rpc session.save | refused | writes an export file on the gateway host |
 | `/sessions` | refused | HermesCLI._handle_sessions_command | local | picker: session | refused | messaging origin-scoped listing (`/sessions all` needs a messaging admin) |
 | `/sethome` (/set-home) | refused | messaging-only: unknown command | slash.exec: refused | unavailable: terminal | refused | messaging-only |
-| `/skills` | refused | HermesCLI._cmd_skills | slash.exec; sidecar: skills.manage | slash.exec: refused | refused | write-approval queue; `/skills approve\|approval` write |
+| `/skills` | read (bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused) | HermesCLI._cmd_skills | slash.exec; sidecar: skills.manage | slash.exec | refused | client-local (cli_only) |
 | `/skin` | refused | HermesCLI._handle_skin_command | config.get, config.set | action: skin | refused | client-local (cli_only) |
 | `/snapshot` (/snap) | refused | HermesCLI._handle_snapshot_command | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
 | `/start` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging-only |
