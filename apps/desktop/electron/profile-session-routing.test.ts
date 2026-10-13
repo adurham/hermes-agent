@@ -5,6 +5,7 @@ import { test } from 'vitest'
 import {
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
+  fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
@@ -828,4 +829,171 @@ test('remoteProfileQueryScope resolves the wire scope for a profile override', (
   assert.equal(remoteProfileQueryScope('default'), 'default')
   assert.equal(remoteProfileQueryScope('default', 'dixie'), 'dixie')
   assert.equal(remoteProfileQueryScope(''), '')
+})
+
+// A native gateway grant names one profile and the gateway refuses `all`, so a local native
+// backend's unified lists are read profile by profile and merged like the backend's own scan.
+test('all-profiles session list is merged from one read per profile', async () => {
+  const reads: string[] = []
+
+  const pages: Record<string, unknown> = {
+    default: {
+      sessions: [
+        { id: 'd-new', profile: 'default', last_active: 30 },
+        { id: 'd-old', profile: 'default', last_active: 10 },
+        { id: 'd-pin', profile: 'default', last_active: 1, pinned: true }
+      ],
+      total: 3,
+      profile_totals: { default: 3 },
+      errors: [],
+      storage: {}
+    },
+    work: {
+      sessions: [{ id: 'w-mid', profile: 'work', last_active: 20 }],
+      total: 1,
+      profile_totals: { work: 1 },
+      errors: [],
+      storage: { work: 'corrupt' }
+    }
+  }
+
+  const result = (await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions?limit=2&offset=0&min_messages=1&profile=all',
+    ['default', 'work', 'gone'],
+    async (profile, path) => {
+      reads.push(path)
+
+      if (!(profile in pages)) {
+        throw new Error('403: profile_scope_mismatch')
+      }
+
+      return pages[profile]
+    }
+  )) as any
+
+  assert.deepEqual(reads.sort(), [
+    '/api/profiles/sessions?limit=2&offset=0&min_messages=1&profile=default',
+    '/api/profiles/sessions?limit=2&offset=0&min_messages=1&profile=gone',
+    '/api/profiles/sessions?limit=2&offset=0&min_messages=1&profile=work'
+  ])
+  // Recency across profiles, window of 2, pinned rows past the window back-filled.
+  assert.deepEqual(result.sessions.map((s: any) => s.id), ['d-new', 'w-mid', 'd-pin'])
+  assert.equal(result.total, 4)
+  assert.deepEqual(result.profile_totals, { default: 3, work: 1 })
+  assert.deepEqual(result.storage, { work: 'corrupt' })
+  // A profile that cannot be read is a named failure, never a silent empty list.
+  assert.deepEqual(result.errors, [{ profile: 'gone', error: '403: profile_scope_mismatch' }])
+})
+
+test('all-profiles session list over-fetches each profile for a later page', async () => {
+  const reads: string[] = []
+
+  await fetchAllProfilesSessionsPerProfile('/api/profiles/sessions?limit=20&offset=40&order=created', ['default'], async (_p, path) => {
+    reads.push(path)
+
+    return { sessions: [], total: 0, profile_totals: {} }
+  })
+
+  assert.deepEqual(reads, ['/api/profiles/sessions?limit=60&offset=0&order=created&profile=default'])
+})
+
+test('all-profiles sidebar is merged from one batched read per profile', async () => {
+  const pages: Record<string, unknown> = {
+    default: {
+      recents: {
+        sessions: [{ id: 'd1', profile: 'default', last_active: 5 }],
+        profiles_truncated: { default: false },
+        profiles_usage: { default: { cost_usd: 1, tokens: 10 } }
+      },
+      cron: { sessions: [{ id: 'dc', profile: 'default', started_at: 3 }] },
+      messaging: { sessions: [{ id: 'dm', profile: 'default', last_active: 2 }], total: 1 },
+      errors: [],
+      storage: {}
+    },
+    work: {
+      recents: {
+        sessions: [{ id: 'w1', profile: 'work', last_active: 9 }],
+        profiles_truncated: { work: true },
+        profiles_usage: { work: { cost_usd: 2, tokens: 20 } }
+      },
+      cron: { sessions: [] },
+      messaging: { sessions: [{ id: 'wm', profile: 'work', last_active: 4 }], total: 3 },
+      errors: [],
+      storage: {}
+    },
+    broken: {
+      recents: { failed: true, retry: true, errors: [{ profile: 'broken', error: 'database is locked' }] },
+      cron: { failed: true, retry: true, errors: [{ profile: 'broken', error: 'database is locked' }] },
+      messaging: { failed: true, retry: true, errors: [{ profile: 'broken', error: 'database is locked' }], total: 0 },
+      errors: [{ profile: 'broken', error: 'database is locked' }],
+      storage: {}
+    }
+  }
+
+  const reads: string[] = []
+
+  const result = (await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions/sidebar?recents_profile=all&recents_limit=40&cron_limit=5&messaging_limit=5',
+    ['default', 'work', 'broken'],
+    async (profile, path) => {
+      reads.push(path)
+
+      return pages[profile]
+    }
+  )) as any
+
+  assert.ok(reads.includes('/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=40&cron_limit=5&messaging_limit=5'))
+  assert.deepEqual(result.recents.sessions.map((s: any) => s.id), ['w1', 'd1'])
+  assert.deepEqual(result.cron.sessions.map((s: any) => s.id), ['dc'])
+  assert.deepEqual(result.messaging.sessions.map((s: any) => s.id), ['wm', 'dm'])
+  assert.equal(result.messaging.total, 4)
+  assert.deepEqual(result.recents.profiles_truncated, { default: false, work: true })
+  assert.deepEqual(result.recents.profiles_usage, {
+    default: { cost_usd: 1, tokens: 10 },
+    work: { cost_usd: 2, tokens: 20 }
+  })
+  // The failed profile keeps Retry while its siblings' rows still render.
+  const failed = { broken: { failed: true, retry: true, error: 'database is locked' } }
+  assert.deepEqual(result.profiles_failed, failed)
+  assert.deepEqual(result.recents.profiles_failed, failed)
+  assert.deepEqual(result.errors, [{ profile: 'broken', error: 'database is locked' }])
+})
+
+test('all-profiles sidebar reports a failed load when every profile fails', async () => {
+  const result = (await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions/sidebar?recents_profile=all',
+    ['default'],
+    async () => {
+      throw new Error('Gateway ticket bootstrap failed')
+    }
+  )) as any
+
+  assert.equal(result.recents.failed, true)
+  assert.equal('sessions' in result.recents, false)
+  assert.deepEqual(result.errors, [{ profile: 'default', error: 'Gateway ticket bootstrap failed' }])
+})
+
+test('all-profiles session list pages a deep per-profile read under the backend cap', async () => {
+  const reads: string[] = []
+
+  const result = (await fetchAllProfilesSessionsPerProfile('/api/profiles/sessions?limit=200&offset=400', ['default'], async (_p, path) => {
+    reads.push(path)
+    const params = new URL(path, 'http://x').searchParams
+    const start = Number(params.get('offset'))
+    const count = Math.min(Number(params.get('limit')), 650 - start)
+
+    return {
+      sessions: Array.from({ length: count }, (_, i) => ({ id: `s${start + i}`, profile: 'default', last_active: 1000 - start - i })),
+      total: 650,
+      profile_totals: { default: 650 }
+    }
+  })) as any
+
+  assert.deepEqual(reads, [
+    '/api/profiles/sessions?limit=500&offset=0&profile=default',
+    '/api/profiles/sessions?limit=100&offset=500&profile=default'
+  ])
+  assert.equal(result.sessions.length, 200)
+  assert.equal(result.sessions[0].id, 's400')
+  assert.equal(result.total, 650)
 })

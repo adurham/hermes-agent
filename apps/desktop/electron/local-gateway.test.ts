@@ -415,6 +415,16 @@ test('a ?profile= request on the shared host descriptor mints for the sibling pr
   expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', path.resolve('hermes-home'))).toThrow('Invalid profile route')
 })
 
+// The batched sidebar names its owner in `recents_profile`; a grant for the window's own profile
+// is refused there (profile_scope_mismatch) and the sidebar drops that profile's sessions.
+test('a sidebar read mints for the profile its recents_profile names', () => {
+  const endpoint = { profile_id: path.resolve('hermes-home', 'profiles', 'p2'), instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: path.resolve('hermes-home') }
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=40', path.resolve('hermes-home'))).toMatchObject({ profile_id: path.resolve('hermes-home') })
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/profiles/sessions/sidebar?recents_profile=p2', path.resolve('hermes-home'))).toBe(endpoint)
+  // `profile` is not the sidebar's selector.
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/profiles/sessions/sidebar?profile=default&recents_profile=p2', path.resolve('hermes-home'))).toBe(endpoint)
+})
+
 // A native gateway grant is minted only by main's shared transport (fetchJsonForBackend), which
 // also carries the descriptor's configured headers; a call site that hands fetchJson a
 // gatewayDescriptor itself silently drops them. Source guard over the one module that issues them.

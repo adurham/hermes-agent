@@ -1,0 +1,169 @@
+import { spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
+import { buildAppEnv, createSandbox, launchDesktop } from './fixtures'
+import { expect, test } from './test'
+
+// Pre-cutover Desktop rows as main writes them (source='desktop', profile stamped, optional
+// Nous user_id), on an install with a second profile that has history of its own. A native
+// HTTP grant covers one profile, so every cross-profile session list must still list them.
+const ROWS = [
+  { id: 'legacy-desktop-anon', source: 'desktop', userId: null },
+  { id: 'legacy-desktop-nous', source: 'desktop', userId: 'nous:e2e-user' },
+  { id: 'legacy-tui-control', source: 'tui', userId: null }
+]
+
+const NAMED_ROW = 'legacy-developer-desktop'
+
+test('pre-cutover Desktop conversations remain visible and open across profiles', async () => {
+  test.setTimeout(300_000)
+  const sandbox = createSandbox('legacy-desktop-history')
+  const mock = await startMockServer()
+  const python = process.env.HERMES_DESKTOP_PYTHON!
+  const root = path.resolve(import.meta.dirname, '../../..')
+  const env = buildAppEnv(sandbox, { HERMES_DESKTOP_PYTHON: python, TIRITH_ENABLED: 'false' })
+  const multiplex = process.env.E2E_MULTIPLEX === '1'
+  writeMockProviderConfig(sandbox.hermesHome, mock.url, undefined, multiplex ? 'gateway:\n  multiplex_profiles: true\n' : undefined)
+  writeEnvFile(sandbox.hermesHome)
+  const named = path.join(sandbox.hermesHome, 'profiles', 'developer')
+  fs.mkdirSync(named, { recursive: true })
+  writeMockProviderConfig(named, mock.url)
+  writeEnvFile(named)
+  const seed = spawnSync(python, ['-c', `
+import json, os, sys
+from pathlib import Path
+from hermes_state import SessionDB
+
+def seed(db_path, rows, profile):
+    with SessionDB(db_path=db_path) as db:
+        for r in rows:
+            db.create_session(r['id'], source=r['source'], model='e2e-mock', cwd=os.environ['HOME'], user_id=r['userId'])
+            db.set_session_title(r['id'], 'Retained ' + r['id'])
+            db.append_message(r['id'], 'user', 'Historical question ' + r['id'])
+            db.append_message(r['id'], 'assistant', 'Historical answer ' + r['id'])
+            db._conn.execute('UPDATE sessions SET profile_name=? WHERE id=?', (profile, r['id']))
+        db._conn.commit()
+
+home = Path(os.environ['HERMES_HOME'])
+seed(home / 'state.db', json.loads(sys.argv[1]), 'default')
+seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source': 'desktop', 'userId': None}], 'developer')
+`, JSON.stringify(ROWS), NAMED_ROW], { cwd: root, env: { ...env, PYTHONPATH: root }, encoding: 'utf8' })
+  expect(seed.status, seed.stderr).toBe(0)
+  // An existing install has a startup profile; without one the first-launch migration guesses
+  // from the newest state.db, which here is the named profile's.
+  fs.writeFileSync(path.join(sandbox.userDataDir, 'active-profile.json'), JSON.stringify({ profile: 'default' }))
+  let app: Awaited<ReturnType<typeof launchDesktop>>['app'] | undefined
+  const evidence = process.env.HERMES_E2E_EVIDENCE || path.join(sandbox.root, 'evidence')
+  fs.mkdirSync(evidence, { recursive: true })
+  const results: Record<string, { listed: boolean; opened: boolean; error?: string }> = {}
+  let probes: Record<string, unknown> = {}
+
+  try {
+    const launched = await launchDesktop(env)
+    app = launched.app
+    const page = launched.page
+    const sidebar = page.locator('[data-slot="sidebar"]')
+
+    try {
+      await expect(page.getByRole('button', { name: /developer/ }).first()).toBeVisible({ timeout: 90_000 })
+
+      // The cross-profile lists the sidebar and Sessions view read, through main's transport.
+      probes = await page.evaluate(async () => {
+        const api = (window as any).hermesDesktop.api
+        const out: Record<string, unknown> = {}
+        const q = 'limit=40&offset=0&min_messages=1&archived=exclude&order=recent'
+        const calls: Record<string, string> = {
+          'sidebar:default': '/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=40&cron_limit=5&messaging_limit=5',
+          'sidebar:developer': '/api/profiles/sessions/sidebar?recents_profile=developer&recents_limit=40&cron_limit=5&messaging_limit=5',
+          'sidebar:all': '/api/profiles/sessions/sidebar?recents_profile=all&recents_limit=40&cron_limit=5&messaging_limit=5',
+          'sessions:all': `/api/profiles/sessions?${q}&profile=all`
+        }
+
+        for (const [name, path] of Object.entries(calls)) {
+          try {
+            const r = await api({ path })
+            const rows = r?.recents ? r.recents.sessions : r?.sessions
+            out[name] = { ids: (rows ?? []).map((x: any) => `${x.profile}:${x.id}`).sort(), errors: r?.errors ?? [] }
+          } catch (e) {
+            out[name] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
+          }
+        }
+
+        return out
+      })
+      console.log('API_PROBES: ' + JSON.stringify(probes))
+
+      await expect(sidebar.getByText(/Retained legacy-/).first()).toBeVisible({ timeout: 30_000 }).catch(() => undefined)
+      await page.screenshot({ path: path.join(evidence, 'sidebar.png') })
+
+      for (const row of [...ROWS, { id: NAMED_ROW }]) {
+        if (row.id === NAMED_ROW) {
+          await page.getByRole('button', { name: /developer/ }).first().click()
+        }
+
+        const entry = sidebar.getByText('Retained ' + row.id, { exact: true })
+        await entry.waitFor({ state: 'visible', timeout: 30_000 }).catch(() => undefined)
+        const listed = await entry.isVisible()
+        results[row.id] = { listed, opened: false }
+
+        if (!listed) {
+          continue
+        }
+
+        await entry.click()
+        const answer = page.locator('[data-slot="aui_thread-viewport"]').getByText('Historical answer ' + row.id)
+        const failure = page.getByText("Couldn't open this session")
+        await expect(answer.or(failure).first()).toBeVisible({ timeout: 45_000 }).catch(() => undefined)
+        results[row.id].opened = await answer.isVisible()
+
+        if (!results[row.id].opened) {
+          results[row.id].error = (await page.locator('body').innerText()).match(/Couldn't open this session\s*\n?\s*(\S+)/)?.[1] ?? 'no transcript'
+        }
+
+        await page.screenshot({ path: path.join(evidence, `open-${row.id}.png`) })
+      }
+    } finally {
+      console.log('LEGACY_DESKTOP_RESULTS: ' + JSON.stringify(results))
+      fs.writeFileSync(path.join(evidence, 'results.json'), JSON.stringify({ results, probes }, null, 2))
+
+      for (const name of ['gateway.log', 'errors.log', 'desktop.log']) {
+        const log = path.join(sandbox.hermesHome, 'logs', name)
+
+        if (fs.existsSync(log)) {
+          fs.copyFileSync(log, path.join(evidence, name))
+        }
+      }
+    }
+  } finally {
+    await app?.close().catch(() => undefined)
+    await mock.close()
+    spawnSync(python, ['-c', `
+import psutil,sys,os
+home=sys.argv[1]
+owned=[]
+for p in psutil.process_iter():
+    if p.pid==os.getpid(): continue
+    try:
+        if p.environ().get('HERMES_HOME')==home:
+            owned.append(p);p.terminate()
+    except (psutil.NoSuchProcess,psutil.AccessDenied): pass
+_,alive=psutil.wait_procs(owned,timeout=5)
+for p in alive:
+    try:p.kill()
+    except psutil.NoSuchProcess:pass
+`, sandbox.hermesHome], { encoding: 'utf8', env: process.env })
+    sandbox.cleanup()
+  }
+
+  const everyRow = [...ROWS.map(r => `default:${r.id}`), `developer:${NAMED_ROW}`].sort()
+  expect.soft(probes['sidebar:all'], 'sidebar:all').toEqual({ ids: everyRow, errors: [] })
+  expect.soft(probes['sessions:all'], 'sessions:all').toEqual({ ids: everyRow, errors: [] })
+  expect.soft(probes['sidebar:default'], 'sidebar:default').toEqual({ ids: ROWS.map(r => `default:${r.id}`).sort(), errors: [] })
+  expect.soft(probes['sidebar:developer'], 'sidebar:developer').toEqual({ ids: [`developer:${NAMED_ROW}`], errors: [] })
+
+  for (const row of [...ROWS, { id: NAMED_ROW }]) {
+    expect.soft(results[row.id], row.id).toEqual({ listed: true, opened: true })
+  }
+})

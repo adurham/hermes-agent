@@ -463,6 +463,7 @@ import {
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
   composeUnifiedSessionResponse,
+  fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
@@ -15586,6 +15587,20 @@ async function fetchJsonForBackend(
   opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
 ) {
   const url = `${descriptor.baseUrl}${path}`
+
+  // A native grant names one profile and the gateway refuses `all`: assemble the unified
+  // session lists from one read per profile, each carrying that profile's own grant.
+  if (descriptor.gatewayEndpoint && isAllProfilesSessionListRequest(opts.method, path)) {
+    const listing = (await fetchJsonForBackend(descriptor, '/api/profiles', { timeoutMs: opts.timeoutMs })) as any
+
+    const profiles = (Array.isArray(listing?.profiles) ? listing.profiles : [])
+      .map(profile => profile?.name)
+      .filter(name => typeof name === 'string' && name)
+
+    return fetchAllProfilesSessionsPerProfile(path, profiles, (_profile, scoped) =>
+      fetchJsonForBackend(descriptor, scoped, { timeoutMs: opts.timeoutMs })
+    )
+  }
 
   if (descriptor.authMode === 'oauth') {
     // The OAuth cookie path rides electron.net with JSON headers; multipart

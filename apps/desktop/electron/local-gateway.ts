@@ -312,11 +312,17 @@ function shellQuote(file: string): string {
   return `'${file.replace(/'/g, `'\\''`)}'`
 }
 
+/** The batched sidebar names its owner in `recents_profile` (the gateway checks that selector);
+ *  every other profile-scoped route uses `profile`. */
+function scopedProfileOf(url: URL): null | string {
+  return url.searchParams.get(url.pathname.replace(/\/+$/, '') === '/api/profiles/sessions/sidebar' ? 'recents_profile' : 'profile')
+}
+
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
  *  daemon, ticket minted for the sibling profile's home (`profiles/<name>` under the launch root).
  *  The gateway refuses a ticket whose profile it does not serve, so a bad name fails closed. */
 export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, _launchHome: string): GatewayEndpoint {
-  const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? new URL(urlOrProfile).searchParams.get('profile') : urlOrProfile)?.trim()
+  const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? scopedProfileOf(new URL(urlOrProfile)) : urlOrProfile)?.trim()
 
   if (!profile || profile === 'current') {return endpoint}
   const own = path.basename(endpoint.profile_id)

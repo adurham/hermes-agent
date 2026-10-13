@@ -920,3 +920,222 @@ export async function findRemoteOwnerProfileForSession(
 
   return matches.find(profile => profile !== null) ?? null
 }
+
+// The backend's `/api/profiles/sessions` page cap (FastAPI `le=500`).
+const PROFILE_SESSION_PAGE_CAP = 500
+
+const SIDEBAR_SLICES = ['recents', 'cron', 'messaging'] as const
+
+type FetchProfilePage = (profile: string, path: string) => Promise<unknown>
+
+type ProfileRead = { profile: string; data: any } | { profile: string; error: string }
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function recencyOf(row: any): number {
+  return Number(row?.last_active || row?.started_at || 0)
+}
+
+function sortedWindow(rows: unknown[], key: (row: any) => number, offset: number, limit: number): unknown[] {
+  return mergeProfileSessionWindow([...rows].sort((a, b) => key(b) - key(a)), offset, limit)
+}
+
+function failedProfiles(errors: SessionScanError[]): Record<string, { failed: true; retry: true; error: string }> {
+  return Object.fromEntries(
+    errors.filter(err => err.profile).map(err => [err.profile, { failed: true, retry: true, error: err.error || '' }])
+  )
+}
+
+async function readEachProfile(
+  profiles: readonly string[],
+  read: (profile: string) => Promise<unknown>
+): Promise<ProfileRead[]> {
+  return Promise.all(
+    profiles.map(async profile => {
+      try {
+        return { profile, data: (await read(profile)) as any }
+      } catch (error) {
+        return { profile, error: errorMessage(error) }
+      }
+    })
+  )
+}
+
+/** One profile's rows from offset 0 through `want`, in pages the backend accepts. The first
+ *  page carries the profile's totals. */
+async function readProfileSessionRows(url: URL, profile: string, want: number, fetchPage: FetchProfilePage) {
+  let first: any
+  const rows: unknown[] = []
+
+  for (let offset = 0; ; ) {
+    const params = new URLSearchParams(url.searchParams)
+    const limit = Math.min(PROFILE_SESSION_PAGE_CAP, Math.max(0, want - offset))
+    params.set('limit', String(limit))
+    params.set('offset', String(offset))
+    params.set('profile', profile)
+
+    const page = (await fetchPage(profile, `${url.pathname}?${params}`)) as any
+    const pageRows = rowsOf(page)
+    first ??= page
+    rows.push(...pageRows)
+    offset += limit
+
+    if (offset >= want || pageRows.length < limit) {
+      return { ...first, sessions: rows }
+    }
+  }
+}
+
+async function allProfilesSessionList(url: URL, profiles: readonly string[], fetchPage: FetchProfilePage) {
+  const limit = Math.max(0, Number(url.searchParams.get('limit') ?? 20) || 0)
+  const offset = Math.max(0, Number(url.searchParams.get('offset')) || 0)
+  const created = url.searchParams.get('order') === 'created'
+  const reads = await readEachProfile(profiles, profile => readProfileSessionRows(url, profile, limit + offset, fetchPage))
+
+  const rows: unknown[] = []
+  const totals: Record<string, number> = {}
+  const errors: SessionScanError[] = []
+  const storage: Record<string, unknown> = {}
+
+  for (const read of reads) {
+    if ('error' in read) {
+      errors.push({ profile: read.profile, error: read.error })
+
+      continue
+    }
+
+    rows.push(...rowsOf(read.data))
+    Object.assign(totals, read.data?.profile_totals)
+    Object.assign(storage, read.data?.storage)
+    errors.push(...(errorsOf(read.data) ?? []))
+  }
+
+  const key = created ? (row: any) => Number(row?.started_at || 0) : recencyOf
+
+  return {
+    sessions: sortedWindow(rows, key, offset, limit),
+    total: Object.values(totals).reduce((sum, n) => sum + (Number(n) || 0), 0),
+    profile_totals: totals,
+    limit,
+    offset,
+    errors,
+    storage
+  }
+}
+
+async function allProfilesSidebar(url: URL, profiles: readonly string[], fetchPage: FetchProfilePage) {
+  const cap = (key: string, fallback: number) =>
+    Math.min(Math.max(Number(url.searchParams.get(key)) || fallback, 1), PROFILE_SESSION_PAGE_CAP)
+
+  const caps = { recents: cap('recents_limit', 20), cron: cap('cron_limit', 50), messaging: cap('messaging_limit', 100) }
+
+  const reads = await readEachProfile(profiles, profile => {
+    const params = new URLSearchParams(url.searchParams)
+    params.set('recents_profile', profile)
+
+    return fetchPage(profile, `${url.pathname}?${params}`)
+  })
+
+  const rows: Record<(typeof SIDEBAR_SLICES)[number], unknown[]> = { recents: [], cron: [], messaging: [] }
+  const truncated: Record<string, boolean> = {}
+  const usage: Record<string, unknown> = {}
+  const errors: SessionScanError[] = []
+  const storage: Record<string, unknown> = {}
+  const failed: SessionScanError[] = []
+  let messagingTotal = 0
+  let contributed = false
+
+  for (const read of reads) {
+    if ('error' in read) {
+      errors.push({ profile: read.profile, error: read.error })
+      failed.push({ profile: read.profile, error: read.error })
+
+      continue
+    }
+
+    const data = read.data
+    Object.assign(storage, data?.storage)
+    errors.push(...(errorsOf(data) ?? []))
+
+    // A failed slice has no `sessions` key: the profile's scan failed, it is not empty.
+    if (data?.recents?.failed) {
+      failed.push(...(errorsOf(data.recents) ?? [{ profile: read.profile, error: '' }]))
+
+      continue
+    }
+
+    for (const err of Object.entries(data?.profiles_failed ?? {})) {
+      failed.push({ profile: err[0], error: String((err[1] as any)?.error ?? '') })
+    }
+
+    for (const key of SIDEBAR_SLICES) {
+      rows[key].push(...rowsOf(data?.[key]))
+    }
+
+    contributed ||= SIDEBAR_SLICES.some(key => rowsOf(data?.[key]).length > 0)
+    Object.assign(truncated, data?.recents?.profiles_truncated)
+    Object.assign(usage, data?.recents?.profiles_usage)
+    messagingTotal += Number(data?.messaging?.total) || rowsOf(data?.messaging).length
+  }
+
+  const live = profiles.filter(profile => !(profile in storage))
+
+  if (live.length && !contributed && live.every(profile => failed.some(err => err.profile === profile))) {
+    const failedSlice = (extra = {}) => ({ failed: true, retry: true, errors: failed.map(err => ({ ...err })), ...extra })
+
+    return {
+      recents: failedSlice({ profiles_truncated: {}, profiles_usage: {} }),
+      cron: failedSlice(),
+      messaging: failedSlice({ total: 0 }),
+      errors,
+      storage
+    }
+  }
+
+  const body: Record<string, any> = {
+    recents: {
+      sessions: sortedWindow(rows.recents, recencyOf, 0, caps.recents),
+      profiles_truncated: truncated,
+      profiles_usage: usage
+    },
+    cron: { sessions: sortedWindow(rows.cron, recencyOf, 0, caps.cron) },
+    messaging: { sessions: sortedWindow(rows.messaging, recencyOf, 0, caps.messaging), total: messagingTotal },
+    errors,
+    storage
+  }
+
+  const profilesFailed = failedProfiles(failed)
+
+  if (Object.keys(profilesFailed).length) {
+    body.profiles_failed = profilesFailed
+
+    for (const key of SIDEBAR_SLICES) {
+      body[key].profiles_failed = profilesFailed
+      body[key].errors = failed.map(err => ({ ...err }))
+    }
+  }
+
+  return body
+}
+
+/** An all-profiles session list (`/api/profiles/sessions` or the batched sidebar) assembled
+ *  from one read per profile.
+ *
+ *  A native gateway grant names ONE profile and the gateway refuses `all`, so a local native
+ *  backend cannot answer the unified list in one request. Each profile is read with its own
+ *  grant (`fetchPage` scopes the path to it) and merged the way the backend merges its own
+ *  per-profile scans: recency order, pinned back-fill, per-profile totals, and a profile that
+ *  cannot be read reported as a failed profile rather than as an empty one. */
+export async function fetchAllProfilesSessionsPerProfile(
+  path: string,
+  profiles: readonly string[],
+  fetchPage: FetchProfilePage
+): Promise<unknown> {
+  const url = new URL(path, 'http://desktop.local')
+
+  return url.pathname.replace(/\/+$/, '') === '/api/profiles/sessions/sidebar'
+    ? allProfilesSidebar(url, profiles, fetchPage)
+    : allProfilesSessionList(url, profiles, fetchPage)
+}
