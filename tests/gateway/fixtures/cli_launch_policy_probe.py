@@ -112,7 +112,10 @@ def probe(tmp_path):
         # contract, same as the in-process CLI), never 0.
         assert result.returncode == (1 if budget else 0), result.stdout + result.stderr
         if not resume:
-            sessions[side] = re.search(r'Session: (\S+)', result.stderr).group(1)
+            # Main's `-q -Q` exit line (cli_single_query): `session_id: <sid>` on stderr.
+            found = re.search(r'^session_id: (\S+)$', result.stderr, re.MULTILINE)
+            assert found, result.stderr
+            sessions[side] = found.group(1)
         return result.stdout
 
     async def unauthorized(desc):
