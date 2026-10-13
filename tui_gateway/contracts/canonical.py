@@ -13,6 +13,7 @@ from typing import Literal
 
 from .base import JsonValue, Params, Result
 from .common import McpServerStatus, OpenModel, ProjectRef
+from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .registry import canonical_method
 
@@ -274,6 +275,8 @@ class RuntimeDescribeResult(Result):
     authority_epoch: int
     capabilities: list[str]
     session_create: SessionCreateDescriptor
+    #: The owning profile's resolved skin (``resolve_skin()``, main's ``gateway.ready.skin``).
+    skin: SkinPayload | None = None
 
 
 canonical_method("runtime.describe", params=RuntimeDescribeParams, result=RuntimeDescribeResult,

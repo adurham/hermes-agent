@@ -186,6 +186,7 @@ export class GatewayClient extends EventEmitter {
   private recoveryAttempts: number[] = []
   isCanonical = false
   private creationContract?: CreationContract
+  private describedSkin?: Record<string, unknown>
   private describeFlight?: Promise<void>
   private attachHold: AttachHold | null = null
   // The last session.create whose outcome is in doubt (see createCanonical).
@@ -269,7 +270,11 @@ export class GatewayClient extends EventEmitter {
   private describeThenReady(ws: WebSocket | null, payload: Record<string, unknown>) {
     this.describeFlight = undefined
     void this.describeRuntime().then(() => {
-      if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload } as unknown as AnyGatewayEvent) }
+      // The owner's resolved profile skin (`runtime.describe.skin`, main's `gateway.ready.skin`)
+      // unless the listener's own ready already carried one.
+      const ready = payload.skin === undefined && this.describedSkin ? { ...payload, skin: this.describedSkin } : payload
+
+      if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload: ready } as unknown as AnyGatewayEvent) }
     }).catch(error => {
       this.publish({ type: 'gateway.start_timeout', payload: {
         python: 'runtime.describe', cwd: '', stderr_tail: String(error)
@@ -655,7 +660,7 @@ export class GatewayClient extends EventEmitter {
             this.connectSidecarMirror()
 
             // The canonical gateway has no ready frame (readiness is the discovery grant +
-            // runtime.describe); a client-local ready with no skin boots the default theme.
+            // runtime.describe); the client-local ready carries the skin runtime.describe resolved.
             if (this.isCanonical) { this.describeThenReady(ws, {}) }
           },
           { once: true }
@@ -871,8 +876,11 @@ export class GatewayClient extends EventEmitter {
    * session.create asks again instead of reporting an outdated gateway forever. */
   private describeRuntime(): Promise<void> {
     if (!this.describeFlight) {
-      const flight: Promise<void> = this.requestOverWebSocket<{ session_create: CreationContract }>('runtime.describe').then(
-        description => { this.creationContract = description.session_create },
+      const flight: Promise<void> = this.requestOverWebSocket<{ session_create: CreationContract; skin?: Record<string, unknown> | null }>('runtime.describe').then(
+        description => {
+          this.creationContract = description.session_create
+          this.describedSkin = description.skin && typeof description.skin === 'object' ? description.skin : undefined
+        },
         error => {
           if (this.describeFlight === flight) { this.describeFlight = undefined }
 

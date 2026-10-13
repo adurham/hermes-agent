@@ -33138,6 +33138,17 @@
           },
           "session_create": {
             "$ref": "#/components/schemas/SessionCreateDescriptor"
+          },
+          "skin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SkinPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

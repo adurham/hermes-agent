@@ -4615,10 +4615,25 @@ export interface RuntimeDescribeResult {
   authority_epoch: number
   capabilities: string[]
   session_create: SessionCreateDescriptor
+  skin?: SkinPayload | null
 }
 export interface SessionCreateDescriptor {
   sources: string[]
   parameters: string[]
+}
+/** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
+export interface SkinPayload {
+  name?: string
+  description?: string
+  colors?: Record<string, string>
+  light_colors?: Record<string, string>
+  dark_colors?: Record<string, string>
+  branding?: Record<string, string>
+  banner_logo?: string
+  banner_hero?: string
+  tool_prefix?: string
+  help_header?: string
+  [key: string]: unknown
 }
 export interface ClarifyRespondParams {
   session_id: string
@@ -5322,20 +5337,6 @@ export interface GatewayReadyPayload {
   replay_epoch: string
   heartbeat?: boolean | null
   session_authority?: boolean | null
-}
-/** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
-export interface SkinPayload {
-  name?: string
-  description?: string
-  colors?: Record<string, string>
-  light_colors?: Record<string, string>
-  dark_colors?: Record<string, string>
-  branding?: Record<string, string>
-  banner_logo?: string
-  banner_hero?: string
-  tool_prefix?: string
-  help_header?: string
-  [key: string]: unknown
 }
 /** ``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``. */
 export interface SetupReadyPayload {
