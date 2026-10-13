@@ -71,14 +71,19 @@ def _build_hermes_repo_root_aliases(
 
 
 def _validated_runtime_venv(env: dict) -> Path | None:
-    """Producer-owned runtime venv identified by VIRTUAL_ENV, or None. The variable
-    alone is not provenance (users carry unrelated venvs): require the legacy Windows
-    base-Python producer's exact ``<repo>/venv`` layout AND a real ``pyvenv.cfg``."""
-    from pm.environments import runtime_facts_path, selected_venv
+    """Producer-owned runtime venv, or None: PM's committed generation, else a sealed
+    payload's shipped venv (its interpreter is not a venv, so ``_in_venv`` misses it),
+    else VIRTUAL_ENV. The variable alone is not provenance (users carry unrelated
+    venvs): require the legacy Windows base-Python producer's exact ``<repo>/venv``
+    layout AND a real ``pyvenv.cfg``."""
+    from pm.environments import payload_venv, runtime_facts_path, selected_venv
 
     root = Path(__file__).resolve().parents[2]
     if runtime_facts_path(root).is_file():
         return selected_venv(root)
+    shipped = payload_venv(root)
+    if shipped is not None:
+        return shipped
     candidate = Path(env.get("VIRTUAL_ENV") or "")
     if not env.get("VIRTUAL_ENV") or not any(
             _same_path(candidate, root / "venv") for root in _state()._hermes_repo_root_aliases):
