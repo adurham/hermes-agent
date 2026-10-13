@@ -359,8 +359,9 @@ class CLIInitMixin:
     def _ensure_gateway_session(self):
         """Create (or resume) this CLI's gateway session and adopt the id it returns, before the banner
         and the first turn. Idempotent; a store without the gateway facade (tests) is left alone."""
-        store = self._session_db
-        if getattr(self, "_gateway_session_open", False) or not hasattr(store, "open_session"):
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        store = getattr(self, "_session_db", None)
+        if getattr(self, "_gateway_session_open", False) or not isinstance(store, GatewaySessionStore):
             return
         launch = {"model": self.model if getattr(self, "_explicit_model_override", False) else None,
                   "provider": (self.requested_provider if getattr(self, "_explicit_model_override", False)

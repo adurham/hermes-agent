@@ -128,7 +128,7 @@ class CLIInfoMixin:
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
                 context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
-            gateway_inventory = getattr(self._session_db, "banner_inventory", lambda: None)()
+            gateway_inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
             if gateway_inventory is not None:
                 # The gateway session's snapshot (the TUI banner's data): the CLI enumerates nothing.
                 self._defer_tool_warnings = True

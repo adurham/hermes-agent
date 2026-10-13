@@ -179,8 +179,8 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
         "ensure_mcp_discovery_before_agent_build",
         _fake_ensure,
     )
-    import run_agent
-    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+    import hermes_cli.gateway_agent as gateway_agent
+    monkeypatch.setattr(gateway_agent, "GatewayAgent", lambda *_a, **_k: types.SimpleNamespace())
 
     assert cli._init_agent() is True
     assert seen.get("single_query") is True
@@ -206,8 +206,8 @@ def test_init_agent_defaults_to_interactive(monkeypatch):
         "ensure_mcp_discovery_before_agent_build",
         _fake_ensure,
     )
-    import run_agent
-    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+    import hermes_cli.gateway_agent as gateway_agent
+    monkeypatch.setattr(gateway_agent, "GatewayAgent", lambda *_a, **_k: types.SimpleNamespace())
 
     assert cli._init_agent() is True
     assert seen.get("single_query") is False
