@@ -21,12 +21,11 @@ function hasAssistantWords(runtimeId: null | string): boolean {
  * Main's first-run start around `onboarding.start`: the boot overlay holds, the window takes the demo
  * layout once the start answers, and the intro opens once the returned chat is the one on screen.
  * `onboarding.start` has no deadline: past the boot budget the starting screen offers a way out, which
- * fails the start (`failed` below) so the chat stays closed this launch.
+ * counts as Skip setup. A resumed run (a relaunch mid-run) reopens as a normal chat at normal size.
  */
 export function firstRunIntro(): OnboardingIntroHooks {
   let offerExit: ReturnType<typeof setTimeout> | undefined
-  // The user left this run's intro on an earlier launch: the chat reopens as a normal chat, no demo.
-  let left = false
+  let resumed = false
 
   const clearExit = () => {
     clearTimeout(offerExit)
@@ -34,16 +33,16 @@ export function firstRunIntro(): OnboardingIntroHooks {
   }
 
   return {
-    starting: (abandon, seen) => {
-      left = seen
+    starting: skip => {
       startIntro()
       $introTurnSent.set(false)
-      offerExit = setTimeout(() => $introStartExit.set(abandon), BACKEND_BOOT_WAIT_TIMEOUT_MS)
+      offerExit = setTimeout(() => $introStartExit.set(skip), BACKEND_BOOT_WAIT_TIMEOUT_MS)
     },
-    started: () => {
+    started: (started: OnboardingStartResult) => {
       clearExit()
+      resumed = started.resumed
 
-      if (!left) {
+      if (!resumed) {
         openDemoLayout()
       }
     },
@@ -56,7 +55,7 @@ export function firstRunIntro(): OnboardingIntroHooks {
       // onboarding.start has already submitted the opening turn.
       $introTurnSent.set(true)
 
-      if (left) {
+      if (resumed) {
         $introView.set('ended')
       } else {
         openIntro(!hasAssistantWords(runtimeId))

@@ -1,8 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { DEMO_LAYOUT_ID } from '@/app/contrib/layout-presets'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { $activePresetId } from '@/components/pane-shell/tree/store'
 import { TIP_CATALOG } from '@/lib/tips/catalog'
 import { $sidebarOpen, CHAT_SIDEBAR_PANE_ID } from '@/store/layout'
 import { $introView } from '@/store/onboarding-intro'
@@ -69,7 +67,7 @@ export function leaveIntro(): void {
   endIntroView()
 }
 
-/** A layout pick (the layout card, `set_theme`, the layout picker) ends the intro and keeps the pick. */
+/** A committed layout (the layout card's Continue, a `set_theme` layout) ends the intro and keeps the pick. */
 export function leaveIntroOnLayout(): void {
   endIntroView(true)
 }
@@ -98,7 +96,6 @@ function watchLeaveActions(): () => void {
   const stops = [
     () => window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onReveal),
     $sidebarOpen.listen(() => leaveIntro()),
-    $activePresetId.listen(id => id !== DEMO_LAYOUT_ID && leaveIntroOnLayout()),
     $activeGatewayProfile.listen(profile => profile !== introProfile && leaveIntro()),
     $selectedStoredSessionId.listen(id => (!id || !$chatOnboardingThreadIds.get().includes(id)) && leaveIntro())
   ]

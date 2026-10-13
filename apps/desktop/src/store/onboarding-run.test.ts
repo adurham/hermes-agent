@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $introView } from './onboarding-intro'
 import { $onboardingPhase } from './onboarding-phase'
 import { $onboardingDecided, $onboardingSurfaceClear } from './onboarding-presence'
 import {
@@ -92,17 +91,17 @@ describe('onboarding run', () => {
     expect($onboardingEnded.get()).toBeNull()
   })
 
-  it('returns the window to the profile it launched on when the start fails', async () => {
+  it('stays on the default profile when the start fails', async () => {
     $activeGatewayProfile.set('work')
     const switched = vi.fn(async (_profile: string) => undefined)
     const refuse = async (): Promise<never> => Promise.reject(new Error('backend down'))
 
     expect(await startOnboarding(refuse, resume, { ensureProfile: switched })).toBe(false)
-    expect(switched.mock.calls).toEqual([['default'], ['work']])
+    expect(switched.mock.calls).toEqual([['default']])
     $activeGatewayProfile.set('default')
   })
 
-  it('opens a new chat in the launch profile on Skip setup', async () => {
+  it('opens a new chat in the default profile on Skip setup', async () => {
     $activeGatewayProfile.set('work')
     const { request } = backend({ eligible: true, run: true })
     await startOnboarding(request, resume, { ensureProfile })
@@ -113,7 +112,7 @@ describe('onboarding run', () => {
 
     expect($onboardingEnded.get()).toBe('skipped')
     expect($freshSessionRequest.get()).toBe(fresh + 1)
-    expect($newChatProfile.get()).toBe('work')
+    expect($newChatProfile.get()).toBe('default')
   })
 
   it('acks the free-tier notice when the onboarding intro opens', async () => {
@@ -126,15 +125,24 @@ describe('onboarding run', () => {
     expect(calls).toContain('free_tier.ack_notice')
   })
 
-  it('records the intro as seen when the user first leaves it mid-run', async () => {
-    const { calls, request } = backend({ eligible: true, run: true })
-    const intro = { failed: vi.fn(), opened: () => $introView.set('intro'), started: vi.fn(), starting: vi.fn() }
+  it("keeps a rerun going when the old run's withdrawn card reports skipped_all first", async () => {
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
 
-    await startOnboarding(request, resume, { ensureProfile, intro })
-    $introView.set('ended')
-    $introView.set('off')
+    // The backend withdraws the old card while the rerun's start is still answering.
+    const rerun = async <T,>(method: string): Promise<T> => {
+      if (method === 'onboarding.start') {
+        noteSetupBeatResult(['rt-1', 'st-1'], { skipped_all: true })
+      }
 
-    expect(calls.filter(method => method === 'onboarding.intro_seen')).toHaveLength(1)
+      // SAFETY: the fake answers onboarding.start with its contract result shape.
+      return { resumed: false, session_id: 'rt-2', stored_session_id: 'st-2' } as T
+    }
+
+    await startOnboarding(rerun, resume, { ensureProfile, rerun: true })
+
+    expect($onboardingPhase.get()).toBe('shown')
+    expect($onboardingEnded.get()).toBeNull()
   })
 
   it('keeps the run when the backend refuses the skip', async () => {

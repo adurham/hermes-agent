@@ -35,6 +35,7 @@ beforeEach(() => {
   $chatOnboardingSolo.set(false)
   $selectedStoredSessionId.set(null)
   size.mockClear()
+  adopt.mockClear()
 })
 
 describe('first-run kickoff', () => {
@@ -55,8 +56,10 @@ describe('first-run kickoff', () => {
     expect($introCopy.get()).toBe('playing')
   })
 
-  it('reopens the chat without the demo layout once the user left the intro on an earlier launch', async () => {
-    const opened = await startOnboarding(request, adopt, { ensureProfile, intro: firstRunIntro(), introSeen: true })
+  it('reopens a resumed run without the demo layout, at normal size', async () => {
+    // SAFETY: the fake answers onboarding.start with its contract result; nothing else reads the answer.
+    const resumed = async <T>(): Promise<T> => ({ ...started, resumed: true }) as T
+    const opened = await startOnboarding(resumed, adopt, { ensureProfile, intro: firstRunIntro() })
 
     expect(opened).toBe(true)
     expect(size).not.toHaveBeenCalled()
@@ -64,15 +67,18 @@ describe('first-run kickoff', () => {
     expect($introView.get()).toBe('ended')
   })
 
-  it('waits on a slow start with no deadline, and the way out fails it', async () => {
+  it('waits on a slow start with no deadline, and the way out skips the run once the start answers', async () => {
     vi.useFakeTimers()
-    const deadlines: (number | undefined)[] = []
+    const calls: [string, unknown, number | undefined][] = []
 
-    // A cold start that answers only when abandoned.
-    const slow: OnboardingRequest = async <T>(...[, , timeoutMs, signal]: Parameters<OnboardingRequest>): Promise<T> => {
-      deadlines.push(timeoutMs)
+    let answer: () => void = () => {}
 
-      return new Promise<T>((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+    // A cold start that answers late.
+    const slow: OnboardingRequest = async <T>(...[method, params, timeoutMs]: Parameters<OnboardingRequest>): Promise<T> => {
+      calls.push([method, params, timeoutMs])
+
+      // SAFETY: the fake answers onboarding.start with its contract result; the skip's answer is unread.
+      return method === 'onboarding.start' ? new Promise<T>(resolve => (answer = () => resolve(started as T))) : ({} as T)
     }
 
     const opening = startOnboarding(slow, adopt, { ensureProfile, intro: firstRunIntro() })
@@ -80,9 +86,13 @@ describe('first-run kickoff', () => {
     $introStartExit.get()?.()
     vi.useRealTimers()
 
-    expect(await opening).toBe(false)
-    expect(deadlines).toEqual([0])
     expect($introView.get()).toBe('off')
-    expect($onboardingPhase.get()).toBe('failed')
+    expect($onboardingPhase.get()).toBe('skipped')
+    answer()
+
+    expect(await opening).toBe(false)
+    expect(calls.map(([method, , timeout]) => [method, timeout])).toEqual([['onboarding.start', 0], ['onboarding.skip', undefined]])
+    expect(calls[1][1]).toEqual({ session_id: 'rt-1' })
+    expect(adopt).not.toHaveBeenCalledWith('st-1', true)
   })
 })
