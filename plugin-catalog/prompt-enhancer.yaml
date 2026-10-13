@@ -5,6 +5,7 @@ description: "A composer button for Hermes Desktop that rewrites a rough draft i
 maintainer: Heybinshao
 tier: community
 category: desktop
+requires_hermes: ">=0.21.5"
 docs_url: https://github.com/Heybinshao/prompt-enhancer#readme
 version: "1.6.1"
 image: https://raw.githubusercontent.com/Heybinshao/prompt-enhancer/e5cc952c44d7d8ea731f406dbfcd2330fda2befb/assets/banner.png
