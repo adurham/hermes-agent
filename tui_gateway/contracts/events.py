@@ -240,9 +240,34 @@ event("status.update", StatusUpdatePayload, doc="Transient status line (kind: st
 
 
 class SessionUsagePayload(Payload):
-    """``server._start_usage_ticker``."""
+    """``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative
+    counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level:
+    published after every API call and at turn end, what main's classic CLI read off its agent."""
 
-    usage: Usage
+    usage: Usage | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    reasoning_tokens: int | None = None
+    api_calls: int | None = None
+    last_prompt_tokens: int | None = None
+    context_tokens: int | None = None
+    context_length: int | None = None
+    config_context_length: int | None = None
+    context_source: str | None = None
+    compression_count: int | None = None
+    avg_latency_s: float | None = None
+    tokens_per_s: float | None = None
+    last_turn_tokens: int | None = None
+    rate_limit: dict[str, JsonValue] | None = None
+    active_subagents: int | None = None
+    model: str | None = None
+    provider: str | None = None
+    fallback_model: str | None = None
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")

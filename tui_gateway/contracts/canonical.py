@@ -171,6 +171,43 @@ canonical_method("session.info", params=CanonicalSessionInfoParams, result=Canon
                  doc="Frozen launch policy projection of one local session.")
 
 
+class SessionStatsParams(Params):
+    session_id: str
+
+
+class SessionStats(Result):
+    """``gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``),
+    context / compressor figures, rolling latency and throughput, rate-limit state, live subagents."""
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    reasoning_tokens: int
+    api_calls: int
+    last_prompt_tokens: int
+    context_tokens: int
+    context_length: int | None = None
+    config_context_length: int | None = None
+    context_source: str | None = None
+    compression_count: int
+    avg_latency_s: float | None = None
+    tokens_per_s: float | None = None
+    last_turn_tokens: int
+    rate_limit: dict[str, JsonValue] | None = None
+    active_subagents: int
+    model: str
+    provider: str
+    fallback_model: str | None = None
+
+
+canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,
+                 doc="The session.usage dict on demand: what main's classic CLI read off its agent.")
+
+
 class SessionDetachParams(Params):
     session_id: str
     subscription_id: str

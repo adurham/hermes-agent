@@ -860,6 +860,11 @@ class GatewayTurnProgressMixin:
         if not ctx._run_still_current():
             return
         self._publish_execution("agent.step", {"iteration": iteration})
+        if iteration > 1 and local_viewer_turn(self):
+            # Each step after the first follows a finished API call: main's CLI repainted its status
+            # bar from the agent's counters right then (the last call is covered at turn end).
+            from gateway.session_usage import publish_usage
+            publish_usage(self, ctx.agent_holder[0])
         if not ctx._hooks_ref.loaded_hooks:
             return
         # prev_tools may be list[str] or list[dict] with "name"/"result" keys. Normalise so

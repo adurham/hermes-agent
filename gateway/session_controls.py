@@ -14,7 +14,7 @@ from hermes_state_runtime import RuntimeStoreError
 # Verbs whose param sets are closed and never carried a ``profile`` key.
 _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
-                               'session.interrupt', 'session.events.since', 'session.mutate',
+                               'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'approval.respond', 'clarify.respond'})
 
 
@@ -104,6 +104,8 @@ class AuthorityConnection:
         handlers['image.attach_bytes'] = partial(attach_bytes, self)
         from gateway.session_prune import prune
         handlers['session.prune'] = partial(prune, self)
+        from gateway.session_usage import stats
+        handlers['session.stats'] = partial(stats, self)
         return handlers
 
     async def dispatch(self, request):

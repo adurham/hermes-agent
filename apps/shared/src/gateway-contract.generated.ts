@@ -4545,6 +4545,35 @@ export interface CanonicalSessionInfo {
   fast?: boolean | null
   [key: string]: unknown
 }
+export interface SessionStatsParams {
+  session_id: string
+}
+/** ``gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``), context / compressor figures, rolling latency and throughput, rate-limit state, live subagents. */
+export interface SessionStats {
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  reasoning_tokens: number
+  api_calls: number
+  last_prompt_tokens: number
+  context_tokens: number
+  context_length?: number | null
+  config_context_length?: number | null
+  context_source?: string | null
+  compression_count: number
+  avg_latency_s?: number | null
+  tokens_per_s?: number | null
+  last_turn_tokens: number
+  rate_limit?: Record<string, unknown> | null
+  active_subagents: number
+  model: string
+  provider: string
+  fallback_model?: string | null
+}
 export interface SessionDetachParams {
   session_id: string
   subscription_id: string
@@ -5363,9 +5392,32 @@ export interface StatusUpdatePayload {
   kind: string
   text: string
 }
-/** ``server._start_usage_ticker``. */
+/** ``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level: published after every API call and at turn end, what main's classic CLI read off its agent. */
 export interface SessionUsagePayload {
-  usage: Usage
+  usage?: Usage | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
+  prompt_tokens?: number | null
+  completion_tokens?: number | null
+  total_tokens?: number | null
+  reasoning_tokens?: number | null
+  api_calls?: number | null
+  last_prompt_tokens?: number | null
+  context_tokens?: number | null
+  context_length?: number | null
+  config_context_length?: number | null
+  context_source?: string | null
+  compression_count?: number | null
+  avg_latency_s?: number | null
+  tokens_per_s?: number | null
+  last_turn_tokens?: number | null
+  rate_limit?: Record<string, unknown> | null
+  active_subagents?: number | null
+  model?: string | null
+  provider?: string | null
+  fallback_model?: string | null
 }
 /** ``prompt_turn._invoke_agent`` ``_on_session_title`` hook. */
 export interface SessionTitlePayload {
@@ -6474,6 +6526,8 @@ export interface CanonicalRpcMethods {
   'session.prune': { params: SessionPruneParams; result: SessionPruneResult }
   'session.redirect': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
   'session.resume': { params: CanonicalResumeParams; result: CanonicalSnapshot }
+  /** The session.usage dict on demand: what main's classic CLI read off its agent. */
+  'session.stats': { params: SessionStatsParams; result: SessionStats }
   'session.steer': { params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }
   /** Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in its frozen launch cwd (``gateway/session_shell.py``). */
   'shell.exec': { params: CanonicalShellExecParams; result: ShellExecResult }
@@ -6520,6 +6574,7 @@ export const CANONICAL_RPC_METHODS = [
   'session.prune',
   'session.redirect',
   'session.resume',
+  'session.stats',
   'session.steer',
   'shell.exec',
   'worker.adopt',
