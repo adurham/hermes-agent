@@ -910,9 +910,33 @@ class CLIInfoMixin:
         with self._busy_command(self._slow_command_status(cmd_original)):
             self._reload_mcp()
 
+    def _reload_gateway_mcp(self, connection):
+        """``/reload-mcp`` on the shared gateway: the gateway owns the MCP servers and the session's
+        agent, so it reconciles them with config and refreshes its agents (``reload.mcp``); main's
+        "Agent updated" line then counts the tools the gateway session now loads."""
+        from hermes_cli.gateway_client import GatewayClientError
+        if not self._command_running:
+            print(t("cli.reload_mcp.reloading"))
+        try:
+            result = connection.call("reload.mcp", session_id=self.session_id, confirm=True)
+            snapshot = connection.call("session.resume", session_id=self.session_id) or {}
+        except GatewayClientError as e:
+            print(f"  {t('gateway.reload_mcp.failed', error=str(e))}")
+            return
+        print(f"  {result.get('message') or ''}".rstrip())
+        connection.state(self.session_id).adopt_snapshot(snapshot)
+        info = snapshot.get("info") or {}
+        count = info.get("tool_count")
+        if not isinstance(count, int):
+            count = sum(len(names or []) for names in (info.get("tools") or {}).values())
+        print(f"  {t('cli.reload_mcp.agent_updated', count=str(count))}")
+
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect, then refresh the
         agent's tool list so the model sees the updated tools on the next turn."""
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            return self._reload_gateway_mcp(connection)
         try:
             from tools.mcp_tool_lifecycle import shutdown_mcp_servers
             from tools.mcp_tool_discovery import discover_mcp_tools
