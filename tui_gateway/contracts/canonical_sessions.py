@@ -98,6 +98,13 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None
     fast: bool | None = None
+    title: str | None = None
+    started_at: float | None = None
+    last_active_at: float | None = None
+    yolo: bool | None = None
+    api_mode: str | None = None
+    tool_count: int | None = None
+    credential_hint: str | None = None
 
 
 class CanonicalSnapshot(Result):

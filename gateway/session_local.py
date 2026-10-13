@@ -305,4 +305,37 @@ def local_session_info(authority, ref):
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
+    info.update(_classic_cli_fields(authority, ref, live, agent, policy))
     return info
+
+
+def _classic_cli_fields(authority, ref, live, agent, policy):
+    """What main's HermesCLI read off itself for /status, the status bar and the exit summary: the
+    stored title and times, the session's yolo, api_mode, the loaded tool count and a masked
+    credential hint (never the key). Lazy sessions report what is known without building an agent."""
+    import contextlib
+    stored_id = ref.session_id
+    with contextlib.suppress(Exception):
+        from hermes_state_local import local_receipt
+        stored_id = local_receipt(authority.db, ref.session_id)['entry']['session_id'] or stored_id
+    row = {}
+    with contextlib.suppress(Exception):
+        row = authority.db.get_session(stored_id) or {}
+    yolo = bool(policy is not None and getattr(policy, 'yolo', False))
+    with contextlib.suppress(Exception):
+        from tools.approval import is_session_yolo_enabled
+        yolo = yolo or is_session_yolo_enabled(live.route)
+    api_mode = getattr(agent, 'api_mode', None) if agent is not None else None
+    if api_mode is None and policy is not None:
+        with contextlib.suppress(Exception):
+            api_mode = (policy.effective(authority, secrets=False)[0].get('model') or {}).get('api_mode')
+    hint = None
+    if agent is not None and getattr(agent, 'api_key', None):
+        from agent.redact import mask_secret
+        hint = mask_secret(str(agent.api_key))
+    tools = getattr(agent, 'tools', None) if agent is not None else None
+    started = row.get('started_at')
+    return {'title': row.get('title'), 'started_at': started,
+            'last_active_at': row.get('last_activity_at') or started, 'yolo': yolo,
+            'api_mode': api_mode or None, 'tool_count': len(tools) if isinstance(tools, list) else None,
+            'credential_hint': hint}

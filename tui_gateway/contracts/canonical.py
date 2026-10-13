@@ -168,6 +168,14 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None
     fast: bool | None = None
+    # What main's classic CLI read off itself (/status, status bar, exit summary).
+    title: str | None = None
+    started_at: float | None = None
+    last_active_at: float | None = None
+    yolo: bool | None = None
+    api_mode: str | None = None
+    tool_count: int | None = None
+    credential_hint: str | None = None
 
 
 canonical_method("session.info", params=CanonicalSessionInfoParams, result=CanonicalSessionInfo,

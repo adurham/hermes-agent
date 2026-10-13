@@ -922,6 +922,18 @@ class GatewayTurnProgressMixin:
                 "Gateway auto-title failure suppressed (not user-visible): %s: %s", task, exc,
             )
             session_id = getattr(agent, "session_id", None)
+            if local_viewer_turn(self):
+                # Main's CLI repainted its status-bar title when the auto-title landed.
+                authority, canonical_id, _generation = self._approval_owner
+
+                def republish(title, title_source):
+                    from gateway.session_contract import SessionRef
+                    from gateway.session_local import local_session_info
+                    ref = SessionRef(getattr(authority, "profile_id", ""), canonical_id)
+                    authority.sessions[canonical_id].event_stream.publish(
+                        canonical_id, local_session_info(authority, ref), event_type="session.info")
+                agent._on_session_title = republish
+                return
             runner = self._runner
             source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
             # Both lanes spend a rate-limited platform call per title, so they use the model's title

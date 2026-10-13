@@ -4545,6 +4545,13 @@ export interface CanonicalSessionInfo {
   reasoning_effort_wire?: string | null
   service_tier?: string | null
   fast?: boolean | null
+  title?: string | null
+  started_at?: number | null
+  last_active_at?: number | null
+  yolo?: boolean | null
+  api_mode?: string | null
+  tool_count?: number | null
+  credential_hint?: string | null
   [key: string]: unknown
 }
 export interface SessionStatsParams {
@@ -4855,6 +4862,13 @@ export interface CanonicalSnapshotInfo {
   reasoning_effort_wire?: string | null
   service_tier?: string | null
   fast?: boolean | null
+  title?: string | null
+  started_at?: number | null
+  last_active_at?: number | null
+  yolo?: boolean | null
+  api_mode?: string | null
+  tool_count?: number | null
+  credential_hint?: string | null
 }
 export interface CanonicalResumeParams {
   profile?: string | null
