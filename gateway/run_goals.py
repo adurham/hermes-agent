@@ -14,6 +14,7 @@ import time
 from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -220,6 +221,16 @@ class GatewayGoalsMixin:
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
+        if getattr(source, "platform", None) == Platform.LOCAL:
+            # The local adapter's send is a no-op (viewers read the event stream): main's TUI
+            # painted the verdict from ``status.update {kind: goal}``.
+            from gateway.session_authorities import active_authority
+            authority = active_authority(self)
+            live = authority.sessions.get(source.chat_id) if authority is not None else None
+            if live is not None:
+                live.event_stream.publish(source.chat_id, {"kind": "goal", "text": message},
+                                          event_type="status.update")
+            return
         adapter = self._goal_notice_adapter(source)
         if not adapter:
             return
@@ -313,6 +324,15 @@ class GatewayGoalsMixin:
             await self._defer_goal_status_notice_after_delivery(source, msg)
         prompt = decision.get("continuation_prompt") or ""
         if not decision.get("should_continue") or not prompt or source is None:
+            return
+        if getattr(source, "platform", None) == Platform.LOCAL:
+            # A local session's adapter FIFO has no reader: its turns are authority admissions.
+            # Commit the continuation there, as main's TUI chained it after the turn.
+            from gateway.session_automation import admit_route_wake
+            try:
+                await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
+            except Exception as exc:
+                logger.debug("goal continuation: local admission failed: %s", exc)
             return
         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
         try:

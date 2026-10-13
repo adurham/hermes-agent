@@ -135,3 +135,87 @@ def test_local_session_authoring_commands_run_the_gateway_handler(tmp_path):
     for command in ('goal clear', 'loop clear', 'heartbeat clear'):
         assert out[command]['type'] == 'exec' and out[command]['output'], (command, out[command])
     assert (home / 'config.yaml').read_text() == config
+
+
+class _JudgeModel(Model):
+    """Echo model whose goal-judge calls answer ``continue`` once, then ``done``."""
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        text = json.dumps(body.get('messages', []))
+        if 'goal' in text.lower() and 'judge' in text.lower():
+            self.server.verdicts += 1
+            content = json.dumps({'done': self.server.verdicts > 1, 'reason': 'probe verdict'})
+        else:
+            content = 'ACK'
+        message = {'role': 'assistant', 'content': content}
+        if body.get('stream'):
+            payload = ('data: ' + json.dumps({'id': 'j', 'choices': [
+                {'index': 0, 'delta': message, 'finish_reason': 'stop'}]}) + '\n\ndata: [DONE]\n\n').encode()
+            kind = 'text/event-stream'
+        else:
+            payload = json.dumps({'id': 'j', 'choices': [{'index': 0, 'message': message, 'finish_reason': 'stop'}],
+                                  'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}}).encode()
+            kind = 'application/json'
+        self.send_response(200)
+        self.send_header('Content-Type', kind)
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@pytest.mark.platforms("linux")
+def test_local_goal_kickoff_is_judged_and_continued_by_the_gateway(tmp_path):
+    """The client submits /goal's kickoff; the gateway's post-turn judge then admits the continuation
+    into the session's own FIFO (the local adapter has no FIFO reader) until the judge says done."""
+    root = Path(__file__).resolve().parents[2]
+    home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
+    home.mkdir(mode=0o700)
+    user.mkdir()
+    work.mkdir()
+    peer = ThreadingHTTPServer(('127.0.0.1', 0), _JudgeModel)
+    peer.verdicts = 0
+    thread = threading.Thread(target=peer.serve_forever, daemon=True)
+    thread.start()
+    url = f'http://127.0.0.1:{peer.server_port}/v1'
+    (home / 'config.yaml').write_text(json.dumps({
+        'gateway': {'multiplex_profiles': False}, 'model': {'provider': 'custom', 'default': 'm', 'base_url': url},
+        'auxiliary': {'title_generation': {'enabled': False}}}))
+    env = child_env()
+    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
+               OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1')
+    out = {}
+
+    async def probe(desc):
+        async with websocket(home, desc) as ws:
+            sid = (await rpc(ws, 'session.create', request_id='goal', source='tui', toolsets=[],
+                             cwd=str(work)))['result']['session_id']
+            kickoff = (await rpc(ws, 'slash.exec', session_id=sid, command='goal write the probe'))['result']
+            await rpc(ws, 'prompt.submit', session_id=sid, input_id='kick', text=kickoff['message'])
+            deadline = time.monotonic() + 60
+            while True:
+                status = (await rpc(ws, 'slash.exec', session_id=sid, command='goal status'))['result']['output']
+                if status.startswith('✓'):
+                    break
+                assert time.monotonic() < deadline, status
+                await asyncio.sleep(.2)
+            out['status'] = status
+            out['messages'] = (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
+    try:
+        with daemon(root, home, env, barrier=False) as (proc, desc):
+            asyncio.run(probe(desc))
+            proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=20)
+    finally:
+        peer.shutdown()
+        peer.server_close()
+        thread.join(timeout=5)
+    assert out['status'].startswith('✓ Goal done (2/20 turns)'), out['status']
+    users = [m['content'] for m in out['messages'] if m.get('role') == 'user']
+    assert users[0] == 'write the probe' and 'standing goal' in users[1], users
+    with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+        rows = db.execute('SELECT request_id, principal_id FROM session_admissions').fetchall()
+    kick = [r for r in rows if r[0] == 'kick']
+    continuation = [r for r in rows if r[0] != 'kick']
+    assert len(kick) == 1 and len(continuation) == 1, rows
+    assert continuation[0][1].startswith('automation:') and 'goal-continuation' in continuation[0][0], rows
