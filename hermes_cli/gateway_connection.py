@@ -87,6 +87,10 @@ class GatewayConnection:
         self._stop = None
         self._start_lock = threading.Lock()
         self.closed = False
+        # /bg and /btw answers by task id (hermes_cli/gateway_side.py); created by whichever of the
+        # waiter or the frame comes first, so an answer faster than the verb's reply is kept.
+        self._side: dict[str, queue.Queue] = {}
+        self._side_lock = threading.Lock()
 
     @classmethod
     def shared(cls):
@@ -158,6 +162,8 @@ class GatewayConnection:
                 self.events.put(frame)
                 return
             params = frame.get("params") if isinstance(frame, dict) else None
+            if isinstance(params, dict) and self._take_side(params):
+                continue
             if isinstance(params, dict):
                 sid = params.get("session_id")
                 if sid in self.states:
@@ -166,6 +172,22 @@ class GatewayConnection:
                     except Exception:  # pragma: no cover - a cache update must never stop the pump
                         logger.debug("session state update failed", exc_info=True)
             self.events.put(frame)
+
+    def _take_side(self, params):
+        from hermes_cli.gateway_side import SIDE_EVENTS
+        payload = params.get("payload")
+        if params.get("type") not in SIDE_EVENTS or not isinstance(payload, dict) or not payload.get("task_id"):
+            return False
+        self.side_waiter(payload["task_id"]).put(payload)
+        return True
+
+    def side_waiter(self, task_id) -> queue.Queue:
+        with self._side_lock:
+            return self._side.setdefault(task_id, queue.Queue())
+
+    def drop_side_waiter(self, task_id):
+        with self._side_lock:
+            self._side.pop(task_id, None)
 
     def close(self):
         loop, stop = self.loop, self._stop

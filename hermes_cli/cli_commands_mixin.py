@@ -1601,17 +1601,26 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_background_command(self, cmd: str):
         """Handle /bg <prompt> — run a prompt in a separate background session (its own AIAgent
         on a thread); the result prints here without touching the active history."""
-        from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
-        from run_agent import AIAgent
         prompt = _command_arg(cmd)
         if not prompt:
             return _cp(*_lines(_t("background.usage")))
         self._background_task_counter += 1
         task_num = self._background_task_counter
+        preview = _ellipsize(prompt, 60)
+        from hermes_cli import gateway_side
+        connection = gateway_side.connection_for(self)
+        if connection is not None:
+            # The gateway runs the side agent on this session's route (prompt.background); this
+            # process never builds one.
+            task_id, wait = gateway_side.start(connection, self.session_id, "background", prompt)
+            _cp(f"  {_t('background.started', number=task_num, preview=preview)}",
+                f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
+            return self._start_background_worker(task_id, task_num, preview, wait)
+        from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from run_agent import AIAgent
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
         if not self._ensure_runtime_credentials():
             return _cp(f"  {_t('background.no_credentials')}")
-        preview = _ellipsize(prompt, 60)
         _cp(f"  {_t('background.started', number=task_num, preview=preview)}",
             f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
         turn_route = self._resolve_turn_agent_config(prompt)
@@ -1674,6 +1683,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                     set_save_login_prompt_callback(None)
                     set_code_prompt_callback(None)
 
+        self._start_background_worker(task_id, task_num, preview, produce)
+
+    def _start_background_worker(self, task_id, task_num, preview, produce):
+        """The /bg result panel's daemon thread (``produce()`` returns the answer text)."""
         def done():
             self._background_tasks.pop(task_id, None)
             if not self._agent_running:  # clear spinner only if no foreground agent owns it
@@ -1766,6 +1779,19 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         question = _command_arg(cmd)
         if not question:
             return _cp(*_lines(_t("btw.usage")))
+        from hermes_cli import gateway_side
+        connection = gateway_side.connection_for(self)
+        if connection is not None:
+            # The gateway answers from its own copy of the conversation (prompt.btw): the live
+            # agent's fork when it has one, else the stored transcript.
+            _task_id, wait = gateway_side.start(connection, self.session_id, "btw", question)
+            preview = _ellipsize(question, 60)
+            _cp(*_lines(_gt("btw.started", preview=preview)), "")
+            self._side_worker(wait, name="btw-side-question", fail_label="/btw",
+                              header_lines=[f"  {_t('btw.header', preview=preview)}"],
+                              title_suffix=_t("btw.title_suffix"),
+                              empty_note=f"  {_t('btw.no_answer')}").start()
+            return
         if not self._ensure_runtime_credentials():
             return _cp(f"  {_t('btw.no_credentials')}")
         # Snapshot NOW, on the UI thread — the foreground turn keeps appending to
