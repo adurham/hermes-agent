@@ -89,7 +89,50 @@ class TestPatchStoreLevel:
         assert s._entries_for("memory") == ["Jeff drinks coffee in the morning; his wife drinks tea at night"]
 
 
+def _store_with(tmp_path, monkeypatch, entry):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    s = MemoryStore(memory_char_limit=500)
+    s.add("memory", entry)
+    return s
+
+
+def _patch(store, shape, old_text, content):
+    if shape == "single":
+        return store.patch("memory", old_text, content)
+    return store.apply_batch("memory", [{"action": "patch", "old_text": old_text, "content": content}])
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+def test_patch_rejects_an_overlapping_repeat(tmp_path, monkeypatch, shape):
+    # str.count misses overlaps: '00' is twice in '1000', and the edit saved 'Timeout 150 ms'.
+    s = _store_with(tmp_path, monkeypatch, "Timeout 1000 ms")
+    result = _patch(s, shape, "00", "5")
+    assert result["success"] is False and "appears 2 times" in result["error"]
+    assert s._entries_for("memory") == ["Timeout 1000 ms"]
+
+
+@pytest.mark.parametrize("shape", ["single", "batch"])
+@pytest.mark.parametrize("entry,old_text,content,expected", [
+    ("Jeff drinks tea tonight", "tea ", "coffee ", "Jeff drinks coffee tonight"),
+    ("Lives in NewYork", "New", "New ", "Lives in New York"),
+])
+def test_patch_spans_keep_their_whitespace(tmp_path, monkeypatch, shape, entry, old_text, content, expected):
+    # The single call stripped old_text only (double space); the batch stripped both (a no-op).
+    s = _store_with(tmp_path, monkeypatch, entry)
+    assert _patch(s, shape, old_text, content)["success"] is True
+    assert s._entries_for("memory") == [expected]
+
+
 class TestPatchBatch:
+    def test_batch_reports_the_entry_each_patch_produced(self, packed_store):
+        result = packed_store.apply_batch("memory", [
+            {"action": "patch", "old_text": "item B", "content": "item B done"},
+            {"action": "patch", "old_text": "item C", "content": "item C done"},
+        ])
+        assert result["patched_entries"] == {1: PACKED, 2: "todo: item A; item B done; item C"}
+        assert result["patched_entries_after"] == {
+            1: "todo: item A; item B done; item C", 2: "todo: item A; item B done; item C done"}
+
     def test_patch_op_in_batch(self, packed_store):
         result = packed_store.apply_batch("memory", [
             {"action": "patch", "old_text": "item B", "new_text": "item B done"},

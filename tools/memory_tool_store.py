@@ -137,6 +137,25 @@ def _repeated_span_message(old_text: str, count: int) -> str:
             f"Include more surrounding text so old_text occurs once.")
 
 
+def _span_occurrences(text: str, span: str) -> int:
+    """Occurrences of *span* in *text*, overlapping ones included: '00' occurs twice in '1000'."""
+    return sum(text.startswith(span, i) for i in range(len(text) - len(span) + 1))
+
+
+def _patch_entry(entry: str, old_text: str, new_text: str) -> tuple[Optional[str], str, str]:
+    """``(patched entry, "", "none")``, or ``(None, error, failure class)`` when the span occurs more
+    than once in the entry, the edit changes nothing, or the patched entry fails the threat scan.
+    Single and batch patches both go through here, so they share one rule."""
+    if (count := _span_occurrences(entry, old_text)) > 1:
+        return None, _repeated_span_message(old_text, count), "ambiguous"
+    patched = entry.replace(old_text, new_text, 1)
+    if patched == entry:
+        return None, f"Patch is a no-op: '{old_text}' -> '{new_text}' leaves the entry unchanged.", "invalid_args"
+    if scan_error := _scan_memory_content(patched):
+        return None, scan_error, "scan_blocked"
+    return patched, "", "none"
+
+
 def _pinned_index(entries: list[str], matched_entry: str) -> Optional[int]:
     """Index of the exact entry a staged write was reviewed against; None once it is gone (stale)."""
     return entries.index(matched_entry) if matched_entry in entries else None
@@ -394,7 +413,8 @@ class MemoryStore:
             return _error("old_text cannot be empty.", "missing_old_text")
         if new_text is None or not str(new_text).strip():
             return _error(f"new_text cannot be empty. {PATCH_DROP_HINT}", "missing_content")
-        return self._patch(target, old_text.strip(), str(new_text), matched_entry)
+        # The span keeps its whitespace: it is part of the text being replaced ("tea " -> "coffee ").
+        return self._patch(target, old_text, str(new_text), matched_entry)
 
     def _patch(self, target: str, old_text: str, new_text: str,
                matched_entry: Optional[str] = None) -> dict[str, Any]:
@@ -404,14 +424,9 @@ class MemoryStore:
             if isinstance(idx, dict):
                 return idx
             before = entries[idx]
-            if (count := before.count(old_text)) > 1:
-                return _error(_repeated_span_message(old_text, count), "ambiguous")
-            after = before.replace(old_text, new_text)
-            if after == before:
-                return _error(f"Patched entry is unchanged by replacing '{old_text}' "
-                              f"with '{new_text}'.", "invalid_args")
-            if scan_error := _scan_memory_content(after):
-                return _error(scan_error, "scan_blocked")
+            after, message, failure_class = _patch_entry(before, old_text, new_text)
+            if after is None:
+                return _error(message, failure_class)
             patched = entries[:idx] + [after] + entries[idx + 1:]
             new_total = len(ENTRY_DELIMITER.join(patched))
             if new_total > limit:
@@ -474,55 +489,52 @@ class MemoryStore:
         return self._mutate(target, _apply)
 
     @staticmethod
-    def _apply_batch_op(working: list[str], act: str, content: str, old_text: str,
-                        pos: str, matched_entry: Optional[str] = None) -> tuple[Optional[str], Any, str]:
-        """Apply one batch op to *working*; return ``(error message, previous content, failure class)`` —
-        on a zero-match error the second value is that op's ``closest_entries`` instead.
+    def _apply_batch_op(working: list[str], act: str, content: str, old_text: str, pos: str,
+                        matched_entry: Optional[str] = None) -> tuple[Optional[str], Any, str, Optional[str]]:
+        """Apply one batch op to *working*; return ``(error message, previous content, failure class,
+        patched entry)`` — on a zero-match error the second value is that op's ``closest_entries``
+        instead, and the fourth is the entry a patch produced (None for every other op).
         Previous content is captured before each replace/remove, under the store lock.
         It is published only after the entire batch has been validated and persisted.
         A staged op's *matched_entry* selects exactly that entry, as in ``_locate``.
         """
         if act == "add":
             if not content:
-                return f"{pos}: content is required.", None, "missing_content"
+                return f"{pos}: content is required.", None, "missing_content", None
             if content not in working:  # idempotent -- skip duplicate, don't fail the batch
                 working.append(content)
-            return None, None, "none"
+            return None, None, "none", None
         if act not in ("replace", "remove", "patch"):
-            return f"{pos}: unknown action. Use add, replace, patch, or remove.", None, "invalid_args"
-        if not old_text:
-            return f"{pos}: old_text is required.", None, "missing_old_text"
+            return f"{pos}: unknown action. Use add, replace, patch, or remove.", None, "invalid_args", None
+        if not old_text.strip():
+            return f"{pos}: old_text is required.", None, "missing_old_text", None
         if act == "replace" and not content:
             return (f"{pos}: content is required — set this operation object's own 'content' to the COMPLETE "
-                    f"new entry (or use action='remove' to delete)."), None, "missing_content"
-        if act == "patch" and not content:
+                    f"new entry (or use action='remove' to delete)."), None, "missing_content", None
+        if act == "patch" and not content.strip():
             return (f"{pos}: content is required — set this operation object's own 'content' to the new "
-                    f"text for the old_text span. {PATCH_DROP_HINT}"), None, "missing_content"
+                    f"text for the old_text span. {PATCH_DROP_HINT}"), None, "missing_content", None
         if matched_entry is not None:
             idx = _pinned_index(working, matched_entry)
             if idx is None:
-                return f"{pos}: {_stale_entry_message(matched_entry)}", None, "stale_entry"
+                return f"{pos}: {_stale_entry_message(matched_entry)}", None, "stale_entry", None
         else:
             idx, ambiguous = _find_unique_match(working, old_text)
             if ambiguous:
-                return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None, "ambiguous"
+                return (f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None,
+                        "ambiguous", None)
             if idx is None:
                 miss = _no_match_error(working, old_text, act)
-                return f"{pos}: {miss['error']}", miss.get("closest_entries"), "no_match"
+                return f"{pos}: {miss['error']}", miss.get("closest_entries"), "no_match", None
         previous_content = working[idx]
-        if act == "patch":
-            if (count := previous_content.count(old_text)) > 1:
-                return f"{pos}: {_repeated_span_message(old_text, count)}", None, "ambiguous"
-            patched = previous_content.replace(old_text, content)
-            if patched == previous_content:
-                return (f"{pos}: patch is a no-op -- '{old_text}' -> '{content}' leaves the "
-                        f"entry unchanged."), None, "invalid_args"
-            if scan_error := _scan_memory_content(patched):
-                return f"{pos}: {scan_error}", None, "scan_blocked"
-            working[idx:idx + 1] = [patched]
-        else:
+        if act != "patch":
             working[idx:idx + 1] = [content] if act == "replace" else []
-        return None, previous_content, "none"
+            return None, previous_content, "none", None
+        patched, message, failure_class = _patch_entry(previous_content, old_text, content)
+        if patched is None:
+            return f"{pos}: {message}", None, failure_class, None
+        working[idx:idx + 1] = [patched]
+        return None, previous_content, "none", patched
 
     def apply_batch(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
@@ -553,16 +565,21 @@ class MemoryStore:
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
-            matched = []  # per op, the entry a replace/remove selected (None for add)
+            matched = []  # per op, the entry a replace/patch/remove selected (None for add)
+            produced = {}  # 1-based op index -> the entry a patch produced
             for i, op in enumerate(ops):
                 act = op.get("action")
-                msg, previous_content, failure_class = self._apply_batch_op(
-                    working, act, (op.get("content") or op.get("new_text") or "").strip(),
-                    (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})",
+                content, old_text = op.get("content") or op.get("new_text") or "", op.get("old_text") or ""
+                if act != "patch":  # whole-entry actions; a patch span keeps its whitespace
+                    content, old_text = content.strip(), old_text.strip()
+                msg, previous_content, failure_class, after = self._apply_batch_op(
+                    working, act, content, old_text, f"Operation {i + 1} ({act or 'unknown'})",
                     op.get("matched_entry"))
                 if msg:  # a failed op's second value is its closest_entries (or None)
                     return self._batch_failure(target, msg, failure_class, closest_entries=previous_content)
                 matched.append(previous_content)
+                if after is not None:
+                    produced[i + 1] = after
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single
@@ -592,6 +609,7 @@ class MemoryStore:
             replaced_fields = {"replaced_entries": replaced} if replaced else {}
             if patched:
                 replaced_fields["patched_entries"] = patched
+                replaced_fields["patched_entries_after"] = produced
             if removed:
                 replaced_fields["removed_entries"] = removed
             return working, f"Applied {len(operations)} operation(s).", replaced_fields
