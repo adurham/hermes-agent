@@ -249,19 +249,36 @@ def _registry_home() -> Iterable[Path]:
 
 
 def _service_homes() -> Iterable[Path]:
-    """The ``HERMES_HOME`` of every gateway service this OS user runs: its own definitions, and the
-    machine-wide units that run as it. Another account's gateway is that account's install."""
-    from hermes_cli.gateway_service_owner import service_definition_homes
+    """The ``HERMES_HOME`` of every gateway service this OS user runs: its own definitions, the
+    machine-wide units that run as it, and the launchers its Scheduled Tasks start. Another account's
+    gateway is that account's install."""
+    from hermes_cli import gateway_windows
     from hermes_platform.resolver import known_dirs
 
     for machine_wide, globs in ((False, known_dirs.gateway_service_definition_globs()),
                                 (True, known_dirs.system_gateway_service_definition_globs())):
         for definition in _expand_all(globs):
-            with contextlib.suppress(OSError, UnicodeError, ValueError):
-                text = _read_text(definition)
-                account = _unit_account(text) or ("root" if machine_wide else None)
-                if account is None or _is_this_account(account):
-                    yield from (Path(home.strip().strip('"')) for home in service_definition_homes(text))
+            yield from _definition_homes(definition, machine_wide=machine_wide)
+    for launcher in gateway_windows.registered_task_launchers():
+        yield from _definition_homes(Path(launcher), machine_wide=False, follow=False)
+
+
+def _definition_homes(definition: Path, *, machine_wide: bool, follow: bool = True) -> Iterator[Path]:
+    """The homes one definition names, and those named by the launchers it starts (the Windows
+    Startup-folder fallback names only its launcher). Unreadable: none."""
+    from hermes_cli.gateway_service_owner import service_definition_homes, service_definition_launchers
+
+    try:
+        text = _read_text(definition)
+    except (OSError, UnicodeError, ValueError):
+        return
+    account = _unit_account(text) or ("root" if machine_wide else None)
+    if account is not None and not _is_this_account(account):
+        return
+    yield from (Path(home.strip().strip('"')) for home in service_definition_homes(text))
+    if follow:
+        for launcher in service_definition_launchers(text):
+            yield from _definition_homes(Path(launcher), machine_wide=False, follow=False)
 
 
 def _unit_account(unit: str) -> str | None:

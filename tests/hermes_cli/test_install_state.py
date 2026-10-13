@@ -140,6 +140,28 @@ def test_gateway_service_definitions_name_their_homes(tmp_path, monkeypatch):
     assert set(install_state._service_homes()) == {home, Path(f"{home}-win")}
 
 
+def test_a_gateway_started_by_a_scheduled_task_or_the_startup_fallback_names_its_home(tmp_path, monkeypatch):
+    """A Scheduled Task install removes the Startup-folder entries, and the Startup fallback only starts
+    the home's own launcher: both name their home through the ``gateway.vbs`` they start."""
+    from hermes_cli import gateway_windows
+    from hermes_platform.resolver import known_dirs
+
+    def launcher(home: Path) -> Path:  # what _write_task_script leaves in the home
+        script = home / "gateway-service" / "Hermes_Gateway.vbs"
+        script.parent.mkdir(parents=True)
+        script.write_text(f'env.Item("HERMES_HOME") = "{home}"\r\n', encoding="utf-8")
+        return script
+
+    by_task, by_startup = tmp_path / "task home", tmp_path / "startup home"
+    startup = tmp_path / "Startup" / "Hermes_Gateway.vbs"
+    startup.parent.mkdir()
+    startup.write_text(gateway_windows._build_startup_launcher(launcher(by_startup).with_suffix(".cmd")), encoding="utf-8")
+    monkeypatch.setattr(known_dirs, "gateway_service_definition_globs", lambda: (str(startup.parent / "Hermes_Gateway*"),))
+    monkeypatch.setattr(gateway_windows, "registered_task_launchers", lambda: [str(launcher(by_task))], raising=False)
+
+    assert {by_task, by_startup} <= set(install_state._service_homes())
+
+
 @pytest.mark.platforms("posix")
 def test_a_gateway_service_counts_only_for_the_account_it_runs_as(tmp_path, monkeypatch):
     """A machine-wide unit is another account's install unless it runs as this one (``User=``, root

@@ -107,6 +107,14 @@ def service_definition_homes(definition: str) -> list[str]:
     return homes
 
 
+def service_definition_launchers(definition: str) -> list[str]:
+    """The scripts a definition starts, by their quoted absolute paths. The Windows Startup-folder
+    fallback and a Scheduled Task's action name no home: they start the home's ``gateway.vbs``, which does."""
+    import re
+    found = re.findall(r'"((?:[A-Za-z]:[\\/]|\\\\|/)[^"\r\n]*\.(?:vbs|cmd))"', definition, flags=re.IGNORECASE)
+    return list(dict.fromkeys(found))
+
+
 def temp_home_in_service_definition(definition: str) -> str | None:
     """Temp-dir HERMES_HOME baked into a systemd unit / launchd plist, or None. A temp home means a
     test/E2E harness generated it; installing it leaves the gateway "running" but deaf to every platform."""
