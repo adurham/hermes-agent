@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
 import { deFirstRun } from './de_first_run'
@@ -5239,24 +5240,7 @@ export const deOverrides = {
         `Dies fügt das Muster „${pattern}“ Ihrer dauerhaften Zulassungsliste hinzu (~/.hermes/config.yaml). Hermes fragt bei solchen Befehlen nicht mehr nach – weder in dieser noch in zukünftigen Sessions.`,
       alwaysAllow: 'Immer erlauben'
     },
-    clarify: {
-      notReady: 'Klärungsanfrage ist noch nicht bereit',
-      gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
-      sendFailed: 'Klärungsantwort konnte nicht gesendet werden',
-      loadingQuestion: 'Frage wird geladen…',
-      other: 'Anderes (Antwort eingeben)',
-      placeholder: 'Geben Sie Ihre Antwort ein…',
-      skip: 'Überspringen',
-      skipped: 'Übersprungen',
-      noAnswer: 'Keine Antwort',
-      confirmAndContinueLabel: 'Bestätigen und fortfahren',
-      singleSelectHint: 'Eines auswählen',
-      multiSelectHint: 'Alle Treffer auswählen',
-      oneQuestion: '1 Frage',
-      questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
-      notDelivered:
-        'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
-    },
+    clarify: deClarify,
     themePicker: deThemePicker,
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',

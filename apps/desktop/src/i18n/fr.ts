@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
 import { frFirstRun } from './fr_first_run'
@@ -5248,24 +5249,7 @@ export const frOverrides = {
         `Cela ajoute le motif « ${pattern} » à votre liste d'autorisation permanente (~/.hermes/config.yaml). Hermes ne redemandera plus pour ce type de commande — que ce soit dans cette session ou dans une session future.`,
       alwaysAllow: 'Toujours autoriser'
     },
-    clarify: {
-      notReady: "La demande de clarification n'est pas encore prête",
-      gatewayDisconnected: "La Gateway Hermes n'est pas connectée",
-      sendFailed: "Impossible d'envoyer la réponse de clarification",
-      loadingQuestion: 'Chargement de la question…',
-      other: 'Autre (saisissez votre réponse)',
-      placeholder: 'Saisissez votre réponse…',
-      skip: 'Passer',
-      skipped: 'Ignoré',
-      noAnswer: 'Pas de réponse',
-      confirmAndContinueLabel: 'Confirmer et continuer',
-      singleSelectHint: 'Choisir une réponse',
-      multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
-      oneQuestion: '1 question',
-      questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
-      notDelivered:
-        "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
-    },
+    clarify: frClarify,
     themePicker: frThemePicker,
     catalogInstall: {
       preparing: 'Préparation de l’installation…',

@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
 import { jaFirstRun } from './ja_first_run'
 import { jaLocalModels } from './ja_local_models'
@@ -3548,24 +3549,7 @@ export const jaOverrides = {
         `これにより "${pattern}" パターンが永続的な許可リスト (~/.hermes/config.yaml) に追加されます。Hermes はこのセッションや将来のセッションで、このようなコマンドについて再度尋ねません。`,
       alwaysAllow: '常に許可'
     },
-    clarify: {
-      notReady: '明確化リクエストはまだ準備できていません',
-      gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
-      sendFailed: '明確化応答を送信できませんでした',
-      loadingQuestion: '質問を読み込み中…',
-      other: 'その他（回答を入力）',
-      placeholder: '回答を入力…',
-      skip: 'スキップ',
-      skipped: 'スキップ済み',
-      noAnswer: '回答なし',
-      confirmAndContinueLabel: '確定して続行',
-      singleSelectHint: '1つ選ぶ',
-      multiSelectHint: '該当するものをすべて選択',
-      oneQuestion: '1問',
-      questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
-      notDelivered:
-        'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
-    },
+    clarify: jaClarify,
     themePicker: jaThemePicker,
     tool: {
       copyCode: 'コードをコピー',

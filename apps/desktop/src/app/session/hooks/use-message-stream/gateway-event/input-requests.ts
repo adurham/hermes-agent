@@ -193,9 +193,15 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     clearVaultSaveLoginRequest(sessionId, id)
   } else if ($vaultUnlockRequests.get()[key]?.requestId === id) {
     clearVaultUnlockRequest(sessionId, id)
-  } else if (sessionId && (clearThemePick(id, sessionId) || clearSetupBeat(id, sessionId))) {
-    deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+  } else {
+    clearParkedCard(ctx, id)
   }
 
   return true
+}
+
+function clearParkedCard({ deps, sessionId }: GatewayEventContext, requestId: string) {
+  if (sessionId && (clearThemePick(requestId, sessionId) || clearSetupBeat(requestId, sessionId))) {
+    deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+  }
 }

@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
@@ -4524,23 +4525,7 @@ export const zhOverrides = {
         `这会将“${pattern}”模式加入永久允许列表 (~/.hermes/config.yaml)。Hermes 对类似命令将不再询问，包括当前会话和未来会话。`,
       alwaysAllow: '始终允许'
     },
-    clarify: {
-      notReady: '澄清请求尚未就绪',
-      gatewayDisconnected: 'Hermes 网关未连接',
-      sendFailed: '无法发送澄清响应',
-      loadingQuestion: '正在加载问题…',
-      other: '其他 (输入你的答案)',
-      placeholder: '输入你的答案…',
-      skip: '跳过',
-      skipped: '已跳过',
-      noAnswer: '未回答',
-      confirmAndContinueLabel: '确认并继续',
-      singleSelectHint: '选一个',
-      multiSelectHint: '可多选',
-      oneQuestion: '1 个问题',
-      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
-    },
+    clarify: zhClarify,
     themePicker: zhThemePicker,
     catalogInstall: {
       preparing: '正在准备安装…',

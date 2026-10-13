@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
 import { esFirstRun } from './es_first_run'
@@ -5235,24 +5236,7 @@ export const esOverrides = {
         `Esto añade el patrón “${pattern}” a tu allowlist permanente (~/.hermes/config.yaml). Hermes no volverá a preguntar por comandos como este, ni en esta sesión ni en futuras.`,
       alwaysAllow: 'Permitir siempre'
     },
-    clarify: {
-      notReady: 'La solicitud de aclaración aún no está lista',
-      gatewayDisconnected: 'Hermes está sin conexión ahora mismo. Reconéctate y vuelve a enviarlo.',
-      sendFailed: 'No se pudo enviar la respuesta de aclaración',
-      loadingQuestion: 'Cargando pregunta…',
-      other: 'Otro (escribe tu respuesta)',
-      placeholder: 'Escribe tu respuesta…',
-      skip: 'Omitir',
-      skipped: 'Omitido',
-      noAnswer: 'Sin respuesta',
-      confirmAndContinueLabel: 'Confirmar y continuar',
-      singleSelectHint: 'Elige una',
-      multiSelectHint: 'Elige todas las que correspondan',
-      oneQuestion: '1 pregunta',
-      questionProgress: (answered, total) => `${answered} de ${total} respondidas`,
-      notDelivered:
-        'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
-    },
+    clarify: esClarify,
     themePicker: esThemePicker,
     catalogInstall: {
       preparing: 'Preparando la instalación…',

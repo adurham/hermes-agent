@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruFirstRun } from './ru_first_run'
 import { ruModelMenu } from './ru_model_menu'
@@ -3730,24 +3731,7 @@ export const ruOverrides = {
         `Это добавит паттерн «${pattern}» в ваш постоянный список разрешений (~/.hermes/config.yaml). Hermes больше не будет спрашивать о подобных командах — ни в этом сеансе, ни в будущем.`,
       alwaysAllow: 'Всегда разрешать'
     },
-    clarify: {
-      notReady: 'Запрос уточнения ещё не готов',
-      gatewayDisconnected: 'Шлюз Hermes не подключён',
-      sendFailed: 'Не удалось отправить ответ на уточнение',
-      loadingQuestion: 'Загрузка вопроса…',
-      other: 'Другое (введите ответ)',
-      placeholder: 'Введите ваш ответ…',
-      skip: 'Пропустить',
-      skipped: 'Пропущено',
-      noAnswer: 'Нет ответа',
-      confirmAndContinueLabel: 'Подтвердить и продолжить',
-      singleSelectHint: 'Выберите один',
-      multiSelectHint: 'Выберите все подходящие',
-      oneQuestion: '1 вопрос',
-      questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
-      notDelivered:
-        'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
-    },
+    clarify: ruClarify,
     themePicker: ruThemePicker,
     catalogInstall: {
       preparing: 'Готовим установку…',
