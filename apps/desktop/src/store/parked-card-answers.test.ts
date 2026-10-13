@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $onboardingPhase } from './onboarding-phase'
 import { $onboardingSession } from './onboarding-session'
 import {
   answerParkedCard,
@@ -17,6 +18,7 @@ describe('parked card answers', () => {
   afterEach(() => {
     unregister.splice(0).forEach(off => off())
     $onboardingSession.set(null)
+    $onboardingPhase.set('idle')
   })
 
   it('stops at the first card that takes the text, and forgets a card once it unregisters', () => {
@@ -55,6 +57,8 @@ describe('parked card answers', () => {
     expect(answerParkedCard('session-a', 'hello')).toBe(false)
     expect($waiting.get()).toBe(false)
 
+    // A run is shown whenever its chat is named (startOnboarding).
+    $onboardingPhase.set('shown')
     $onboardingSession.set({ runId: 'run-1', runtimeId: 'session-a', storedId: 'stored-a' })
     expect($waiting.get()).toBe(true)
     expect(answerParkedCard('session-a', 'hello')).toBe(true)

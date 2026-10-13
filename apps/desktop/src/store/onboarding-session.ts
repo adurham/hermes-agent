@@ -1,6 +1,7 @@
-import { atom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import { storedSessionIdForRuntimeId } from './session-states'
+import { $onboardingPhase } from './onboarding-phase'
+import { $sessionTiles, storedSessionIdForRuntimeId } from './session-states'
 
 export interface OnboardingSession {
   /** Names the run in `onboarding.ended` and `onboarding.state`. */
@@ -13,11 +14,21 @@ export interface OnboardingSession {
 export const $onboardingSession = atom<null | OnboardingSession>(null)
 
 /** Whether runtime id `sessionId` shows the onboarding chat in progress. Matched by the stored id too:
- *  a resume after a reconnect or a backend restart gives the chat a new runtime id. */
+ *  a resume after a reconnect or a backend restart gives the chat a new runtime id. Only while the run
+ *  is shown: an ended run is never in progress, whatever the session atom still holds. */
 export function isOnboardingChat(sessionId: null | string | undefined): boolean {
   const session = $onboardingSession.get()
 
   return Boolean(
-    sessionId && session && (session.runtimeId === sessionId || storedSessionIdForRuntimeId(sessionId) === session.storedId)
+    sessionId &&
+    session &&
+    $onboardingPhase.get() === 'shown' &&
+    (session.runtimeId === sessionId || storedSessionIdForRuntimeId(sessionId) === session.storedId)
   )
 }
+
+/** `isOnboardingChat` as a store, for a render. The React Compiler memoizes a plain call on its
+ *  arguments, so a component that calls `isOnboardingChat(sessionId)` keeps its first answer while the
+ *  session id stays the same (Skip setup outlived the run that way). */
+export const onboardingChatStore = (sessionId: null | string): ReadableAtom<boolean> =>
+  computed([$onboardingSession, $onboardingPhase, $sessionTiles], () => isOnboardingChat(sessionId))

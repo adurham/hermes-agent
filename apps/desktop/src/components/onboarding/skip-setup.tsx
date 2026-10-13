@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { skipIntro } from '@/components/onboarding/first-run/intro'
@@ -6,15 +7,15 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import { skipOnboarding } from '@/store/onboarding-run'
-import { $onboardingSession, isOnboardingChat } from '@/store/onboarding-session'
+import { onboardingChatStore } from '@/store/onboarding-session'
 
 /** Skip setup, shown in the composer of the onboarding chat only. Once the backend has ended the run,
  *  like main's: the intro ends on the previous layout at normal size and the tutorial tips stop. */
 export function OnboardingSkip({ sessionId }: { sessionId: null | string }) {
-  useStore($onboardingSession)
+  const onboardingChat = useStore(useMemo(() => onboardingChatStore(sessionId), [sessionId]))
 
   // The chat's current runtime id: a resume after a reconnect gives it a new one.
-  return sessionId && isOnboardingChat(sessionId) ? <SkipButton runtimeId={sessionId} /> : null
+  return sessionId && onboardingChat ? <SkipButton runtimeId={sessionId} /> : null
 }
 
 // Split out so the gateway hook mounts only in the onboarding chat, not in every composer.

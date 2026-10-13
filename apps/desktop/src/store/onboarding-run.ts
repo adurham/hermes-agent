@@ -217,9 +217,11 @@ export function endOnboarding(outcome: 'done' | 'skipped'): void {
     return
   }
 
+  // The chat is let go first: a listener that throws on the ending below must not leave this window
+  // treating it as the onboarding chat (Skip setup stayed up after a run ended).
+  $onboardingSession.set(null)
   $onboardingPhase.set(outcome)
   $onboardingEnded.set(outcome)
-  $onboardingSession.set(null)
   $onboardingSettleFrom.set($onboardingSettleFrom.get() ?? Date.now())
 }
 
