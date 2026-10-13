@@ -1978,7 +1978,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     # ---- /goal, /loop, /subgoal -----------------------------------------------------------
     def _handle_goal_command(self, cmd: str) -> None:
-        from hermes_cli.goal_command import dispatch_goal_command
+        from hermes_cli.gateway_automation import dispatch_goal_command  # /goal draft drafts on the gateway
         from hermes_cli.goals import last_user_message_content
 
         mgr = self._session_manager(self._get_goal_manager, _t("goal.label"))
@@ -2017,8 +2017,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             _cp(f"  {line}")
         if result.get("created"):
             with suppress(Exception):
-                from hermes_cli.loops import goal_blocks_loop_tick
-                if goal_blocks_loop_tick(mgr.session_id):
+                from hermes_cli.cli_loops_mixin import _goal_blocks_loop_tick
+                if _goal_blocks_loop_tick(mgr):
                     _cp(_dim_line(_t("loop.goal_defers_note")))
 
     def _handle_subgoal_command(self, cmd: str) -> None:
