@@ -517,3 +517,33 @@ def test_first_turn_on_a_rebuilt_gateway_agent_keeps_the_exact_figure(make_agent
     agent.run_conversation("who are you", conversation_history=[{"role": "user", "content": "a"},
                                                                  {"role": "assistant", "content": "b"}])
     assert agent._turn_base_usage_anchor["base_count"] == 3  # anchored after the ask: no estimated delta
+
+
+def test_native_image_parts_are_staged_and_submitted_as_attachments(make_agent):
+    """Main hands run_conversation OpenAI content parts for a vision model (images read locally);
+    prompt.submit takes text + attachments, so each image is staged with image.attach_bytes first."""
+    from agent.image_routing import build_native_content_parts
+    import base64
+    import tempfile
+    from pathlib import Path
+    png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNg+M8AAAICAQB7CYF4AAAAAElFTkSuQmCC")
+    with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:
+        path = Path(tmp) / "pixel.png"
+        path.write_bytes(png)
+        parts, skipped = build_native_content_parts("what is this?", [str(path)])
+    assert not skipped
+    agent, client = make_agent([frame("message.complete", {"text": "a pixel", "outcome": "completed"})])
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "image.attach_bytes":
+            client.calls.append((method, params))
+            return {"attached": True, "path": "/owner/cache/images/upload_1.png", "mime": "image/png"}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.run_conversation(parts, persist_user_message=None)
+    staged = [p for m, p in client.calls if m == "image.attach_bytes"]
+    assert len(staged) == 1 and staged[0]["content_base64"].startswith("data:image/png;base64,")
+    submit = dict(client.calls)["prompt.submit"]
+    assert submit["text"] == "what is this?"
+    assert submit["attachments"] == [{"path": "/owner/cache/images/upload_1.png", "mime": "image/png"}]

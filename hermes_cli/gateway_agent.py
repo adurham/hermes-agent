@@ -378,8 +378,17 @@ class GatewayAgent:
 
     # -- the turn ------------------------------------------------------------------------------
     def _submit_params(self, user_message, persist_user_message, turn_author):
+        attachments = None
+        if isinstance(user_message, list):
+            # Main's native image turn: OpenAI content parts built from local files. The gateway takes
+            # text plus staged attachments and routes the images itself (native or described).
+            user_message, attachments = self._stage_content_parts(user_message)
+            if isinstance(persist_user_message, list):
+                persist_user_message = user_message
         text = persist_user_message if isinstance(persist_user_message, str) else user_message
         params = {"session_id": self.session_id, "submission_id": uuid.uuid4().hex, "text": text}
+        if attachments:
+            params["attachments"] = attachments
         if isinstance(user_message, str) and user_message != text:
             params["api_text"] = user_message
         if turn_author:
@@ -392,6 +401,25 @@ class GatewayAgent:
         if getattr(self, "_finite", False):
             params["finite"] = True
         return params
+
+    def _stage_content_parts(self, parts):
+        """``[{type: text}, {type: image_url, image_url: {url: data:...}}]`` -> (text, attachments): each
+        image is staged on the owner with ``image.attach_bytes`` (bytes read here, locally, by main's
+        ``build_native_content_parts``); main's ``[Image attached at: <local path>]`` hints are dropped
+        because the gateway names its own staged copies."""
+        texts, attachments = [], []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                lines = str(part.get("text") or "").splitlines()
+                texts.append("\n".join(ln for ln in lines if not ln.startswith("[Image attached")).strip())
+            elif part.get("type") == "image_url":
+                url = (part.get("image_url") or {}).get("url") if isinstance(part.get("image_url"), dict) else None
+                if isinstance(url, str) and url.startswith("data:image/"):
+                    staged = self.connection.call("image.attach_bytes", session_id=self.session_id, content_base64=url)
+                    attachments.append({"path": staged["path"], "mime": staged["mime"]})
+        return "\n\n".join(t for t in texts if t), attachments
 
     def run_conversation(self, user_message, conversation_history=None, stream_callback=None,
                          task_id=None, persist_user_message=None, turn_author=None, **_kw):
