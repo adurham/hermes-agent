@@ -71,7 +71,9 @@ def _(rid, params: dict) -> dict:
 def _run_state() -> dict:
     from hermes_cli.anon_auth import guest_enabled
     from hermes_cli.onboarding_run import should_run
-    return {"run": should_run(), "eligible": guest_enabled(), "session_id": _active_onboarding_session()}
+    # The lookup ends a run whose quiet spell ran out and closes the flag, so it goes first.
+    session_id = _active_onboarding_session()
+    return {"run": should_run(), "eligible": guest_enabled(), "session_id": session_id}
 
 
 # ── first-run onboarding: one chat in the default profile, driven by setup_beat ───────────────
@@ -104,7 +106,11 @@ def _(rid, params: dict) -> dict:
                 stored = None if params.get("rerun") else next(iter(open_ids), None)
                 created = stored is None
                 if created:
-                    facts = read_facts(facts_source=params.get("facts_source") or "local", locale=params.get("locale"))
+                    # The tours setting is the default profile's, whichever profile launched the backend.
+                    home = _profile_home("default")
+                    with _session_profile_runtime_scope({"profile_home": str(home) if home else None},
+                                                        hydrate_secrets=False):
+                        facts = read_facts(facts_source=params.get("facts_source") or "local", locale=params.get("locale"))
                     stored = db.create_session(new_session_id(), "desktop")
                     db.set_session_title(stored, db.get_next_title_in_lineage(CHAT_TITLE))
                     # The record exists before the agent is built, so the build folds the onboarding toolset in.

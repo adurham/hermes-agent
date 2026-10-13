@@ -263,3 +263,31 @@ def test_a_rerun_closes_the_card_waiting_in_the_chat_it_replaces(client, monkeyp
     _call("onboarding.start", {"rerun": True})
     waiter.join(timeout=5)
     assert reply == [None] and events[0][0] == "request.cancel"
+
+
+def test_the_first_state_read_after_the_quiet_spell_says_do_not_run(root):
+    from agent.onboarding_flow import QUIET_COMPLETE_S, Answered
+    db = server._get_db()
+    db.create_session("onb", "desktop")
+    onboarding_record.start(db, "onb", FACTS)
+    for event in (Shown("build"), Answered("build", {"build": "week"})):
+        onboarding_record.advance(db, "onb", event)
+    record = onboarding_record.load(db, "onb")
+    db.patch_session_model_config("onb", {"onboarding_run": {**record, "updated_at": record["updated_at"] - QUIET_COMPLETE_S}})
+
+    assert _call("onboarding.state")["result"] == {"run": False, "eligible": False, "session_id": None}
+
+
+def test_the_onboarding_facts_are_read_in_the_default_profile(root, client, monkeypatch):
+    from hermes_constants import get_hermes_home
+    work = root / "profiles" / "work"
+    (work / "skills").mkdir(parents=True)
+    (work / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_hermes_home", str(work))
+    monkeypatch.setenv("HERMES_HOME", str(work))  # a backend launched with -p work
+    monkeypatch.setitem(server._methods, "prompt.submit", lambda rid, params: {"result": {}})  # launch db is work's
+    homes = []
+    monkeypatch.setattr("agent.onboarding_facts.read_facts", lambda **kw: (homes.append(get_hermes_home()), FACTS)[1])
+
+    _call("onboarding.start")
+    assert homes == [root]
