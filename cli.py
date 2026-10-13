@@ -1191,6 +1191,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         entry = self._slash_handler(canonical)
         if entry is None:
             return self._process_unregistered_slash(cmd_original, cmd_lower)
+        from hermes_cli.gateway_setting_commands import run as run_gateway_setting
+        if run_gateway_setting(self, canonical, cmd_original):
+            return True  # a per-session setting the gateway's handler applied
         method_name, pass_arg = entry
         handler = getattr(self, method_name)
         result = handler(cmd_original) if pass_arg else handler()
