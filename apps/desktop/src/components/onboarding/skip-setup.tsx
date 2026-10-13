@@ -4,10 +4,11 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { skipIntro } from '@/components/onboarding/first-run/intro'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { notifyError } from '@/store/notifications'
 import { $onboardingSession, skipOnboarding } from '@/store/onboarding-run'
 
-/** Skip setup, shown in the composer of the onboarding chat only. Like main's: the intro ends on the
- *  previous layout at normal size and the tutorial tips stop, then the backend ends the run. */
+/** Skip setup, shown in the composer of the onboarding chat only. Once the backend has ended the run,
+ *  like main's: the intro ends on the previous layout at normal size and the tutorial tips stop. */
 export function OnboardingSkip({ sessionId }: { sessionId: null | string }) {
   const session = useStore($onboardingSession)
 
@@ -27,10 +28,11 @@ function SkipButton({ runtimeId }: { runtimeId: string }) {
     <Tip label={t.firstRun.skipTip}>
       <button
         className="ml-auto text-[11px] text-(--ui-text-quaternary) transition-colors hover:text-(--ui-text-secondary)"
-        onClick={() => {
-          skipIntro()
-          void skipOnboarding(requestGateway, runtimeId)
-        }}
+        onClick={() =>
+          void skipOnboarding(requestGateway, runtimeId).then(skipIntro, error =>
+            notifyError(error, t.firstRun.skipFailed)
+          )
+        }
         type="button"
       >
         {t.firstRun.skip}

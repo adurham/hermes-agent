@@ -21,6 +21,7 @@ export const jaFirstRun: FirstRunCopy = {
   skippedAll: 'セットアップをスキップしました',
   skip: 'セットアップをスキップ',
   skipTip: 'ガイド付きセットアップを終了します。このままチャットを続けられます。',
+  skipFailed: 'セットアップをスキップできませんでした',
   localModel: {
     title: 'このコンピューターはモデルをローカルで実行できます',
     text: (model, size) =>

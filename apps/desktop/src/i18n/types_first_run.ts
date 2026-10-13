@@ -24,6 +24,7 @@ export interface FirstRunCopy {
   skippedAll: string
   skip: string
   skipTip: string
+  skipFailed: string
   localModel: {
     title: string
     text: (model: string, size: string) => string

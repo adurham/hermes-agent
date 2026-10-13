@@ -21,6 +21,7 @@ export const ruFirstRun: FirstRunCopy = {
   skippedAll: 'Настройка пропущена',
   skip: 'Пропустить настройку',
   skipTip: 'Завершить пошаговую настройку. Можно продолжить общение здесь.',
+  skipFailed: 'Не удалось пропустить настройку',
   localModel: {
     title: 'Этот компьютер может запускать модель локально',
     text: (model, size) =>

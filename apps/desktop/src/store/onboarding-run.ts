@@ -194,14 +194,10 @@ export function endOnboarding(outcome: 'done' | 'skipped'): void {
   $onboardingSettleFrom.set($onboardingSettleFrom.get() ?? Date.now())
 }
 
-/** Skip setup: the backend ends the run and closes the card that waits. */
+/** Skip setup: the backend ends the run and closes the card that waits. A failed skip leaves the run
+ *  going, so Skip setup stays on offer; the caller reports the error. */
 export async function skipOnboarding(request: OnboardingRequest, runtimeId: string): Promise<void> {
-  try {
-    await request('onboarding.skip', { session_id: runtimeId })
-  } catch (error) {
-    console.warn('[onboarding] skip failed', error)
-  }
-
+  await request('onboarding.skip', { session_id: runtimeId })
   endOnboarding('skipped')
 }
 

@@ -1544,6 +1544,7 @@
     "firstRun.rerun.failed",
     "firstRun.rerun.title",
     "firstRun.skip",
+    "firstRun.skipFailed",
     "firstRun.skipTip",
     "firstRun.skippedAll",
     "firstRun.useName",

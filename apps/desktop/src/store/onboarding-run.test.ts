@@ -7,6 +7,7 @@ import {
   $onboardingSettleFrom,
   decideOnboarding,
   noteSetupBeatResult,
+  skipOnboarding,
   startOnboarding
 } from './onboarding-run'
 import { $connection, $selectedStoredSessionId } from './session'
@@ -77,5 +78,16 @@ describe('onboarding run', () => {
     expect($onboardingPhase.get()).toBe('shown')
     expect($onboardingSurfaceClear.get()).toBe(true)
     expect($onboardingSettleFrom.get()).not.toBeNull()
+  })
+
+  it('keeps the run when the backend refuses the skip', async () => {
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+
+    const refuse = async (): Promise<never> => Promise.reject(new Error('skip refused'))
+
+    await expect(skipOnboarding(refuse, 'rt-1')).rejects.toThrow('skip refused')
+    expect($onboardingPhase.get()).toBe('shown')
+    expect($onboardingEnded.get()).toBeNull()
   })
 })

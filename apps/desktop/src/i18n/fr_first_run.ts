@@ -21,6 +21,7 @@ export const frFirstRun: FirstRunCopy = {
   skippedAll: 'Configuration ignorée',
   skip: 'Ignorer la configuration',
   skipTip: 'Termine la configuration guidée. Vous pouvez continuer à discuter ici.',
+  skipFailed: 'Impossible d’ignorer la configuration',
   localModel: {
     title: 'Cet ordinateur peut exécuter un modèle en local',
     text: (model, size) =>

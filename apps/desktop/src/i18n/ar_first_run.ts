@@ -21,6 +21,7 @@ export const arFirstRun: FirstRunCopy = {
   skippedAll: 'تم تخطي الإعداد',
   skip: 'تخطي الإعداد',
   skipTip: 'إنهاء الإعداد الموجَّه. يمكنك متابعة المحادثة هنا.',
+  skipFailed: 'تعذّر تخطي الإعداد',
   localModel: {
     title: 'يمكن لهذا الكمبيوتر تشغيل نموذج محليًا',
     text: (model, size) => `${model} (${size}) يناسب أجهزتك. يعمل مجانًا، وتبقى محادثاتك على هذا الكمبيوتر.`,

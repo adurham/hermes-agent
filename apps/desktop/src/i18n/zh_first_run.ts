@@ -21,6 +21,7 @@ export const zhFirstRun: FirstRunCopy = {
   skippedAll: '已跳过设置',
   skip: '跳过设置',
   skipTip: '结束引导设置。你可以继续在这里对话。',
+  skipFailed: '无法跳过设置',
   localModel: {
     title: '这台电脑可以在本地运行模型',
     text: (model, size) => `${model}（${size}）适合你的硬件。它免费运行，你的对话会留在这台电脑上。`,

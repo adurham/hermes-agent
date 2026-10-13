@@ -21,6 +21,7 @@ export const deFirstRun: FirstRunCopy = {
   skippedAll: 'Einrichtung übersprungen',
   skip: 'Einrichtung überspringen',
   skipTip: 'Beendet die geführte Einrichtung. Du kannst hier weiterchatten.',
+  skipFailed: 'Einrichtung konnte nicht übersprungen werden',
   localModel: {
     title: 'Dieser Computer kann ein Modell lokal ausführen',
     text: (model, size) =>

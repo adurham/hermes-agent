@@ -21,6 +21,7 @@ export const zhHantFirstRun: FirstRunCopy = {
   skippedAll: '已略過設定',
   skip: '略過設定',
   skipTip: '結束引導設定。你可以繼續在這裡對話。',
+  skipFailed: '無法略過設定',
   localModel: {
     title: '這部電腦可以在本機執行模型',
     text: (model, size) => `${model}（${size}）適合你的硬體。它免費執行，你的對話會留在這部電腦上。`,
