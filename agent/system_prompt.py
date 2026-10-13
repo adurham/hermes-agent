@@ -135,6 +135,9 @@ def _frozen_plugin_prompt_sections(agent: Any) -> tuple:
     return rendered
 
 
+_PLUGIN_SECTIONS_NEIGHBORS = ("\n\nActive Hermes profile:", "\n\nConversation started:")
+
+
 def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     """Recover frozen section bytes from the persisted full prompt.  Only the
     exact canonical container emitted by core is accepted — user/project text
@@ -148,7 +151,9 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    if not prompt[after_end:].startswith("\n\nConversation started:"):
+    # The frame's canonical neighbor is the always-present profile line; legacy prompts (before
+    # the profile line moved into the volatile tier) had the timestamp block there instead.
+    if not prompt[after_end:].startswith(_PLUGIN_SECTIONS_NEIGHBORS):
         return ()
     framed = prompt[start:after_end]
     restored = []
@@ -176,7 +181,7 @@ def _plugin_section_blocks(sections: tuple, position: str) -> list[str]:
 def _session_start_like(agent: Any, now: Any) -> Any:
     """Best-known conversation start time, or ``now`` as a fallback.
     ``Conversation started:`` must be byte-stable across rebuilds (compression,
-    resume, fresh gateway turns), so prefer immutable sources in order: the
+    resume, fresh gateway turns — FORK: and across turns, now that it rides each user turn), so prefer immutable sources in order: the
     lineage-root session id's embedded stamp (compaction rotates ids, each with
     its own mint time), the current session id's stamp, ``agent.session_start``,
     then ``now``.  Stamps are box-local wall-clock: attach that zone first, then
@@ -486,10 +491,10 @@ def _zone_bits(now: Any, tz: Any) -> list[str]:
     return bits
 
 
-def _timestamp_line(agent: Any) -> str:
-    """Date-only so the prompt is byte-stable for the day; zone + offset so
-    tools needn't guess EST vs EDT. Long-lived sessions get an "as of" line on
-    rebuild days (the cache prefix is already invalidated at that boundary)."""
+def _date_block(agent: Any) -> str:
+    """The date half of ``_timestamp_line``: date-only so it is byte-stable for the day; zone +
+    offset so tools needn't guess EST vs EDT. In bot-chat timeless mode it is the ``Timezone:``
+    line instead.  Reads only clock/session-start inputs, never the identity trailer."""
     from hermes_time import get_timezone as _hermes_tz, now as _hermes_now, safe_strftime
     now = _hermes_now()
     _bits = _zone_bits(now, _hermes_tz())
@@ -503,14 +508,56 @@ def _timestamp_line(agent: Any) -> str:
     # of' refreshes exactly when the cache prefix is already being invalidated (compaction), so the added
     # line costs no extra cache churn. Same-day sessions skip the second line entirely — nothing to correct,
     # and the single-line shape stays byte-identical for the day (prefix-cache safe).
+    # FORK: the block now rides the per-turn user injection (see conversation_date_block), where it is
+    # recomputed each turn; each historical row replays its own stamped bytes, so it never churns the prefix.
     if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
         timestamp_line += (f"\nToday's date (as of the last context rebuild): {safe_strftime(now, '%A, %B %d, %Y')} "
                            "— trust this over the start date for what day it is now; query tools for exact time.")
     if getattr(agent, "_bot_chat_timeless_prompt", False):
         timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""
+    return timestamp_line
+
+
+def _identity_trailer_lines(agent: Any) -> list[str]:
+    """The ``Session ID``/``Model``/``Provider``/``Platform`` half of ``_timestamp_line``."""
     trailer = (("Session ID", agent.session_id if agent.pass_session_id else None), ("Model", agent.model),
                ("Provider", agent.provider), ("Platform", agent.platform))
-    return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
+    return [f"{label}: {value}" for label, value in trailer if value]
+
+
+def _timestamp_line(agent: Any) -> str:
+    """The historical single block: date line(s) + identity trailer, byte-for-byte as upstream
+    renders it.  FORK: no longer placed in the system prompt as one piece — the date lines move to
+    the per-turn user injection (``conversation_date_block``) and the trailer stays in the system
+    prompt (``_identity_trailer_block``); kept as the reference composition of both halves."""
+    return _date_block(agent) + "".join(f"\n{line}" for line in _identity_trailer_lines(agent))
+
+
+def conversation_date_block(agent: Any) -> str:
+    """FORK: the ``Conversation started:`` (+ optional ``Today's date (as of ...)``) lines, exactly as
+    ``_timestamp_line`` renders them, for the per-turn user-message injection; ``""`` in bot-chat
+    timeless mode (its constant ``Timezone:`` line stays in the system prompt).
+
+    Why it left the system prompt: on a longest-common-prefix KV cache (exo), a date inside the
+    system prompt changes daily and forces a re-prefill of everything after it — the rest of the
+    prompt plus the whole tools array — on every cross-day session.  The user turn is already the
+    first inherent divergence point between sessions, so carrying the date there makes the system
+    prompt byte-stable across days at no extra re-prefill cost."""
+    if getattr(agent, "_bot_chat_timeless_prompt", False):
+        return ""
+    return _date_block(agent)
+
+
+def _identity_trailer_block(agent: Any) -> str:
+    """FORK: the system-prompt half of ``_timestamp_line`` — the ``Session ID:``/``Model:``/
+    ``Provider:``/``Platform:`` trailer, constant for a route, so it stays byte-stable across days.
+    It must stay its own final paragraph before the runtime block: restore-time route checks,
+    failover identity rewrites and surface-switch detection all parse it from the system prompt
+    (``agent.surface_switch.identity_line_value``).  Timeless bot chats keep their full upstream
+    block (the constant ``Timezone:`` line + trailer) unchanged."""
+    if getattr(agent, "_bot_chat_timeless_prompt", False):
+        return _timestamp_line(agent)
+    return "\n".join(_identity_trailer_lines(agent))
 
 
 def _memory_parts(agent: Any) -> list[str]:
@@ -807,7 +854,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # The profile line names this home's path, so it rides in the volatile tier: the stable
     # prefix then stays byte-identical across every profile (and home) on the host.
     volatile_parts.append(_active_profile_line(agent))
-    volatile_parts.append(_timestamp_line(agent))
+    # FORK: only the constant identity trailer stays here; the date lines ride the per-turn user
+    # injection (conversation_date_block) so this prompt is byte-stable across days.
+    volatile_parts.append(_identity_trailer_block(agent))
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.
     if environment_hints:

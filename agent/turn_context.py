@@ -887,6 +887,55 @@ def _merge_gateway_notes(
     )
 
 
+def _date_block_already_sent(
+    system_prompt: Any, messages: list[Any], current_turn_user_idx: int, date_block: str
+) -> bool:
+    """Whether the model already sees ``date_block`` verbatim: in a legacy stored system prompt
+    (pre-fork prompts embedded it; a resumed session keeps those bytes), or in an earlier user
+    row's ``api_content`` sidecar (string turns) / content (multimodal text parts)."""
+    if isinstance(system_prompt, str) and date_block in system_prompt:
+        return True
+    for msg in messages[:max(current_turn_user_idx, 0)]:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        sidecar = msg.get("api_content")
+        if (isinstance(sidecar, str) and date_block in sidecar) or date_block in flatten_message_text(msg.get("content")):
+            return True
+    return False
+
+
+def _append_conversation_date(
+    agent: Any, system_prompt: Any, messages: list[Any], current_turn_user_idx: int,
+    plugin_user_context: str,
+) -> str:
+    """FORK: append the ``Conversation started:`` block LAST in this turn's injected context.
+
+    The block used to sit inside the system prompt, where its daily change broke longest-prefix
+    KV reuse (exo) for everything after it — the rest of the prompt plus the tools array — on every
+    cross-day session.  The user turn is already the first inherent divergence between sessions,
+    so the date costs no extra re-prefill there.  Rendered ONCE per turn and folded into the one
+    value every consumer composes from (string sidecar, multimodal text part, API-builder
+    fallback), so the sidecar and wire bytes stay byte-identical; historical rows replay their own
+    stamped bytes, so a later turn never rewrites an earlier one.
+
+    Sent only when no earlier user row already carries these exact bytes: the first turn, the first
+    turn after the rendered block changes (a new day adds/refreshes the "Today's date" line), or
+    after compaction dropped the row that carried it — and never on top of a legacy stored system
+    prompt that still embeds the same bytes (no duplicate, no forced rebuild).  Fail-open: a
+    render error drops the block rather than the turn."""
+    try:
+        from agent.system_prompt import conversation_date_block
+        date_block = conversation_date_block(agent)
+    except Exception:
+        logger.warning("conversation date block failed to render; sending the turn without it", exc_info=True)
+        return plugin_user_context
+    if not date_block or _date_block_already_sent(
+        system_prompt, messages, current_turn_user_idx, date_block
+    ):
+        return plugin_user_context
+    return plugin_user_context + "\n\n" + date_block if plugin_user_context else date_block
+
+
 def _bind_interrupt_scope(agent: Any, ra) -> None:
     """Record the execution thread so interrupt()/clear_interrupt() scope the tool-level
     signal to THIS agent's thread; clear stale state, preserving a pending interrupt."""
@@ -1225,6 +1274,9 @@ def build_turn_context(
     stage_skills_index_note(agent, active_system_prompt, messages)
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
+    )
+    plugin_user_context = _append_conversation_date(
+        agent, active_system_prompt, messages, current_turn_user_idx, plugin_user_context
     )
 
     _bind_interrupt_scope(agent, ra)

@@ -24,6 +24,14 @@ from agent.turn_context import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_conversation_date_block(monkeypatch):
+    """FORK: these tests pin the injection channel's exact bytes; the per-turn
+    ``Conversation started:`` block (which now rides the same channel) is covered
+    end to end in tests/agent/test_conversation_date_injection.py."""
+    monkeypatch.setattr("agent.system_prompt.conversation_date_block", lambda _agent: "")
+
+
 class _FakeTodoStore:
     def has_items(self):
         return True

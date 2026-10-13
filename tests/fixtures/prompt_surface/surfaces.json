@@ -3,7 +3,7 @@
     "prompt_tokens": {
       "context": 249,
       "stable": 2057,
-      "volatile": 1813
+      "volatile": 1797
     },
     "tool_tokens": 15232,
     "tools": [
@@ -51,7 +51,7 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1567,
-      "volatile": 1813
+      "volatile": 1796
     },
     "tool_tokens": 15232,
     "tools": [
@@ -99,7 +99,7 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1989,
-      "volatile": 1811
+      "volatile": 1795
     },
     "tool_tokens": 15232,
     "tools": [
@@ -147,7 +147,7 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 2762,
-      "volatile": 1809
+      "volatile": 1792
     },
     "tool_tokens": 15388,
     "tools": [
@@ -195,7 +195,7 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1567,
-      "volatile": 1813
+      "volatile": 1797
     },
     "tool_tokens": 15232,
     "tools": [
@@ -243,7 +243,7 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1439,
-      "volatile": 1813
+      "volatile": 1796
     },
     "tool_tokens": 15232,
     "tools": [
@@ -291,7 +291,7 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1701,
-      "volatile": 1814
+      "volatile": 1797
     },
     "tool_tokens": 15868,
     "tools": [
@@ -340,7 +340,7 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1472,
-      "volatile": 1814
+      "volatile": 1797
     },
     "tool_tokens": 15232,
     "tools": [
@@ -388,7 +388,7 @@
     "prompt_tokens": {
       "context": 0,
       "stable": 1504,
-      "volatile": 1814
+      "volatile": 1797
     },
     "tool_tokens": 15232,
     "tools": [

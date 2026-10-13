@@ -107,7 +107,6 @@ Only proceed without loading a skill if genuinely none are relevant to the task.
 
 Active Hermes profile: default. Other profiles (if any) live under <HERMES_HOME>/profiles/<name>/. Each profile has its own skills/, plugins/, cron/, and memories/ that affect a different session than this one. Do not modify another profile's skills/plugins/cron/memories unless the user explicitly directs you to.
 
-Conversation started: Thursday, January 15, 2026 (UTC, UTC+00:00)
 Model: anthropic/claude-sonnet-4.5
 Platform: cron
 

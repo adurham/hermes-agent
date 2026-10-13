@@ -557,7 +557,8 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         "WORKSPACE",
         "Operator instructions (from config):\nOPERATOR",
         expected_profile,
-        "Conversation started: Friday, January 02, 2026",
+        # FORK: no "Conversation started:" — the date rides the first user turn now
+        # (conversation_date_block), so the system prompt is byte-stable across days.
     ))
 
     with (
@@ -721,11 +722,12 @@ class TestSkillsInVolatileBand:
 
     def test_full_order_is_stable_context_then_skills(self):
         # build_system_prompt joins stable + context + volatile, so the skills
-        # index renders after the context files and before the per-turn
-        # memory/timestamp tail.
+        # index renders after the context files and before the profile line +
+        # identity-trailer tail.  FORK: the date line left the system prompt.
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
-        assert full.index(_SKILLS) < full.index("Conversation started:")
+        assert full.index(_SKILLS) < full.index("Active Hermes profile:")
+        assert "Conversation started:" not in full
 
 
 class TestMemoryProviderSystemPromptGating:
@@ -940,9 +942,12 @@ def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
         patch("hermes_time.now", return_value=datetime(2026, 1, 2, 9, 0)),
     ):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
+        # FORK: the block rides the per-turn user injection, not the system prompt.
+        date_block = system_prompt.conversation_date_block(agent)
 
-    assert "Conversation started: Thursday, January 01, 2026" in prompt
-    assert "Conversation started: Friday" not in prompt
+    assert "Conversation started:" not in prompt
+    assert date_block.startswith("Conversation started: Thursday, January 01, 2026")
+    assert "Conversation started: Friday" not in date_block
 
 class TestConversationStartedTwoLine:
     """Maintainer design on top of #96224's anchor: long-lived sessions get a
@@ -957,9 +962,11 @@ class TestConversationStartedTwoLine:
         )
 
     def _volatile(self, agent):
+        """FORK: the date lines left the system prompt for the per-turn user
+        injection; assert on that block, and that the volatile tier has none."""
         import agent.system_prompt as sp
-        parts = sp.build_system_prompt_parts(agent)
-        return parts["volatile"]
+        assert "Conversation started:" not in sp.build_system_prompt_parts(agent)["volatile"]
+        return sp.conversation_date_block(agent)
 
     def test_old_session_gets_rebuild_date_line(self):
         vol = self._volatile(self._agent("20200110_090000_old"))

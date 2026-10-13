@@ -83,7 +83,16 @@ def test_real_aiagent_freezes_section_within_life_and_rerenders_on_invalidate(mo
     assert calls[0]["session_id"] == agent.session_id
     assert calls[1]["session_id"] == agent.session_id
     assert "## Plugin Context: example.rules" in rebuilt
-    assert rebuilt.index("## Plugin Context: example.rules") < rebuilt.index("Conversation started:")
+    # FORK: the date line left the system prompt; the volatile tail after the plugin
+    # anchor is now the profile line + identity trailer.
+    assert "Conversation started:" not in rebuilt
+    assert rebuilt.index("## Plugin Context: example.rules") < rebuilt.index("Active Hermes profile:")
+    assert rebuilt.index("## Plugin Context: example.rules") < rebuilt.index("Model: test/model")
+    # The persisted-prompt parser must recognize the frame's real neighbor (the profile
+    # line), or a resumed agent would silently drop its frozen plugin sections.
+    from agent.system_prompt import _restore_plugin_prompt_sections
+    restored = _restore_plugin_prompt_sections(rebuilt)
+    assert [(s.id, s.content) for s in restored] == [("example.rules", "rules render 2")]
     assert "example.rules" not in agent._cached_system_prompt_static
 
 

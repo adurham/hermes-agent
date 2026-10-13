@@ -897,7 +897,10 @@ class TestBuildSystemPrompt:
         time-of-day and is constant for the whole day (it shifts only at a DST
         transition), so it does not affect cache stability.
         """
-        prompt = agent._build_system_prompt()
+        # FORK: the date line rides the per-turn user injection, not the system prompt.
+        from agent.system_prompt import conversation_date_block
+        assert "Conversation started:" not in agent._build_system_prompt()
+        prompt = conversation_date_block(agent)
         # Find the line and strip it for inspection
         for line in prompt.splitlines():
             if line.startswith("Conversation started:"):
@@ -914,7 +917,7 @@ class TestBuildSystemPrompt:
                 )
                 break
         else:
-            assert False, "Expected a 'Conversation started:' line in the system prompt"
+            assert False, "Expected a 'Conversation started:' line in the conversation date block"
 
     def test_datetime_includes_utc_offset(self, agent):
         """Timestamp must carry an explicit UTC offset.
@@ -924,7 +927,8 @@ class TestBuildSystemPrompt:
         infer EST vs EDT on its own, which is a coin-flip near a DST boundary and
         silently writes records onto the wrong day when it guesses wrong.
         """
-        prompt = agent._build_system_prompt()
+        from agent.system_prompt import conversation_date_block
+        prompt = conversation_date_block(agent)  # FORK: lives in the per-turn user injection
         import re as _re
         for line in prompt.splitlines():
             if line.startswith("Conversation started:"):
@@ -933,15 +937,19 @@ class TestBuildSystemPrompt:
                 )
                 break
         else:
-            assert False, "Expected a 'Conversation started:' line in the system prompt"
+            assert False, "Expected a 'Conversation started:' line in the conversation date block"
 
     def test_datetime_line_is_stable_across_rebuilds(self, agent):
         """Two rebuilds within the same day must produce a byte-identical
-        timestamp line, or the prefix cache is invalidated on every rebuild."""
+        timestamp line, or the prefix cache is invalidated on every rebuild.
+        FORK: the line moved to the per-turn user injection; the system prompt
+        itself must now be byte-identical and date-free."""
+        from agent.system_prompt import conversation_date_block
         def _line(p):
             return next(ln for ln in p.splitlines()
                         if ln.startswith("Conversation started:"))
-        assert _line(agent._build_system_prompt()) == _line(agent._build_system_prompt())
+        assert _line(conversation_date_block(agent)) == _line(conversation_date_block(agent))
+        assert agent._build_system_prompt() == agent._build_system_prompt()
 
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
@@ -3343,7 +3351,9 @@ class TestRunConversation:
         ]
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
         assert all("request" in c and "messages" in c["request"]["body"] for c in pre_request_calls)
-        assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
+        # FORK: the first turn's user message carries the conversation date block appended.
+        assert any(msg.get("role") == "user" and msg.get("content", "").startswith("search something\n\nConversation started:")
+                   for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 
@@ -5112,7 +5122,8 @@ class TestRunConversation:
         # output-cap retry would call the compressor but re-transmit the same
         # oversized request forever.
         second_messages = second_call.get("messages", [])
-        assert second_messages[-1].get("content") == "hello"
+        # FORK: plus the conversation date block the turn injects after the user text.
+        assert second_messages[-1].get("content").startswith("hello\n\nConversation started:")
         assert len(second_messages) == 2
         assert second_messages[0]["role"] == "system"
         # context_length was NOT mutated by an output-cap error.
