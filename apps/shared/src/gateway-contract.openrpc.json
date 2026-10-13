@@ -33504,7 +33504,7 @@
       },
       "SetupBeatRequestParams": {
         "additionalProperties": false,
-        "description": "``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and\nplugins have their own shape; layout, tour and build carry ``options``.",
+        "description": "``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and\nplugins have their own shape; layout, tour and build carry ``options``. ``tool_call_id`` is the\nsetup_beat call the card belongs to: only that transcript row draws it.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -33524,6 +33524,18 @@
             ],
             "default": null,
             "title": "Question"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Call Id"
           },
           "card": {
             "anyOf": [

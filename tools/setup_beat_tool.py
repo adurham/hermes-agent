@@ -9,6 +9,7 @@ The ``onboarding`` toolset carrying it is folded in only for the onboarding chat
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -16,7 +17,37 @@ from agent import onboarding_flow as flow
 from agent.onboarding_text import QUESTIONS, finish_reminder, reminder
 from tools.registry import registry, tool_error
 
+logger = logging.getLogger(__name__)
+
 BEATS = ("next", *flow.BEAT_IDS, "done")
+
+
+def _connected() -> dict:
+    from tools.connectors.display import connected_slugs
+    from tools.connectors.gateway.client import ConnectorClient
+
+    return {"connected": sorted(connected_slugs(ConnectorClient()))}
+
+
+def _installed() -> dict:
+    from hermes_cli.plugin_catalog_presence import onboarding_names
+    from hermes_cli.plugins_cmd import _catalog_installed_dir
+
+    return {"installed": [name for name in onboarding_names() if _catalog_installed_dir(name) is not None]}
+
+
+# A card closed without its own answer (words, a value, a skip, the deadline) still reports these.
+_PRESENT = {"connectors": _connected, "plugins": _installed}
+
+
+def _present(beat: str) -> dict | None:
+    if (read := _PRESENT.get(beat)) is None:
+        return None
+    try:
+        return read()
+    except Exception:
+        logger.warning("onboarding: could not read what the %s beat has on this machine", beat, exc_info=True)
+        return None
 
 
 def _direct_event(beat: str, args: Mapping[str, Any]) -> flow.Event | None:
@@ -25,9 +56,9 @@ def _direct_event(beat: str, args: Mapping[str, Any]) -> flow.Event | None:
     if beat == "done":
         return flow.Done()
     if args.get("skip"):
-        return flow.Skipped(beat)
+        return flow.Skipped(beat, _present(beat))
     value = args.get("value")
-    return flow.Recorded(beat, value.strip()) if isinstance(value, str) and value.strip() else None
+    return flow.Recorded(beat, value.strip(), _present(beat)) if isinstance(value, str) and value.strip() else None
 
 
 def _reply_event(beat: str, reply: Mapping[str, Any] | None) -> flow.Event:
@@ -35,9 +66,10 @@ def _reply_event(beat: str, reply: Mapping[str, Any] | None) -> flow.Event:
     said = reply.get("said")
     if isinstance(said, str) and said.strip():
         # Words typed while the name card waits are the name, like its own text box.
-        return flow.Answered(beat, {"name": said.strip()}) if beat == "name" else flow.Said(beat, said.strip())
+        return (flow.Answered(beat, {"name": said.strip()}) if beat == "name"
+                else flow.Said(beat, said.strip(), _present(beat)))
     answer = reply.get("answer")
-    return flow.Answered(beat, answer) if isinstance(answer, dict) and answer else flow.TimedOut(beat)
+    return flow.Answered(beat, answer) if isinstance(answer, dict) and answer else flow.TimedOut(beat, _present(beat))
 
 
 def _installed_skills() -> Callable[[str], bool]:
@@ -92,7 +124,8 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
     if shown.result:  # refused, or a beat this machine skips
         return _result(shown)
     question = str(args.get("question") or "").strip() or QUESTIONS[beat]
-    reply = callback({"beat": beat, "question": question, "card": _card(beat, shown, args)})
+    reply = callback({"beat": beat, "question": question, "card": _card(beat, shown, args),
+                      "tool_call_id": tool_call_id or None})
     after = records.load(db, session_id)
     if after is not None and after["phase"] == flow.PHASE_SKIPPED:
         # Skip setup closed the card (onboarding.skip already wrote the record).

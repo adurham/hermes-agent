@@ -69,26 +69,34 @@ class Answered:
     answer: Mapping[str, Any]
 
 
+# ``present`` on the events below: the beat's picks as this machine has them now (the apps connected,
+# the plugins installed), so a card closed without its own answer still reports them.
+
+
 @dataclass(frozen=True)
 class Said:
     beat: str
     text: str
+    present: Any = None
 
 
 @dataclass(frozen=True)
 class TimedOut:
     beat: str
+    present: Any = None
 
 
 @dataclass(frozen=True)
 class Recorded:
     beat: str
     value: str
+    present: Any = None
 
 
 @dataclass(frozen=True)
 class Skipped:
     beat: str
+    present: Any = None
 
 
 @dataclass(frozen=True)
@@ -227,7 +235,8 @@ def _shown(record: dict, event: Shown, facts: Facts, now: float) -> Step:
         record["beats"][event.beat] = SKIPPED
         return Step(record, {"beat": event.beat, "skipped": True, "next": _next_field(record)}, "moved_on")
     if event.beat == "build" and (error := _build_picks_error(record, event, facts)):
-        return Step(record, {"beat": "build", "error": error})
+        # No ``beat``: no card was shown, so the transcript draws nothing for this refusal.
+        return Step(record, {"error": error})
     # A later card on screen means the user moved on from an earlier card left open.
     for earlier in BEAT_IDS[:BEAT_IDS.index(event.beat)]:
         if record["beats"][earlier] == SHOWN:
@@ -274,14 +283,21 @@ def _answered(record: dict, event: Answered, facts: Facts, now: float) -> Step:
                 BEAT_BY_ID[event.beat].after(record["picks"]))
 
 
+def _note_present(record: dict, event: Said | TimedOut | Recorded | Skipped) -> dict:
+    """Record the beat's picks as the machine has them now; returns them for the result."""
+    present = {key: value for key, value in (event.present or {}).items() if key in BEAT_BY_ID[event.beat].picks}
+    record["picks"].update(present)
+    return present
+
+
 def _said(record: dict, event: Said, facts: Facts, now: float) -> Step:
     record["waiting"] = None
-    return Step(record, {"beat": event.beat, "said": event.text}, "said")
+    return Step(record, {"beat": event.beat, "said": event.text, **_note_present(record, event)}, "said")
 
 
 def _timed_out(record: dict, event: TimedOut, facts: Facts, now: float) -> Step:
     record["waiting"] = None
-    return Step(record, {"beat": event.beat, "timed_out": True}, "timed_out")
+    return Step(record, {"beat": event.beat, "timed_out": True, **_note_present(record, event)}, "timed_out")
 
 
 # Beats a general tool applies; their result settles the beat, so a value given in words would only
@@ -299,12 +315,14 @@ def _recorded(record: dict, event: Recorded, facts: Facts, now: float) -> Step:
         return Step(record, {"error": f"value for {event.beat} must be one of: {', '.join(accepted)}.",
                              "next": _next_field(record)})
     _settle(record, event.beat, {beat.value: event.value} if beat.value else {})
-    return Step(record, {"recorded": event.beat, "next": _next_field(record)}, beat.after(record["picks"]))
+    present = _note_present(record, event)
+    return Step(record, {"recorded": event.beat, **present, "next": _next_field(record)}, beat.after(record["picks"]))
 
 
 def _skipped(record: dict, event: Skipped, facts: Facts, now: float) -> Step:
     record["beats"][event.beat] = SKIPPED
-    return Step(record, {"recorded": event.beat, "skipped": True, "next": _next_field(record)}, "moved_on")
+    present = _note_present(record, event)
+    return Step(record, {"recorded": event.beat, "skipped": True, **present, "next": _next_field(record)}, "moved_on")
 
 
 def _end(record: dict, event: End, facts: Facts, now: float) -> Step:

@@ -28,6 +28,16 @@ def db(tmp_path, monkeypatch):
     store.close()
 
 
+@pytest.fixture(autouse=True)
+def machine(monkeypatch):
+    """What this machine has connected and installed right now, read when a card closes without its answer."""
+    present = {"connected": ["slack"], "installed": ["blender"]}
+    monkeypatch.setattr("tools.setup_beat_tool._PRESENT", {
+        "connectors": lambda: {"connected": present["connected"]},
+        "plugins": lambda: {"installed": present["installed"]}})
+    return present
+
+
 @pytest.fixture
 def desktop():
     """A card answerer: replies come off a queue; every payload it was shown is kept."""
@@ -50,7 +60,8 @@ def test_a_card_answer_settles_the_beat_and_names_the_next(db, desktop):
 
     result = call(db, desktop, beat="theme", question="Pick one.")
 
-    assert desktop.shown == [{"beat": "theme", "question": "Pick one.", "card": {"picker": "accent"}}]
+    assert desktop.shown == [{"beat": "theme", "question": "Pick one.", "card": {"picker": "accent"},
+                              "tool_call_id": "call_1"}]
     assert result["answer"] == {"accent": "Ultraviolet"} and result["next"] == "name"
     assert "Ultraviolet" in result["reminder"]
     assert onboarding_record.load(db, SID)["beats"]["theme"] == "done"
@@ -77,6 +88,18 @@ def test_no_answer_closes_the_card_and_typed_words_come_back_as_said(db, desktop
     assert timed_out["timed_out"] is True and "five minutes" in timed_out["reminder"]
     assert said["said"] == "what is Elite?" and 'setup_beat(beat="layout")' in said["reminder"]
     assert onboarding_record.load(db, SID)["waiting"] is None
+
+
+def test_a_card_closed_by_words_a_value_or_the_deadline_reports_what_is_connected_and_installed(db, desktop):
+    onboarding_record.start(db, SID, FACTS)
+    timed_out = call(db, desktop, beat="plugins")
+    desktop.replies.append({"said": "done"})
+    said = call(db, desktop, beat="connectors", call_id="call_2")
+    continued = call(db, desktop, beat="connectors", value="continue")
+
+    assert timed_out["installed"] == ["blender"] and said["connected"] == ["slack"]
+    assert continued["connected"] == ["slack"] and "Connected: slack" in continued["reminder"]
+    assert onboarding_record.load(db, SID)["picks"]["installed"] == ["blender"]
 
 
 def test_suggest_pins_connectors_and_value_or_skip_records_without_a_card(db, desktop):

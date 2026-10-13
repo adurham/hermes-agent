@@ -4555,11 +4555,12 @@ export interface SetupChooseResult {
   label?: string | string[] | null
   said?: string | null
 }
-/** ``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and plugins have their own shape; layout, tour and build carry ``options``. */
+/** ``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and plugins have their own shape; layout, tour and build carry ``options``. ``tool_call_id`` is the setup_beat call the card belongs to: only that transcript row draws it. */
 export interface SetupBeatRequestParams {
   session_id: string
   beat: SetupBeat
   question?: string | null
+  tool_call_id?: string | null
   card: SetupNameCard | SetupThemeCard | SetupOptionsCard | SetupConnectorsCard | SetupPluginsCard
 }
 export type SetupBeat = 'name' | 'theme' | 'layout' | 'connectors' | 'plugins' | 'tour' | 'build'
