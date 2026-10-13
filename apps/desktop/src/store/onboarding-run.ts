@@ -14,7 +14,9 @@ import { atom, computed } from 'nanostores'
 import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import type { GatewayRequester } from '@/lib/yolo-session'
 
+import { ackFreeTierNotice } from './free-tier'
 import { activeGatewayConnectionId } from './gateway'
+import { clearFreeTierIntro } from './onboarding'
 import { $onboardingPhase } from './onboarding-phase'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from './onboarding-presence'
 import { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile, newSessionInProfile } from './profile'
@@ -155,7 +157,11 @@ export async function startOnboarding(
     // The chat is on screen before the run names it, so the presence never sees a gap.
     await resume(started.stored_session_id, true)
     $onboardingSession.set({ runtimeId: started.session_id, storedId: started.stored_session_id })
-    intro?.opened(started)
+
+    if (intro) {
+      intro.opened(started)
+      ackFreeTierIntro(request)
+    }
 
     return true
   } catch (error) {
@@ -171,6 +177,16 @@ export async function startOnboarding(
 
     return false
   }
+}
+
+// The onboarding intro is the free-tier introduction, as on main: the ready screen must not follow it.
+function ackFreeTierIntro(request: OnboardingRequest): void {
+  clearFreeTierIntro()
+  void ackFreeTierNotice(request).then(acked => {
+    if (acked) {
+      clearFreeTierIntro()
+    }
+  })
 }
 
 // Like main's failed kickoff: the window goes back to where it was before the switch.

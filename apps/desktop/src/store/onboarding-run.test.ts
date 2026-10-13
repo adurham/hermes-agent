@@ -115,6 +115,16 @@ describe('onboarding run', () => {
     expect($newChatProfile.get()).toBe('work')
   })
 
+  it('acks the free-tier notice when the onboarding intro opens', async () => {
+    const { calls, request } = backend({ eligible: true, run: true })
+    const intro = { failed: vi.fn(), opened: vi.fn(), started: vi.fn(), starting: vi.fn() }
+
+    await startOnboarding(request, resume, { ensureProfile, intro })
+
+    expect(intro.opened).toHaveBeenCalled()
+    expect(calls).toContain('free_tier.ack_notice')
+  })
+
   it('keeps the run when the backend refuses the skip', async () => {
     const { request } = backend({ eligible: true, run: true })
     await startOnboarding(request, resume, { ensureProfile })

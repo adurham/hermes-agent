@@ -858,9 +858,9 @@ async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadin
   setFreeTierRoute(runtime.freeTier)
   await refreshFreeTierStatus(ctx.requestGateway)
 
-  // Onboarding's Start IS the introduction and acks the notice; a
-  // Skip leaves it owed. Read the status when the overlay is free, not now,
-  // so an ack made meanwhile is honoured.
+  // The onboarding intro is the introduction: opening it acks the notice
+  // (store/onboarding-run.ts). Read the status when the overlay is free, not
+  // now, so that ack is honoured.
   afterOnboardingSurfaceClear(() => {
     if (freeTierReadyPending($freeTierStatus.get(), runtime.freeTier ?? null)) {
       patch({ freeTierReady: true })
