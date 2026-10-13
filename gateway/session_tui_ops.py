@@ -1,5 +1,6 @@
 """Ink's session utilities on the shared owner: ``/save`` (``session.save``), ``/reload``
-(``reload.env``) and ``/agents pause|resume`` (``delegation.pause``).
+(``reload.env``), ``/agents pause|resume`` (``delegation.pause``) and ``/rollback``
+(``rollback.list`` / ``rollback.diff`` / ``rollback.restore``).
 
 Main's per-TUI sidecar served these from its own session table, which never holds a shared-gateway
 session, so the canonical TUI refused them. Each verb reuses main's helpers rather than re-deriving
@@ -8,6 +9,8 @@ them. ``dispatch`` already runs every handler under the owning profile's scope (
 """
 import asyncio
 from datetime import datetime
+import json
+import uuid
 from functools import partial
 from pathlib import Path
 
@@ -18,7 +21,10 @@ from hermes_state_runtime import RuntimeStoreError
 def handlers(connection):
     return {'session.save': partial(save_session, connection),
             'reload.env': partial(reload_env, connection),
-            'delegation.pause': partial(pause_delegation, connection)}
+            'delegation.pause': partial(pause_delegation, connection),
+            'rollback.list': partial(rollback, connection, kind='list'),
+            'rollback.diff': partial(rollback, connection, kind='diff'),
+            'rollback.restore': partial(rollback, connection, kind='restore')}
 
 
 def _profile_home(authority):
@@ -129,3 +135,106 @@ async def pause_delegation(connection, ref, params):
                 raise RuntimeStoreError('profile_mismatch')
     from tools.delegate_tool_registry import set_spawn_paused
     return {'paused': set_spawn_paused(paused)}
+
+
+_ROLLBACK_FIELDS = {'list': {'session_id', 'profile'}, 'diff': {'session_id', 'profile', 'hash'},
+                    'restore': {'session_id', 'profile', 'hash', 'file_path'}}
+
+
+async def rollback(connection, ref, params, *, kind):
+    """``/rollback [list] | diff <n|hash> | <n|hash> [file]``: main's ``rollback.*`` over this
+    session's checkpoints (the shared ``<profile>/checkpoints`` store, keyed by the frozen launch cwd).
+
+    The manager is built from the session's frozen ``checkpoints`` policy rather than read off the
+    resident agent (main's ``agent._checkpoint_mgr``, built from the same config): it carries no
+    per-session state these reads need, and a restarted owner or a just-rewound session has no
+    resident agent. A whole-tree restore also rewinds the transcript to before the newest user turn
+    (main's ``_rewind_active_session_history``) through the owner's fenced ``rewind`` mutation."""
+    fields = _ROLLBACK_FIELDS[kind]
+    if any(key in params and (not isinstance(params[key], str) or (key == 'hash' and not params[key]))
+           for key in ('hash', 'file_path')) or (kind != 'list' and 'hash' not in params):
+        raise RuntimeStoreError('invalid_params')
+    live = _live_ref(connection, ref, params, fields, 'session:read' if kind != 'restore' else 'session:control')
+    authority = connection.authority
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, live.source)
+    if policy is None:
+        raise RuntimeStoreError('permission_denied')
+    file_path = params.get('file_path') or ''
+    if kind == 'restore' and not file_path and authority._handle(ref).execution_state != 'idle':
+        # Main refuses a full-history rollback mid-turn; a file-scoped restore only touches disk.
+        raise RuntimeStoreError('session_busy')
+    from gateway.session_ancillary import physical_target
+    task_id = physical_target(authority, ref)
+    from gateway.run import _checkpoint_agent_kwargs
+    kwargs = _checkpoint_agent_kwargs(policy.config(authority, secrets=False))
+    terminal = json.loads(policy.terminal_json)
+
+    def run():
+        from tools.checkpoint_manager import CheckpointManager
+        from tui_gateway.checkpoints import _resolve_checkpoint_hash
+        mgr = CheckpointManager(enabled=bool(kwargs['checkpoints_enabled']), **{
+            key[len('checkpoint_'):]: value for key, value in kwargs.items() if key.startswith('checkpoint_')})
+        cwd = policy.cwd
+        if kind == 'list':
+            if not mgr.enabled:
+                return {'enabled': False, 'checkpoints': []}
+            # The TUI renders ``message``; the manager calls it ``reason``.
+            return {'enabled': True, 'checkpoints': [
+                {'hash': c.get('hash', ''), 'timestamp': c.get('timestamp', ''), 'message': c.get('reason', '')}
+                for c in mgr.list_checkpoints(cwd)]}
+        # Host checkpoints are not a container-backed session's tree (main's _container_checkpoint_refusal),
+        # classified under the session's frozen terminal policy, not the owner's ambient one.
+        from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+        token = set_terminal_scope(terminal)
+        try:
+            refusal = mgr.unsupported_backend_reason(task_id)
+        finally:
+            reset_terminal_scope(token)
+        try:
+            target = _resolve_checkpoint_hash(mgr, cwd, params['hash'])
+        except ValueError as exc:
+            if kind == 'diff':
+                raise RuntimeStoreError('invalid_checkpoint') from exc
+            return {'success': False, 'error': str(exc)}
+        if kind == 'diff':
+            if refusal:
+                raise RuntimeStoreError('unsupported_terminal_backend')
+            from tui_gateway.render import render_diff
+            result = mgr.diff(cwd, target)
+            raw = result.get('diff', '')[:4000]
+            payload = {'stat': result.get('stat', ''), 'diff': raw}
+            if rendered := render_diff(raw, 80):
+                payload['rendered'] = rendered
+            return payload
+        if refusal:
+            return {'success': False, 'error': refusal}
+        return mgr.restore(cwd, target, file_path=file_path or None)
+    result = await asyncio.to_thread(run)
+    if kind == 'restore' and result.get('success') and not file_path:
+        result['history_removed'] = await _rewind_last_turn(connection, ref)
+    return result
+
+
+async def _rewind_last_turn(connection, ref):
+    """Drop the newest user turn and everything after it (main's full ``/rollback`` restore) via the
+    owner's revision-fenced ``rewind`` mutation; 0 when the transcript has no user turn."""
+    authority = connection.authority
+    from agent.context_compressor import user_originated_turn_view
+    from gateway.session_local_recovery import local_history
+    rows = await asyncio.to_thread(local_history, authority, ref)
+    target = next((row['row_id'] for row in reversed(rows)
+                   if isinstance(row.get('row_id'), int) and user_originated_turn_view(row) is not None), None)
+    if target is None:
+        return 0
+    from gateway.session_mutations import mutate_session
+    from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
+    handle = authority._handle(ref)
+    try:
+        result = await mutate_session(authority, connection.actor, ref, {
+            'session_id': ref.session_id, 'request_id': f'rollback:{uuid.uuid4().hex}',
+            'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
+            'operation': 'rewind', 'payload': {'target_message_id': target}})
+    except MUTATION_GUARD_REFUSALS as exc:
+        raise RuntimeStoreError('session_busy') from exc
+    return int(result.get('rewound_count') or 0)

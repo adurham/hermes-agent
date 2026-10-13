@@ -81,3 +81,31 @@ it('/agents pause and resume call delegation.pause on the shared gateway with ma
   expect(request).toHaveBeenCalledWith('delegation.pause', { paused: false })
   expect(notices(sys)).toEqual(['delegation · paused', 'delegation · resumed'])
 })
+
+it('/rollback list, diff and restore call the owner\'s rollback verbs with main\'s rendering', async () => {
+  const { page, panel, request, setHistoryItems, slash, sys } = harness({
+    'rollback.list': { enabled: true, checkpoints: [{ hash: 'abcdef1234567', timestamp: 't1', message: 'before write_file' }] },
+    'rollback.diff': { stat: ' a.txt | 2 +-', diff: '-old\n+new' },
+    'rollback.restore': { success: true, reason: 'before write_file', history_removed: 2 }
+  })
+
+  for (const cmd of ['/rollback', '/rollback diff 1', '/rollback 1 src/a.py', '/rollback 1']) {
+    slash(cmd)
+    await flush()
+  }
+
+  expect(request.mock.calls.filter(([method]) => String(method).startsWith('rollback.'))).toEqual([
+    ['rollback.list', { session_id: 'owner' }],
+    ['rollback.diff', { hash: '1', session_id: 'owner' }],
+    ['rollback.restore', { file_path: 'src/a.py', hash: '1', session_id: 'owner' }],
+    ['rollback.restore', { hash: '1', session_id: 'owner' }]
+  ])
+  expect(panel).toHaveBeenCalledWith('Rollback checkpoints', [{ rows: [['1. abcdef1234', 't1 · before write_file']] }])
+  expect(page).toHaveBeenCalledWith(' a.txt | 2 +-\n\n-old\n+new', expect.any(String))
+  expect(notices(sys)).toEqual([
+    'rollback restored src/a.py: before write_file',
+    'rollback restored workspace: before write_file'
+  ])
+  // A whole-tree restore rewound the transcript (history_removed > 0): the view drops the exchange.
+  expect(setHistoryItems).toHaveBeenCalled()
+})
