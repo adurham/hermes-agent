@@ -24,6 +24,7 @@ import { clearFreeTierIntro } from './onboarding'
 import { $introView } from './onboarding-intro'
 import { $onboardingPhase } from './onboarding-phase'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from './onboarding-presence'
+import { $onboardingSession } from './onboarding-session'
 import { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $selectedStoredSessionId } from './session'
 import type { SetupBeatToolResult } from './setup-beat'
@@ -40,14 +41,6 @@ const NO_DEADLINE = 0
 
 /** Opens a stored session on screen, replacing the route (`useSessionActions().resumeSession`). */
 export type OnboardingResume = (storedId: string, replaceRoute?: boolean) => Promise<void>
-
-export interface OnboardingSession {
-  runtimeId: string
-  storedId: string
-}
-
-/** The onboarding chat while a run is in progress in this window. */
-export const $onboardingSession = atom<null | OnboardingSession>(null)
 
 /** How the last run in this window ended; the end-of-onboarding surfaces wake on it. */
 export const $onboardingEnded = atom<'done' | 'skipped' | null>(null)

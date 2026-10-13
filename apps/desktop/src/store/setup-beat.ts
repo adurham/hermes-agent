@@ -111,6 +111,7 @@ export function sayToSetupBeat(sessionId: string, text: string): null | Promise<
 }
 
 registerParkedCardAnswer('setup_beat', {
+  onboardingOnly: true,
   $requests: $setupBeatRequests,
   answer: sayToSetupBeat,
   waiting: sessionId => Boolean($setupBeatRequests.get()[sessionId])

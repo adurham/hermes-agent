@@ -1,5 +1,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { $onboardingSession, isOnboardingChat } from './onboarding-session'
+
 /** Answers a card parked on `sessionId` with composer text: null when no card of this kind takes it,
  *  else a promise of whether the answer reached the backend. */
 export type ParkedCardAnswer = (sessionId: string, text: string) => null | Promise<boolean>
@@ -9,10 +11,18 @@ export type ParkedCardAnswer = (sessionId: string, text: string) => null | Promi
 export interface ParkedCardKind {
   $requests: ReadableAtom<object>
   answer: ParkedCardAnswer
+  /** Takes typed text only in the onboarding chat; elsewhere the text is sent as a normal message. */
+  onboardingOnly?: boolean
   waiting: (sessionId: string) => boolean
 }
 
 const kinds = new Map<string, ParkedCardKind>()
+
+const kindsFor = (sessionId: string) => {
+  const onboarding = isOnboardingChat(sessionId)
+
+  return [...kinds.values()].filter(kind => onboarding || !kind.onboardingOnly)
+}
 
 // Bumped when a kind registers, unregisters or its store changes, so per-session views re-ask every kind.
 const $revision = atom(0)
@@ -40,7 +50,7 @@ export function registerParkedCardAnswer(id: string, kind: ParkedCardKind): () =
  * if that answer never reaches the backend, so the composer can give the words back.
  */
 export function answerParkedCard(sessionId: string, text: string, onFailed: () => void = () => {}): boolean {
-  for (const kind of kinds.values()) {
+  for (const kind of kindsFor(sessionId)) {
     const sent = kind.answer(sessionId, text)
 
     if (sent) {
@@ -61,9 +71,10 @@ export function answerParkedCard(sessionId: string, text: string, onFailed: () =
 
 /** Whether any card waits on `sessionId`, so typed text would answer it. */
 export function parkedCardWaiting(sessionId: string): boolean {
-  return [...kinds.values()].some(kind => kind.waiting(sessionId))
+  return kindsFor(sessionId).some(kind => kind.waiting(sessionId))
 }
 
-/** `parkedCardWaiting` for one session, as a store the composer can subscribe to. */
-export const sessionParkedCardWaiting = (sessionId: null | string) =>
-  computed($revision, () => (sessionId ? parkedCardWaiting(sessionId) : false))
+/** Whether a card waits in the onboarding chat, as a store: the composer offers Send for typed
+ *  answers only there; every other chat keeps its normal controls. */
+export const sessionOnboardingCardWaiting = (sessionId: null | string) =>
+  computed([$revision, $onboardingSession], () => isOnboardingChat(sessionId) && parkedCardWaiting(sessionId ?? ''))

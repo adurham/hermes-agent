@@ -68,6 +68,7 @@ export function sayToThemePick(sessionId: string, text: string): null | Promise<
 }
 
 registerParkedCardAnswer('theme-pick', {
+  onboardingOnly: true,
   $requests: $themePicks,
   answer: sayToThemePick,
   waiting: sessionId => Boolean($themePicks.get()[sessionId])

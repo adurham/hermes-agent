@@ -526,6 +526,7 @@ export function answerConnectorDirectory(sessionId: string, text: string): null 
 }
 
 registerParkedCardAnswer('connector-directory', {
+  onboardingOnly: true,
   $requests: $connectionRequests,
   answer: answerConnectorDirectory,
   waiting: sessionId => {

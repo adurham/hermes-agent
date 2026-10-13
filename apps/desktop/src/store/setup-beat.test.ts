@@ -1,9 +1,10 @@
 import type { ServerRequest } from '@hermes/shared'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setupBeatOutcome } from '@/components/assistant-ui/setup-beat/receipt'
 
-import { answerParkedCard, parkedCardWaiting, sessionParkedCardWaiting } from './parked-card-answers'
+import { $onboardingSession } from './onboarding-session'
+import { answerParkedCard, parkedCardWaiting, sessionOnboardingCardWaiting } from './parked-card-answers'
 import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
 import { $setupBeatRequests, clearSetupBeat, parkSetupBeat } from './setup-beat'
 
@@ -18,9 +19,14 @@ function parkNameCard(requestId: string) {
   return respond
 }
 
+beforeEach(() => {
+  $onboardingSession.set({ runtimeId: 'rt-1', storedId: 'stored-1' })
+})
+
 afterEach(() => {
   resetServerRequestsForTests()
   $setupBeatRequests.set({})
+  $onboardingSession.set(null)
 })
 
 describe('setup_beat card', () => {
@@ -38,7 +44,7 @@ describe('setup_beat card', () => {
   })
 
   it('reports a card waiting on the session while a beat is parked, and none once it settles', () => {
-    const $waiting = sessionParkedCardWaiting('rt-1')
+    const $waiting = sessionOnboardingCardWaiting('rt-1')
     const seen: boolean[] = []
     const off = $waiting.subscribe(value => seen.push(value))
 

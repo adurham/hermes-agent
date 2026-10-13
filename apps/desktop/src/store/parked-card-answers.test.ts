@@ -1,7 +1,13 @@
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { answerParkedCard, type ParkedCardAnswer, registerParkedCardAnswer } from './parked-card-answers'
+import { $onboardingSession } from './onboarding-session'
+import {
+  answerParkedCard,
+  type ParkedCardAnswer,
+  registerParkedCardAnswer,
+  sessionOnboardingCardWaiting
+} from './parked-card-answers'
 
 const kind = (answer: ParkedCardAnswer) => ({ $requests: atom({}), answer, waiting: () => false })
 
@@ -10,6 +16,7 @@ describe('parked card answers', () => {
 
   afterEach(() => {
     unregister.splice(0).forEach(off => off())
+    $onboardingSession.set(null)
   })
 
   it('stops at the first card that takes the text, and forgets a card once it unregisters', () => {
@@ -38,5 +45,19 @@ describe('parked card answers', () => {
 
     expect(answerParkedCard('session-a', 'hello', onFailed)).toBe(true)
     await vi.waitFor(() => expect(onFailed).toHaveBeenCalledTimes(1))
+  })
+
+  it('takes typed text for an onboarding-only card in the onboarding chat, and leaves every other chat alone', () => {
+    const takes = vi.fn<ParkedCardAnswer>(() => Promise.resolve(true))
+    unregister.push(registerParkedCardAnswer('test-onboarding', { ...kind(takes), onboardingOnly: true, waiting: () => true }))
+    const $waiting = sessionOnboardingCardWaiting('session-a')
+
+    expect(answerParkedCard('session-a', 'hello')).toBe(false)
+    expect($waiting.get()).toBe(false)
+
+    $onboardingSession.set({ runtimeId: 'session-a', storedId: 'stored-a' })
+    expect($waiting.get()).toBe(true)
+    expect(answerParkedCard('session-a', 'hello')).toBe(true)
+    expect(answerParkedCard('session-b', 'hello')).toBe(false)
   })
 })

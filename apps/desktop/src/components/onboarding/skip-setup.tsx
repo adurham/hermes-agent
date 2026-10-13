@@ -5,7 +5,8 @@ import { skipIntro } from '@/components/onboarding/first-run/intro'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $onboardingSession, skipOnboarding } from '@/store/onboarding-run'
+import { skipOnboarding } from '@/store/onboarding-run'
+import { $onboardingSession } from '@/store/onboarding-session'
 
 /** Skip setup, shown in the composer of the onboarding chat only. Once the backend has ended the run,
  *  like main's: the intro ends on the previous layout at normal size and the tutorial tips stop. */
