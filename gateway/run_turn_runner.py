@@ -791,6 +791,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         )
         ctx = self._ctx
         persist_override: Optional[Any] = ctx.persist_user_message
+        from gateway.session_cli_turn import cli_turn
+        api_text = cli_turn(ctx.inbound_message_id).get('api_text')
+        if api_text is not None:
+            # The classic CLI's model-facing message (voice prefix, its own model-switch and
+            # skills-reload notes); the admitted text stays the persisted user row.
+            clean_text = persist_override if persist_override is not None else ctx.message
+            persist_override = clean_text
+            ctx.message = api_text
         self._prepend_pending_note("_pending_model_notes")
         # Auto-continue: history ending with a tool result means the previous turn was cut off
         # (restart, crash, SIGTERM). Session-level resume_pending (drain-timeout shutdown) uses
@@ -825,6 +833,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 + ctx.message
             )
         self._prepend_pending_note("_pending_skills_reload_notes")
+        if api_text is not None:
+            persist_override = clean_text  # recovery wording is API-only too, never the stored row
         # Safety net: a startup auto-resume event carries empty text; if the resume_pending branch
         # did not fire (freshness signals disagreed, marker cleared) we must NOT hand the model a blank
         # user turn. Restricted to resume_pending sessions so caption-less image turns are untouched.
@@ -1140,6 +1150,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # model is the one this agent must send (#112600).
                 from gateway.session_authorities import active_authority
                 model = policy.current_model(active_authority(runner))
+            from gateway.session_cli_turn import cli_turn, one_turn_runtime
+            override = cli_turn(ctx.inbound_message_id).get('model_override')
+            if override:
+                # The classic CLI's `/model --once` / `/moa`: this admission only, nothing persisted.
+                from gateway.session_authorities import active_authority
+                model, runtime_kwargs = one_turn_runtime(
+                    override, model, runtime_kwargs,
+                    policy.config(active_authority(runner)) if policy else ctx.user_config)
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",

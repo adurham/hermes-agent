@@ -14,7 +14,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 _SUBMIT_FIELDS = ('turn_author', 'api_text', 'model_override')
 _API_TEXT_LIMIT = 1_000_000
-_cli_turn: ContextVar[dict | None] = ContextVar('cli_turn', default=None)
+_cli_turn: ContextVar[tuple | None] = ContextVar('cli_turn', default=None)
 
 
 def submit_cli_turn_fields(params):
@@ -49,14 +49,45 @@ def admit_cli_turn(params):
 
 
 @contextmanager
-def cli_turn_scope(committed):
-    token = _cli_turn.set(committed or None)
+def cli_turn_scope(admission_id, committed):
+    token = _cli_turn.set((admission_id, committed) if committed else None)
     try:
         yield
     finally:
         _cli_turn.reset(token)
 
 
-def cli_turn():
-    """The executing admission's committed CLI turn fields (``{}`` outside one)."""
-    return _cli_turn.get() or {}
+def cli_turn(message_id):
+    """The committed CLI turn fields of the admission whose event id is ``message_id``; ``{}`` for
+    any other turn, so a follow-up drained on the same task never inherits them."""
+    bound = _cli_turn.get()
+    if bound is None or message_id is None or str(message_id) != bound[0]:
+        return {}
+    return bound[1]
+
+
+def one_turn_runtime(override, model, runtime_kwargs, config):
+    """``(model, runtime_kwargs)`` of a committed ``model_override`` for this one turn, resolved by the
+    same ``switch_model`` pipeline ``/model`` uses against the session's current route. Nothing is
+    written: the session's route, policy and cached agent are untouched, so the next turn runs its own
+    route again (main's ``/model --once`` restore). Raises ``RuntimeError`` with the switch's own
+    sentence when the target cannot be resolved; the caller fails the turn with it."""
+    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.model_switch import switch_model
+    result = switch_model(
+        raw_input=override['model'], current_provider=runtime_kwargs.get('provider') or '',
+        current_model=model or '', current_base_url=runtime_kwargs.get('base_url') or '',
+        current_api_key=runtime_kwargs.get('api_key') or '', is_global=False,
+        explicit_provider=override.get('provider', ''), user_providers=(config or {}).get('providers'),
+        custom_providers=get_compatible_custom_providers(config or {}))
+    if not result.success:
+        raise RuntimeError(result.error_message or f"model {override['model']!r} could not be resolved")
+    runtime = dict(runtime_kwargs)
+    if result.target_provider != runtime_kwargs.get('provider'):
+        # The previous provider's pool and ACP command belong to that provider only.
+        runtime.update(credential_pool=None, command=None, args=[])
+    runtime.update(provider=result.target_provider, requested_provider=result.target_provider,
+                   api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode or None,
+                   request_overrides=dict(result.request_overrides or {}),
+                   capabilities=dict(result.runtime_capabilities or {}))
+    return result.new_model, runtime
