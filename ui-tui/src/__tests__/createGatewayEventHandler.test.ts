@@ -2268,6 +2268,26 @@ describe('createGatewayEventHandler', () => {
       expect(getUiState().usage).toMatchObject({ context_percent: 55, input: 500, total: 540 })
     })
 
+    it('maps a canonical local-viewer tick (top-level session.stats fields) onto the status-bar usage', () => {
+      patchUiState({ sid: 'sess-1', usage: ZERO })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: {
+          api_calls: 2, avg_latency_s: 0.14, cache_read_tokens: 0, compression_count: 1, context_length: 128000,
+          context_source: 'provider_usage', input_tokens: 100, last_prompt_tokens: 900, model: 'fake-model',
+          output_tokens: 40, prompt_tokens: 100, tokens_per_s: 229.4, total_tokens: 140
+        },
+        session_id: 'sess-1',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toMatchObject({
+        avg_latency_s: 0.1, avg_tps: 229.4, calls: 2, compressions: 1, context_max: 128000,
+        context_percent: 1, context_used: 900, input: 100, output: 40, total: 140
+      })
+    })
+
     it('drops a tick for a non-focused session', () => {
       patchUiState({ sid: 'focused', usage: ZERO })
       const onEvent = createGatewayEventHandler(buildCtx([]))
