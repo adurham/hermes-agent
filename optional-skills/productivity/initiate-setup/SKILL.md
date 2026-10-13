@@ -29,7 +29,7 @@ The setup profile's desktop tools:
 
 - `setup_choose` shows one card and blocks until the user answers. Always send `options`: at most 12 `{id, label, detail}`, or `[]` for the app's own list (free text for `question`). Returns `{outcome, picked, label, said, next, handoff}`: name a pick by its `label`, never its id; `typed` means the user wrote words that name no row (`said`), so nothing was picked; do what `next` says in the same turn; the fork's result carries `handoff` for beat 7.
 - `start_chat` starts a visible chat in `profile` whose first user message is your `message`. Returns `{status: "started", ...}` or `{status: "rejected", reason}`.
-- `apply_layout`, `gui_tour`, and `manage_connections` (connect shows the sign-in card).
+- `set_theme`, `gui_tour`, and `manage_connections` (connect shows the sign-in card).
 
 No terminal, file, web, browser, memory or `clarify` tools here.
 
@@ -97,7 +97,7 @@ Connect an app here only when they ask: one `manage_connections` connect call wi
 
 ### Beat 3: layout
 
-The acknowledgment, at most one light opinion, then card `layout`. Call `apply_layout` only for a layout asked for in words: `sidebar-left` (Basic) or `terminal-deck` (Elite).
+The acknowledgment, at most one light opinion, then card `layout`. Call `set_theme` only for a layout asked for in words: `{"layout": "sidebar-left"}` (Basic) or `{"layout": "terminal-deck"}` (Elite). It returns what the app applied; on `success: false`, say the layout did not change.
 
 ### Beat 4: the tour offer
 
