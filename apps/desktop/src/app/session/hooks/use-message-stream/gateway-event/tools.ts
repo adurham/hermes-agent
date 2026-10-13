@@ -1,5 +1,9 @@
+import type { ToolCallMessagePart } from '@assistant-ui/react'
+
 import { isPreviewableTarget, toolPreviewOutcome } from '@/components/assistant-ui/tool/fallback-model'
+import { leaveIntroOnLayout } from '@/components/onboarding/first-run/intro'
 import { toolCallOwnerMessageId } from '@/lib/chat-messages'
+import { connectorText, recordOf } from '@/lib/connector-tools'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { noteSetupBeatResult } from '@/store/onboarding-run'
@@ -49,6 +53,25 @@ function noteToolOutcome(ctx: GatewayEventContext, sessionId: string, cwd: strin
   if (ctx.payload?.name === 'setup_beat' && !ctx.event.replayed) {
     noteSetupBeatResult(setupBeatResult(ctx.payload.result))
   }
+
+  if (!ctx.event.replayed && appliedLayout(ctx.payload?.name, ctx.payload?.result)) {
+    leaveIntroOnLayout()
+  }
+}
+
+/** The layout a completed tool applied: the setup_beat layout answer, or a set_theme layout (applied or picked). */
+function appliedLayout(name: string | undefined, result: ToolCallMessagePart['result']): string | undefined {
+  if (name === 'setup_beat') {
+    return setupBeatResult(result).answer?.layout
+  }
+
+  if (name === 'set_theme') {
+    const row = recordOf(result)
+
+    return connectorText(recordOf(row.applied ?? row.picked).layout)
+  }
+
+  return undefined
 }
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */
