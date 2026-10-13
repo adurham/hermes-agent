@@ -29,3 +29,12 @@ def test_pick_outcomes(monkeypatch, answer, elapsed, result):
 
     assert theme_bridge.theme_request("s1", {"picker": "accent"}) == result
     assert sent == [("theme.pick", "s1", {"picker": "accent"}, theme_bridge.THEME_PICK_TIMEOUT_S)]
+
+
+def test_the_session_callbacks_reach_the_bridge(monkeypatch):
+    """Built the way production builds them: server._agent_cbs, rebound to server.py's globals."""
+    calls = []
+    monkeypatch.setattr(theme_bridge, "theme_request", lambda sid, payload: calls.append((sid, payload)) or {"success": True})
+
+    assert server._agent_cbs("s1")["theme_callback"]({"accent": "violet"}) == {"success": True}
+    assert calls == [("s1", {"accent": "violet"})]
