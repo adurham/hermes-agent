@@ -261,6 +261,18 @@ def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
     return executable, dirs
 
 
+def _outside_package(launcher: str, managed: str, dirs: list[str]) -> tuple[str, list[str]]:
+    """Hermes's npm/node *launcher* and toolchain *dirs*, swapped for PM's copies outside a
+    sealed Windows payload (``pm.user_facing.copies``). npm starts each package bin through
+    cmd.exe, and cmd.exe cannot start the packaged ``node.exe``."""
+    from pm.user_facing import copies
+
+    moved = copies(dirs)
+    if moved == dirs:
+        return managed, dirs
+    return shutil.which(launcher, path=os.pathsep.join(moved)) or managed, moved
+
+
 def _is_hermes_managed_bin_dir(directory: str) -> bool:
     """True for the bin dirs Hermes' bootstrap prepends to this process's PATH: anything
     under the active hermes home (the sealed payload's venv, ``<home>/bin``, PM store
@@ -342,6 +354,8 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     managed = _managed_launcher(launcher) if launcher in _MANAGED_LAUNCHERS else None
     if managed is not None:
         resolved_command, dirs = managed
+        if _MANAGED_LAUNCHERS[launcher] == "npm":
+            resolved_command, dirs = _outside_package(launcher, resolved_command, dirs)
         # Moved to the front even when already on PATH behind a user's copy.
         keys = {os.path.normcase(d) for d in dirs}
         rest = [p for p in resolved_env.get("PATH", "").split(os.pathsep) if p and os.path.normcase(p) not in keys]
