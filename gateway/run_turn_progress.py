@@ -968,7 +968,8 @@ class GatewayTurnProgressMixin:
 def local_viewer_turn(runner) -> bool:
     """A local route's viewers read the canonical event stream; ``LocalSessionAdapter.send``
     publishes nothing, so status and notices go to that stream instead."""
-    return getattr(runner, "_approval_owner", None) is not None and runner._ctx.source.platform == Platform.LOCAL
+    return (getattr(runner, "_approval_owner", None) is not None
+            and getattr(getattr(runner._ctx, "source", None), "platform", None) == Platform.LOCAL)
 
 
 def _viewer_status_kind(kind, text):
