@@ -58,7 +58,9 @@ def bind_legacy_target(db, conn, receipt):
     if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (key,)).fetchone():
         raise RuntimeStoreError('storage_unavailable')
     source = receipt['entry']['origin']
-    conn.execute('UPDATE sessions SET ended_at=NULL,end_reason=NULL,session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
+    # Binding is a read-side claim: the row keeps main's ``source`` label and its end stamp. The first
+    # admitted turn reopens it (``reopen_local_session``), exactly as the classic surfaces did.
+    conn.execute('UPDATE sessions SET session_key=?,chat_id=?,user_id=?,chat_type=?,origin_json=? WHERE id=?',
                  (receipt['route'], receipt['session_id'], receipt['principal_id'], 'dm', _json(source), target))
     conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, _json({
         'session_id': receipt['session_id'], 'profile_id': receipt['profile_id'],

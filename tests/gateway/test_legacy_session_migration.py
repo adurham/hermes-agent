@@ -50,7 +50,9 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     receipt = local_receipt(db, ref.session_id)
     assert ref.session_id == 'old-cli'
     assert receipt['entry']['session_id'] == 'old-cli'
-    assert db.get_session('old-cli')['ended_at'] is None
+    # Adoption is a mount: main's end stamp and source label stay until the first admitted turn.
+    assert (db.get_session('old-cli')['ended_at'], db.get_session('old-cli')['end_reason']) == (original['ended_at'], 'cli_exit')
+    assert db.get_session('old-cli')['source'] == 'cli'
     assert db.get_session('old-cli')['title'] == original['title']
     assert db.get_session('old-cli')['parent_session_id'] == original['parent_session_id']
     policy = runner.adapters[Platform.LOCAL].policies[ref.session_id]
@@ -60,6 +62,10 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     await authority.attach(native, ref)
     assert runner.adapters[Platform.LOCAL].policies[ref.session_id] == policy
     history = [{'role': 'user', 'content': 'COMPRESSED'}, {'role': 'assistant', 'content': 'RETAINED'}]
+    # Compression runs inside a turn, and the first admitted turn reopens the adopted row.
+    from gateway.session_local_recovery import reopen_local_session
+    reopen_local_session(authority, ref)
+    assert db.get_session('old-cli')['end_reason'] is None
     assert db.try_acquire_compression_lock(ref.session_id, 'fixture')
     try:
         db.publish_compression_child(parent_session_id=ref.session_id, child_session_id='compressed',
