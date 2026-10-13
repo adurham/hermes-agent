@@ -104,7 +104,8 @@ def test_title_rename_delete_and_detach_are_gateway_verbs(store):
     assert mutate["expected_revision"] == 3
     assert db.connection.state("local-old").title == "Some Title"
     db.end_session("local-old", "cli_close")
-    assert client.calls[-1] == ("session.detach", {"session_id": "local-old", "subscription_id": "sub-local-old"})
+    assert client.calls[-1] == ("session.detach", {"session_id": "local-old", "subscription_id": "sub-local-old",
+                                                   "end_reason": "cli_close"})
     db.delete_session("local-old")
     assert [p for m, p in client.calls if m == "session.mutate"][-1]["operation"] == "delete"
 

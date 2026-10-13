@@ -214,14 +214,18 @@ class GatewaySessionStore:
         return True
 
     def end_session(self, session_id, reason=None):
-        """Detach this viewer; the gateway ends an idle session itself."""
+        """Main's ``end_session(sid, reason)``: detach this viewer with ``end_reason``; the owner ends
+        the idle local row with that reason once no viewer is left (``ended_at`` / ``end_reason``)."""
         snapshot = self.snapshots.pop(session_id, None)
         subscription = (snapshot or {}).get("subscription_id")
         if subscription and not self.connection.closed:
+            params = {"end_reason": reason} if reason else {}
             try:
-                self.call("session.detach", session_id=session_id, subscription_id=subscription)
+                self.call("session.detach", session_id=session_id, subscription_id=subscription, **params)
             except GatewayClientError as exc:
                 logger.debug("session.detach failed: %s", exc)
+        if self.current is snapshot:
+            self.current = None
 
     def delete_session_if_empty(self, session_id, sessions_dir=None):
         """Main's quit-immediately prune, as a gateway delete: only a row with no messages, no title
