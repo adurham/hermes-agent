@@ -41,7 +41,7 @@ export function LayoutPickerCard({ onPick }: LayoutPickerCardProps) {
             onClick={() => onPick(choice.id)}
             type="button"
           >
-            <span className="flex h-20 w-full">
+            <span className="flex aspect-[10/7] w-full">
               {isLayoutNode(tree) && <TreeThumbnail node={tree} resting={layoutPresetResting(choice.id)} />}
             </span>
             <span className="flex flex-col gap-0.5">
