@@ -20,10 +20,24 @@ import pytest
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point HERMES_HOME at a temp dir so session creation stays isolated."""
+    """Point HERMES_HOME at a temp dir so session creation stays isolated. The gateway is the single
+    writer: ``session.create {title}`` is played by a stand-in that writes the row the owner would."""
     home = tmp_path / "hermes_home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    from hermes_cli import gateway_session_store
+
+    def create_titled(title):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            sid = "local-" + "ab" * 32
+            db.create_session(sid, source="local")
+            db.set_session_title(sid, title)
+            return sid
+        finally:
+            db.close()
+    monkeypatch.setattr(gateway_session_store, "create_titled_session", create_titled)
     return home
 
 

@@ -326,3 +326,14 @@ def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, m
     assert sorted(r["id"] for r in found) == ["legacy", "local-cli", "one"]
     assert [r["id"] for r in db.search_sessions(source="tui", limit=10)] == ["local-tui"]
     assert len(db.list_sessions_rich(limit=10)) == 4
+
+
+def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
+    """``chat -c NAME --create-if-missing``: the gateway creates the titled session (its own
+    resolve -> create -> title step); the CLI then resumes the id it returns. No client write."""
+    db, client = store
+    from hermes_cli import gateway_session_store as gss
+    monkeypatch.setattr(gss, "session_store", lambda: db)
+    assert gss.create_titled_session("Fresh Named") == "local-new"
+    method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]

@@ -1380,25 +1380,16 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 def _create_titled_session(title: str) -> Optional[str]:
     """Create a fresh titled session (``chat -c <title> --create-if-missing``).
 
-    Same timestamp+uuid id shape the CLI uses; the title is recorded with
-    user provenance so auto-titling never overwrites it.
+    The gateway is the single writer: it creates the session and records the title with user
+    provenance, so auto-titling never overwrites it (gateway_session_store.create_titled_session).
 
     Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic callers (plugins, scripts) that
     want "send to this named thread, making it if needed" get a deterministic outcome instead of a silent
     no-op.
     """
-    db = None
     try:
-        from hermes_state_ids import new_session_id as mint_session_id
-        from hermes_state_registry import acquire
-
-        new_session_id = mint_session_id()
-        # The CLI acquires the registry handle for this same path moments later; share it
-        # instead of minting a second writer for one INSERT (close() releases the refcount).
-        db = acquire()
-        db.create_session(new_session_id, source="cli")
-        db.set_session_title(new_session_id, title)
-        return new_session_id
+        from hermes_cli.gateway_session_store import create_titled_session
+        return create_titled_session(title)
     except Exception:
         # Programmatic callers rely on --create-if-missing being deterministic;
         # swallow the failure but log the cause so it lands in errors.log
@@ -1406,12 +1397,6 @@ def _create_titled_session(title: str) -> Optional[str]:
         # See #86794.
         logger.exception("Failed to create titled session %r", title)
         return None
-    finally:
-        if db is not None:
-            try:
-                db.close()
-            except Exception:
-                pass
 
 
 def _resolve_continue_arg(args, *, use_tui: bool) -> None:

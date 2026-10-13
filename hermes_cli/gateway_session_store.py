@@ -133,13 +133,16 @@ class GatewaySessionStore:
                 raise
         return self.create(launch)
 
-    def create(self, launch=None):
-        """``session.create`` with the launch policy; adopts and returns the new session id."""
+    def create(self, launch=None, title=None):
+        """``session.create`` with the launch policy (and ``title``: the owner's resolve -> create ->
+        title step); adopts and returns the new session id."""
         from agent.session_source import session_source_for
         params = _creation_policy(launch or {})
         params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
         # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
         params["source"] = session_source_for("cli")
+        if title:
+            params["title"] = title
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
         return self._adopt(snapshot)
 
@@ -379,3 +382,8 @@ def create_titled_session(title):
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None
     return snapshot["stored_session_id"]
+
+    """``chat -c NAME --create-if-missing`` (main's ``_create_titled_session``): the gateway creates the
+    titled session; the CLI resumes the id it returns. Launch flags are applied by the CLI's own
+    session open, as main's bare row took them at agent build."""
+    return session_store().create(title=title)
