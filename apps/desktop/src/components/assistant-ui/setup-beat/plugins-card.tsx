@@ -37,7 +37,8 @@ async function openInstall(name: string, profile: string): Promise<void> {
   const lookup = await lookupPluginCatalogEntry(name)
 
   if (lookup.ok) {
-    openCatalogPluginInstall(lookup.entry, profile)
+    // The card stays in the chat and flips the row to Installed when the plugin list reloads.
+    openCatalogPluginInstall(lookup.entry, profile, { stayAfterInstall: true })
   }
 }
 

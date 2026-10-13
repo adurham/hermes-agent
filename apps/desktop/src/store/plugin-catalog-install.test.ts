@@ -108,4 +108,14 @@ describe('openCatalogPluginInstall', () => {
     expect($pluginInstallRequest.get()).toBeNull()
     expect($notifications.get()[0]).toMatchObject({ kind: 'success' })
   })
+
+  it("carries the caller's stay-in-place choice to the install dialog", () => {
+    $agentPlugins.set([])
+
+    openCatalogPluginInstall({ name: 'weather', repo: 'https://github.com/x/weather' }, 'workbot', {
+      stayAfterInstall: true
+    })
+
+    expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'weather', stayAfterInstall: true })
+  })
 })

@@ -352,9 +352,11 @@ export function PluginInstallModal() {
         }
 
         closePluginInstallRequest()
-        // Land on the inventory (Capabilities → Plugins) — Git installs too;
-        // `/settings?tab=plugins` is the plugin settings pages now.
-        navigate('/capabilities?tab=plugins')
+
+        // Land on the inventory (Capabilities → Plugins), unless the caller keeps the user in place.
+        if (!request.stayAfterInstall) {
+          navigate('/capabilities?tab=plugins')
+        }
 
         return
       }

@@ -18,6 +18,8 @@ export interface PluginInstallRequest {
   /** Capabilities profile scope the pick was made under; the agent half
    *  installs into THIS profile (null/undefined = active profile). */
   profile?: string | null
+  /** The caller keeps the user where they are after a successful install (the setup chat's plugins card). */
+  stayAfterInstall?: boolean
 }
 
 export const $pluginInstallRequest = atom<PluginInstallRequest | null>(null)
