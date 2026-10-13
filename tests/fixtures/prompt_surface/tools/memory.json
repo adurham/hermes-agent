@@ -1,19 +1,20 @@
 {
-  "description": "Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.\n\nHOW: make ALL your changes in ONE call via an 'operations' array (each item: {action, content?, old_text?}). The batch applies atomically and the char limit is checked only on the FINAL result — so a single call can remove/replace stale entries to free room AND add new ones, even when an add alone would overflow. The response reports current/limit chars and confirms completion; one batch call finishes the update, so don't repeat it. Use the bare action/content/old_text fields only for a single lone change.\n\nWHEN: only for facts that apply to EVERY session regardless of task: who the user is, stable environment facts, standing conventions with no task home. Anything learned while doing a task (procedures, pitfalls, and the user's preferences and corrections for that kind of work) belongs in the task's skill via skill_manage, where it loads only when relevant; memory is injected into every turn and must stay small.\n\nIF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that removes or shortens enough stale entries and adds the new one together.\n\nTARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your notes (environment, conventions, tool quirks, lessons).\n\nSKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, completed-work logs, temporary TODO state (use session_search for those). Reusable procedures belong in a skill, not memory.",
+  "description": "Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.\n\nHOW: make your changes in ONE call PER STORE via an 'operations' array (each item: {action, content?, old_text?}). Always supply target at the top level, never inside an operation. Use separate calls for different stores. The batch applies atomically and the char limit is checked only on the FINAL result — so a single call can remove/replace stale entries to free room AND add new ones, even when an add alone would overflow. The response reports current/limit chars and confirms completion; one batch call finishes the update, so don't repeat it. Use the bare action/content/old_text fields only for a single lone change.\n\nWHEN: only for facts that apply to EVERY session regardless of task: who the user is, stable environment facts, standing conventions with no task home. Anything learned while doing a task (procedures, pitfalls, and the user's preferences and corrections for that kind of work) belongs in the task's skill via skill_manage, where it loads only when relevant; memory is injected into every turn and must stay small.\n\nIF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that removes or shortens enough stale entries and adds the new one together.\n\nTARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your notes (environment, conventions, tool quirks, lessons).\n\nSKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, completed-work logs, temporary TODO state (use session_search for those). Reusable procedures belong in a skill, not memory.",
   "name": "memory",
   "parameters": {
     "properties": {
       "action": {
-        "description": "The action to perform (single-op shape). Omit when using 'operations'.",
+        "description": "The action to perform (single-op shape). Omit when using 'operations'. 'patch' edits ONE SPAN inside the matched entry (old_text -> content, rest of the entry kept) -- prefer it when changing part of a multi-fact entry instead of rewriting the whole entry with 'replace'.",
         "enum": [
           "add",
           "replace",
+          "patch",
           "remove"
         ],
         "type": "string"
       },
       "content": {
-        "description": "The entry content. Required for 'add' and 'replace'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. Alias: 'new_text' is also accepted (same full-entry meaning).",
+        "description": "The entry content. Required for 'add', 'replace' and 'patch'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. For 'patch' it is only the NEW SPAN TEXT that replaces old_text inside the matched entry. Alias: 'new_text' is also accepted.",
         "type": "string"
       },
       "new_text": {
@@ -21,7 +22,7 @@
         "type": "string"
       },
       "old_text": {
-        "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit only for 'add'.",
+        "description": "REQUIRED for 'replace', 'patch' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry ('patch' also replaces exactly this span, which must occur once in the entry; 'replace'/'remove' do not splice it). Omit only for 'add'.",
         "type": "string"
       },
       "operations": {
@@ -32,12 +33,13 @@
               "enum": [
                 "add",
                 "replace",
+                "patch",
                 "remove"
               ],
               "type": "string"
             },
             "content": {
-              "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten). Alias: 'new_text'.",
+              "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten); for patch, the NEW SPAN TEXT replacing old_text inside the entry. Alias: 'new_text'.",
               "type": "string"
             },
             "new_text": {
@@ -45,7 +47,7 @@
               "type": "string"
             },
             "old_text": {
-              "description": "Substring identifying the entry for replace/remove.",
+              "description": "Substring identifying the entry for replace/patch/remove; for patch, also the span replaced (must occur once in the entry).",
               "type": "string"
             }
           },
@@ -57,7 +59,7 @@
         "type": "array"
       },
       "target": {
-        "description": "Which memory store: 'memory' for personal notes, 'user' for user profile.",
+        "description": "Required at the top level: 'memory' for personal notes, 'user' for user profile. Applies to every operation in the call; never put target inside an operation.",
         "enum": [
           "memory",
           "user"
