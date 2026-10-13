@@ -51,7 +51,7 @@ function noteToolOutcome(ctx: GatewayEventContext, sessionId: string, cwd: strin
   }
 
   if (ctx.payload?.name === 'setup_beat' && !ctx.event.replayed) {
-    noteSetupBeatResult(setupBeatResult(ctx.payload.result))
+    noteSetupBeatResult([sessionId, storedSessionIdForRuntimeId(sessionId)], setupBeatResult(ctx.payload.result))
   }
 
   if (!ctx.event.replayed && appliedLayout(ctx.payload?.name, ctx.payload?.result)) {

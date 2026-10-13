@@ -201,8 +201,15 @@ export async function skipOnboarding(request: OnboardingRequest, runtimeId: stri
   endOnboarding('skipped')
 }
 
-/** A `setup_beat` result that ends the run: `completed` (the model said done) or `skipped_all`. */
-export function noteSetupBeatResult(result: SetupBeatToolResult): void {
+/** A `setup_beat` result that ends the run: `completed` (the model said done) or `skipped_all`. `ids`:
+ *  the event's runtime and stored session; a rerun closes the old chat's card, which must not end the new run. */
+export function noteSetupBeatResult(ids: readonly (null | string)[], result: SetupBeatToolResult): void {
+  const session = $onboardingSession.get()
+
+  if (!session || !ids.some(id => id === session.runtimeId || id === session.storedId)) {
+    return
+  }
+
   if (result.completed) {
     endOnboarding('done')
   } else if (result.skipped_all) {

@@ -59,8 +59,8 @@ describe('onboarding run', () => {
     const { request } = backend({ eligible: true, run: true })
 
     await startOnboarding(request, resume, { ensureProfile })
-    noteSetupBeatResult({ completed: true })
-    noteSetupBeatResult({ skipped_all: true })
+    noteSetupBeatResult(['rt-1', 'st-1'], { completed: true })
+    noteSetupBeatResult(['rt-1', 'st-1'], { skipped_all: true })
 
     expect($onboardingPhase.get()).toBe('done')
     expect($onboardingEnded.get()).toBe('done')
@@ -78,6 +78,16 @@ describe('onboarding run', () => {
     expect($onboardingPhase.get()).toBe('shown')
     expect($onboardingSurfaceClear.get()).toBe(true)
     expect($onboardingSettleFrom.get()).not.toBeNull()
+  })
+
+  it('ignores a setup_beat result from another chat, like the old run a rerun closed', async () => {
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+
+    noteSetupBeatResult(['rt-old', 'st-old'], { skipped_all: true })
+
+    expect($onboardingPhase.get()).toBe('shown')
+    expect($onboardingEnded.get()).toBeNull()
   })
 
   it('keeps the run when the backend refuses the skip', async () => {
