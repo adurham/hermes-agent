@@ -123,7 +123,10 @@ def test_local_session_authoring_commands_run_the_gateway_handler(tmp_path):
     assert 'ship the cache' in goal['message'] and 'ship the cache' in goal['notice'], goal
     assert 'add tests' in out['subgoal add tests']['output'], out['subgoal add tests']
     assert 'ship the cache' in out['goal status']['output'], out['goal status']
-    assert out['admitted after'] == out['admitted before'], (out['admitted before'], out['admitted after'])
+    # Nothing the commands returned was admitted by the gateway; /loop's first wake (fires now) is the
+    # loop scheduler's own producer admission, not a command's.
+    added = [r for r in out['admitted after'] if r not in out['admitted before'] and not r.startswith('["loop-tick"')]
+    assert added == [], added
     # /loop, /heartbeat: state on the session's row.
     assert '30m' in out['loop every 30m check the queue']['output'], out['loop every 30m check the queue']
     assert 'check the queue' in out['loop']['output'], out['loop']
