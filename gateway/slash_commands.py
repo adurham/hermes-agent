@@ -1251,7 +1251,7 @@ class GatewaySlashCommandsMixin(
                     cli_main(tokens)
                 except SystemExit:
                     pass  # argparse exits on --help/usage errors; its text is the reply
-                except Exception as exc:
+                except Exception as exc:  # health: allow BLE001 -- main's CLI handler: the failure line is the reply
                     print(t("cli.commands.curator.failed", error=exc))
             return out.getvalue().rstrip()
 

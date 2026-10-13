@@ -331,8 +331,8 @@ class GatewayGoalsMixin:
             from gateway.session_automation import admit_route_wake
             try:
                 await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
-            except Exception as exc:
-                logger.debug("goal continuation: local admission failed: %s", exc)
+            except Exception:  # health: allow BLE001 -- best-effort like the FIFO enqueue below; traceback logged
+                logger.debug("goal continuation: local admission failed", exc_info=True)
             return
         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
         try:
