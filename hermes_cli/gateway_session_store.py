@@ -224,6 +224,11 @@ class GatewaySessionStore:
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
             rewound_count=int(receipt.get("rewound_count") or 0), turns_undone=len(durable_user) - user_ordinal)
 
+    def set_session_yolo(self, session_id, enabled):
+        """Main's ``/yolo`` persist hook: the gateway session's own bypass (``config.set yolo``, persisted
+        on the route), since approvals run there. The CLI's in-process flag stays main's display state."""
+        self.call("config.set", session_id=session_id, key="yolo", value="1" if enabled else "0")
+
     def _title_holder(self, session_id, title):
         db = self._db()
         if db is None or not title:

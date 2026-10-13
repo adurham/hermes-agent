@@ -37,6 +37,8 @@ class FakeClient:
             return {"admission_id": "adm-1", "status": "queued", "execution_generation": 7}
         if method == "prompt.receipt":
             return {"admission_id": "adm-1", "status": "terminal", "result": self.result, "usage": self.usage}
+        if method == "session.resume":
+            return {"session_id": params["session_id"], "revision": 1, "execution_generation": 7, "messages": []}
         if method == "session.interrupt":
             if self.on_interrupt:
                 await self.events.put(self.on_interrupt)
@@ -594,3 +596,35 @@ def test_voice_turn_flag_rides_prompt_submit(make_agent):
     agent._voice_turn_pending = False
     agent.run_conversation("typed")
     assert "voice_turn" not in dict(client.calls)["prompt.submit"]
+
+
+def test_verbose_mode_reaches_the_gateway_session(make_agent):
+    """``/verbose`` / ``/focus`` write ``agent.tool_progress_mode``: the gateway renders tool events in
+    that mode (``config.set verbose`` with the explicit mode, never ``cycle``)."""
+    agent, client = make_agent([])
+    agent.tool_progress_mode = "verbose"
+    agent.tool_progress_mode = "verbose"
+    agent.tool_progress_mode = "off"
+    sets = [p for m, p in client.calls if m == "config.set"]
+    assert sets == [{"session_id": SID, "key": "verbose", "value": "verbose"},
+                    {"session_id": SID, "key": "verbose", "value": "off"}]
+
+
+def test_a_non_default_verbose_mode_is_sent_when_the_agent_is_built(make_agent):
+    agent, client = make_agent([], tool_progress_mode="new")
+    assert {"session_id": SID, "key": "verbose", "value": "new"} in [p for m, p in client.calls if m == "config.set"]
+
+
+def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
+    """``/reasoning high`` sets ``reasoning_config`` and rebuilds the agent: the rebuilt agent commits
+    the effort as ``session.mutate reasoning`` (session scope, as main's), once."""
+    agent, client = make_agent([], reasoning_config={"enabled": True, "effort": "high"})
+    mut = [p for m, p in client.calls if m == "session.mutate"]
+    assert len(mut) == 1 and mut[0]["operation"] == "reasoning" and mut[0]["payload"] == {"effort": "high"}
+    agent.reasoning_config = {"enabled": False}
+    mut = [p for m, p in client.calls if m == "session.mutate"]
+    assert mut[-1]["payload"] == {"effort": "none"}
+    agent.connection.state(SID).info["reasoning_effort"] = "none"
+    agent2 = GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": False})
+    assert len([p for m, p in client.calls if m == "session.mutate"]) == 2  # already the session's effort
+    assert agent2.reasoning_config == {"enabled": False}

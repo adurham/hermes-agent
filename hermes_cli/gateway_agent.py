@@ -90,8 +90,6 @@ class GatewayAgent:
         self.api_key = None  # never on this side of the wire
         self.max_iterations = max_iterations
         self.quiet_mode = quiet_mode
-        self.tool_progress_mode = tool_progress_mode
-        self.reasoning_config = reasoning_config
         self.service_tier = service_tier
         self.clarify_callback = clarify_callback
         self.connection_callback = connection_callback
@@ -150,6 +148,12 @@ class GatewayAgent:
         self._interrupt_sent_at = None
         self._rate_limit_state = None
         self._config_context_length = None
+        # Session-scope settings the gateway applies (its turn renders tools in this mode, its agent asks
+        # for this effort): written once main's rebuilt agent is ready, then on every change.
+        self._tool_progress_mode = "all"
+        self.tool_progress_mode = tool_progress_mode
+        self._reasoning_config = None
+        self.reasoning_config = reasoning_config
         self._apply_info(self._state().info)
         self.reasoning_callback = reasoning_callback
         state = self._state()
@@ -178,6 +182,48 @@ class GatewayAgent:
             logger.debug("config.set show_reasoning failed: %s", exc)
             return
         self._show_reasoning_sent = wanted
+
+    # -- session-scope settings ------------------------------------------------------------------
+    @property
+    def tool_progress_mode(self):
+        return self._tool_progress_mode
+
+    @tool_progress_mode.setter
+    def tool_progress_mode(self, mode):
+        """``/verbose`` / ``/focus``: ``config.set verbose`` with the explicit mode (never ``cycle``, which
+        could drift from the CLI's own cycle)."""
+        if mode == self._tool_progress_mode or mode not in {"off", "new", "all", "verbose"}:
+            self._tool_progress_mode = mode
+            return
+        self._tool_progress_mode = mode
+        try:
+            self.connection.call("config.set", session_id=self.session_id, key="verbose", value=mode)
+        except GatewayClientError as exc:
+            logger.debug("config.set verbose failed: %s", exc)
+
+    @property
+    def reasoning_config(self):
+        return self._reasoning_config
+
+    @reasoning_config.setter
+    def reasoning_config(self, config):
+        """``/reasoning <level>`` (session scope; main rebuilds its agent with the new config) and /new's
+        re-derived effort: ``session.mutate reasoning`` when it differs from the session's effort."""
+        self._reasoning_config = config
+        effort = _effort_word(config)
+        if effort is None:
+            return
+        info = self._state().info or {}
+        if info.get("reasoning_effort") == effort:
+            return
+        try:
+            snapshot = self.connection.call("session.resume", session_id=self.session_id)
+            self.connection.call("session.mutate", session_id=self.session_id, request_id=uuid.uuid4().hex,
+                                 expected_revision=snapshot["revision"], operation="reasoning",
+                                 payload={"effort": effort})
+            info["reasoning_effort"] = effort
+        except (GatewayClientError, KeyError, TypeError) as exc:
+            logger.debug("session.mutate reasoning failed: %s", exc)
 
     # -- session identity ----------------------------------------------------------------------
     @property
@@ -833,6 +879,16 @@ class GatewayAgent:
             if receipt_usage.get(key) or stored.get(key):
                 usage[key] = receipt_usage.get(key) or stored.get(key)
         self.apply_session_usage(usage)
+
+
+def _effort_word(config):
+    """The ``session.mutate reasoning`` effort for main's ``reasoning_config`` dict (None: no override)."""
+    if not isinstance(config, dict):
+        return None
+    if config.get("enabled") is False:
+        return "none"
+    effort = config.get("effort")
+    return effort if isinstance(effort, str) and effort else None
 
 
 def _rate_limit_state(data):

@@ -385,3 +385,15 @@ def test_verbose_flag_rides_session_create():
     from hermes_cli.gateway_session_store import _creation_policy
     assert _creation_policy({"verbose": True})["verbose"] is True
     assert "verbose" not in _creation_policy({"verbose": None})
+
+
+def test_yolo_toggle_persists_as_the_gateway_session_yolo(store):
+    """Main's ``/yolo`` persist hook (``db.set_session_yolo``) is the gateway's ``config.set yolo`` with an
+    explicit value: approvals run in the gateway, so its bypass is the one that matters."""
+    db, client = store
+    db.open_session(cli("local-old", resumed=True))
+    db.set_session_yolo("local-old", True)
+    db.set_session_yolo("local-old", False)
+    sets = [p for m, p in client.calls if m == "config.set"]
+    assert sets == [{"session_id": "local-old", "key": "yolo", "value": "1"},
+                    {"session_id": "local-old", "key": "yolo", "value": "0"}]
