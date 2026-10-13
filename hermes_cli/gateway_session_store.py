@@ -148,10 +148,26 @@ class GatewaySessionStore:
                          expected_revision=self._revision(session_id), operation=operation, payload=payload)
 
     def set_session_title(self, session_id, title):
-        self._mutate(session_id, "rename", {"title": title})
+        try:
+            self._mutate(session_id, "rename", {"title": title})
+        except GatewayClientError as exc:
+            # The owner's SessionDB ValueError text never crosses the wire (bounded reason codes):
+            # print main's "already in use" copy from the reader when another row holds the title.
+            holder = self._title_holder(session_id, title)
+            if holder:
+                raise ValueError(f"Title '{title}' is already in use by session {holder}") from exc
+            raise
         if session_id in self.snapshots:
             self.connection.state(session_id).title = title
         return True
+
+    def _title_holder(self, session_id, title):
+        db = self._db()
+        if db is None or not title:
+            return None
+        with db._read_ctx() as conn:
+            row = conn.execute("SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id)).fetchone()
+        return row[0] if row else None
 
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)

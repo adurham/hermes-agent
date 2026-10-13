@@ -181,3 +181,30 @@ def test_cli_startup_notices_render_from_the_snapshot(store, monkeypatch):
     printed.clear()
     CLIInfoMixin.show_banner(banner)
     assert "[yellow]⚠ terminal off[/]" in printed and "LOCAL-WARN" not in printed
+
+
+def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypatch):
+    """The owner's ValueError text never crosses the wire (bounded reason codes); the rename copy
+    main prints comes from the read-only reader."""
+    db, client = store
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    from hermes_state import SessionDB
+    writer = SessionDB(db_path=tmp_path / "state.db")
+    writer.create_session("local-other", source="local")
+    writer.set_session_title("local-other", "Alpha Title")
+    writer.create_session("local-old", source="local")
+    writer.close()
+    db.open_session(cli("local-old", resumed=True))
+
+    async def refuse(method, *, _timeout=None, **params):
+        client.calls.append((method, params))
+        if method == "session.mutate":
+            raise GatewayClientError("request_failed")
+        return snapshot(params.get("session_id", "local-old"))
+    client.rpc = refuse
+    with pytest.raises(ValueError) as err:
+        db.set_session_title("local-old", "Alpha Title")
+    assert str(err.value) == "Title 'Alpha Title' is already in use by session local-other"
+    with pytest.raises(ValueError) as err:
+        db.set_session_title("local-old", "Free Title")
+    assert str(err.value) == "request_failed"
