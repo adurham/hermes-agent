@@ -61,7 +61,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
     onStarted: card => setOpenKey(cardKey(card))
   })
 
-  const { connectAccount, connector, remover, startConnect, switcher, write } = hostedActions
+  const { connectAccount, connector, remover, retry, startConnect, switcher, write } = hostedActions
   const renamer = useRenameAccount(profile)
 
   const [addOpen, setAddOpen] = useState(false)
@@ -229,15 +229,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
             pendingRename,
             reconnect: (account: AccountRow) => void startConnect(openCard, true, account),
             reconnecting: connector.pending === openCard.slug,
-            retry: operation => {
-              const { reconnect, ...address } = operation.request
-
-              void connectAccount(openCard, reconnect, address).then(outcome => {
-                if (!outcome.ok) {
-                  notifyError(outcome.error, t.connectors.connectErrorFor(openCard.name))
-                }
-              })
-            },
+            retry: operation => retry(openCard, operation),
             remove: (account: AccountRow) => setDisconnecting({ account, card: openCard }),
             rename: renamer.rename,
             renameOpened

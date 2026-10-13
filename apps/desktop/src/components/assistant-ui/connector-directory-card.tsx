@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import {
   $abandonedConnects,
   $accountOperations,
+  type AccountOperation,
   accountOperationFor,
   retryable
 } from '@/app/capabilities/connectors/data/account-operations'
@@ -136,27 +137,43 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
     })
   }
 
-  // An open sign-in shows on its tile; a failed one says so, and clicking the tile starts the same sign-in again.
-  const signInSub = (card: ConnectorCardModel): string | undefined => {
+  // An open sign-in decides both the tile's label and its click, so the two never disagree with a stale row.
+  const openSignIn = (card: ConnectorCardModel) => {
     const operation = accountOperationFor(operations, card.slug, owner)
 
-    if (!operation || operation.settled) {
-      return undefined
-    }
-
-    return retryable(operation) ? copy.directory.signInFailed : copy.directory.finishInBrowser
+    return operation && !operation.settled ? operation : null
   }
 
-  const tileSub = (card: ConnectorCardModel, busy: boolean): string | undefined => {
+  const tileSub = (card: ConnectorCardModel, busy: boolean, open: AccountOperation | null): string | undefined => {
     if (busy) {
       return copy.opening
     }
 
-    return signInSub(card) ?? (card.state === 'available' ? undefined : t.connectorsPage.card.state[card.stateWord])
+    if (open) {
+      return retryable(open) ? copy.directory.signInFailed : copy.directory.finishInBrowser
+    }
+
+    return card.state === 'available' ? undefined : t.connectorsPage.card.state[card.stateWord]
+  }
+
+  // Failed: the same request again. Waiting: the link again. Otherwise the app's own verb.
+  const press = (card: ConnectorCardModel, open: AccountOperation | null) => {
+    if (open && retryable(open)) {
+      actions.retry(card, open)
+    } else if (open) {
+      const url = open.targets.find(target => target.connectUrl)?.connectUrl
+
+      if (url) {
+        void window.hermesDesktop?.openExternal?.(url)
+      }
+    } else {
+      actions.runHostedVerb(card)
+    }
   }
 
   const tile = (card: ConnectorCardModel) => {
     const busy = actions.busySlug === card.slug
+    const open = openSignIn(card)
 
     return (
       <Chip
@@ -172,10 +189,10 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
         on={card.state === 'connected'}
         onToggle={() => {
           if (!busy) {
-            actions.runHostedVerb(card)
+            press(card, open)
           }
         }}
-        sub={tileSub(card, busy)}
+        sub={tileSub(card, busy, open)}
       />
     )
   }

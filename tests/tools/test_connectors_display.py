@@ -7,7 +7,6 @@ Contracts:
 """
 
 import json
-import threading
 from unittest.mock import patch
 
 import pytest
@@ -45,16 +44,13 @@ def test_display_waits_for_the_user_and_reports_what_they_connected(ending):
     seen = []
 
     def card(payload):
+        # The user connects Slack while the card is open, then presses Continue or walks away.
         seen.append(payload)
+        gw.connected.add("slack")
+        if ending == "continue":
+            apply_answer(live.get("s1", payload["op_id"]), json.dumps({"settled_by": "continue"}))
 
-        def user_connects_slack():
-            gw.connected.add("slack")
-            if ending == "continue":
-                apply_answer(live.get("s1", payload["op_id"]), json.dumps({"settled_by": "continue"}))
-
-        threading.Timer(0.05, user_connects_slack).start()
-
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.5 if ending == "deadline" else 60):
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 2 if ending == "deadline" else 60):
         out = _display(gw, callback=card, card_surface=True)
 
     (payload,) = seen

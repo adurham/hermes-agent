@@ -6,7 +6,7 @@ import { notifyError } from '@/store/notifications'
 
 import type { AccountRow, ConnectorCardModel } from '../types'
 
-import { $accountOperations, abandonConnect, accountOperationFor } from './account-operations'
+import { $accountOperations, abandonConnect, type AccountOperation, accountOperationFor } from './account-operations'
 import { accountAddress, pickAccount } from './join'
 import {
   type AccountDisconnect,
@@ -25,6 +25,8 @@ export interface HostedActions {
   connectAccount: (card: ConnectorCardModel, reconnect: boolean, address?: ConnectAddress) => Promise<ConnectOutcome>
   connector: ConnectorConnect
   remover: AccountDisconnect
+  /** Runs a failed sign-in's own request again, so it mints a fresh link for the same account. */
+  retry: (card: ConnectorCardModel, operation: AccountOperation) => void
   /** Runs a hosted card's verb; false when the verb is not a hosted one (a local server's). */
   runHostedVerb: (card: ConnectorCardModel) => boolean
   startConnect: (card: ConnectorCardModel, reconnect: boolean, account?: AccountRow) => Promise<void>
@@ -90,6 +92,16 @@ export function useHostedActions(
     onStarted?.(card)
   }
 
+  const retry = (card: ConnectorCardModel, operation: AccountOperation) => {
+    const { reconnect, ...address } = operation.request
+
+    void connectAccount(card, reconnect, address).then(outcome => {
+      if (!outcome.ok) {
+        notifyError(outcome.error, t.connectors.connectErrorFor(card.name))
+      }
+    })
+  }
+
   const stopWaiting = (card: ConnectorCardModel) => {
     const open = accountOperationFor(operations, card.slug, scope)
 
@@ -142,6 +154,7 @@ export function useHostedActions(
     connectAccount,
     connector,
     remover,
+    retry,
     runHostedVerb,
     startConnect,
     switcher,
