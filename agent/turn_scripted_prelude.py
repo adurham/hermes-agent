@@ -24,6 +24,12 @@ from agent.turn_tool_round import run_tool_round
 Prelude = Generator[tuple[str, str, dict], Optional[str], None]
 
 
+def prelude_call_id(session_id: str, name: str, args: dict, index: int) -> str:
+    """Seeded by the session, the call and its place in history: no two chats share an id (a rerun plays
+    the same card at the same place), and it stays byte-stable on replay."""
+    return deterministic_call_id(name, f"{session_id}:{json.dumps(args, sort_keys=True)}", index)
+
+
 def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
     """Play ``prelude`` into the loop state ``s``; returns the last tool round's verdict, or None when
     no step ran. The caller ends the turn on ``return`` and skips the model on ``break``."""
@@ -38,9 +44,7 @@ def run_scripted_prelude(agent: Any, s: Any, prelude: Prelude) -> Any:
         s.finish_reason = "tool_calls"
         s.assistant_message = NormalizedResponse(
             content=content, finish_reason="tool_calls",
-            # Seeded by the card and its place in history: unique within the session, byte-stable on replay.
-            tool_calls=[build_tool_call(deterministic_call_id(name, json.dumps(args, sort_keys=True), len(s.messages)),
-                                        name, args)])
+            tool_calls=[build_tool_call(prelude_call_id(agent.session_id, name, args, len(s.messages)), name, args)])
         verdict = _run_phase(run_tool_round, agent, s)
         if verdict.action != "continue":
             break
