@@ -1235,6 +1235,28 @@ class GatewaySlashCommandsMixin(
         confirmation_text = t(key, count=count, reason=reason)
         return await self._deliver_approval_confirmation(event, confirmation_text, "deny")
 
+    async def _handle_curator_command(self, event: MessageEvent) -> str:
+        """Handle /curator — the ``hermes curator`` handler set (status by default), as main's CLI ran
+        it in-process; its printed report is the reply. Runs in the executor with the session's
+        context so the profile's skills tree and curator state are the ones read and written."""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from hermes_cli.curator import cli_main
+        tokens = shlex.split(event.get_command_args() or "") or ["status"]
+
+        def _run() -> str:
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(out):
+                try:
+                    cli_main(tokens)
+                except SystemExit:
+                    pass  # argparse exits on --help/usage errors; its text is the reply
+                except Exception as exc:
+                    print(t("cli.commands.curator.failed", error=exc))
+            return out.getvalue().rstrip()
+
+        return await self._run_in_executor_with_context(_run)
+
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
         protect privacy; ``hermes debug share`` from the CLI does full uploads."""

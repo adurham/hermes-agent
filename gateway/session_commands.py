@@ -18,6 +18,14 @@ _READ_COMMANDS = frozenset({'help', 'commands', 'status', 'context', 'version', 
                             'usage', 'insights', 'profile', 'diff', 'memory', 'kanban', 'topup',
                             'suggestions', 'bundles'})
 _CONTROL_COMMANDS = frozenset({'title'})
+# Authoring/workflow commands whose messaging handler (``_command_handler_table``) runs as-is for a
+# local session: goal/loop/heartbeat state on the session's row, the review/refine forks of its
+# cached agent, the /debug summary upload, /blueprint's job creation. A turn the handler would have
+# pushed onto the adapter FIFO comes back as a ``send`` directive (gateway/session_command_sink.py).
+_HANDLER_CONTROLS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat', 'review', 'refine', 'debug', 'curator'})
+# Idle-path commands the messaging gateway answers by rewriting the turn (``_hm_cmd_<name>``,
+# gateway/run_inbound.py): the rewritten text is returned as the client's ``send`` directive.
+_PROMPT_COMMANDS = frozenset({'plan', 'learn', 'init', 'initiate-setup', 'moa', 'blueprint', 'egress'})
 
 # Kanban verbs that only read the board. ``create`` would also subscribe the LOCAL chat to
 # messaging notifications, and every other verb mutates the board.
@@ -48,7 +56,7 @@ _READ_ARGUMENTS = {
 
 def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
-    if name in _CONTROL_COMMANDS:
+    if name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS:
         return 'control'
     if name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg):
         return 'read'
@@ -178,12 +186,32 @@ async def execute_command(connection, ref, params, *, dispatch=False):
         return await asyncio.to_thread(build)
 
     from gateway.platforms.base import MessageEvent
-    event = MessageEvent(text='/' + canonical + (' ' + arg if arg else ''), source=live.source)
+    from gateway.session_command_sink import capture
+    typed = '/' + canonical + (' ' + arg if arg else '')
+    event = MessageEvent(text=typed, source=live.source)
+    runner = authority.runner
+    prompt = None
     # Use the registry's existing busy contract, not a local approximation.
-    with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
+    with _profile_runtime_scope(home), _session_workspace(runner, live.source), capture() as sink:
         if authority._handle(ref).execution_state != 'idle':
-            output = await authority.runner._dispatch_busy_slash_command(event, definition, live.route, live.source)
+            output = await runner._dispatch_busy_slash_command(event, definition, live.route, live.source)
+        elif canonical in _PROMPT_COMMANDS:
+            handled, output = await getattr(runner, '_hm_cmd_' + canonical.replace('-', '_'))(
+                event, live.source, live.route)
+            if not handled:
+                prompt = event.text
         else:
-            handler = authority.runner._command_handler_table((canonical,))[canonical]
+            handler = runner._command_handler_table((canonical,))[canonical]
             output = await handler(event)
-    return {'type': 'exec', 'output': str(output or '')}
+    prompt = prompt if prompt is not None else sink.prompt
+    if prompt:
+        # The client submits the turn with its own durable input id; the gateway never does.
+        notice = '\n'.join(filter(None, [*sink.notices, str(output or '')]))
+        return {'type': 'send', 'message': prompt, 'display': sink.display or typed,
+                **({'notice': notice} if notice else {})}
+    return {'type': 'exec', 'output': '\n'.join(filter(None, [*sink.notices, _text(output)]))}
+
+
+def _text(output):
+    """A handler reply as text: ``/blueprint``'s result object carries it in ``.text``."""
+    return str(getattr(output, 'text', output) or '')
