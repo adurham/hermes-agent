@@ -116,7 +116,7 @@ class GatewayConnection:
     def _run(self):
         try:
             asyncio.run(self._main())
-        except BaseException as exc:  # reported to the waiting caller
+        except BaseException as exc:  # health: allow BLE001 -- the loop thread reports every failure to the waiting caller
             if self._error is None:
                 self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
                     "Gateway connection failed; no local fallback")
@@ -140,7 +140,7 @@ class GatewayConnection:
                 await asyncio.wait({pump, stop}, return_when=asyncio.FIRST_COMPLETED)
                 pump.cancel()
                 stop.cancel()
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- a transport failure becomes the connect error or the disconnect frame
             if not self._ready.is_set():
                 self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
                     f"Gateway connection failed; no local fallback ({type(exc).__name__})")

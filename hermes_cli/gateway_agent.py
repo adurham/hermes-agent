@@ -263,7 +263,7 @@ class GatewayAgent:
         try:
             self.connection.call("session.interrupt", session_id=self.session_id,
                                  execution_generation=generation, timeout=5)
-        except Exception as exc:  # the settle wait below bounds a lost interrupt
+        except Exception as exc:  # health: allow BLE001 -- the settle wait below bounds a lost interrupt
             logger.debug("session.interrupt failed: %s", exc)
 
     def hard_interrupt(self, message=None, tool_reason=None):

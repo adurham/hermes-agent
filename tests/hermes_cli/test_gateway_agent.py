@@ -49,7 +49,7 @@ class FakeClient:
                 await self.events.put(GatewayClientError("Gateway disconnected"))
                 return
             if item == "wait":
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.3)  # health: allow HX013 -- a slow stream frame gap IS the scripted behaviour
                 continue
             await self.events.put(item)
 
@@ -147,8 +147,8 @@ def test_interrupt_sends_session_interrupt_and_settles_interrupted(make_agent):
     out = {}
     worker = threading.Thread(target=lambda: out.update(agent.run_conversation("story")))
     worker.start()
-    import time
-    time.sleep(0.4)
+    from tests.waiting import wait_until
+    wait_until(lambda: agent._generation is not None and agent._admission, timeout=5)
     agent.interrupt("stop")
     worker.join(5)
     assert not worker.is_alive()

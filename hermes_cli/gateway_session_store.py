@@ -78,7 +78,7 @@ class GatewaySessionStore:
             try:
                 from hermes_state import SessionDB
                 self._reader = SessionDB(db_path=path, read_only=True)
-            except Exception as exc:  # reads find nothing; retried on the next read
+            except Exception as exc:  # health: allow BLE001 -- reads find nothing; retried on the next read
                 logger.debug("read-only state.db unavailable: %s", exc)
         return self._reader
 
@@ -178,7 +178,7 @@ class GatewaySessionStore:
                     " AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
                     " AND NOT EXISTS (SELECT 1 FROM sessions child WHERE child.parent_session_id = sessions.id)",
                     (session_id,)).fetchone()
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- a failed probe keeps the row (never deletes on doubt)
             logger.debug("empty-session probe failed: %s", exc)
             return False
         if not empty:

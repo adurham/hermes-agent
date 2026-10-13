@@ -904,6 +904,7 @@ from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.p
     _run_npm_install_deterministic,
 )
 from hermes_cli.main_tui_launch import (
+    _bypass_chat_launch,
     _launch_tui,
     _pin_kanban_board_env,
     _refuse_unforwarded_tui_flags,
@@ -1707,9 +1708,8 @@ _CHAT_PASSTHROUGH = (
 def cmd_chat(args):
     """Run interactive chat CLI."""
     from hermes_cli.stream_json import stream_json_requested
-    # Structured stdout (stream-json) and the --safe-mode / --ignore-user-config bypass keep the
-    # gateway transport client; the classic CLI (interactive and -q/-Q) is main's HermesCLI, whose
-    # agent is a gateway-backed proxy (hermes_cli/gateway_agent.py).
+    # stream-json and the --safe-mode / --ignore-user-config bypass keep the transport client; the
+    # classic CLI (interactive, -q/-Q) is main's HermesCLI with a gateway-backed agent (gateway_agent.py).
     if stream_json_requested(args) or _bypass_chat_launch(args):
         from hermes_cli.gateway_chat_startup import launch_gateway_chat
         sys.exit(launch_gateway_chat(args))
@@ -2889,14 +2889,6 @@ def _is_tui_chat_launch(args) -> bool:
     if getattr(args, "command", None) not in {None, "chat"}:
         return False
     return _resolve_use_tui(args)
-
-
-def _bypass_chat_launch(args) -> bool:
-    """--safe-mode / --ignore-user-config chat: the gateway owner freezes code defaults and runs
-    the turn out of process, so the profile's display.interface must not pick a surface and the
-    client performs no discovery. Explicit --tui forwards the flags in its session.create policy."""
-    return bool(getattr(args, "safe_mode", False) or getattr(args, "ignore_user_config", False)) \
-        and not getattr(args, "tui", False)
 
 
 def _agent_subcommand_selected(args) -> bool:

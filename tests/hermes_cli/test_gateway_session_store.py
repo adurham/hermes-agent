@@ -156,6 +156,7 @@ def test_cli_startup_notices_render_from_the_snapshot(store, monkeypatch):
     banner = SimpleNamespace(**vars(host), console=SimpleNamespace(clear=lambda: None), compact=True,
                              session_id="local-old", _show_status=lambda: None, agent=None,
                              _show_tool_availability_warnings=lambda: printed.append("LOCAL-WARN"))
+    banner._print_gateway_tool_warnings = lambda lines: CLIInfoMixin._print_gateway_tool_warnings(banner, lines)
     printed.clear()
     CLIInfoMixin.show_banner(banner)
     assert "[yellow]⚠ terminal off[/]" in printed and "LOCAL-WARN" not in printed

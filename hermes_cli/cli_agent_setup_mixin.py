@@ -649,7 +649,7 @@ class CLIAgentSetupMixin:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
         try:
             self._ensure_gateway_session()
-        except Exception as e:
+        except Exception as e:  # health: allow BLE001 -- any session.create/resume failure is main's agent-init failure copy, never a traceback
             ChatConsole().print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
             return False
         if (
