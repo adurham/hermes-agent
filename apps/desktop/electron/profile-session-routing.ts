@@ -1145,3 +1145,156 @@ export async function fetchAllProfilesSessionsPerProfile(
     ? allProfilesSidebar(url, profiles, fetchPage)
     : allProfilesSessionList(url, profiles, fetchPage)
 }
+
+/** Cross-profile reads the gateway builds by scanning every profile's databases: the
+ *  all-profiles project tree and the PR scan. The renderer asks for them only for the
+ *  all-profiles view, so a `profile` already on the path is the route's own scope, not a
+ *  selector; the per-profile reads carry their own scope and are made with `profileScoped`. */
+export function isAllProfilesAggregateRequest(method: string | undefined, path: string | undefined): boolean {
+  if (!path) {
+    return false
+  }
+
+  let pathname: string
+
+  try {
+    pathname = new URL(path, 'http://desktop.local').pathname.replace(/\/+$/, '')
+  } catch {
+    return false
+  }
+
+  const verb = (method || 'GET').toUpperCase()
+
+  return (
+    (verb === 'GET' && pathname === '/api/profiles/projects/tree') ||
+    (verb === 'POST' && pathname === '/api/profiles/sessions/pull-requests')
+  )
+}
+
+function mergeTreeById(into: Map<string, any>, entries: any[], childKey: string): void {
+  for (const entry of entries) {
+    const existing = into.get(entry.id)
+
+    if (!existing) {
+      into.set(entry.id, entry)
+
+      continue
+    }
+
+    if (childKey === 'sessions') {
+      existing.sessions = [...(existing.sessions ?? []), ...(entry.sessions ?? [])]
+    } else {
+      const children = new Map<string, any>((existing[childKey] ?? []).map((child: any) => [child.id, child]))
+      mergeTreeById(children, entry[childKey] ?? [], 'sessions')
+      existing[childKey] = [...children.values()]
+    }
+
+    if ('sessionCount' in existing) {
+      existing.sessionCount = (existing.sessionCount || 0) + (entry.sessionCount || 0)
+    }
+  }
+}
+
+// The gateway's own cross-profile merge (`_merge_profile_tree`), keyed by the folder key each
+// per-profile read reports: one group per folder, a declared project wins over another
+// profile's auto entry, totals add up, and the previews are the newest across profiles.
+function mergeProfileProjectTrees(reads: ProfileRead[], previewLimit: number) {
+  const merged = new Map<string, any>()
+  const scopedSessionIds: unknown[] = []
+  const errors: SessionScanError[] = []
+
+  for (const read of reads) {
+    if ('error' in read) {
+      errors.push({ profile: read.profile, error: read.error })
+
+      continue
+    }
+
+    scopedSessionIds.push(...(Array.isArray(read.data?.scoped_session_ids) ? read.data.scoped_session_ids : []))
+    errors.push(...(errorsOf(read.data) ?? []))
+
+    for (const incoming of Array.isArray(read.data?.projects) ? read.data.projects : []) {
+      let project = incoming
+      const key = String(project.mergeKey ?? project.path ?? project.id)
+      let existing = merged.get(key)
+
+      if (!existing) {
+        merged.set(key, project)
+
+        continue
+      }
+
+      if (existing.isAuto && !project.isAuto) {
+        ;[existing, project] = [project, existing]
+        merged.set(key, existing)
+      }
+
+      const repos = new Map<string, any>((existing.repos ?? []).map((repo: any) => [repo.id, repo]))
+      mergeTreeById(repos, project.repos ?? [], 'groups')
+      existing.repos = [...repos.values()]
+
+      for (const total of ['sessionCount', 'totalTokens', 'totalCostUsd']) {
+        existing[total] = (existing[total] || 0) + (project[total] || 0)
+      }
+
+      existing.lastActive = Math.max(existing.lastActive || 0, project.lastActive || 0)
+      existing.previewSessions = [...(existing.previewSessions ?? []), ...(project.previewSessions ?? [])]
+        .sort((a, b) => recencyOf(b) - recencyOf(a))
+        .slice(0, previewLimit)
+    }
+  }
+
+  const projects = [...merged.values()].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))
+
+  return { projects, active_id: null, scoped_session_ids: scopedSessionIds, errors }
+}
+
+function mergeProfilePullRequests(reads: ProfileRead[]) {
+  const pullRequests: Record<string, unknown> = {}
+  let scanned: unknown[] = []
+
+  // Profile order, like the gateway's scan: a later profile's match wins.
+  for (const read of reads) {
+    if (!('error' in read)) {
+      Object.assign(pullRequests, read.data?.pull_requests)
+      scanned = Array.isArray(read.data?.scanned) ? read.data.scanned : scanned
+    }
+  }
+
+  // `scanned` lets the caller stop asking about an id. An unread profile scanned nothing, so
+  // only the ids that did resolve are settled.
+  return {
+    pull_requests: pullRequests,
+    scanned: reads.some(read => 'error' in read) ? Object.keys(pullRequests) : scanned
+  }
+}
+
+/** The all-profiles project tree or PR scan, assembled from one read per profile.
+ *
+ *  A native gateway grant names ONE profile, so each profile is read with its own grant
+ *  (`fetchProfile` gets the path scoped to it). A profile that cannot be read is reported in
+ *  `errors`; when none can be read the call fails, as the single request would have. */
+export async function fetchAllProfilesAggregatePerProfile(
+  path: string,
+  profiles: readonly string[],
+  fetchProfile: FetchProfilePage
+): Promise<unknown> {
+  const url = new URL(path, 'http://desktop.local')
+
+  const reads = await readEachProfile(profiles, profile => {
+    const params = new URLSearchParams(url.searchParams)
+    params.set('profile', profile)
+
+    return fetchProfile(profile, `${url.pathname}?${params}`)
+  })
+
+  if (!reads.some(read => !('error' in read))) {
+    throw new Error(reads.map(read => ('error' in read ? `${read.profile}: ${read.error}` : '')).join('; ') || 'No profiles to read')
+  }
+
+  if (url.pathname.replace(/\/+$/, '') === '/api/profiles/projects/tree') {
+    return mergeProfileProjectTrees(reads, Math.max(0, Number(url.searchParams.get('preview_limit') ?? 3) || 0))
+  }
+
+  return mergeProfilePullRequests(reads)
+}

@@ -84,6 +84,7 @@ async def _check_profile_scope(request, profile_id):
         suffix = path.removeprefix('/api/profiles/')
         aggregate_selector = {
             'sessions': 'profile', 'sessions/sidebar': 'recents_profile',
+            'projects/tree': 'profile', 'sessions/pull-requests': 'profile',
         }.get(suffix)
         if aggregate_selector:
             values = request.query_params.getlist(aggregate_selector)
@@ -94,7 +95,7 @@ async def _check_profile_scope(request, profile_id):
                 _own_profile(value, profile_id, current=False)
         elif suffix == 'active' and request.method == 'GET':
             return  # Discovery of sticky defaults does not switch this daemon.
-        elif suffix in {'active', 'import', 'projects/tree', 'sessions/pull-requests'}:
+        elif suffix in {'active', 'import'}:
             raise PermissionError('profile_scope_mismatch')
         else:
             _own_profile(suffix.split('/', 1)[0], profile_id, current=False)

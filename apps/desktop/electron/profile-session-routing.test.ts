@@ -5,12 +5,14 @@ import { test } from 'vitest'
 import {
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
+  fetchAllProfilesAggregatePerProfile,
   fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
+  isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
   mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
@@ -1015,4 +1017,120 @@ test('all-profiles session list pages a deep per-profile read under the backend 
   assert.equal(result.sessions.length, 200)
   assert.equal(result.sessions[0].id, 's400')
   assert.equal(result.total, 650)
+})
+
+test('the project tree and PR scan are all-profiles reads whatever route scope they carry', () => {
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/projects/tree?preview_limit=3'), true)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/projects/tree?preview_limit=3&profile=default'), true)
+  assert.equal(isAllProfilesAggregateRequest('POST', '/api/profiles/sessions/pull-requests'), true)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/sessions/pull-requests'), false)
+  assert.equal(isAllProfilesAggregateRequest('POST', '/api/profiles/projects/tree'), false)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/profiles/sessions?profile=all'), false)
+})
+
+test('all-profiles project tree merges one read per profile by folder', async () => {
+  const reads: string[] = []
+  const session = (id: string, profile: string, last: number) => ({ id, profile, last_active: last })
+
+  const pages: Record<string, unknown> = {
+    default: {
+      projects: [
+        {
+          id: 'auto:/repo', mergeKey: '/repo', path: '/repo', label: 'repo', isAuto: true, sessionCount: 2,
+          totalTokens: 10, totalCostUsd: 1, lastActive: 5,
+          previewSessions: [session('d1', 'default', 5), session('d2', 'default', 1)],
+          repos: [{ id: 'r', sessionCount: 2, groups: [{ id: 'main', sessionCount: 2, sessions: [session('d1', 'default', 5)] }] }]
+        },
+        { id: '__no_project__', mergeKey: '__no_project__', isNoProject: true, sessionCount: 1, lastActive: 2, previewSessions: [session('d3', 'default', 2)] }
+      ],
+      active_id: null,
+      scoped_session_ids: ['d1'],
+      errors: []
+    },
+    work: {
+      projects: [
+        {
+          id: 'p_abc', mergeKey: '/repo', path: '/repo', label: 'Declared', isAuto: false, sessionCount: 1,
+          totalTokens: 5, totalCostUsd: 0.5, lastActive: 9,
+          previewSessions: [session('w1', 'work', 9)],
+          repos: [{ id: 'r', sessionCount: 1, groups: [{ id: 'main', sessionCount: 1, sessions: [session('w1', 'work', 9)] }] }]
+        }
+      ],
+      active_id: null,
+      scoped_session_ids: ['w1'],
+      errors: []
+    }
+  }
+
+  const result = (await fetchAllProfilesAggregatePerProfile(
+    '/api/profiles/projects/tree?preview_limit=2&profile=default',
+    ['default', 'work', 'broken'],
+    async (profile, path) => {
+      reads.push(path)
+
+      if (profile === 'broken') {
+        throw new Error('403: denied')
+      }
+
+      return structuredClone(pages[profile])
+    }
+  )) as any
+
+  // Each read names only the profile it reads, replacing the route's own scope.
+  assert.deepEqual(reads.sort(), [
+    '/api/profiles/projects/tree?preview_limit=2&profile=broken',
+    '/api/profiles/projects/tree?preview_limit=2&profile=default',
+    '/api/profiles/projects/tree?preview_limit=2&profile=work'
+  ])
+  assert.deepEqual(result.projects.map((p: any) => p.label ?? p.id), ['Declared', '__no_project__'])
+  const repo = result.projects[0]
+  assert.equal(repo.sessionCount, 3)
+  assert.equal(repo.totalTokens, 15)
+  assert.equal(repo.totalCostUsd, 1.5)
+  assert.equal(repo.lastActive, 9)
+  assert.deepEqual(repo.previewSessions.map((s: any) => s.id), ['w1', 'd1'])
+  assert.equal(repo.repos.length, 1)
+  assert.equal(repo.repos[0].sessionCount, 3)
+  assert.deepEqual(repo.repos[0].groups[0].sessions.map((s: any) => s.id), ['w1', 'd1'])
+  assert.deepEqual(result.scoped_session_ids, ['d1', 'w1'])
+  assert.equal(result.active_id, null)
+  assert.deepEqual(result.errors, [{ profile: 'broken', error: '403: denied' }])
+})
+
+test('all-profiles project tree fails when no profile can be read', async () => {
+  await assert.rejects(
+    fetchAllProfilesAggregatePerProfile('/api/profiles/projects/tree', ['default'], async () => {
+      throw new Error('Gateway ticket bootstrap failed')
+    }),
+    /default: Gateway ticket bootstrap failed/
+  )
+})
+
+test('all-profiles PR scan unions the profiles and settles only what it could read', async () => {
+  const pr = (n: number) => ({ number: n, url: `https://github.com/o/r/pull/${n}` })
+
+  const complete = (await fetchAllProfilesAggregatePerProfile(
+    '/api/profiles/sessions/pull-requests',
+    ['default', 'work'],
+    async profile => ({
+      pull_requests: profile === 'default' ? { a: pr(1) } : { b: pr(2) },
+      scanned: ['a', 'b', 'c']
+    })
+  )) as any
+
+  assert.deepEqual(complete, { pull_requests: { a: pr(1), b: pr(2) }, scanned: ['a', 'b', 'c'] })
+
+  const partial = (await fetchAllProfilesAggregatePerProfile(
+    '/api/profiles/sessions/pull-requests',
+    ['default', 'work'],
+    async profile => {
+      if (profile === 'work') {
+        throw new Error('timeout')
+      }
+
+      return { pull_requests: { a: pr(1) }, scanned: ['a', 'b', 'c'] }
+    }
+  )) as any
+
+  assert.deepEqual(partial, { pull_requests: { a: pr(1) }, scanned: ['a'] })
 })

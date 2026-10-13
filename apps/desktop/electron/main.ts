@@ -463,12 +463,14 @@ import {
   assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
   composeUnifiedSessionResponse,
+  fetchAllProfilesAggregatePerProfile,
   fetchAllProfilesSessionsPerProfile,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   hasPinnedRegistrySessionSource,
+  isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
   pathWithRemoteOwnerScope,
   type RegistrySessionSource,
@@ -15584,22 +15586,30 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
 async function fetchJsonForBackend(
   descriptor,
   path,
-  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number } = {}
+  opts: { method?: string; body?: unknown; upload?: unknown; timeoutMs?: number; profileScoped?: boolean } = {}
 ) {
   const url = `${descriptor.baseUrl}${path}`
 
   // A native grant names one profile and the gateway refuses `all`: assemble the unified
-  // session lists from one read per profile, each carrying that profile's own grant.
-  if (descriptor.gatewayEndpoint && isAllProfilesSessionListRequest(opts.method, path)) {
-    const listing = (await fetchJsonForBackend(descriptor, '/api/profiles', { timeoutMs: opts.timeoutMs })) as any
+  // session lists, project tree and PR scan from one read per profile, each carrying that
+  // profile's own grant.
+  if (descriptor.gatewayEndpoint && !opts.profileScoped) {
+    const sessions = isAllProfilesSessionListRequest(opts.method, path)
 
-    const profiles = (Array.isArray(listing?.profiles) ? listing.profiles : [])
-      .map(profile => profile?.name)
-      .filter(name => typeof name === 'string' && name)
+    if (sessions || isAllProfilesAggregateRequest(opts.method, path)) {
+      const listing = (await fetchJsonForBackend(descriptor, '/api/profiles', { timeoutMs: opts.timeoutMs })) as any
 
-    return fetchAllProfilesSessionsPerProfile(path, profiles, (_profile, scoped) =>
-      fetchJsonForBackend(descriptor, scoped, { timeoutMs: opts.timeoutMs })
-    )
+      const profiles = (Array.isArray(listing?.profiles) ? listing.profiles : [])
+        .map(profile => profile?.name)
+        .filter(name => typeof name === 'string' && name)
+
+      const readProfile = (_profile, scoped) =>
+        fetchJsonForBackend(descriptor, scoped, { method: opts.method, body: opts.body, timeoutMs: opts.timeoutMs, profileScoped: true })
+
+      return sessions
+        ? fetchAllProfilesSessionsPerProfile(path, profiles, readProfile)
+        : fetchAllProfilesAggregatePerProfile(path, profiles, readProfile)
+    }
   }
 
   if (descriptor.authMode === 'oauth') {

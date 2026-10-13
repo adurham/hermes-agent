@@ -102,6 +102,31 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
           }
         }
 
+        // The all-profiles Projects view and PR badges: which profiles' sessions each read covers.
+        for (const [name, scope] of [['projects:all', {}], ['projects:all:registry', registry]] as const) {
+          try {
+            const r = await api({ path: '/api/profiles/projects/tree?preview_limit=10', ...scope })
+            const profiles = new Set<string>()
+
+            for (const project of r?.projects ?? []) {
+              for (const session of project.previewSessions ?? []) {
+                profiles.add(session.profile)
+              }
+            }
+
+            out[name] = { profiles: [...profiles].sort(), errors: r?.errors ?? [] }
+          } catch (e) {
+            out[name] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
+          }
+        }
+
+        try {
+          const r = await api({ path: '/api/profiles/sessions/pull-requests', method: 'POST', body: { ids: ['legacy-desktop-anon'] } })
+          out['prs:all'] = { scanned: r?.scanned ?? null }
+        } catch (e) {
+          out['prs:all'] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
+        }
+
         return out
       })
       console.log('API_PROBES: ' + JSON.stringify(probes))
@@ -203,6 +228,10 @@ for p in alive:
   const everyRow = [...ROWS.map(r => `default:${r.id}`), `developer:${NAMED_ROW}`].sort()
   expect.soft(probes['sidebar:all'], 'sidebar:all').toEqual({ ids: everyRow, errors: [] })
   expect.soft(probes['sidebar:all:registry'], 'sidebar:all:registry').toEqual({ ids: everyRow, errors: [] })
+  const everyProfile = { profiles: ['default', 'developer'], errors: [] }
+  expect.soft(probes['projects:all'], 'projects:all').toEqual(everyProfile)
+  expect.soft(probes['projects:all:registry'], 'projects:all:registry').toEqual(everyProfile)
+  expect.soft(probes['prs:all'], 'prs:all').toEqual({ scanned: ['legacy-desktop-anon'] })
   expect.soft(probes['sessions:all'], 'sessions:all').toEqual({ ids: everyRow, errors: [] })
   expect.soft(probes['sidebar:default'], 'sidebar:default').toEqual({ ids: ROWS.map(r => `default:${r.id}`).sort(), errors: [] })
   expect.soft(probes['sidebar:developer'], 'sidebar:developer').toEqual({ ids: [`developer:${NAMED_ROW}`], errors: [] })
