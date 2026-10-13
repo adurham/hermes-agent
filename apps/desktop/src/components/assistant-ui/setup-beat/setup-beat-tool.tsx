@@ -3,12 +3,15 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { SetupBeat } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useState } from 'react'
+import { Puzzle } from 'lucide-react'
+import { type ComponentType, type ReactNode, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { CLARIFY_ICON_CLASS } from '@/components/assistant-ui/clarify/core/shell'
 import { ConnectorDirectoryCard } from '@/components/assistant-ui/connector-directory-card'
 import { AccentPickerCard } from '@/components/assistant-ui/theme-picker/accent-picker-card'
 import { LayoutPickerCard } from '@/components/assistant-ui/theme-picker/layout-picker-card'
+import { LayoutDashboard, MessageQuestion, Palette, Plug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { applyAppearance } from '@/store/appearance-apply'
 import {
@@ -83,10 +86,26 @@ function BeatBody({ answer, request }: { answer: (picks: SetupBeatAnswer) => voi
   }
 }
 
+// The theme beat picks the accent, so it carries the accent's palette icon.
+const BEAT_ICONS = {
+  build: MessageQuestion,
+  connectors: Plug,
+  layout: LayoutDashboard,
+  name: MessageQuestion,
+  plugins: Puzzle,
+  theme: Palette,
+  tour: MessageQuestion
+} satisfies Record<SetupBeat, ComponentType<{ className?: string }>>
+
 function BeatShell({ beat, children, question }: { beat: SetupBeat; children: ReactNode; question: string }) {
+  const Icon = BEAT_ICONS[beat]
+
   return (
     <div className={cn(SETUP_BEAT_SHELL_CLASS, 'grid gap-3')} data-setup-beat={beat}>
-      {question && <span className={SETUP_BEAT_LABEL_CLASS}>{question}</span>}
+      <div className="flex items-start gap-2">
+        <span className={cn(SETUP_BEAT_LABEL_CLASS, 'flex-1')}>{question}</span>
+        <Icon aria-hidden className={CLARIFY_ICON_CLASS} />
+      </div>
       {children}
     </div>
   )

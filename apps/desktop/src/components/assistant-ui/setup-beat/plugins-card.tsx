@@ -3,6 +3,7 @@
 import type { CatalogPluginPresence, PluginsManageResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
+import { Puzzle } from 'lucide-react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
@@ -31,6 +32,12 @@ async function openInstall(name: string, profile: string): Promise<void> {
     openCatalogPluginInstall(lookup.entry, profile)
   }
 }
+
+const PLUGIN_ICON = (
+  <span className="grid size-7 shrink-0 place-items-center rounded-full bg-background text-muted-foreground">
+    <Puzzle className="size-4" />
+  </span>
+)
 
 /** The plugins this OS runs, from the card payload; Install opens the reviewed install dialog in place,
  *  Continue answers with the ones installed. */
@@ -75,6 +82,7 @@ export function PluginsCard({
             return (
               <Chip
                 className="w-full"
+                icon={PLUGIN_ICON}
                 key={row.name}
                 label={row.title || row.name}
                 on={on}
