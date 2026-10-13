@@ -795,11 +795,6 @@ export const esOverrides = {
         profileLabel: 'Instalar para el perfil',
         agentTargetLocal: (profile, dir) => `Se instala en el backend ${profile} (${dir})`,
         agentTargetRemote: profile => `Se instala en el backend ${profile} conectado`,
-        catalogPinned: (name, sha) =>
-          `Entrada del catálogo de Hermes “${name}”: el componente del agente se instala en la versión fijada revisada${sha ? ` ${sha}` : ''}, no en la punta de la rama.`,
-        reviewedHeading: 'Entrada del catálogo revisada',
-        reviewedIntro:
-          'Una persona revisó esta entrada en su commit fijado. Aun así, puedes inspeccionar el código exacto abajo.',
         toolsConnected: n => (n === 1 ? '1 herramienta conectada' : `${n} herramientas conectadas`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} lista` : `${names.length} skills listas`),
         nextChat: 'más herramientas disponibles en tu próximo chat',
@@ -812,13 +807,11 @@ export const esOverrides = {
         desktopOnlyNote: 'Los paquetes solo de escritorio no instalan un plugin del agente en el backend.',
         insecureWarning:
           'Esta URL usa un esquema inseguro o local. Para instalaciones de producción, usa https:// o git@.',
-        securityHeading: 'Antes de instalar',
         securityIntro:
           'Instala solo desde fuentes de confianza; revisa el repositorio de abajo si quieres ver qué se añadirá.',
         sourceHeading: 'Código fuente',
         viewRepository: 'Ver repositorio',
         viewPluginFiles: 'Ver archivos del plugin',
-        gitCloneLabel: 'URL de git clone',
         enableAgent: 'Activar el plugin del agente tras instalarlo',
         forceReinstall: 'Forzar reinstalación (reemplazar si ya está instalado)',
         pinToCommit: 'Fijar a un commit (opcional)',
@@ -839,7 +832,17 @@ export const esOverrides = {
           'Hermes dejó de esperar el resultado de la instalación, pero es posible que el plugin siga instalándose. Cierra este cuadro y actualiza la lista de plugins antes de volver a instalarlo.',
         desktopFailed: 'Error al instalar el plugin de escritorio',
         missingEnv: (name, vars) =>
-          `${name} está instalado, pero necesita una clave para funcionar: ${vars}. Añádela ahora o las herramientas del plugin fallarán.`
+          `${name} está instalado, pero necesita una clave para funcionar: ${vars}. Añádela ahora o las herramientas del plugin fallarán.`,
+        verified: 'Verificado',
+        unverified: 'Sin verificar',
+        reviewedByNous: 'Revisado por Nous.',
+        installsAndEnables: profile => `Se instala para ${profile} y se activa al momento.`,
+        installsOnly: profile => `Se instala para ${profile}.`,
+        advanced: 'Avanzado',
+        versionLabel: 'Versión',
+        reviewedPin: sha => (sha ? `Pin revisado ${sha}` : 'Pin revisado'),
+        latestCommit: 'Último commit',
+        nothingToInstall: 'Este paquete no tiene nada que instalar aquí.'
       }
     },
     vault: {

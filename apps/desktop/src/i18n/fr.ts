@@ -792,11 +792,6 @@ export const frOverrides = {
         profileLabel: 'Installer pour le profil',
         agentTargetLocal: (profile, dir) => `Installe dans le backend ${profile} (${dir})`,
         agentTargetRemote: profile => `S'installe dans le backend ${profile} connecté`,
-        catalogPinned: (name, sha) =>
-          `Entrée « ${name} » du catalogue Hermes — le composant agent sera installé depuis le commit vérifié${sha ? ` ${sha}` : ''}, et non depuis la tête de branche.`,
-        reviewedHeading: 'Entrée du catalogue vérifiée',
-        reviewedIntro:
-          'Cette entrée a été vérifiée manuellement à son commit épinglé. Vous pouvez encore examiner le code exact ci-dessous.',
         toolsConnected: n => (n === 1 ? '1 outil connecté' : `${n} outils connectés`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} prêt` : `${names.length} skills prêts`),
         nextChat: "d'autres outils disponibles dans votre prochaine conversation",
@@ -810,13 +805,11 @@ export const frOverrides = {
         desktopOnlyNote: "Les paquets réservés au Desktop n'installent aucun plugin dans le backend.",
         insecureWarning:
           'Cette URL utilise un protocole non sécurisé ou local. Préférez https:// ou git@ en production.',
-        securityHeading: "Avant l'installation",
         securityIntro:
           'Installez uniquement des sources de confiance — consultez le dépôt ci-dessous pour vérifier ce qui sera ajouté.',
         sourceHeading: 'Code source',
         viewRepository: 'Voir le dépôt',
         viewPluginFiles: 'Voir les fichiers du plugin',
-        gitCloneLabel: 'URL de clonage Git',
         enableAgent: "Activer le plugin de l'agent après l'installation",
         forceReinstall: 'Forcer la réinstallation (remplacer la version existante)',
         pinToCommit: 'Épingler à un commit (facultatif)',
@@ -838,7 +831,17 @@ export const frOverrides = {
           "Hermes n'attend plus le résultat de l'installation, mais le plugin est peut-être encore en cours d'installation. Fermez cette fenêtre et actualisez la liste des plugins avant de relancer l'installation.",
         desktopFailed: "Échec de l'installation du plugin Desktop",
         missingEnv: (name, vars) =>
-          `${name} est installé, mais a besoin d'une clé pour fonctionner : ${vars}. Ajoutez-la maintenant, sinon les outils du plugin échoueront.`
+          `${name} est installé, mais a besoin d'une clé pour fonctionner : ${vars}. Ajoutez-la maintenant, sinon les outils du plugin échoueront.`,
+        verified: 'Vérifié',
+        unverified: 'Non vérifié',
+        reviewedByNous: 'Examiné par Nous.',
+        installsAndEnables: profile => `S’installe pour ${profile} et s’active tout de suite.`,
+        installsOnly: profile => `S’installe pour ${profile}.`,
+        advanced: 'Avancé',
+        versionLabel: 'Version',
+        reviewedPin: sha => (sha ? `Pin examiné ${sha}` : 'Pin examiné'),
+        latestCommit: 'Dernier commit',
+        nothingToInstall: 'Ce paquet n’a rien à installer ici.'
       }
     },
     vault: {

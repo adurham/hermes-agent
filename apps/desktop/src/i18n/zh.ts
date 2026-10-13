@@ -629,10 +629,6 @@ export const zhOverrides = {
         profileLabel: '安装到配置文件',
         agentTargetLocal: (profile, dir) => `安装到 ${profile} 后端（${dir}）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
-        catalogPinned: (name, sha) =>
-          `Hermes 目录条目「${name}」— agent 部分将安装在经过审核的固定提交${sha ? ` ${sha}` : ''}，而不是分支最新代码。`,
-        reviewedHeading: '经过审核的目录条目',
-        reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
         toolsConnected: n => `已连接 ${n} 个工具`,
         skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就绪` : `${names.length} 个技能已就绪`),
         nextChat: '更多工具将在下一次聊天中可用',
@@ -643,12 +639,10 @@ export const zhOverrides = {
         desktopTargetFromPackage: '从上方的包加载到本应用 — 所有配置相同',
         desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
         insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
-        securityHeading: '安装前须知',
         securityIntro: '请仅安装你信任的来源 — 如需了解将添加的内容，可先查看下方仓库。',
         sourceHeading: '源代码',
         viewRepository: '查看仓库',
         viewPluginFiles: '查看插件文件',
-        gitCloneLabel: 'Git 克隆地址',
         enableAgent: '安装后启用智能体插件',
         forceReinstall: '强制重装（替换已存在的安装）',
         pinToCommit: '固定到提交（可选）',
@@ -667,7 +661,17 @@ export const zhOverrides = {
         agentFailed: '智能体插件安装失败',
         installUncertain: 'Hermes 已停止等待安装结果，但插件可能仍在安装。关闭此窗口并刷新插件列表，然后再尝试安装。',
         desktopFailed: '桌面插件安装失败',
-        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
+        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`,
+        verified: '已验证',
+        unverified: '未验证',
+        reviewedByNous: '已由 Nous 审核。',
+        installsAndEnables: profile => `安装到 ${profile}，并立即启用。`,
+        installsOnly: profile => `安装到 ${profile}。`,
+        advanced: '高级',
+        versionLabel: '版本',
+        reviewedPin: sha => (sha ? `已审核的固定提交 ${sha}` : '已审核的固定提交'),
+        latestCommit: '最新提交',
+        nothingToInstall: '此包在这里没有可安装的内容。'
       }
     },
     notifications: {

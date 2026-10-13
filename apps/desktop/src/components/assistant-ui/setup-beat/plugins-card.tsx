@@ -35,12 +35,12 @@ async function readPresence(owner: ConnectionOwner, names: string[]): Promise<Ca
   return result.presence ?? []
 }
 
-async function openInstall(name: string, profile: string): Promise<void> {
+async function openInstall(name: string, title: string, profile: string): Promise<void> {
   const lookup = await lookupPluginCatalogEntry(name)
 
   if (lookup.ok) {
     // The card stays in the chat and flips the row to Installed when the plugin list reloads.
-    openCatalogPluginInstall(lookup.entry, profile, { stayAfterInstall: true })
+    openCatalogPluginInstall(lookup.entry, profile, { stayAfterInstall: true, title })
   }
 }
 
@@ -109,7 +109,7 @@ export function PluginsCard({
                 on={on}
                 onToggle={() => {
                   if (!on && owner) {
-                    void openInstall(row.name, owner.profile)
+                    void openInstall(row.name, row.title || row.name, owner.profile)
                   }
                 }}
                 sub={on ? copy.installed : row.sentence || copy.install}

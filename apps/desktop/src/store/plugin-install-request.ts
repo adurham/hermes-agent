@@ -15,6 +15,10 @@ export interface PluginInstallRequest {
   catalogName?: string
   /** The catalog pin (display only — the backend resolves it itself). */
   sha?: string
+  /** Display name for the dialog heading (the catalog card's title); falls back to the catalog name. */
+  title?: string
+  /** One line on what the plugin does (the catalog description's first sentence). */
+  summary?: string
   /** Capabilities profile scope the pick was made under; the agent half
    *  installs into THIS profile (null/undefined = active profile). */
   profile?: string | null

@@ -791,11 +791,6 @@ export const deOverrides = {
         profileLabel: 'Für Profil installieren',
         agentTargetLocal: (profile, dir) => `Wird in das Backend ${profile} installiert (${dir})`,
         agentTargetRemote: profile => `Installiert in das verbundene ${profile}-Backend`,
-        catalogPinned: (name, sha) =>
-          `Hermes-Katalog-Eintrag „${name}" — die Agent-Komponente wird am geprüften Pin installiert${sha ? ` ${sha}` : ''}, nicht an der Spitze des Branches.`,
-        reviewedHeading: 'Geprüfter Katalog-Eintrag',
-        reviewedIntro:
-          'Dieser Eintrag wurde an seinem gepinnten Commit von einem Menschen geprüft. Sie können den genauen Code trotzdem unten ansehen.',
         toolsConnected: n => (n === 1 ? '1 Tool verbunden' : `${n} Tools verbunden`),
         skillsReady: names => (names.length === 1 ? `Skill ${names[0]} bereit` : `${names.length} Skills bereit`),
         nextChat: 'weitere Tools in Ihrem nächsten Chat verfügbar',
@@ -808,13 +803,11 @@ export const deOverrides = {
         desktopOnlyNote: 'Nur-Desktop-Pakete installieren kein Backend-Agent-Plugin.',
         insecureWarning:
           'Diese URL verwendet ein unsicheres oder lokales Schema. Für Produktionsinstallationen bevorzuge https:// oder git@.',
-        securityHeading: 'Vor der Installation',
         securityIntro:
           'Installieren Sie nur aus Quellen, denen Sie vertrauen – prüfen Sie das Repository unten, wenn Sie sehen möchten, was hinzugefügt wird.',
         sourceHeading: 'Quellcode',
         viewRepository: 'Repository ansehen',
         viewPluginFiles: 'Plugin-Dateien ansehen',
-        gitCloneLabel: 'Git-Clone-URL',
         enableAgent: 'Agent-Plugin nach der Installation aktivieren',
         forceReinstall: 'Neuinstallation erzwingen (ersetzen, falls bereits installiert)',
         pinToCommit: 'An Commit binden (optional)',
@@ -836,7 +829,17 @@ export const deOverrides = {
           'Hermes wartet nicht mehr auf das Installationsergebnis, aber das Plugin wird möglicherweise noch installiert. Schließe dieses Fenster und aktualisiere die Pluginliste, bevor du die Installation erneut startest.',
         desktopFailed: 'Installation des Desktop-Plugins fehlgeschlagen',
         missingEnv: (name, vars) =>
-          `${name} ist installiert, benötigt aber einen Schlüssel, um zu funktionieren: ${vars}. Fügen Sie ihn jetzt hinzu, sonst schlagen die Tools des Plugins fehl.`
+          `${name} ist installiert, benötigt aber einen Schlüssel, um zu funktionieren: ${vars}. Fügen Sie ihn jetzt hinzu, sonst schlagen die Tools des Plugins fehl.`,
+        verified: 'Verifiziert',
+        unverified: 'Nicht verifiziert',
+        reviewedByNous: 'Von Nous geprüft.',
+        installsAndEnables: profile => `Wird für ${profile} installiert und sofort eingeschaltet.`,
+        installsOnly: profile => `Wird für ${profile} installiert.`,
+        advanced: 'Erweitert',
+        versionLabel: 'Version',
+        reviewedPin: sha => (sha ? `Geprüfter Pin ${sha}` : 'Geprüfter Pin'),
+        latestCommit: 'Neuester Commit',
+        nothingToInstall: 'Dieses Paket hat hier nichts zu installieren.'
       }
     },
     vault: {

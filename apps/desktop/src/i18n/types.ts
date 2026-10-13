@@ -638,15 +638,22 @@ export interface Translations extends NoticeTranslations {
         title: string
         description: string
         repoLabel: string
+        verified: string
+        unverified: string
+        reviewedByNous: string
+        installsAndEnables: (profile: string) => string
+        installsOnly: (profile: string) => string
+        advanced: string
+        versionLabel: string
+        reviewedPin: (sha: string) => string
+        latestCommit: string
+        nothingToInstall: string
         includesHeading: string
         agentLabel: string
         desktopLabel: string
         profileLabel: string
         agentTargetLocal: (profile: string, dir: string) => string
         agentTargetRemote: (profile: string) => string
-        catalogPinned: (name: string, sha: string) => string
-        reviewedHeading: string
-        reviewedIntro: string
         toolsConnected: (n: number) => string
         skillsReady: (names: string[]) => string
         nextChat: string
@@ -657,12 +664,10 @@ export interface Translations extends NoticeTranslations {
         desktopTargetFromPackage: string
         desktopOnlyNote: string
         insecureWarning: string
-        securityHeading: string
         securityIntro: string
         sourceHeading: string
         viewRepository: string
         viewPluginFiles: string
-        gitCloneLabel: string
         enableAgent: string
         forceReinstall: string
         pinToCommit: string
