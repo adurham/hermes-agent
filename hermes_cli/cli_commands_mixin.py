@@ -2294,6 +2294,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                        _dim_line(_t("reasoning.valid_levels")), _dim_line(_t("reasoning.valid_display")),
                        _dim_line(_t("reasoning.valid_scope")))
         self.reasoning_config = parsed
+        self._reasoning_user_set = True  # the rebuilt gateway agent commits it to the session
         _retire_agent(self)  # Force agent re-init with new reasoning config
         saved = explicit_global and _save("agent.reasoning_effort", arg)
         if saved:

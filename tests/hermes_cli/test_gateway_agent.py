@@ -402,7 +402,7 @@ def test_a_non_default_verbose_mode_is_sent_when_the_agent_is_built(make_agent):
 def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     """``/reasoning high`` sets ``reasoning_config`` and rebuilds the agent: the rebuilt agent commits
     the effort as ``session.mutate reasoning`` (session scope, as main's), once."""
-    agent, client = make_agent([], reasoning_config={"enabled": True, "effort": "high"})
+    agent, client = make_agent([], reasoning_config={"enabled": True, "effort": "high"}, push_reasoning=True)
     mut = [p for m, p in client.calls if m == "session.mutate"]
     assert len(mut) == 1 and mut[0]["operation"] == "reasoning" and mut[0]["payload"] == {"effort": "high"}
     # A policy mutation without the generation it was read at is refused by the owner (invalid_params).
@@ -414,6 +414,14 @@ def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     agent2 = GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": False})
     assert len([p for m, p in client.calls if m == "session.mutate"]) == 2  # already the session's effort
     assert agent2.reasoning_config == {"enabled": False}
+
+
+def test_a_config_resolved_effort_never_overrides_the_sessions_launch_policy(make_agent):
+    """Building the agent with the CLI's config-resolved effort (no /reasoning pick) commits nothing:
+    a resumed `-q --resume` must keep the session's frozen --reasoning, not the profile default."""
+    agent, client = make_agent([], reasoning_config={"enabled": True, "effort": "none"})
+    assert [p for m, p in client.calls if m == "session.mutate"] == []
+    assert agent.reasoning_config == {"enabled": True, "effort": "none"}
 
 
 def test_reasoning_sink_sets_the_sessions_show_reasoning_flag_on_attach_and_toggle(make_agent):

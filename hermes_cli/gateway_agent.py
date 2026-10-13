@@ -76,7 +76,8 @@ class GatewayAgent:
                  reasoning_callback=None, thinking_callback=None, tool_progress_callback=None,
                  tool_start_callback=None, tool_complete_callback=None, stream_delta_callback=None,
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
-                 reaction_callback=None, interim_assistant_callback=None, connection=None, **_ignored):
+                 reaction_callback=None, interim_assistant_callback=None, connection=None,
+                 push_reasoning=False, **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -153,7 +154,12 @@ class GatewayAgent:
         self._tool_progress_mode = "all"
         self.tool_progress_mode = tool_progress_mode
         self._reasoning_config = None
-        self.reasoning_config = reasoning_config
+        # Only a user-picked effort (/reasoning, a model pick's --reasoning) is committed at build; the
+        # config-resolved level must never override the session's frozen launch policy on resume.
+        if push_reasoning:
+            self.reasoning_config = reasoning_config
+        else:
+            self._reasoning_config = reasoning_config
         self._apply_info(self._state().info)
         self.reasoning_callback = reasoning_callback
         self.service_tier = service_tier
