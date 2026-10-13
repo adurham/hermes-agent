@@ -33,7 +33,6 @@ import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/st
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
-import { sessionParkedCardWaiting } from '@/store/parked-card-answers'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -62,6 +61,7 @@ import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-aff
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
 import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
@@ -174,7 +174,6 @@ export function ChatBar({
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
-  const cardWaiting = useStore(useMemo(() => sessionParkedCardWaiting(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
@@ -383,8 +382,7 @@ export function ChatBar({
   })
 
   const hasComposerPayload = hasText || attachments.length > 0
-  // A waiting card turns the stop button into send, which has nothing to send while the draft is empty.
-  const canSubmit = (busy && !cardWaiting) || hasComposerPayload
+  const { canSubmit, cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
