@@ -122,7 +122,7 @@ export async function lookupPluginCatalogEntry(
     return { ok: false, error: 'invalid_name' }
   }
 
-  let reply: CatalogLookupReply
+  let reply: CatalogLookupReply | null | undefined
 
   try {
     reply = await request<CatalogLookupReply>('plugins.catalog.lookup', { name: trimmed })
@@ -130,14 +130,17 @@ export async function lookupPluginCatalogEntry(
     return lookupFromFeed(trimmed, fetchImpl)
   }
 
-  if (reply.status === 'found') {
-    const entry = asEntry(reply.entry)
+  // A malformed success reply (null, no status) degrades like every other failure.
+  const status = reply?.status
+
+  if (status === 'found') {
+    const entry = asEntry(reply?.entry)
 
     return entry ? { ok: true, entry } : { ok: false, error: 'unavailable' }
   }
 
   return {
     ok: false,
-    error: reply.status === 'unknown' || reply.status === 'invalid_name' ? reply.status : 'unavailable'
+    error: status === 'unknown' || status === 'invalid_name' ? status : 'unavailable'
   }
 }

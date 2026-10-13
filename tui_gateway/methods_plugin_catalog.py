@@ -21,10 +21,11 @@ _profile_scoped = _registry.profile_scoped
 @method("plugins.catalog.lookup")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from hermes_cli.plugin_catalog import _NAME_RE, find_removed, load_catalog_live
+    from hermes_cli.plugin_catalog import find_removed, load_catalog_live
+    from hermes_cli.plugins_cmd_catalog import looks_like_catalog_name
 
     name = str(params.get("name") or "").strip()
-    if not _NAME_RE.match(name):
+    if not looks_like_catalog_name(name):  # the same rule `hermes plugins install <name>` applies
         return _ok(rid, {"status": "invalid_name"})
     # The loaders never raise: a dead host falls back to the cache, then to the in-tree catalog.
     # Nothing readable at all is "unavailable", never a guess.

@@ -37,7 +37,9 @@ describe('lookupPluginCatalogEntry', () => {
     [{ status: 'invalid_name' }, 'invalid_name'],
     [{ status: 'unavailable' }, 'unavailable'],
     [{ status: 'found', entry: { name: 'x' } }, 'unavailable'],
-    [{ status: 'something-new' }, 'unavailable']
+    [{ status: 'something-new' }, 'unavailable'],
+    [null, 'unavailable'],
+    [undefined, 'unavailable']
   ] as const)('backend %j → %s, with no fetch', async (reply, error) => {
     await expect(
       lookupPluginCatalogEntry('weather', { fetchImpl: noFetch, request: replying(reply) })
