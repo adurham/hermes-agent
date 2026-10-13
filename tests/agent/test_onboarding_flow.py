@@ -10,8 +10,8 @@ import pytest
 
 from agent import onboarding_flow as flow
 from agent.onboarding_flow import (
-    DONE, PENDING, SHOWN, SKIPPED, Answered, Applied, Done, Facts, Recorded, Said, Shown, SkipAll, Skipped,
-    TimedOut, apply, expire, new_record, next_beat,
+    DONE, PENDING, SHOWN, SKIPPED, Answered, Applied, Done, Facts, End, Recorded, Said, Shown, Skipped,
+    TimedOut, apply, new_record, next_beat,
 )
 from agent.onboarding_first_tasks import eligible_tasks
 from agent.onboarding_text import opening_prompt, reminder, turn_note
@@ -173,7 +173,7 @@ def test_run_3ofn_pick_for_me_applies_layout_and_offers_the_look_around_once():
 
 def test_skip_setup_while_a_card_waits_ends_the_run_and_refuses_later_beats():
     facts = MACHINES["windows_laptop"]
-    steps = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"), SkipAll(), Shown("theme"))
+    steps = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"), End(), Shown("theme"))
 
     skipped, refused = steps[-2], steps[-1]
     assert skipped.result == {"skipped_all": True} and skipped.reminder == "skip_all"
@@ -304,14 +304,22 @@ def test_build_guidance_carries_only_this_hosts_commands(machine, present, absen
     assert 'setup_beat(beat="done")' in text
 
 
-def test_quiet_spell_after_the_build_card_completes_the_run():
+def test_the_build_answer_completes_the_run_and_a_later_done_or_skip_reports_that_end():
     facts = MACHINES["mac"]
-    record = run(facts, Shown("build", "", NOTES))[-1].record
+    answered, done, skip = run(facts, Shown("build", "", NOTES), Answered("build", {"build": "notes"}), Done(), End())[1:]
 
-    assert expire(record, now=record["updated_at"] + flow.QUIET_COMPLETE_S - 1)["phase"] == flow.ONBOARDING
-    ended = expire(record, now=record["updated_at"] + flow.QUIET_COMPLETE_S)
-    assert ended["phase"] == flow.COMPLETE and ended["ended_by"] == "timeout"
-    assert expire(new_record(facts), now=10**9)["phase"] == flow.ONBOARDING
+    assert answered.result["completed"] is True and answered.reminder == "build_notes"
+    assert answered.record["phase"] == flow.COMPLETE and answered.record["ended_by"] == "done"
+    assert done.result == {"completed": True} and done.record == answered.record
+    assert skip.result == {"skipped_all": True} and skip.record == answered.record
+
+
+def test_a_general_tool_that_settles_the_waiting_beat_clears_waiting():
+    facts = MACHINES["mac"]
+    step = run(facts, Shown("theme", "call_t"), Applied("set_theme", {"accent": "violet"},
+                                                         {"success": True, "applied": {"accent": "violet"}}))[-1]
+
+    assert step.record["beats"]["theme"] == DONE and step.record["waiting"] is None
 
 
 def test_a_card_answer_outside_the_cards_options_is_refused_and_the_beat_stays_open():

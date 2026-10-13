@@ -1920,14 +1920,13 @@ export interface ClientCapabilitiesResult {
 }
 /** Client→server method params / server→client request params. Unknown keys are rejected. */
 export type Params = Record<string, never>
-/** ``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is ``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``full_name`` is the OS account's real name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none. */
+/** ``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is ``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``locale`` is the OS account's first UI language, null when the OS has none. */
 export interface MachineFactsResult {
   machine: MachineInfo
   machine_kind: string
   has_nvidia_gpu: boolean
   nvidia_platform?: 'rtx_spark' | 'dgx_spark' | 'discrete' | null
   locale?: string | null
-  full_name?: string | null
 }
 /** Measured hardware; a key that was not measured is absent. */
 export interface MachineInfo {
@@ -2203,12 +2202,11 @@ export interface OnboardingStateResult {
   profile?: string | null
 }
 export type OnboardingIntro = 'unseen' | 'seen'
-/** ``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it. ``intro_seen``: the user left that run's intro once, so a relaunch reopens it as a normal chat. */
+/** ``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it. */
 export interface OnboardingRunStateResult {
   run: boolean
   eligible: boolean
   session_id?: string | null
-  intro_seen?: boolean
 }
 /** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after onboarding gets the plain intro instead of the profile offer. */
 export interface OnboardingSetRunParams {
@@ -5401,8 +5399,6 @@ export interface RpcMethods {
   /** Create-or-read the backend-owned setup profile; the backend picks the name. */
   'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
   'onboarding.ensure_setup_session': { params: OnboardingEnsureSetupSessionParams; result: OnboardingEnsureSetupSessionResult }
-  /** Record that the user left the intro of the run in progress; returns onboarding.state. */
-  'onboarding.intro_seen': { params: Params; result: OnboardingRunStateResult }
   'onboarding.mark_seen': { params: Params; result: OnboardingStateResult }
   'onboarding.record_failed_start': { params: Params; result: OnboardingStateResult }
   /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
@@ -5816,7 +5812,6 @@ export const RPC_METHODS = [
   'model.save_key',
   'onboarding.ensure_setup_profile',
   'onboarding.ensure_setup_session',
-  'onboarding.intro_seen',
   'onboarding.mark_seen',
   'onboarding.record_failed_start',
   'onboarding.reset_setup_profile',

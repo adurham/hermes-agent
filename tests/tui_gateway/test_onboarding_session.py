@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import onboarding_record
-from agent.onboarding_flow import Facts, Shown, SkipAll
+from agent.onboarding_flow import End, Facts, Shown
 from agent.onboarding_text import GREETING
 from tui_gateway import server, server_requests
 
@@ -71,16 +71,6 @@ def test_start_creates_one_onboarding_chat_and_plays_the_opening_once(client):
     again = _call("onboarding.start")["result"]
     assert again["stored_session_id"] == stored and again["resumed"] is True and len(client) == 3
     assert _call("onboarding.start", {"rerun": True})["result"]["stored_session_id"] != stored
-
-
-def test_leaving_the_intro_is_kept_on_the_run_and_a_rerun_plays_it_again(client):
-    _call("onboarding.start")
-    assert _call("onboarding.state")["result"]["intro_seen"] is False
-    assert _call("onboarding.intro_seen")["result"]["intro_seen"] is True
-    assert _call("onboarding.state")["result"]["intro_seen"] is True
-
-    _call("onboarding.start", {"rerun": True})
-    assert _call("onboarding.state")["result"]["intro_seen"] is False
 
 
 def test_a_restart_before_the_opening_turn_plays_the_opening_on_relaunch(client, monkeypatch):
@@ -231,7 +221,7 @@ def test_a_compression_rotation_carries_the_run_record(root):
     assert db.get_session_model_config_value("child", "codex_thread_id") is None
     # The parent keeps its active copy; the run is read at the tip, so skipping the child ends it.
     assert onboarding_record.active_session_id(db) == "child"
-    onboarding_record.advance(db, "child", SkipAll())
+    onboarding_record.advance(db, "child", End())
     assert onboarding_record.active_session_id(db) is None
 
 
@@ -266,12 +256,12 @@ def test_a_skip_retried_after_a_failed_config_write_closes_the_install_flag(root
 
     monkeypatch.setattr(onboarding_run, "set_run", disk_full)
     with pytest.raises(OSError):
-        onboarding_record.advance(db, "onb", SkipAll())
+        onboarding_record.advance(db, "onb", End())
     monkeypatch.setattr(onboarding_run, "set_run", real_set_run)
 
     assert onboarding_record.load(db, "onb")["phase"] == "skipped"
     assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is True
-    onboarding_record.advance(db, "onb", SkipAll())
+    onboarding_record.advance(db, "onb", End())
     assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is False
 
 
@@ -280,11 +270,11 @@ def test_an_old_ended_chat_never_closes_the_flag_of_a_newer_run(root):
     db = server._get_db()
     db.create_session("old", "desktop")
     onboarding_record.start(db, "old", FACTS)
-    onboarding_record.advance(db, "old", SkipAll())
+    onboarding_record.advance(db, "old", End())
     db.create_session("new", "desktop")
     onboarding_record.start(db, "new", FACTS)
 
-    onboarding_record.advance(db, "old", SkipAll())  # the old chat's agent still carries setup_beat
+    onboarding_record.advance(db, "old", End())  # the old chat's agent still carries setup_beat
     assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is True
     assert onboarding_record.active_session_id(db) == "new"
 
@@ -296,7 +286,7 @@ def test_a_rerun_ends_the_run_it_replaces_so_finishing_the_new_one_closes_the_fl
     db = server._get_db()
 
     assert onboarding_record.load(db, old)["phase"] == "skipped"
-    onboarding_record.advance(db, new, SkipAll())
+    onboarding_record.advance(db, new, End())
     assert onboarding_record.active_session_id(db) is None
     assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is False
 
@@ -339,17 +329,13 @@ def test_a_rerun_closes_the_card_waiting_in_the_chat_it_replaces(client, monkeyp
     assert reply == [None] and events[0][0] == "request.cancel"
 
 
-def test_the_first_state_read_after_the_quiet_spell_says_do_not_run(root):
-    from agent.onboarding_flow import QUIET_COMPLETE_S, Answered
+def test_deleting_the_onboarding_chat_ends_its_run_and_closes_the_flag(root):
     db = server._get_db()
     db.create_session("onb", "desktop")
     onboarding_record.start(db, "onb", FACTS)
-    for event in (Shown("build", options=[{"id": "notes", "label": "Notes"}]), Answered("build", {"build": "notes"})):
-        onboarding_record.advance(db, "onb", event)
-    record = onboarding_record.load(db, "onb")
-    db.patch_session_model_config("onb", {"onboarding_run": {**record, "updated_at": record["updated_at"] - QUIET_COMPLETE_S}})
 
-    assert _call("onboarding.state")["result"] == {"run": False, "eligible": False, "session_id": None, "intro_seen": False}
+    assert _call("session.delete", {"session_id": "onb"})["result"] == {"deleted": "onb"}
+    assert _call("onboarding.state")["result"] == {"run": False, "eligible": False, "session_id": None}
 
 
 def test_the_onboarding_facts_are_read_in_the_default_profile(root, client, monkeypatch):

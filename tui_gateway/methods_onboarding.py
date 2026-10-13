@@ -72,22 +72,7 @@ def _run_state() -> dict:
     from hermes_cli.anon_auth import guest_enabled
     from hermes_cli.onboarding_run import should_run
 
-    from agent.onboarding_record import active_session_id, intro_seen
-    # The lookup ends a run whose quiet spell ran out and closes the flag, so it goes first.
-    with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
-        session_id = None if db is None else active_session_id(db)
-        seen = db is not None and intro_seen(db, session_id)
-    return {"run": should_run(), "eligible": guest_enabled(), "session_id": session_id, "intro_seen": seen}
-
-
-@method("onboarding.intro_seen")
-def _(rid, params: dict) -> dict:
-    from agent.onboarding_record import active_session_id, mark_intro_seen
-    with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
-        session_id = None if db is None else active_session_id(db)
-        if session_id is not None:
-            mark_intro_seen(db, session_id)
-    return _ok(rid, _run_state())
+    return {"run": should_run(), "eligible": guest_enabled(), "session_id": _active_onboarding_session()}
 
 
 # ── first-run onboarding: one chat in the default profile, driven by setup_beat ───────────────
@@ -100,14 +85,14 @@ _onboarding_start_lock = threading.Lock()
 
 def _active_onboarding_session() -> str | None:
     from agent.onboarding_record import active_session_id
-    with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+    with _profile_db(_ONBOARDING_PROFILE) as db:
         return None if db is None else active_session_id(db)
 
 
 @method("onboarding.start")
 def _(rid, params: dict) -> dict:
     from agent.onboarding_facts import read_facts
-    from agent.onboarding_flow import Facts, SkipAll
+    from agent.onboarding_flow import End, Facts
     from agent.onboarding_record import advance, load, open_session_ids, start
     from agent.onboarding_text import CHAT_TITLE, opening_prompt
     # Held through the opening submit: two windows pressing start at once get one chat and one opening.
@@ -135,7 +120,7 @@ def _(rid, params: dict) -> dict:
                 # flag never closes in between; finishing it closes the flag.
                 replaced = [sid for sid in open_ids if sid != stored]
                 for old in replaced:
-                    advance(db, old, SkipAll())
+                    advance(db, old, End("replaced"))
                 # A chat with no messages never got its opening (a restart between start and the first turn).
                 opening = None if (db.get_session(stored) or {}).get("message_count") else opening_prompt(facts)
         except Exception as e:
@@ -156,7 +141,7 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.skip")
 def _(rid, params: dict) -> dict:
-    from agent.onboarding_flow import SkipAll
+    from agent.onboarding_flow import End
     from agent.onboarding_record import advance, load
     session, err = _sess_nowait(params, rid)
     if err:
@@ -166,7 +151,7 @@ def _(rid, params: dict) -> dict:
     with _session_db(session) as db:
         if load(db, stored) is None:
             return _ok(rid, {"skipped": False})
-        step = advance(db, stored, SkipAll())
+        step = advance(db, stored, End("skipped"))
     # The card that waits returns to setup_beat, which reads the skipped record.
     _cancel_session_requests(params["session_id"], "resolved", method="setup_beat")
     return _ok(rid, {"skipped": bool(step.result.get("skipped_all"))})

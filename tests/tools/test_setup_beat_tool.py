@@ -10,7 +10,7 @@ import pytest
 
 from agent import onboarding_record
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-from agent.onboarding_flow import Facts, SkipAll
+from agent.onboarding_flow import End, Facts
 from hermes_state import SessionDB
 from tools.registry import registry
 
@@ -95,7 +95,7 @@ def test_skip_setup_during_a_card_returns_skipped_all(db, desktop):
     onboarding_record.start(db, SID, FACTS)
 
     def skip_pressed(payload):
-        onboarding_record.advance(db, SID, SkipAll())
+        onboarding_record.advance(db, SID, End())
 
     desktop.answer = skip_pressed
     result = call(db, desktop, beat="theme")
@@ -119,7 +119,7 @@ def test_done_ends_the_run_only_after_the_build_card(db, desktop):
     done = call(db, desktop, beat="done")
 
     assert "error" in refused
-    assert "How does this look?" in build["reminder"]
+    assert "How does this look?" in build["reminder"] and build["completed"] is True
     assert done == {"completed": True, "reminder": done["reminder"]}
     assert onboarding_record.load(db, SID)["phase"] == "complete"
 

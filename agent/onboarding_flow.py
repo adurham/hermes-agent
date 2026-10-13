@@ -17,8 +17,6 @@ from agent.onboarding_first_tasks import FIXED_ID, OWN_ID, card_options, pick_er
 PENDING, SHOWN, DONE, SKIPPED = "pending", "shown", "done", "skipped"
 ONBOARDING, COMPLETE, PHASE_SKIPPED = "onboarding", "complete", "skipped"
 CARD_TIMEOUT_S = 300
-# Fallback end: no onboarding change for this long after the build card was reached.
-QUIET_COMPLETE_S = 30 * 60
 MAX_PLUGINS = 5
 
 LAYOUT_OPTIONS = ({"id": "sidebar-left", "label": "Basic"}, {"id": "terminal-deck", "label": "Elite"})
@@ -94,8 +92,11 @@ class Skipped:
 
 
 @dataclass(frozen=True)
-class SkipAll:
-    pass
+class End:
+    """The run ended outside the model: ``skipped`` (Skip setup), ``replaced`` (a rerun opened a new
+    run) or ``deleted`` (its chat is being deleted)."""
+
+    outcome: str = "skipped"
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,7 @@ class Applied:
     result: Mapping[str, Any]
 
 
-Event = Shown | Answered | Said | TimedOut | Recorded | Skipped | SkipAll | Done | Applied
+Event = Shown | Answered | Said | TimedOut | Recorded | Skipped | End | Done | Applied
 
 
 @dataclass(frozen=True)
@@ -197,15 +198,6 @@ def next_beat(record: Mapping[str, Any]) -> str | None:
 
 def is_active(record: Mapping[str, Any] | None) -> bool:
     return bool(record) and record.get("phase") == ONBOARDING
-
-
-def expire(record: dict, *, now: float) -> dict:
-    """The quiet-spell fallback: a run whose build card was reached and that has not changed for
-    ``QUIET_COMPLETE_S`` is complete."""
-    if is_active(record) and record["beats"]["build"] != PENDING and now - record["updated_at"] >= QUIET_COMPLETE_S:
-        record = copy.deepcopy(record)
-        record.update(phase=COMPLETE, ended_by="timeout", waiting=None, updated_at=now)
-    return record
 
 
 # ── apply ─────────────────────────────────────────────────────────────────────────────────────
@@ -315,8 +307,8 @@ def _skipped(record: dict, event: Skipped, facts: Facts, now: float) -> Step:
     return Step(record, {"recorded": event.beat, "skipped": True, "next": _next_field(record)}, "moved_on")
 
 
-def _skip_all(record: dict, event: SkipAll, facts: Facts, now: float) -> Step:
-    record.update(phase=PHASE_SKIPPED, ended_by="skip", waiting=None)
+def _end(record: dict, event: End, facts: Facts, now: float) -> Step:
+    record.update(phase=PHASE_SKIPPED, ended_by=event.outcome, waiting=None)
     for beat in BEAT_IDS:
         if record["beats"][beat] != DONE:
             record["beats"][beat] = SKIPPED
@@ -329,8 +321,7 @@ def _done(record: dict, event: Done, facts: Facts, now: float) -> Step:
                                       "answered. If they want to stop, tell them about the Skip setup button.",
                              "next": _next_field(record)})
     record["beats"]["build"] = DONE
-    record.update(phase=COMPLETE, ended_by="done", waiting=None)
-    return Step(record, {"completed": True}, "complete")
+    return Step(record, {}, "complete")
 
 
 def _applied_beats(event: Applied) -> list[tuple[str, dict]]:
@@ -360,23 +351,40 @@ def _applied(record: dict, event: Applied, facts: Facts, now: float) -> Step:
         elif beat in APPLIED_BY:
             repeated = beat
         _settle(record, beat, patch)
+        if (record["waiting"] or {}).get("beat") == beat:
+            record["waiting"] = None
     return Step(record, {}, f"after_{settled}" if settled else f"already_{repeated}" if repeated else "")
 
 
 _HANDLERS: dict[type, Callable[[dict, Any, Facts, float], Step]] = {
     Shown: _shown, Answered: _answered, Said: _said, TimedOut: _timed_out, Recorded: _recorded,
-    Skipped: _skipped, SkipAll: _skip_all, Done: _done, Applied: _applied,
+    Skipped: _skipped, End: _end, Done: _done, Applied: _applied,
 }
 _ENDED = "Onboarding is over in this chat; it is a normal chat now."
 
 
+def _ended(record: dict, event: Event) -> Step:
+    """An ended run ignores general tool results and refuses setup_beat, except a repeat of its own
+    end: done on a completed run and any end on an ended run answer as if they had ended it."""
+    if isinstance(event, Applied):
+        return Step(record, {})
+    if isinstance(event, Done) and record.get("phase") == COMPLETE:
+        return Step(record, {"completed": True}, "complete")
+    if isinstance(event, End):
+        return Step(record, {"skipped_all": True})
+    return Step(record, {"error": _ENDED})
+
+
 def apply(record: Mapping[str, Any], event: Event, facts: Facts, *, now: float = 0.0) -> Step:
-    """The record after ``event``, the model-facing result, and the reminder key. A finished run
-    refuses every setup_beat event and ignores general tool results."""
+    """The record after ``event``, the model-facing result, and the reminder key. The run completes
+    when the build beat settles: the answer to the first-task card ends onboarding."""
     working = copy.deepcopy(dict(record))
     if not is_active(working):
-        return Step(working, {} if isinstance(event, Applied) else {"error": _ENDED})
+        return _ended(working, event)
     step = _HANDLERS[type(event)](working, event, facts, now)
+    if is_active(step.record) and step.record["beats"]["build"] == DONE:
+        step.record.update(phase=COMPLETE, ended_by="done", waiting=None)
+        step = Step(step.record, {**step.result, "completed": True}, step.reminder)
     if step.record != record:
         step.record["updated_at"] = now
     return step

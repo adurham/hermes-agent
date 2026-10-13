@@ -2059,24 +2059,6 @@
       }
     },
     {
-      "name": "onboarding.intro_seen",
-      "summary": "Record that the user left the intro of the run in progress; returns onboarding.state.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/Params"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/OnboardingRunStateResult"
-        }
-      }
-    },
-    {
       "name": "onboarding.mark_seen",
       "summary": "",
       "params": [
@@ -18027,7 +18009,7 @@
       },
       "MachineFactsResult": {
         "additionalProperties": false,
-        "description": "``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is\n``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``full_name`` is the OS account's\nreal name (never a login handle) and ``locale`` its first UI language; each is null when the OS has none.",
+        "description": "``machine_kind`` is ``Spark``, ``Mac``, ``PC`` or ``computer``. ``nvidia_platform`` is\n``products.nvidia_platform()``: ``rtx_spark``, ``dgx_spark``, ``discrete`` or null. ``locale`` is the OS\naccount's first UI language, null when the OS has none.",
         "properties": {
           "machine": {
             "$ref": "#/components/schemas/MachineInfo"
@@ -18068,18 +18050,6 @@
             ],
             "default": null,
             "title": "Locale"
-          },
-          "full_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Full Name"
           }
         },
         "required": [
@@ -20541,7 +20511,7 @@
       },
       "OnboardingRunStateResult": {
         "additionalProperties": false,
-        "description": "``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).\n``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it.\n``intro_seen``: the user left that run's intro once, so a relaunch reopens it as a normal chat.",
+        "description": "``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).\n``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it.",
         "properties": {
           "run": {
             "title": "Run",
@@ -20562,11 +20532,6 @@
             ],
             "default": null,
             "title": "Session Id"
-          },
-          "intro_seen": {
-            "default": false,
-            "title": "Intro Seen",
-            "type": "boolean"
           }
         },
         "required": [

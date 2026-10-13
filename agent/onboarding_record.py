@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from agent.onboarding_flow import (
-    Applied, Event, Facts, Step, applies_to, apply, expire, is_active, new_record,
+    Applied, End, Event, Facts, Step, applies_to, apply, is_active, new_record,
 )
 from agent.onboarding_text import reminder
 
@@ -24,36 +24,24 @@ logger = logging.getLogger(__name__)
 KEY = "onboarding_run"
 
 
-def _read(db, session_id: str) -> dict | None:
+def load(db, session_id: str) -> dict | None:
     record = db.get_session_model_config_value(session_id, KEY) if db is not None and session_id else None
     return record if isinstance(record, dict) else None
 
 
-def load(db, session_id: str) -> dict | None:
-    """The run record, with the quiet-spell fallback applied (and saved) when it is due."""
-    record = _read(db, session_id)
-    if record is not None and expire(record, now=time.time()) is not record:
-        step = _transition(db, session_id, None)
-        return step.record if step is not None else None
-    return record
-
-
-def _transition(db, session_id: str, event: Event | None) -> Step | None:
-    """Expire, apply *event* and write the result in one database transaction at the compression tip,
-    so Skip setup pressed while a card answer is being applied is never overwritten by the older copy,
-    and an id read before a rotation published still lands on the copy the chat reads. An ended run then
-    closes the install flag (a Skip or Done retried after a failed config write repairs it), unless
-    another run is still open: the flag belongs to that run, and an old chat must not end it."""
+def _transition(db, session_id: str, event: Event) -> Step | None:
+    """Apply *event* and write the result in one database transaction at the compression tip, so Skip
+    setup pressed while a card answer is being applied is never overwritten by the older copy, and an id
+    read before a rotation published still lands on the copy the chat reads. An ended run then closes the
+    install flag (a Skip or Done retried after a failed config write repairs it), unless another run
+    is still open: the flag belongs to that run, and an old chat must not end it."""
     holder: dict[str, Step] = {}
 
     def update(current: Any) -> Any:
         holder.pop("step", None)
         if not isinstance(current, dict):
             return current
-        now = time.time()
-        record = expire(current, now=now)
-        holder["step"] = (apply(record, event, Facts.from_stored(record["facts"]), now=now)
-                          if event is not None else Step(record, {}))
+        holder["step"] = apply(current, event, Facts.from_stored(current["facts"]), now=time.time())
         return holder["step"].record
 
     db.update_conversation_model_config_value(session_id, KEY, update)
@@ -114,14 +102,12 @@ def active_session_id(db) -> str | None:
     return next(iter(open_session_ids(db)), None)
 
 
-def intro_seen(db, session_id: str | None) -> bool:
-    return bool((_read(db, session_id) or {}).get("intro_seen")) if session_id else False
-
-
-def mark_intro_seen(db, session_id: str) -> None:
-    """Kept on the run, so a rerun plays the intro again."""
-    db.update_session_model_config_value(
-        session_id, KEY, lambda current: {**current, "intro_seen": True} if isinstance(current, dict) else current)
+def end_before_delete(db, session_id: str) -> None:
+    """Deleting the onboarding chat ends its run first (``deleted``), so the install flag closes and the
+    next launch does not open a fresh run. The run lives at the chat's compression tip."""
+    for sid in dict.fromkeys((session_id, db.resolve_resume_session_id(session_id) or session_id)):
+        if is_active(load(db, sid)):
+            advance(db, sid, End("deleted"))
 
 
 def observe_tool_result(agent, name: str, args: Mapping[str, Any], result: Any) -> Any:
