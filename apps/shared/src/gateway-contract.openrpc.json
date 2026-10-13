@@ -20397,6 +20397,30 @@
         "title": "OnboardingCatalogPlugin",
         "type": "object"
       },
+      "OnboardingEndedPayload": {
+        "additionalProperties": false,
+        "description": "``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress.\n``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered;\n``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted.",
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/OnboardingOutcome"
+          }
+        },
+        "required": [
+          "run_id",
+          "stored_session_id",
+          "outcome"
+        ],
+        "title": "OnboardingEndedPayload",
+        "type": "object"
+      },
       "OnboardingEnsureSetupProfileResult": {
         "additionalProperties": false,
         "description": "``created`` is false when an existing setup profile was found (and returned untouched).",
@@ -20485,6 +20509,16 @@
         "title": "OnboardingIntro",
         "type": "string"
       },
+      "OnboardingOutcome": {
+        "enum": [
+          "done",
+          "skipped",
+          "replaced",
+          "deleted"
+        ],
+        "title": "OnboardingOutcome",
+        "type": "string"
+      },
       "OnboardingResetSetupProfileResult": {
         "additionalProperties": false,
         "properties": {
@@ -20511,7 +20545,7 @@
       },
       "OnboardingRunStateResult": {
         "additionalProperties": false,
-        "description": "``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).\n``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it.",
+        "description": "``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).\n``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it;\n``run_id``: that run's id, which ``onboarding.ended`` names.",
         "properties": {
           "run": {
             "title": "Run",
@@ -20532,6 +20566,18 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
           }
         },
         "required": [
@@ -20632,7 +20678,7 @@
       },
       "OnboardingStartResult": {
         "additionalProperties": false,
-        "description": "``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding\nchat already in progress was reopened instead of a new one started.",
+        "description": "``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding\nchat already in progress was reopened instead of a new one started. ``run_id`` names the run in\n``onboarding.ended``.",
         "properties": {
           "session_id": {
             "title": "Session Id",
@@ -20645,12 +20691,17 @@
           "resumed": {
             "title": "Resumed",
             "type": "boolean"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
           }
         },
         "required": [
           "session_id",
           "stored_session_id",
-          "resumed"
+          "resumed",
+          "run_id"
         ],
         "title": "OnboardingStartResult",
         "type": "object"
@@ -41981,6 +42032,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/NotificationShowPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "onboarding.ended",
+      "summary": "A first-run onboarding run ended; sent to every connected window.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/OnboardingEndedPayload"
           }
         }
       ]

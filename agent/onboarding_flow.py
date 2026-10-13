@@ -180,9 +180,9 @@ BEAT_BY_ID = {beat.id: beat for beat in BEATS}
 BEAT_IDS = tuple(BEAT_BY_ID)
 
 
-def new_record(facts: Facts, *, now: float = 0.0) -> dict:
+def new_record(facts: Facts, *, now: float = 0.0, run_id: str = "") -> dict:
     record = {
-        "phase": ONBOARDING, "beats": {beat.id: PENDING for beat in BEATS}, "waiting": None,
+        "run_id": run_id, "phase": ONBOARDING, "beats": {beat.id: PENDING for beat in BEATS}, "waiting": None,
         "picks": {"name": None, "accent": None, "mode": None, "layout": None, "connected": [],
                   "newly_connected": [], "installed": [], "tour": None, "build": None,
                   "build_options": []},

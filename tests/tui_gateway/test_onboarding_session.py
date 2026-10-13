@@ -59,7 +59,8 @@ def test_start_creates_one_onboarding_chat_and_plays_the_opening_once(client):
     stored = started["stored_session_id"]
 
     db = server._get_db()
-    assert started == {"session_id": f"rt-{stored}", "stored_session_id": stored, "resumed": False}
+    run_id = onboarding_record.load(db, stored)["run_id"]
+    assert started == {"session_id": f"rt-{stored}", "stored_session_id": stored, "resumed": False, "run_id": run_id}
     assert onboarding_record.load(db, stored)["phase"] == "onboarding"
     assert client[0] == ("resume", {"profile": "default", "session_id": stored, "source": "desktop"})
     kind, submitted = client[1]
@@ -80,11 +81,13 @@ def test_a_restart_before_the_opening_turn_plays_the_opening_on_relaunch(client,
 
     storing_submit = server._methods["prompt.submit"]
     monkeypatch.setitem(server._methods, "prompt.submit", lost_submit)
-    stored = _call("onboarding.start")["result"]["stored_session_id"]
+    first = _call("onboarding.start")["result"]
+    stored = first["stored_session_id"]
     monkeypatch.setitem(server._methods, "prompt.submit", storing_submit)
 
     reopened = _call("onboarding.start")["result"]
-    assert reopened == {"session_id": f"rt-{stored}", "stored_session_id": stored, "resumed": True}
+    assert reopened == {"session_id": f"rt-{stored}", "stored_session_id": stored, "resumed": True,
+                        "run_id": first["run_id"]}
     assert [kind for kind, _ in client] == ["resume", "lost", "resume", "submit"]
 
 
@@ -279,14 +282,22 @@ def test_an_old_ended_chat_never_closes_the_flag_of_a_newer_run(root):
     assert onboarding_record.active_session_id(db) == "new"
 
 
-def test_a_rerun_ends_the_run_it_replaces_so_finishing_the_new_one_closes_the_flag(client, root):
+def test_a_rerun_ends_the_run_it_replaces_so_finishing_the_new_one_closes_the_flag(client, root, monkeypatch):
     from hermes_cli.config import read_user_config_raw
-    old = _call("onboarding.start")["result"]["stored_session_id"]
+    broadcast = []
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda event, payload: broadcast.append((event, payload)))
+    old = _call("onboarding.start")["result"]
     new = _call("onboarding.start", {"rerun": True})["result"]["stored_session_id"]
     db = server._get_db()
 
-    assert onboarding_record.load(db, old)["phase"] == "skipped"
+    assert onboarding_record.load(db, old["stored_session_id"])["ended_by"] == "replaced"
     onboarding_record.advance(db, new, End())
+    onboarding_record.advance(db, new, End())  # a repeat end is not a second event
+    assert broadcast == [
+        ("onboarding.ended", {"run_id": old["run_id"], "stored_session_id": old["stored_session_id"],
+                              "outcome": "replaced"}),
+        ("onboarding.ended", {"run_id": onboarding_record.load(db, new)["run_id"], "stored_session_id": new,
+                              "outcome": "skipped"})]
     assert onboarding_record.active_session_id(db) is None
     assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is False
 
@@ -335,7 +346,7 @@ def test_deleting_the_onboarding_chat_ends_its_run_and_closes_the_flag(root):
     onboarding_record.start(db, "onb", FACTS)
 
     assert _call("session.delete", {"session_id": "onb"})["result"] == {"deleted": "onb"}
-    assert _call("onboarding.state")["result"] == {"run": False, "eligible": False, "session_id": None}
+    assert _call("onboarding.state")["result"] == {"run": False, "eligible": False, "session_id": None, "run_id": None}
 
 
 def test_the_onboarding_facts_are_read_in_the_default_profile(root, client, monkeypatch):

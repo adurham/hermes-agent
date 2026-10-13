@@ -2202,11 +2202,12 @@ export interface OnboardingStateResult {
   profile?: string | null
 }
 export type OnboardingIntro = 'unseen' | 'seen'
-/** ``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it. */
+/** ``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it; ``run_id``: that run's id, which ``onboarding.ended`` names. */
 export interface OnboardingRunStateResult {
   run: boolean
   eligible: boolean
   session_id?: string | null
+  run_id?: string | null
 }
 /** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after onboarding gets the plain intro instead of the profile offer. */
 export interface OnboardingSetRunParams {
@@ -2220,11 +2221,12 @@ export interface OnboardingStartParams {
   locale?: string | null
 }
 export type OnboardingFactsSource = 'local' | 'remote'
-/** ``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding chat already in progress was reopened instead of a new one started. */
+/** ``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding chat already in progress was reopened instead of a new one started. ``run_id`` names the run in ``onboarding.ended``. */
 export interface OnboardingStartResult {
   session_id: string
   stored_session_id: string
   resumed: boolean
+  run_id: string
 }
 export interface OnboardingSkipParams {
   session_id: string
@@ -4813,6 +4815,13 @@ export interface SkinPayload {
   help_header?: string
   [key: string]: unknown
 }
+/** ``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress. ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered; ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted. */
+export interface OnboardingEndedPayload {
+  run_id: string
+  stored_session_id: string
+  outcome: OnboardingOutcome
+}
+export type OnboardingOutcome = 'done' | 'skipped' | 'replaced' | 'deleted'
 /** ``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``. */
 export interface SetupReadyPayload {
   provider_configured: boolean
@@ -6085,6 +6094,8 @@ export interface BackendGatewayEventMap {
   'notification.clear': NotificationClearPayload
   /** Show / replace a keyed out-of-band notice (toast or status bar). */
   'notification.show': NotificationShowPayload
+  /** A first-run onboarding run ended; sent to every connected window. */
+  'onboarding.ended': OnboardingEndedPayload
   /** Pairing state moved; refetch pairing. */
   'pairing.changed': ChangeSignalPayload
   /** Focus / reveal a named desktop pane. */
@@ -6209,6 +6220,7 @@ export const GATEWAY_EVENT_TYPES = [
   'notice',
   'notification.clear',
   'notification.show',
+  'onboarding.ended',
   'pairing.changed',
   'pane.reveal',
   'pet.changed',

@@ -401,11 +401,13 @@ method("onboarding.mark_seen", params=Params, result=OnboardingStateResult)
 class OnboardingRunStateResult(Result):
     """``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh
     install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).
-    ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it."""
+    ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it;
+    ``run_id``: that run's id, which ``onboarding.ended`` names."""
 
     run: bool
     eligible: bool
     session_id: str | None = None
+    run_id: str | None = None
 
 
 method("onboarding.state", params=Params, result=OnboardingRunStateResult,
@@ -441,11 +443,13 @@ class OnboardingStartParams(Params):
 
 class OnboardingStartResult(Result):
     """``session_id`` is the runtime id the client attaches to; ``resumed`` is true when an onboarding
-    chat already in progress was reopened instead of a new one started."""
+    chat already in progress was reopened instead of a new one started. ``run_id`` names the run in
+    ``onboarding.ended``."""
 
     session_id: str
     stored_session_id: str
     resumed: bool
+    run_id: str
 
 
 method("onboarding.start", params=OnboardingStartParams, result=OnboardingStartResult,

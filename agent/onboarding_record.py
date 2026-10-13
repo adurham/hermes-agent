@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Mapping
+import uuid
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from agent.onboarding_flow import (
@@ -22,6 +23,14 @@ from agent.onboarding_text import reminder
 logger = logging.getLogger(__name__)
 
 KEY = "onboarding_run"
+
+# Told when a run stops being in progress: ``{run_id, stored_session_id, outcome}``. The gateway sends
+# it to every window (tui_gateway/methods_onboarding.py::register).
+_ended_listeners: list[Callable[[dict], None]] = []
+
+
+def on_ended(listener: Callable[[dict], None]) -> None:
+    _ended_listeners.append(listener)
 
 
 def load(db, session_id: str) -> dict | None:
@@ -35,17 +44,24 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
     read before a rotation published still lands on the copy the chat reads. An ended run then closes the
     install flag (a Skip or Done retried after a failed config write repairs it), unless another run
     is still open: the flag belongs to that run, and an old chat must not end it."""
-    holder: dict[str, Step] = {}
+    holder: dict[str, Any] = {}
 
     def update(current: Any) -> Any:
-        holder.pop("step", None)
+        holder.clear()
         if not isinstance(current, dict):
             return current
+        holder["was_active"] = is_active(current)
         holder["step"] = apply(current, event, Facts.from_stored(current["facts"]), now=time.time())
         return holder["step"].record
 
     db.update_conversation_model_config_value(session_id, KEY, update)
     step = holder.get("step")
+    # Told before the flag write, which can fail: the record already says the run ended.
+    if step is not None and holder["was_active"] and not is_active(step.record):
+        ended = {"run_id": step.record.get("run_id") or "", "stored_session_id": session_id,
+                 "outcome": step.record["ended_by"]}
+        for listener in _ended_listeners:
+            listener(ended)
     if step is not None and not is_active(step.record) and active_session_id(db) is None:
         _close_install_flag()
     return step
@@ -70,7 +86,7 @@ def start(db, session_id: str, facts: Facts) -> dict:
     crash before the end reopens this chat on the next launch."""
     from hermes_cli.onboarding_run import set_run
 
-    record = new_record(facts, now=time.time())
+    record = new_record(facts, now=time.time(), run_id=uuid.uuid4().hex)
     db.patch_session_model_config(session_id, {KEY: record})
     set_run(True)
     return record

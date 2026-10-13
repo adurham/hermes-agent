@@ -72,7 +72,7 @@ def _run_state() -> dict:
     from hermes_cli.anon_auth import guest_enabled
     from hermes_cli.onboarding_run import should_run
 
-    return {"run": should_run(), "eligible": guest_enabled(), "session_id": _active_onboarding_session()}
+    return {"run": should_run(), "eligible": guest_enabled(), **_active_run()}
 
 
 # ── first-run onboarding: one chat in the default profile, driven by setup_beat ───────────────
@@ -83,10 +83,12 @@ _ONBOARDING_PROFILE = {"profile": "default"}
 _onboarding_start_lock = threading.Lock()
 
 
-def _active_onboarding_session() -> str | None:
-    from agent.onboarding_record import active_session_id
+def _active_run() -> dict:
+    """The onboarding chat in progress and its run id, both None when no run is open."""
+    from agent.onboarding_record import active_session_id, load
     with _profile_db(_ONBOARDING_PROFILE) as db:
-        return None if db is None else active_session_id(db)
+        session_id = None if db is None else active_session_id(db)
+        return {"session_id": session_id, "run_id": (load(db, session_id) or {}).get("run_id") if session_id else None}
 
 
 @method("onboarding.start")
@@ -116,6 +118,7 @@ def _(rid, params: dict) -> dict:
                     start(db, stored, facts)
                 else:
                     facts = Facts.from_stored(load(db, stored)["facts"])
+                run_id = load(db, stored).get("run_id") or ""
                 # One open run at a time. The kept run is open before the others end, so the install
                 # flag never closes in between; finishing it closes the flag.
                 replaced = [sid for sid in open_ids if sid != stored]
@@ -136,7 +139,7 @@ def _(rid, params: dict) -> dict:
             submitted = _methods["prompt.submit"](rid, {"session_id": sid, "text": opening, "display_kind": "hidden"})
             if "error" in submitted:
                 return submitted
-    return _ok(rid, {"session_id": sid, "stored_session_id": stored, "resumed": not created})
+    return _ok(rid, {"session_id": sid, "stored_session_id": stored, "resumed": not created, "run_id": run_id})
 
 
 @method("onboarding.skip")
@@ -310,4 +313,8 @@ def _clear_setup_sessions(profile_dir) -> None:
 
 
 def register(server) -> None:
+    from agent.onboarding_record import on_ended
+
     bind_module(globals(), server, skip=("_",))
+    # Every window, not one session: the window showing the run may be subscribed to another chat.
+    on_ended(lambda ended: server._broadcast_global_event("onboarding.ended", ended))

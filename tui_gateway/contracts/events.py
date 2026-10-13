@@ -80,6 +80,25 @@ class SetupReadyPayload(OpenPayload):
     finished_at: float
 
 
+class OnboardingOutcome(WireEnum):
+    done = "done"
+    skipped = "skipped"
+    replaced = "replaced"
+    deleted = "deleted"
+
+
+class OnboardingEndedPayload(Payload):
+    """``agent/onboarding_record.py::_transition``: the run ``run_id`` stopped being in progress.
+    ``stored_session_id`` is its chat at the compression tip. ``done``: the first-task card was answered;
+    ``skipped``: Skip setup; ``replaced``: a rerun opened a new run; ``deleted``: its chat was deleted."""
+
+    run_id: str
+    stored_session_id: str
+    outcome: OnboardingOutcome
+
+
+event("onboarding.ended", OnboardingEndedPayload,
+      doc="A first-run onboarding run ended; sent to every connected window.")
 event("setup.ready", SetupReadyPayload,
       doc="The free-tier bootstrap finished (broadcast); the desktop's setup gate reads the record.")
 
