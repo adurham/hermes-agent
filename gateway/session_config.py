@@ -82,7 +82,7 @@ async def config_get(connection, ref, params):
                                      k: (policy.config() if policy else cfg).get(k)
                                      for k in ('mcp', 'mcp_servers', 'tools')},
                                      sort_keys=True).encode()).hexdigest()[:12]},
-                'reasoning': lambda: _reasoning(agent, policy, cfg),
+                'reasoning': lambda: _reasoning(agent, policy, cfg, connection, ref),
                 'fast': lambda: _fast(connection, ref, policy, agent, cfg),
                 'skin': lambda: {'value': display.get('skin', 'default')},
                 'theme': lambda: {'value': display.get('tui_theme', 'auto')},
@@ -109,11 +109,15 @@ def _fast(connection, ref, policy, agent, cfg):
     return {'value': {'priority': 'fast', 'ultrafast': 'ultrafast'}.get(tier, 'normal')}
 
 
-def _reasoning(agent, policy, cfg):
+def _reasoning(agent, policy, cfg, connection=None, ref=None):
     from hermes_constants import resolve_reasoning_config
     value = getattr(agent, 'reasoning_config', None)
-    if not isinstance(value, dict):
-        value = policy.reasoning_config if policy else resolve_reasoning_config(cfg, '')
+    if not isinstance(value, dict) and policy is not None:
+        # The next turn's level: a typed session /reasoning, else the frozen (or followed) one.
+        runner = connection.authority.runner
+        value = policy.current_reasoning_config(runner, connection.authority.sessions[ref.session_id].route)
+    elif not isinstance(value, dict):
+        value = resolve_reasoning_config(cfg, '')
     effort = 'none' if value and value.get('enabled') is False else (value or {}).get('effort', 'medium')
     return {'value': effort, 'display': 'show' if cfg.get('display', {}).get('show_reasoning', True) else 'hide'}
 

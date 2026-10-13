@@ -17,16 +17,16 @@ the rest (`unsupported_command`). The classic CLI prints a refusal as
 
 **Gateway (`slash.exec`)**: `read` = the real handler runs for a local session (proved by
 `tests/gateway/test_session_read_commands.py`); `control` = admission-fenced write; `refused`.
-**Notes**: `port: per-session setting` toggles write config.yaml or messaging-only state
-through their gateway handler, so they stay refused until ported to the session's frozen
-policy; `client-local (cli_only)` commands are terminal/UI features of a client.
+**Notes**: `per-session setting (gateway handler)` = the messaging handler runs and applies the
+setting to this local session (its next turn and `config.get`), saving config.yaml only where the
+handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-103 registry commands: 17 control, 15 read, 71 refused.
+103 registry commands: 27 control, 15 read, 61 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
 | `/agents` (/tasks) | refused | refused: not available yet | delegation.pause | slash.exec: refused | refused | gateway-wide: lists every chat's running agents and the process's async jobs |
-| `/approvals` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | port: per-session setting |
+| `/approvals` | control | slash.exec | slash.exec | slash.exec | refused | per-session setting (gateway handler) |
 | `/approve` | refused | approval.respond (prompt id) | slash.exec: refused | unavailable: messaging | refused | messaging-only |
 | `/battery` | refused | refused: not available yet | sidecar: system.battery (preference not saved) | slash.exec: refused | refused | client-local (cli_only) |
 | `/bg` | refused | refused: not available yet | prompt.background | action: background | refused |  |
@@ -35,9 +35,9 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/browser` | refused | refused: not available yet | sidecar: browser.manage | action: browser | refused | client-local (cli_only) |
 | `/btw` | refused | refused: not available yet | prompt.btw | action: btw | refused |  |
 | `/bundles` | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/busy` | refused | refused: not available yet | canonical route | unavailable: terminal | refused | port: per-session setting |
+| `/busy` | control | slash.exec | canonical route | unavailable: terminal | refused | per-session setting (gateway handler) |
 | `/clear` | refused | session.create | local | action: new | refused | client-local (cli_only) |
-| `/codex-runtime` (/codex_runtime) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | port: per-session setting |
+| `/codex-runtime` (/codex_runtime) | control | slash.exec | slash.exec | slash.exec | refused | per-session setting (gateway handler) |
 | `/commands` | read | slash.exec | slash.exec | action: help | refused | messaging-only |
 | `/compress` (/compact) | refused | session.mutate compress | canonical route | action: compress | session.mutate compress |  |
 | `/config` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
@@ -50,9 +50,9 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/diff` | read | slash.exec | slash.exec | slash.exec | refused |  |
 | `/egress` | control | slash.exec | slash.exec | slash.exec | refused |  |
 | `/export` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
-| `/fast` | refused | refused: not available yet | config.get, config.set | unavailable: advanced | refused | port: per-session setting |
+| `/fast` | control | slash.exec | config.get, config.set | unavailable: advanced | refused | per-session setting (gateway handler) |
 | `/focus` | refused | refused: not available yet | local (preference not saved) | slash.exec: refused | refused | client-local (cli_only) |
-| `/footer` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | port: per-session setting |
+| `/footer` | control | slash.exec | slash.exec | unavailable: terminal | refused | per-session setting (gateway handler) |
 | `/goal` | control | slash.exec | slash.exec | slash.exec | refused |  |
 | `/handoff` | refused | refused: not available yet | slash.exec: refused | action: handoff | refused | client-local (cli_only) |
 | `/hatch` (/generate-pet) | refused | refused: not available yet | slash.exec: refused | action: hatch | refused | client-local (cli_only) |
@@ -77,7 +77,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/palette` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
 | `/paste` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
 | `/pause` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging-only |
-| `/personality` | refused | refused: not available yet | config.set | slash.exec: refused | refused | port: per-session setting |
+| `/personality` | control | slash.exec | config.set | slash.exec | refused | per-session setting (gateway handler) |
 | `/pet` | refused | refused: not available yet | slash.exec | action: pet | refused | client-local (cli_only) |
 | `/plan` | control | slash.exec | slash.exec | slash.exec | refused |  |
 | `/platform` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging adapters; `pause`/`resume` mutate them |
@@ -87,7 +87,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/prompt` (/compose) | refused | refused: not available yet | local | slash.exec: refused | refused | client-local (cli_only) |
 | `/queue` (/q) | refused | refused: not available yet | local | slash.exec: refused | refused |  |
 | `/quit` (/exit) | refused | detach | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/reasoning` | refused | refused: not available yet | config.get; change refused: not available yet | action: reasoning | refused | port: per-session setting |
+| `/reasoning` | control | slash.exec | config.get; change refused: not available yet | action: reasoning | refused | per-session setting (gateway handler) |
 | `/redraw` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
 | `/refine` | control | slash.exec | slash.exec | slash.exec | refused |  |
 | `/reload` | refused | refused: not available yet | canonical route | unavailable: terminal | refused | client-local (cli_only) |
@@ -121,10 +121,10 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/undo` | refused | session.mutate rewind | canonical route | slash.exec: refused | refused |  |
 | `/update` | refused | refused: not available yet | local | unavailable: terminal | refused |  |
 | `/usage` | read (bare only (`reset` refused)) | slash.exec + last-turn receipt | canonical route | slash.exec | refused |  |
-| `/verbose` | refused | refused: not available yet | config.set | unavailable: terminal | refused | port: per-session setting |
+| `/verbose` | control | slash.exec | config.set | unavailable: terminal | refused | per-session setting (gateway handler) |
 | `/version` (/v) | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/voice` | refused | refused: not available yet | sidecar: voice.toggle; `tts` refused | unavailable: composer-voice | refused | port: per-session setting |
+| `/voice` | control | slash.exec | sidecar: voice.toggle; `tts` refused | unavailable: composer-voice | refused | per-session setting (gateway handler) |
 | `/wake` | refused | refused: not available yet | local | action: wake | refused | client-local (cli_only) |
 | `/whoami` | read | slash.exec | slash.exec | slash.exec | refused |  |
 | `/worktree` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
-| `/yolo` | refused | config.set yolo | config.set | action: yolo | refused | port: per-session setting |
+| `/yolo` | control | config.set yolo | config.set | action: yolo | refused | per-session setting (gateway handler) |

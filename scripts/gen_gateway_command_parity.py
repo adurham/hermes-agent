@@ -20,8 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "website" / "docs" / "developer-guide" / "gateway-command-parity.md"
 
-# Per-session settings that write config.yaml / messaging-only state through their gateway handler:
-# enabling them as-is would print success and change nothing for a local session.
+# Per-session settings: slash.exec runs their messaging handler, which applies a setting to the local
+# session it came from (gateway/session_setting_commands.py; tests/gateway/test_session_setting_commands.py).
 TOGGLES = frozenset({"fast", "reasoning", "yolo", "footer", "personality", "busy", "voice", "approvals",
                      "verbose", "codex-runtime"})
 # Why a command with a gateway handler is NOT a read for a local session (probe: the real handler
@@ -74,7 +74,7 @@ def port_note(cmd):
 
 def _base_note(cmd):
     if cmd.name in TOGGLES:
-        return "port: per-session setting"
+        return "per-session setting (gateway handler)"
     if cmd.name in NOT_A_LOCAL_READ:
         return NOT_A_LOCAL_READ[cmd.name]
     if cmd.gateway_only:
@@ -220,9 +220,9 @@ the rest (`unsupported_command`). The classic CLI prints a refusal as
 
 **Gateway (`slash.exec`)**: `read` = the real handler runs for a local session (proved by
 `tests/gateway/test_session_read_commands.py`); `control` = admission-fenced write; `refused`.
-**Notes**: `port: per-session setting` toggles write config.yaml or messaging-only state
-through their gateway handler, so they stay refused until ported to the session's frozen
-policy; `client-local (cli_only)` commands are terminal/UI features of a client.
+**Notes**: `per-session setting (gateway handler)` = the messaging handler runs and applies the
+setting to this local session (its next turn and `config.get`), saving config.yaml only where the
+handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
 """
 

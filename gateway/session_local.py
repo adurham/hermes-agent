@@ -249,7 +249,7 @@ def _lazy_model(authority, policy):
         return GUEST_MODEL if free_tier_route() else model
 
 
-def _reasoning_fields(agent, policy, model, authority=None):
+def _reasoning_fields(agent, policy, model, authority=None, override=None):
     """Main's session-info effort/tier fields, from the built agent or (lazy) what the policy's next turn
     resolves (a following session's current profile): a resumed Desktop slice holds its reasoning pill
     pending until ``reasoning_effort`` arrives."""
@@ -265,7 +265,7 @@ def _reasoning_fields(agent, policy, model, authority=None):
         effective, next_model = policy.effective(authority, secrets=False)
         route = effective.get('model') or {}
     config = (getattr(view, 'reasoning_config', None) if view is not None
-              else resolve_reasoning_config(effective, next_model or ''))
+              else override if override is not None else resolve_reasoning_config(effective, next_model or ''))
     tier = (getattr(view, 'service_tier', None) if view is not None
             else parse_service_tier((effective.get('agent') or {}).get('service_tier'))) or ''
     provider = getattr(view, 'provider', None) if view is not None else route.get('provider')
@@ -299,7 +299,10 @@ def local_session_info(authority, ref):
             # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.
             'profile_name': served_profile_name(authority.profile_id),
             **({'cwd': policy.cwd} if policy else {})}
-    info.update(_reasoning_fields(agent, policy, info['model'], authority))
+    peek = getattr(authority.runner, '_peek_session_state', None)
+    state = peek(live.route) if peek is not None else None
+    override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
+    info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
     if policy:
         # The creation request the route was frozen with (secrets already extracted), so a
         # resuming client can tell "same flags again" from a real override attempt.

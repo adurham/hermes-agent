@@ -131,8 +131,13 @@ class LocalSessionPolicy:
             return self.toolsets
         return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode)))
 
-    def current_reasoning_config(self, runner):
-        """The next turn's reasoning: the profile's current effort when following, else the frozen one."""
+    def current_reasoning_config(self, runner, session_key=None):
+        """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
+        the profile's current effort when following, else the frozen one."""
+        peek = getattr(runner, '_peek_session_state', None)
+        state = peek(session_key) if session_key and peek is not None else None
+        if state is not None and state.conversation.reasoning_override is not None:
+            return dict(state.conversation.reasoning_override)
         if not self.follows_profile:
             return self.reasoning_config
         from gateway.session_authorities import active_authority

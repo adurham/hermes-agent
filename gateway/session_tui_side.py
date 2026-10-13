@@ -117,7 +117,7 @@ async def background(connection, ref, params):
                 max_iterations=policy.max_turns, quiet_mode=True, verbose_logging=False,
                 enabled_toolsets=list(policy.current_toolsets(config)),
                 disabled_toolsets=parse_config_string_list((config.get('agent') or {}).get('disabled_toolsets')) or None,
-                reasoning_config=policy.current_reasoning_config(runner),
+                reasoning_config=policy.current_reasoning_config(runner, live.route),
                 service_tier=policy.current_service_tier(runner, live.route),
                 request_overrides=dict(runtime.get('request_overrides') or {}),
                 providers_allowed=pr.get('only'), providers_ignored=pr.get('ignore'), providers_order=pr.get('order'),

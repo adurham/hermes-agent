@@ -27,6 +27,10 @@ _HANDLER_CONTROLS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat', 'review',
 # Idle-path commands the messaging gateway answers by rewriting the turn (``_hm_cmd_<name>``,
 # gateway/run_inbound.py): the rewritten text is returned as the client's ``send`` directive.
 _PROMPT_COMMANDS = frozenset({'plan', 'learn', 'init', 'initiate-setup', 'moa', 'blueprint', 'egress'})
+# Per-session settings: the messaging handler itself, made session-correct for a local session
+# (gateway/session_setting_commands.py). Admission-fenced like any control.
+_SETTING_COMMANDS = frozenset({'reasoning', 'voice', 'approvals', 'codex-runtime', 'footer', 'busy', 'verbose',
+                               'yolo', 'fast', 'personality'})
 
 # Kanban verbs that only read the board. ``create`` would also subscribe the LOCAL chat to
 # messaging notifications, and every other verb mutates the board.
@@ -57,7 +61,8 @@ _READ_ARGUMENTS = {
 
 def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
-    if name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS:
+    if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
+            or name in _SETTING_COMMANDS):
         return 'control'
     if name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg):
         return 'read'

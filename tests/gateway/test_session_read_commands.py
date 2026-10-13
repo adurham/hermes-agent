@@ -54,7 +54,7 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
                 await asyncio.sleep(.1)
             for command in ('usage', 'insights', 'profile', 'topup', 'diff', 'memory', 'kanban list',
                             'suggestions', 'bundles', 'usage reset', 'memory approval on', 'kanban create x',
-                            'suggestions catalog', 'agents', 'sessions', 'platform', 'fast'):
+                            'suggestions catalog', 'agents', 'sessions', 'platform'):
                 try:
                     reply = await rpc(ws, 'slash.exec', session_id=sid, command=command)
                 except TimeoutError:
@@ -84,9 +84,10 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
     assert out['kanban list'] == '(no matching tasks)', out['kanban list']
     assert 'No suggested automations' in out['suggestions'], out['suggestions']
     assert str(home / 'skill-bundles') in out['bundles'], out['bundles']
-    # Write forms, messaging-model state, gateway-wide views and toggles stay refused.
+    # Write forms, messaging-model state and gateway-wide views stay refused (the per-session settings
+    # run: tests/gateway/test_session_setting_commands.py).
     for command in ('usage reset', 'memory approval on', 'kanban create x', 'suggestions catalog',
-                    'agents', 'sessions', 'platform', 'fast'):
+                    'agents', 'sessions', 'platform'):
         assert out[command] == 'unsupported_command', (command, out[command])
     assert (home / 'config.yaml').read_text() == config
     assert not os.path.exists(home / 'cron' / 'jobs.json') or 'catalog' not in (home / 'cron' / 'jobs.json').read_text()
