@@ -8895,6 +8895,15 @@
             "default": null,
             "title": "Profile"
           },
+          "scope": {
+            "default": "live",
+            "enum": [
+              "live",
+              "stored"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
           "limit": {
             "default": 200,
             "title": "Limit",
