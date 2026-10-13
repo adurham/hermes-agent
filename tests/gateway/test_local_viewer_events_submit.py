@@ -159,3 +159,59 @@ def test_an_unresolvable_one_turn_model_fails_the_turn_without_running_it():
         result, agent = _run_turn(_gateway_runner())
     assert result["failed"] is True and "Unknown model 'nope'" in result["final_response"]
     assert agent is None and _RecordingAgent.built == []
+
+
+class _SteeredAgent(_RecordingAgent):
+    def run_conversation(self, message, **kwargs):
+        self.calls.append((message, kwargs))
+        return {"final_response": "", "messages": [], "failed": True, "error": "HTTP 402",
+                "failure_reason": "billing", "pending_steer": "also check the logs",
+                "pre_transform_response": "raw draft", "response_transformed": True,
+                "billing_block": {"provider": "openrouter", "url": "https://openrouter.ai/credits"},
+                "last_reasoning": "thought", "turn_exit_reason": "billing"}
+
+
+@pytest.mark.parametrize("classic", [True, False])
+def test_a_classic_cli_receipt_carries_the_run_conversation_keys(classic):
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.session import SessionSource
+    from gateway.session_results import execution_result
+    from gateway.turn_context import TurnContext
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.LOCAL, chat_id="c", user_id="u"),
+        message="hi", history=[], session_id="sid", session_key="key", user_config={},
+        AIAgent=_SteeredAgent, resolve_display_setting=lambda *_a: False,
+        _run_still_current=lambda: True, _hooks_ref=SimpleNamespace(loaded_hooks=False))
+    captured = {}
+    token = execution_result.set(captured)
+    try:
+        with patch("gateway.session_cli_turn.classic_cli_turn", return_value=classic):
+            delivered = TurnRunner(_gateway_runner(), ctx).run_sync()
+    finally:
+        execution_result.reset(token)
+    stored = captured["result"]
+    if classic:
+        # main's CLI renders its own chat_error_copy for an empty failed turn and queues the
+        # leftover /steer itself, so the gateway must not also drain it as a follow-up.
+        assert stored["final_response"] == ""
+        assert stored["pending_steer"] == "also check the logs"
+        assert stored["pre_transform_response"] == "raw draft" and stored["response_transformed"] is True
+        assert stored["billing_block"]["provider"] == "openrouter"
+        assert (stored["last_reasoning"], stored["turn_exit_reason"]) == ("thought", "billing")
+        assert "pending_steer" not in ctx.result_holder[0]
+    else:
+        assert "pending_steer" not in stored and "billing_block" not in stored
+        assert ctx.result_holder[0]["pending_steer"] == "also check the logs"
+    # The delivered reply (message.complete text) keeps the gateway's own copy either way.
+    assert delivered["final_response"] and stored["failed"] is True
+
+
+def test_only_a_classic_cli_surface_session_is_a_classic_cli_turn():
+    from gateway.session_cli_turn import classic_cli_turn
+    turn = SimpleNamespace(_approval_owner=("authority", "s", 1), _runner=object(),
+                           _ctx=SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL)))
+    for platform, expected in (("cli", True), ("tui", False), ("desktop", False)):
+        with patch("gateway.session_policy.policy_for_source", return_value=SimpleNamespace(platform=platform)):
+            assert classic_cli_turn(turn) is expected
+    turn._ctx.source.platform = Platform.TELEGRAM
+    assert classic_cli_turn(turn) is False

@@ -91,3 +91,45 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
                    request_overrides=dict(result.request_overrides or {}),
                    capabilities=dict(result.runtime_capabilities or {}))
     return result.new_model, runtime
+
+
+# run_conversation keys main's HermesCLI reads that the gateway's own projection does not carry
+# (CALLMAP §3.3 step 4): the transform-preview original, the billing descriptor and the turn's
+# last reasoning / preview flags.
+_RESULT_PASSTHROUGH = ('pre_transform_response', 'billing_block', 'last_reasoning', 'response_previewed',
+                       'response_transformed', 'turn_exit_reason')
+
+
+def classic_cli_turn(turn):
+    """A local-viewer turn on a classic-CLI surface session (``cli`` / ``oneshot`` / ``tool``): the
+    viewer is main's HermesCLI, which reads the run_conversation-shaped result itself."""
+    from gateway.run_turn_progress import local_viewer_turn
+    if not local_viewer_turn(turn):
+        return False
+    from gateway.session_policy import policy_for_source
+    try:
+        policy = policy_for_source(turn._runner, turn._ctx.source)
+    except Exception:
+        return False
+    return policy is not None and policy.platform == 'cli'
+
+
+def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_id=None):
+    """The receipt-only fields of a classic CLI turn, taken from the agent's raw result.
+
+    ``pending_steer`` is REMOVED from ``result``: main's CLI queues a leftover /steer as its own
+    next turn (``delivering leftover steer``), so the gateway must not also run it as a follow-up
+    inside this admission. ``final_response`` is the agent's raw text: main renders its own
+    ``chat_error_copy`` for an empty failed turn instead of the gateway's chat copy."""
+    if not isinstance(result, dict):
+        return {}
+    fields = {key: result.get(key) for key in _RESULT_PASSTHROUGH if key in result}
+    fields['final_response'] = result.get('final_response') or ''
+    steer = result.pop('pending_steer', None)
+    fields['pending_steer'] = steer or None
+    if aux_before is not None:
+        from hermes_cli.oneshot import _attach_auxiliary_usage
+        holder = {'session_id': result.get('session_id') or session_id}
+        _attach_auxiliary_usage(holder, session_db, aux_before, fallback_session_id=session_id)
+        fields['auxiliary_usage'] = holder.get('auxiliary_usage') or {}
+    return fields

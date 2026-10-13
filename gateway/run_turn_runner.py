@@ -1096,7 +1096,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             from gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:
-                captured['result'] = result
+                cli_fields = self.__dict__.pop("_cli_result_fields", None)
+                # A classic CLI viewer reads the run_conversation-shaped dict from the receipt; the
+                # delivered reply (message.complete text) keeps the gateway's own copy.
+                captured['result'] = {**result, **cli_fields} if cli_fields else result
             return result
 
     def _run_sync_scoped(self):
@@ -1228,7 +1231,18 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
             persist_msg, persist_ts = self._prepare_turn_message(agent_history)
             compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
+            aux_before = cli_db = None
+            from gateway.session_cli_turn import classic_cli_turn, take_cli_result_fields
+            cli_turn_result = classic_cli_turn(self)
+            if cli_turn_result and _finite_viewer_turn():
+                # `chat -q --usage-file` / stream-json: this turn's auxiliary spend, as oneshot.py read it.
+                from hermes_cli.oneshot import _auxiliary_usage
+                cli_db = getattr(runner._session_db, "_db", runner._session_db)
+                aux_before = _auxiliary_usage(cli_db, ctx.session_id)
             result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+            if cli_turn_result:
+                self._cli_result_fields = take_cli_result_fields(
+                    result, aux_before=aux_before, session_db=cli_db, session_id=ctx.session_id)
         finally:
             if local_sinks is not None:
                 from gateway import local_viewer_events
