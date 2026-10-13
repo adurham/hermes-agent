@@ -123,18 +123,44 @@ _CLOSE = ('When the first thing is built and shown, ask with clarify: "How does 
           'After they answer, call setup_beat(beat="done").')
 
 _HOW_TO_WORK = (
-    "Real data only: their connected apps, or tools signed in on this computer. Never mock or invent data, and "
-    "never route around a connector.",
-    "Show visible progress within a minute and a first result within five.",
-    "Your first reply is one line, then a tool call.",
-    "At most two checks and one question before you start working.",
-    "Connect or install anything once, with exact ids and no searching, then use it.",
-    "Never search the whole disk.",
-    "Save every file in ~/hermes-first-task/ and say where it is. No test files.",
-    "A page is one self-contained HTML file, unless the task says otherwise.",
+    "Real data only: this computer, their connected apps, the live web. Never mock or invent data.",
+    "First reply: one line, then a tool call. At most two checks and one question before you start. Something "
+    "visible within a minute, finished within five.",
+    "Save every file in ~/hermes-first-task/ and say where. No test files.",
+    "Install or connect anything once, with exact ids. Never search the whole disk.",
+    "Write the words they read with humanizer: short, plain, specific.",
 )
 
+_PREVIEW_CALL = 'tool_call {"calls":[{"name":"desktop_preview","arguments":{"action":"open","url":"<file>"}}]}'
+
+
+def _preview_line(facts: Facts) -> str:
+    """Every host shows results in the app's preview pane, which watches a local file but not a remote one."""
+    reload = ("On this host it does not reload by itself: open it again after each change."
+              if facts.facts_source == "remote" else
+              "Open it once, early: it reloads when the file changes, so keep improving the same file while they "
+              "watch.")
+    return (f"Show results in the preview pane beside the chat with {_PREVIEW_CALL}; it shows HTML, images and "
+            f"PDFs. {reload} Say it is open only after the call succeeds.")
+
+
+_NPM = "https://cdn.jsdelivr.net/npm/"
+_PAGE = (
+    "One self-contained HTML file, laid out for the pane (often about 600px wide) and able to widen.",
+    "It moves within a second: a diagram that draws itself, a dot that runs a path, numbers that count up to "
+    "real values.",
+    f"Libraries, only what the page needs, each pinned as {_NPM}<package>@<version>/<file>: gsap@3.13.0 for "
+    "motion, with its DrawSVGPlugin, MotionPathPlugin and ScrollTrigger (register each); d3@7.9.0 for charts of "
+    "real numbers; p5@1.11.3 for a 2D figure they drag or tune; matter-js@0.20.0 for physics; katex@0.16.11 "
+    "with its CSS and auto-render for maths; tone@15.0.4 for sound, started on a click; roughjs@4.6.6 for a "
+    "hand-drawn look.",
+    '3D: three@0.170.0 is ES modules only. Use an import map: "three" to its build/three.module.js, '
+    '"three/addons/" to its examples/jsm/.',
+)
+_PAGE_TASKS = ("hermes", "explain", "brief", "week", "youtube", "site", "repo", "own")
+
 _CONNECTORS = (
+    "Never route around a connector. "
     'Reading a connected app: check it with manage_connections(action="status"). Find its tools with tool_search '
     "using the app slug, then the slug plus an action (a bare slug misses actions). tool_describe every action you "
     'need in one batch, then call them through tool_call(calls=[{"name": "connectors__<slug>__<ACTION>", '
@@ -157,43 +183,13 @@ _SPARK_LINE = "This machine is built for local models; say so once when it fits 
 _REMOTE_LINE = "Hermes runs on another computer than the user's: say which machine anything is installed on."
 
 
-_PREVIEW_CALL = 'tool_call {"calls":[{"name":"desktop_preview","arguments":{"action":"open","url":"<file>"}}]}'
-# The terminal tool's Git Bash on Windows passes argv literally (MSYS_NO_PATHCONV=1), so Git's `start`
-# wrapper hands cmd a literal `//c` and opens nothing; a single-slash `cmd.exe /c` survives that.
-_OPEN = {"macos": "`open <file>`",
-         "windows": '`cmd.exe /c start "" "<file>"` with the full Windows path (C:/Users/...), never a ~ or /c/ path'}
-_CMD_BANNER = ('Exit 0 with a cmd banner ("Microsoft Windows [Version ...]") in the output is a failure: nothing '
-               "opened; fix the command.")
-
-
-def _open_line(facts: Facts) -> str:
-    if facts.facts_source == "remote":
-        return f"show it with desktop_preview: {_PREVIEW_CALL}"
-    return f"open it in the default browser with {_OPEN.get(facts.os, '`xdg-open <file>`')}"
-
-
-def _shown_phrase(facts: Facts) -> str:
-    return "shown with desktop_preview" if facts.facts_source == "remote" else "opened in the default browser"
-
-
-def _page_lines(facts: Facts) -> list[str]:
-    """How a page reaches the user: a local backend opens it in their browser; a remote one cannot."""
-    if facts.facts_source == "remote":
-        return [f"Show a page with desktop_preview, through tool_call: {_PREVIEW_CALL}. Their browser is on "
-                "another computer.",
-                "Say the page is open only after desktop_preview returned success."]
-    check = f" {_CMD_BANNER}" if facts.os == "windows" else ""
-    return [f"Open a page in their default browser with {_OPEN.get(facts.os, '`xdg-open <file>`')}.",
-            f"Say the page is open only after the open command succeeded.{check}"]
-
-
-def _task_prompt(option: str, label: str, facts: Facts, has_skill: Callable[[str], bool]) -> list[str]:
+def _task_prompt(option: str, label: str, has_skill: Callable[[str], bool]) -> list[str]:
     task = TASK_BY_ID.get(option, OWN_TASK)
     picked = f'They picked "{label or task.label}". ' if (label or task.label) else ""
-    steps = [f"{n}. {step.replace('<open>', _open_line(facts))}" for n, step in enumerate(task.steps, 1)]
+    steps = [f"{n}. {step}" for n, step in enumerate(task.steps, 1)]
     return [f"{picked}Your job: {task.goal}.",
             f"Load these skills with skill_view first: {', '.join(task_skills(option, has_skill))}.",
-            "Steps:", *steps, f"Output: {task.output.replace('<shown>', _shown_phrase(facts))}", f"Quality bar: {task.quality}", f"Done when: {task.done}"]
+            "Steps:", *steps, f"Output: {task.output}", f"Quality bar: {task.quality}", f"Done when: {task.done}"]
 
 
 def _bullets(title: str, lines) -> str:
@@ -204,7 +200,8 @@ def build_guidance(option: str, facts: Facts, has_skill: Callable[[str], bool] =
                    label: str = "") -> str:
     """The prompt once a first task is picked; ``label`` is the card text they clicked, ``has_skill``
     says whether a bundled skill is on this install."""
-    work = [*_HOW_TO_WORK, *_page_lines(facts), *((_CONNECTORS,) if option in _CONNECTOR_TASKS else ())]
+    work = [*_HOW_TO_WORK, _preview_line(facts), *((_CONNECTORS,) if option in _CONNECTOR_TASKS else ())]
+    page = [_bullets("When you make a page", _PAGE)] if option in _PAGE_TASKS else []
     host = [_OS_LINES.get(facts.os, _OS_LINES["linux"])]
     if facts.os == "windows" and facts.arch == "arm64":
         host.append(_ARM_WINDOWS)
@@ -212,7 +209,7 @@ def build_guidance(option: str, facts: Facts, has_skill: Callable[[str], bool] =
         host.append(_SPARK_LINE)
     if facts.facts_source == "remote":
         host.append(_REMOTE_LINE)
-    return "\n\n".join(["\n".join(_task_prompt(option, label, facts, has_skill)), _bullets("How to work", work),
+    return "\n\n".join(["\n".join(_task_prompt(option, label, has_skill)), _bullets("How to work", work), *page,
                          _bullets("This computer", host), f"When it is shown:\n{_CLOSE}"])
 
 

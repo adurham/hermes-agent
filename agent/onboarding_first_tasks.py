@@ -26,7 +26,7 @@ OWN_ID = "own"
 class FirstTask:
     """``skills`` load first, before the work; an entry ``a|b`` means one of them, whichever fits.
     Plugin skills use the ``<plugin>:<skill>`` form skill_view resolves. ``goal`` finishes the
-    sentence "Your job: ..."; ``<open>`` in a step and ``<shown>`` in the output are replaced with how this host shows a page."""
+    sentence "Your job: ..."."""
 
     id: str
     label: str
@@ -59,63 +59,71 @@ def _macos(facts: Facts, picks: Mapping[str, Any]) -> bool:
 FIRST_TASKS: tuple[FirstTask, ...] = (
     FirstTask(
         "hermes", "Explain how Hermes works", lambda facts, picks: False, ("hermes-agent", "claude-design", "p5js"),
-        goal="build a designed page of at least three screens that shows how Hermes works, from the real docs "
-             "and real facts about this install",
+        goal="build a living page that shows how Hermes works, from the real docs and this install",
         steps=(
-            "Read the docs with web_extract, starting at https://hermes-agent.nousresearch.com/docs (the "
-            "hermes-agent skill links the pages): the agent loop, skills and the learning loop, cron and "
-            "automations, tools and toolsets, memory.",
-            "Read facts from this install with your own tools: how many skills are installed, which apps are "
-            "connected, which model is configured, and which skills this chat used.",
-            "Write a first version within a minute and <open>. Then refine the same file.",
-            "Screen 1, the agent loop: model, tools, results, back to the model, as an animated diagram.",
-            "Screen 2, the skill learning loop: Hermes notices a procedure, saves it as a skill and loads it next "
-            "time. Name the skills this chat used.",
-            "Screen 3, automations and what they can do: cron jobs, webhooks, connectors, messaging, with "
-            "examples that fit them.",
+            "Read https://hermes-agent.nousresearch.com/docs/llms.txt once with web_extract. Open a page only to "
+            "check a fact you show.",
+            "Read this install: the model, how many skills are installed, the connected apps, and what this chat did "
+            "(tools called, skills loaded, their name and picks).",
+            "Within a minute, open it in the preview pane with the title, those facts and three screen headings. "
+            "Then fill one screen at a time.",
+            "Screen 1, the agent loop: a pulse runs model, tool, result, back to the model, labelled with the tools "
+            "this chat called.",
+            "Screen 2, learning: a procedure becomes a skill that loads next time; memory keeps facts across chats. "
+            "Use the skills this chat loaded.",
+            "Screen 3, out in the world: cron jobs, connectors and messaging, one example each built on their apps.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, at least three full-screen sections, each "
-               "with its own graphic (a p5js animation or an SVG diagram).",
-        quality="Designed with claude-design, not a plain document. Every name and number comes from the docs or "
-                "this install. Copy is short and plain.",
-        done="The page is open, every screen has its graphic and real facts, and you said where the file is."),
+        output="One HTML file in ~/hermes-first-task/, three screens that each fill the pane with one animated "
+               "graphic; open in the preview pane.",
+        quality="Every name and number comes from the docs or this install. A few short lines per screen.",
+        done="All three screens move and show real facts, and you said where the file is."),
     FirstTask(
         "games", "Tune my games for this PC", _plugin("nvidia-app"), ("nvidia-app:nvidia-app",),
         goal="optimise the games on this PC with NVIDIA App and show what changed",
         steps=(
-            "Check NVIDIA App is running, as the skill says. If it is not, say how to start it and wait.",
-            "Read the installed games and their current settings.",
-            "Ask once before changing anything, naming the games you will change.",
-            "Apply the optimised settings, then read them back.",
+            "Its tools are mcp__nvidia_app__nvapp_*. If none are listed, say so as the skill says and wait until "
+            "they start NVIDIA App.",
+            "List the installed games and show them at once. If the driver status shows a newer Game Ready "
+            "driver, say so in one line.",
+            "Ask in one clarify which preset to apply (Performance, Visual or Recommended), naming the games.",
+            "Apply it, then read each game back.",
         ),
-        output="A before and after table in chat: one row per game, what changed and why.",
+        output="A before and after table in chat: one row per game, what changed.",
         quality="Only settings NVIDIA App reports and really changed. Never guess a value.",
-        done="The changes are applied and read back, and the table shows each one."),
+        done="The changes are read back and in the table. Next-step idea: launch one of the games."),
     FirstTask(
         "broadcast", "Make my mic and camera pro", _plugin("nvidia-broadcast"), ("nvidia-broadcast:nvidia-broadcast",),
         goal="set up NVIDIA Broadcast so their mic and camera are ready for a call",
         steps=(
-            "Check NVIDIA Broadcast is running, as the skill says. If it is not, say how to start it and wait.",
-            "Read the mic, speaker and camera devices and the effects this machine offers.",
-            "Ask in one clarify what the setup is for, with three options such as a meeting, a stream or a "
-            "noisy room.",
-            "Turn on the effects that fit, then read them back.",
+            "Its tools are mcp__nvidia_broadcast__*. If none are listed, say so as the skill says and wait until "
+            "they start Broadcast.",
+            "Read the devices and the effects this machine offers, then ask in one clarify what it is for: a "
+            "meeting, a stream or a noisy room.",
+            "Turn the effects on one at a time. After each, say what to look at or listen for in the Broadcast "
+            "window.",
         ),
         output="A short list in chat: each effect, its device, before and after.",
         quality="Only effects Broadcast reports on this machine.",
-        done="The effects are on and they know how to turn each one off."),
+        done="The effects are on and read back, and they know how to turn each one off."),
     FirstTask(
         "blender", "Build a 3D scene in Blender", _plugin("blender"), ("blender:blender",),
-        goal="make one small 3D scene in Blender from a script, render it and show it",
+        goal="build a small 3D scene live in their open Blender, one visible step at a time",
         steps=(
-            "Check Blender is running, as the skill says. If it is not, say how to start it and wait.",
-            "Offer three scene ideas that fit them in one clarify.",
-            "Write a short Python script, run it in Blender and render one still.",
-            "Show the render, then offer one variation.",
+            "Drive the open Blender with its mcp__blender__* tools. Never run Blender from the terminal.",
+            "If Blender is not connected, give the skill's setup steps for this OS as a short list, and check "
+            "again each time they say done.",
+            "Offer three scene ideas in one clarify: two that fit them, one that shows off this machine.",
+            "Build it in a new scene named Hermes, in camera view, in four calls they can watch: ground and camera, "
+            "main objects, materials and light, framing. After each, render the viewport to render.png; after the "
+            "first, open it in the preview pane.",
+            "Render a 1280x720 EEVEE still over render.png. Look at it before you call it done: lit, not black, "
+            "framed.",
+            "Save only the new scene with bpy.data.libraries.write as scene.blend, and the code as scene.py.",
         ),
-        output="The script and the PNG render in ~/hermes-first-task/; the render <shown>.",
-        quality="A real Blender render, lit and framed. Never a placeholder.",
-        done="The render is shown and you said where the script and image are."),
+        output="scene.blend, scene.py and render.png in ~/hermes-first-task/; the render open in the preview pane.",
+        quality="Made in their open Blender, never headless, never a placeholder.",
+        done="The final still is shown and you named the files. Next-step idea: a turntable video or a GPU Cycles "
+             "render."),
     FirstTask(
         "brief", "Brief me on today", _connected, ("claude-design",),
         goal="write today's brief from their connected apps",
@@ -125,7 +133,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Show a first version early, then fill it in: what needs attention, what changed, what is next.",
             "Offer a morning cron job that sends the brief. Schedule it only on yes.",
         ),
-        output="One designed HTML page in ~/hermes-first-task/, <shown>.",
+        output="One designed HTML page in ~/hermes-first-task/, open in the preview pane.",
         quality="Every item comes from a connected app and says which one. Nothing invented.",
         done="The brief is shown and the morning job is set up or declined."),
     FirstTask(
@@ -137,7 +145,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Show a first version early, then fill it in: meetings, threads, work shipped, open loops.",
             "End with a short plan for next week built from the open loops.",
         ),
-        output="One designed HTML page in ~/hermes-first-task/, <shown>.",
+        output="One designed HTML page in ~/hermes-first-task/, open in the preview pane.",
         quality="Every item comes from a connected app and says which one. Nothing invented.",
         done="The page is shown with all five parts filled from real data."),
     FirstTask(
@@ -166,18 +174,18 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
     FirstTask(
         "explain", "Explain a topic I care about", _always,
         ("grounded-citations", "claude-design", "p5js", "blocked-page-recovery"),
-        goal="explain a topic they care about on one designed page with an interactive figure",
+        goal="explain a topic they care about on one page built around a figure they can play with",
         steps=(
-            "If the label they clicked names a topic, use it. Otherwise offer three topic guesses from what you "
-            "learned about them in one clarify.",
-            "Research it with citations. For a technical topic, also load arxiv.",
-            "Show a first version early, then refine the same file.",
-            "Add one interactive p5js figure that shows the core idea.",
+            "If the label they clicked names a topic, use it. Otherwise offer three guesses from what you know about "
+            "them in one clarify.",
+            "Within a minute, open it in the preview pane with the title and the figure already moving: the one "
+            "mechanism that makes the topic click, which they can drag or tune.",
+            "Research it with citations (load arxiv for a technical topic), then write short sections around the "
+            "figure. End on the most surprising thing you found.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, <shown>, sources at "
-               "the end.",
-        quality="Designed with claude-design. Every claim is cited. The figure responds to input.",
-        done="The page is shown with the figure working and every source listed."),
+        output="One HTML file in ~/hermes-first-task/, open in the preview pane, sources at the end.",
+        quality="Every claim and every number in the figure is cited. Under 400 words of text.",
+        done="The figure responds to input and every source is listed."),
     FirstTask(
         "youtube", "Turn a video into a page", _always, ("youtube-content", "claude-design", "p5js"),
         goal="turn one video into a page that lays its ideas out visually",
@@ -187,7 +195,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Pull out the main ideas, each with a timestamp and a quote.",
             "Show a first version early, then lay the ideas out visually, with one figure where it helps.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, <shown>; each "
+        output="One self-contained HTML file in ~/hermes-first-task/, open in the preview pane; each "
                "timestamp links to that moment in the video.",
         quality="Designed with claude-design. Quotes are exact words from the transcript.",
         done="The page is shown and every idea has its timestamp and quote."),
@@ -212,7 +220,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Show a first version early with a p5js hero, then refine the same file.",
             "Offer one variation.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, <shown>.",
+        output="One self-contained HTML file in ~/hermes-first-task/, open in the preview pane.",
         quality="Designed with the skills. Real content they gave you, never filler text.",
         done="The page is shown and a variation is offered."),
     FirstTask(
@@ -224,7 +232,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Read its entry points and main modules.",
             "Draw the architecture page: the modules, how they connect, where to start reading.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, <shown>.",
+        output="One self-contained HTML file in ~/hermes-first-task/, open in the preview pane.",
         quality="Only modules that are really in the repo, named by their paths.",
         done="The page is shown and every box on it maps to a real path."),
 )
@@ -239,7 +247,7 @@ OWN_TASK = FirstTask(
         "Cut a big ask to a first slice and say so in one line.",
         "Show a first version early, then refine it.",
     ),
-    output="Whatever fits the task; a page is one self-contained HTML file, <shown>.",
+    output="Whatever fits the task; a page is one self-contained HTML file, open in the preview pane.",
     quality="Real data only, designed with the skills when it is a page.",
     done="The first slice is shown and you said where its files are.")
 TASK_BY_ID = {task.id: task for task in FIRST_TASKS}

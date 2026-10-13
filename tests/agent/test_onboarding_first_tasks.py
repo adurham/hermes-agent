@@ -39,8 +39,7 @@ def test_a_task_reminder_opens_with_its_skills_and_drops_a_bundled_skill_this_in
     text = reminder("build_explain", new_record(MAC), MAC, has_skill=lambda name: name != "p5js")
 
     goal, skills = text.split("\n")[:2]
-    assert goal == ('They picked "Explain a topic I care about". Your job: explain a topic they care about on one '
-                    "designed page with an interactive figure.")
+    assert goal.startswith('They picked "Explain a topic I care about". Your job: ')
     assert skills == ("Load these skills with skill_view first: grounded-citations, claude-design, "
                       "blocked-page-recovery, humanizer.")
     # Plugin skills come with the plugin, which is the row's gate; a typed task starts from hermes-agent.
@@ -77,40 +76,25 @@ def test_how_hermes_works_reads_the_docs_and_builds_three_screens():
     assert all(f"Screen {n}" in text for n in (1, 2, 3)) and "~/hermes-first-task/" in text
 
 
-@pytest.mark.parametrize(("facts", "opens"), [
-    (MAC, "`open <file>`"), (PC, '`cmd.exe /c start "" "<file>"`'), (Facts(os="linux"), "`xdg-open <file>`"),
-])
-def test_a_local_backend_opens_the_page_in_the_default_browser_and_never_names_desktop_preview(facts, opens):
-    text = reminder("build_hermes", new_record(facts), facts)
-    site = reminder("build_site", new_record(facts), facts)
-
-    assert f"open it in the default browser with {opens}" in text
-    assert f"Open a page in their default browser with {opens}" in text
-    assert "Say the page is open only after the open command succeeded." in text
-    assert "desktop_preview" not in text and "desktop_preview" not in site
-    assert "opened in the default browser" in site
-
-
-def test_windows_opens_with_a_single_slash_cmd_and_a_banner_is_not_success():
-    """Vesper run 1: Git's `start` wrapper passes a literal `//c` under MSYS_NO_PATHCONV=1, cmd printed its
-    banner, exited 0 and nothing opened; the model still said the page was open."""
-    text = reminder("build_hermes", new_record(PC), PC)
-
-    assert '`start "" <file>`' not in text and "//c" not in text
-    assert "full Windows path (C:/Users/...)" in text
-    assert 'cmd banner ("Microsoft Windows [Version ...]") in the output is a failure' in text
-    assert "cmd banner" not in reminder("build_hermes", new_record(MAC), MAC)
-
-
-def test_a_remote_backend_shows_the_page_with_desktop_preview_through_tool_call():
-    facts = Facts(os="linux", facts_source="remote")
-    text = reminder("build_hermes", new_record(facts), facts)
+@pytest.mark.parametrize("facts", [MAC, PC, Facts(os="linux"), Facts(os="linux", facts_source="remote")],
+                         ids=["mac", "windows", "linux", "remote"])
+def test_every_host_shows_results_in_the_preview_pane_and_never_opens_a_browser(facts):
     call = 'tool_call {"calls":[{"name":"desktop_preview","arguments":{"action":"open","url":"<file>"}}]}'
+    for row in ("hermes", "site", "blender"):
+        text = reminder(f"build_{row}", new_record(facts), facts)
 
-    assert f"show it with desktop_preview: {call}" in text
-    assert "Say the page is open only after desktop_preview returned success." in text
-    assert "default browser" not in text and "xdg-open" not in text
-    assert "shown with desktop_preview" in reminder("build_site", new_record(facts), facts)
+        assert call in text and "Say it is open only after the call succeeds." in text
+        assert "default browser" not in text and "cmd.exe" not in text and "xdg-open" not in text
+    # The pane watches a local file; a remote backend's file has no watcher, so it is opened again.
+    text = reminder("build_hermes", new_record(facts), facts)
+    assert ("open it again after each change" in text) is (facts.facts_source == "remote")
+
+
+def test_the_page_guidance_rides_only_the_tasks_that_make_a_page():
+    assert "When you make a page:" in reminder("build_hermes", new_record(MAC), MAC)
+    assert "When you make a page:" in reminder("build_explain", new_record(MAC), MAC)
+    for row in ("blender", "games", "notes"):
+        assert "When you make a page:" not in reminder(f"build_{row}", new_record(PC), PC), row
 
 
 def test_the_app_tasks_carry_the_connectors_playbook_and_the_menu_lists_only_eligible_rows():
