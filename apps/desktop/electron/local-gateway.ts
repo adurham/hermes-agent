@@ -339,7 +339,17 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }
 }
 
-export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id, method = 'GET') {
+/** What a native grant is minted for: the URL's own profile selector or, when it names none, a
+ *  JSON body's `profile`. The gateway checks both against the grant, and a session write such as
+ *  `PATCH /api/sessions/<id>` names its owner in the body alone. */
+export function nativeGrantRoute(url: string, body?: unknown): string {
+  if (scopedProfileOf(new URL(url))?.trim()) {return url}
+  const profile = body && typeof body === 'object' && !Array.isArray(body) ? (body as { profile?: unknown }).profile : undefined
+
+  return typeof profile === 'string' && profile.trim() ? profile : url
+}
+
+export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id, method = 'GET', body?: unknown) {
   if (new URL(url).origin !== descriptor.gatewayEndpoint.api_origin || descriptor.baseUrl !== descriptor.gatewayEndpoint.api_origin) {
     throw new Error('Native gateway HTTP origin mismatch')
   }
@@ -347,7 +357,7 @@ export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: Ga
   const purpose = method.toUpperCase() === 'POST' && new URL(url).pathname.replace(/\/$/, '') === '/api/profiles'
     ? 'native-profile-create' : 'native-http'
 
-  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, url, launchHome), purpose) }
+  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome), purpose) }
 }
 
 // The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX

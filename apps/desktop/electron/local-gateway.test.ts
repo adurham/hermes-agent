@@ -2,7 +2,7 @@ import path from 'node:path'
 
 import { expect, test, vi } from 'vitest'
 
-import { createLocalGatewayDials, ensureLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { createLocalGatewayDials, ensureLocalGateway, nativeGrantRoute, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
 import { shortSocketTmpDir } from './local-gateway.test-helpers'
 
 test('the ensure client inherits the caller-scrubbed parent env, not the raw Desktop env', async () => {
@@ -478,5 +478,17 @@ test.skipIf(process.platform === 'win32')('a group-writable home mints through t
     configurePythonGatewayTicketClient(undefined as never)
     await fs.chmod(home, 0o700)
     await fs.rm(home, { recursive: true, force: true })
+  }
+})
+
+test('a session write that names its owner only in the body gets a grant for that profile', () => {
+  const url = 'http://127.0.0.1:1/api/sessions/s1'
+  expect(nativeGrantRoute(url, { hidden: true, profile: 'p2' })).toBe('p2')
+  // The URL's own selector wins; the gateway refuses a body that disagrees with it.
+  expect(nativeGrantRoute(url + '?profile=p3', { profile: 'p2' })).toBe(url + '?profile=p3')
+  expect(nativeGrantRoute('http://127.0.0.1:1/api/profiles/sessions/sidebar?recents_profile=p3', { profile: 'p2' })).toContain('recents_profile=p3')
+
+  for (const body of [undefined, null, {}, { profile: '' }, { profile: 7 }, [{ profile: 'p2' }]]) {
+    expect(nativeGrantRoute(url, body)).toBe(url)
   }
 })

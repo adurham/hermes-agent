@@ -55,6 +55,16 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
 `, JSON.stringify(ROWS), NAMED_ROW], { cwd: root, env: { ...env, PYTHONPATH: root }, encoding: 'utf8' })
 
   expect(seed.status, seed.stderr).toBe(0)
+
+  // One cron job in each profile's own store, for the all-profiles cron list.
+  for (const [home, name] of [[sandbox.hermesHome, 'default-job'], [named, 'developer-job']]) {
+    const job = spawnSync(python, ['-c', 'import sys\nfrom cron.jobs import create_job\ncreate_job("e2e", "every 1h", name=sys.argv[1])', name], {
+      cwd: root, env: { ...env, HERMES_HOME: home, PYTHONPATH: root }, encoding: 'utf8'
+    })
+
+    expect(job.status, job.stderr).toBe(0)
+  }
+
   // An existing install has a startup profile; without one the first-launch migration guesses
   // from the newest state.db, which here is the named profile's.
   fs.writeFileSync(path.join(sandbox.userDataDir, 'active-profile.json'), JSON.stringify({ profile: 'default' }))
@@ -115,6 +125,16 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
             }
 
             out[name] = { profiles: [...profiles].sort(), errors: r?.errors ?? [] }
+          } catch (e) {
+            out[name] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
+          }
+        }
+
+        // The all-profiles cron list, on both routes.
+        for (const [name, scope] of [['cron:all', {}], ['cron:all:registry', registry]] as const) {
+          try {
+            const r = await api({ path: '/api/cron/jobs?profile=all', ...scope })
+            out[name] = (Array.isArray(r) ? r : []).map((job: any) => `${job.profile}:${job.name}`).sort()
           } catch (e) {
             out[name] = 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
           }
@@ -186,6 +206,31 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
       await rail.getByRole('button', { name: /^Switch to / }).first().click()
       views.default = await listedIn(ROWS.map(r => r.id))
       await page.screenshot({ path: path.join(evidence, 'view-default.png') })
+
+      // The Bots plugin's hide write as the SDK sends it: the owner named only in the body, from
+      // the window, now back on default. An unopened pre-upgrade row is not editable over HTTP at all
+      // (only its first resume adopts it), so this runs on the developer row opened above.
+      probes['bots:hide'] = await page.evaluate(async () => {
+        const api = (window as any).hermesDesktop.api
+        const path = '/api/sessions/legacy-developer-desktop'
+
+        try {
+          const snapshot = await api({ path: `${path}/mutation-snapshot?profile=developer` })
+
+          const identity = {
+            expected_generation: snapshot?.runtime_generation,
+            expected_revision: snapshot?.runtime_revision,
+            request_id: crypto.randomUUID()
+          }
+
+          const r = await api({ path, method: 'PATCH', body: { hidden: false, profile: 'developer', ...identity } })
+
+          return { ok: r?.ok ?? null }
+        } catch (e) {
+          return 'ERR ' + String((e as Error)?.message ?? e).slice(0, 200)
+        }
+      })
+      console.log('BOTS_HIDE: ' + JSON.stringify(probes['bots:hide']))
     } finally {
       console.log('LEGACY_DESKTOP_RESULTS: ' + JSON.stringify(results))
       console.log('LEGACY_DESKTOP_VIEWS: ' + JSON.stringify(views))
@@ -232,6 +277,10 @@ for p in alive:
   expect.soft(probes['projects:all'], 'projects:all').toEqual(everyProfile)
   expect.soft(probes['projects:all:registry'], 'projects:all:registry').toEqual(everyProfile)
   expect.soft(probes['prs:all'], 'prs:all').toEqual({ scanned: ['legacy-desktop-anon'] })
+  const everyJob = ['default:default-job', 'developer:developer-job']
+  expect.soft(probes['cron:all'], 'cron:all').toEqual(everyJob)
+  expect.soft(probes['cron:all:registry'], 'cron:all:registry').toEqual(everyJob)
+  expect.soft(probes['bots:hide'], 'bots:hide').toEqual({ ok: true })
   expect.soft(probes['sessions:all'], 'sessions:all').toEqual({ ids: everyRow, errors: [] })
   expect.soft(probes['sidebar:default'], 'sidebar:default').toEqual({ ids: ROWS.map(r => `default:${r.id}`).sort(), errors: [] })
   expect.soft(probes['sidebar:developer'], 'sidebar:developer').toEqual({ ids: [`developer:${NAMED_ROW}`], errors: [] })
