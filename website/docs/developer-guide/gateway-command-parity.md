@@ -32,7 +32,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 |---|---|---|---|---|---|---|
 | `/agents` (/tasks) | refused | HermesCLI._handle_agents_command | delegation.pause | slash.exec: refused | refused | gateway-wide: lists every chat's running agents and the process's async jobs |
 | `/approvals` | control | HermesCLI._handle_approvals_command | slash.exec | slash.exec | refused | per-session setting (gateway handler) |
-| `/approve` | control | messaging-only: unknown command | slash.exec | unavailable: messaging | refused | messaging-only |
+| `/approve` | control | messaging-only: unknown command | slash.exec | slash.exec | refused | messaging-only |
 | `/battery` | refused | HermesCLI._handle_battery_command | sidecar: system.battery (preference not saved) | slash.exec: refused | refused | client-local (cli_only) |
 | `/bg` | refused | HermesCLI._handle_background_command | prompt.background | action: background | refused |  |
 | `/blueprint` (/bp) | control | HermesCLI._handle_blueprint_command | slash.exec | slash.exec | refused |  |
@@ -51,7 +51,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/cron` | refused | HermesCLI._handle_cron_command | slash.exec | unavailable: terminal | refused | TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs; client-local (cli_only) |
 | `/curator` | control | HermesCLI._handle_curator_command | slash.exec | unavailable: advanced | refused |  |
 | `/debug` | control | HermesCLI._handle_debug_command | slash.exec | slash.exec | refused | uploads logs to a public paste |
-| `/deny` | control | messaging-only: unknown command | slash.exec | unavailable: messaging | refused | messaging-only |
+| `/deny` | control | messaging-only: unknown command | slash.exec | slash.exec | refused | messaging-only |
 | `/diff` | read | HermesCLI._handle_diff_command | slash.exec | slash.exec | refused |  |
 | `/egress` | control | HermesCLI._cmd_egress | slash.exec | slash.exec | refused |  |
 | `/export` | refused | HermesCLI._handle_export_command | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |

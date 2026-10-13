@@ -433,6 +433,15 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
     }
   })
 
+  it('runs a typed /approve or /deny on the owner like every surface (the approval card stays approval.respond)', () => {
+    for (const name of ['/approve', '/deny']) {
+      expect(desktopSlashRegistry[name as keyof typeof desktopSlashRegistry]).toBeNull()
+      expect(isDesktopSlashCommand(name, 'all')).toBe(true)
+      expect(resolveDesktopCommand(name)?.surface.kind).toBe('exec')
+      expect(desktopSlashUnavailableMessage(name)).toBeNull()
+    }
+  })
+
   it('recognizes offered built-ins and their aliases offline as Commands, never as skills (#116159)', () => {
     // Cold catalog: nothing remembered, nothing cached. /context has no
     // desktop disposition and no hand-typed TS row, so only the dump can
