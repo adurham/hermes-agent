@@ -80,7 +80,7 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
                               else {"error": "Onboarding is over in this chat; it is a normal chat now."})
     if callback is None:
         return tool_error("setup_beat cards show only in the Hermes desktop app.")
-    shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id))
+    shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id, args.get("options")))
     if shown.result:  # refused, or a beat this machine skips
         return _result(shown)
     question = str(args.get("question") or "").strip() or QUESTIONS[beat]
@@ -97,7 +97,8 @@ SETUP_BEAT_SCHEMA = {
     "description": (
         "Run the first-run onboarding in this chat. Shows the card for a beat and waits for the user, then "
         "returns their answer and what to do next. beat=next shows the next beat. Pass value to record an answer "
-        "they gave in words, skip to record that they skipped a beat. beat=done ends onboarding after the first "
+        "they gave in words, skip to record that they skipped a beat. The build card needs options: your picks "
+        "from the list its reminder gives. beat=done ends onboarding after the first "
         "build is shown and its close card is answered. Nothing here ends it early: a user who wants to stop "
         "presses Skip setup."
     ),
@@ -106,11 +107,15 @@ SETUP_BEAT_SCHEMA = {
         "required": ["beat"],
         "properties": {
             "beat": {"type": "string", "enum": list(BEATS)},
-            "question": {"type": "string", "description": "Your line above the card. The app fixes the options."},
+            "question": {"type": "string", "description": "Your line above the card."},
             "value": {"type": "string", "description": "Record an answer given in words (a name, or an option id). No card."},
             "skip": {"type": "boolean", "description": "They skipped this beat in words. No card."},
             "suggest": {"type": "array", "items": {"type": "string"},
                         "description": "connectors only: slugs pinned as Suggested."},
+            "options": {"type": "array", "maxItems": 4, "description": "build only: up to four picks, ids from the list.",
+                        "items": {"type": "object", "required": ["id", "label"],
+                                  "properties": {"id": {"type": "string"},
+                                                 "label": {"type": "string", "maxLength": 32}}}},
         },
     },
 }

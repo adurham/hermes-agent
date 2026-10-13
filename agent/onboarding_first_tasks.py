@@ -14,8 +14,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from agent.onboarding_flow import Facts
 
+MAX_PICKS = 4
+MAX_LABEL = 32
 # The one fixed row: always last on the card, never one of the model's picks.
 FIXED_ID = "hermes"
+# The value a task the user names in words records; it is never on the card.
+OWN_ID = "own"
 
 
 @dataclass(frozen=True)
@@ -93,3 +97,43 @@ EVERY_TASK_SKILL = "humanizer"
 def eligible_tasks(facts: Facts, picks: Mapping[str, Any]) -> tuple[FirstTask, ...]:
     """The rows the model may pick from on this machine and run, in catalog order."""
     return tuple(task for task in FIRST_TASKS if task.id != FIXED_ID and task.gate(facts, picks))
+
+
+def card_options(chosen: Any) -> list[dict]:
+    """The build card: the model's picks as given, then the fixed row."""
+    return [*(dict(option) for option in chosen or ()), {"id": FIXED_ID, "label": TASK_BY_ID[FIXED_ID].label}]
+
+
+def _option_error(option: Any, eligible: set[str], seen: set[str]) -> str | None:
+    if not isinstance(option, Mapping) or not isinstance(option.get("id"), str):
+        return 'each option is {"id": ..., "label": ...}'
+    if option["id"] == FIXED_ID:
+        return f"{FIXED_ID} is added last by itself; do not pick it"
+    if option["id"] not in eligible:
+        return f"{option['id']!r} is not an eligible id"
+    if option["id"] in seen:
+        return f"{option['id']!r} is picked twice"
+    label = option.get("label")
+    if not isinstance(label, str) or not label.strip() or len(label) > MAX_LABEL:
+        return f"the label for {option['id']} must be 1 to {MAX_LABEL} characters"
+    return None
+
+
+def pick_error(options: Any, facts: Facts, picks: Mapping[str, Any]) -> str | None:
+    """Why the model's build picks are refused, naming the eligible ids; None when they are valid."""
+    eligible = [task.id for task in eligible_tasks(facts, picks)]
+    problem = None
+    if not isinstance(options, list) or not options:
+        problem = "options is required"
+    elif len(options) > MAX_PICKS:
+        problem = f"pick at most {MAX_PICKS}"
+    else:
+        seen: set[str] = set()
+        for option in options:
+            if problem := _option_error(option, set(eligible), seen):
+                break
+            seen.add(option["id"])
+    if problem is None:
+        return None
+    return (f'{problem}. Call setup_beat(beat="build", options=[{{"id": ..., "label": ...}}]) with up to '
+            f"{MAX_PICKS} of these ids: {', '.join(eligible)}.")

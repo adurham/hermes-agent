@@ -110,8 +110,12 @@ def test_done_ends_the_run_only_after_the_build_card(db, desktop):
     # The model cannot end it early: a user who wants to stop is pointed at the Skip setup button.
     quit_in_words = call(db, desktop, beat="done", skip=True)
     assert "Skip setup" in quit_in_words["error"] and onboarding_record.load(db, SID)["phase"] == "onboarding"
-    desktop.replies.append({"answer": {"build": "week"}})
-    build = call(db, desktop, beat="build")
+    # No picks: refused with the eligible ids, and no card goes out.
+    no_picks = call(db, desktop, beat="build")
+    assert "notes" in no_picks["error"] and desktop.shown == []
+    desktop.replies.append({"answer": {"build": "notes"}})
+    build = call(db, desktop, beat="build", options=[{"id": "notes", "label": "Notes to wiki"}])
+    assert desktop.shown[-1]["card"]["options"][-1] == {"id": "hermes", "label": "How Hermes works"}
     done = call(db, desktop, beat="done")
 
     assert "error" in refused

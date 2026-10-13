@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from agent.onboarding_first_tasks import FIXED_ID, OWN_ID, card_options, pick_error
+
 PENDING, SHOWN, DONE, SKIPPED = "pending", "shown", "done", "skipped"
 ONBOARDING, COMPLETE, PHASE_SKIPPED = "onboarding", "complete", "skipped"
 CARD_TIMEOUT_S = 300
@@ -56,8 +58,11 @@ class Facts:
 
 @dataclass(frozen=True)
 class Shown:
+    """``options``: the model's build picks, ``[{id, label}]``; empty brings back the card already shown."""
+
     beat: str
     tool_call_id: str = ""
+    options: Any = None
 
 
 @dataclass(frozen=True)
@@ -120,20 +125,9 @@ class Step:
 # ── beats ─────────────────────────────────────────────────────────────────────────────────────
 
 
-def build_options(facts: Facts, picks: Mapping[str, Any]) -> list[dict]:
-    """Two tasks that fit the facts and picks, then the three fixed rows."""
-    installed, connected = set(picks.get("installed") or ()), list(picks.get("connected") or ())
-    tasks = [
-        ("games", "Set up my games and streaming", facts.os == "windows" and facts.nvidia_platform == "discrete"),
-        ("blender", "Help me make something in Blender", "blender" in installed),
-        ("brief", "A daily brief from my apps", bool(connected)),
-        ("week", "A summary of my week", True),
-        ("scan", f"Look around this {facts.machine_kind} and suggest something", True),
-    ]
-    rows = [{"id": task_id, "label": label} for task_id, label, fits in tasks if fits][:2]
-    return [*rows, {"id": "mind", "label": "I have something in mind"},
-            {"id": "machine", "label": f"Help me set up this {facts.machine_kind}"},
-            {"id": "together", "label": "Let's figure it out together"}]
+def build_values(facts: Facts, picks: Mapping[str, Any]) -> tuple[str, ...]:
+    """Ids the build beat accepts: what its card showed, plus a task they named in words."""
+    return (*_option_ids(picks.get("build_options") or ()), FIXED_ID, OWN_ID)
 
 
 def _option_ids(options) -> tuple[str, ...]:
@@ -170,8 +164,8 @@ BEATS: tuple[Beat, ...] = (
          when=lambda facts, picks: bool(facts.plugins)),
     Beat("tour", lambda facts, picks: {"options": list(TOUR_OPTIONS)}, picks=("tour",), value="tour",
          values=lambda facts, picks: _option_ids(TOUR_OPTIONS), when=lambda facts, picks: facts.tours),
-    Beat("build", lambda facts, picks: {"options": build_options(facts, picks)}, picks=("build",), value="build",
-         values=lambda facts, picks: _option_ids(build_options(facts, picks))),
+    Beat("build", lambda facts, picks: {"options": card_options(picks.get("build_options"))}, picks=("build",),
+         value="build", values=build_values),
 )
 BEAT_BY_ID = {beat.id: beat for beat in BEATS}
 BEAT_IDS = tuple(BEAT_BY_ID)
@@ -181,7 +175,8 @@ def new_record(facts: Facts, *, now: float = 0.0) -> dict:
     record = {
         "phase": ONBOARDING, "beats": {beat.id: PENDING for beat in BEATS}, "waiting": None,
         "picks": {"name": None, "accent": None, "mode": None, "layout": None, "connected": [],
-                  "newly_connected": [], "installed": [], "tour": None, "build": None},
+                  "newly_connected": [], "installed": [], "tour": None, "build": None,
+                  "build_options": []},
         "look_around": "not_offered", "facts": facts.stored(), "ended_by": None,
         "started_at": now, "updated_at": now,
     }
@@ -225,11 +220,23 @@ def _settle(record: dict, beat: str, patch: Mapping[str, Any]) -> None:
     record["picks"].update({key: value for key, value in patch.items() if key in BEAT_BY_ID[beat].picks})
 
 
+def _build_picks_error(record: dict, event: Shown, facts: Facts) -> str | None:
+    """Stores the model's build picks; a bring-back without picks reuses the ones already on the card."""
+    if not event.options and record["picks"].get("build_options"):
+        return None
+    if error := pick_error(event.options, facts, record["picks"]):
+        return error
+    record["picks"]["build_options"] = [{"id": o["id"], "label": o["label"].strip()} for o in event.options]
+    return None
+
+
 def _shown(record: dict, event: Shown, facts: Facts, now: float) -> Step:
     if not BEAT_BY_ID[event.beat].when(facts, record["picks"]):
         record["beats"][event.beat] = SKIPPED
         return Step(record, {"beat": event.beat, "skipped": True, "next": _next_field(record)},
                     f"after_{event.beat}")
+    if event.beat == "build" and (error := _build_picks_error(record, event, facts)):
+        return Step(record, {"beat": "build", "error": error})
     # A later card on screen means the user moved on from an earlier card left open.
     for earlier in BEAT_IDS[:BEAT_IDS.index(event.beat)]:
         if record["beats"][earlier] == SHOWN:

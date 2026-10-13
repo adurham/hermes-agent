@@ -334,7 +334,7 @@ def test_the_first_state_read_after_the_quiet_spell_says_do_not_run(root):
     db = server._get_db()
     db.create_session("onb", "desktop")
     onboarding_record.start(db, "onb", FACTS)
-    for event in (Shown("build"), Answered("build", {"build": "week"})):
+    for event in (Shown("build", options=[{"id": "notes", "label": "Notes"}]), Answered("build", {"build": "notes"})):
         onboarding_record.advance(db, "onb", event)
     record = onboarding_record.load(db, "onb")
     db.patch_session_model_config("onb", {"onboarding_run": {**record, "updated_at": record["updated_at"] - QUIET_COMPLETE_S}})

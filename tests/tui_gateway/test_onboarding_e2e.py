@@ -78,7 +78,7 @@ def test_every_beat_from_the_name_card_to_done(chat):
     assert '"preset":"quick"' in tour["reminder"]
     observe_tool_result(chat.agent, "gui_tour", {"action": "start", "preset": "quick"}, json.dumps({"success": True}))
 
-    build = beat(chat, {"answer": {"build": "games"}}, beat="next")
+    build = beat(chat, {"answer": {"build": "games"}}, beat="next", options=[{"id": "games", "label": "Tune my games"}])
     assert "--accept-package-agreements" in build["reminder"] and "How does this look?" in build["reminder"]
     assert beat(chat, beat="done")["completed"] is True
 

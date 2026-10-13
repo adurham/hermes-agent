@@ -108,7 +108,8 @@ _TYPED_ANSWER = {
     "connectors": 'setup_beat(beat="connectors", value="continue") for "done" or "continue", skip=true for "skip"',
     "plugins": 'setup_beat(beat="plugins", value="continue") for "done" or "continue", skip=true for "skip"',
     "tour": 'setup_beat(beat="tour", value="quick", "full" or "skip"), bucketing their words into one of the three',
-    "build": 'a task they name is setup_beat(beat="build", value="mind"), then build it',
+    "build": ('setup_beat(beat="build", value=<id>) for an option on the card; a task of their own is '
+              'setup_beat(beat="build", value="own"), then build it'),
 }
 
 _CLOSE = ('When the first thing is built and shown, ask with clarify: "How does this look?" with the choices '

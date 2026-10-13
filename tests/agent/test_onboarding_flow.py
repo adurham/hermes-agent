@@ -11,9 +11,12 @@ import pytest
 from agent import onboarding_flow as flow
 from agent.onboarding_flow import (
     DONE, PENDING, SHOWN, SKIPPED, Answered, Applied, Done, Facts, Recorded, Said, Shown, SkipAll, Skipped,
-    TimedOut, apply, build_options, expire, new_record, next_beat,
+    TimedOut, apply, expire, new_record, next_beat,
 )
+from agent.onboarding_first_tasks import eligible_tasks
 from agent.onboarding_text import opening_prompt, reminder, turn_note
+
+NOTES = [{"id": "notes", "label": "Notes to wiki"}]
 
 MACHINES = {
     "mac": Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=("blender",)),
@@ -44,8 +47,10 @@ def answer_all(facts: Facts) -> list:
                "plugins": {"installed": list(facts.plugins[:1])}, "tour": {"tour": "quick"}}
     record, events = new_record(facts), []
     while (beat := next_beat(record)) is not None:
-        answer = answers.get(beat) or {"build": build_options(facts, record["picks"])[0]["id"]}
-        for event in (Shown(beat, f"call_{beat}"), Answered(beat, answer)):
+        first = eligible_tasks(facts, record["picks"])[0]
+        answer = answers.get(beat) or {"build": first.id}
+        options = [{"id": first.id, "label": first.label}] if beat == "build" else None
+        for event in (Shown(beat, f"call_{beat}", options), Answered(beat, answer)):
             events.append(event)
             record = apply(record, event, facts).record
     return [*events, Done()]
@@ -224,24 +229,31 @@ def test_results_that_pick_nothing_settle_nothing(tool, args, result):
     assert set(step.record["beats"].values()) <= {PENDING, SKIPPED}
 
 
-@pytest.mark.parametrize(("machine", "first_two", "machine_row"), [
-    ("windows_laptop", ["games", "week"], "Help me set up this PC"),
-    ("windows_rtx", ["week", "scan"], "Help me set up this Spark"),
-    ("spark", ["week", "scan"], "Help me set up this Spark"),
-    ("mac", ["week", "scan"], "Help me set up this Mac"),
+@pytest.mark.parametrize("options", [
+    None, [], [{"id": "games", "label": "Games"}], [{"id": "scan", "label": "Scan"}],
+    [{"id": "hermes", "label": "How Hermes works"}], [{"id": x, "label": x} for x in ("notes", "site", "repo", "watch", "explain")],
+    [{"id": "notes", "label": "A"}, {"id": "notes", "label": "B"}], [{"id": "notes", "label": "x" * 33}],
+    [{"id": "notes", "label": " "}], ["notes"],
 ])
-def test_build_options_fit_the_machine(machine, first_two, machine_row):
-    options = build_options(MACHINES[machine], {"connected": [], "installed": []})
+def test_build_picks_are_refused_with_the_eligible_ids_and_no_card(options):
+    step = run(MACHINES["linux"], Shown("build", "call_b", options))[-1]
 
-    assert [row["id"] for row in options[:2]] == first_two
-    assert [row["id"] for row in options[2:]] == ["mind", "machine", "together"]
-    assert options[3]["label"] == machine_row
+    assert "notes, explain, youtube, watch, site, repo" in step.result["error"]
+    assert step.record["beats"]["build"] == PENDING and step.record["waiting"] is None
 
 
-def test_build_options_follow_the_picks():
-    options = build_options(MACHINES["mac"], {"connected": ["notion", "slack"], "installed": ["blender"]})
+def test_valid_picks_are_the_card_with_how_hermes_works_last_and_any_card_id_answers_it():
+    facts = MACHINES["mac"]
+    picks = [{"id": "mac", "label": "Your Mac, sorted"}, {"id": "repo", "label": "Map your repo"}]
+    shown = run(facts, Shown("build", "call_b", picks))[-1]
+    card = flow.BEAT_BY_ID["build"].card(facts, shown.record["picks"])
 
-    assert [row["id"] for row in options[:2]] == ["blender", "brief"]
+    assert card == {"options": [*picks, {"id": "hermes", "label": "How Hermes works"}]}
+    # Brought back without picks, the same card returns.
+    assert apply(shown.record, Shown("build", "call_c"), facts).result == {}
+    for value in ("repo", "hermes", "own"):
+        assert apply(shown.record, Recorded("build", value), facts).record["picks"]["build"] == value
+    assert "error" in apply(shown.record, Recorded("build", "notes"), facts).result
 
 
 @pytest.mark.parametrize(("machine", "present", "absent"), [
@@ -260,7 +272,7 @@ def test_build_guidance_carries_only_this_hosts_commands(machine, present, absen
 
 def test_quiet_spell_after_the_build_card_completes_the_run():
     facts = MACHINES["mac"]
-    record = run(facts, Shown("build"))[-1].record
+    record = run(facts, Shown("build", "", NOTES))[-1].record
 
     assert expire(record, now=record["updated_at"] + flow.QUIET_COMPLETE_S - 1)["phase"] == flow.ONBOARDING
     ended = expire(record, now=record["updated_at"] + flow.QUIET_COMPLETE_S)
@@ -270,7 +282,7 @@ def test_quiet_spell_after_the_build_card_completes_the_run():
 
 def test_a_card_answer_outside_the_cards_options_is_refused_and_the_beat_stays_open():
     facts = MACHINES["mac"]
-    record = run(facts, Shown("build", "call_b"))[-1].record
+    record = run(facts, Shown("build", "call_b", NOTES))[-1].record
     step = apply(record, Answered("build", {"build": "games"}), facts, now=2.0)
 
     assert "error" in step.result and step.record["beats"]["build"] == SHOWN
