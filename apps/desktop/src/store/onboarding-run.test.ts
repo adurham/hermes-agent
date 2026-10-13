@@ -21,15 +21,17 @@ const ensureProfile = async (): Promise<void> => undefined
 // What resumeSession does for the test: the stored chat becomes the one on screen.
 const resume = vi.fn(async (storedId: string) => $selectedStoredSessionId.set(storedId))
 
-function backend(state: { eligible: boolean; run: boolean }) {
+// `runId`: the run onboarding.state reports open; null once something ended it.
+function backend(state: { eligible: boolean; run: boolean }, runId: null | string = 'run-1') {
   const calls: string[] = []
   const started = { resumed: false, run_id: 'run-1', session_id: 'rt-1', stored_session_id: 'st-1' }
+  const read = { ...state, run_id: runId, session_id: runId && 'st-1' }
 
   const request = async <T,>(method: string): Promise<T> => {
     calls.push(method)
 
     // SAFETY: the fake answers onboarding.state and onboarding.start with their contract result shapes.
-    return (method === 'onboarding.state' ? state : started) as T
+    return (method === 'onboarding.state' ? read : started) as T
   }
 
   return { calls, request }
@@ -53,7 +55,8 @@ describe('onboarding run', () => {
     await decideOnboarding(request, resume, { ensureProfile })
     stop()
 
-    expect(calls).toEqual(['onboarding.state', 'onboarding.start'])
+    // The last read checks for an end sent while the chat was opening.
+    expect(calls).toEqual(['onboarding.state', 'onboarding.start', 'onboarding.state'])
     expect(resume).toHaveBeenCalledWith('st-1', true)
     expect($onboardingDecided.get()).toBe(true)
     expect(clear).not.toContain(true)
@@ -103,6 +106,13 @@ describe('onboarding run', () => {
     expect(isOnboardingChat('rt-after-restart')).toBe(true)
     expect(isOnboardingChat('rt-other')).toBe(false)
     $sessionTiles.set([])
+  })
+
+  it('ends a run that ended while its chat was opening', async () => {
+    const { request } = backend({ eligible: true, run: true }, null)
+
+    await startOnboarding(request, resume, { ensureProfile })
+    await vi.waitFor(() => expect($onboardingEnded.get()).toBe('skipped'))
   })
 
   it('ends a run the backend no longer has open when it re-reads the state', async () => {

@@ -22,10 +22,10 @@ import { ackFreeTierNotice } from './free-tier'
 import { clearFreeTierIntro } from './onboarding'
 import { $onboardingPhase } from './onboarding-phase'
 import { markOnboardingDecided, ONBOARDING_DECIDE_DEADLINE_MS, setOnboardingSurfaceActive } from './onboarding-presence'
-import { $onboardingSession } from './onboarding-session'
+import { $onboardingSession, isOnboardingChat } from './onboarding-session'
 import { ensureGatewayProfile, newSessionInProfile } from './profile'
 import { $connection, $gatewayState, $selectedStoredSessionId } from './session'
-import { dropSetupBeat } from './setup-beat'
+import { $setupBeatRequests, dropSetupBeat } from './setup-beat'
 
 export type OnboardingRequest = <T = unknown>(
   method: string,
@@ -240,8 +240,13 @@ export function noteOnboardingEnded({ outcome, run_id }: OnboardingEndedPayload)
     return
   }
 
-  dropSetupBeat(session.runtimeId)
+  dropRunCards()
   endOnboarding(outcome === 'done' ? 'done' : 'skipped')
+}
+
+// The run's card waits under the chat's current runtime id, which a reconnect replaces.
+function dropRunCards(): void {
+  Object.keys($setupBeatRequests.get()).filter(isOnboardingChat).forEach(dropSetupBeat)
 }
 
 /** An end this window missed (a reconnect, a backend restart): the run it shows is no longer the run
@@ -256,6 +261,7 @@ export async function reconcileOnboarding(request: OnboardingRequest): Promise<v
   const state = await request<OnboardingRunStateResult>('onboarding.state')
 
   if ($onboardingSession.get() === session && state.run_id !== session.runId) {
+    dropRunCards()
     endOnboarding('skipped')
   }
 }
@@ -275,4 +281,7 @@ function watchRunEnd(request: OnboardingRequest): void {
     offGateway()
     window.removeEventListener('focus', check)
   }
+
+  // An end sent while the chat was opening found no session here to end.
+  check()
 }
