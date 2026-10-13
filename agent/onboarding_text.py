@@ -278,8 +278,10 @@ def _said(record, facts, beat: str) -> str:
 
 
 def _timed_out(record, facts, beat: str) -> str:
-    return (f"No answer to the {beat} card in five minutes; it is closed. Say one short line that they can pick up "
-            f'whenever they are back, then stop. When they return, bring it back with setup_beat(beat="{beat}").')
+    # Also the result when they sent a file or a slash command while the card waited.
+    return (f"The {beat} card closed without an answer. If a message from them comes next, answer it first. "
+            f"Otherwise say one short line that they can pick up whenever they are back, then stop. When they "
+            f'return, bring it back with setup_beat(beat="{beat}").')
 
 
 def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None = None,

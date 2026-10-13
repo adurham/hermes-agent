@@ -85,7 +85,7 @@ def test_no_answer_closes_the_card_and_typed_words_come_back_as_said(db, desktop
     desktop.replies.append({"said": "what is Elite?"})
     said = call(db, desktop, beat="layout", call_id="call_2")
 
-    assert timed_out["timed_out"] is True and "five minutes" in timed_out["reminder"]
+    assert timed_out["timed_out"] is True and "closed without an answer" in timed_out["reminder"]
     assert said["said"] == "what is Elite?" and 'setup_beat(beat="layout")' in said["reminder"]
     assert onboarding_record.load(db, SID)["waiting"] is None
 
