@@ -31,6 +31,9 @@ _PROMPT_COMMANDS = frozenset({'plan', 'learn', 'init', 'initiate-setup', 'moa', 
 # (gateway/session_setting_commands.py). Admission-fenced like any control.
 _SETTING_COMMANDS = frozenset({'reasoning', 'voice', 'approvals', 'codex-runtime', 'footer', 'busy', 'verbose',
                                'yolo', 'fast', 'personality'})
+# Typed `/approve` / `/deny`: the messaging handler resolves THIS session's waiting approval (its
+# route is the session key), the same waiter `approval.respond` answers by prompt id.
+_APPROVAL_COMMANDS = frozenset({'approve', 'deny'})
 
 # Kanban verbs that only read the board. ``create`` would also subscribe the LOCAL chat to
 # messaging notifications, and every other verb mutates the board.
@@ -62,7 +65,7 @@ _READ_ARGUMENTS = {
 def command_verdict(name, arg=''):
     """``read`` / ``control`` / ``refused`` for a canonical registry command on a local session."""
     if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
-            or name in _SETTING_COMMANDS):
+            or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS):
         return 'control'
     if name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg):
         return 'read'
@@ -175,6 +178,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if definition is not None and (tui := await _tui_read(authority, actor, ref, canonical, arg)) is not None:
         return tui
     capability = ('session:read' if verdict == 'read' else
+                  'session:approve' if canonical in _APPROVAL_COMMANDS else
                   'session:control' if definition else 'session:submit')
     authority.authorize(actor, ref, capability)
     if verdict == 'refused':
@@ -209,6 +213,11 @@ async def execute_command(connection, ref, params, *, dispatch=False):
         else:
             handler = runner._command_handler_table((canonical,))[canonical]
             output = await handler(event)
+    if canonical in _APPROVAL_COMMANDS:
+        # Settle the answered prompt for every viewer now (`approval.settled`), as approval.respond does.
+        handle = authority._handle(ref)
+        live.controls.snapshot(ref.session_id, handle.execution_generation
+                               if handle.execution_state == 'running' else None)
     prompt = prompt if prompt is not None else sink.prompt
     if prompt:
         # The client submits the turn with its own durable input id; the gateway never does.
