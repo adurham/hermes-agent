@@ -177,6 +177,37 @@ class GatewayAgent:
             return
         self._show_reasoning_sent = wanted
 
+    # -- session identity ----------------------------------------------------------------------
+    @property
+    def session_id(self):
+        return self._session_id
+
+    @session_id.setter
+    def session_id(self, value):
+        """Main repoints ``agent.session_id`` on /new, /resume and /branch: attach this viewer to that
+        gateway session (idempotent) and read its state from then on."""
+        previous = getattr(self, "_session_id", None)
+        self._session_id = value
+        if previous is None or value == previous or not value:
+            return
+        store = self._session_db
+        if store is not None and hasattr(store, "attach"):
+            try:
+                store.attach(value)
+            except GatewayClientError as exc:
+                logger.debug("session.resume %s failed: %s", value, exc)
+        else:
+            try:
+                self.connection.call("session.resume", session_id=value)
+            except GatewayClientError as exc:
+                logger.debug("session.resume %s failed: %s", value, exc)
+        state = self._state()
+        if self.apply_session_usage not in state.usage_listeners:
+            state.usage_listeners.append(self.apply_session_usage)
+        self._apply_info(state.info)
+        if state.usage:
+            self.apply_session_usage(state.usage)
+
     # -- snapshot-backed reads ---------------------------------------------------------------
     def _state(self):
         return self.connection.state(self.session_id)

@@ -131,14 +131,32 @@ class GatewaySessionStore:
                 if str(exc) in {"not_found", "permission_denied"}:
                     return None
                 raise
+        return self.create(launch)
+
+    def create(self, launch=None):
+        """``session.create`` with the launch policy; adopts and returns the new session id."""
+        from agent.session_source import session_source_for
         params = _creation_policy(launch or {})
         params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
-        # Main's label for this row (a finite `-q`/`-Q` run is ``oneshot``, which `hermes -c` and
-        # `--resume latest` count as CLI history; `--source` wins), the rule run_agent applies.
-        from agent.session_source import session_source_for
+        # Main's row label: ``cli``, ``oneshot`` for a finite -q/-Q run, or an explicit --source.
         params["source"] = session_source_for("cli")
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
         return self._adopt(snapshot)
+
+    def branch(self, session_id, title=None):
+        """``session.mutate branch``: the gateway forks the whole active transcript into a child it
+        attaches this viewer to; returns the child id (main's /branch then switches to it)."""
+        snapshot = self.call("session.resume", session_id=session_id)
+        payload = {"title": title} if title else {}
+        receipt = self.call("session.mutate", session_id=session_id, request_id=uuid.uuid4().hex,
+                            expected_revision=snapshot["revision"],
+                            expected_generation=snapshot["execution_generation"],
+                            operation="branch", payload=payload) or {}
+        child = receipt.get("branched_session_id")
+        if not child:
+            raise GatewayClientError("branch_failed")
+        self._adopt(self.attach(child))
+        return child
 
     def _revision(self, session_id):
         return self.call("session.resume", session_id=session_id)["revision"]

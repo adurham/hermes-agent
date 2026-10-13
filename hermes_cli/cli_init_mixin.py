@@ -375,6 +375,24 @@ class CLIInitMixin:
             self.session_id = sid
             getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
+    def _new_session_id(self, now, *, branch_of=None, title=None):
+        """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway
+        store it is a session the gateway created: /new is a fresh ``session.create`` on the profile's
+        default model (an explicit -m was for the previous session only), /branch the child of
+        ``session.mutate branch``. Off the gateway (tests) it is main's local mint."""
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        store = getattr(self, "_session_db", None)
+        if not isinstance(store, GatewaySessionStore):
+            from hermes_state_ids import new_session_id
+            return new_session_id(now)
+        if branch_of:
+            return store.branch(branch_of, title)
+        sid = store.create({"toolsets": getattr(self, "enabled_toolsets", None),
+                            "pass_session_id": getattr(self, "pass_session_id", False) or None,
+                            "ignore_rules": getattr(self, "ignore_rules", False) or None})
+        self.session_id = sid
+        return sid
+
     def _init_ui_state(self):
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""
         from cli import CLI_CONFIG, _status_bar_visible_from_display_config

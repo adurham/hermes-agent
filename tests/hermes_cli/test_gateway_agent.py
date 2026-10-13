@@ -446,3 +446,15 @@ def test_gateway_clarify_batch_request_opens_mains_batch_panel(make_agent):
     agent.run_conversation("ask")
     assert [q["qid"] for q in shown[0]] == ["q0", "q1"] and shown[0][1]["multi_select"] is True
     assert replies == [("srq-clr", {"answers": {"q0": "red", "q1": '["s", "l"]'}, "outcome": "submitted"})]
+
+
+def test_agent_follows_mains_session_id_switch(make_agent):
+    """/new, /resume and /branch point ``agent.session_id`` at another session: the agent attaches to it
+    (``session.resume``) and reads that session's state."""
+    agent, client = make_agent([])
+    agent.connection.state("local-other").info = {"model": "other-model"}
+    agent.session_id = "local-other"
+    assert agent.session_id == "local-other"
+    assert ("session.resume", {"session_id": "local-other"}) in client.calls
+    agent.connection.state("local-other").apply_usage({"api_calls": 3, "input_tokens": 9})
+    assert agent.session_api_calls == 3

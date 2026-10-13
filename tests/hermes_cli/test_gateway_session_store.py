@@ -255,3 +255,47 @@ def test_rewind_refuses_when_the_warm_view_diverged(store):
     with pytest.raises(RuntimeError):
         db.rewind_user_turn("local-old", -1, warm_history=[{"role": "user", "content": "other"}])
     assert len([c for c in client.calls if c[0] == "session.mutate"]) == before
+
+
+def test_new_session_id_is_a_fresh_gateway_session(store, monkeypatch):
+    """/new: the id main mints is the gateway's new session (created with the profile's default model:
+    an explicit -m was for the previous session only)."""
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    db, client = store
+    host = types.SimpleNamespace(session_id="local-old", _resumed=True, _session_db=db, model="m-explicit",
+                                 _explicit_model_override=True, requested_provider=None, enabled_toolsets=["file"],
+                                 _gateway_session_open=True)
+    host._ensure_gateway_session = lambda: CLIInitMixin._ensure_gateway_session(host)
+    db.open_session(cli("local-old", resumed=True))
+    sid = CLIInitMixin._new_session_id(host, None)
+    assert sid == "local-new" and host.session_id == "local-new"
+    method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    assert "model" not in params and params["toolsets"] == ["file"]
+
+
+def test_branch_session_id_is_the_gateway_branch_child(store):
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    db, client = store
+    base = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.mutate" and params["operation"] == "branch":
+            client.calls.append((method, params))
+            client.known.add("local-child")
+            return {"branched_session_id": "local-child", "copied_messages": 2}
+        return await base(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    db.open_session(cli("local-old", resumed=True))
+    host = types.SimpleNamespace(session_id="local-old", _session_db=db)
+    assert CLIInitMixin._new_session_id(host, None, branch_of="local-old", title="fork") == "local-child"
+    mutate = [p for m, p in client.calls if m == "session.mutate"][-1]
+    assert mutate["payload"] == {"title": "fork"} and "expected_generation" in mutate
+    assert "local-child" in db.snapshots
+
+
+def test_new_session_id_off_the_gateway_is_mains_mint():
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    host = types.SimpleNamespace(_session_db=None)
+    from datetime import datetime
+    assert CLIInitMixin._new_session_id(host, datetime(2026, 10, 12, 1, 2, 3)).startswith("20261012_010203_")

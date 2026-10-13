@@ -1097,7 +1097,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from gateway.slash_commands_branch_thread import parse_branch_args
         _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
-        new_session_id = mint_session_id(now)
+        new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
             self._session_db.get_session_title(self.session_id) or "branch")
         parent_session_id = self.session_id
