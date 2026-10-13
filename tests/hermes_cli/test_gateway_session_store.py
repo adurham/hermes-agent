@@ -432,3 +432,30 @@ def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monke
     monkeypatch.setenv("TERMINAL_ENV", "docker")  # main stamps no host cwd for a remote backend
     db.create({"toolsets": ["file"]})
     assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
+
+
+def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store, monkeypatch):
+    """Main's HermesCLI built AIAgent with the run's `--reasoning`, `--max-turns` and `--checkpoints`;
+    the gateway now builds the agent, so `session.create` must carry them or the run silently uses
+    the profile default. Unset flags stay unset (the gateway resolves the profile default)."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    db, client = store
+
+    def host(**flags):
+        h = SimpleNamespace(model="m1", requested_provider="auto", enabled_toolsets=["terminal"],
+                            session_id="20261012_000000_abcdef", _resumed=False, _session_db=GatewaySessionStore(db.connection))
+        CLIInitMixin._init_turn_limits(h, flags.get("max_turns"), None)
+        CLIInitMixin._init_checkpoints_and_rules(h, flags.get("checkpoints", False), False, False)
+        CLIInitMixin._init_prompt_and_reasoning(h, flags.get("reasoning"))
+        return h
+
+    CLIInitMixin._ensure_gateway_session(host(reasoning="high", max_turns=1, checkpoints=True))
+    params = client.calls[-1][1]
+    assert (params.get("reasoning"), params.get("max_turns"), params.get("checkpoints")) == ("high", 1, True), params
+    CLIInitMixin._ensure_gateway_session(host())
+    assert not {"reasoning", "max_turns", "checkpoints"} & set(client.calls[-1][1]), client.calls[-1][1]
+    # An unparseable --reasoning keeps main's warn-and-ignore (never an invalid_params refusal).
+    CLIInitMixin._ensure_gateway_session(host(reasoning="bogus"))
+    assert "reasoning" not in client.calls[-1][1]

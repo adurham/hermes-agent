@@ -209,6 +209,8 @@ class CLIInitMixin:
         ))
         self.run_budget_seconds = run_budget if run_budget is not None else CLI_CONFIG["agent"].get("run_budget_seconds")
         self._explicit_run_budget = run_budget  # `--run-budget`: session.create policy (the gateway runs the turn)
+        # The gateway builds the agent now: the explicit flag (not the resolved value) rides session.create.
+        self._explicit_max_turns = max_turns
 
     def _init_toolsets(self, toolsets):
         from cli import CLI_CONFIG, validate_toolset
@@ -240,6 +242,7 @@ class CLIInitMixin:
         if isinstance(cp_cfg, bool):
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
+        self._explicit_checkpoints = bool(checkpoints)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
@@ -264,6 +267,7 @@ class CLIInitMixin:
         from hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
+        self._explicit_reasoning = None
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
@@ -272,6 +276,7 @@ class CLIInitMixin:
             else:
                 self.reasoning_config = _cli_reasoning
                 self._explicit_reasoning_config = _cli_reasoning
+                self._explicit_reasoning = str(reasoning).strip()
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -368,6 +373,10 @@ class CLIInitMixin:
                   "api_key": getattr(self, "_explicit_api_key", None),
                   "base_url": getattr(self, "_explicit_base_url", None),
                   "toolsets": self.enabled_toolsets,
+                  # Main handed these to AIAgent; the gateway's agent gets them as creation policy.
+                  "reasoning": getattr(self, "_explicit_reasoning", None),
+                  "max_turns": getattr(self, "_explicit_max_turns", None),
+                  "checkpoints": getattr(self, "_explicit_checkpoints", False) or None,
                   "pass_session_id": getattr(self, "pass_session_id", False) or None,
                   "ignore_rules": getattr(self, "ignore_rules", False) or None,
                   "run_budget": getattr(self, "_explicit_run_budget", None),
