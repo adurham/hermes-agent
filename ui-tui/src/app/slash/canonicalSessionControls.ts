@@ -209,13 +209,27 @@ function isSupersededControl(
   )
 }
 
-function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
+async function applyBranchResult(result: CanonicalControlResult, arg: string, ctx: SlashRunCtx) {
   if (!result.branched_session_id) {
     throw new Error(t('session.common.invalidResponse', 'branch'))
   }
 
-  ctx.session.resumeById(result.branched_session_id)
-  ctx.transcript.sys(t('slashCmd.session.branch.branched', arg || result.branched_session_id))
+  // The child resume repaints the transcript; main's "branched →" line is printed after it, or the
+  // reset wipes it.
+  const child = result.branched_session_id as string
+
+  await ctx.session.resumeById(child)
+
+  // Main named the child by its title ("Slash lane #2" for an untitled branch of "Slash lane").
+  const info = await ctx.gateway.gw
+    .request<{ title?: null | string }>('session.info', { session_id: child })
+    .catch(() => null)
+
+  // The resume moved this view to the child, so the slash's own staleness check no longer applies:
+  // print only while the child is still the view's session.
+  if (getUiState().sid === child) {
+    ctx.transcript.sys(t('slashCmd.session.branch.branched', asRpcResult(info)?.title?.trim() || arg || child))
+  }
 }
 
 function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
@@ -307,7 +321,7 @@ export async function runCanonicalSessionControl(
     if (operation === 'model' && needsModelConfirmation(result)) {
       askModelConfirmation(result, arg, ctx, Boolean(confirm))
     } else if (operation === 'branch') {
-      applyBranchResult(result, arg, ctx)
+      await applyBranchResult(result, arg, ctx)
     } else if (operation === 'model') {
       applyModelResult(result, ctx)
     } else if (result.status === 'preview') {
