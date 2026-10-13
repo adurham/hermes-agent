@@ -1434,8 +1434,13 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 # "send to this named thread, making it if needed" — without it
                 # a quiet send to a not-yet-existing session silently no-ops.
                 # --create-if-missing: no session matches the title — create a new session with that title
-                # and proceed. See #86794.
-                new_sid = _create_titled_session(continue_val)
+                # and proceed. See #86794. The classic CLI's gateway writes it (the single writer);
+                # the TUI keeps main's local row.
+                if use_tui:
+                    new_sid = _create_titled_session(continue_val)
+                else:
+                    from hermes_cli.gateway_session_store import create_titled_session
+                    new_sid = create_titled_session(continue_val)
                 if new_sid:
                     args.resume = new_sid
                 else:
