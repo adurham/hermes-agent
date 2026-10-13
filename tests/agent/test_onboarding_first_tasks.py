@@ -78,11 +78,39 @@ def test_how_hermes_works_reads_the_docs_and_builds_three_screens():
 
 
 @pytest.mark.parametrize(("facts", "opens"), [
-    (MAC, "`open <file>`"), (PC, '`start "" <file>`'), (Facts(os="linux"), "`xdg-open <file>`"),
-    (Facts(os="linux", facts_source="remote"), "show it with desktop_preview"),
+    (MAC, "`open <file>`"), (PC, '`cmd.exe /c start "" "<file>"`'), (Facts(os="linux"), "`xdg-open <file>`"),
 ])
-def test_how_hermes_works_opens_in_the_default_browser_unless_hermes_runs_elsewhere(facts, opens):
-    assert opens in reminder("build_hermes", new_record(facts), facts)
+def test_a_local_backend_opens_the_page_in_the_default_browser_and_never_names_desktop_preview(facts, opens):
+    text = reminder("build_hermes", new_record(facts), facts)
+    site = reminder("build_site", new_record(facts), facts)
+
+    assert f"open it in the default browser with {opens}" in text
+    assert f"Open a page in their default browser with {opens}" in text
+    assert "Say the page is open only after the open command succeeded." in text
+    assert "desktop_preview" not in text and "desktop_preview" not in site
+    assert "opened in the default browser" in site
+
+
+def test_windows_opens_with_a_single_slash_cmd_and_a_banner_is_not_success():
+    """Vesper run 1: Git's `start` wrapper passes a literal `//c` under MSYS_NO_PATHCONV=1, cmd printed its
+    banner, exited 0 and nothing opened; the model still said the page was open."""
+    text = reminder("build_hermes", new_record(PC), PC)
+
+    assert '`start "" <file>`' not in text and "//c" not in text
+    assert "full Windows path (C:/Users/...)" in text
+    assert 'cmd banner ("Microsoft Windows [Version ...]") in the output is a failure' in text
+    assert "cmd banner" not in reminder("build_hermes", new_record(MAC), MAC)
+
+
+def test_a_remote_backend_shows_the_page_with_desktop_preview_through_tool_call():
+    facts = Facts(os="linux", facts_source="remote")
+    text = reminder("build_hermes", new_record(facts), facts)
+    call = 'tool_call {"calls":[{"name":"desktop_preview","arguments":{"action":"open","url":"<file>"}}]}'
+
+    assert f"show it with desktop_preview: {call}" in text
+    assert "Say the page is open only after desktop_preview returned success." in text
+    assert "default browser" not in text and "xdg-open" not in text
+    assert "shown with desktop_preview" in reminder("build_site", new_record(facts), facts)
 
 
 def test_the_app_tasks_carry_the_connectors_playbook_and_the_menu_lists_only_eligible_rows():

@@ -131,7 +131,7 @@ _HOW_TO_WORK = (
     "Connect or install anything once, with exact ids and no searching, then use it.",
     "Never search the whole disk.",
     "Save every file in ~/hermes-first-task/ and say where it is. No test files.",
-    "A page is one self-contained HTML file shown with desktop_preview, unless the task says otherwise.",
+    "A page is one self-contained HTML file, unless the task says otherwise.",
 )
 
 _CONNECTORS = (
@@ -157,13 +157,34 @@ _SPARK_LINE = "This machine is built for local models; say so once when it fits 
 _REMOTE_LINE = "Hermes runs on another computer than the user's: say which machine anything is installed on."
 
 
-_OPEN = {"macos": "`open <file>`", "windows": '`start "" <file>`'}
+_PREVIEW_CALL = 'tool_call {"calls":[{"name":"desktop_preview","arguments":{"action":"open","url":"<file>"}}]}'
+# The terminal tool's Git Bash on Windows passes argv literally (MSYS_NO_PATHCONV=1), so Git's `start`
+# wrapper hands cmd a literal `//c` and opens nothing; a single-slash `cmd.exe /c` survives that.
+_OPEN = {"macos": "`open <file>`",
+         "windows": '`cmd.exe /c start "" "<file>"` with the full Windows path (C:/Users/...), never a ~ or /c/ path'}
+_CMD_BANNER = ('Exit 0 with a cmd banner ("Microsoft Windows [Version ...]") in the output is a failure: nothing '
+               "opened; fix the command.")
 
 
 def _open_line(facts: Facts) -> str:
     if facts.facts_source == "remote":
-        return "show it with desktop_preview"
+        return f"show it with desktop_preview: {_PREVIEW_CALL}"
     return f"open it in the default browser with {_OPEN.get(facts.os, '`xdg-open <file>`')}"
+
+
+def _shown_phrase(facts: Facts) -> str:
+    return "shown with desktop_preview" if facts.facts_source == "remote" else "opened in the default browser"
+
+
+def _page_lines(facts: Facts) -> list[str]:
+    """How a page reaches the user: a local backend opens it in their browser; a remote one cannot."""
+    if facts.facts_source == "remote":
+        return [f"Show a page with desktop_preview, through tool_call: {_PREVIEW_CALL}. Their browser is on "
+                "another computer.",
+                "Say the page is open only after desktop_preview returned success."]
+    check = f" {_CMD_BANNER}" if facts.os == "windows" else ""
+    return [f"Open a page in their default browser with {_OPEN.get(facts.os, '`xdg-open <file>`')}.",
+            f"Say the page is open only after the open command succeeded.{check}"]
 
 
 def _task_prompt(option: str, label: str, facts: Facts, has_skill: Callable[[str], bool]) -> list[str]:
@@ -172,7 +193,7 @@ def _task_prompt(option: str, label: str, facts: Facts, has_skill: Callable[[str
     steps = [f"{n}. {step.replace('<open>', _open_line(facts))}" for n, step in enumerate(task.steps, 1)]
     return [f"{picked}Your job: {task.goal}.",
             f"Load these skills with skill_view first: {', '.join(task_skills(option, has_skill))}.",
-            "Steps:", *steps, f"Output: {task.output}", f"Quality bar: {task.quality}", f"Done when: {task.done}"]
+            "Steps:", *steps, f"Output: {task.output.replace('<shown>', _shown_phrase(facts))}", f"Quality bar: {task.quality}", f"Done when: {task.done}"]
 
 
 def _bullets(title: str, lines) -> str:
@@ -183,7 +204,7 @@ def build_guidance(option: str, facts: Facts, has_skill: Callable[[str], bool] =
                    label: str = "") -> str:
     """The prompt once a first task is picked; ``label`` is the card text they clicked, ``has_skill``
     says whether a bundled skill is on this install."""
-    work = [*_HOW_TO_WORK, *((_CONNECTORS,) if option in _CONNECTOR_TASKS else ())]
+    work = [*_HOW_TO_WORK, *_page_lines(facts), *((_CONNECTORS,) if option in _CONNECTOR_TASKS else ())]
     host = [_OS_LINES.get(facts.os, _OS_LINES["linux"])]
     if facts.os == "windows" and facts.arch == "arm64":
         host.append(_ARM_WINDOWS)

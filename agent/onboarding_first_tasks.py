@@ -26,7 +26,7 @@ OWN_ID = "own"
 class FirstTask:
     """``skills`` load first, before the work; an entry ``a|b`` means one of them, whichever fits.
     Plugin skills use the ``<plugin>:<skill>`` form skill_view resolves. ``goal`` finishes the
-    sentence "Your job: ..."; ``<open>`` in a step is replaced with how this host shows a page."""
+    sentence "Your job: ..."; ``<open>`` in a step and ``<shown>`` in the output are replaced with how this host shows a page."""
 
     id: str
     label: str
@@ -113,7 +113,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Write a short Python script, run it in Blender and render one still.",
             "Show the render, then offer one variation.",
         ),
-        output="The script and the PNG render in ~/hermes-first-task/; the render shown with desktop_preview.",
+        output="The script and the PNG render in ~/hermes-first-task/; the render <shown>.",
         quality="A real Blender render, lit and framed. Never a placeholder.",
         done="The render is shown and you said where the script and image are."),
     FirstTask(
@@ -125,7 +125,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Show a first version early, then fill it in: what needs attention, what changed, what is next.",
             "Offer a morning cron job that sends the brief. Schedule it only on yes.",
         ),
-        output="One designed HTML page in ~/hermes-first-task/, shown with desktop_preview.",
+        output="One designed HTML page in ~/hermes-first-task/, <shown>.",
         quality="Every item comes from a connected app and says which one. Nothing invented.",
         done="The brief is shown and the morning job is set up or declined."),
     FirstTask(
@@ -137,7 +137,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Show a first version early, then fill it in: meetings, threads, work shipped, open loops.",
             "End with a short plan for next week built from the open loops.",
         ),
-        output="One designed HTML page in ~/hermes-first-task/, shown with desktop_preview.",
+        output="One designed HTML page in ~/hermes-first-task/, <shown>.",
         quality="Every item comes from a connected app and says which one. Nothing invented.",
         done="The page is shown with all five parts filled from real data."),
     FirstTask(
@@ -174,7 +174,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Show a first version early, then refine the same file.",
             "Add one interactive p5js figure that shows the core idea.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, shown with desktop_preview, sources at "
+        output="One self-contained HTML file in ~/hermes-first-task/, <shown>, sources at "
                "the end.",
         quality="Designed with claude-design. Every claim is cited. The figure responds to input.",
         done="The page is shown with the figure working and every source listed."),
@@ -187,7 +187,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Pull out the main ideas, each with a timestamp and a quote.",
             "Show a first version early, then lay the ideas out visually, with one figure where it helps.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, shown with desktop_preview; each "
+        output="One self-contained HTML file in ~/hermes-first-task/, <shown>; each "
                "timestamp links to that moment in the video.",
         quality="Designed with claude-design. Quotes are exact words from the transcript.",
         done="The page is shown and every idea has its timestamp and quote."),
@@ -212,7 +212,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Show a first version early with a p5js hero, then refine the same file.",
             "Offer one variation.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, shown with desktop_preview.",
+        output="One self-contained HTML file in ~/hermes-first-task/, <shown>.",
         quality="Designed with the skills. Real content they gave you, never filler text.",
         done="The page is shown and a variation is offered."),
     FirstTask(
@@ -224,7 +224,7 @@ FIRST_TASKS: tuple[FirstTask, ...] = (
             "Read its entry points and main modules.",
             "Draw the architecture page: the modules, how they connect, where to start reading.",
         ),
-        output="One self-contained HTML file in ~/hermes-first-task/, shown with desktop_preview.",
+        output="One self-contained HTML file in ~/hermes-first-task/, <shown>.",
         quality="Only modules that are really in the repo, named by their paths.",
         done="The page is shown and every box on it maps to a real path."),
 )
@@ -239,7 +239,7 @@ OWN_TASK = FirstTask(
         "Cut a big ask to a first slice and say so in one line.",
         "Show a first version early, then refine it.",
     ),
-    output="Whatever fits the task; a page is one self-contained HTML file shown with desktop_preview.",
+    output="Whatever fits the task; a page is one self-contained HTML file, <shown>.",
     quality="Real data only, designed with the skills when it is a page.",
     done="The first slice is shown and you said where its files are.")
 TASK_BY_ID = {task.id: task for task in FIRST_TASKS}
