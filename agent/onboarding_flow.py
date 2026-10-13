@@ -56,11 +56,13 @@ class Facts:
 
 @dataclass(frozen=True)
 class Shown:
-    """``options``: the model's build picks, ``[{id, label}]``; empty brings back the card already shown."""
+    """``options``: the model's build picks, ``[{id, label}]``; empty brings back the card already shown.
+    ``suggest``: the connector slugs the model pins after it looked around."""
 
     beat: str
     tool_call_id: str = ""
     options: Any = None
+    suggest: Any = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +236,10 @@ def _build_picks_error(record: dict, event: Shown, facts: Facts) -> str | None:
     return None
 
 
+def _has_suggestions(suggest: Any) -> bool:
+    return isinstance(suggest, list | tuple) and any(str(slug).strip() for slug in suggest)
+
+
 def _shown(record: dict, event: Shown, facts: Facts, now: float) -> Step:
     if not BEAT_BY_ID[event.beat].when(facts, record["picks"]):
         record["beats"][event.beat] = SKIPPED
@@ -241,14 +247,17 @@ def _shown(record: dict, event: Shown, facts: Facts, now: float) -> Step:
     if event.beat == "build" and (error := _build_picks_error(record, event, facts)):
         # No ``beat``: no card was shown, so the transcript draws nothing for this refusal.
         return Step(record, {"error": error})
+    if event.beat == "connectors" and record["look_around"] == "not_offered":
+        # The offer reaches the model only here, so it is offered now; suggestions mean it already looked.
+        record["look_around"] = "offered"
+        if not _has_suggestions(event.suggest):
+            return Step(record, {"error": "offer first"}, "offer_first")
     # A later card on screen means the user moved on from an earlier card left open.
     for earlier in BEAT_IDS[:BEAT_IDS.index(event.beat)]:
         if record["beats"][earlier] == SHOWN:
             record["beats"][earlier] = DONE
     if record["beats"][event.beat] != DONE:
         record["beats"][event.beat] = SHOWN
-    if event.beat == "connectors" and record["look_around"] == "not_offered":
-        record["look_around"] = "offered"
     record["waiting"] = {"beat": event.beat, "tool_call_id": event.tool_call_id, "since": now}
     return Step(record, {})
 

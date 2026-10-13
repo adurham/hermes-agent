@@ -14,7 +14,7 @@ from agent.onboarding_flow import (
     TimedOut, apply, new_record, next_beat,
 )
 from agent.onboarding_first_tasks import eligible_tasks
-from agent.onboarding_text import opening_prompt, reminder, turn_note
+from agent.onboarding_text import _LOOK_AROUND, opening_prompt, reminder, turn_note
 
 NOTES = [{"id": "notes", "label": "Notes to wiki"}]
 
@@ -50,7 +50,8 @@ def answer_all(facts: Facts) -> list:
         first = eligible_tasks(facts, record["picks"])[0]
         answer = answers.get(beat) or {"build": first.id}
         options = [{"id": first.id, "label": first.label}] if beat == "build" else None
-        for event in (Shown(beat, f"call_{beat}", options), Answered(beat, answer)):
+        suggest = ["slack"] if beat == "connectors" else None
+        for event in (Shown(beat, f"call_{beat}", options, suggest), Answered(beat, answer)):
             events.append(event)
             record = apply(record, event, facts).record
     return [*events, Done()]
@@ -155,20 +156,71 @@ def test_run_hrs0_off_script_questions_keep_one_card_and_continue_settles_it():
     assert steps[-1].record["beats"]["connectors"] == DONE
 
 
-def test_run_3ofn_pick_for_me_applies_layout_and_offers_the_look_around_once():
-    """3ofn: "look around and pick one for me" ended in Elite through set_theme; the look-around
-    offer rides the layout result once."""
-    facts = MACHINES["mac"]
-    steps = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"),
-                Answered("theme", {"accent": "Ember"}), Shown("layout"),
-                Said("layout", "look around and pick one for me"),
-                Applied("set_theme", {"layout": "terminal-deck"}, {"success": True, "applied": {"layout": "terminal-deck"}}),
-                Shown("connectors"))
+LAYOUT_SET = Applied("set_theme", {"layout": "terminal-deck"}, {"success": True, "applied": {"layout": "terminal-deck"}})
+TO_LAYOUT = (Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"), Answered("theme", {"accent": "Ember"}),
+             Shown("layout"))
 
-    layout_done = steps[-2].record
-    assert "look around" in reminder("after_layout", layout_done, facts)
-    assert steps[-1].record["look_around"] == "offered"
+
+def test_run_3ofn_pick_for_me_applies_layout_and_the_look_around_offer_waits_for_the_connectors_card():
+    """3ofn: "look around and pick one for me" ended in Elite through set_theme. The offer no longer
+    rides the layout result: it comes back on the first try to show the connectors card."""
+    facts = MACHINES["mac"]
+    steps = run(facts, *TO_LAYOUT, Said("layout", "look around and pick one for me"), LAYOUT_SET)
+
+    assert steps[-1].record["beats"]["layout"] == DONE and steps[-1].record["look_around"] == "not_offered"
     assert "look around" not in reminder("after_layout", steps[-1].record, facts)
+
+
+def test_vesper_batched_set_theme_and_next_gets_the_offer_then_the_second_next_shows_connectors():
+    """Vesper run 1: set_theme(layout) and setup_beat(next) in one batch put the connectors card up before
+    the offer was made, and the run recorded it as offered."""
+    facts = MACHINES["windows_laptop"]
+    steps = run(facts, *TO_LAYOUT, LAYOUT_SET, Shown("connectors", "call_a"), Shown("connectors", "call_b"))
+
+    refused, shown = steps[-2], steps[-1]
+    assert refused.result == {"error": "offer first"} and "beat" not in refused.result
+    assert refused.reminder == "offer_first" and refused.record["look_around"] == "offered"
+    assert refused.record["beats"]["connectors"] == PENDING and refused.record["waiting"] is None
+    assert _LOOK_AROUND in reminder(refused.reminder, refused.record, facts)
+    assert shown.result == {} and shown.record["beats"]["connectors"] == SHOWN
+    assert shown.record["waiting"]["tool_call_id"] == "call_b"
+
+
+def test_showing_connectors_directly_before_the_offer_is_refused():
+    facts = MACHINES["mac"]
+    step = run(facts, Shown("connectors", "call_1"))[-1]
+
+    assert step.result == {"error": "offer first"} and step.reminder == "offer_first"
+    assert step.record["beats"]["connectors"] == PENDING and step.record["waiting"] is None
+    assert step.record["look_around"] == "offered"
+
+
+def test_suggestions_mean_the_model_already_looked_so_the_card_shows_at_once():
+    facts = MACHINES["mac"]
+    step = run(facts, Shown("connectors", "call_1", suggest=["slack", "linear"]))[-1]
+
+    assert step.result == {} and step.record["beats"]["connectors"] == SHOWN
+    assert step.record["look_around"] == "offered"
+    # Blank slugs are not suggestions.
+    assert run(facts, Shown("connectors", "call_1", suggest=["  "]))[-1].result == {"error": "offer first"}
+
+
+@pytest.mark.parametrize("state", ["declined", "accepted"])
+def test_a_settled_look_around_state_shows_the_card_and_stays(state):
+    facts = MACHINES["mac"]
+    record = {**new_record(facts), "look_around": state}
+    step = apply(record, Shown("connectors", "call_1"), facts)
+
+    assert step.result == {} and step.record["beats"]["connectors"] == SHOWN
+    assert step.record["look_around"] == state
+
+
+def test_the_opening_prompt_grants_the_look_and_bounds_it():
+    text = opening_prompt(MACHINES["mac"])
+
+    assert "look around this computer when they say yes" in text
+    assert "installed apps, developer tools, the OS and the hardware" in text
+    assert "Never personal files" in text and "act on it at any beat" in text
 
 
 def test_skip_setup_while_a_card_waits_ends_the_run_and_refuses_later_beats():

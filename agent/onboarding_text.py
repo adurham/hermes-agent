@@ -77,6 +77,7 @@ How it works:
 - If they ask you to pick (a colour, a layout), pick from what you know and say why in one line.
 - If they skip a beat in words, call setup_beat(beat=<that beat>, skip=true), take the default, and never ask it again in the same form. If they want to stop altogether, say in one line that the Skip setup button ends it, then carry on; only they can end it, with that button.
 - Off-script requests are done now, then you bring the card back.
+- You may look around this computer when they say yes: installed apps, developer tools, the OS and the hardware, read with the terminal. Never personal files, documents, browser data or messages without a specific ask. A yes to looking is an off-script request: act on it at any beat.
 
 Voice: every word you write is spoken to the user. Never think out loud. Never mention beats, cards, tools, reminders or a script, and never call this setup or onboarding (the Skip setup button's name is the one exception). One or two short, plain sentences per message: warm, like the front desk of somewhere good. No thanks, no praise, no stock lines, no em dashes, no exclamation marks. Write in the user's language when the locale is not English, labels included.
 
@@ -102,7 +103,8 @@ _LOOK_AROUND = (
     "Before the card, offer once to look around this computer and suggest what to connect. Only on yes, and "
     "only installed apps, developer tools, the OS and the hardware; never personal files, documents, browser "
     "data or messages without a specific ask. Then show the card with what you suggest: "
-    'setup_beat(beat="connectors", suggest=[<connector slugs>]).')
+    'setup_beat(beat="connectors", suggest=[<connector slugs>]). If they say no, show it with '
+    'setup_beat(beat="connectors").')
 
 # How a typed answer settles each beat without the card.
 _TYPED_ANSWER = {
@@ -218,8 +220,7 @@ def _next(record: Mapping[str, Any]) -> str:
 
 def _after_layout(record, facts) -> str:
     label = {"sidebar-left": "Basic", "terminal-deck": "Elite"}.get(record["picks"]["layout"], record["picks"]["layout"])
-    offer = f" {_LOOK_AROUND}" if record["look_around"] == "not_offered" else ""
-    return f"Layout {label} is on, already applied. Do not call set_theme for it again. {_next(record)}{offer}"
+    return f"Layout {label} is on, already applied. Do not call set_theme for it again. {_next(record)}"
 
 
 def _after_connectors(record, facts) -> str:
@@ -250,6 +251,7 @@ _REMINDERS = {
     "after_theme": lambda r, f: (f"Accent {r['picks']['accent'] or 'Nous blue'} is on, already applied. Do not call "
                                  f"set_theme for it again. React in three words or fewer. {_next(r)}"),
     "after_layout": _after_layout,
+    "offer_first": lambda r, f: f"The connectors card is not shown yet. {_LOOK_AROUND}",
     "after_connectors": _after_connectors,
     "after_plugins": _after_plugins,
     "after_tour": lambda r, f: f"The tour is already running; do not start it again. {_next(r)}",

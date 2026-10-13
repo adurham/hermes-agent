@@ -94,8 +94,9 @@ def test_no_answer_closes_the_card_and_typed_words_come_back_as_said(db, desktop
 def test_a_card_closed_by_words_a_value_or_the_deadline_reports_what_is_connected_and_installed(db, desktop):
     onboarding_record.start(db, SID, FACTS)
     timed_out = call(db, desktop, beat="plugins")
+    call(db, desktop, beat="connectors", call_id="call_2")  # refused once: the look-around offer
     desktop.replies.append({"said": "done"})
-    said = call(db, desktop, beat="connectors", call_id="call_2")
+    said = call(db, desktop, beat="connectors", call_id="call_3")
     continued = call(db, desktop, beat="connectors", value="continue")
 
     assert timed_out["installed"] == ["blender"] and said["connected"] == ["slack"]
@@ -113,6 +114,21 @@ def test_suggest_pins_connectors_and_value_or_skip_records_without_a_card(db, de
     assert desktop.shown[0]["card"] == {"suggested": ["slack", "linear"]} and len(desktop.shown) == 1
     assert recorded["recorded"] == "tour" and "No tour" in recorded["reminder"]
     assert skipped["skipped"] is True
+
+
+def test_next_to_the_connectors_card_before_the_offer_is_refused_without_a_card(db, desktop):
+    onboarding_record.start(db, SID, FACTS)
+    for beat in ("name", "theme", "layout"):
+        call(db, desktop, beat=beat, skip=True)
+
+    refused = call(db, desktop, beat="next")
+    desktop.replies.append({"answer": {"connected": [], "newly_connected": []}})
+    shown = call(db, desktop, beat="next", call_id="call_2")
+
+    assert refused["error"] == "offer first" and "beat" not in refused
+    assert "offer once to look around" in refused["reminder"]
+    assert [card["beat"] for card in desktop.shown] == ["connectors"]
+    assert shown["answer"] == {"connected": [], "newly_connected": []} and shown["next"] == "plugins"
 
 
 def test_skip_setup_during_a_card_returns_skipped_all(db, desktop):

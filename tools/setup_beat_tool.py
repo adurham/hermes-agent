@@ -120,7 +120,7 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
                               else {"error": "Onboarding is over in this chat; it is a normal chat now."})
     if callback is None:
         return tool_error("setup_beat cards show only in the Hermes desktop app.")
-    shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id, args.get("options")))
+    shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id, args.get("options"), args.get("suggest")))
     if shown.result:  # refused, or a beat this machine skips
         return _result(shown)
     question = str(args.get("question") or "").strip() or QUESTIONS[beat]
