@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setupBeatOutcome } from '@/components/assistant-ui/setup-beat/receipt'
 
-import { answerParkedCard } from './parked-card-answers'
+import { answerParkedCard, parkedCardWaiting, sessionParkedCardWaiting } from './parked-card-answers'
 import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
 import { $setupBeatRequests, clearSetupBeat, parkSetupBeat } from './setup-beat'
 
@@ -35,6 +35,21 @@ describe('setup_beat card', () => {
     expect(respond).toHaveBeenCalledWith({ said: 'Sid' })
     expect($setupBeatRequests.get()['rt-1']).toBeUndefined()
     expect(answerParkedCard('rt-1', 'again')).toBe(false)
+  })
+
+  it('reports a card waiting on the session while a beat is parked, and none once it settles', () => {
+    const $waiting = sessionParkedCardWaiting('rt-1')
+    const seen: boolean[] = []
+    const off = $waiting.subscribe(value => seen.push(value))
+
+    expect(parkedCardWaiting('rt-1')).toBe(false)
+    parkNameCard('srq-3')
+    expect(parkedCardWaiting('rt-1')).toBe(true)
+    expect(parkedCardWaiting('rt-2')).toBe(false)
+    expect(answerParkedCard('rt-1', 'Sid')).toBe(true)
+    expect(parkedCardWaiting('rt-1')).toBe(false)
+    expect(seen).toEqual([false, true, false])
+    off()
   })
 
   it('collapses every way a card can close to a receipt, and draws nothing for a card-less call', () => {

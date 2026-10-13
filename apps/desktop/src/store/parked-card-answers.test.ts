@@ -1,6 +1,9 @@
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { answerParkedCard, registerParkedCardAnswer } from './parked-card-answers'
+import { answerParkedCard, type ParkedCardAnswer, registerParkedCardAnswer } from './parked-card-answers'
+
+const kind = (answer: ParkedCardAnswer) => ({ $requests: atom({}), answer, waiting: () => false })
 
 describe('parked card answers', () => {
   const unregister: Array<() => void> = []
@@ -14,9 +17,9 @@ describe('parked card answers', () => {
     const takes = vi.fn((sessionId: string) => sessionId === 'session-a')
     const later = vi.fn(() => true)
 
-    unregister.push(registerParkedCardAnswer('test-declines', declines))
-    const offTakes = registerParkedCardAnswer('test-takes', takes)
-    unregister.push(registerParkedCardAnswer('test-later', later))
+    unregister.push(registerParkedCardAnswer('test-declines', kind(declines)))
+    const offTakes = registerParkedCardAnswer('test-takes', kind(takes))
+    unregister.push(registerParkedCardAnswer('test-later', kind(later)))
 
     expect(answerParkedCard('session-a', 'hello')).toBe(true)
     expect(declines).toHaveBeenCalledWith('session-a', 'hello')

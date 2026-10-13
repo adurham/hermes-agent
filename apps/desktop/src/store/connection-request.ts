@@ -527,7 +527,15 @@ export function answerConnectorDirectory(sessionId: string, text: string): boole
   return true
 }
 
-registerParkedCardAnswer('connector-directory', answerConnectorDirectory)
+registerParkedCardAnswer('connector-directory', {
+  $requests: $connectionRequests,
+  answer: answerConnectorDirectory,
+  waiting: sessionId => {
+    const request = $connectionRequests.get()[keyFor(sessionId)]
+
+    return Boolean(request?.display && !request.settled)
+  }
+})
 
 // Typing a message while the card is open ends the operation, otherwise the typed message waits behind
 // the blocked tool until the deadline.

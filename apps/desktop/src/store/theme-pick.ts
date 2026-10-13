@@ -67,4 +67,8 @@ export function sayToThemePick(sessionId: string, text: string): boolean {
   return Boolean(text.trim()) && answer(sessionId, { said: text.trim() })
 }
 
-registerParkedCardAnswer('theme-pick', sayToThemePick)
+registerParkedCardAnswer('theme-pick', {
+  $requests: $themePicks,
+  answer: sayToThemePick,
+  waiting: sessionId => Boolean($themePicks.get()[sessionId])
+})

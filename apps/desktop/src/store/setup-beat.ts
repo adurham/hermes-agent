@@ -108,4 +108,8 @@ export function sayToSetupBeat(sessionId: string, text: string): boolean {
   return Boolean(text.trim()) && respond(sessionId, { said: text.trim() })
 }
 
-registerParkedCardAnswer('setup_beat', sayToSetupBeat)
+registerParkedCardAnswer('setup_beat', {
+  $requests: $setupBeatRequests,
+  answer: sayToSetupBeat,
+  waiting: sessionId => Boolean($setupBeatRequests.get()[sessionId])
+})
