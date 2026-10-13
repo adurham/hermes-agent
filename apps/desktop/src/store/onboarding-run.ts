@@ -262,19 +262,12 @@ export async function reconcileOnboarding(request: OnboardingRequest): Promise<v
 
 let stopWatching: (() => void) | null = null
 
-// Re-read the run on every reconnect and window focus while this window shows one.
+// Re-read the run on every reconnect while this window shows one.
 function watchRunEnd(request: OnboardingRequest): void {
   stopWatching?.()
 
   const check = () => void reconcileOnboarding(request).catch(error => console.warn('[onboarding] reconcile', error))
-  const offGateway = $gatewayState.listen(state => state === 'open' && check())
-
-  window.addEventListener('focus', check)
-
-  stopWatching = () => {
-    offGateway()
-    window.removeEventListener('focus', check)
-  }
+  stopWatching = $gatewayState.listen(state => state === 'open' && check())
 
   // An end sent while the chat was opening found no session here to end.
   check()
