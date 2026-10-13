@@ -127,6 +127,8 @@ export async function startOnboarding(
     skipped = true
     intro?.failed()
     leaveSkipped()
+    // The start has no deadline behind the intro; the boot hold must not wait for it once the user left.
+    markOnboardingDecided()
   })
 
   try {

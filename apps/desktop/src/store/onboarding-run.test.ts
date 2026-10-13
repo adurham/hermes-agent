@@ -205,6 +205,22 @@ describe('onboarding run', () => {
     expect(calls).toContain('free_tier.ack_notice')
   })
 
+  it('releases the boot hold when the user takes the way out while the start is still pending', async () => {
+    let exit: () => void = () => undefined
+    const intro = { failed: vi.fn(), opened: vi.fn(), started: vi.fn(), starting: (leave: () => void) => (exit = leave) }
+
+    const request = (method: string) =>
+      method === 'onboarding.start' ? new Promise<never>(() => undefined) : Promise.reject(new Error(method))
+
+    $onboardingDecided.set(false)
+
+    // `starting` runs before the first await, so the way out exists as soon as the start is called.
+    void startOnboarding(request, resume, { ensureProfile, intro })
+    exit()
+
+    expect($onboardingDecided.get()).toBe(true)
+  })
+
   it("keeps a rerun going when the old run's withdrawn card reports skipped_all first", async () => {
     const { request } = backend({ eligible: true, run: true })
     await startOnboarding(request, resume, { ensureProfile })
