@@ -7,7 +7,7 @@ import json
 import hermes_yaml as yaml
 import pytest
 
-from tests.gateway.test_session_busy_controls import owner, admissions
+from tests.gateway.test_session_busy_controls import owner, admissions, settled
 from tests.gateway.fixtures.local_recovery_probe import rpc, websocket
 
 
@@ -136,4 +136,30 @@ def test_fast_is_session_scoped_validated_and_read_back(tmp_path):
                 # Session-scoped like main: config.yaml is untouched.
                 assert (home / 'config.yaml').read_bytes() == before
                 assert not admissions(home) and not peer.requests
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_personality_persists_to_the_profile_and_drives_the_next_turn(tmp_path):
+    with owner(tmp_path) as (home, peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='persona', source='tui',
+                                 toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='before', text='BEFORE')
+                await settled(home)
+                result = await rpc(ws, 'config.set', key='personality', value='pirate', session_id=sid)
+                assert result.get('result') == {'key': 'personality', 'value': 'pirate',
+                                                'history_reset': False}, result
+                assert _display(home)['personality'] == 'pirate'
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='after', text='AFTER')
+                await settled(home)
+                systems = [' '.join(str(m.get('content')) for m in body['messages'] if m['role'] == 'system')
+                           for body in peer.requests]
+                assert 'Captain Hermes' not in systems[0] and 'Captain Hermes' in systems[-1], systems
+                assert (await rpc(ws, 'config.set', key='personality', value='nobody', session_id=sid)
+                        ).get('error', {}).get('message') == 'unknown_personality'
+                result = await rpc(ws, 'config.set', key='personality', value='none', session_id=sid)
+                assert result.get('result', {}).get('value') == 'none', result
+                assert _display(home)['personality'] == ''
         asyncio.run(probe())

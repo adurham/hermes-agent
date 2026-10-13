@@ -173,6 +173,8 @@ async def config_set(connection, ref, params):
     value = params.get('value')
     if key == 'fast':
         return await _set_fast(connection, ref, policy, value)
+    if key == 'personality':
+        return await asyncio.to_thread(_set_personality, connection, value)
     result = await asyncio.to_thread(_write_profile_config, connection,
                                      lambda cfg: _set_display(cfg, key, value))
     if key == 'focus' and ref.session_id and 'tool_progress' in result:
@@ -247,3 +249,20 @@ async def _set_fast(connection, ref, policy, value):
     connection.authority.runner._set_session_service_tier_override(
         connection.authority.sessions[ref.session_id].route, tier)
     return {'key': 'fast', 'value': service_tier_word(tier)}
+
+
+def _set_personality(connection, value):
+    """Main's /personality: validated against the profile's personalities and persisted through
+    ``hermes_cli.personality`` (the only sanctioned write). Every next turn of the profile's sessions
+    resolves its ephemeral prompt from that config, and the changed prompt rebuilds the cached agent."""
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import load_config
+    from hermes_cli.personality import persist_personality, resolve_personality
+    with _profile_runtime_scope(Path(connection.authority.profile_id)), _WRITE_LOCK:
+        try:
+            name, _prompt = resolve_personality(str(value or ''), load_config())
+        except ValueError as exc:
+            raise RuntimeStoreError('unknown_personality') from exc
+        if not persist_personality(name):
+            raise RuntimeStoreError('storage_unavailable')
+    return {'key': 'personality', 'value': str(value or 'none'), 'history_reset': False}

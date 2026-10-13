@@ -261,12 +261,6 @@ export const sessionCommands: SlashCommand[] = [
         return
       }
 
-      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
-      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'personality'))
-      }
-
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'personality', session_id: ctx.sid, value: arg }).then(
         ctx.guarded<ConfigSetResponse>(r => {
           if (r.history_reset) {

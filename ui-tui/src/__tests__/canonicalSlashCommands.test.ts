@@ -200,10 +200,10 @@ it('/stop is session-scoped; process-global /reload-mcp refuses on the shared ga
   }
 })
 
-it('setting writes the shared gateway has no verb for say so instead of a bare invalid_params; reads still work', async () => {
+it('/reasoning --global still says the shared gateway has no verb for it; /skin reads still work', async () => {
   const { request, slash, sys } = harness()
 
-  for (const cmd of ['/reasoning high --global', '/personality pirate', '/skin']) {
+  for (const cmd of ['/reasoning high --global', '/skin']) {
     slash(cmd)
   }
 
@@ -214,11 +214,18 @@ it('setting writes the shared gateway has no verb for say so instead of a bare i
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
-  for (const name of ['reasoning', 'personality']) {
-    expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
-  }
-
+  expect(notices).toContain('/reasoning is not available on the shared gateway yet')
   expect(notices.some(line => /skin: default/.test(line))).toBe(true)
+})
+
+it('/personality <name> is the owner\'s config.set like main', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/personality pirate')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'personality', session_id: 'owner', value: 'pirate' })
+  expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['personality: pirate'])
 })
 
 it('/skin writes the profile through the owner\'s config.set like main (the owner repaints via skin.changed)', async () => {
