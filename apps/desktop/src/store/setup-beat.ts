@@ -2,9 +2,11 @@
  * Open `setup_beat` requests: the onboarding chat's card for one beat, one per session.
  *
  * The setup_beat tool row reads this to draw the beat's card. A pick answers the request with
- * `{answer}`; composer text answers it with `{said}` (the backend treats words on the name card as
- * the name). The backend's `request.cancel` (timeout, Stop, Skip setup) clears the entry by request
- * id, so a late cancel never erases a newer card the same session raised; the setup_beat call's
+ * `{answer}`. Composer text answers only the name card, with `{said}` (the words are the name); a
+ * message sent while any other card waits closes it with `{wrote_instead}`, the backend ends that
+ * turn, and the composer sends the message as the next turn. The backend's `request.cancel`
+ * (timeout, Stop, Skip setup) clears the entry by request id, so a late cancel never erases a newer
+ * card the same session raised; the setup_beat call's
  * completion clears it by tool call id, which covers a card answered in another window.
  */
 
@@ -52,6 +54,7 @@ export interface SetupBeatToolResult {
   said?: string
   skipped_all?: boolean
   timed_out?: boolean
+  wrote_instead?: boolean
 }
 
 /** A setup_beat tool row's result: the object a live row carries, or the JSON text of a reloaded one. */
@@ -101,7 +104,7 @@ export function dropSetupBeat(sessionId: string): void {
 // The card clears only once the answer is sent, so a failed send leaves it on screen to answer again.
 function respond(
   sessionId: string,
-  result: { answer: SetupBeatAnswer } | Record<string, never> | { said: string }
+  result: { answer: SetupBeatAnswer } | Record<string, never> | { said: string } | { wrote_instead: true }
 ): boolean {
   const request = $setupBeatRequests.get()[sessionId]
 
@@ -119,18 +122,24 @@ export function answerSetupBeat(sessionId: string, answer: SetupBeatAnswer): boo
   return respond(sessionId, { answer })
 }
 
-/** Composer text typed while a card waits answers it as the user's words. */
+/** Composer text typed while the name card waits is the name. No other card takes typed words. */
 export function sayToSetupBeat(sessionId: string, text: string): null | Promise<boolean> {
-  return text.trim() && $setupBeatRequests.get()[sessionId]
+  return text.trim() && $setupBeatRequests.get()[sessionId]?.beat === 'name'
     ? Promise.resolve(respond(sessionId, { said: text.trim() }))
     : null
+}
+
+/** A message sent instead of an answer closes the card; the backend ends its turn on that result. */
+export function yieldSetupBeatToMessage(sessionId: string): boolean {
+  return respond(sessionId, { wrote_instead: true })
 }
 
 registerParkedCardAnswer('setup_beat', {
   onboardingOnly: true,
   $requests: $setupBeatRequests,
   answer: sayToSetupBeat,
-  // An empty answer closes the card unanswered, so an attachment or a slash command can run.
+  // An empty answer closes the card unanswered, so a slash command can run.
   skip: sessionId => respond(sessionId, {}),
-  waiting: sessionId => Boolean($setupBeatRequests.get()[sessionId])
+  waiting: sessionId => Boolean($setupBeatRequests.get()[sessionId]),
+  yieldToMessage: yieldSetupBeatToMessage
 })

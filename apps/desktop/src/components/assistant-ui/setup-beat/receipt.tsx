@@ -51,7 +51,8 @@ export function setupBeatOutcome(result: SetupBeatToolResult): null | SetupBeatO
     return { answer: result.answer, beat, kind: 'answer' }
   }
 
-  return result.timed_out ? { beat, kind: 'timed_out' } : null
+  // A message sent instead: it shows as its own bubble in the next turn, so the card reads unanswered.
+  return result.timed_out || result.wrote_instead ? { beat, kind: 'timed_out' } : null
 }
 
 interface AnswerNames {

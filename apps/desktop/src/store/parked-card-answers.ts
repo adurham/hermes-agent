@@ -15,6 +15,9 @@ export interface ParkedCardKind {
   onboardingOnly?: boolean
   /** Closes the card unanswered, so a message that cannot answer it (attachments, a slash command) runs. */
   skip?: (sessionId: string) => boolean
+  /** Closes the card unanswered because the user sent a message instead. The card's turn ends on that
+   *  answer, so the message runs as the next turn. True when a card closed. */
+  yieldToMessage?: (sessionId: string) => boolean
   waiting: (sessionId: string) => boolean
 }
 
@@ -69,6 +72,20 @@ export function answerParkedCard(sessionId: string, text: string, onFailed: () =
   }
 
   return false
+}
+
+/** Close every card waiting on `sessionId` that gives its turn to a message sent instead of an answer. True
+ *  when one closed: the message then waits for that turn to end and runs as the next one, never a steer. */
+export function yieldParkedCardsToMessage(sessionId: string): boolean {
+  let yielded = false
+
+  for (const kind of kindsFor(sessionId)) {
+    if (kind.waiting(sessionId) && kind.yieldToMessage?.(sessionId)) {
+      yielded = true
+    }
+  }
+
+  return yielded
 }
 
 /** Close every card waiting on `sessionId` that a message cannot answer (attachments, a slash command). */
