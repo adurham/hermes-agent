@@ -4832,6 +4832,7 @@ export interface CanonicalResumeParams {
 }
 export interface CanonicalListParams {
   profile?: string | null
+  scope?: 'live' | 'stored'
   limit?: number
   title?: string | null
   include_hidden?: boolean

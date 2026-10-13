@@ -116,6 +116,7 @@ class CanonicalSnapshot(Result):
 
 
 class CanonicalListParams(ProfileParams):
+    scope: Literal['live', 'stored'] = 'live'
     limit: int = 200
     title: str | None = None
     include_hidden: bool = False

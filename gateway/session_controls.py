@@ -326,8 +326,14 @@ class AuthorityConnection:
         if 'session:read' not in self.actor.capabilities:
             raise RuntimeStoreError('permission_denied')
         limit = params.get('limit', 200)
-        if set(params) - {'limit', 'title', 'include_hidden'} or type(limit) is not int or not 1 <= limit <= 200:
+        if set(params) - {'limit', 'title', 'include_hidden', 'scope'} or type(limit) is not int or not 1 <= limit <= 200:
             raise RuntimeStoreError('invalid_params')
+        if params.get('scope', 'live') not in {'live', 'stored'} or ('title' in params and 'scope' in params):
+            raise RuntimeStoreError('invalid_params')
+        if params.get('scope') == 'stored':
+            from gateway.session_listing import stored_picker_sessions
+            return await asyncio.to_thread(stored_picker_sessions, self.authority, self.actor,
+                limit=limit, include_hidden=params.get('include_hidden', False))
         if 'title' in params:
             # Title-as-identity lookup (the Bots roster's forever-chat registry): the same
             # resolver `session.resume title=` uses, so a hidden canonical chat answers here
