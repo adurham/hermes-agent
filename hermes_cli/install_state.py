@@ -324,7 +324,7 @@ def _launcher_root() -> Iterable[Path]:
 def root_evidence(root: Path, places: Places) -> Finding | None:
     if _is_protected(root, places):
         return Finding(Evidence.UNREADABLE, root)
-    home = _Root(root)
+    home = _Root(root, places.protected)
     for evidence, check in CHECKS:
         try:
             if check(home):
@@ -338,18 +338,31 @@ class _Root:
     """One root's files, each read at most once. No ``load_config``: it writes SOUL.md and the
     directory skeleton into the root it reads."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, protected: tuple[Path, ...] = ()) -> None:
         self.path = path
+        self.protected = protected
+
+    def file(self, name: str) -> Path:
+        """*name* in this root, resolved before anything opens it. A link into a protected folder
+        raises: following it would raise the macOS permission prompt, so it counts as unreadable."""
+        return _unprotected(self.path / name, self.protected)
 
     @cached_property
     def config(self) -> dict[str, Any]:
-        return _read_mapping(self.path / "config.yaml", _parse_yaml)
+        return _read_mapping(self.file("config.yaml"), _parse_yaml)
 
     @cached_property
     def auth_stores(self) -> tuple[dict[str, Any], ...]:
         # The shared-auth override names the directory itself, so its file sits at the top.
         names = ("auth.json", "shared/nous_auth.json", "nous_auth.json")
-        return tuple(_read_mapping(self.path / name, json.loads) for name in names)
+        return tuple(_read_mapping(self.file(name), json.loads) for name in names)
+
+
+def _unprotected(path: Path, protected: tuple[Path, ...]) -> Path:
+    resolved = path.resolve()
+    if _inside(resolved, protected):
+        raise PermissionError(f"{path} leads into a protected folder")
+    return resolved
 
 
 def _onboarding_done(home: _Root) -> bool:
@@ -360,11 +373,16 @@ def _onboarding_done(home: _Root) -> bool:
 def _named_profile(home: _Root) -> bool:
     from hermes_constants import PROFILE_ID_RE, named_profile_has_identity, named_profile_is_deleted
 
-    profiles = home.path / "profiles"
-    return profiles.is_dir() and any(
-        entry.is_dir() and entry.name != "default" and PROFILE_ID_RE.match(entry.name)
-        and named_profile_has_identity(entry) and not named_profile_is_deleted(entry)
-        for entry in profiles.iterdir())
+    profiles = home.file("profiles")
+    if not profiles.is_dir():
+        return False
+    for entry in profiles.iterdir():
+        if entry.name == "default" or not PROFILE_ID_RE.match(entry.name):
+            continue
+        entry = _unprotected(entry, home.protected)
+        if entry.is_dir() and named_profile_has_identity(entry) and not named_profile_is_deleted(entry):
+            return True
+    return False
 
 
 def _provider_config(home: _Root) -> bool:
@@ -383,7 +401,7 @@ def _provider_key(home: _Root) -> bool:
 
     from agent.secret_scope import load_env_file
 
-    path = home.path / ".env"
+    path = home.file(".env")
     if not path.is_file():
         return False
     _read_text(path)  # too large or unreadable raises, so doubt counts as used; the tokenizer swallows both
@@ -415,7 +433,7 @@ _DB_BUSY_ERRORS = frozenset({"SQLITE_BUSY", "SQLITE_LOCKED"})
 
 
 def _messages(home: _Root) -> bool:
-    db = home.path / "state.db"
+    db = home.file("state.db")
     if not db.is_file():
         return False
     # Read-only URI, never the state registry: that opens a writer and migrates a schema we do not own.

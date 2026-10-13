@@ -98,6 +98,27 @@ def test_a_root_in_a_protected_folder_is_existing_without_being_opened(machine, 
     assert install_state.probe().findings[0].evidence is Evidence.UNREADABLE
 
 
+@pytest.mark.parametrize("name", ["config.yaml", ".env", "auth.json", "state.db", "profiles"])
+def test_a_file_linked_into_a_protected_folder_is_existing_without_being_opened(machine, tmp_path, monkeypatch, name):
+    """A root outside the protected folders whose file links into one: following the link would raise
+    the macOS permission prompt, so the target counts as unreadable."""
+    other, places = machine
+    protected = tmp_path / "Documents"
+    target = protected / "hermes" / name
+    target.parent.mkdir(parents=True)
+    if name == "profiles":
+        target.mkdir()
+    elif name == "state.db":
+        sqlite3.connect(target).execute("CREATE TABLE messages (id INTEGER)").connection.close()
+    else:
+        target.write_text("{}\n", encoding="utf-8")
+    (other / name).symlink_to(target)
+    monkeypatch.setattr(install_state, "machine_places",
+                        lambda: Places(markers=places.markers, sources=places.sources, protected=(protected,)))
+
+    assert [(f.evidence, f.where) for f in install_state.probe().findings] == [(Evidence.UNREADABLE, other.resolve())]
+
+
 def test_a_launcher_in_a_protected_folder_names_its_folder_without_being_opened(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
