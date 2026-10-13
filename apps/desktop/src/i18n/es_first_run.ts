@@ -17,7 +17,6 @@ export const esFirstRun: FirstRunCopy = {
   loading: 'Cargando…',
   noPlugins: 'No hay plugins para mostrar ahora mismo.',
   noneChosen: 'Ninguno',
-  answeredInChat: 'Respondido en el chat',
   noAnswer: 'Sin respuesta',
   skippedAll: 'Configuración omitida',
   skip: 'Omitir configuración',

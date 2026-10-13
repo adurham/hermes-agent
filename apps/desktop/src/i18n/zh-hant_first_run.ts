@@ -17,7 +17,6 @@ export const zhHantFirstRun: FirstRunCopy = {
   loading: '正在載入…',
   noPlugins: '目前沒有可顯示的外掛。',
   noneChosen: '無',
-  answeredInChat: '已在對話中回答',
   noAnswer: '未回答',
   skippedAll: '已略過設定',
   skip: '略過設定',

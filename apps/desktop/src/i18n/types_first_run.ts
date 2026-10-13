@@ -20,7 +20,6 @@ export interface FirstRunCopy {
   noPlugins: string
   /** A receipt for a card that settled with nothing chosen (no apps connected, no plugin installed). */
   noneChosen: string
-  answeredInChat: string
   noAnswer: string
   skippedAll: string
   skip: string

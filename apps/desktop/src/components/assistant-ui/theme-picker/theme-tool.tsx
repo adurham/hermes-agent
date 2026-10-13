@@ -19,6 +19,7 @@ import { accentName, resolveAccentPick } from '@/themes/accents'
 import type { ThemeMode } from '@/themes/context'
 
 import { ToolFallback } from '../tool/fallback'
+import { TypedAnswer } from '../typed-answer'
 
 import { AccentPickerCard } from './accent-picker-card'
 import { setThemeCall } from './args'
@@ -103,6 +104,12 @@ export function ThemeTool(props: ToolCallMessagePartProps) {
 
   if (props.result !== undefined) {
     const result = recordOf(props.result)
+    const said = connectorText(result.said)?.trim()
+
+    if (said) {
+      return <TypedAnswer text={said} />
+    }
+
     const values = readValues(result.applied ?? result.picked)
 
     if (values || (picker && result.success !== false)) {

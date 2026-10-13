@@ -17,7 +17,6 @@ export const ruFirstRun: FirstRunCopy = {
   loading: 'Загрузка…',
   noPlugins: 'Сейчас нет плагинов для показа.',
   noneChosen: 'Нет',
-  answeredInChat: 'Ответ дан в чате',
   noAnswer: 'Нет ответа',
   skippedAll: 'Настройка пропущена',
   skip: 'Пропустить настройку',

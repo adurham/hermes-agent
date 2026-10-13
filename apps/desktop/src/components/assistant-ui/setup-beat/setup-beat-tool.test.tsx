@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -27,6 +27,12 @@ function renderRow(result: SetupBeatToolResult) {
 describe('SetupBeatTool', () => {
   afterEach(() => {
     cleanup()
+  })
+
+  it('draws the words typed while the card waited as the user\'s bubble', () => {
+    renderRow({ beat: 'theme', said: 'look around and suggest one for me :D' })
+
+    expect(screen.getByText('look around and suggest one for me :D').closest('[data-slot="typed-answer"]')).not.toBeNull()
   })
 
   it('draws nothing for a refusal meant for the model', () => {

@@ -17,7 +17,6 @@ export const frFirstRun: FirstRunCopy = {
   loading: 'Chargement…',
   noPlugins: 'Aucun plugin à afficher pour le moment.',
   noneChosen: 'Aucun',
-  answeredInChat: 'Répondu dans le chat',
   noAnswer: 'Pas de réponse',
   skippedAll: 'Configuration ignorée',
   skip: 'Ignorer la configuration',

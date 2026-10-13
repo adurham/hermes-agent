@@ -17,7 +17,6 @@ export const enFirstRun: FirstRunCopy = {
   loading: 'Loading…',
   noPlugins: 'No plugins to show right now.',
   noneChosen: 'None',
-  answeredInChat: 'Answered in chat',
   noAnswer: 'No answer',
   skippedAll: 'Setup skipped',
   skip: 'Skip setup',

@@ -17,7 +17,6 @@ export const jaFirstRun: FirstRunCopy = {
   loading: '読み込み中…',
   noPlugins: '現在表示できるプラグインはありません。',
   noneChosen: 'なし',
-  answeredInChat: 'チャットで回答済み',
   noAnswer: '回答なし',
   skippedAll: 'セットアップをスキップしました',
   skip: 'セットアップをスキップ',

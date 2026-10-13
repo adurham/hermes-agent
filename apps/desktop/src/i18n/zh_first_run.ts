@@ -17,7 +17,6 @@ export const zhFirstRun: FirstRunCopy = {
   loading: '正在加载…',
   noPlugins: '暂时没有可显示的插件。',
   noneChosen: '无',
-  answeredInChat: '已在对话中回答',
   noAnswer: '未回答',
   skippedAll: '已跳过设置',
   skip: '跳过设置',

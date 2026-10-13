@@ -17,7 +17,6 @@ export const deFirstRun: FirstRunCopy = {
   loading: 'Wird geladen…',
   noPlugins: 'Gerade keine Plugins verfügbar.',
   noneChosen: 'Keine',
-  answeredInChat: 'Im Chat beantwortet',
   noAnswer: 'Keine Antwort',
   skippedAll: 'Einrichtung übersprungen',
   skip: 'Einrichtung überspringen',

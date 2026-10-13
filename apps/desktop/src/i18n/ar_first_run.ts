@@ -17,7 +17,6 @@ export const arFirstRun: FirstRunCopy = {
   loading: 'جارٍ التحميل…',
   noPlugins: 'لا توجد إضافات لعرضها الآن.',
   noneChosen: 'لا شيء',
-  answeredInChat: 'تمت الإجابة في المحادثة',
   noAnswer: 'لا توجد إجابة',
   skippedAll: 'تم تخطي الإعداد',
   skip: 'تخطي الإعداد',
