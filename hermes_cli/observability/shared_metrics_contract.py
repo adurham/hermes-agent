@@ -1828,6 +1828,9 @@ _CONNECTOR_CODE_CLASSES = {
     "TOOL_NOT_ALLOWED": "not_allowed",
     **dict.fromkeys(("ALIAS_REQUIRED", "ALIAS_UNKNOWN"), "alias"),
     "INVALID_ARGUMENTS": "invalid_arguments",
+    # Agent-side file input refusals (``tools.connectors.gateway.wire.FILE_ERROR_FAMILIES``).
+    "FILE_NOT_ALLOWED": "not_allowed",
+    **dict.fromkeys(("FILE_NOT_FOUND", "FILE_TOO_LARGE"), "invalid_arguments"),
 }
 _CONNECTOR_FAMILY_CLASSES = {"backend": "connector_backend"}
 

@@ -393,7 +393,9 @@ gateway's error code in its result: `connection_required` (connection required
 or expired), `not_allowed`, `alias` (alias required or unknown),
 `invalid_arguments`, and `connector_backend` for every backend-family code
 (vendor error, rate limit, timeout, policy or gateway failure); other codes keep
-`tool_error`. Hermes does not infer retries from repeated tool names or
+`tool_error`. Hermes's own file-input refusals count the same way: a refused
+path is `not_allowed`, a missing or oversized file is `invalid_arguments`, and a
+failed upload is `connector_backend`. Hermes does not infer retries from repeated tool names or
 adjacent calls; when the
 hook does not provide an explicit retry relationship, the retry bucket is
 `unknown`. Approval decisions are emitted as `hermes.tool_approval` marks and
