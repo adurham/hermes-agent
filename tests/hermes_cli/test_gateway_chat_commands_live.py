@@ -57,14 +57,21 @@ def classic_session(tmp_path):
     def screen():
         return tmux("capture-pane", "-p", "-J", "-S", "-3000", "-t", "chat").stdout
 
-    def send(line, expect, timeout=45):
+    def composer_shows(text):
+        return any(row.startswith("❯") and text in row for row in screen().splitlines())
+
+    def send(line, expect, timeout=45, composer=None):
+        """``composer``: text the CLI itself put in the composer (``/undo``'s prefill), awaited like
+        typed text. An Enter within 50 ms of any buffer change is a newline (#10994's paste guard,
+        main's own), so a bare Enter right behind the prefill would only add a line."""
         # The pane is fixed-height (blank rows pad it), so a new answer is one more occurrence.
         seen = screen().count(expect)
-        if line:
-            tmux("send-keys", "-t", "chat", "-l", line)
+        if line or composer:
+            if line:
+                tmux("send-keys", "-t", "chat", "-l", line)
             echo = time.monotonic() + 10
-            while line not in screen():
-                assert time.monotonic() < echo, (line, screen())
+            while (line not in screen()) if line else not composer_shows(composer):
+                assert time.monotonic() < echo, (line or composer, screen())
                 time.sleep(.1)
             time.sleep(1)  # health: allow HX013 -- main drops an Enter sent in the same burst as the text (probe_pty.py); the gap is the input timing
         tmux("send-keys", "-t", "chat", "Enter")
@@ -100,7 +107,10 @@ def classic_session(tmp_path):
             tmux("new-session", "-d", "-s", "chat", "-x", "200", "-y", "50", "-c", str(cwd),
                  command + '; printf "\\nCLI_RC=%s\\n" "$?"; sleep 120')
             deadline = time.monotonic() + 60
-            while "Welcome to Hermes Agent" not in screen():
+            # The banner prints before prompt_toolkit owns the tty: keys typed then are echoed raw and
+            # reach the app in one burst with their Enter (a newline, not a submit). The drawn
+            # composer row means the app is reading keys.
+            while not ("Welcome to Hermes Agent" in screen() and composer_shows("")):
                 assert time.monotonic() < deadline, (screen(), (home / "gw.log").read_text())
                 time.sleep(.1)
             yield send, screen, db, session_id
@@ -144,7 +154,7 @@ def test_classic_view_retry_undo_new_match_main(tmp_path):
         send("/undo", "destroys conversation state")
         send("", "Undid 1 turn")
         # The removed message is back in the composer: Enter alone resubmits it.
-        send("", "RECOVERY_ACK_second question")
+        send("", "RECOVERY_ACK_second question", composer="second question")
         send("/new Second Thread", "destroys conversation state")
         send("", "New session started")
         second = session_id()
