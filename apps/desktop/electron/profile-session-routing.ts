@@ -1035,6 +1035,12 @@ async function allProfilesSidebar(url: URL, profiles: readonly string[], fetchPa
     const params = new URLSearchParams(url.searchParams)
     params.set('recents_profile', profile)
 
+    // A registry-routed request also carries its route's `profile`; the gateway checks every
+    // selector against the grant, so each read names only the profile it reads.
+    if (params.has('profile')) {
+      params.set('profile', profile)
+    }
+
     return fetchPage(profile, `${url.pathname}?${params}`)
   })
 

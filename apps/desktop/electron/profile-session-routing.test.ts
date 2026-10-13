@@ -959,6 +959,25 @@ test('all-profiles sidebar is merged from one batched read per profile', async (
   assert.deepEqual(result.errors, [{ profile: 'broken', error: 'database is locked' }])
 })
 
+test('all-profiles sidebar reads name only the profile they read, even on a registry route', async () => {
+  const reads: string[] = []
+
+  await fetchAllProfilesSessionsPerProfile(
+    '/api/profiles/sessions/sidebar?recents_profile=all&recents_limit=40&profile=default',
+    ['default', 'work'],
+    async (_profile, path) => {
+      reads.push(path)
+
+      return { recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [], total: 0 } }
+    }
+  )
+
+  assert.deepEqual(reads.sort(), [
+    '/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=40&profile=default',
+    '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=40&profile=work'
+  ])
+})
+
 test('all-profiles sidebar reports a failed load when every profile fails', async () => {
   const result = (await fetchAllProfilesSessionsPerProfile(
     '/api/profiles/sessions/sidebar?recents_profile=all',

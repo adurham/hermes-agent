@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+
 import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
+
 import { buildAppEnv, createSandbox, launchDesktop } from './fixtures'
 import { expect, test } from './test'
 
@@ -31,6 +33,7 @@ test('pre-cutover Desktop conversations remain visible and open across profiles'
   fs.mkdirSync(named, { recursive: true })
   writeMockProviderConfig(named, mock.url)
   writeEnvFile(named)
+
   const seed = spawnSync(python, ['-c', `
 import json, os, sys
 from pathlib import Path
@@ -50,6 +53,7 @@ home = Path(os.environ['HERMES_HOME'])
 seed(home / 'state.db', json.loads(sys.argv[1]), 'default')
 seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source': 'desktop', 'userId': None}], 'developer')
 `, JSON.stringify(ROWS), NAMED_ROW], { cwd: root, env: { ...env, PYTHONPATH: root }, encoding: 'utf8' })
+
   expect(seed.status, seed.stderr).toBe(0)
   // An existing install has a startup profile; without one the first-launch migration guesses
   // from the newest state.db, which here is the named profile's.
@@ -59,6 +63,8 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
   fs.mkdirSync(evidence, { recursive: true })
   const results: Record<string, { listed: boolean; opened: boolean; error?: string }> = {}
   let probes: Record<string, unknown> = {}
+  const views: Record<string, string[]> = {}
+  let resumeFailures = -1
 
   try {
     const launched = await launchDesktop(env)
@@ -74,6 +80,7 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
         const api = (window as any).hermesDesktop.api
         const out: Record<string, unknown> = {}
         const q = 'limit=40&offset=0&min_messages=1&archived=exclude&order=recent'
+
         const calls: Record<string, string> = {
           'sidebar:default': '/api/profiles/sessions/sidebar?recents_profile=default&recents_limit=40&cron_limit=5&messaging_limit=5',
           'sidebar:developer': '/api/profiles/sessions/sidebar?recents_profile=developer&recents_limit=40&cron_limit=5&messaging_limit=5',
@@ -81,9 +88,13 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
           'sessions:all': `/api/profiles/sessions?${q}&profile=all`
         }
 
+        // The same all-profiles read as the renderer sends it on its registry route.
+        const registry = { profile: 'default', connectionId: 'local' }
+        calls['sidebar:all:registry'] = calls['sidebar:all']
+
         for (const [name, path] of Object.entries(calls)) {
           try {
-            const r = await api({ path })
+            const r = await api({ path, ...(name.endsWith(':registry') ? registry : {}) })
             const rows = r?.recents ? r.recents.sessions : r?.sessions
             out[name] = { ids: (rows ?? []).map((x: any) => `${x.profile}:${x.id}`).sort(), errors: r?.errors ?? [] }
           } catch (e) {
@@ -124,9 +135,36 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
 
         await page.screenshot({ path: path.join(evidence, `open-${row.id}.png`) })
       }
+
+      // The rail's home pill: back to default, then its all-profiles view, then default again.
+      // Every profile's history is listed, and leaving the all view keeps default's own.
+      const listedIn = async (ids: string[]) => {
+        const seen: string[] = []
+
+        for (const id of ids) {
+          const entry = sidebar.getByText('Retained ' + id, { exact: true }).first()
+          await entry.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => undefined)
+
+          if (await entry.isVisible()) {
+            seen.push(id)
+          }
+        }
+
+        return seen
+      }
+
+      const rail = page.locator('[data-slot="profile-rail"]')
+      await rail.getByRole('button', { name: /^Switch to / }).first().click()
+      await rail.getByRole('button', { name: 'Show all profiles' }).first().click()
+      views.all = await listedIn([...ROWS.map(r => r.id), NAMED_ROW])
+      await page.screenshot({ path: path.join(evidence, 'view-all.png') })
+      await rail.getByRole('button', { name: /^Switch to / }).first().click()
+      views.default = await listedIn(ROWS.map(r => r.id))
+      await page.screenshot({ path: path.join(evidence, 'view-default.png') })
     } finally {
       console.log('LEGACY_DESKTOP_RESULTS: ' + JSON.stringify(results))
-      fs.writeFileSync(path.join(evidence, 'results.json'), JSON.stringify({ results, probes }, null, 2))
+      console.log('LEGACY_DESKTOP_VIEWS: ' + JSON.stringify(views))
+      fs.writeFileSync(path.join(evidence, 'results.json'), JSON.stringify({ results, views, probes }, null, 2))
 
       for (const name of ['gateway.log', 'errors.log', 'desktop.log']) {
         const log = path.join(sandbox.hermesHome, 'logs', name)
@@ -135,6 +173,11 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
           fs.copyFileSync(log, path.join(evidence, name))
         }
       }
+
+      // Opening a row resumes it; every one, Nous-stamped included, must be continuable.
+      const desktopLog = path.join(sandbox.hermesHome, 'logs', 'desktop.log')
+      resumeFailures = fs.existsSync(desktopLog) ? (fs.readFileSync(desktopLog, 'utf8').match(/Resume failed/g) ?? []).length : -1
+      console.log('LEGACY_DESKTOP_RESUME_FAILURES: ' + resumeFailures)
     }
   } finally {
     await app?.close().catch(() => undefined)
@@ -159,6 +202,7 @@ for p in alive:
 
   const everyRow = [...ROWS.map(r => `default:${r.id}`), `developer:${NAMED_ROW}`].sort()
   expect.soft(probes['sidebar:all'], 'sidebar:all').toEqual({ ids: everyRow, errors: [] })
+  expect.soft(probes['sidebar:all:registry'], 'sidebar:all:registry').toEqual({ ids: everyRow, errors: [] })
   expect.soft(probes['sessions:all'], 'sessions:all').toEqual({ ids: everyRow, errors: [] })
   expect.soft(probes['sidebar:default'], 'sidebar:default').toEqual({ ids: ROWS.map(r => `default:${r.id}`).sort(), errors: [] })
   expect.soft(probes['sidebar:developer'], 'sidebar:developer').toEqual({ ids: [`developer:${NAMED_ROW}`], errors: [] })
@@ -166,4 +210,8 @@ for p in alive:
   for (const row of [...ROWS, { id: NAMED_ROW }]) {
     expect.soft(results[row.id], row.id).toEqual({ listed: true, opened: true })
   }
+
+  expect.soft(views.all, 'all-profiles view').toEqual([...ROWS.map(r => r.id), NAMED_ROW])
+  expect.soft(views.default, 'default after all-profiles view').toEqual(ROWS.map(r => r.id))
+  expect.soft(resumeFailures, 'resume failures').toBe(0)
 })
