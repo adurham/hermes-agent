@@ -77,6 +77,7 @@ def test_next_shows_the_first_open_beat_and_the_name_card_offers_the_account_nam
     assert desktop.shown[0]["beat"] == "name" and desktop.shown[0]["card"] == {"suggested": "Ada Lovelace"}
     # Words typed while the name card waits are the name; the account name reaches the model only if picked.
     assert result["answer"] == {"name": "Ada"} and "Ada Lovelace" not in json.dumps(result)
+    assert result["said"] == "Ada"  # drawn as the user's bubble, not a receipt
 
 
 def test_no_answer_closes_the_card_and_typed_words_come_back_as_said(db, desktop):

@@ -42,12 +42,13 @@ export function setupBeatOutcome(result: SetupBeatToolResult): null | SetupBeatO
     return { beat, kind: 'refused' }
   }
 
-  if (result.answer) {
-    return { answer: result.answer, beat, kind: 'answer' }
-  }
-
+  // Words typed in the composer show as the user's bubble, also when they answered the card (the name).
   if (result.said?.trim()) {
     return { beat, kind: 'said', said: result.said.trim() }
+  }
+
+  if (result.answer) {
+    return { answer: result.answer, beat, kind: 'answer' }
   }
 
   return result.timed_out ? { beat, kind: 'timed_out' } : null

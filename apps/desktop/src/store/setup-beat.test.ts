@@ -83,6 +83,7 @@ describe('setup_beat card', () => {
   it('collapses every way a card can close to a receipt, and draws nothing for a card-less call', () => {
     expect(setupBeatOutcome({ answer: { name: 'Sid' }, beat: 'name' })).toMatchObject({ kind: 'answer' })
     expect(setupBeatOutcome({ beat: 'theme', said: 'make it violet' })).toMatchObject({ kind: 'said' })
+    expect(setupBeatOutcome({ answer: { name: 'Ada' }, beat: 'name', said: 'Ada' })).toMatchObject({ kind: 'said' })
     expect(setupBeatOutcome({ beat: 'layout', timed_out: true })).toMatchObject({ kind: 'timed_out' })
     expect(setupBeatOutcome({ skipped_all: true })).toMatchObject({ kind: 'skipped_all' })
     expect(setupBeatOutcome({ beat: 'build', error: 'not accepted' })).toMatchObject({ kind: 'refused' })

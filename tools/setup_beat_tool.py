@@ -66,7 +66,7 @@ def _reply_event(beat: str, reply: Mapping[str, Any] | None) -> flow.Event:
     said = reply.get("said")
     if isinstance(said, str) and said.strip():
         # Words typed while the name card waits are the name, like its own text box.
-        return (flow.Answered(beat, {"name": said.strip()}) if beat == "name"
+        return (flow.Answered(beat, {"name": said.strip()}, said.strip()) if beat == "name"
                 else flow.Said(beat, said.strip(), _present(beat)))
     answer = reply.get("answer")
     return flow.Answered(beat, answer) if isinstance(answer, dict) and answer else flow.TimedOut(beat, _present(beat))

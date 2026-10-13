@@ -65,8 +65,12 @@ class Shown:
 
 @dataclass(frozen=True)
 class Answered:
+    """``said``: the answer came as words in the composer (the name card), so the chat shows them as
+    the user's bubble."""
+
     beat: str
     answer: Mapping[str, Any]
+    said: str = ""
 
 
 # ``present`` on the events below: the beat's picks as this machine has them now (the apps connected,
@@ -279,7 +283,8 @@ def _answered(record: dict, event: Answered, facts: Facts, now: float) -> Step:
         return Step(record, {"beat": event.beat, "error": "The card sent an answer this beat does not accept. "
                              f'Bring it back with setup_beat(beat="{event.beat}").'})
     _settle(record, event.beat, event.answer)
-    return Step(record, {"beat": event.beat, "answer": dict(event.answer), "next": _next_field(record)},
+    said = {"said": event.said} if event.said else {}
+    return Step(record, {"beat": event.beat, "answer": dict(event.answer), **said, "next": _next_field(record)},
                 BEAT_BY_ID[event.beat].after(record["picks"]))
 
 
