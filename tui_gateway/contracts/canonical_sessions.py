@@ -41,6 +41,8 @@ class CanonicalCreateParams(ProfileParams):
     cwd_explicit: bool | None = None
     # Wall-clock budget per run in seconds (the classic CLI's `--run-budget`).
     run_budget: float | None = None
+    # The classic CLI's `-v`: the session agent's status lines are not quieted.
+    verbose: bool = False
 
 
 class CanonicalResumeParams(ProfileParams):

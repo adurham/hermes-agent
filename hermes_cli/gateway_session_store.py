@@ -364,6 +364,8 @@ def _creation_policy(launch):
     policy.pop("source", None)
     if launch.get("run_budget") is not None:  # main's `--run-budget` (the thin client refuses it)
         policy["run_budget"] = float(launch["run_budget"])
+    if launch.get("verbose"):  # main's `-v` (the thin client refuses it)
+        policy["verbose"] = True
     policy.update(env_launch_flags())
     return policy
 

@@ -158,7 +158,7 @@ class GatewaySessionAgentMixin:
         policy = policy_for_source(runner, src)
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
-            max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
+            max_iterations=max_iterations, quiet_mode=not bool(policy and policy.verbose), verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
             ephemeral_system_prompt=combined_ephemeral or None,
             prefill_messages=runner._prefill_messages or None,

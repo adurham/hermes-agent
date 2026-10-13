@@ -8803,6 +8803,11 @@
             ],
             "default": null,
             "title": "Run Budget"
+          },
+          "verbose": {
+            "default": false,
+            "title": "Verbose",
+            "type": "boolean"
           }
         },
         "title": "CanonicalCreateParams",

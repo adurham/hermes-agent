@@ -379,3 +379,9 @@ def test_start_and_quit_closes_the_gateway_session_with_no_agent():
     assert CLITuiRuntimeMixin._closing_session_id(host) is None
     host.agent = types.SimpleNamespace(session_id="local-agent")
     assert CLITuiRuntimeMixin._closing_session_id(host) == "local-agent"
+
+
+def test_verbose_flag_rides_session_create():
+    from hermes_cli.gateway_session_store import _creation_policy
+    assert _creation_policy({"verbose": True})["verbose"] is True
+    assert "verbose" not in _creation_policy({"verbose": None})

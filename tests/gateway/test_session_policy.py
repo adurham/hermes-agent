@@ -370,3 +370,13 @@ def test_run_budget_passes_the_session_create_contract():
     assert canonical_param_problems(contract, {'request_id': 'r', 'source': 'cli', 'run_budget': 120.0}) == []
     declared = set(contract.params.model_fields)
     assert CREATE_FIELDS <= declared | {'request_id'}, CREATE_FIELDS - declared
+
+
+def test_verbose_is_a_frozen_launch_option(tmp_path):
+    """`hermes chat -v` (main: AIAgent(quiet_mode=False)): the session agent's status lines are not quieted."""
+    from gateway.session_policy import build_policy
+    from hermes_state_runtime import RuntimeStoreError
+    assert build_policy(dict(cwd=str(tmp_path), verbose=True), {}).verbose is True
+    assert build_policy(dict(cwd=str(tmp_path)), {}).verbose is False
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        build_policy(dict(cwd=str(tmp_path), verbose='yes'), {})

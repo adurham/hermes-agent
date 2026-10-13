@@ -370,7 +370,8 @@ class CLIInitMixin:
                   "toolsets": self.enabled_toolsets,
                   "pass_session_id": getattr(self, "pass_session_id", False) or None,
                   "ignore_rules": getattr(self, "ignore_rules", False) or None,
-                  "run_budget": getattr(self, "_explicit_run_budget", None)}
+                  "run_budget": getattr(self, "_explicit_run_budget", None),
+                  "verbose": getattr(self, "verbose", False) or None}
         sid = store.open_session(self, launch)
         self._gateway_session_open = True
         if sid and sid != self.session_id:

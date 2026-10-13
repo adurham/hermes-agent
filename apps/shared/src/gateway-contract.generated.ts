@@ -4795,6 +4795,7 @@ export interface CanonicalCreateParams {
   service_tier?: string | null
   cwd_explicit?: boolean | null
   run_budget?: number | null
+  verbose?: boolean
 }
 export interface CanonicalSnapshot {
   session_id: string

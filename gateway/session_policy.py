@@ -11,7 +11,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit', 'run_budget'})
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
@@ -191,6 +191,12 @@ class LocalSessionPolicy:
         return resolve_turn_limit(cfg.get('agent', {}).get('max_turns', cfg.get('max_turns')))
 
     @property
+    def verbose(self):
+        """`hermes chat -v`: the session's agent runs with quiet_mode off, so its status lines reach the
+        viewer (``agent.print``) as main's in-process verbose agent printed them."""
+        return json.loads(self.request_json).get('verbose', False)
+
+    @property
     def run_budget_seconds(self):
         """Frozen `agent.run_budget_seconds` (`--run-budget` folds into it); None = no budget."""
         from agent.agent_init import _normalize_run_budget_seconds
@@ -313,7 +319,7 @@ def _apply_launch_overrides(params, config):
                     raise RuntimeStoreError('invalid_params')
             config.setdefault('model', {})[key] = value
     for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                 'cwd_explicit'):
+                 'cwd_explicit', 'verbose'):
         if flag in params and type(params[flag]) is not bool:
             raise RuntimeStoreError('invalid_params')
     if 'service_tier' in params:
