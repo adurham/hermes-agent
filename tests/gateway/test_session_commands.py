@@ -99,7 +99,7 @@ def test_ordinary_daemon_slash_skill_uses_durable_fifo(tmp_path):
             for params, reason in [({'command': 'help', 'profile': 'foreign'}, 'profile_mismatch'),
                                    ({'command': 'help', 'source': 'telegram'}, 'invalid_params'),
                                    ({'command': 'restart'}, 'unsupported_command'),
-                                   ({'command': 'approve'}, 'unsupported_command')]:
+                                   ({'command': 'sethome'}, 'unsupported_command')]:
                 denied = await command(**params)
                 assert denied['error']['message'] == reason, denied
             # A second dashboard operator shares access but still obeys the busy fence.
