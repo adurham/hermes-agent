@@ -197,8 +197,10 @@ class GatewayAgent:
             return
         try:
             snapshot = self.connection.call("session.resume", session_id=self.session_id)
+            # A policy mutation is generation-fenced: the owner refuses it without the generation.
             self.connection.call("session.mutate", session_id=self.session_id, request_id=uuid.uuid4().hex,
-                                 expected_revision=snapshot["revision"], operation="reasoning",
+                                 expected_revision=snapshot["revision"],
+                                 expected_generation=snapshot["execution_generation"], operation="reasoning",
                                  payload={"effort": effort})
             info["reasoning_effort"] = effort
         except (GatewayClientError, KeyError, TypeError) as exc:

@@ -405,6 +405,8 @@ def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     agent, client = make_agent([], reasoning_config={"enabled": True, "effort": "high"})
     mut = [p for m, p in client.calls if m == "session.mutate"]
     assert len(mut) == 1 and mut[0]["operation"] == "reasoning" and mut[0]["payload"] == {"effort": "high"}
+    # A policy mutation without the generation it was read at is refused by the owner (invalid_params).
+    assert mut[0]["expected_generation"] == 7
     agent.reasoning_config = {"enabled": False}
     mut = [p for m, p in client.calls if m == "session.mutate"]
     assert mut[-1]["payload"] == {"effort": "none"}
