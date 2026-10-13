@@ -128,7 +128,17 @@ class CLIInfoMixin:
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
                 context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
-            if snapshot is not None:
+            gateway_inventory = getattr(self._session_db, "banner_inventory", lambda: None)()
+            if gateway_inventory is not None:
+                # The gateway session's snapshot (the TUI banner's data): the CLI enumerates nothing.
+                self._defer_tool_warnings = True
+                build_welcome_banner(
+                    tools=gateway_inventory["tools"], get_toolset_for_tool=gateway_inventory["get_toolset_for_tool"],
+                    availability=gateway_inventory["availability"],
+                    skills_by_category=gateway_inventory["skills_by_category"],
+                    **{**banner_kw, "cwd": gateway_inventory["cwd"] or cwd,
+                       "context_length": gateway_inventory["context_length"] or ctx_len})
+            elif snapshot is not None:
                 self._defer_tool_warnings = True
                 toolset_map = snapshot["toolset_map"]
                 build_welcome_banner(

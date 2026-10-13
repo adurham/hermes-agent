@@ -329,8 +329,8 @@ class CLIInitMixin:
             # path a moment later from the REPL thread, and a second writer repeats the full
             # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
             # holds the GIL — that repeat was the post-banner freeze before the first prompt.
-            from hermes_state_registry import acquire
-            self._session_db = acquire()
+            from hermes_cli.gateway_session_store import session_store
+            self._session_db = session_store()  # the gateway is the single writer
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.
@@ -355,6 +355,26 @@ class CLIInitMixin:
             render_notification(_present_store_warning, platform="cli")
         _run_state_db_auto_maintenance(self._session_db)
         _run_checkpoint_auto_maintenance()
+
+    def _ensure_gateway_session(self):
+        """Create (or resume) this CLI's gateway session and adopt the id it returns, before the banner
+        and the first turn. Idempotent; a store without the gateway facade (tests) is left alone."""
+        store = self._session_db
+        if getattr(self, "_gateway_session_open", False) or not hasattr(store, "open_session"):
+            return
+        launch = {"model": self.model if getattr(self, "_explicit_model_override", False) else None,
+                  "provider": (self.requested_provider if getattr(self, "_explicit_model_override", False)
+                               and self.requested_provider not in {None, "", "auto"} else None),
+                  "api_key": getattr(self, "_explicit_api_key", None),
+                  "base_url": getattr(self, "_explicit_base_url", None),
+                  "toolsets": self.enabled_toolsets,
+                  "pass_session_id": getattr(self, "pass_session_id", False) or None,
+                  "ignore_rules": getattr(self, "ignore_rules", False) or None}
+        sid = store.open_session(self, launch)
+        self._gateway_session_open = True
+        if sid and sid != self.session_id:
+            self.session_id = sid
+            getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
     def _init_ui_state(self):
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""

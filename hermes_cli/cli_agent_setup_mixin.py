@@ -626,7 +626,7 @@ class CLIAgentSetupMixin:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
         from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
-        from run_agent import AIAgent
+        from hermes_cli.gateway_agent import GatewayAgent as AIAgent  # the gateway runs the turn
         if self.agent is not None:
             return True
 
@@ -640,12 +640,18 @@ class CLIAgentSetupMixin:
         from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
         ensure_mcp_discovery_before_agent_build(
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
+        from hermes_cli.cli_chat_error_copy import agent_init_failure_message
         if self._session_db is None:
             try:
-                from hermes_state_registry import acquire
-                self._session_db = acquire()
+                from hermes_cli.gateway_session_store import session_store
+                self._session_db = session_store()
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
+        try:
+            self._ensure_gateway_session()
+        except Exception as e:
+            ChatConsole().print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
+            return False
         if (
             self._resumed and self._session_db and not self.conversation_history
             and not self._load_resumed_history_late()):
@@ -716,6 +722,7 @@ class CLIAgentSetupMixin:
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
+            self.agent._finite = single_query_mode  # -q/-Q: a finite gateway admission (headless clarify)
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:
