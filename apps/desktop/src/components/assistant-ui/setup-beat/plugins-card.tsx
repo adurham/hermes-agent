@@ -97,8 +97,7 @@ export function PluginsCard({
 
             onContinue(done, done.map(title))
           }}
-          size="xs"
-          variant="textStrong"
+          size="sm"
         >
           {t.common.continue}
         </Button>

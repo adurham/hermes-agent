@@ -259,7 +259,7 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
         )}
       </div>
       <div className="px-3.5">
-        <Button onClick={finish} size="xs" variant="textStrong">
+        <Button onClick={finish} size="sm">
           {t.common.continue}
         </Button>
       </div>

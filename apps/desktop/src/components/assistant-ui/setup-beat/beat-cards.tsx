@@ -35,7 +35,7 @@ export function NameCard({ onName, suggested }: { onName: (name: string) => void
           placeholder={t.firstRun.namePlaceholder}
           value={name}
         />
-        <Button disabled={!typed} size="xs" type="submit" variant="textStrong">
+        <Button disabled={!typed} size="sm" type="submit">
           {t.common.continue}
         </Button>
       </form>
