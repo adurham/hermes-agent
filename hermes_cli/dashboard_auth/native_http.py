@@ -137,10 +137,13 @@ async def authenticate_native_http(request):
             or descriptor.get('state') != 'ready' or getattr(runner, '_draining', True)
             or not authorities or store is None
             or store.instance_id != descriptor.get('instance_id')
-            or any(a.instance_id != store.instance_id for a in authorities)
+            or any(a is not None and a.instance_id != store.instance_id for a in authorities)
+            # A profile being hot-served (just created: a reserved ``None`` slot, then an authority
+            # not yet published to the descriptor and ticket store) is not served yet. It cannot
+            # redeem a grant, and it must not refuse every already-served profile meanwhile.
             or descriptor.get('served_profiles') != [
                 {'profile_id': a.profile_id, 'home': a.profile_id} for a in authorities
-                if not getattr(a, 'retiring', False)]):
+                if a is not None and not getattr(a, 'retiring', False) and a.profile_id in store.profile_ids]):
         return JSONResponse({'detail': 'Unauthorized'}, status_code=401)
     try:
         # The ticket names the served profile it was minted for; that home's authority owns it.
