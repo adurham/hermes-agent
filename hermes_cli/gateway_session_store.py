@@ -161,6 +161,45 @@ class GatewaySessionStore:
             self.connection.state(session_id).title = title
         return True
 
+    def rewind_user_turn(self, session_id, user_ordinal, *, warm_history=None, require_retryable=False, **_kw):
+        """Main's ``SessionDB.rewind_user_turn`` (``/undo N``, ``/retry``) as ``session.mutate rewind``.
+        The user turn is located on the gateway's snapshot transcript (its rows carry ``row_id``),
+        checked against the CLI's warm view exactly as main checks it, then rewound by that row id."""
+        from agent.context_compressor import history_before_user_originated_turn, retryable_user_text
+        from agent.message_content import flatten_message_text
+        from agent.session_persistence import _is_ephemeral_scaffolding
+        from hermes_state_rewind import (
+            _HISTORY_CHANGED, RewindOutcome, RewindTargetUnavailableError, _comparison_content, _user_indices)
+        snapshot = self.call("session.resume", session_id=session_id)
+        durable = list(snapshot.get("messages") or [])
+        durable_user = _user_indices(durable)
+        if user_ordinal < 0:
+            user_ordinal = max(len(durable_user) + user_ordinal, 0)
+        if user_ordinal >= len(durable_user):
+            raise RewindTargetUnavailableError("target user message is no longer in session history")
+        target = durable[durable_user[user_ordinal]]
+        durable_prefix, live_view = history_before_user_originated_turn(durable, durable_user[user_ordinal])
+        prefix = [{k: v for k, v in m.items() if k != "row_id"} for m in durable_prefix]
+        if warm_history is not None:
+            warm = [m for m in warm_history if not _is_ephemeral_scaffolding(m)]
+            warm_user = _user_indices(warm)
+            if len(warm_user) != len(durable_user):
+                raise RuntimeError(_HISTORY_CHANGED)
+            prefix, warm_live = history_before_user_originated_turn(warm, warm_user[user_ordinal])
+            if _comparison_content(live_view) != _comparison_content(warm_live):
+                raise RuntimeError(_HISTORY_CHANGED)
+        live_text = retryable_user_text(live_view.get("content")) if require_retryable else None
+        if not isinstance(target.get("row_id"), int):
+            raise RuntimeError("rewind target has no durable row identity")
+        receipt = self.call("session.mutate", session_id=session_id, request_id=uuid.uuid4().hex,
+                            expected_revision=snapshot["revision"],
+                            expected_generation=snapshot["execution_generation"],
+                            operation="rewind", payload={"target_message_id": target["row_id"]}) or {}
+        return RewindOutcome(
+            prefix=prefix, live_view=live_view,
+            live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),
+            rewound_count=int(receipt.get("rewound_count") or 0), turns_undone=len(durable_user) - user_ordinal)
+
     def _title_holder(self, session_id, title):
         db = self._db()
         if db is None or not title:

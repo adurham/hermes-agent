@@ -118,7 +118,7 @@ def test_gateway_owned_writes_are_noops_and_unknown_writes_refuse(store):
     assert db.prune_empty_ghost_sessions() == 0
     assert len(client.calls) == before
     with pytest.raises(ValueError):
-        db.rewind_user_turn("x", 1)
+        db.request_handoff("x", "telegram")
 
 
 def test_banner_inventory_comes_from_the_session_snapshot(store):
@@ -208,3 +208,49 @@ def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypa
     with pytest.raises(ValueError) as err:
         db.set_session_title("local-old", "Free Title")
     assert str(err.value) == "request_failed"
+
+
+HISTORY = [{"role": "user", "content": "one", "row_id": 11}, {"role": "assistant", "content": "a1", "row_id": 12},
+           {"role": "user", "content": "two", "row_id": 13}, {"role": "assistant", "content": "a2", "row_id": 14}]
+
+
+def _with_history(client):
+    base = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.resume":
+            client.calls.append((method, params))
+            return {**snapshot(params["session_id"]), "messages": [dict(m) for m in HISTORY],
+                    "execution_generation": 7}
+        if method == "session.mutate" and params["operation"] == "rewind":
+            client.calls.append((method, params))
+            return {"rewound_count": 2, "target_message": {"role": "user", "content": "two"}}
+        return await base(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+
+
+def test_undo_and_retry_rewind_by_the_durable_row_id(store):
+    """main's ``rewind_user_turn(sid, ordinal, warm_history=...)`` as ``session.mutate rewind``
+    addressed by the row id of that user turn in the gateway's snapshot."""
+    db, client = store
+    _with_history(client)
+    db.open_session(cli("local-old", resumed=True))
+    warm = [{k: v for k, v in m.items() if k != "row_id"} for m in HISTORY]
+    outcome = db.rewind_user_turn("local-old", 1, warm_history=warm)
+    mutate = [p for m, p in client.calls if m == "session.mutate"][-1]
+    assert mutate["operation"] == "rewind" and mutate["payload"] == {"target_message_id": 13}
+    assert mutate["expected_generation"] == 7
+    assert outcome.prefix == warm[:2] and outcome.live_text == "two" and outcome.rewound_count == 2
+    retry = db.rewind_user_turn("local-old", -1, warm_history=warm, require_retryable=True)
+    assert [p for m, p in client.calls if m == "session.mutate"][-1]["payload"] == {"target_message_id": 13}
+    assert retry.live_text == "two" and retry.turns_undone == 1
+
+
+def test_rewind_refuses_when_the_warm_view_diverged(store):
+    db, client = store
+    _with_history(client)
+    db.open_session(cli("local-old", resumed=True))
+    before = len([c for c in client.calls if c[0] == "session.mutate"])
+    with pytest.raises(RuntimeError):
+        db.rewind_user_turn("local-old", -1, warm_history=[{"role": "user", "content": "other"}])
+    assert len([c for c in client.calls if c[0] == "session.mutate"]) == before
