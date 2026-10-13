@@ -1604,9 +1604,12 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _save(f"{subsystem}.write_approval", bool(enabled))
 
     # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
-    def _queue_prompt_turn(self, msg: str, command: str) -> None:
+    def _queue_prompt_turn(self, msg: str, command: str, ack: str = "") -> None:
         """Inject ``msg`` onto the agent's input queue as the next normal user turn (the
-        /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe)."""
+        /learn, /plan, /init pattern: no engine, no model-tool footprint, prompt-cache safe). ``ack``
+        paints first on the turn's own channel (_cprint), so the turn's `────` never overtakes it."""
+        if ack:
+            __import__("cli")._cli_visible_print("\n" + ack)
         if hasattr(self, "_pending_input"):
             self._pending_input.put(msg)
         else:  # pragma: no cover - defensive (no live input loop)
@@ -1618,16 +1621,14 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         tools it already has and authors the skill via ``skill_manage``."""
         from agent.learn_prompt import build_learn_prompt
         user_request = _command_arg(cmd)
-        print("\n" + _t("learn.from_description" if user_request else "learn.from_conversation"))
-        self._queue_prompt_turn(build_learn_prompt(user_request), "/learn")
+        self._queue_prompt_turn(build_learn_prompt(user_request), "/learn", _t("learn.from_description" if user_request else "learn.from_conversation"))
 
     def _handle_plan_command(self, cmd: str):
         """Handle /plan — write a markdown implementation plan, no execution. The live agent
         inspects the workspace read-only and saves the plan under ``.hermes/plans/``."""
         from agent.plan_prompt import build_plan_prompt
         task = _command_arg(cmd)  # optional — empty infers the task from conversation context
-        print("\n" + (_t("plan.planning", task=_ellipsize(task, 80)) if task else _t("plan.from_conversation")))
-        self._queue_prompt_turn(build_plan_prompt(task), "/plan")
+        self._queue_prompt_turn(build_plan_prompt(task), "/plan", _t("plan.planning", task=_ellipsize(task, 80)) if task else _t("plan.from_conversation"))
 
     def _handle_init_command(self, cmd: str):
         """Handle /init — generate or update AGENTS.md from a project scan performed by the
@@ -1636,8 +1637,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         # session_key="" targets the single-session CLI's "default" cwd record, which tracks
         # `cd` and workspace switches, so /init follows the directory the user works in.
         msg = build_init_prompt_for_cwd(extra=_command_arg(cmd), session_key="")  # optional user emphasis
-        print("\n" + _t("init.updating" if "UPDATE the existing AGENTS.md" in msg else "init.generating"))
-        self._queue_prompt_turn(msg, "/init")
+        self._queue_prompt_turn(msg, "/init", _t("init.updating" if "UPDATE the existing AGENTS.md" in msg else "init.generating"))
 
     # ---- side-session handlers: /bg, /btw -------------------------------------------------
     def _handle_background_command(self, cmd: str):
