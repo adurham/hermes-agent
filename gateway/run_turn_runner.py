@@ -1257,7 +1257,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway import local_viewer_events
                 local_viewer_events.restore(agent, local_sinks)
                 from gateway.session_usage import publish_usage
-                publish_usage(self, agent)  # turn end: the final API call's counters
+                publish_usage(self, agent, record=True)  # turn end: the final API call's counters
         persisted_turn = _persisted_turn(agent, agent_history, result, compressions)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         if _finite_viewer_turn() and getattr(agent, "_codex_session", None) is not None:

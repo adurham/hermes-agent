@@ -107,12 +107,50 @@ def seed_compression_count(live, agent) -> None:
             compressor.compression_count = carried_compression_count(live, agent)
 
 
-def publish_usage(turn, agent) -> None:
-    """One ``session.usage`` frame on the viewer's stream; never breaks the turn."""
+def tui_usage(stats: dict) -> dict:
+    """``stats`` in main's TUI ``Usage`` shape (``tui_gateway/server.py::_get_usage``): the fields its
+    status bar (context used/max/bar, ``◷`` latency, ``t/s``, ``cmp`` badge, cache hit) and ``/usage``
+    read off ``message.complete.usage``. Absent figures are omitted, never fabricated as zeros."""
+    usage = {"model": stats.get("model") or "", "input": stats.get("input_tokens") or stats.get("prompt_tokens") or 0,
+             "output": stats.get("output_tokens") or stats.get("completion_tokens") or 0,
+             "reasoning": stats.get("reasoning_tokens") or 0, "prompt": stats.get("prompt_tokens") or 0,
+             "completion": stats.get("completion_tokens") or 0, "total": stats.get("total_tokens") or 0,
+             "calls": stats.get("api_calls") or 0}
+    used, maximum = stats.get("last_prompt_tokens") or 0, stats.get("context_length") or 0
+    if used and maximum:
+        # ``agent/context_breakdown.py::context_usage_fields``: current occupancy, clamped.
+        used = min(used, maximum)
+        source = stats.get("context_source") or "provider_usage"
+        usage.update(context_used=used, context_max=maximum,
+                     context_percent=max(0, min(100, round(used / maximum * 100))),
+                     context_source=source, context_estimated=source != "provider_usage")
+    if stats.get("context_length") is not None:
+        usage["compressions"] = stats.get("compression_count") or 0
+    prompt_total, cache_read = stats.get("prompt_tokens") or 0, stats.get("cache_read_tokens") or 0
+    if prompt_total > 0 and cache_read > 0:
+        usage["cache_hit_pct"] = max(0, min(100, round(cache_read / prompt_total * 100)))
+    for key, source_key in (("avg_latency_s", "avg_latency_s"), ("avg_tps", "tokens_per_s")):
+        if isinstance(stats.get(source_key), (int, float)):
+            usage[key] = round(float(stats[source_key]), 1)
+    if isinstance(stats.get("active_subagents"), int):
+        usage["active_subagents"] = stats["active_subagents"]
+    return usage
+
+
+def publish_usage(turn, agent, *, record: bool = False) -> None:
+    """One ``session.usage`` frame on the viewer's stream; never breaks the turn. At turn end
+    (``record``) the same dict rides the captured execution result, so the turn's
+    ``message.complete`` carries main's ``usage`` (``session_settlement_recovery.completion_payload``)."""
     if agent is None:
         return
     with contextlib.suppress(Exception):
-        turn._publish_execution("session.usage", usage_stats(agent))
+        stats = usage_stats(agent)
+        turn._publish_execution("session.usage", stats)
+        if record:
+            from gateway.session_results import execution_result
+            captured = execution_result.get()
+            if captured is not None:
+                captured["session_usage"] = stats
 
 
 async def stats(connection, ref, params):
