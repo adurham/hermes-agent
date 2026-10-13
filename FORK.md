@@ -16,9 +16,10 @@ migration test is reworked to the seam, skips when the provider is absent
 `test_memory_warm.py` gets the same module-level skip, and `test_memory_auto_feedback.py` /
 `test_memory_extraction.py` skip only their warm-store-backed classes (isolated suite environments
 install no catalog plugins). The warm-tier prefetch recall hook is ported into
-`hermes-plugin-holographic` (`prefetch()` → `get_warm_store()._after_recall`): committed locally on
-branch `fork/warm-accounting` — NOT pushed (that clone's origin is third-party upstream; publishing
-needs a PR-or-fork decision).
+`hermes-plugin-holographic` (`prefetch()` → `get_warm_store()._after_recall`): owner-decided
+2026-10-13 — forked to `adurham/hermes-plugin-holographic`; the port rides branch
+`fork/warm-accounting` (0c58cda) plus tag `v0.6.1-warm-tier.1`, both on the catalog-pinned v0.6.1
+base (`a6d0093`). The catalog/install wiring to the fork lands with the live update.
 
 **O1 — approval bell aligned to upstream's default-off.** `cli.py::_fire_attention_signals`:
 `approvals.bell_on_prompt` / `approvals.notify_on_prompt` now default False (fork behavior defaulted
