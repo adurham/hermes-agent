@@ -81,8 +81,13 @@ def _validated_runtime_venv(env: dict) -> Path | None:
     root = Path(__file__).resolve().parents[2]
     if runtime_facts_path(root).is_file():
         return selected_venv(root)
-    shipped = payload_venv(root)
-    if shipped is not None:
+    try:
+        shipped = payload_venv(root)
+    except (RuntimeError, OSError):  # a manifest that escapes its root reads as "not a payload"
+        shipped = None
+    # Require the real venv, as the VIRTUAL_ENV branch does: a stray manifest.json beside a
+    # checkout must not hand back a phantom path that shadows the user's own venv.
+    if shipped is not None and (shipped / "pyvenv.cfg").is_file():
         return shipped
     candidate = Path(env.get("VIRTUAL_ENV") or "")
     if not env.get("VIRTUAL_ENV") or not any(

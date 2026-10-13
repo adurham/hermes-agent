@@ -272,6 +272,8 @@ def _outside_package(launcher: str, managed: str, dirs: list[str]) -> tuple[str,
     moved = copies(dirs)
     if moved == dirs:
         return managed, dirs
+    # Plain which(): Hermes's own copy dirs hold one real node.exe/npx.cmd, so the parent's
+    # PATHEXT is the right question (unlike a user server's config env, see _which_with_config_pathext).
     return shutil.which(launcher, path=os.pathsep.join(moved)) or managed, moved
 
 
@@ -470,7 +472,12 @@ def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
     a copy that PM may make. The payload's Python CAN start the packaged ``node.exe``, so the
     package is installed with npm's own script and the bin's script runs on that node.
     Install scripts stay off, because npm runs them through cmd.exe too. None keeps plain
-    npx (an honest failure) for any other argv shape, a failed install, or an unclear bin.
+    npx (an honest failure) for any other argv shape, a non-registry spec (git, URL, path:
+    npm installs those under a name the spec does not show), a failed install, or an
+    unclear bin.
+
+    Like npx, only an exact version is reused as installed. Any other spec re-resolves on
+    each start and keeps the previous install when npm cannot run (offline).
     """
     from pm.user_facing import _sealed_dirs, applies
 
@@ -488,27 +495,35 @@ def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
     spec = str(rest[0]) if rest else ""
     if not spec or spec.startswith("-") or any(str(a) in ("-y", "--yes") for a in rest[1:]):
         return None
+    if ":" in spec or spec.startswith((".", "/", "\\", "~")) or ("/" in spec and not spec.startswith("@")):
+        return None
     scope, _, bare = spec.rpartition("/") if spec.startswith("@") else ("", "", spec)
-    name = (f"{scope}/" if scope else "") + bare.split("@", 1)[0]
+    base, _, version = bare.partition("@")
+    name = (f"{scope}/" if scope else "") + base
     from hermes_constants import get_hermes_home
 
     prefix = Path(get_hermes_home()) / "cache" / "mcp-npx" / hashlib.sha256(spec.encode()).hexdigest()[:16]
     manifest = prefix / "node_modules" / name / "package.json"
-    if not manifest.is_file():
+    exact = re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?", version) is not None
+    if not (exact and manifest.is_file()):
         install = [node, npm_cli, "install", "--prefix", str(prefix), "--no-save", "--ignore-scripts",
                    "--no-audit", "--no-fund", "--loglevel=error", spec]
-        result = subprocess.run(install, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                stdin=subprocess.DEVNULL, timeout=600, check=False)
+        try:
+            result = subprocess.run(install, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                    stdin=subprocess.DEVNULL, timeout=600, check=False)
+        except (subprocess.SubprocessError, OSError) as exc:  # hang, unwritable prefix, AV lock, node not startable
+            result = subprocess.CompletedProcess(install, 1, "", str(exc))
         if result.returncode != 0 or not manifest.is_file():
             logger.warning("npm install of %s with the packaged node failed: %s", spec,
                            (result.stderr or result.stdout).strip()[-500:])
-            return None
+            if not manifest.is_file():
+                return None
     try:
         bin_field = (json.loads(manifest.read_text(encoding="utf-8-sig")) or {}).get("bin")
     except (OSError, ValueError):
         return None
     if isinstance(bin_field, dict):
-        bin_field = bin_field.get(bare.split("@", 1)[0]) or (
+        bin_field = bin_field.get(base) or (
             next(iter(bin_field.values())) if len(bin_field) == 1 else None)
     if not isinstance(bin_field, str):
         return None
