@@ -124,11 +124,23 @@ def active_session_id(db) -> str | None:
 
 def delete_chat(db, session_id: str, delete: Callable[[], bool]) -> bool:
     """Run *delete*; when it removed the chat holding the live run, end that run (``deleted``) on every
-    compression copy, tell windows once and close the install flag. Only the compression tip holds the
-    live run, so deleting an older copy ends nothing."""
+    compression copy and tell windows once. Only the compression tip holds the live run, so deleting an
+    older copy ends nothing. The install flag closes before the delete when no other run is open: a
+    failed flag write keeps the chat for a retry, and a refused delete sets the flag again."""
+    from hermes_cli.onboarding_run import set_run
+
     record = load(db, session_id)
     live = is_active(record) and (db.resolve_resume_session_id(session_id) or session_id) == session_id
-    if not delete():
+    last = live and all(sid == session_id for sid in open_session_ids(db))
+    if last:
+        _close_install_flag()
+    deleted = False
+    try:
+        deleted = delete()
+    finally:
+        if last and not deleted:
+            set_run(True)
+    if not deleted:
         return False
     if live:
         # Each older copy is written on its own row: a tip-routed write would land every copy on the
@@ -137,8 +149,6 @@ def delete_chat(db, session_id: str, delete: Callable[[], bool]) -> bool:
             if ((older := load(db, sid)) or {}).get("run_id") == record["run_id"]:
                 db.patch_session_model_config(sid, {KEY: _end_deleted(older)})
         _announce(record.get("run_id"), session_id, "deleted")
-        if active_session_id(db) is None:
-            _close_install_flag()
     return True
 
 
