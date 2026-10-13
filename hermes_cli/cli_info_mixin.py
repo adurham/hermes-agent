@@ -443,25 +443,8 @@ class CLIInfoMixin:
 
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
-        from toolsets import get_all_toolsets, get_toolset_info
-        all_toolsets = get_all_toolsets()
-
-        print()
-        _ascii_box(t("cli.toolsets.header"), 58)
-        print()
-
-        for name in sorted(all_toolsets.keys()):
-            info = get_toolset_info(name)
-            if info:
-                marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
-                print(f"  {marker} {name:<18} [{info['tool_count']:>2} tools] - {info['description']}")
-
-        print()
-        print(f"  {t('cli.toolsets.currently_enabled_legend')}")
-        print()
-        print(f"  {t('cli.toolsets.tip_enable_all')}")
-        print(f"  {t('cli.toolsets.example')}")
-        print()
+        from hermes_cli.cli_info_lines import toolsets_lines
+        print("\n".join(toolsets_lines(self.enabled_toolsets)))
 
     def _handle_whoami_command(self):
         """Display slash-command access for the local CLI surface."""
@@ -554,48 +537,8 @@ class CLIInfoMixin:
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
-        from hermes_constants import display_hermes_home
-        from gateway.config import load_gateway_config, Platform
-
-        print()
-        _ascii_box(t("cli.gateway_status.header"), 60)
-        print()
-
-        try:
-            config = load_gateway_config()
-            print(f"  {t('cli.gateway_status.platform_config_header')}")
-            print("  " + "-" * 55)
-            platform_status = {
-                Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
-                Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
-                Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
-                Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED")}
-            for platform, (name, env_var) in platform_status.items():
-                pconfig = config.platforms.get(platform)
-                if pconfig and pconfig.enabled:
-                    home = config.get_home_channel(platform)
-                    home_str = f" → {home.name}" if home else ""
-                    print(f"    ✓ {name:<12} {t('cli.gateway_status.enabled')}{home_str}")
-                else:
-                    print(f"    ○ {name:<12} {t('cli.gateway_status.not_configured', env_var=env_var)}")
-
-            print()
-            print(f"  {t('cli.gateway_status.conversations_persist')}")
-            print()
-            print(f"  {t('cli.gateway_status.to_start')}")
-            print("    python cli.py --gateway")
-            print()
-            print(f"  {t('cli.gateway_status.config_file', path=f'{display_hermes_home()}/config.yaml')}")
-            print()
-        except Exception as e:
-            print(f"  {t('cli.gateway_status.load_error', error=str(e))}")
-            print()
-            print(f"  {t('cli.gateway_status.to_configure')}")
-            print(f"    {t('cli.gateway_status.step_env_vars')}")
-            print("       TELEGRAM_BOT_TOKEN=your_token")
-            print("       DISCORD_BOT_TOKEN=your_token")
-            print(f"    {t('cli.gateway_status.step_config', path=f'{display_hermes_home()}/config.yaml')}")
-            print()
+        from hermes_cli.cli_info_lines import platforms_lines
+        print("\n".join(platforms_lines()))
 
     def _print_random_tip(self) -> None:
         """Best-effort discovery tip (startup + /clear); never raises."""

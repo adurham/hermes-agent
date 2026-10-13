@@ -41,7 +41,7 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
 
     async def probe(desc):
         async with websocket(home, desc) as ws:
-            created = await rpc(ws, 'session.create', request_id='reads', source='cli', toolsets=[], cwd=str(work))
+            created = await rpc(ws, 'session.create', request_id='reads', source='cli', toolsets=['todo'], cwd=str(work))
             sid = created['result']['session_id']
             await rpc(ws, 'prompt.submit', session_id=sid, input_id='warm', text='WARM_READS')
             deadline = time.monotonic() + 45
@@ -54,7 +54,8 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
                 await asyncio.sleep(.1)
             for command in ('usage', 'insights', 'profile', 'topup', 'diff', 'memory', 'kanban list',
                             'suggestions', 'bundles', 'usage reset', 'memory approval on', 'kanban create x',
-                            'suggestions catalog', 'agents', 'sessions', 'platform'):
+                            'suggestions catalog', 'agents', 'sessions', 'platform',
+                            'toolsets', 'platforms'):
                 try:
                     reply = await rpc(ws, 'slash.exec', session_id=sid, command=command)
                 except TimeoutError:
@@ -84,6 +85,9 @@ def test_local_session_reads_report_this_session_and_refuse_their_write_forms(tm
     assert out['kanban list'] == '(no matching tasks)', out['kanban list']
     assert 'No suggested automations' in out['suggestions'], out['suggestions']
     assert str(home / 'skill-bundles') in out['bundles'], out['bundles']
+    # Reports with no messaging handler: the classic CLI's text for this session's toolsets.
+    assert '(*) todo ' in out['toolsets'] and '    web ' in out['toolsets'], out['toolsets']
+    assert 'Telegram' in out['platforms'] and 'TELEGRAM_BOT_TOKEN' in out['platforms'], out['platforms']
     # Write forms, messaging-model state and gateway-wide views stay refused (the per-session settings
     # run: tests/gateway/test_session_setting_commands.py).
     for command in ('usage reset', 'memory approval on', 'kanban create x', 'suggestions catalog',

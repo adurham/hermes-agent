@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-103 registry commands: 29 control, 15 read, 59 refused.
+103 registry commands: 29 control, 17 read, 57 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -86,7 +86,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/pet` | refused | HermesCLI._handle_pet_command | slash.exec | action: pet | refused | client-local (cli_only) |
 | `/plan` | control | HermesCLI._handle_plan_command | slash.exec | slash.exec | refused |  |
 | `/platform` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging adapters; `pause`/`resume` mutate them |
-| `/platforms` (/gateway) | refused | HermesCLI._show_gateway_status | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
+| `/platforms` (/gateway) | read | HermesCLI._show_gateway_status | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
 | `/plugins` | refused | HermesCLI._cmd_plugins | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
 | `/profile` | read | HermesCLI._handle_profile_command | slash.exec | action: profile | refused |  |
 | `/prompt` (/compose) | refused | HermesCLI._handle_prompt_compose_command | local | slash.exec: refused | refused | client-local (cli_only) |
@@ -120,7 +120,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/timestamps` (/ts) | refused | HermesCLI._handle_timestamps_command | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
 | `/title` | control | HermesCLI._cmd_title | canonical route | action: title | refused |  |
 | `/tools` | refused | HermesCLI._handle_tools_command | canonical route | slash.exec: refused | refused | client-local (cli_only) |
-| `/toolsets` | refused | HermesCLI.show_toolsets | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
+| `/toolsets` | read | HermesCLI.show_toolsets | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
 | `/topic` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging-only |
 | `/topup` | read | HermesCLI._show_billing | sidecar: billing.state | slash.exec | refused |  |
 | `/undo` | refused | HermesCLI._cmd_undo | canonical route | slash.exec: refused | refused |  |

@@ -34,6 +34,9 @@ _SETTING_COMMANDS = frozenset({'reasoning', 'voice', 'approvals', 'codex-runtime
 # Typed `/approve` / `/deny`: the messaging handler resolves THIS session's waiting approval (its
 # route is the session key), the same waiter `approval.respond` answers by prompt id.
 _APPROVAL_COMMANDS = frozenset({'approve', 'deny'})
+# Reports with no messaging handler: the classic CLI's own text, built by the owner for this
+# session (gateway/session_info_reads.py).
+_INFO_READS = frozenset({'toolsets', 'platforms'})
 
 # Kanban verbs that only read the board. ``create`` would also subscribe the LOCAL chat to
 # messaging notifications, and every other verb mutates the board.
@@ -67,7 +70,7 @@ def command_verdict(name, arg=''):
     if (name in _CONTROL_COMMANDS or name in _HANDLER_CONTROLS or name in _PROMPT_COMMANDS
             or name in _SETTING_COMMANDS or name in _APPROVAL_COMMANDS):
         return 'control'
-    if name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg):
+    if name in _INFO_READS or (name in _READ_COMMANDS and _READ_ARGUMENTS.get(name, lambda _arg: True)(arg)):
         return 'read'
     return 'refused'
 
@@ -194,6 +197,10 @@ async def execute_command(connection, ref, params, *, dispatch=False):
             with _profile_runtime_scope(home):
                 return _skill_directive(name, arg, live.route)
         return await asyncio.to_thread(build)
+
+    if canonical in _INFO_READS:
+        from gateway.session_info_reads import run_info_read
+        return await run_info_read(authority, live, canonical)
 
     from gateway.platforms.base import MessageEvent
     from gateway.session_command_sink import capture
