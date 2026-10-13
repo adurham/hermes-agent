@@ -5601,27 +5601,9 @@ def _status_host_kind() -> str:
     return "windows" if is_windows() else "other"
 
 
-def _incompatible_owner_verdict() -> str | None:
-    """``incompatible: <reason>`` when the gateway answering for this home is one this Hermes's clients
-    (TUI, Desktop, chat) refuse, e.g. an older Hermes's daemon left running across an upgrade."""
-    try:
-        from hermes_cli.gateway_runtime import discover_gateway_endpoint
-        observed = discover_gateway_endpoint(get_hermes_home(), timeout=1.5)
-    except Exception:
-        return None
-    if observed.state != "incompatible":
-        return None
-    return f"incompatible: {observed.reason_code or 'unknown'}"
-
-
-def _print_incompatible_owner_hint() -> None:
-    print("  It was started by another Hermes version; TUI, Desktop and chat cannot attach to it.")
-    print("  Replace it with this version:")
-    print("    hermes gateway restart")
-
-
 def _cmd_status(args):
     from hermes_cli.gateway_profile_lifecycle import print_parked_status
+    from hermes_cli.gateway_status_notes import print_standalone_by_config, report_incompatible_owner
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
@@ -5653,17 +5635,13 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
-        if stale := _incompatible_owner_verdict():
-            print(f"✗ The running gateway cannot serve this Hermes ({stale})")
-            _print_incompatible_owner_hint()
+        report_incompatible_owner(())
         _print_multiplex_standalone_reason()
         _print_served_ingress_urls()
     else:
         pids = list(snapshot.gateway_pids)
-        if pids and (stale := _incompatible_owner_verdict()):
-            # An older Hermes's gateway: alive, but no client of this version can attach to it.
-            print(f"✗ Gateway is running (PID: {', '.join(map(str, pids))}) but cannot serve this Hermes ({stale})")
-            _print_incompatible_owner_hint()
+        if pids and report_incompatible_owner(pids):
+            pass  # an older Hermes's gateway: alive, but every client of this version refuses it
         elif pids:
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
@@ -5689,20 +5667,7 @@ def _cmd_status(args):
 
     _print_duplicate_credential_warnings()
     _print_other_profiles_gateway_status()
-    _print_standalone_by_config()
-
-
-def _print_standalone_by_config() -> None:
-    """Default-profile status: name the profiles that opted out of the host multiplexer by config,
-    so the served set the host gateway reports is not mistaken for the installed roster."""
-    from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
-    if (get_active_profile_name() or "default") != "default":
-        return
-    roster = {name for name, _home in profiles_to_serve(True, include_standalone=True)}
-    served = {name for name, _home in profiles_to_serve(True)}
-    names = sorted(roster - served - {"default"})
-    if names:
-        print(f"standalone by config (temporary compatibility shim): {', '.join(names)}")
+    print_standalone_by_config()
 
 
 def _cmd_list(args):

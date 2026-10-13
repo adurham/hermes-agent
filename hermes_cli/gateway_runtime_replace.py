@@ -116,7 +116,7 @@ def replace_incompatible_owner(home: Path, *, deadline: float) -> str | None:
         return "owner_unreachable"
     try:
         found = _identify(home, timeout=min(2.0, budget))
-    except Exception:
+    except (OSError, ValueError, TypeError):  # timeout, refused/denied peer, malformed reply
         return "owner_unreachable"
     if found is None:
         return None  # it is already gone: nothing to replace
