@@ -367,3 +367,15 @@ def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypa
     from hermes_cli.main import _resolve_last_session
     assert _resolve_last_session("cli") == "local-cli"
     assert _resolve_last_session("tui") == "local-tui"
+
+
+def test_start_and_quit_closes_the_gateway_session_with_no_agent():
+    """The gateway session exists from the banner on, before any agent is built (main created its row
+    lazily at the first turn): quit-immediately still ends and discards it, as main leaves no row."""
+    from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
+    host = types.SimpleNamespace(agent=None, session_id="local-new", _gateway_session_open=True)
+    assert CLITuiRuntimeMixin._closing_session_id(host) == "local-new"
+    host._gateway_session_open = False
+    assert CLITuiRuntimeMixin._closing_session_id(host) is None
+    host.agent = types.SimpleNamespace(session_id="local-agent")
+    assert CLITuiRuntimeMixin._closing_session_id(host) == "local-agent"
