@@ -69,11 +69,17 @@ _HoloMemoryStore = None
 
 
 def _load_holo() -> type:
-    """Import and return ``plugins.memory.holographic.store.MemoryStore``."""
+    """Import and return the holographic provider's ``MemoryStore``.
+
+    Resolved through the same loader seam every other host-side caller uses
+    (``plugins.memory.import_provider_module``): the bundled in-tree copy is
+    gone (v0.21.7 moved the provider to the catalog plugin), so a direct
+    ``plugins.memory.holographic.store`` import can never resolve.
+    """
     global _HoloMemoryStore
     if _HoloMemoryStore is None:
-        from plugins.memory.holographic.store import MemoryStore as _MS
-        _HoloMemoryStore = _MS
+        from plugins.memory import import_provider_module
+        _HoloMemoryStore = import_provider_module("holographic", "store").MemoryStore
     return _HoloMemoryStore
 
 
@@ -154,7 +160,8 @@ class WarmStore:
         identically instead of drifting apart.
         """
         if self._retriever_obj is None:
-            from plugins.memory.holographic.retrieval import FactRetriever
+            from plugins.memory import import_provider_module
+            FactRetriever = import_provider_module("holographic", "retrieval").FactRetriever
             cfg = _holo_plugin_config()
             self._retriever_obj = FactRetriever(
                 store=self._inner,

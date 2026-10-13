@@ -3,6 +3,35 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Follow-ups — 2026-10-13 (post-v0.21.7 sync): holographic seam restore, bell default aligned, vision fix re-ported
+
+**R1 — holographic restore (owner-ruled: "upstream moved it to a plugin, so we should follow suit").**
+`tools/memory_warm.py` now resolves the provider through `plugins.memory.import_provider_module`
+(store + retrieval) instead of the deleted in-tree package — the same seam every host-side caller
+uses (`gateway/run_profile_reconcile.py`). Proven on a synthetic `HERMES_HOME` with the catalog plugin
+installed: store/retrieval/provider all resolve through the user-namespace loader. Test side: the
+migration test is reworked to the seam, skips when the provider is absent
+(`pytest.skip(allow_module_level=True)`), and asserts the catalog tokenizer's shape
+(`("plat 15800" ...)` phrase + multi-script digit variants; glued-form negative control kept);
+`test_memory_warm.py` gets the same module-level skip, and `test_memory_auto_feedback.py` /
+`test_memory_extraction.py` skip only their warm-store-backed classes (isolated suite environments
+install no catalog plugins). The warm-tier prefetch recall hook is ported into
+`hermes-plugin-holographic` (`prefetch()` → `get_warm_store()._after_recall`): committed locally on
+branch `fork/warm-accounting` — NOT pushed (that clone's origin is third-party upstream; publishing
+needs a PR-or-fork decision).
+
+**O1 — approval bell aligned to upstream's default-off.** `cli.py::_fire_attention_signals`:
+`approvals.bell_on_prompt` / `approvals.notify_on_prompt` now default False (fork behavior defaulted
+True since the feature landed); opt-in via config unchanged. Round-4 audit confirmed upstream's
+default-off stance.
+
+**W2 — vision auto-detect fix re-ported onto upstream's refactored shape.** The `0285cf60c` fix
+("configured vision model before the main-model fallback") was lost when upstream rewrote the
+resolver in both trees; re-ported as `vision_model = resolved_model or provider_vision_default or
+main_model` in `_vision_main_provider_client` — the configured `auxiliary.vision.model` now outranks
+the provider vision default and the pinned chat model for the vision-support check, matching the
+nous branch's own convention in the same function.
+
 ### Sync close-out — 2026-10-13 (v0.21.7): route-model alignment, upstream's new gates, ruff-strict sweep, health lane classified
 
 **Gateway watcher: held-then-released completions deliver again (merge defect, fixed in-tree).**

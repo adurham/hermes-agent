@@ -3414,6 +3414,10 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             the Mac that owns the GUI, even when the user is SSH'd in
             from elsewhere.  No-op on non-darwin platforms.
 
+        Both signals default OFF — opt in via ``approvals.bell_on_prompt`` /
+        ``approvals.notify_on_prompt`` (aligned with upstream's default-off
+        bell; fork behavior until 2026-10-13 defaulted ON).
+
         Safe to call from any thread.  Failures are swallowed — never
         block or crash the prompt path because the bell didn't ring.
         """
@@ -3422,7 +3426,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             approvals_cfg = {}
 
         # Terminal bell
-        if approvals_cfg.get("bell_on_prompt", True):
+        if approvals_cfg.get("bell_on_prompt", False):
             try:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
@@ -3430,7 +3434,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 pass
 
         # macOS native notification (banner + default sound)
-        if approvals_cfg.get("notify_on_prompt", True) and sys.platform == "darwin":
+        if approvals_cfg.get("notify_on_prompt", False) and sys.platform == "darwin":
             try:
                 import subprocess as _subprocess
                 # Escape double quotes and backslashes for AppleScript.

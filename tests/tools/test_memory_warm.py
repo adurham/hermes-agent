@@ -18,6 +18,24 @@ from tools.memory_warm import (
 from tools.memory_tool import memory_tool, MemoryStore, ENTRY_DELIMITER
 
 
+def _holographic_provider_available() -> bool:
+    """True when the catalog holographic plugin resolves (it left core in v0.21.7)."""
+    try:
+        from plugins.memory import import_provider_module
+        import_provider_module("holographic", "store")
+    except Exception:
+        return False
+    return True
+
+
+# The store-backed contracts below run against the real provider; environments without the
+# catalog plugin (isolated suites included) skip instead of erroring on the import.
+pytestmark = pytest.mark.skipif(
+    not _holographic_provider_available(),
+    reason="holographic provider (catalog plugin) not installed in this environment",
+)
+
+
 @pytest.fixture()
 def warm(tmp_path):
     """Fresh WarmStore singleton at tmp_path/warm.db."""

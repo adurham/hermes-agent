@@ -29,10 +29,21 @@ import json
 
 import pytest
 
-from plugins.memory.holographic.retrieval import FactRetriever
-from plugins.memory.holographic.store import MemoryStore as HoloStore
 from tools import memory_warm as mw
 from tools.memory_warm import get_warm_store, reset_warm_store_for_testing
+
+# The holographic provider left core in v0.21.7 and lives as a catalog plugin now; resolve every
+# import through the same loader seam the host-side callers use, and skip the module when the
+# provider is simply not installed in this environment (the isolation conftest points HERMES_HOME
+# at a bare tempdir that has no catalog plugins -- on the live box the plugin is installed).
+try:
+    from plugins.memory import import_provider_module
+
+    FactRetriever = import_provider_module("holographic", "retrieval").FactRetriever
+    HoloStore = import_provider_module("holographic", "store").MemoryStore
+    HolographicMemoryProvider = import_provider_module("holographic").HolographicMemoryProvider
+except Exception as _provider_exc:
+    pytest.skip(f"holographic provider not installed: {_provider_exc}", allow_module_level=True)
 
 _FACT = "Escalation PLAT-15800 tracks the TDS query queue overflow returning 503"
 
@@ -89,8 +100,6 @@ class TestNoDataMigrationNeeded:
         Write via the warm tier, then read back through the holographic PROVIDER's
         own ``fact_store`` tool over the same file.
         """
-        from plugins.memory.holographic import HolographicMemoryProvider
-
         db = tmp_path / "shared.db"
         reset_warm_store_for_testing()
         try:
@@ -147,12 +156,15 @@ class TestRetrievalAccounting:
 
 
 class TestHyphenTokenization:
-    """A real bug fix that must survive the migration: ``_FTS_OPERATORS`` DELETES
-    '-', so without the hyphen split "PLAT-15800" becomes an unmatchable
-    "plat15800" while FTS5 indexed the content as two tokens."""
+    """A real bug fix that must survive the migration: without hyphen handling "PLAT-15800"
+    becomes an unmatchable "plat15800" while FTS5 indexed the content as two tokens. The
+    catalog retriever phrases the pair ("plat 15800", plus multi-script digit variants); the
+    fork's older split form was '"plat" OR "15800"' -- both retrieve, the glued form must not."""
 
     def test_hyphenated_code_is_split_not_glued(self):
-        assert FactRetriever._sanitize_fts_query("PLAT-15800") == '"plat" OR "15800"'
+        sanitized = FactRetriever._sanitize_fts_query("PLAT-15800")
+        assert sanitized.startswith('("plat 15800"')
+        assert "plat15800" not in sanitized
 
     def test_hyphenated_code_is_actually_retrievable(self, warm):
         fact_id = warm.add(_FACT, category="project")["fact_id"]

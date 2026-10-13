@@ -15,10 +15,29 @@ import pytest
 from tools.memory_extraction import buffer as mex_buffer
 from tools.memory_extraction import conflict as mex_conflict
 from tools.memory_extraction import extractor as mex_extractor
+
 from tools.memory_extraction import prompts as mex_prompts
 from tools.memory_warm import (
     get_warm_store,
     reset_warm_store_for_testing,
+)
+
+
+def _holographic_provider_available() -> bool:
+    """True when the catalog holographic plugin resolves (it left core in v0.21.7)."""
+    try:
+        from plugins.memory import import_provider_module
+        import_provider_module("holographic", "store")
+    except Exception:
+        return False
+    return True
+
+
+# The classes below touch the warm store, which lives behind the catalog holographic plugin;
+# environments without it (isolated suites included) skip instead of erroring on the import.
+_provider_required = pytest.mark.skipif(
+    not _holographic_provider_available(),
+    reason="holographic provider (catalog plugin) not installed in this environment",
 )
 
 
@@ -314,6 +333,7 @@ class TestBuffer:
 # conflict.py
 # =========================================================================
 
+@_provider_required
 class TestConflictClassify:
     def test_no_existing_facts_is_new(self, warm):
         verdict = mex_conflict.classify("brand new fact never seen before")
@@ -349,6 +369,7 @@ class TestConflictClassify:
         assert "failed" in verdict.rationale.lower()
 
 
+@_provider_required
 class TestApplyVerdict:
     def test_new_writes_fact(self, warm):
         from tools.memory_extraction.conflict import ConflictVerdict
@@ -428,6 +449,7 @@ class TestApplyVerdict:
 # extractor.py — module-level orchestration
 # =========================================================================
 
+@_provider_required
 class TestOnTurnEnd:
     def test_disabled_is_noop(self, warm, auto_extract_off):
         # Should not call the LLM, not append to buffer
@@ -471,6 +493,7 @@ class TestOnTurnEnd:
         assert mex_buffer.get_session_entries("sid-3") == []
 
 
+@_provider_required
 class TestOnPreCompress:
     def test_disabled_is_noop(self, warm, auto_extract_off, monkeypatch):
         m = MagicMock()
@@ -496,6 +519,7 @@ class TestOnPreCompress:
         assert entries[0]["source"] == "pre_compress"
 
 
+@_provider_required
 class TestOnSessionEnd:
     def test_disabled_returns_zero_summary(self, warm, auto_extract_off):
         result = mex_extractor.on_session_end("sid", [])
@@ -717,6 +741,7 @@ class TestOnSessionEnd:
         )
 
 
+@_provider_required
 class TestFlushBuffer:
     def test_flush_clears(self, warm, auto_extract_on):
         mex_buffer.append("sid", [{"content": "x"}], source="per_turn")
@@ -848,6 +873,7 @@ class TestExtractionCostLedger:
 # extractor.py — session-end CLEANUP pass (real warm store, no mocked store)
 # =========================================================================
 
+@_provider_required
 class TestSessionEndCleanup:
     """E2E over a real temp warm DB — only the LLM boundary is stubbed.
 
