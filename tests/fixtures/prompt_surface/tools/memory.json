@@ -13,7 +13,7 @@
         "type": "string"
       },
       "content": {
-        "description": "For 'add', the new entry. For 'patch', the text that replaces old_text; the rest of the entry is kept. Alias: 'new_text'.",
+        "description": "Required for 'add' and 'patch'. For 'add', the new entry. For 'patch', the text that replaces old_text; the rest of the entry is kept. Alias: 'new_text'.",
         "type": "string"
       },
       "new_text": {
@@ -38,7 +38,7 @@
               "type": "string"
             },
             "content": {
-              "description": "As 'content' above.",
+              "description": "Required for add and patch, as 'content' above.",
               "type": "string"
             },
             "new_text": {
