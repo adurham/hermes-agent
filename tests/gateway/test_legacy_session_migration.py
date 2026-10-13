@@ -170,8 +170,8 @@ async def test_upgraded_oneshot_and_tool_history_resumes_by_id_and_title_but_sta
 @pytest.mark.asyncio
 async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     """main's Desktop stored its chats with ``source='desktop'``. After the upgrade the native owner
-    adopts them by id like ``gui`` history. A row that carries an account identity is unchanged:
-    it still needs its own authority."""
+    adopts them by id like ``gui`` history, including the ones stamped with the signed-in Nous
+    account. Any other identity still needs its own authority."""
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
@@ -197,6 +197,15 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     assert [m['content'] for m in resumed['result']['messages']] == ['OLD-DESKTOP']
     from gateway.config import Platform
     assert runner.adapters[Platform.LOCAL].policies['old-desktop'].platform == 'desktop'
-    refused = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-account'}})
-    assert 'error' in refused, refused
-    assert db.get_session('old-desktop-account')['user_id'] == 'nous:account'
+    stamped = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-account'}})
+    assert stamped.get('result', {}).get('session_id') == 'old-desktop-account', stamped
+    assert [m['content'] for m in stamped['result']['messages']] == ['OLD-DESKTOP-ACCOUNT']
+    # Any other identity, or a Nous stamp on a non-Desktop row, still needs its own authority.
+    for sid, source, user_id in (('old-desktop-foreign', 'desktop', 'telegram:42'),
+                                 ('old-cli-account', 'cli', 'nous:account')):
+        db.create_session(sid, source=source, model='old-model', cwd=str(tmp_path), user_id=user_id)
+        db.append_message(sid, role='user', content=sid.upper())
+        db.end_session(sid, 'session_switch')
+        refused = await native.dispatch({'id': 3, 'method': 'session.resume', 'params': {'session_id': sid}})
+        assert 'error' in refused, refused
+        assert db.get_session(sid)['user_id'] == user_id
