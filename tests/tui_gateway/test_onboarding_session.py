@@ -225,7 +225,7 @@ def test_a_compression_rotation_carries_the_run_record(root):
     # The parent keeps its active copy; the run is read at the tip, so skipping the child ends it.
     assert onboarding_record.active_session_id(db) == "child"
     # Deleting the parent keeps the tip, so the run stays in progress there.
-    onboarding_record.end_before_delete(db, "parent")
+    assert onboarding_record.delete_chat(db, "parent", lambda: db.delete_session("parent"))
     assert onboarding_record.active_session_id(db) == "child"
     onboarding_record.advance(db, "child", End())
     assert onboarding_record.active_session_id(db) is None

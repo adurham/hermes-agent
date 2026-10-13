@@ -47,6 +47,12 @@ def _ends_last_open_run(db, session_id: str, event: Event) -> bool:
     return not is_active(after) and all(sid == session_id for sid in open_session_ids(db))
 
 
+def _announce(run_id: str | None, session_id: str, outcome: str) -> None:
+    ended = {"run_id": run_id or "", "stored_session_id": session_id, "outcome": outcome}
+    for listener in _ended_listeners:
+        listener(ended)
+
+
 def _transition(db, session_id: str, event: Event) -> Step | None:
     """Apply *event* and write the result in one database transaction at the compression tip, so Skip
     setup pressed while a card answer is being applied is never overwritten by the older copy, and an id
@@ -69,10 +75,7 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
     step = holder.get("step")
     # Told before the flag write, which can fail: the record already says the run ended.
     if step is not None and holder["was_active"] and not is_active(step.record):
-        ended = {"run_id": step.record.get("run_id") or "", "stored_session_id": session_id,
-                 "outcome": step.record["ended_by"]}
-        for listener in _ended_listeners:
-            listener(ended)
+        _announce(step.record.get("run_id"), session_id, step.record["ended_by"])
     if step is not None and not is_active(step.record) and active_session_id(db) is None:
         _close_install_flag()  # no-op unless a concurrent change ended the run after the check above
     return step
@@ -129,12 +132,30 @@ def active_session_id(db) -> str | None:
     return next(iter(open_session_ids(db)), None)
 
 
-def end_before_delete(db, session_id: str) -> None:
-    """Deleting the onboarding chat ends its run first (``deleted``), so the install flag closes and the
-    next launch does not open a fresh run. Only the compression tip holds the live run: deleting a
-    parent keeps the tip, and the parent's copy is a stale one."""
-    if (db.resolve_resume_session_id(session_id) or session_id) == session_id and is_active(load(db, session_id)):
-        advance(db, session_id, End("deleted"))
+def delete_chat(db, session_id: str, delete: Callable[[], bool]) -> bool:
+    """Run *delete*; when it removed the chat holding the live run, end that run (``deleted``) on every
+    compression copy, tell windows once and close the install flag. Only the compression tip holds the
+    live run, so deleting an older copy ends nothing."""
+    record = load(db, session_id)
+    live = is_active(record) and (db.resolve_resume_session_id(session_id) or session_id) == session_id
+    if not delete():
+        return False
+    if live:
+        # Each older copy is written on its own row: a tip-routed write would land every copy on the
+        # newest one left.
+        for sid in db.session_ids_with_model_config_key(KEY) if record.get("run_id") else ():
+            if ((older := load(db, sid)) or {}).get("run_id") == record["run_id"]:
+                db.patch_session_model_config(sid, {KEY: _end_deleted(older)})
+        _announce(record.get("run_id"), session_id, "deleted")
+        if active_session_id(db) is None:
+            _close_install_flag()
+    return True
+
+
+def _end_deleted(current: Any) -> Any:
+    if not is_active(current):
+        return current
+    return apply(current, End("deleted"), Facts.from_stored(current["facts"]), now=time.time()).record
 
 
 def observe_tool_result(agent, name: str, args: Mapping[str, Any], result: Any) -> Any:

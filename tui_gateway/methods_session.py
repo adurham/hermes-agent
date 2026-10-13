@@ -1172,7 +1172,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @method("session.delete")
 def _(rid, params: dict) -> dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
-    from agent.onboarding_record import end_before_delete
+    from agent.onboarding_record import delete_chat
     from hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
 
     if not (target := params.get("session_id", "")):
@@ -1188,8 +1188,8 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5036)
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
-            end_before_delete(db, target)
-            deleted = db.delete_session(target, sessions_dir=home / "sessions", exclude_active_write_guards=True)
+            deleted = delete_chat(db, target, lambda: db.delete_session(
+                target, sessions_dir=home / "sessions", exclude_active_write_guards=True))
         except SessionActiveWriteGuardError:
             return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:
