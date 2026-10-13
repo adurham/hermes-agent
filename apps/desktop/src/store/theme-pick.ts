@@ -63,8 +63,8 @@ export function cancelThemePick(sessionId: string): boolean {
 }
 
 /** Composer text typed while a picker waits answers it as the user's words; the model applies them. */
-export function sayToThemePick(sessionId: string, text: string): boolean {
-  return Boolean(text.trim()) && answer(sessionId, { said: text.trim() })
+export function sayToThemePick(sessionId: string, text: string): null | Promise<boolean> {
+  return text.trim() && $themePicks.get()[sessionId] ? Promise.resolve(answer(sessionId, { said: text.trim() })) : null
 }
 
 registerParkedCardAnswer('theme-pick', {

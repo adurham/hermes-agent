@@ -261,11 +261,11 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
 }
 
 /** Answer the clarify parked on `sessionId` with composer text: the answer to its first question not yet locked. */
-function answerClarifyText(sessionId: string, text: string): boolean {
+function answerClarifyText(sessionId: string, text: string): null | Promise<boolean> {
   const request = $clarifyRequests.get()[keyFor(sessionId)]
 
   if (!request) {
-    return false
+    return null
   }
 
   return lockTypedAnswer(request, text)
@@ -287,12 +287,12 @@ function typedAnswer(question: ClarifyQuestion, text: string): string {
  */
 const lockChains = new Map<string, Promise<boolean>>()
 
-function lockTypedAnswer(request: ClarifyRequest, text: string): boolean {
+function lockTypedAnswer(request: ClarifyRequest, text: string): null | Promise<boolean> {
   const gateway = $gateway.get()
   const question = request.questions.find(entry => request.lockedAnswers?.[entry.qid] === undefined)
 
   if (!gateway || !question) {
-    return false
+    return null
   }
 
   const answer = typedAnswer(question, text)
@@ -356,7 +356,7 @@ function lockTypedAnswer(request: ClarifyRequest, text: string): boolean {
     }
   })
 
-  return true
+  return sent
 }
 
 /** Undo one failed lock without touching answers locked after it. */

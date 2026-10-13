@@ -1,7 +1,8 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
-/** Answers a card parked on `sessionId` with composer text; true when the text answered it. */
-export type ParkedCardAnswer = (sessionId: string, text: string) => boolean
+/** Answers a card parked on `sessionId` with composer text: null when no card of this kind takes it,
+ *  else a promise of whether the answer reached the backend. */
+export type ParkedCardAnswer = (sessionId: string, text: string) => null | Promise<boolean>
 
 /** One card kind: its typed-answer handler, whether a card of it waits on a session, and the store that
  *  predicate reads (watched so the composer redraws when a card parks or settles). */
@@ -35,11 +36,22 @@ export function registerParkedCardAnswer(id: string, kind: ParkedCardKind): () =
 
 /**
  * Offer composer text to every card waiting on `sessionId`, in registration order. True when one
- * took it as its answer: the composer then neither sends nor steers the text.
+ * took it as its answer: the composer then neither sends nor steers the text, and `onFailed` runs
+ * if that answer never reaches the backend, so the composer can give the words back.
  */
-export function answerParkedCard(sessionId: string, text: string): boolean {
+export function answerParkedCard(sessionId: string, text: string, onFailed: () => void = () => {}): boolean {
   for (const kind of kinds.values()) {
-    if (kind.answer(sessionId, text)) {
+    const sent = kind.answer(sessionId, text)
+
+    if (sent) {
+      void sent
+        .then(delivered => {
+          if (!delivered) {
+            onFailed()
+          }
+        })
+        .catch(onFailed)
+
       return true
     }
   }

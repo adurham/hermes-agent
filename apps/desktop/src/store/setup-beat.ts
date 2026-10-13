@@ -104,8 +104,10 @@ export function answerSetupBeat(sessionId: string, answer: SetupBeatAnswer): boo
 }
 
 /** Composer text typed while a card waits answers it as the user's words. */
-export function sayToSetupBeat(sessionId: string, text: string): boolean {
-  return Boolean(text.trim()) && respond(sessionId, { said: text.trim() })
+export function sayToSetupBeat(sessionId: string, text: string): null | Promise<boolean> {
+  return text.trim() && $setupBeatRequests.get()[sessionId]
+    ? Promise.resolve(respond(sessionId, { said: text.trim() }))
+    : null
 }
 
 registerParkedCardAnswer('setup_beat', {

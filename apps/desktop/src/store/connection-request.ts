@@ -515,16 +515,14 @@ export const continueConnectionRequest = (request: ConnectionRequest): Promise<b
   respondToConnectionRequest(request, { settled_by: 'continue' })
 
 /** The composer's words answer an open connector directory card; the tool returns them as `said`. */
-export function answerConnectorDirectory(sessionId: string, text: string): boolean {
+export function answerConnectorDirectory(sessionId: string, text: string): null | Promise<boolean> {
   const request = $connectionRequests.get()[keyFor(sessionId)]
 
   if (!request?.display || request.settled || !text.trim()) {
-    return false
+    return null
   }
 
-  void respondToConnectionRequest(request, { said: text.trim(), settled_by: 'continue' }).catch(() => undefined)
-
-  return true
+  return respondToConnectionRequest(request, { said: text.trim(), settled_by: 'continue' })
 }
 
 registerParkedCardAnswer('connector-directory', {

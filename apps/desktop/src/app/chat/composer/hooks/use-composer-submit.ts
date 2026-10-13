@@ -291,11 +291,22 @@ export function useComposerSubmit({
     const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
     const routable = payloadPresent && !queueEdit && !isSideQuestion
 
+    // Like dispatchSubmit's restore: an answer that never reached the backend gives the words back.
+    const answeredScope = draftScopeRef.current
+
+    const restore = () => {
+      stashAt(answeredScope, text, [])
+
+      if (draftScopeRef.current === answeredScope) {
+        loadIntoComposer(text, [])
+      }
+    }
+
     if (
       routable &&
       !attachments.length &&
       !SLASH_COMMAND_RE.test(text.trim()) &&
-      answerParkedCard(sessionId ?? '', text.trim())
+      answerParkedCard(sessionId ?? '', text.trim(), restore)
     ) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
