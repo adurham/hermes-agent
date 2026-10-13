@@ -8,7 +8,6 @@ run ends write the install-level flag in the root config so the next launch does
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import time
@@ -39,14 +38,6 @@ def load(db, session_id: str) -> dict | None:
     return record if isinstance(record, dict) else None
 
 
-def _ends_last_open_run(db, session_id: str, event: Event) -> bool:
-    current = load(db, session_id)
-    if not is_active(current):
-        return False
-    after = apply(copy.deepcopy(current), event, Facts.from_stored(current["facts"]), now=time.time()).record
-    return not is_active(after) and all(sid == session_id for sid in open_session_ids(db))
-
-
 def _announce(run_id: str | None, session_id: str, outcome: str) -> None:
     ended = {"run_id": run_id or "", "stored_session_id": session_id, "outcome": outcome}
     for listener in _ended_listeners:
@@ -56,11 +47,9 @@ def _announce(run_id: str | None, session_id: str, outcome: str) -> None:
 def _transition(db, session_id: str, event: Event) -> Step | None:
     """Apply *event* and write the result in one database transaction at the compression tip, so Skip
     setup pressed while a card answer is being applied is never overwritten by the older copy, and an id
-    read before a rotation published still lands on the copy the chat reads. An ending closes the install
-    flag first: a failed config write raises before the run ends, so the window keeps the run and the
-    same Skip, Done or delete can be retried. Another open run keeps the flag; it belongs to that run."""
-    if _ends_last_open_run(db, session_id, event):
-        _close_install_flag()
+    read before a rotation published still lands on the copy the chat reads. An ended run then closes the
+    install flag (a Skip or Done retried after a failed config write repairs it), unless another run
+    is still open: the flag belongs to that run, and an old chat must not end it."""
     holder: dict[str, Any] = {}
 
     def update(current: Any) -> Any:
@@ -77,7 +66,7 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
     if step is not None and holder["was_active"] and not is_active(step.record):
         _announce(step.record.get("run_id"), session_id, step.record["ended_by"])
     if step is not None and not is_active(step.record) and active_session_id(db) is None:
-        _close_install_flag()  # no-op unless a concurrent change ended the run after the check above
+        _close_install_flag()
     return step
 
 
