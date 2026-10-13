@@ -351,9 +351,14 @@ def _applied_beats(event: Applied) -> list[tuple[str, dict]]:
 
 
 def _applied(record: dict, event: Applied, facts: Facts, now: float) -> Step:
+    """The reminder names the last beat this result newly settled, so the model moves on instead of
+    recording it again with setup_beat. ``after_<beat>``, not ``Beat.after``: the tour already started."""
+    settled = ""
     for beat, patch in _applied_beats(event):
+        if record["beats"][beat] != DONE:
+            settled = beat
         _settle(record, beat, patch)
-    return Step(record, {})
+    return Step(record, {}, f"after_{settled}" if settled else "")
 
 
 _HANDLERS: dict[type, Callable[[dict, Any, Facts, float], Step]] = {

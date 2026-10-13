@@ -105,6 +105,21 @@ def test_run_hrs0_typed_answer_is_applied_and_never_reshows_the_card():
     assert next_beat(applied.record) == "connectors"
 
 
+def test_set_theme_settling_the_layout_beat_tells_the_model_the_next_beat():
+    """Without a reminder the model recorded the applied layout with setup_beat and was refused."""
+    facts = MACHINES["mac"]
+    steps = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"),
+                Answered("theme", {"accent": "Ultraviolet"}), Shown("layout"), Said("layout", "basic"),
+                Applied("set_theme", {"layout": "sidebar-left"}, {"success": True, "applied": {"layout": "sidebar-left"}}),
+                Applied("set_theme", {"layout": "terminal-deck"}, {"success": True, "applied": {"layout": "terminal-deck"}}))
+
+    settled, again = steps[-2], steps[-1]
+    assert settled.reminder == "after_layout"
+    text = reminder(settled.reminder, settled.record, facts)
+    assert text.startswith("Layout Basic is on.") and 'setup_beat(beat="next") shows the connectors card' in text
+    assert again.reminder == ""
+
+
 def test_run_hrs0_off_script_questions_keep_one_card_and_continue_settles_it():
     """hrs0: each off-script question re-rendered the apps cards (four open copies), and a typed
     "continue" left the beat shown. Bringing a card back is a new Shown of the same beat; a value

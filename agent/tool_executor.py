@@ -1088,7 +1088,7 @@ def _commit_tool_result(
 
     observe_tool_outcome(agent, function_name, is_error)
     if not (blocked or is_error):
-        observe_onboarding_result(agent, function_name, function_args, function_result)
+        function_result = observe_onboarding_result(agent, function_name, function_args, function_result)
     if observed:
         if not blocked:
             function_result = agent._append_guardrail_observation(

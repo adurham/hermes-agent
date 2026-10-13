@@ -17,6 +17,7 @@ from typing import Any
 from agent.onboarding_flow import (
     Applied, Event, Facts, Step, applies_to, apply, expire, is_active, new_record,
 )
+from agent.onboarding_text import reminder
 
 logger = logging.getLogger(__name__)
 
@@ -113,16 +114,21 @@ def active_session_id(db) -> str | None:
     return next(iter(open_session_ids(db)), None)
 
 
-def observe_tool_result(agent, name: str, args: Mapping[str, Any], result: Any) -> None:
+def observe_tool_result(agent, name: str, args: Mapping[str, Any], result: Any) -> Any:
     """Settle a beat from a general tool's result (``set_theme``, ``manage_connections`` display,
     ``gui_tour``). Runs for every tool result; only an onboarding chat (one whose agent carries
-    ``setup_beat``) reads its record."""
+    ``setup_beat``) reads its record. Returns *result*, with the next-step reminder added when it
+    settled a beat."""
     if not applies_to(name) or "setup_beat" not in (getattr(agent, "valid_tool_names", None) or ()):
-        return
+        return result
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", "") or ""
     try:
         parsed = json.loads(result) if isinstance(result, str) else result
         if isinstance(parsed, dict) and load(db, session_id) is not None:
-            advance(db, session_id, Applied(name, dict(args or {}), parsed))
+            step = advance(db, session_id, Applied(name, dict(args or {}), parsed))
+            text = reminder(step.reminder, step.record, Facts.from_stored(step.record["facts"]))
+            if text and isinstance(result, str):
+                return json.dumps({**parsed, "reminder": text}, ensure_ascii=False)
     except Exception:
         logger.warning("onboarding: %s result did not update the run record", name, exc_info=True)
+    return result
