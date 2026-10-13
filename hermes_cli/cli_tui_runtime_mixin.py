@@ -59,10 +59,24 @@ class CLITuiRuntimeMixin:
             with suppress(Exception):
                 step()
 
+    def _tui_dock_drop_dequeued(self):
+        """Re-read the live-work dock once an input has left ``_pending_input``.
+
+        The spinner thread polls the dock once a second, so without this the prompt a turn just took
+        (a seeded ``-q`` prompt above all) stays listed as queued while the turn starts. If the reply
+        prints in that window the dock shrinks only after it, leaving blank rows under the prompt.
+        The turn's own invalidate repaints the refreshed rows.
+        """
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is not None:
+            with suppress(Exception):
+                monitor.refresh()
+
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         from tools.process_registry_notifications import TimelineNotification
+        self._tui_dock_drop_dequeued()
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
