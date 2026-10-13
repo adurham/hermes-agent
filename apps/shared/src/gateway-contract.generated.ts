@@ -3661,6 +3661,7 @@ export interface ProcessStopParams {
 }
 export interface ProcessStopResult {
   killed: number
+  delegations?: number
 }
 export interface AgentsListParams {
   profile?: string | null
@@ -3699,6 +3700,7 @@ export interface ProcessEntry {
   notify_on_complete?: boolean | null
   exit_code?: number | null
   exited_at?: number | null
+  started_epoch?: number | null
   completion_reason?: string | null
   detached?: boolean | null
   [key: string]: unknown

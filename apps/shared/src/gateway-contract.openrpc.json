@@ -27521,6 +27521,18 @@
             "default": null,
             "title": "Exited At"
           },
+          "started_epoch": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started Epoch"
+          },
           "completion_reason": {
             "anyOf": [
               {
@@ -27767,6 +27779,11 @@
         "properties": {
           "killed": {
             "title": "Killed",
+            "type": "integer"
+          },
+          "delegations": {
+            "default": 0,
+            "title": "Delegations",
             "type": "integer"
           }
         },

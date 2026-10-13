@@ -1,0 +1,157 @@
+"""The background-process registry main's classic CLI reads, served by the gateway session.
+
+On main the CLI process ran every ``terminal(background=true)`` itself, so the live-work dock,
+the status bar's ``⚙ N`` segment, ``/stop`` and the dock's tail view read
+``tools.process_registry`` in-process. Rewired, the processes run in the gateway: this view
+answers the same calls (``list_sessions`` / ``get`` / ``count_running`` / ``kill_process`` /
+``kill_all``) from the session's ``process.list`` / ``process.kill`` / ``process.stop`` verbs, so
+main's dock and command code render unchanged.
+
+Polling: the dock ticks once a second. The view only asks the gateway while it has a reason to
+(a tool finished since the last poll, or a listed process is still running or recently
+exited); the status bar reads the cached count and never blocks a repaint on an RPC.
+"""
+from __future__ import annotations
+
+import logging
+import threading
+import time
+
+from hermes_cli.gateway_client import GatewayClientError
+
+logger = logging.getLogger(__name__)
+
+_POLL_SECONDS = 1.0
+# A finished process stays interesting this long (main's dock RETAIN_SECONDS).
+_RETAIN_SECONDS = 60
+
+_view = None
+
+
+class _Proc:
+    """The ``ProcessSession`` attributes main's dock reads."""
+
+    def __init__(self, row):
+        self.id = row.get("session_id") or ""
+        self.command = row.get("command") or ""
+        self.exit_code = row.get("exit_code")
+        self.started_at = float(row.get("started_epoch") or 0.0)
+        self.exited_at = float(row.get("exited_at") or 0.0)
+        self.output_buffer = row.get("output_tail") or ""
+        self.completion_reason = row.get("completion_reason") or "exited"
+        self.exited = row.get("status") == "exited"
+
+
+class GatewayProcessView:
+    def __init__(self, agent):
+        self.agent = agent
+        self.connection = agent.connection
+        self.rows: list = []
+        self.dirty = True
+        self.delegations = 0
+        self._polled = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def session_id(self):
+        return self.agent.session_id  # follows /new, /resume and compression rotations
+
+    # -- polling ---------------------------------------------------------------------------
+    def mark_dirty(self):
+        self.dirty = True
+
+    def _interesting(self, now):
+        return any(not p.exited or (p.exited_at and now - p.exited_at <= _RETAIN_SECONDS) for p in self.rows)
+
+    def refresh(self, *, force=False):
+        now = time.time()
+        if not force and (now - self._polled < _POLL_SECONDS or not (self.dirty or self._interesting(now))):
+            return
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            self._polled = now
+            self.dirty = False
+            result = self.connection.call("process.list", session_id=self.session_id, timeout=5)
+            self.rows = [_Proc(row) for row in (result or {}).get("processes") or []]
+        except (GatewayClientError, RuntimeError) as exc:
+            logger.debug("process.list failed: %s", exc)
+        finally:
+            self._lock.release()
+
+    # -- the tools.process_registry surface main's CLI calls ---------------------------------
+    def list_sessions(self):
+        self.refresh()
+        now = time.time()
+        return [{"session_id": p.id, "command": p.command[:200],
+                 "status": "exited" if p.exited else "running", "exit_code": p.exit_code,
+                 "completion_reason": p.completion_reason if p.exited else None,
+                 "uptime_seconds": int(now - p.started_at) if p.started_at else 0} for p in self.rows]
+
+    def get(self, process_id):
+        return next((p for p in self.rows if p.id == process_id), None)
+
+    def count_running(self):
+        """Cached (the status bar repaints off the render thread)."""
+        return sum(1 for p in self.rows if not p.exited)
+
+    def kill_process(self, process_id, **_kw):
+        try:
+            result = self.connection.call("process.kill", session_id=self.session_id, process_id=process_id)
+        except GatewayClientError as exc:
+            return {"status": "error", "error": str(exc)}
+        self.refresh(force=True)
+        return result
+
+    def kill_all(self, **_kw):
+        """``/stop``: the session's own processes plus its background delegations (``process.stop``)."""
+        result = self.connection.call("process.stop", session_id=self.session_id) or {}
+        self.delegations = int(result.get("delegations") or 0)
+        self.refresh(force=True)
+        return int(result.get("killed") or 0)
+
+    def interrupt_delegations(self):
+        """The delegation half of ``/stop`` (``kill_all`` already ran it when processes were live)."""
+        if self.delegations:
+            count, self.delegations = self.delegations, 0
+            return count
+        self.kill_all()
+        count, self.delegations = self.delegations, 0
+        return count
+
+    def active_delegations(self):
+        """Running background subagents (the gateway's ``session.usage.active_subagents``)."""
+        try:
+            usage = self.connection.state(self.session_id).usage or {}
+        except Exception:  # health: allow BLE001 -- a missing usage cache reads as none running
+            return 0
+        value = usage.get("active_subagents")
+        return value if isinstance(value, int) else 0
+
+
+def bind(agent):
+    """Called when the CLI's gateway-backed agent is built."""
+    global _view
+    _view = GatewayProcessView(agent) if getattr(agent, "connection", None) is not None else None
+    return _view
+
+
+def mark_dirty():
+    if _view is not None:
+        _view.mark_dirty()
+
+
+def process_view():
+    """The gateway-backed registry, or None when this process runs its own tools (not rewired) or
+    its gateway connection is gone."""
+    view = _view
+    return view if view is not None and not view.connection.closed else None
+
+
+def process_registry():
+    """``tools.process_registry.process_registry`` for main's dock, status bar and ``/stop``."""
+    view = process_view()
+    if view is not None:
+        return view
+    from tools.process_registry import process_registry as local
+    return local

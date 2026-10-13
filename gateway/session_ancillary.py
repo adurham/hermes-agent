@@ -17,6 +17,7 @@ _SUBAGENT_FIELDS = (
     'started_at', 'status', 'tool_count', 'last_tool', 'accepting_steer',
 )
 _TAIL_BYTES = 16384
+_PROCESS_TAIL_CHARS = 32768  # main's dock tail view (cli_process_dock.process_tail)
 
 
 def handlers(connection):
@@ -213,7 +214,18 @@ async def stop_processes(connection, ref, params):
         results = [registry.kill_process(pid, source='process.stop', consume_output=False) for pid in targets]
         return sum(r.get('status') in {'killed', 'already_exited'} and 'scope_stop_failed' not in r
                    for r in results)
-    return {'killed': await asyncio.to_thread(kill) if targets else 0}
+    killed = await asyncio.to_thread(kill) if targets else 0
+    return {'killed': killed, 'delegations': await asyncio.to_thread(_interrupt_delegations, connection.authority, ref)}
+
+
+def _interrupt_delegations(authority, ref):
+    """Main's ``/stop`` also interrupted the background (async) delegations; here only the ones this
+    session dispatched (its route or its durable id), never another chat's."""
+    module = sys.modules.get('tools.async_delegation')
+    if module is None:
+        return 0
+    return module.interrupt_for_session(session_key=authority.sessions[ref.session_id].route,
+                                        parent_session_id=physical_target(authority, ref), reason='/stop')
 
 
 def _require_current_route(authority, ref):
@@ -334,4 +346,7 @@ def process_snapshot(authority, ref, agent, records):
     with registry._lock:
         return [{'session_id': p.id, 'command': p.command[:200],
                  'status': 'exited' if p.exited else 'running', 'exit_code': p.exit_code,
-                 'output_tail': p.output_buffer[-4000:]} for p in _owned_locked(registry, keys, owners)]
+                 # The classic CLI dock's elapsed / exit-age / verdict and its 32k tail view.
+                 'started_epoch': p.started_at, 'exited_at': p.exited_at or None,
+                 'completion_reason': p.completion_reason if p.exited else None,
+                 'output_tail': p.output_buffer[-_PROCESS_TAIL_CHARS:]} for p in _owned_locked(registry, keys, owners)]

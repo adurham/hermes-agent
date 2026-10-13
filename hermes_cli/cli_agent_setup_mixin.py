@@ -721,6 +721,8 @@ class CLIAgentSetupMixin:
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
             self.agent._finite = single_query_mode  # -q/-Q: a finite gateway admission (headless clarify)
+            from hermes_cli.gateway_tools import bind
+            bind(self.agent)  # main's dock / status bar / /stop read this session's gateway processes
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:
