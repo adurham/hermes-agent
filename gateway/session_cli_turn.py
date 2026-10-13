@@ -109,7 +109,7 @@ def classic_cli_turn(turn):
     from gateway.session_policy import policy_for_source
     try:
         policy = policy_for_source(turn._runner, turn._ctx.source)
-    except Exception:
+    except RuntimeStoreError:  # a route whose frozen policy is not restored: not a CLI viewer turn
         return False
     return policy is not None and policy.platform == 'cli'
 
@@ -133,3 +133,32 @@ def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_
         _attach_auxiliary_usage(holder, session_db, aux_before, fallback_session_id=session_id)
         fields['auxiliary_usage'] = holder.get('auxiliary_usage') or {}
     return fields
+
+
+def one_turn_route(turn, policy, model, runtime_kwargs):
+    """The executing admission's ``model_override`` applied to the resolved route (unchanged without one)."""
+    override = cli_turn(turn._ctx.inbound_message_id).get('model_override')
+    if not override:
+        return model, runtime_kwargs
+    from gateway.session_authorities import active_authority
+    config = policy.config(active_authority(turn._runner)) if policy else turn._ctx.user_config
+    return one_turn_runtime(override, model, runtime_kwargs, config)
+
+
+def run_classic_cli_turn(turn, run):
+    """``run()`` (the turn's run_conversation) for any turn; on a classic CLI turn the receipt-only
+    fields are taken from its raw result and kept on ``turn`` for the committed receipt."""
+    if not classic_cli_turn(turn):
+        return run()
+    from gateway.session_finite import finite_turn_required
+    aux_before = cli_db = None
+    if finite_turn_required() is True:
+        # `chat -q --usage-file` / stream-json: this turn's auxiliary spend, as oneshot.py read it.
+        from hermes_cli.oneshot import _auxiliary_usage
+        runner_db = turn._runner._session_db
+        cli_db = getattr(runner_db, "_db", runner_db)
+        aux_before = _auxiliary_usage(cli_db, turn._ctx.session_id)
+    result = run()
+    turn._cli_result_fields = take_cli_result_fields(
+        result, aux_before=aux_before, session_db=cli_db, session_id=turn._ctx.session_id)
+    return result

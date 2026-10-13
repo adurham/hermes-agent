@@ -1162,14 +1162,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 # model is the one this agent must send (#112600).
                 from gateway.session_authorities import active_authority
                 model = policy.current_model(active_authority(runner))
-            from gateway.session_cli_turn import cli_turn, one_turn_runtime
-            override = cli_turn(ctx.inbound_message_id).get('model_override')
-            if override:
-                # The classic CLI's `/model --once` / `/moa`: this admission only, nothing persisted.
-                from gateway.session_authorities import active_authority
-                model, runtime_kwargs = one_turn_runtime(
-                    override, model, runtime_kwargs,
-                    policy.config(active_authority(runner)) if policy else ctx.user_config)
+            # The classic CLI's `/model --once` / `/moa`: this admission only, nothing persisted.
+            from gateway.session_cli_turn import one_turn_route
+            model, runtime_kwargs = one_turn_route(self, policy, model, runtime_kwargs)
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
                 model, runtime_kwargs.get("provider"), ctx.session_key or "",
@@ -1240,18 +1235,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
             persist_msg, persist_ts = self._prepare_turn_message(agent_history)
             compressions = getattr(getattr(agent, "context_compressor", None), "compression_count", None)
-            aux_before = cli_db = None
-            from gateway.session_cli_turn import classic_cli_turn, take_cli_result_fields
-            cli_turn_result = classic_cli_turn(self)
-            if cli_turn_result and _finite_viewer_turn():
-                # `chat -q --usage-file` / stream-json: this turn's auxiliary spend, as oneshot.py read it.
-                from hermes_cli.oneshot import _auxiliary_usage
-                cli_db = getattr(runner._session_db, "_db", runner._session_db)
-                aux_before = _auxiliary_usage(cli_db, ctx.session_id)
-            result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
-            if cli_turn_result:
-                self._cli_result_fields = take_cli_result_fields(
-                    result, aux_before=aux_before, session_db=cli_db, session_id=ctx.session_id)
+            from gateway.session_cli_turn import run_classic_cli_turn
+            result = run_classic_cli_turn(self, lambda: self._run_conversation_with_approval(
+                agent, agent_history, observed_group_context, persist_msg, persist_ts))
         finally:
             if local_sinks is not None:
                 from gateway import local_viewer_events

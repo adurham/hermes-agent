@@ -12,7 +12,10 @@ previous values; ``restore`` puts them back when the turn's ``run_conversation``
 """
 from __future__ import annotations
 
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 # Attributes ``wire`` may overwrite on the cached agent for one local-viewer turn.
 _TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_callback", "reasoning_callback")
@@ -93,7 +96,8 @@ def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:
         from agent.display import capture_local_edit_snapshot
         snapshot = capture_local_edit_snapshot(tool_name, args if isinstance(args, dict) else {},
                                                task_id=turn._ctx.session_id)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- display-only preview; a failed snapshot only drops the diff
+        logger.debug("Edit snapshot capture failed for %s", tool_name, exc_info=True)
         snapshot = None
     if snapshot is not None:
         turn.__dict__.setdefault("_local_edit_snapshots", {})[key] = snapshot
@@ -113,7 +117,8 @@ def complete_fields(turn, call_id, tool_name=None, args=None, result=None) -> di
         from agent.display import render_edit_diff_with_delta
         render_edit_diff_with_delta(tool_name, result, function_args=args if isinstance(args, dict) else {},
                                     snapshot=snapshot, print_fn=rendered.append)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- display-only preview, as main's CLI _on_tool_complete
+        logger.debug("Edit diff preview failed for %s", tool_name, exc_info=True)
         rendered = []
     fields["inline_diff"] = "\n".join(rendered) if rendered else None
     todo = todo_state(tool_name, result)
@@ -143,13 +148,11 @@ def prompt_timeout_s(turn, kind) -> int | None:
     from gateway.run_turn_progress import local_viewer_turn
     if not local_viewer_turn(turn):
         return None
-    try:
-        if kind == "approval":
-            from tools.approval_context import _get_approval_timeout
-            seconds = int(_get_approval_timeout())
-        else:
-            from tools.clarify_gateway import get_clarify_timeout
-            seconds = int(get_clarify_timeout())
-    except Exception:
-        return None
+    # Both readers fall back to their defaults themselves; they never raise.
+    if kind == "approval":
+        from tools.approval_context import _get_approval_timeout
+        seconds = int(_get_approval_timeout())
+    else:
+        from tools.clarify_gateway import get_clarify_timeout
+        seconds = int(get_clarify_timeout())
     return seconds if seconds > 0 else None
