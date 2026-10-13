@@ -83,9 +83,7 @@ async def config_get(connection, ref, params):
                                      for k in ('mcp', 'mcp_servers', 'tools')},
                                      sort_keys=True).encode()).hexdigest()[:12]},
                 'reasoning': lambda: _reasoning(agent, policy, cfg),
-                'fast': lambda: {'value': 'fast' if (getattr(agent, 'service_tier', None) or
-                    (policy.config() if policy else cfg).get('agent', {}).get('service_tier'))
-                    in {'priority', 'fast', 'on'} else 'normal'},
+                'fast': lambda: _fast(connection, ref, policy, agent, cfg),
                 'skin': lambda: {'value': display.get('skin', 'default')},
                 'theme': lambda: {'value': display.get('tui_theme', 'auto')},
                 'indicator': lambda: {'value': display.get('tui_status_indicator', DEFAULT_INDICATOR_STYLE)},
@@ -99,6 +97,16 @@ async def config_get(connection, ref, params):
                 raise RuntimeStoreError('invalid_params')
             return getters[key]()
     return await asyncio.to_thread(read)
+
+
+def _fast(connection, ref, policy, agent, cfg):
+    from agent.fast_mode import parse_service_tier
+    if ref.session_id:  # the session's next-turn tier: its /fast pin, else its policy's
+        from gateway.session_tui_config import current_tier
+        tier = current_tier(connection, ref, policy)
+    else:
+        tier = getattr(agent, 'service_tier', None) or parse_service_tier(cfg.get('agent', {}).get('service_tier'))
+    return {'value': {'priority': 'fast', 'ultrafast': 'ultrafast'}.get(tier, 'normal')}
 
 
 def _reasoning(agent, policy, cfg):

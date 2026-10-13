@@ -203,7 +203,7 @@ it('/stop is session-scoped; process-global /reload-mcp refuses on the shared ga
 it('setting writes the shared gateway has no verb for say so instead of a bare invalid_params; reads still work', async () => {
   const { request, slash, sys } = harness()
 
-  for (const cmd of ['/reasoning high --global', '/fast fast', '/personality pirate', '/skin']) {
+  for (const cmd of ['/reasoning high --global', '/personality pirate', '/skin']) {
     slash(cmd)
   }
 
@@ -214,7 +214,7 @@ it('setting writes the shared gateway has no verb for say so instead of a bare i
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
-  for (const name of ['reasoning', 'fast', 'personality']) {
+  for (const name of ['reasoning', 'personality']) {
     expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
   }
 
@@ -229,6 +229,17 @@ it('/skin writes the profile through the owner\'s config.set like main (the owne
 
   expect(request).toHaveBeenCalledWith('config.set', { key: 'skin', value: 'mono' })
   expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['skin → mono'])
+})
+
+it('/fast <mode> is the owner\'s session-scoped config.set like main', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/fast fast')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'fast', session_id: 'owner', value: 'fast' })
+  expect(sys.mock.calls.map(([text]) => String(text))).toEqual(['fast mode: fast'])
+  expect(getUiState().info).toMatchObject({ fast: true, service_tier: 'priority' })
 })
 
 it('/theme and /indicator write the profile through the owner\'s config.set like main', async () => {

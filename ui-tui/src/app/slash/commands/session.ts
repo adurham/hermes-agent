@@ -696,12 +696,6 @@ export const sessionCommands: SlashCommand[] = [
           .catch(ctx.guardedErr)
       }
 
-      // The shared owner serves this setting's read, not its write (a config.yaml / per-session
-      // setting it has no frozen-policy verb for yet): say so instead of a bare invalid_params.
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'fast'))
-      }
-
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'fast', session_id: ctx.sid, value: mode })
         .then(

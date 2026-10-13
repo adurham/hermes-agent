@@ -106,3 +106,34 @@ def test_skin_persists_and_repaints_every_attached_tui_of_the_profile(tmp_path):
                 assert (await rpc(ws, 'config.set', key='skin', value='')).get('error', {}).get('message') == 'invalid_params'
                 assert not admissions(home) and not peer.requests
         asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_fast_is_session_scoped_validated_and_read_back(tmp_path):
+    with owner(tmp_path) as (home, peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                # A route that bills Priority Processing (never called: no turn runs).
+                sid = (await rpc(ws, 'session.create', request_id='fast', source='tui', toolsets=[],
+                                 model='gpt-5.4', provider='openai',
+                                 base_url='https://api.openai.com/v1'))['result']['session_id']
+                other = (await rpc(ws, 'session.create', request_id='slow', source='tui',
+                                   toolsets=[]))['result']['session_id']
+                before = (home / 'config.yaml').read_bytes()
+                result = await rpc(ws, 'config.set', key='fast', value='fast', session_id=sid)
+                assert result.get('result') == {'key': 'fast', 'value': 'fast'}, result
+                assert (await rpc(ws, 'config.get', key='fast', session_id=sid))['result']['value'] == 'fast'
+                assert (await rpc(ws, 'config.get', key='fast', session_id=other))['result']['value'] == 'normal'
+                assert (await rpc(ws, 'config.set', key='fast', value='toggle', session_id=sid)
+                        )['result']['value'] == 'normal'
+                assert (await rpc(ws, 'config.get', key='fast', session_id=sid))['result']['value'] == 'normal'
+                for params, reason in [
+                    ({'key': 'fast', 'value': 'fast', 'session_id': other}, 'fast_unavailable'),
+                    ({'key': 'fast', 'value': 'warp', 'session_id': sid}, 'invalid_params'),
+                    ({'key': 'fast', 'value': 'fast'}, 'invalid_params'),
+                ]:
+                    assert (await rpc(ws, 'config.set', **params)).get('error', {}).get('message') == reason, params
+                # Session-scoped like main: config.yaml is untouched.
+                assert (home / 'config.yaml').read_bytes() == before
+                assert not admissions(home) and not peer.requests
+        asyncio.run(probe())

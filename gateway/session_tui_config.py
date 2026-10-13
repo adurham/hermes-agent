@@ -169,8 +169,10 @@ async def config_set(connection, ref, params):
         return await busy_config(connection, ref, params, write=True)
     if set(params) - {'session_id', 'profile', 'key', 'value'}:
         raise RuntimeStoreError('invalid_params')
-    _authorize_write(connection, ref, params)
+    policy = _authorize_write(connection, ref, params)
     value = params.get('value')
+    if key == 'fast':
+        return await _set_fast(connection, ref, policy, value)
     result = await asyncio.to_thread(_write_profile_config, connection,
                                      lambda cfg: _set_display(cfg, key, value))
     if key == 'focus' and ref.session_id and 'tool_progress' in result:
@@ -197,3 +199,51 @@ async def _broadcast_skin(connection):
     for session_id, live in list(connection.authority.sessions.items()):
         if live.subscribers:
             live.event_stream.publish(session_id, payload, event_type='skin.changed')
+
+
+# /fast word -> stored tier (main's ``_FAST_WORDS``; None = explicit normal).
+_FAST_TIERS = {'fast': 'priority', 'on': 'priority', 'normal': None, 'off': None, 'auto': 'auto',
+               'cold': 'cold', 'ultrafast': 'ultrafast', 'ultra': 'ultrafast'}
+
+
+def current_tier(connection, ref, policy):
+    """The tier this session's next turn runs: its /fast pin, else its policy's (or the profile's)."""
+    runner, live = connection.authority.runner, connection.authority.sessions[ref.session_id]
+    if policy is not None:
+        return policy.current_service_tier(runner, live.route)
+    return runner._resolve_session_service_tier(source=live.source, session_key=live.route)
+
+
+async def _set_fast(connection, ref, policy, value):
+    """Session-scoped /fast like main's: validated against the session's route, never config.yaml.
+    The pin is the runner's per-session override the next turn reads (``current_service_tier``)."""
+    from agent.fast_mode import STATIC_TIERS, service_tier_word
+    if not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    raw, current = _word(value), current_tier(connection, ref, policy)
+    if raw == 'status':
+        return {'key': 'fast', 'value': service_tier_word(current)}
+    if raw in ('', 'toggle'):
+        raw = 'normal' if current in STATIC_TIERS else 'fast'
+    if raw not in _FAST_TIERS:
+        raise RuntimeStoreError('invalid_params')
+    tier = _FAST_TIERS[raw]
+    if tier in STATIC_TIERS:
+        agent = connection.authority.agent(ref)
+        model = getattr(agent, 'model', None) or (policy.current_model(connection.authority) if policy else None)
+        provider = getattr(agent, 'provider', None) or (policy.provider if policy else None)
+        base_url = getattr(agent, 'base_url', None) or (policy.base_url if policy else None)
+
+        def offered():
+            from agent.codex_service_tiers import ultrafast_offered
+            from hermes_cli.models import resolve_fast_mode_overrides
+            if not model or resolve_fast_mode_overrides(model, provider=provider, base_url=base_url,
+                                                        tier=tier if tier == 'ultrafast' else None) is None:
+                return False
+            return tier != 'ultrafast' or ultrafast_offered(model, provider=provider, base_url=base_url,
+                                                            access_token=getattr(agent, 'api_key', None))
+        if not await asyncio.to_thread(offered):
+            raise RuntimeStoreError('fast_unavailable')
+    connection.authority.runner._set_session_service_tier_override(
+        connection.authority.sessions[ref.session_id].route, tier)
+    return {'key': 'fast', 'value': service_tier_word(tier)}
