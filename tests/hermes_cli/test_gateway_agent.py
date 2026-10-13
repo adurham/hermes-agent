@@ -334,3 +334,13 @@ def test_first_tool_of_a_batch_reads_session_stats_for_mains_spinner_token_flow(
     agent.run_conversation("q")
     assert seen[0] == ("tool.started", 10)
     assert [m for m, _ in client.calls].count("session.stats") == 2  # first tool.start + turn end
+
+
+def test_moa_reference_maps_index_and_count_to_mains_kwargs(make_agent):
+    seen = []
+    agent, _ = make_agent([frame("moa.reference", {"label": "gpt-x", "text": "ref", "index": 1, "count": 2}),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})],
+                          tool_progress_callback=lambda *a, **k: seen.append((a, k)))
+    agent.run_conversation("q")
+    assert seen[0][0][:3] == ("moa.reference", "gpt-x", "ref")
+    assert seen[0][1] == {"moa_index": 1, "moa_count": 2}

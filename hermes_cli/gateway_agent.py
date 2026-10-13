@@ -678,7 +678,12 @@ def _moa_handler(kind):
     def handler(agent, payload, stream_callback, starts):
         if agent.tool_progress_callback is None:
             return
-        extra = {k: v for k, v in payload.items() if k not in {"label", "text", "name", "preview"}}
+        extra = {k: v for k, v in payload.items() if k not in {"label", "text", "name", "preview", "index", "count"}}
+        # Main's _on_tool_progress reads moa_index / moa_count (the gateway frame uses the TUI keys).
+        if payload.get("index") is not None:
+            extra["moa_index"] = payload["index"]
+        if payload.get("count") is not None:
+            extra["moa_count"] = payload["count"]
         agent.tool_progress_callback(kind, payload.get("label") or payload.get("name"),
                                      payload.get("text") or payload.get("preview"), None, **extra)
     return handler
