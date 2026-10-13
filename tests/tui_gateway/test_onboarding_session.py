@@ -197,6 +197,24 @@ def test_a_compression_rotation_carries_the_run_record(root):
     assert onboarding_record.active_session_id(db) is None
 
 
+def test_skip_that_read_the_id_before_a_rotation_ends_the_run_at_the_tip(root, monkeypatch):
+    """Compression published a child between Skip reading the agent's id and writing the record."""
+    from hermes_cli.config import read_user_config_raw
+    db = server._get_db()
+    db.create_session("parent", "desktop")
+    onboarding_record.start(db, "parent", FACTS)
+    db.publish_compression_child(parent_session_id="parent", child_session_id="child", source="desktop",
+                                 messages=[{"role": "user", "content": "summary"}],
+                                 require_compression_lease=False)
+    monkeypatch.setitem(server._sessions, "ui-onb",
+                        {"session_key": "parent", "agent": _agent(db, "parent"), "source": "desktop"})
+
+    assert _call("onboarding.skip", {"session_id": "ui-onb"})["result"] == {"skipped": True}
+    assert onboarding_record.load(db, "child")["phase"] == "skipped"
+    assert onboarding_record.active_session_id(db) is None
+    assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is False
+
+
 def test_a_skip_retried_after_a_failed_config_write_closes_the_install_flag(root, monkeypatch):
     from hermes_cli import onboarding_run
     from hermes_cli.config import read_user_config_raw

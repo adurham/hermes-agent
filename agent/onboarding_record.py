@@ -38,8 +38,9 @@ def load(db, session_id: str) -> dict | None:
 
 
 def _transition(db, session_id: str, event: Event | None) -> Step | None:
-    """Expire, apply *event* and write the result in one database transaction, so Skip setup pressed
-    while a card answer is being applied is never overwritten by the older copy. An ended run then
+    """Expire, apply *event* and write the result in one database transaction at the compression tip,
+    so Skip setup pressed while a card answer is being applied is never overwritten by the older copy,
+    and an id read before a rotation published still lands on the copy the chat reads. An ended run then
     closes the install flag (a Skip or Done retried after a failed config write repairs it), unless
     another run is still open: the flag belongs to that run, and an old chat must not end it."""
     holder: dict[str, Step] = {}
@@ -54,7 +55,7 @@ def _transition(db, session_id: str, event: Event | None) -> Step | None:
                           if event is not None else Step(record, {}))
         return holder["step"].record
 
-    db.update_session_model_config_value(session_id, KEY, update)
+    db.update_conversation_model_config_value(session_id, KEY, update)
     step = holder.get("step")
     if step is not None and not is_active(step.record) and active_session_id(db) is None:
         _close_install_flag()

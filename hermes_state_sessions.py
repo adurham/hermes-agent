@@ -832,21 +832,25 @@ class SessionSessionsMixin:
         session = self.get_session(session_id) or {}
         return _parse_model_config(session.get("model_config")).get(key, default)
 
-    def update_session_model_config_value(self, session_id: str, key: str, update: Callable[[Any], Any]) -> bool:
-        """Read ``key``, write ``update(value)`` back, in one write transaction, so a concurrent writer of
-        the same key cannot be overwritten with a stale copy. ``update`` may run more than once (lock
-        retry) and must be pure; returning None removes the key. False when the row does not exist."""
-        def _do(conn) -> bool:
-            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    def update_conversation_model_config_value(self, session_id: str, key: str,
+                                               update: Callable[[Any], Any]) -> Optional[str]:
+        """Read a conversation-wide ``key`` at *session_id*'s compression tip and write ``update(value)``
+        back, in one write transaction: a concurrent writer of the key cannot be overwritten with a stale
+        copy, and a rotation cannot publish between finding the tip and writing it (the child would keep
+        the old copy). ``update`` may run more than once (lock retry) and must be pure; returning None
+        removes the key. Returns the id written, None when the row does not exist."""
+        def _do(conn) -> Optional[str]:
+            tip = self._compression_tip_on(conn, session_id)
+            row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (tip,)).fetchone()
             if row is None:
-                return False
+                return None
             config = _parse_model_config(row[0])
             if (value := update(config.get(key))) is None:
                 config.pop(key, None)
             else:
                 config[key] = value
-            conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(config), session_id))
-            return True
+            conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(config), tip))
+            return tip
         return self._execute_write(_do)
 
     def session_ids_with_model_config_key(self, key: str) -> list[str]:

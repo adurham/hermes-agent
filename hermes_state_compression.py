@@ -86,6 +86,25 @@ _CHAIN_CAP = 1000
 _CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run",)
 
 
+def _walk_compression_chain(session_id: str, step) -> list[str]:
+    """Root-first ids from *session_id* through its tip; ``step(id)`` returns the ``_CHAIN_STEP_SQL`` row."""
+    current = session_id
+    chain = [current] if current else []
+    seen = set(chain)
+    # Defensive bound; ``seen`` guards cycles. 100 truncated real
+    # compression lineages (~180 deep), stranding root→tip walks on a
+    # stale mid id (#125041).
+    for _ in range(_CHAIN_CAP):
+        row = step(current)
+        child_id = row["id"] if row is not None else None
+        if not child_id or child_id in seen:
+            return chain
+        seen.add(child_id)
+        current = child_id
+        chain.append(child_id)
+    return chain
+
+
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
@@ -752,28 +771,21 @@ class SessionCompressionMixin:
         written, while a stale websocket later creates a sibling that passes it). Instead exclude
         branch/delegate/tool children and prefer children that continue the chain or are still live over
         stale closed siblings such as ``ws_orphan_reap``."""
-        current = session_id
-        chain = [current] if current else []
-        seen = set(chain)
-        # Defensive bound; ``seen`` guards cycles. 100 truncated real
-        # compression lineages (~180 deep), stranding root→tip walks on a
-        # stale mid id (#125041).
-        for _ in range(_CHAIN_CAP):
+        def step(current: str):
             with self._read_ctx() as conn:
-                row = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
-            child_id = row["id"] if row is not None else None
-            if not child_id or child_id in seen:
-                return chain
-            seen.add(child_id)
-            current = child_id
-            chain.append(child_id)
-        return chain
+                return conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
+        return _walk_compression_chain(session_id, step)
 
     def get_compression_tip(self, session_id: str) -> Optional[str]:
         """Live tip of a compression chain (``get_compression_chain`` semantics); the input
         id when no continuation exists."""
         chain = self.get_compression_chain(session_id)
         return chain[-1] if chain else session_id
+
+    def _compression_tip_on(self, conn, session_id: str) -> str:
+        """``get_compression_tip`` read on a writer's own connection: inside its transaction no rotation
+        can publish between finding the tip and writing it."""
+        return _walk_compression_chain(session_id, lambda current: conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone())[-1]
 
     def _is_compression_child_row(self, child: dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")
