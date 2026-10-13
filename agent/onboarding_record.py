@@ -8,6 +8,7 @@ run ends write the install-level flag in the root config so the next launch does
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
@@ -38,12 +39,22 @@ def load(db, session_id: str) -> dict | None:
     return record if isinstance(record, dict) else None
 
 
+def _ends_last_open_run(db, session_id: str, event: Event) -> bool:
+    current = load(db, session_id)
+    if not is_active(current):
+        return False
+    after = apply(copy.deepcopy(current), event, Facts.from_stored(current["facts"]), now=time.time()).record
+    return not is_active(after) and all(sid == session_id for sid in open_session_ids(db))
+
+
 def _transition(db, session_id: str, event: Event) -> Step | None:
     """Apply *event* and write the result in one database transaction at the compression tip, so Skip
     setup pressed while a card answer is being applied is never overwritten by the older copy, and an id
-    read before a rotation published still lands on the copy the chat reads. An ended run then closes the
-    install flag (a Skip or Done retried after a failed config write repairs it), unless another run
-    is still open: the flag belongs to that run, and an old chat must not end it."""
+    read before a rotation published still lands on the copy the chat reads. An ending closes the install
+    flag first: a failed config write raises before the run ends, so the window keeps the run and the
+    same Skip, Done or delete can be retried. Another open run keeps the flag; it belongs to that run."""
+    if _ends_last_open_run(db, session_id, event):
+        _close_install_flag()
     holder: dict[str, Any] = {}
 
     def update(current: Any) -> Any:
@@ -63,7 +74,7 @@ def _transition(db, session_id: str, event: Event) -> Step | None:
         for listener in _ended_listeners:
             listener(ended)
     if step is not None and not is_active(step.record) and active_session_id(db) is None:
-        _close_install_flag()
+        _close_install_flag()  # no-op unless a concurrent change ended the run after the check above
     return step
 
 
@@ -120,10 +131,10 @@ def active_session_id(db) -> str | None:
 
 def end_before_delete(db, session_id: str) -> None:
     """Deleting the onboarding chat ends its run first (``deleted``), so the install flag closes and the
-    next launch does not open a fresh run. The run lives at the chat's compression tip."""
-    for sid in dict.fromkeys((session_id, db.resolve_resume_session_id(session_id) or session_id)):
-        if is_active(load(db, sid)):
-            advance(db, sid, End("deleted"))
+    next launch does not open a fresh run. Only the compression tip holds the live run: deleting a
+    parent keeps the tip, and the parent's copy is a stale one."""
+    if (db.resolve_resume_session_id(session_id) or session_id) == session_id and is_active(load(db, session_id)):
+        advance(db, session_id, End("deleted"))
 
 
 def observe_tool_result(agent, name: str, args: Mapping[str, Any], result: Any) -> Any:

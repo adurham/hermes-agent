@@ -224,6 +224,9 @@ def test_a_compression_rotation_carries_the_run_record(root):
     assert db.get_session_model_config_value("child", "codex_thread_id") is None
     # The parent keeps its active copy; the run is read at the tip, so skipping the child ends it.
     assert onboarding_record.active_session_id(db) == "child"
+    # Deleting the parent keeps the tip, so the run stays in progress there.
+    onboarding_record.end_before_delete(db, "parent")
+    assert onboarding_record.active_session_id(db) == "child"
     onboarding_record.advance(db, "child", End())
     assert onboarding_record.active_session_id(db) is None
 
@@ -246,7 +249,7 @@ def test_skip_that_read_the_id_before_a_rotation_ends_the_run_at_the_tip(root, m
     assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is False
 
 
-def test_a_skip_retried_after_a_failed_config_write_closes_the_install_flag(root, monkeypatch):
+def test_a_failed_config_write_leaves_the_run_open_so_the_skip_can_be_retried(root, monkeypatch):
     from hermes_cli import onboarding_run
     from hermes_cli.config import read_user_config_raw
     db = server._get_db()
@@ -257,15 +260,18 @@ def test_a_skip_retried_after_a_failed_config_write_closes_the_install_flag(root
     def disk_full(value, **kw):
         raise OSError("disk full")
 
+    ended: list[dict] = []
+    monkeypatch.setattr(onboarding_record, "_ended_listeners", [ended.append])
     monkeypatch.setattr(onboarding_run, "set_run", disk_full)
     with pytest.raises(OSError):
         onboarding_record.advance(db, "onb", End())
     monkeypatch.setattr(onboarding_run, "set_run", real_set_run)
 
-    assert onboarding_record.load(db, "onb")["phase"] == "skipped"
-    assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is True
+    # Nothing ended: no window drops its Skip button, and the next launch resumes this run.
+    assert onboarding_record.active_session_id(db) == "onb" and ended == []
     onboarding_record.advance(db, "onb", End())
     assert read_user_config_raw(root / "config.yaml")["onboarding"]["run"] is False
+    assert [e["outcome"] for e in ended] == ["skipped"]
 
 
 def test_an_old_ended_chat_never_closes_the_flag_of_a_newer_run(root):
