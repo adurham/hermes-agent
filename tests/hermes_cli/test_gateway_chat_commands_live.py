@@ -160,3 +160,18 @@ def test_classic_view_retry_undo_new_match_main(tmp_path):
         second = session_id()
         assert second != sid
         assert db("SELECT title FROM sessions WHERE id=?", second) == [("Second Thread",)]
+
+
+@pytest.mark.platforms("linux")
+def test_classic_view_plan_and_goal_run_on_the_gateway(tmp_path):
+    """/plan queues main's plan-mode turn; /goal sets the session's goal and kicks it off. Both reach
+    the model as normal turns of this session (the loopback model echoes the user text)."""
+    with classic_session(tmp_path) as (send, _screen, db, session_id):
+        send("first question", "RECOVERY_ACK_first question")
+        send("/plan add a cache", "RECOVERY_ACK_[/plan")
+        send("/goal ship the cache", "Goal set")
+        send("/goal status", "Goal (")
+        sid = session_id()
+        users = [r[0] for r in db("SELECT content FROM messages WHERE session_id=? AND role='user'", sid)]
+        assert any("add a cache" in u and "PLAN MODE" in u for u in users), users
+        assert "ship the cache" in users, users
