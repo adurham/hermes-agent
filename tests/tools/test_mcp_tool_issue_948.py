@@ -233,6 +233,41 @@ def test_bare_node_launchers_resolve_pm_node_ahead_of_the_users(tmp_path, monkey
     assert env["PATH"].split(os.pathsep) == [str(npm_bin), str(node_bin), str(user_bin), "/usr/bin"]
 
 
+def test_packaged_npx_runs_the_package_bin_on_the_packaged_node(tmp_path, monkeypatch):
+    """With only the payload's Node, npx's cmd.exe hop always dies, so Hermes installs the
+    package (scripts off) and runs its bin script on the packaged node instead."""
+    import pm.user_facing
+    from tools.mcp_tool_config import _packaged_npx_entry
+
+    npm_bin = _toolchain_bin(tmp_path / "store" / "npm", "npx")
+    (npm_bin / "node_modules" / "npm" / "bin").mkdir(parents=True)
+    (npm_bin / "node_modules" / "npm" / "bin" / "npm-cli.js").write_text("", encoding="utf-8")
+    node_bin = tmp_path / "store" / "node"
+    node_bin.mkdir(parents=True)
+    calls = tmp_path / "npm-calls.txt"
+    node = node_bin / "node"
+    # Stands in for `node npm-cli.js install --prefix <p> ... <spec>`: records argv, lays out the package.
+    node.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" >> "{calls}"\n'
+        'pkg="$4/node_modules/@scope/srv"; mkdir -p "$pkg"\n'
+        "echo '{\"bin\": {\"srv\": \"dist/index.js\"}}' > \"$pkg/package.json\"\n",
+        encoding="utf-8")
+    node.chmod(0o755)
+    monkeypatch.setattr(pm.user_facing, "applies", lambda: True)
+    sealed = {"node": [str(node_bin)], "npm": [str(npm_bin)]}
+    monkeypatch.setattr(pm.user_facing, "_sealed_dirs", lambda name: sealed.get(name, []))
+
+    args = ["-y", "@scope/srv", "--port", "1"]
+    command, argv = _packaged_npx_entry(str(npm_bin / "npx.cmd"), args)
+    assert command == str(node)
+    assert argv[1:] == ["--port", "1"] and argv[0].endswith(os.path.join("@scope", "srv", "dist", "index.js"))
+    assert "--ignore-scripts" in calls.read_text(encoding="utf-8-sig").split()
+    assert _packaged_npx_entry(str(npm_bin / "npx.cmd"), args) == (command, argv)
+    assert len(calls.read_text(encoding="utf-8-sig").splitlines()) == 1
+    assert _packaged_npx_entry(str(tmp_path / "user-node" / "npx.cmd"), args) is None
+
+
 def test_bare_uvx_resolves_pm_uv_and_an_absolute_command_stays_the_users(tmp_path, monkeypatch):
     user_bin = _toolchain_bin(tmp_path / "user" / ".local" / "bin", "uvx")
     uv_dir = _toolchain_bin(tmp_path / "store" / "uv-0.1", "uv", "uvx")

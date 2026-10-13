@@ -3,11 +3,13 @@ interpolation, hidden-whitespace and suspicious-entry filtering, the filtered
 subprocess env, command resolution, the cached-npx binary shortcut and the shared stderr log."""
 
 import codecs
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -457,6 +459,60 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
             if os.path.exists(candidate) and os.access(candidate, os.X_OK):
                 return candidate, rest[1:]
     return None
+
+
+def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
+    """``(node.exe, [bin script, *args])`` for ``npx [-y] <pkg> ...`` when *command* is a sealed
+    Windows payload's own npx, else None.
+
+    That npx starts the package bin through cmd.exe, and cmd.exe cannot start the packaged
+    ``node.exe`` (``pm.user_facing``). Hermes gets here only without a host Node and without
+    a copy that PM may make. The payload's Python CAN start the packaged ``node.exe``, so the
+    package is installed with npm's own script and the bin's script runs on that node.
+    Install scripts stay off, because npm runs them through cmd.exe too. None keeps plain
+    npx (an honest failure) for any other argv shape, a failed install, or an unclear bin.
+    """
+    from pm.user_facing import _sealed_dirs, applies
+
+    if not applies() or not isinstance(args, list):
+        return None
+    npm_dirs = {os.path.normcase(d): d for d in _sealed_dirs("npm")}
+    npm_dir = npm_dirs.get(os.path.normcase(os.path.dirname(str(command))))
+    node = shutil.which("node", path=os.pathsep.join(_sealed_dirs("node")))
+    npm_cli = os.path.join(npm_dir or "", "node_modules", "npm", "bin", "npm-cli.js")
+    if npm_dir is None or node is None or not os.path.isfile(npm_cli):
+        return None
+    rest = list(args)
+    while rest and rest[0] in ("-y", "--yes"):
+        rest.pop(0)
+    spec = str(rest[0]) if rest else ""
+    if not spec or spec.startswith("-") or any(str(a) in ("-y", "--yes") for a in rest[1:]):
+        return None
+    scope, _, bare = spec.rpartition("/") if spec.startswith("@") else ("", "", spec)
+    name = (f"{scope}/" if scope else "") + bare.split("@", 1)[0]
+    from hermes_constants import get_hermes_home
+
+    prefix = Path(get_hermes_home()) / "cache" / "mcp-npx" / hashlib.sha256(spec.encode()).hexdigest()[:16]
+    manifest = prefix / "node_modules" / name / "package.json"
+    if not manifest.is_file():
+        install = [node, npm_cli, "install", "--prefix", str(prefix), "--no-save", "--ignore-scripts",
+                   "--no-audit", "--no-fund", "--loglevel=error", spec]
+        result = subprocess.run(install, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                stdin=subprocess.DEVNULL, timeout=600, check=False)
+        if result.returncode != 0 or not manifest.is_file():
+            logger.warning("npm install of %s with the packaged node failed: %s", spec,
+                           (result.stderr or result.stdout).strip()[-500:])
+            return None
+    try:
+        bin_field = (json.loads(manifest.read_text(encoding="utf-8-sig")) or {}).get("bin")
+    except (OSError, ValueError):
+        return None
+    if isinstance(bin_field, dict):
+        bin_field = bin_field.get(bare.split("@", 1)[0]) or (
+            next(iter(bin_field.values())) if len(bin_field) == 1 else None)
+    if not isinstance(bin_field, str):
+        return None
+    return node, [str(manifest.parent / bin_field), *rest[1:]]
 
 
 def _interpolate_env_vars(value):
