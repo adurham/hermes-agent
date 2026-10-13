@@ -497,3 +497,23 @@ def test_a_mid_turn_steer_row_is_estimated_delta_like_main(make_agent):
     agent.run_conversation("slow", conversation_history=[{"role": "user", "content": "a"},
                                                           {"role": "assistant", "content": "b"}])
     assert agent._turn_base_usage_anchor["base_count"] == 3  # history + the ask, not the steer row
+
+
+def test_first_turn_on_a_rebuilt_gateway_agent_keeps_the_exact_figure(make_agent):
+    """/personality or /model rebuilds the gateway's agent, whose session counters restart: the turn
+    result's own api_calls says the turn answered, so its reply is anchored (no `~`), as on main."""
+    usage = dict(SESSION_USAGE, context_tokens=120, api_calls=1)  # restarted counters
+    agent, client = make_agent([frame("message.complete", {"text": "arr", "outcome": "completed"})],
+                               result={"final_response": "arr", "api_calls": 1,
+                                       "messages": [{"role": "assistant", "content": "arr"}]})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.session_api_calls = 9  # what the retired agent's counters had reached
+    agent.run_conversation("who are you", conversation_history=[{"role": "user", "content": "a"},
+                                                                 {"role": "assistant", "content": "b"}])
+    assert agent._turn_base_usage_anchor["base_count"] == 3  # anchored after the ask: no estimated delta

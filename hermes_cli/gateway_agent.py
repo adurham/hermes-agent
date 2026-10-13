@@ -131,6 +131,7 @@ class GatewayAgent:
         self._context_tokens = 0
         self._turn_calls_base = 0
         self._turn_ask_index = None
+        self._turn_api_calls = None
         self._usage_stale = False
         self._current_task_id = self._current_turn_id = self._current_api_request_id = ""
         self._memory_manager = None
@@ -396,6 +397,7 @@ class GatewayAgent:
                          task_id=None, persist_user_message=None, turn_author=None, **_kw):
         history = list(conversation_history or [])
         self._turn_ask_index = len(history)  # the staged ask's row in this turn's transcript
+        self._turn_api_calls = None
         self._turn_calls_base = self.session_api_calls
         self._usage_stale = True
         self._interrupt_requested = False
@@ -714,6 +716,8 @@ class GatewayAgent:
             out["messages"].append({"role": "assistant", "content": out["final_response"]})
         out["session_id"] = self.session_id
         self._session_messages = out["messages"]
+        calls = stored.get("api_calls")
+        self._turn_api_calls = calls if isinstance(calls, int) and not isinstance(calls, bool) else None
         self._apply_usage(stored, usage)
         return out
 
@@ -746,7 +750,12 @@ class GatewayAgent:
         last_user = ask if isinstance(ask, int) and 0 <= ask < len(messages) and messages[ask].get("role") == "user" \
             else next((i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"),
                       len(messages) - 1)
-        base = last_user + 1 if self.session_api_calls > self._turn_calls_base else last_user
+        # Did this turn complete an API call? The turn result's own count when the gateway sent one: a
+        # rebuilt gateway agent (/personality, /model) restarts its session counters, so the cumulative
+        # delta can read "no call" for a turn that answered.
+        turn_calls = self._turn_api_calls
+        made_call = turn_calls > 0 if isinstance(turn_calls, int) else self.session_api_calls > self._turn_calls_base
+        base = last_user + 1 if made_call else last_user
         if base <= 0:
             self._turn_base_usage_anchor = None
             return
