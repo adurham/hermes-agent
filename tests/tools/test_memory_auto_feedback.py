@@ -21,9 +21,28 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.memory_auto_feedback import audit as maf
+
 from tools.memory_warm import (
     get_warm_store,
     reset_warm_store_for_testing,
+)
+
+
+def _holographic_provider_available() -> bool:
+    """True when the catalog holographic plugin resolves (it left core in v0.21.7)."""
+    try:
+        from plugins.memory import import_provider_module
+        import_provider_module("holographic", "store")
+    except Exception:
+        return False
+    return True
+
+
+# The warm-store-backed classes run against the real provider; environments without the catalog
+# plugin (isolated suites included) skip instead of erroring on the import.
+_provider_required = pytest.mark.skipif(
+    not _holographic_provider_available(),
+    reason="holographic provider (catalog plugin) not installed in this environment",
 )
 
 
@@ -249,6 +268,7 @@ class TestRecordRecall:
 # =========================================================================
 
 
+@_provider_required
 class TestOnTurnEnd:
     def test_credits_matched_fact(self, enabled_config, reset_audit_state, warm):
         # Seed warm with a real fact whose fingerprints we'll cite.
@@ -436,6 +456,7 @@ class TestSetSession:
         assert maf.current_session_id() is None
 
 
+@_provider_required
 class TestWarmStoreHook:
     def test_recall_records_when_session_bound_and_enabled(
         self, enabled_config, reset_audit_state, warm,

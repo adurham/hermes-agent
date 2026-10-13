@@ -5949,8 +5949,12 @@ def _vision_main_provider_client(
     """Auto-detect step 1: try the main provider; (None, None) falls through to the aggregator chain."""
     # A provider vision default (static override or catalog discovery) is a *known* multimodal
     # model; the pinned chat model usually isn't, so only fall back to it when no default exists.
+    # A configured auxiliary.vision.model (resolved_model) outranks both: it is the user's own
+    # pick, and consulting it here is what keeps a text-only main model (e.g. a DeepSeek chat
+    # pin) from tripping the support check below and dropping to the aggregator chain
+    # (fork fix ported from 0285cf60c onto upstream's refactored shape, 2026-10-13).
     provider_vision_default = _resolve_provider_vision_default(main_provider)
-    vision_model = provider_vision_default or main_model
+    vision_model = resolved_model or provider_vision_default or main_model
     if main_provider == "nous":
         # Nous picks its vision model from Portal tier-aware slots inside _try_nous(vision=True);
         # passing the chat model would override that and 404. Only auxiliary.vision.model may.
