@@ -1146,28 +1146,31 @@ export async function fetchAllProfilesSessionsPerProfile(
     : allProfilesSessionList(url, profiles, fetchPage)
 }
 
-/** Cross-profile reads the gateway builds by scanning every profile's databases: the
- *  all-profiles project tree and the PR scan. The renderer asks for them only for the
- *  all-profiles view, so a `profile` already on the path is the route's own scope, not a
- *  selector; the per-profile reads carry their own scope and are made with `profileScoped`. */
+/** Cross-profile reads the gateway builds by scanning every profile: the all-profiles project
+ *  tree, the PR scan and the cron job list. The renderer asks for the first two only for the
+ *  all-profiles view, so a `profile` already on their path is the route's own scope, not a
+ *  selector; the cron list is cross-profile only when it names `all` or no profile. The
+ *  per-profile reads carry their own scope and are made with `profileScoped`. */
 export function isAllProfilesAggregateRequest(method: string | undefined, path: string | undefined): boolean {
   if (!path) {
     return false
   }
 
-  let pathname: string
+  let url: URL
 
   try {
-    pathname = new URL(path, 'http://desktop.local').pathname.replace(/\/+$/, '')
+    url = new URL(path, 'http://desktop.local')
   } catch {
     return false
   }
 
+  const pathname = url.pathname.replace(/\/+$/, '')
   const verb = (method || 'GET').toUpperCase()
 
   return (
     (verb === 'GET' && pathname === '/api/profiles/projects/tree') ||
-    (verb === 'POST' && pathname === '/api/profiles/sessions/pull-requests')
+    (verb === 'POST' && pathname === '/api/profiles/sessions/pull-requests') ||
+    (verb === 'GET' && pathname === '/api/cron/jobs' && (url.searchParams.get('profile') || 'all').trim().toLowerCase() === 'all')
   )
 }
 
@@ -1269,7 +1272,43 @@ function mergeProfilePullRequests(reads: ProfileRead[]) {
   }
 }
 
-/** The all-profiles project tree or PR scan, assembled from one read per profile.
+// The gateway's own cross-profile list (`_list_cron_jobs_sync`): a job copied into a second
+// profile is listed once, the default profile's copy winning, and a job without an id is never
+// folded. A profile that cannot be read is left out, as the gateway logs and skips it.
+function mergeProfileCronJobs(reads: ProfileRead[]) {
+  const byId = new Map<string, any>()
+  const unkeyed: unknown[] = []
+
+  for (const read of reads) {
+    if ('error' in read || !Array.isArray(read.data)) {
+      continue
+    }
+
+    for (const job of read.data) {
+      if (!job || typeof job !== 'object') {
+        continue
+      }
+
+      const id = job.id || job.job_id
+
+      if (!id || id === 'unknown') {
+        unkeyed.push(job)
+
+        continue
+      }
+
+      const existing = byId.get(id)
+
+      if (!existing || (job.is_default_profile && !existing.is_default_profile)) {
+        byId.set(id, job)
+      }
+    }
+  }
+
+  return [...byId.values(), ...unkeyed]
+}
+
+/** The all-profiles project tree, PR scan or cron list, assembled from one read per profile.
  *
  *  A native gateway grant names ONE profile, so each profile is read with its own grant
  *  (`fetchProfile` gets the path scoped to it). A profile that cannot be read is reported in
@@ -1292,8 +1331,14 @@ export async function fetchAllProfilesAggregatePerProfile(
     throw new Error(reads.map(read => ('error' in read ? `${read.profile}: ${read.error}` : '')).join('; ') || 'No profiles to read')
   }
 
-  if (url.pathname.replace(/\/+$/, '') === '/api/profiles/projects/tree') {
+  const pathname = url.pathname.replace(/\/+$/, '')
+
+  if (pathname === '/api/profiles/projects/tree') {
     return mergeProfileProjectTrees(reads, Math.max(0, Number(url.searchParams.get('preview_limit') ?? 3) || 0))
+  }
+
+  if (pathname === '/api/cron/jobs') {
+    return mergeProfileCronJobs(reads)
   }
 
   return mergeProfilePullRequests(reads)

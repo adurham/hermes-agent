@@ -1134,3 +1134,41 @@ test('all-profiles PR scan unions the profiles and settles only what it could re
 
   assert.deepEqual(partial, { pull_requests: { a: pr(1) }, scanned: ['a'] })
 })
+
+test('the cron job list is an all-profiles read only for `all` or no profile', () => {
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/cron/jobs'), true)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/cron/jobs?profile=all'), true)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/cron/jobs?profile=work'), false)
+  assert.equal(isAllProfilesAggregateRequest('POST', '/api/cron/jobs'), false)
+  assert.equal(isAllProfilesAggregateRequest('GET', '/api/cron/jobs/abc?profile=all'), false)
+})
+
+test('all-profiles cron list merges one read per profile like the gateway', async () => {
+  const reads: string[] = []
+
+  const pages: Record<string, unknown> = {
+    work: [
+      { id: 'shared', profile: 'work', is_default_profile: false },
+      { id: 'w', profile: 'work' },
+      { id: 'unknown', name: 'w-orphan' }
+    ],
+    default: [
+      { id: 'shared', profile: 'default', is_default_profile: true },
+      { id: 'unknown', name: 'd-orphan' }
+    ]
+  }
+
+  const jobs = (await fetchAllProfilesAggregatePerProfile('/api/cron/jobs?profile=all', ['work', 'default', 'broken'], async (profile, path) => {
+    reads.push(path)
+
+    if (profile === 'broken') {
+      throw new Error('denied')
+    }
+
+    return structuredClone(pages[profile])
+  })) as any[]
+
+  assert.deepEqual(reads.sort(), ['/api/cron/jobs?profile=broken', '/api/cron/jobs?profile=default', '/api/cron/jobs?profile=work'])
+  // A duplicate keeps its first position but the default profile's copy; id-less jobs never fold.
+  assert.deepEqual(jobs.map(job => `${job.id}:${job.profile ?? job.name}`), ['shared:default', 'w:work', 'unknown:w-orphan', 'unknown:d-orphan'])
+})
