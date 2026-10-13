@@ -547,3 +547,34 @@ def test_native_image_parts_are_staged_and_submitted_as_attachments(make_agent):
     submit = dict(client.calls)["prompt.submit"]
     assert submit["text"] == "what is this?"
     assert submit["attachments"] == [{"path": "/owner/cache/images/upload_1.png", "mime": "image/png"}]
+
+
+def test_after_a_redirect_the_redirect_row_is_the_turns_ask_like_main(make_agent):
+    """busy_input_mode=interrupt redirects the streaming call: main's first completed response answers
+    the redirect row, so the reply is anchored (no `~`), unlike a /steer row."""
+    usage = dict(SESSION_USAGE, context_tokens=300, api_calls=1)
+    suffix = [{"role": "assistant", "content": "STEP8 story: w000 w001"},
+              {"role": "user", "content": "[Context from the interrupted assistant response] redirect now"},
+              {"role": "assistant", "content": "redirected"}]
+    agent, client = make_agent([frame("message.delta", {"text": "w000 "}), "wait", "wait",
+                                frame("message.complete", {"text": "redirected", "outcome": "completed"})],
+                               result={"final_response": "redirected", "api_calls": 1, "messages": suffix},
+                               stream_delta_callback=lambda text: None)
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        if method == "session.redirect":
+            client.calls.append((method, params))
+            return {"status": "redirected"}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    out = {}
+    worker = threading.Thread(target=lambda: out.update(agent.run_conversation("story")))
+    worker.start()
+    from tests.waiting import wait_until
+    wait_until(lambda: agent._generation is not None, timeout=5)
+    assert agent.redirect("redirect now") is True
+    worker.join(5)
+    assert agent._turn_base_usage_anchor["base_count"] == 3  # through the redirect row

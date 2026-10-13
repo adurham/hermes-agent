@@ -374,7 +374,12 @@ class GatewayAgent:
         return self._correct("steer", text)
 
     def redirect(self, text):
-        return self._correct("redirect", text)
+        accepted = self._correct("redirect", text)
+        if accepted:
+            # Main's turn then answers the redirect row first (the interrupted call has no usage), so
+            # its anchor is priced through that row: it, not the original ask, is the turn's ask.
+            self._turn_ask_index = None
+        return accepted
 
     # -- the turn ------------------------------------------------------------------------------
     def _submit_params(self, user_message, persist_user_message, turn_author):
