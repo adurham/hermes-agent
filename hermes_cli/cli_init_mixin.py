@@ -381,11 +381,20 @@ class CLIInitMixin:
                   "ignore_rules": getattr(self, "ignore_rules", False) or None,
                   "run_budget": getattr(self, "_explicit_run_budget", None),
                   "verbose": getattr(self, "verbose", False) or None}
+        # A resumed row this gateway has not imported yet (a legacy / in-process session) is imported
+        # under the active-session registry lock, which refuses while ANY live lease holds the id —
+        # including this process's own, claimed before the first turn. Hand the slot over around the
+        # attach, then re-claim it for the id the gateway returned (main's exclusivity is kept).
+        held = getattr(self, "_resumed", False) and getattr(self, "_active_session_lease", None) is not None
+        if held:
+            self._release_active_session()
         sid = store.open_session(self, launch)
         self._gateway_session_open = True
         if sid and sid != self.session_id:
             self.session_id = sid
             getattr(self, "_write_terminal_breadcrumb", lambda: None)()
+        if held and not self._claim_active_session("cli", stderr=True):
+            raise RuntimeError("session_already_owned")
 
     def _new_session_id(self, now, *, branch_of=None, title=None):
         """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway

@@ -459,3 +459,27 @@ def test_explicit_reasoning_max_turns_and_checkpoints_reach_session_create(store
     # An unparseable --reasoning keeps main's warn-and-ignore (never an invalid_params refusal).
     CLIInitMixin._ensure_gateway_session(host(reasoning="bogus"))
     assert "reasoning" not in client.calls[-1][1]
+
+
+def test_resume_hands_the_cli_lease_over_while_the_gateway_imports_the_row(store):
+    """The gateway imports a resumed legacy row under the active-session registry lock and refuses
+    (runtime_coordination_required) while any live lease holds that id. The -q/-Q path claims the
+    CLI's lease before the first turn, so the attach must run without it and re-claim afterwards."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    db, client = store
+    events = []
+    h = SimpleNamespace(model="m1", requested_provider="auto", enabled_toolsets=["terminal"],
+                        session_id="local-old", _resumed=True, _session_db=GatewaySessionStore(db.connection),
+                        _active_session_lease=object())
+    h._release_active_session = lambda: (events.append("release"), setattr(h, "_active_session_lease", None))
+    h._claim_active_session = lambda *a, **k: (events.append(("claim", h.session_id)), True)[1]
+    base = client.rpc
+
+    async def rpc(method, **params):
+        events.append((method, h._active_session_lease is None))
+        return await base(method, **params)
+    client.rpc = rpc
+    CLIInitMixin._ensure_gateway_session(h)
+    assert events == ["release", ("session.resume", True), ("claim", "local-old")], events
