@@ -18,7 +18,7 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
     db = authority.db
     sessions, offset = [], 0
     while len(sessions) < limit:
-        rows = db.list_sessions_rich(sources=['cli', 'tui', 'gui'], limit=200, offset=offset,
+        rows = db.list_sessions_rich(sources=['cli', 'tui', 'gui', 'desktop'], limit=200, offset=offset,
             order_by_last_active=True, compact_rows=True, include_hidden=include_hidden)
         for row in rows:
             sid = db.get_compression_tip(row['id']) or row['id']
