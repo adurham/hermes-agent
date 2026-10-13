@@ -16,15 +16,15 @@ import {
 import { useI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { activeGatewayConnectionId } from '@/store/gateway'
+import {
+  $localModelOfferPending,
+  LOCAL_MODEL_OFFERED_KEY,
+  LOCAL_MODEL_PENDING_KEY
+} from '@/store/local-model-offer'
 import { readLocalSetupEligibility } from '@/store/local-setup-offer'
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
 import { requestRoute } from '@/store/recovery-requests'
 import type { LocalCatalogModel } from '@/types/hermes'
-
-/** Install-level: the local-model offer opens at most once per install, and a dismiss is final. */
-export const LOCAL_MODEL_OFFERED_KEY = 'hermes.desktop.firstRun.localModelOffered.v1'
-/** When the offer's settle wait started, so a restart before it opens resumes the wait. */
-const LOCAL_MODEL_PENDING_KEY = 'hermes.desktop.firstRun.localModelPendingFrom.v1'
 
 function settleStart(settleFrom: null | number): null | number {
   if (settleFrom !== null) {
@@ -51,6 +51,14 @@ export function OnboardingEnd() {
     if (from === null || readKey(LOCAL_MODEL_OFFERED_KEY)) {
       return
     }
+
+    $localModelOfferPending.set(true)
+    // A machine that cannot run a local model (or cannot be read) gets no offer, so the sign-in offer
+    // stops waiting.
+    void readLocalSetupEligibility().then(
+      ({ fit }) => !fit && $localModelOfferPending.set(false),
+      () => $localModelOfferPending.set(false)
+    )
 
     const settledAt = from + SETTLE_MIN_MS + Math.random() * SETTLE_SPREAD_MS
     let lastTypedAt = 0
@@ -96,8 +104,13 @@ export function OnboardingEnd() {
 
   const copy = t.firstRun.localModel
 
+  const close = () => {
+    setOffer(null)
+    $localModelOfferPending.set(false)
+  }
+
   return (
-    <Dialog onOpenChange={open => !open && setOffer(null)} open={offer !== null}>
+    <Dialog onOpenChange={open => !open && close()} open={offer !== null}>
       {offer && (
         <DialogContent onOpenAutoFocus={preventCloseButtonAutoFocus}>
           <DialogHeader>
@@ -105,12 +118,12 @@ export function OnboardingEnd() {
             <DialogDescription>{copy.text(offer.display_name, offer.size_label)}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button onClick={() => setOffer(null)} size="sm" type="button" variant="text">
+            <Button onClick={close} size="sm" type="button" variant="text">
               {copy.notNow}
             </Button>
             <Button
               onClick={() => {
-                setOffer(null)
+                close()
                 requestRoute(`${SETTINGS_ROUTE}?tab=providers&pview=local`)
               }}
               type="button"

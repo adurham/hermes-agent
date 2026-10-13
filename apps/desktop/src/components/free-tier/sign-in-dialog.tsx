@@ -40,6 +40,7 @@ import {
   stopFreeTierOffer,
   syncFreeTierOffer
 } from '@/store/free-tier-sign-in'
+import { $localModelOfferPending } from '@/store/local-model-offer'
 import { refreshOnboardingProviders } from '@/store/onboarding'
 import { $onboardingSurfaceClear } from '@/store/onboarding-presence'
 import { $currentModel, setModelPickerOpen } from '@/store/session'
@@ -97,6 +98,7 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
     const stops = [
       $freeTierStatus.listen(sync),
       $onboardingSurfaceClear.listen(sync),
+      $localModelOfferPending.listen(sync),
       $freeTierTurnCompleted.listen(() => void refreshFreeTierStatus(requestGateway, sameGatewayRoute()))
     ]
 

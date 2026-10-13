@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $freeTierStatus, type FreeTierRequester } from '@/store/free-tier'
 import { $freeTierSignIn, closeFreeTierSignIn, stopFreeTierOffer, syncFreeTierOffer } from '@/store/free-tier-sign-in'
 import { activeGatewayProfileKey, ensureGatewayForProfile } from '@/store/gateway'
+import { $localModelOfferPending } from '@/store/local-model-offer'
 import {
   $onboardingDecided,
   markOnboardingDecided,
@@ -71,6 +72,21 @@ afterEach(() => {
 })
 
 describe('sign-in offer after a finished task', () => {
+  it('waits for the local-model offer to be answered, then claims', async () => {
+    const requestGateway = gateway({ statuses: [status(null)] })
+    $localModelOfferPending.set(true)
+
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(claims(requestGateway)).toBe(0)
+
+    $localModelOfferPending.set(false)
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(claims(requestGateway)).toBe(1)
+    expect($freeTierSignIn.get().status).toBe('offer')
+  })
+
   it('due now: claims once and opens the offer', async () => {
     const requestGateway = gateway({ statuses: [status(null)] })
 
