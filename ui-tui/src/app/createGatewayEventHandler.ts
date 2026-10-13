@@ -1089,8 +1089,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // mid-turn instead of only at message.complete. The session filter at
         // the top of this handler already dropped ticks for non-focused
         // sessions.
-        // A canonical local viewer's tick carries the owner's counters at the top level.
-        const usage = usageFromTick(ev.payload)
+        const usage = usageFromTick(ev.payload) // canonical: the owner's counters at the top level
 
         if (usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))

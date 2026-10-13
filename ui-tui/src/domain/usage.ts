@@ -5,6 +5,68 @@ export const ZERO: Usage = { calls: 0, input: 0, output: 0, total: 0 }
 const num = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined
 
+const round1 = (value: number) => Math.round(value * 10) / 10
+const pct = (part: number, whole: number) => Math.max(0, Math.min(100, Math.round((part / whole) * 100)))
+
+// Main `Usage` key ← owner stats key(s), first non-zero wins (`gateway/session_usage.py::tui_usage`).
+const COUNTERS: [keyof Usage, string[]][] = [
+  ['calls', ['api_calls']],
+  ['input', ['input_tokens', 'prompt_tokens']],
+  ['output', ['output_tokens', 'completion_tokens']],
+  ['reasoning', ['reasoning_tokens']],
+  ['prompt', ['prompt_tokens']],
+  ['completion', ['completion_tokens']],
+  ['total', ['total_tokens']]
+]
+
+function contextFields(p: Record<string, unknown>): Partial<Usage> {
+  const used = num(p.last_prompt_tokens) ?? 0
+  const max = num(p.context_length) ?? 0
+  const fields: Partial<Usage> = p.context_length == null ? {} : { compressions: num(p.compression_count) ?? 0 }
+
+  if (!used || !max) {
+    return fields
+  }
+
+  const source = typeof p.context_source === 'string' && p.context_source ? p.context_source : 'provider_usage'
+  const clamped = Math.min(used, max)
+
+  return {
+    ...fields,
+    context_estimated: source !== 'provider_usage',
+    context_max: max,
+    context_percent: pct(clamped, max),
+    context_source: source,
+    context_used: clamped
+  }
+}
+
+function rateFields(p: Record<string, unknown>): Partial<Usage> {
+  const fields: Partial<Usage> = {}
+  const promptTotal = num(p.prompt_tokens) ?? 0
+  const cacheRead = num(p.cache_read_tokens) ?? 0
+  const latency = num(p.avg_latency_s)
+  const tps = num(p.tokens_per_s)
+
+  if (promptTotal > 0 && cacheRead > 0) {
+    fields.cache_hit_pct = pct(cacheRead, promptTotal)
+  }
+
+  if (latency !== undefined) {
+    fields.avg_latency_s = round1(latency)
+  }
+
+  if (tps !== undefined) {
+    fields.avg_tps = round1(tps)
+  }
+
+  if (num(p.active_subagents) !== undefined) {
+    fields.active_subagents = num(p.active_subagents)
+  }
+
+  return fields
+}
+
 /** A canonical local viewer's `session.usage` tick carries the owner's session-cumulative counters at
  * the top level (`gateway/session_usage.py::usage_stats`, the `session.stats` dict); main's sidecar
  * ticker sent its `_get_usage` shape under `usage`. Both land as the same status-bar `Usage`
@@ -24,61 +86,13 @@ export function usageFromTick(payload: unknown): Partial<Usage> | undefined {
     return undefined
   }
 
-  const usage: Partial<Usage> = {
-    calls: num(p.api_calls) ?? 0,
-    completion: num(p.completion_tokens) ?? 0,
-    input: num(p.input_tokens) || num(p.prompt_tokens) || 0,
-    output: num(p.output_tokens) || num(p.completion_tokens) || 0,
-    prompt: num(p.prompt_tokens) ?? 0,
-    reasoning: num(p.reasoning_tokens) ?? 0,
-    total: num(p.total_tokens) ?? 0
-  }
+  const usage: Partial<Usage> = Object.fromEntries(
+    COUNTERS.map(([key, sources]) => [key, sources.map(source => num(p[source])).find(Boolean) ?? 0])
+  )
 
   if (typeof p.model === 'string' && p.model) {
     usage.model = p.model
   }
 
-  const used = num(p.last_prompt_tokens) ?? 0
-  const max = num(p.context_length) ?? 0
-
-  if (used && max) {
-    const source = typeof p.context_source === 'string' && p.context_source ? p.context_source : 'provider_usage'
-    const clamped = Math.min(used, max)
-
-    Object.assign(usage, {
-      context_estimated: source !== 'provider_usage',
-      context_max: max,
-      context_percent: Math.max(0, Math.min(100, Math.round((clamped / max) * 100))),
-      context_source: source,
-      context_used: clamped
-    })
-  }
-
-  if (p.context_length !== undefined && p.context_length !== null) {
-    usage.compressions = num(p.compression_count) ?? 0
-  }
-
-  const promptTotal = num(p.prompt_tokens) ?? 0
-  const cacheRead = num(p.cache_read_tokens) ?? 0
-
-  if (promptTotal > 0 && cacheRead > 0) {
-    usage.cache_hit_pct = Math.max(0, Math.min(100, Math.round((cacheRead / promptTotal) * 100)))
-  }
-
-  const latency = num(p.avg_latency_s)
-  const tps = num(p.tokens_per_s)
-
-  if (latency !== undefined) {
-    usage.avg_latency_s = Math.round(latency * 10) / 10
-  }
-
-  if (tps !== undefined) {
-    usage.avg_tps = Math.round(tps * 10) / 10
-  }
-
-  if (num(p.active_subagents) !== undefined) {
-    usage.active_subagents = num(p.active_subagents)
-  }
-
-  return usage
+  return { ...usage, ...contextFields(p), ...rateFields(p) }
 }
