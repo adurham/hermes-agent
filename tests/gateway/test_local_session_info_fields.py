@@ -46,7 +46,7 @@ def test_local_viewer_title_republishes_session_info(monkeypatch):
                                    _is_telegram_topic_lane=lambda s: False,
                                    _is_discord_auto_thread_lane=lambda s: False,
                                    _is_relay_discord_channel_lane=lambda s: False)
-    import gateway.session_local as session_local
+    from gateway import session_local
     monkeypatch.setattr(session_local, 'local_session_info', lambda authority, ref: {'title': 'Auto'})
     agent = SimpleNamespace(session_id='s')
     turn._attach_session_title_callback(agent, turn._ctx)

@@ -116,3 +116,47 @@ async def test_cli_surface_snapshot_carries_main_cli_toolsets_and_startup_warnin
     assert cli['browser_backend_notice'] == 'browser-harness is missing'
     tui = (await call('session.create', request_id='tui', source='tui', cwd=str(repo)))['info']
     assert 'tool_availability_warnings' not in tui and 'browser_backend_notice' not in tui
+
+
+@pytest.mark.asyncio
+async def test_cli_surface_counts_kanban_skills_like_main_cli_without_leaking(tmp_path, monkeypatch, repo):
+    """Main's ``cmd_chat`` pins ``HERMES_KANBAN_BOARD`` before HermesCLI starts, so its banner lists
+    ``environments: [kanban]`` skills. A CLI-surface snapshot counts them; other surfaces and the
+    process-wide catalog do not."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli import banner
+    from tools.skills_tool import _find_all_skills
+
+    home = tmp_path / 'home'
+    for name, extra in (('arxiv', ''), ('sdlc-review', 'environments:\n  - kanban\n')):
+        skill = home / 'skills' / 'devops' / name
+        skill.mkdir(parents=True)
+        (skill / 'SKILL.md').write_text(f'---\nname: {name}\ndescription: d.\n{extra}---\nBody.\n')
+    (home / 'config.yaml').write_text(
+        'model: {default: gpt-5.4, provider: custom, base_url: "http://127.0.0.1:9/v1"}\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.delenv('HERMES_KANBAN_BOARD', raising=False)
+    monkeypatch.delenv('HERMES_KANBAN_TASK', raising=False)
+    monkeypatch.setattr(run, '_hermes_home', home)
+    monkeypatch.setattr(banner, '_available_skills_cache', None)
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(home), instance_id='first')
+    connection = AuthorityConnection(authority, object(), {'user_id': 'human'})
+
+    async def call(method, **params):
+        reply = await connection.dispatch({'id': 1, 'method': method, 'params': params})
+        assert 'result' in reply, reply
+        return reply['result']
+
+    cli = (await call('session.create', request_id='cli', source='cli', cwd=str(repo)))['info']
+    assert sorted(cli['skills']['devops']) == ['arxiv', 'sdlc-review'], cli['skills']
+    tui = (await call('session.create', request_id='tui', source='tui', cwd=str(repo)))['info']
+    assert tui['skills']['devops'] == ['arxiv'], tui['skills']
+    assert [s['name'] for s in _find_all_skills()] == ['arxiv']

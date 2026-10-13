@@ -95,6 +95,28 @@ def _cli_startup_notices(enabled):
     return notices
 
 
+def _cli_skills():
+    """``hermes_cli.banner.get_available_skills`` as main's classic CLI computed it: ``cmd_chat`` pins
+    ``HERMES_KANBAN_BOARD`` before HermesCLI starts, so ``environments: [kanban]`` skills are offered.
+    The owner never sets that env; the kanban relevance is scoped to this scan (a ContextVar) and the
+    catalog cache entry it would poison is restored, so other surfaces keep their own view."""
+    from tools import skills_tool
+    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+    key = ("filtered", False)
+    saved = skills_tool._SKILLS_CACHE.pop(key, None)
+    try:
+        with scoped_kanban_toolset_selection(["kanban"]):
+            found = skills_tool._find_all_skills()
+    finally:
+        skills_tool._SKILLS_CACHE.pop(key, None)
+        if saved is not None:
+            skills_tool._SKILLS_CACHE[key] = saved
+    grouped: dict[str, list[str]] = {}
+    for skill in found:
+        grouped.setdefault(skill.get("category") or "general", []).append(skill["name"])
+    return grouped
+
+
 def session_inventory(authority, policy, agent, cwd):
     """Main's banner/status fields for one session. Each section degrades to main's empty value on
     its own, so one failing builder never blanks the others (main wrapped each in ``suppress``)."""
@@ -132,8 +154,11 @@ def session_inventory(authority, policy, agent, cwd):
         if policy is not None and policy.source == "cli":
             info.update(_cli_startup_notices(enabled))
         with contextlib.suppress(Exception):
-            from hermes_cli.banner import get_available_skills
-            info["skills"] = get_available_skills()
+            if policy is not None and policy.source == "cli":
+                info["skills"] = _cli_skills()
+            else:
+                from hermes_cli.banner import get_available_skills
+                info["skills"] = get_available_skills()
         with contextlib.suppress(Exception):
             from tools.mcp_tool_discovery import get_mcp_status
             info["mcp_servers"] = get_mcp_status()
