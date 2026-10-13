@@ -55,10 +55,16 @@ async def busy_config(connection, ref, params, *, write=False):
     if value is None:
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(authority.runner, live.source)
-        value = (policy.config().get('display', {}).get('busy_input_mode', 'interrupt') if policy else
+        # Main's TUI defaulted to ``queue`` (``ui-tui/src/app/useConfigSync.ts`` TUI_BUSY_DEFAULT): in a
+        # full-screen composer the next prompt is authored while the agent streams, and an unintended
+        # interrupt loses work. Only an explicit ``display.busy_input_mode`` overrides it; every other
+        # surface keeps the framework default ``interrupt``.
+        fallback = 'queue' if policy is not None and getattr(policy, 'source', None) == 'tui' else 'interrupt'
+        display = (policy.config().get('display') or {}) if policy else {}
+        value = (display.get('busy_input_mode') or fallback if policy else
                  authority.runner._effective_busy_input_mode(live.source))
         if value not in ('interrupt', 'steer', 'queue'):
-            value = 'interrupt'
+            value = fallback
     return {'key': 'busy', 'value': value, 'scope': 'session'}
 
 
