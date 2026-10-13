@@ -157,6 +157,17 @@ def process_registry():
     return local
 
 
+def background_counts():
+    """The status bar's ``⚙ N`` processes and running background subagents (cached, no RPC)."""
+    view = process_view()
+    if view is not None:
+        return {"active_background_processes": view.count_running(),
+                "active_background_subagents": view.active_delegations()}
+    from tools.async_delegation import active_count
+    from tools.process_registry import process_registry as local
+    return {"active_background_processes": local.count_running(), "active_background_subagents": active_count()}
+
+
 def session_tools():
     """``/tools`` / ``/initiate-setup``: the gateway session's tool catalog (``tools.show``) as
     ``(tools, toolset_of)``: ``get_tool_definitions``-shaped rows (first description sentence) and

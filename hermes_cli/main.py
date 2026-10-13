@@ -2956,12 +2956,10 @@ def _prepare_agent_startup(args) -> None:
         logger.debug("MCP server filter setup failed", exc_info=True)
 
     # TUI launches hand off to a startup path that backgrounds MCP discovery
-    # with a bounded join; acp/gateway/cron do their own on the runtime path;
-    # chat turns run in the gateway, which owns MCP for them.
-    _run_inline_mcp_discovery = not (
-        _is_tui_chat_launch(args) or _command_has_dedicated_mcp_startup(args)
-        or _chat_runs_at_gateway(args)
-    )
+    # with a bounded join; acp/gateway/cron do their own on the runtime path.
+    if _chat_runs_at_gateway(args):  # chat turns run in the gateway: it owns MCP, hooks, webhooks
+        return
+    _run_inline_mcp_discovery = not (_is_tui_chat_launch(args) or _command_has_dedicated_mcp_startup(args))
     if _run_inline_mcp_discovery and _should_background_mcp_startup(args):
         try:
             from hermes_cli.mcp_startup import start_background_mcp_discovery
@@ -2991,10 +2989,6 @@ def _prepare_agent_startup(args) -> None:
                 "MCP tool discovery failed at CLI startup",
                 exc_info=True,
             )
-    if _chat_runs_at_gateway(args):
-        # Shell hooks and outbound webhooks fire where the tools run: the gateway session registers
-        # them from its policy (``accept_hooks`` rides on session.create).
-        return
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
