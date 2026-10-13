@@ -152,13 +152,9 @@ export const opsCommands: SlashCommand[] = [
     help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
     name: 'reload',
     run: (_arg, ctx) => {
-      // The shared owner's environment is every profile's; it re-reads `.env` per turn itself.
-      if (ctx.gateway.gw?.isCanonical) {
-        return ctx.transcript.sys(t('canonical.controls.notAvailable', 'reload'))
-      }
-
+      // The shared gateway serves `/reload` for one session this client controls.
       ctx.gateway
-        .rpc<ReloadEnvResponse>('reload.env', {})
+        .rpc<ReloadEnvResponse>('reload.env', ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {})
         .then(
           ctx.guarded<ReloadEnvResponse>(r => {
             const n = Number(r.updated ?? 0)

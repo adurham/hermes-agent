@@ -31572,7 +31572,33 @@
       },
       "ReloadEnvParams": {
         "additionalProperties": false,
-        "properties": {},
+        "description": "The shared owner serves ``/reload`` for one session the caller controls (``session_id``).",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
         "title": "ReloadEnvParams",
         "type": "object"
       },

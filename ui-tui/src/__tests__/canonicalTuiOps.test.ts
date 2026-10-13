@@ -55,3 +55,13 @@ it('/save calls session.save on the shared gateway and reports the saved file', 
   expect(request).toHaveBeenCalledWith('session.save', { session_id: 'owner' })
   expect(notices(sys)).toContain('conversation saved to: /home/u/.hermes/sessions/saved/x.json')
 })
+
+it('/reload calls reload.env for this session on the shared gateway and reports the count', async () => {
+  const { request, slash, sys } = harness({ 'reload.env': { updated: 2 } })
+
+  slash('/reload')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('reload.env', { session_id: 'owner' })
+  expect(notices(sys)).toContain('reloaded .env (2 vars updated)')
+})

@@ -4015,7 +4015,11 @@ export interface ToolsConfigureResult {
   reset: boolean
   unknown: string[]
 }
-export type ReloadEnvParams = Record<string, never>
+/** The shared owner serves ``/reload`` for one session the caller controls (``session_id``). */
+export interface ReloadEnvParams {
+  session_id?: string | null
+  profile?: string | null
+}
 export interface ReloadEnvResult {
   updated: number
 }
