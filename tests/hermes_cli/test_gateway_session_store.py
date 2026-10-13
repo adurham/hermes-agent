@@ -116,3 +116,13 @@ def test_store_is_falsy_once_the_gateway_connection_closed(store):
     assert db
     db.connection.close()
     assert not db
+
+
+def test_reader_opens_once_the_gateway_created_state_db(store, tmp_path, monkeypatch):
+    """The startup maintenance probe runs before the gateway exists; that miss is not latched."""
+    db, _ = store
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    assert db.get_session("x") is None and db._reader is None
+    from hermes_state import SessionDB
+    SessionDB(db_path=tmp_path / "state.db").close()
+    assert db.get_session("x") is None and db._reader is not None

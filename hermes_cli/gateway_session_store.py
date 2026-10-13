@@ -61,21 +61,24 @@ class GatewaySessionStore:
         self.snapshots: dict[str, dict] = {}
         self.current: dict | None = None
         self._reader = None
-        self._reader_failed = False
 
     def __bool__(self):
         return not self.connection.closed
 
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
-        if self._reader is None and not self._reader_failed:
+        """The read-only reader, opened on first use. No state.db yet (the gateway creates it on its
+        first start, after the CLI's startup maintenance probe) is retried on the next read."""
+        if self._reader is None:
+            from hermes_constants import get_hermes_home
+            path = get_hermes_home() / "state.db"
+            if not path.exists():
+                return None
             try:
-                from hermes_constants import get_hermes_home
                 from hermes_state import SessionDB
-                self._reader = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
-            except Exception as exc:  # no state.db yet (the gateway creates it): reads find nothing
+                self._reader = SessionDB(db_path=path, read_only=True)
+            except Exception as exc:  # reads find nothing; retried on the next read
                 logger.debug("read-only state.db unavailable: %s", exc)
-                self._reader_failed = True
         return self._reader
 
     def __getattr__(self, name):
