@@ -2,7 +2,7 @@ import type { OnboardingStartResult } from '@hermes/shared'
 
 import { chatMessageText } from '@/lib/chat-messages'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
-import { $introStartExit } from '@/store/onboarding-intro'
+import { $introStartExit, $introView } from '@/store/onboarding-intro'
 import { $onboardingEnded, type OnboardingIntroHooks } from '@/store/onboarding-run'
 import { $activeSessionId } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
@@ -25,6 +25,8 @@ function hasAssistantWords(runtimeId: null | string): boolean {
  */
 export function firstRunIntro(): OnboardingIntroHooks {
   let offerExit: ReturnType<typeof setTimeout> | undefined
+  // The user left this run's intro on an earlier launch: the chat reopens as a normal chat, no demo.
+  let left = false
 
   const clearExit = () => {
     clearTimeout(offerExit)
@@ -32,14 +34,18 @@ export function firstRunIntro(): OnboardingIntroHooks {
   }
 
   return {
-    starting: abandon => {
+    starting: (abandon, seen) => {
+      left = seen
       startIntro()
       $introTurnSent.set(false)
       offerExit = setTimeout(() => $introStartExit.set(abandon), BACKEND_BOOT_WAIT_TIMEOUT_MS)
     },
     started: () => {
       clearExit()
-      openDemoLayout()
+
+      if (!left) {
+        openDemoLayout()
+      }
     },
     opened: (started: OnboardingStartResult) => {
       const runtimeId = $activeSessionId.get()
@@ -49,7 +55,12 @@ export function firstRunIntro(): OnboardingIntroHooks {
       ])
       // onboarding.start has already submitted the opening turn.
       $introTurnSent.set(true)
-      openIntro(!hasAssistantWords(runtimeId))
+
+      if (left) {
+        $introView.set('ended')
+      } else {
+        openIntro(!hasAssistantWords(runtimeId))
+      }
     },
     failed: () => {
       clearExit()

@@ -32,6 +32,7 @@ beforeEach(() => {
   $connection.set({ mode: 'local' } as never)
   $onboardingPhase.set('idle')
   $introView.set('off')
+  $chatOnboardingSolo.set(false)
   $selectedStoredSessionId.set(null)
   size.mockClear()
 })
@@ -52,6 +53,15 @@ describe('first-run kickoff', () => {
     expect(size).toHaveBeenCalledWith('onboarding')
     // A blank chat plays main's intro copy; the backend's greeting row replaces it.
     expect($introCopy.get()).toBe('playing')
+  })
+
+  it('reopens the chat without the demo layout once the user left the intro on an earlier launch', async () => {
+    const opened = await startOnboarding(request, adopt, { ensureProfile, intro: firstRunIntro(), introSeen: true })
+
+    expect(opened).toBe(true)
+    expect(size).not.toHaveBeenCalled()
+    expect($chatOnboardingSolo.get()).toBe(false)
+    expect($introView.get()).toBe('ended')
   })
 
   it('waits on a slow start with no deadline, and the way out fails it', async () => {

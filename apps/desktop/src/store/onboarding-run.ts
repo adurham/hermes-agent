@@ -8,7 +8,12 @@
  * (`onboarding.state`) and writes the install-level flag when a run ends.
  */
 
-import type { MachineFactsResult, OnboardingRunStateResult, OnboardingStartResult } from '@hermes/shared'
+import type {
+  MachineFactsResult,
+  OnboardingRunStateResult,
+  OnboardingStartResult,
+  OnboardingStateResult
+} from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { getRuntimeI18nLocale } from '@/i18n/runtime'
@@ -17,6 +22,7 @@ import type { GatewayRequester } from '@/lib/yolo-session'
 import { ackFreeTierNotice } from './free-tier'
 import { activeGatewayConnectionId } from './gateway'
 import { clearFreeTierIntro } from './onboarding'
+import { $introView } from './onboarding-intro'
 import { $onboardingPhase } from './onboarding-phase'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from './onboarding-presence'
 import { $activeGatewayProfile, ensureGatewayAgent, ensureGatewayProfile, newSessionInProfile } from './profile'
@@ -112,8 +118,8 @@ async function factsSource(request: OnboardingRequest): Promise<'local' | 'remot
 /** The first-run intro around a start (`components/onboarding/first-run/kickoff.ts`). */
 export interface OnboardingIntroHooks {
   /** Before `onboarding.start`: the boot overlay holds. `abandon`: the user went on without setup; the
-   *  start fails and the chat stays closed. */
-  starting: (abandon: () => void) => void
+   *  start fails and the chat stays closed. `seen`: the user left this run's intro on an earlier launch. */
+  starting: (abandon: () => void, seen: boolean) => void
   /** The start answered, the chat not open yet. */
   started: (started: OnboardingStartResult) => void
   /** The chat is the one on screen. */
@@ -125,6 +131,8 @@ interface StartOptions {
   /** Points the window's gateway at the profile onboarding runs in (`store/profile.ts::ensureGatewayProfile`). */
   ensureProfile?: (profile: string) => Promise<void>
   intro?: OnboardingIntroHooks
+  /** The user left the intro on an earlier launch (`onboarding.mark_seen`). */
+  introSeen?: boolean
   rerun?: boolean
 }
 
@@ -132,14 +140,14 @@ interface StartOptions {
 export async function startOnboarding(
   request: OnboardingRequest,
   resume: OnboardingResume,
-  { ensureProfile = ensureGatewayProfile, intro, rerun = false }: StartOptions = {}
+  { ensureProfile = ensureGatewayProfile, intro, introSeen = false, rerun = false }: StartOptions = {}
 ): Promise<boolean> {
   $onboardingPhase.set('shown')
   $onboardingEnded.set(null)
   $onboardingChatSeen.set(false)
 
   const abandon = new AbortController()
-  intro?.starting(() => abandon.abort())
+  intro?.starting(() => abandon.abort(), introSeen)
   launch = { connectionId: activeGatewayConnectionId(), profile: $activeGatewayProfile.get() }
 
   try {
@@ -161,6 +169,7 @@ export async function startOnboarding(
     if (intro) {
       intro.opened(started)
       ackFreeTierIntro(request)
+      markSeenOnLeave(request)
     }
 
     return true
@@ -185,6 +194,21 @@ function ackFreeTierIntro(request: OnboardingRequest): void {
   void ackFreeTierNotice(request).then(acked => {
     if (acked) {
       clearFreeTierIntro()
+    }
+  })
+}
+
+// Main's rule: once the user leaves the intro mid-run, a relaunch reopens the chat without the demo.
+function markSeenOnLeave(request: OnboardingRequest): void {
+  if ($introView.get() !== 'intro') {
+    return
+  }
+
+  const stop = $introView.listen(view => {
+    stop()
+
+    if (view === 'ended' && $onboardingPhase.get() === 'shown') {
+      void request('onboarding.mark_seen').catch(error => console.warn('[onboarding] mark_seen failed', error))
     }
   })
 }
@@ -223,10 +247,12 @@ export function decideOnboarding(
 
 async function readAndStart(request: OnboardingRequest, resume: OnboardingResume, options?: StartOptions): Promise<void> {
   try {
-    const state = await request<OnboardingRunStateResult>('onboarding.state')
+    const state = await request<OnboardingRunStateResult & Partial<Pick<OnboardingStateResult, 'intro'>>>(
+      'onboarding.state'
+    )
 
     if (state.run && state.eligible) {
-      await startOnboarding(request, resume, options)
+      await startOnboarding(request, resume, { ...options, introSeen: state.intro === 'seen' })
     }
   } catch (error) {
     console.warn('[onboarding] state could not be read', error)

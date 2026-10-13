@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $introView } from './onboarding-intro'
 import { $onboardingPhase } from './onboarding-phase'
 import { $onboardingDecided, $onboardingSurfaceClear } from './onboarding-presence'
 import {
@@ -123,6 +124,17 @@ describe('onboarding run', () => {
 
     expect(intro.opened).toHaveBeenCalled()
     expect(calls).toContain('free_tier.ack_notice')
+  })
+
+  it('records the intro as seen when the user first leaves it mid-run', async () => {
+    const { calls, request } = backend({ eligible: true, run: true })
+    const intro = { failed: vi.fn(), opened: () => $introView.set('intro'), started: vi.fn(), starting: vi.fn() }
+
+    await startOnboarding(request, resume, { ensureProfile, intro })
+    $introView.set('ended')
+    $introView.set('off')
+
+    expect(calls.filter(method => method === 'onboarding.mark_seen')).toHaveLength(1)
   })
 
   it('keeps the run when the backend refuses the skip', async () => {
