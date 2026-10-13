@@ -320,8 +320,7 @@ class CLIInitMixin:
         self._init_ui_state()
 
     def _init_session_store(self):
-        """Open the session store early (so /title works before the first message) + opportunistic maintenance."""
-        from cli import _run_checkpoint_auto_maintenance, _run_state_db_auto_maintenance
+        """Open the session store early (so /title works before the first message)."""
         self._session_db = None
         self._session_db_unavailable = False
         try:
@@ -353,8 +352,7 @@ class CLIInitMixin:
             # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
             from gateway.warning_notifications import render_notification
             render_notification(_present_store_warning, platform="cli")
-        _run_state_db_auto_maintenance(self._session_db)
-        _run_checkpoint_auto_maintenance()
+        # No state.db / checkpoint maintenance here: the gateway (the single writer) runs both.
 
     def _ensure_gateway_session(self):
         """Create (or resume) this CLI's gateway session and adopt the id it returns, before the banner

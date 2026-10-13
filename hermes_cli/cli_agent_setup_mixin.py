@@ -637,9 +637,7 @@ class CLIAgentSetupMixin:
         self._install_tool_callbacks()
         if not self._ensure_runtime_credentials():
             return False
-        from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
-        ensure_mcp_discovery_before_agent_build(
-            logger=logger, single_query=getattr(self, "_single_query_mode", False))
+        # No MCP discovery here: the gateway session that runs the turn owns its MCP servers.
         from hermes_cli.cli_chat_error_copy import agent_init_failure_message
         if self._session_db is None:
             try:

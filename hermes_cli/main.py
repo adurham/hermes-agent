@@ -3004,6 +3004,10 @@ def _prepare_agent_startup(args) -> None:
                 "MCP tool discovery failed at CLI startup",
                 exc_info=True,
             )
+    if _chat_runs_at_gateway(args):
+        # Shell hooks and outbound webhooks fire where the tools run: the gateway session registers
+        # them from its policy (``accept_hooks`` rides on session.create).
+        return
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
