@@ -103,6 +103,22 @@ def _skill_directive(name, arg, route):
             'display': describe_skill_invocation(message, separator=' ')}
 
 
+async def _tui_read(authority, actor, ref, name, arg):
+    """Main's TUI sidecar text for a TUI session's /status, /context or /cron read, else None."""
+    from gateway.session_local import authorize_local_source
+    from gateway.session_policy import policy_for_source
+    from gateway.session_tui_reads import run_tui_read, tui_read
+    live = authority.sessions[ref.session_id]
+    if authorize_local_source(authority.runner, live.source) is not True:
+        return None
+    policy = policy_for_source(authority.runner, live.source)
+    render = tui_read(policy, name, arg)
+    if render is None:
+        return None
+    authority.authorize(actor, ref, 'session:read')
+    return await run_tui_read(authority, ref, live, policy, render, arg)
+
+
 @contextmanager
 def _session_workspace(runner, source):
     """The session's frozen terminal policy (``TERMINAL_CWD`` = its launch cwd), so ``/diff``
@@ -142,6 +158,8 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     definition = resolve_command(name)
     canonical = definition.name if definition else name
     verdict = command_verdict(canonical, arg) if definition else None
+    if definition is not None and (tui := await _tui_read(authority, actor, ref, canonical, arg)) is not None:
+        return tui
     capability = ('session:read' if verdict == 'read' else
                   'session:control' if definition else 'session:submit')
     authority.authorize(actor, ref, capability)

@@ -61,7 +61,19 @@ def gateway_cell(name):
     return "refused"
 
 
+# Reads a TUI session gets as main's TUI sidecar rendered them (gateway/session_tui_reads.py).
+TUI_READS = {"status": "TUI session: main's `Hermes TUI Status`",
+             "context": "TUI session: main's live /context with the category table",
+             "cron": "TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs"}
+
+
 def port_note(cmd):
+    if cmd.name in TUI_READS:
+        return "; ".join(filter(None, [TUI_READS[cmd.name], _base_note(cmd)]))
+    return _base_note(cmd)
+
+
+def _base_note(cmd):
     if cmd.name in TOGGLES:
         return "port: per-session setting"
     if cmd.name in NOT_A_LOCAL_READ:
@@ -110,7 +122,7 @@ def _ink_commands():
 def ink_cell(cmd, gateway, ink, served):
     entry = next((ink[n] for n in (cmd.name, *cmd.aliases) if n in ink), None)
     if entry is None:
-        return "slash.exec" if gateway != "refused" else "slash.exec: refused"
+        return "slash.exec" if gateway != "refused" or cmd.name in TUI_READS else "slash.exec: refused"
     _, block = entry
     methods = set(re.findall(r"(?:rpc|request)(?:<[^>]*>)?\(\s*'([a-z_]+\.[a-z_.]+)'", block))
     refused = re.findall(r"notAvailable', '([\w-]+) ([\w-]+)'\)", block)

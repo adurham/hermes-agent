@@ -41,9 +41,9 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/commands` | read | slash.exec | slash.exec | action: help | refused | messaging-only |
 | `/compress` (/compact) | refused | session.mutate compress | canonical route | action: compress | session.mutate compress |  |
 | `/config` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
-| `/context` (/ctx) | read | slash.exec | slash.exec | slash.exec | refused |  |
+| `/context` (/ctx) | read | slash.exec | slash.exec | slash.exec | refused | TUI session: main's live /context with the category table |
 | `/copy` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/cron` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
+| `/cron` | refused | refused: not available yet | slash.exec | unavailable: terminal | refused | TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs; client-local (cli_only) |
 | `/curator` | refused | refused: not available yet | slash.exec: refused | unavailable: advanced | refused | no gateway handler (`_handle_curator_command` is missing) |
 | `/debug` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | uploads logs to a public paste |
 | `/deny` | refused | refused: not available yet | slash.exec: refused | unavailable: messaging | refused | messaging-only |
@@ -105,7 +105,7 @@ policy; `client-local (cli_only)` commands are terminal/UI features of a client.
 | `/skin` | refused | refused: not available yet | config.get, config.set | action: skin | refused | client-local (cli_only) |
 | `/snapshot` (/snap) | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
 | `/start` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging-only |
-| `/status` | read | slash.exec | canonical route | slash.exec (rpc fallback) | refused |  |
+| `/status` | read | slash.exec | canonical route | slash.exec (rpc fallback) | refused | TUI session: main's `Hermes TUI Status` |
 | `/statusbar` (/sb) | refused | refused: not available yet | local (preference not saved) | unavailable: terminal | refused | client-local (cli_only) |
 | `/steer` (/s) | refused | refused: not available yet | canonical route | slash.exec: refused | refused |  |
 | `/stop` | refused | session.interrupt | canonical route | action: stop | refused |  |
