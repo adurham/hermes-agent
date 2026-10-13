@@ -68,6 +68,15 @@ async function enableInstalledDesktopHalf(result?: AgentPluginInstallResult): Pr
   }
 }
 
+/** Close the dialog and land on the inventory (Capabilities → Plugins), unless the caller keeps the user in place. */
+function finishInstall(request: PluginInstallRequest, navigate: (to: string) => void): void {
+  closePluginInstallRequest()
+
+  if (!request.stayAfterInstall) {
+    navigate('/capabilities?tab=plugins')
+  }
+}
+
 export function PluginInstallModal() {
   const request = useStore($pluginInstallRequest)
   const { t } = useI18n()
@@ -351,12 +360,7 @@ export function PluginInstallModal() {
           }
         }
 
-        closePluginInstallRequest()
-
-        // Land on the inventory (Capabilities → Plugins), unless the caller keeps the user in place.
-        if (!request.stayAfterInstall) {
-          navigate('/capabilities?tab=plugins')
-        }
+        finishInstall(request, navigate)
 
         return
       }
