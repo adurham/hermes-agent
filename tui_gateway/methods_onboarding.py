@@ -119,15 +119,25 @@ def _active_run() -> dict:
         return {"session_id": session_id, "run_id": (load(db, session_id) or {}).get("run_id") if session_id else None}
 
 
+class _NoModelForTheRun(Exception):
+    """The claim was blocked and nothing else can carry the run's first chat."""
+
+
 def _claim_before_run(scope: dict, *, assume_fresh: bool):
     """Claim the welcome trial with ``onboarding.run: true`` already on disk, so a crash after the claim
     makes this machine read as used still opens onboarding next launch. The run's chat comes after:
-    a refused claim (error 5079) leaves no guest and no chat, and the install still due."""
+    a refused claim (error 5079) leaves no guest and no chat, and the install still due. A blocked claim
+    (another install took the trial since the due check) with no trial or provider to run on is error
+    5080, with no chat either: the desktop lands on provider setup and sign-in, not a chat that fails."""
+    from hermes_cli import anon_auth
     from hermes_cli.onboarding_run import set_run
-    from hermes_cli.welcome_trial import claim_desktop_free_tier
+    from hermes_cli.welcome_trial import claim_desktop_free_tier, provider_configured
     set_run(True)
     with _session_profile_runtime_scope(scope):
-        return claim_desktop_free_tier(assume_fresh=assume_fresh)
+        claimed = claim_desktop_free_tier(assume_fresh=assume_fresh)
+        if claimed is None and not (anon_auth.free_inference_active() or provider_configured()):
+            raise _NoModelForTheRun("The welcome trial is not available here, and no provider is set up.")
+    return claimed
 
 
 @method("onboarding.start")
@@ -183,6 +193,9 @@ def _(rid, params: dict) -> dict:
             # launch is still a first install and tries again.
             logger.info("onboarding.start: welcome trial not claimed: %s", e)
             return _err(rid, 5079, str(e))
+        except _NoModelForTheRun as e:
+            logger.info("onboarding.start: no chat opened: %s", e)
+            return _err(rid, 5080, str(e))
         except Exception as e:
             logger.exception("onboarding.start failed")
             return _err(rid, 5078, str(e))

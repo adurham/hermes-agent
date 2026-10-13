@@ -402,8 +402,9 @@ class OnboardingStartParams(Params):
     the app was closed on does not count, so its chat is deleted and the run starts over.
     ``facts_source``: whether the backend runs on the user's own computer. ``locale``: the desktop's UI
     language, preferred over the backend OS locale. ``assume_fresh``: as on ``onboarding.state``. A new
-    run on a first install claims the welcome trial once its run record exists; a failed claim is error
-    5079 and leaves no guest and no chat."""
+    run on a first install claims the welcome trial before its chat exists; a failed claim is error
+    5079 and leaves no guest and no chat. A claim that is blocked (another install took the trial) with
+    no trial or provider to run on is error 5080 and opens no chat."""
 
     rerun: bool = False
     fresh_launch: bool = False

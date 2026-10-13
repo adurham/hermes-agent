@@ -1,6 +1,7 @@
 """``onboarding.state`` / ``onboarding.start`` and the desktop's welcome trial: a new run on a first
 install claims it with the install already marked due, a rerun never does, a failed claim leaves no guest
-and no chat and the next launch still due, and only the desktop's local backend opens onboarding by itself."""
+and no chat and the next launch still due, a blocked claim with nothing to run on opens no chat, and only
+the desktop's local backend opens onboarding by itself."""
 
 from __future__ import annotations
 
@@ -79,6 +80,27 @@ def test_a_failed_claim_opens_nothing_and_the_next_launch_tries_again(portal, mo
     assert (state["run"], state["eligible"]) == (True, True)
     assert "result" in _call("onboarding.start", {"fresh_launch": True})
     assert anon_auth.free_inference_active()
+
+
+def test_a_trial_another_install_took_first_opens_no_chat_it_cannot_run(portal, root, monkeypatch):
+    """Two installs answered "due" before either claimed. The first takes the trial; the second start
+    opens no chat with no model behind it, so the desktop lands on provider setup and sign-in. The
+    install stays due: once a provider is set, the next start runs onboarding on it."""
+    from hermes_cli import free_tier_bootstrap
+
+    as_local_desktop_backend(monkeypatch)
+    free_tier_bootstrap.run_bootstrap(announce=False)
+    assert _call("onboarding.state")["result"]["eligible"] is True
+    install_state.mark_machine_used()  # the other install's claim consumed the reservation
+
+    refused = _call("onboarding.start", {"fresh_launch": True})
+
+    assert refused["error"]["code"] == 5080
+    state = _call("onboarding.state")["result"]
+    assert (state["run"], state["eligible"], state["session_id"]) == (True, False, None)
+    assert portal.creates() == 0
+    (root / ".env").write_text("OPENROUTER_API_KEY=sk-or-test\n", encoding="utf-8")
+    assert "result" in _call("onboarding.start", {"fresh_launch": True})
 
 
 def test_a_crash_right_after_the_claim_keeps_onboarding_due(portal, monkeypatch):
