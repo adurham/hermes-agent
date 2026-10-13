@@ -41,18 +41,13 @@ import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../l
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
-import {
-  buildToolTrailLine,
-  clarifyAnswerText,
-  formatAbandonedClarify,
-  sameToolTrailGroup,
-  toolTrailLabel
-} from '../lib/text.js'
+import { formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
+import { clarifySettledRows } from './clarifyTranscript.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
@@ -91,9 +86,6 @@ import { useSubmission } from './useSubmission.js'
 const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
-
-const clarifyQuestionCountLabel = (count: number) =>
-  t(count === 1 ? 'session.main.clarifyQuestionsOne' : 'session.main.clarifyQuestionsOther', String(count))
 
 const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
@@ -881,20 +873,13 @@ export function useMainApp(gw: GatewayClient) {
             }
 
             const label = toolTrailLabel('clarify')
+            const settled = clarifySettledRows([question], { [qid]: answer })
 
             turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
             patchTurnState({ turnTrail: turnController.turnTools })
             turnController.persistedToolLabels.add(label)
-            appendMessage({
-              kind: 'trail',
-              role: 'system',
-              text: '',
-              tools: [buildToolTrailLine('clarify', question.question)]
-            })
-            appendMessage({
-              role: 'user',
-              text: answer.trim() ? clarifyAnswerText(answer, question.multiSelect) : t('session.main.skipped')
-            })
+            appendMessage({ kind: 'trail', role: 'system', text: '', tools: [settled.trail] })
+            appendMessage({ role: 'user', text: settled.userText })
             patchUiState({ status: 'running…' })
             patchOverlayState({ clarify: null })
           }
@@ -928,25 +913,13 @@ export function useMainApp(gw: GatewayClient) {
 
         // Batch complete: persist the whole Q&A set as one user-visible block.
         const label = toolTrailLabel('clarify')
+        const settled = clarifySettledRows(clarify.questions, answers)
 
         turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
         patchTurnState({ turnTrail: turnController.turnTools })
         turnController.persistedToolLabels.add(label)
-        appendMessage({
-          kind: 'trail',
-          role: 'system',
-          text: '',
-          tools: [buildToolTrailLine('clarify', clarifyQuestionCountLabel(clarify.questions.length))]
-        })
-        appendMessage({
-          role: 'user',
-          text: clarify.questions
-            .map(
-              q =>
-                `${q.question} → ${answers[q.qid]?.trim() ? clarifyAnswerText(answers[q.qid]!, q.multiSelect) : t('session.main.skipped')}`
-            )
-            .join('\n')
-        })
+        appendMessage({ kind: 'trail', role: 'system', text: '', tools: [settled.trail] })
+        appendMessage({ role: 'user', text: settled.userText })
         patchUiState({ status: 'running…' })
         patchOverlayState({ clarify: null })
       })
