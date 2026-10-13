@@ -201,7 +201,8 @@ async def run_gateway_chat(args, emitter=None):
             if missing:
                 raise GatewayClientError("Gateway does not support creation options: " + ", ".join(missing))
             snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex, source=source, **policy)
-        print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
+        if not isinstance(oneshot_prompt, str):  # main's -z writes nothing to stderr on success
+            print("Session: " + snapshot["stored_session_id"], file=sys.stderr, flush=True)
         if not oneshot:
             from hermes_cli.terminal_breadcrumbs import write_breadcrumb
             await asyncio.to_thread(write_breadcrumb, snapshot["stored_session_id"])
