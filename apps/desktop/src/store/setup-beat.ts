@@ -4,7 +4,8 @@
  * The setup_beat tool row reads this to draw the beat's card. A pick answers the request with
  * `{answer}`; composer text answers it with `{said}` (the backend treats words on the name card as
  * the name). The backend's `request.cancel` (timeout, Stop, Skip setup) clears the entry by request
- * id, so a late cancel never erases a newer card the same session raised.
+ * id, so a late cancel never erases a newer card the same session raised; the setup_beat call's
+ * completion clears it by tool call id, which covers a card answered in another window.
  */
 
 import type { ToolCallMessagePart } from '@assistant-ui/react'
@@ -65,6 +66,8 @@ export interface SetupBeatRequest {
   question: string
   requestId: string
   sessionId: string
+  /** The setup_beat call the card belongs to; only that transcript row draws it. */
+  toolCallId: null | string
 }
 
 export const $setupBeatRequests = atom<Record<string, SetupBeatRequest>>({})
@@ -86,16 +89,29 @@ export function clearSetupBeat(requestId: string, sessionId: string): boolean {
   return true
 }
 
-function respond(sessionId: string, result: { answer: SetupBeatAnswer } | { said: string }): boolean {
+/** The setup_beat call `toolCallId` finished: its card is done here too, wherever it was answered. */
+export function dropSetupBeatForCall(sessionId: string, toolCallId: string | undefined): void {
   const request = $setupBeatRequests.get()[sessionId]
 
-  if (!request) {
+  if (request && toolCallId && request.toolCallId === toolCallId) {
+    clearSetupBeat(request.requestId, sessionId)
+  }
+}
+
+// The card clears only once the answer is sent, so a failed send leaves it on screen to answer again.
+function respond(
+  sessionId: string,
+  result: { answer: SetupBeatAnswer } | Record<string, never> | { said: string }
+): boolean {
+  const request = $setupBeatRequests.get()[sessionId]
+
+  if (!request || !respondToServerRequest(request.requestId, { ...result })) {
     return false
   }
 
   clearSetupBeat(request.requestId, sessionId)
 
-  return respondToServerRequest(request.requestId, { ...result })
+  return true
 }
 
 /** Answer the session's card with the beat's picks. False when no card waits. */
@@ -114,5 +130,7 @@ registerParkedCardAnswer('setup_beat', {
   onboardingOnly: true,
   $requests: $setupBeatRequests,
   answer: sayToSetupBeat,
+  // An empty answer closes the card unanswered, so an attachment or a slash command can run.
+  skip: sessionId => respond(sessionId, {}),
   waiting: sessionId => Boolean($setupBeatRequests.get()[sessionId])
 })

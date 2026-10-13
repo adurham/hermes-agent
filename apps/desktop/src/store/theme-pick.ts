@@ -39,16 +39,26 @@ export function clearThemePick(requestId: string, sessionId: string): boolean {
   return true
 }
 
+// The card clears only once the answer is sent, so a failed send leaves it on screen to answer again.
 function answer(sessionId: string, result: ThemePickResult): boolean {
   const request = $themePicks.get()[sessionId]
 
-  if (!request) {
+  if (!request || !respondToServerRequest(request.requestId, { ...result })) {
     return false
   }
 
   clearThemePick(request.requestId, sessionId)
 
-  return respondToServerRequest(request.requestId, { ...result })
+  return true
+}
+
+/** The set_theme call finished: its picker is done here too, wherever it was answered. */
+export function dropThemePick(sessionId: string): void {
+  const request = $themePicks.get()[sessionId]
+
+  if (request) {
+    clearThemePick(request.requestId, sessionId)
+  }
 }
 
 /** Apply the user's pick and answer the session's card with it. False when no card waits or the value is unknown. */
@@ -71,5 +81,6 @@ registerParkedCardAnswer('theme-pick', {
   onboardingOnly: true,
   $requests: $themePicks,
   answer: sayToThemePick,
+  skip: cancelThemePick,
   waiting: sessionId => Boolean($themePicks.get()[sessionId])
 })

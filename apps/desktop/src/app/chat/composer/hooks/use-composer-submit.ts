@@ -17,7 +17,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
-import { answerParkedCard } from '@/store/parked-card-answers'
+import { answerParkedCard, skipParkedCards } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
@@ -323,6 +323,11 @@ export function useComposerSubmit({
     // Same for a pending connection card: ordinary typing continues the operation.
     if (routable && hasConnectionRequest(sessionId)) {
       void skipConnectionRequest(sessionId)
+    }
+
+    // And for the onboarding chat's setup and theme cards.
+    if (routable) {
+      skipParkedCards(sessionId ?? '')
     }
   }
 

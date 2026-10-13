@@ -751,7 +751,8 @@ const setupBeat: Handler = ctx => {
     card: (request.params.card ?? {}) as SetupBeatCard,
     question,
     requestId: request.id,
-    sessionId
+    sessionId,
+    toolCallId: str(request.params.tool_call_id) || null
   })
   markNeedsInput(ctx)
   notifyInput(ctx, question)

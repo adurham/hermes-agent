@@ -13,6 +13,8 @@ export interface ParkedCardKind {
   answer: ParkedCardAnswer
   /** Takes typed text only in the onboarding chat; elsewhere the text is sent as a normal message. */
   onboardingOnly?: boolean
+  /** Closes the card unanswered, so a message that cannot answer it (attachments, a slash command) runs. */
+  skip?: (sessionId: string) => boolean
   waiting: (sessionId: string) => boolean
 }
 
@@ -67,6 +69,15 @@ export function answerParkedCard(sessionId: string, text: string, onFailed: () =
   }
 
   return false
+}
+
+/** Close every card waiting on `sessionId` that a message cannot answer (attachments, a slash command). */
+export function skipParkedCards(sessionId: string): void {
+  for (const kind of kindsFor(sessionId)) {
+    if (kind.waiting(sessionId)) {
+      kind.skip?.(sessionId)
+    }
+  }
 }
 
 /** Whether any card waits on `sessionId`, so typed text would answer it. */

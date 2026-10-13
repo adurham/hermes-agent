@@ -10,10 +10,11 @@ import { noteSetupBeatResult } from '@/store/onboarding-run'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { recordPreviewArtifact, reofferPreviewArtifact } from '@/store/preview-status'
 import { $sessionStates, storedSessionIdForRuntimeId } from '@/store/session-states'
-import { setupBeatResult } from '@/store/setup-beat'
+import { dropSetupBeatForCall, setupBeatResult } from '@/store/setup-beat'
 import { isTerminalSubagentCompletion, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
+import { dropThemePick } from '@/store/theme-pick'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
@@ -44,11 +45,20 @@ function recordToolPreview(ctx: GatewayEventContext, sessionId: string, cwd: str
   }
 }
 
+// A card's tool finished, so the card is done in this window too: answered in another window, or its
+// cancel was lost. Without this it would keep taking typed text.
+const SETTLED_CARDS = new Map([
+  ['set_theme', dropThemePick],
+  ['setup_beat', dropSetupBeatForCall]
+])
+
 /** What a completed tool leaves behind outside its row: a preview target, or the end of an onboarding run. */
 function noteToolOutcome(ctx: GatewayEventContext, sessionId: string, cwd: string, pendingProduction: boolean): void {
   if (!ctx.deps.sessionInterrupted(sessionId)) {
     recordToolPreview(ctx, sessionId, cwd, pendingProduction)
   }
+
+  SETTLED_CARDS.get(ctx.payload?.name ?? '')?.(sessionId, ctx.payload?.tool_id)
 
   if (ctx.payload?.name === 'setup_beat' && !ctx.event.replayed) {
     noteSetupBeatResult([sessionId, storedSessionIdForRuntimeId(sessionId)], setupBeatResult(ctx.payload.result))

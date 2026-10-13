@@ -514,26 +514,38 @@ export const skipConnectionTarget = (request: ConnectionRequest, name: string): 
 export const continueConnectionRequest = (request: ConnectionRequest): Promise<boolean> =>
   respondToConnectionRequest(request, { settled_by: 'continue' })
 
-/** The composer's words answer an open connector directory card; the tool returns them as `said`. */
-export function answerConnectorDirectory(sessionId: string, text: string): null | Promise<boolean> {
+// Directory cards that took composer words and have not reported settled yet: until the backend's
+// update arrives, a second quick message must not be taken as the answer too.
+const answeredInWords = new Set<string>()
+
+function directoryWaiting(sessionId: string): ConnectionRequest | null {
   const request = $connectionRequests.get()[keyFor(sessionId)]
 
-  if (!request?.display || request.settled || !text.trim()) {
+  return request?.display && !request.settled && !answeredInWords.has(request.opId) ? request : null
+}
+
+/** The composer's words answer an open connector directory card; the tool returns them as `said`. */
+export function answerConnectorDirectory(sessionId: string, text: string): null | Promise<boolean> {
+  const request = directoryWaiting(sessionId)
+
+  if (!request || !text.trim()) {
     return null
   }
 
-  return respondToConnectionRequest(request, { said: text.trim(), settled_by: 'continue' })
+  answeredInWords.add(request.opId)
+  const sent = respondToConnectionRequest(request, { said: text.trim(), settled_by: 'continue' })
+  const reopen = () => answeredInWords.delete(request.opId)
+
+  void sent.then(delivered => delivered || reopen(), reopen)
+
+  return sent
 }
 
 registerParkedCardAnswer('connector-directory', {
   onboardingOnly: true,
   $requests: $connectionRequests,
   answer: answerConnectorDirectory,
-  waiting: sessionId => {
-    const request = $connectionRequests.get()[keyFor(sessionId)]
-
-    return Boolean(request?.display && !request.settled)
-  }
+  waiting: sessionId => Boolean(directoryWaiting(sessionId))
 })
 
 // Typing a message while the card is open ends the operation, otherwise the typed message waits behind
