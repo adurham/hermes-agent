@@ -335,11 +335,13 @@ def _memory_target_error(
                 "error": _bound_error_text(f"Invalid memory target '{target}'. Use 'memory' or 'user'.")}
     if isinstance(operations, list):
         for index, op in enumerate(operations, 1):
-            if isinstance(op, dict) and "target" in op:
+            # A nested target equal to the call's (or null) is redundant, not wrong; only a
+            # different one asks for two stores in one call, which a batch cannot do.
+            if isinstance(op, dict) and op.get("target") not in (None, target):
                 FAILURE_CLASS.set("invalid_args")
                 return {"success": False, "error": (
-                    f"Operation {index} has a nested target. Retry with target only at the top level "
-                    "and remove it from every operation. Use separate calls for different stores. "
+                    f"Operation {index} names a different target than the one at the top level. "
+                    "One call writes one store: retry with separate calls for different stores. "
                     "Nothing was written or staged.")}
     if store.target_enabled(target):
         return None

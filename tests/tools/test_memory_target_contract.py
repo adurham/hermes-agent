@@ -32,8 +32,6 @@ def _call(route, store, args):
     ({"target": None}, {}),
     ({}, {"target": "user"}),
     ({"target": "memory"}, {"target": "user"}),
-    ({"target": "user"}, {"target": "user"}),
-    ({"target": "user"}, {"target": None}),
 ])
 def test_invalid_targets_leave_files_and_pending_queue_unchanged(
     route, origin, target_fields, nested_fields,
@@ -64,6 +62,22 @@ def test_invalid_targets_leave_files_and_pending_queue_unchanged(
     assert wa.list_pending(wa.MEMORY) == []
     assert args == original
     assert {t: store._path_for(t).read_bytes() for t in before} == before
+
+
+@pytest.mark.parametrize("route", ["registry", "inline", "store", "replay"])
+@pytest.mark.parametrize("nested", ["user", None])
+def test_nested_target_matching_the_call_is_accepted(route, nested):
+    store = MemoryStore()
+    store.load_from_disk()
+    for name in ("memory", "user"):
+        assert store.add(name, f"Existing {name} fact")["success"]
+    memory_before = store._path_for("memory").read_bytes()
+    args = {"target": "user", "operations": [{"action": "add", "content": "Fact", "target": nested}]}
+    assert _call(route, store, args)["success"] is True
+    fresh = MemoryStore()
+    fresh.load_from_disk()
+    assert fresh._entries_for("user") == ["Existing user fact", "Fact"]
+    assert store._path_for("memory").read_bytes() == memory_before
 
 
 @pytest.mark.parametrize("route", ["registry", "inline"])

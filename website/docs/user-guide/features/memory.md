@@ -104,8 +104,8 @@ for the user profile. A batch uses that one target for every operation:
 {"target": "user", "operations": [{"action": "add", "content": "User prefers metric units"}]}
 ```
 
-Missing or null targets and targets inside operations return an error before writing
-or staging approval. Correct the payload and retry; use separate calls to update both stores.
+Missing or null targets, and a target inside an operation that differs from the top-level
+one, return an error before writing or staging approval. Correct the payload and retry; use separate calls to update both stores.
 
 ### Substring Matching
 
