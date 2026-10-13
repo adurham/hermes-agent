@@ -130,6 +130,7 @@ class CLIInfoMixin:
 
             gateway_inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
             if gateway_inventory is not None:
+                from hermes_cli.gateway_session_store import session_label
                 # The gateway session's snapshot (the TUI banner's data): the CLI enumerates nothing.
                 self._defer_tool_warnings = True
                 build_welcome_banner(
@@ -137,7 +138,8 @@ class CLIInfoMixin:
                     availability=gateway_inventory["availability"],
                     skills_by_category=gateway_inventory["skills_by_category"],
                     **{**banner_kw, "cwd": gateway_inventory["cwd"] or cwd,
-                       "context_length": gateway_inventory["context_length"] or ctx_len})
+                       "context_length": gateway_inventory["context_length"] or ctx_len,
+                       "session_id": session_label(self.session_id)})
             elif snapshot is not None:
                 self._defer_tool_warnings = True
                 toolset_map = snapshot["toolset_map"]

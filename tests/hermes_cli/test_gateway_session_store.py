@@ -126,3 +126,11 @@ def test_reader_opens_once_the_gateway_created_state_db(store, tmp_path, monkeyp
     from hermes_state import SessionDB
     SessionDB(db_path=tmp_path / "state.db").close()
     assert db.get_session("x") is None and db._reader is not None
+
+
+def test_banner_session_label_is_mains_eight_characters_for_a_canonical_id():
+    from hermes_cli.gateway_session_store import session_label
+    assert session_label("local-ab12cd34" + "0" * 56) == "ab12cd34"
+    assert session_label("20261012_134501_abcdef") == "20261012_134501_abcdef"
+    assert session_label("local-abc") == "local-abc"
+    assert session_label(None) is None

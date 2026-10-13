@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
@@ -213,6 +214,16 @@ class GatewaySessionStore:
             "context_length": info.get("context_length"),
             "cwd": info.get("cwd"),
         }
+
+
+_CANONICAL_LOCAL_ID = re.compile(r"^local-([0-9a-f]{8})[0-9a-f]{56}$")
+
+
+def session_label(session_id):
+    """Main's 8-character banner label for a canonical durable id (``local-`` + 64 hex); every other
+    id is shown as is. Display only: RPCs, /resume hints and the exit summary keep the full id."""
+    match = _CANONICAL_LOCAL_ID.match(session_id or "")
+    return match.group(1) if match else session_id
 
 
 def _creation_policy(launch):
