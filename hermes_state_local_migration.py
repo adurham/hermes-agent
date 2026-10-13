@@ -10,7 +10,10 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # Sources the pre-authority local CLI/TUI/GUI wrote. ``oneshot`` (finite ``chat -q`` / ``-z``) and ``tool``
 # (``chat --source tool``) are CLI runs that printed ``hermes --resume <id>``: adopted for resume like
 # ``cli`` and keeping their label, so human pickers still hide them (INTERNAL_LISTING_SOURCES).
-LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'oneshot', 'tool'})
+# ``desktop`` is the label main's Desktop stored; it is adopted as the ``gui`` creation source.
+LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool'})
+# Legacy labels that are not creation sources of their own (session_policy.SURFACES).
+LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
 
 
 def validate_legacy_row(db, row):

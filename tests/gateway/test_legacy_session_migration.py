@@ -165,3 +165,38 @@ async def test_upgraded_oneshot_and_tool_history_resumes_by_id_and_title_but_sta
     assert {db.get_session(s)['source'] for s in ('old-oneshot', 'old-tool')} == {'oneshot', 'tool'}
     listed = await native.dispatch({'id': 3, 'method': 'session.list', 'params': {}})
     assert listed['result']['sessions'] == [], listed
+
+
+@pytest.mark.asyncio
+async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
+    """main's Desktop stored its chats with ``source='desktop'``. After the upgrade the native owner
+    adopts them by id like ``gui`` history. A row that carries an account identity is unchanged:
+    it still needs its own authority."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    for sid, user_id in (('old-desktop', None), ('old-desktop-account', 'nous:account')):
+        db.create_session(sid, source='desktop', model='old-model', cwd=str(tmp_path), user_id=user_id)
+        db.append_message(sid, role='user', content=sid.upper())
+        db.end_session(sid, 'session_switch')
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
+    native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+        'profile_id': str(tmp_path), 'instance_id': 'first'})
+    resumed = await native.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old-desktop'}})
+    assert resumed.get('result', {}).get('session_id') == 'old-desktop', resumed
+    assert [m['content'] for m in resumed['result']['messages']] == ['OLD-DESKTOP']
+    from gateway.config import Platform
+    assert runner.adapters[Platform.LOCAL].policies['old-desktop'].platform == 'desktop'
+    refused = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-account'}})
+    assert 'error' in refused, refused
+    assert db.get_session('old-desktop-account')['user_id'] == 'nous:account'
