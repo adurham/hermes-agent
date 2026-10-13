@@ -171,10 +171,10 @@ it('/status reads through the gateway', async () => {
   expect(request.mock.calls.map(([method]) => method)).not.toContain('session.status')
 })
 
-it('/stop is session-scoped; process-global /agents pause and /reload-mcp refuse on the shared gateway', async () => {
+it('/stop is session-scoped; process-global /reload-mcp refuses on the shared gateway', async () => {
   const { request, slash, sys } = harness()
 
-  for (const cmd of ['/stop', '/agents pause', '/reload-mcp now']) {
+  for (const cmd of ['/stop', '/reload-mcp now']) {
     slash(cmd)
   }
 
@@ -185,13 +185,13 @@ it('/stop is session-scoped; process-global /agents pause and /reload-mcp refuse
 
   const methods = request.mock.calls.map(([method]) => method)
 
-  for (const method of ['delegation.pause', 'reload.mcp']) {
+  for (const method of ['reload.mcp']) {
     expect(methods).not.toContain(method)
   }
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
-  for (const name of ['agents pause', 'reload-mcp']) {
+  for (const name of ['reload-mcp']) {
     expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
   }
 })

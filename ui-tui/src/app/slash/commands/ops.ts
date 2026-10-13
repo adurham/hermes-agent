@@ -352,11 +352,6 @@ export const opsCommands: SlashCommand[] = [
       // explicit subcommands skip the overlay and act directly so scripts and
       // multi-step flows can drive it without entering interactive mode.
       if (sub === 'pause' || sub === 'resume' || sub === 'unpause') {
-        // The spawn gate is process-global: on the shared owner it would pause every chat.
-        if (ctx.gateway.gw?.isCanonical) {
-          return ctx.transcript.sys(t('canonical.controls.notAvailable', `agents ${sub}`))
-        }
-
         const paused = sub === 'pause'
         ctx.gateway.gw
           .request<DelegationPauseResponse>('delegation.pause', { paused })

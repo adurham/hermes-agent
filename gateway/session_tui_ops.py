@@ -1,5 +1,5 @@
-"""Ink's session utilities on the shared owner: ``/save`` (``session.save``) and ``/reload``
-(``reload.env``).
+"""Ink's session utilities on the shared owner: ``/save`` (``session.save``), ``/reload``
+(``reload.env``) and ``/agents pause|resume`` (``delegation.pause``).
 
 Main's per-TUI sidecar served these from its own session table, which never holds a shared-gateway
 session, so the canonical TUI refused them. Each verb reuses main's helpers rather than re-deriving
@@ -17,7 +17,8 @@ from hermes_state_runtime import RuntimeStoreError
 
 def handlers(connection):
     return {'session.save': partial(save_session, connection),
-            'reload.env': partial(reload_env, connection)}
+            'reload.env': partial(reload_env, connection),
+            'delegation.pause': partial(pause_delegation, connection)}
 
 
 def _profile_home(authority):
@@ -101,3 +102,30 @@ async def reload_env(connection, ref, params):
         after = build_profile_secret_scope(home)
         return sum(before.get(key) != after.get(key) for key in before.keys() | after.keys())
     return {'updated': int(await asyncio.to_thread(reload))}
+
+
+async def pause_delegation(connection, ref, params):
+    """``/agents pause|resume`` and the overlay's ``p``: main's ``delegation.pause`` — block or
+    unblock NEW ``delegate_task`` spawns; running children keep going.
+
+    The gate (``tools.delegate_tool_registry``) is process-wide, as it was in main's sidecar (a
+    TUI's sidecar served one TUI, but its gate covered every agent in that process). On the shared
+    owner it therefore covers every chat this gateway runs, which is what an operator's kill switch
+    is for; ``delegation.status`` reports the same flag to every client."""
+    paused = params.get('paused', True)
+    if set(params) - {'paused', 'profile', 'session_id'} or type(paused) is not bool:
+        raise RuntimeStoreError('invalid_params')
+    if ref.session_id:
+        authorize(connection, ref, params, 'session:control')
+    else:
+        if 'session:control' not in connection.actor.capabilities:
+            raise RuntimeStoreError('permission_denied')
+        profile = params.get('profile')
+        if profile is not None and not isinstance(profile, str):
+            raise RuntimeStoreError('invalid_params')
+        if profile:
+            from hermes_cli.profiles import profile_matches_home
+            if not profile_matches_home(profile, Path(connection.authority.profile_id)):
+                raise RuntimeStoreError('profile_mismatch')
+    from tools.delegate_tool_registry import set_spawn_paused
+    return {'paused': set_spawn_paused(paused)}

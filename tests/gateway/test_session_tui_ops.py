@@ -49,3 +49,21 @@ def test_reload_env_rereads_the_profile_dotenv_for_a_controlled_session(tmp_path
                                        ({'session_id': sid, 'force': True}, 'invalid_params')]:
                     assert (await rpc(ws, 'reload.env', **params))['error']['message'] == reason
         asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_delegation_pause_toggles_the_spawn_gate_and_status_reports_it(tmp_path):
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                await rpc(ws, 'session.create', request_id='pause', source='tui', toolsets=[])
+                paused = await rpc(ws, 'delegation.pause', paused=True)
+                assert paused.get('result') == {'paused': True}, paused
+                assert (await rpc(ws, 'delegation.status'))['result']['paused'] is True
+                assert (await rpc(ws, 'delegation.pause', paused=False))['result'] == {'paused': False}
+                assert (await rpc(ws, 'delegation.status'))['result']['paused'] is False
+                for params, reason in [({'paused': 'yes'}, 'invalid_params'), ({'paused': True, 'profile': 'foreign'},
+                                       'profile_mismatch')]:
+                    assert (await rpc(ws, 'delegation.pause', **params))['error']['message'] == reason
+                assert (await rpc(ws, 'delegation.status'))['result']['paused'] is False
+        asyncio.run(probe())

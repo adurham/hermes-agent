@@ -65,3 +65,19 @@ it('/reload calls reload.env for this session on the shared gateway and reports 
   expect(request).toHaveBeenCalledWith('reload.env', { session_id: 'owner' })
   expect(notices(sys)).toContain('reloaded .env (2 vars updated)')
 })
+
+it('/agents pause and resume call delegation.pause on the shared gateway with main\'s notices', async () => {
+  const { request, slash, sys } = harness({ 'delegation.pause': { paused: true } })
+
+  slash('/agents pause')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('delegation.pause', { paused: true })
+
+  request.mockImplementation(async () => ({ paused: false }))
+  slash('/agents resume')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('delegation.pause', { paused: false })
+  expect(notices(sys)).toEqual(['delegation · paused', 'delegation · resumed'])
+})

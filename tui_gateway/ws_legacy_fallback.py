@@ -40,7 +40,9 @@ _SESSION_FALLBACK_ALLOWED = frozenset({
 # ``delegation.pause`` = the global spawn gate, ``reload.mcp`` = tear down and rediscover every MCP
 # server, ``reload.env`` = rewrite ``os.environ`` from the launch profile's ``.env``, ``agents.list``
 # = every chat's process commands. The owner serves the session-scoped ``process.stop`` itself
-# (``gateway/session_ancillary.py``); ``process.kill`` stays: its handler is already session-scoped.
+# (``gateway/session_ancillary.py``), and ``reload.env`` / ``delegation.pause`` with owner-side rules
+# (``gateway/session_tui_ops.py``); listing them here keeps the sidecar handler unreachable.
+# ``process.kill`` stays: its handler is already session-scoped.
 _PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "reload.env", "agents.list"})
 # Process-global ACTIONS of a verb whose other actions are fine on the shared owner (the gate above is
 # method-level, and refusing the whole verb turns its safe actions into the client's -32601 version-skew

@@ -35,7 +35,7 @@ const sidecarCalls = (request: ReturnType<typeof vi.fn>) =>
 
 afterEach(() => resetUiState())
 
-async function overlayKey(gw: GatewayClient, key: string) {
+async function overlayKey(gw: GatewayClient, key: string, expected = '/agents kill is not available on the shared gateway yet') {
   patchUiState({ sid: 'owner' })
   applyAgentSnapshot('owner', {
     delegations: [],
@@ -61,7 +61,7 @@ async function overlayKey(gw: GatewayClient, key: string) {
   try {
     await vi.waitFor(() => expect(frame).toContain('child'))
     stdin.write(key)
-    await vi.waitFor(() => expect(frame).toContain('/agents kill is not available on the shared gateway yet'))
+    await vi.waitFor(() => expect(frame).toContain(expected))
   } finally {
     view.unmount()
     view.cleanup()
@@ -112,6 +112,15 @@ const SITES: [string, () => Promise<void>][] = [
     async () => {
       const { gw, request } = owner()
       await overlayKey(gw, 'X')
+      expect(sidecarCalls(request)).toEqual([])
+    }
+  ],
+  [
+    'agentsOverlay::togglePause (p) is the owner\'s delegation.pause',
+    async () => {
+      const { gw, request } = owner(method => (method === 'delegation.pause' ? { paused: true } : {}))
+      await overlayKey(gw, 'p', 'spawning paused')
+      expect(request).toHaveBeenCalledWith('delegation.pause', { paused: true })
       expect(sidecarCalls(request)).toEqual([])
     }
   ],

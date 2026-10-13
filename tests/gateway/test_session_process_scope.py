@@ -9,9 +9,9 @@ from tests.gateway.fixtures.local_recovery_probe import child_env
 
 def test_stop_is_session_scoped_and_global_verbs_keep_the_owner_refusal(tmp_path):
     """Ink ``/stop`` kills only its own session's processes (a persisted one included); another
-    chat's processes, persisted or not, survive. ``delegation.pause`` and ``agents.list`` keep the
-    authority's -32601 instead of reaching the legacy handler that pauses every spawn; a sessionless
-    ``reload.env`` is refused before it can rewrite the shared environ."""
+    chat's processes, persisted or not, survive. ``agents.list`` keeps the authority's -32601; a
+    sessionless ``reload.env`` is refused before it can rewrite the shared environ; the owner serves
+    ``delegation.pause`` itself (main's process-wide spawn gate)."""
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir()
@@ -27,7 +27,8 @@ def test_stop_is_session_scoped_and_global_verbs_keep_the_owner_refusal(tmp_path
     assert receipt['exited'] == [True, True, False, False], receipt
     assert receipt['sessionless_stop'] == 4001, receipt
     assert receipt['exited_after_sessionless'] == [True, True, False, False], receipt
-    assert receipt['pause'] == -32601 and receipt['spawn_paused'] is False, receipt
+    # delegation.pause is the owner's own verb now (session_tui_ops.py): main's operator kill switch.
+    assert receipt['pause'] is None and receipt['spawn_paused'] is True, receipt
     # The owner serves reload.env for one controlled session only (session_tui_ops.py); a bare frame
     # is refused before it can rewrite the shared environ.
     assert receipt['reload_env'] == 4001 and receipt['environ_rewritten'] is False, receipt
