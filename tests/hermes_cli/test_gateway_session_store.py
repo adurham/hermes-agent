@@ -272,7 +272,7 @@ def test_new_session_id_is_a_fresh_gateway_session(store, monkeypatch):
     db.open_session(cli("local-old", resumed=True))
     sid = CLIInitMixin._new_session_id(host, None)
     assert sid == "local-new" and host.session_id == "local-new"
-    method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
     assert "model" not in params and params["toolsets"] == ["file"]
 
 
@@ -337,7 +337,7 @@ def test_create_if_missing_titles_a_gateway_created_session(store, monkeypatch):
     from hermes_cli import gateway_session_store as gss
     monkeypatch.setattr(gss, "session_store", lambda: db)
     assert gss.create_titled_session("Fresh Named") == "local-new"
-    method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
     assert params["title"] == "Fresh Named" and params["source"] and params["cwd"]
 
 

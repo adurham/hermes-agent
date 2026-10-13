@@ -611,7 +611,7 @@ def test_verbose_mode_reaches_the_gateway_session(make_agent):
 
 
 def test_a_non_default_verbose_mode_is_sent_when_the_agent_is_built(make_agent):
-    agent, client = make_agent([], tool_progress_mode="new")
+    _agent, client = make_agent([], tool_progress_mode="new")
     assert {"session_id": SID, "key": "verbose", "value": "new"} in [p for m, p in client.calls if m == "config.set"]
 
 
