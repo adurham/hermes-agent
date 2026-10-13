@@ -103,6 +103,24 @@ def test_only_a_chat_with_a_run_in_progress_gets_the_onboarding_toolset(root):
     assert server._carry_onboarding_toolset(["web"], SimpleNamespace(enabled_toolsets=["web"])) == ["web"]
 
 
+def test_an_unrestricted_chat_with_a_run_keeps_every_tool_and_gets_setup_beat(root):
+    """HERMES_TUI_TOOLSETS=all loads None, which selects no session-gated toolset (onboarding is one)."""
+    from model_tools import _select_tool_names
+    db = server._get_db()
+    db.create_session("onb", "desktop")
+    db.create_session("plain", "desktop")
+    onboarding_record.start(db, "onb", FACTS)
+
+    enabled = server._onboarding_toolsets(None, db, "onb")
+    assert _select_tool_names(enabled, None, True) == _select_tool_names(None, None, True) | {"setup_beat"}
+    # The context-engine gate at agent build reads the toolset name, as it reads None.
+    assert "context_engine" in enabled
+    assert server._onboarding_toolsets(None, db, "plain") is None
+    # A refresh loads None again; the built agent keeps setup_beat.
+    assert server._carry_onboarding_toolset(None, SimpleNamespace(enabled_toolsets=enabled)) == enabled
+    assert server._carry_onboarding_toolset(None, SimpleNamespace(enabled_toolsets=None)) is None
+
+
 def _agent(db, sid="onb"):
     return SimpleNamespace(valid_tool_names={"setup_beat", "terminal"}, _session_db=db, session_id=sid,
                            _gateway_turn_context_notes="")

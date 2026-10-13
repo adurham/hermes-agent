@@ -187,15 +187,29 @@ def _onboarding_toolsets(enabled, db, session_id: str):
     until the session is rebuilt."""
     from agent.onboarding_flow import is_active
     from agent.onboarding_record import load
-    if not enabled or "onboarding" in enabled:
+    if _keeps_toolsets(enabled):
         return enabled
-    return [*enabled, "onboarding"] if is_active(load(db if db is not None else _get_db(), session_id)) else enabled
+    return _with_onboarding(enabled) if is_active(load(db if db is not None else _get_db(), session_id)) else enabled
 
 
 def _carry_onboarding_toolset(enabled, agent):
     """A tool refresh keeps the onboarding toolset the agent was built with."""
-    if not enabled or "onboarding" in enabled or "onboarding" not in (getattr(agent, "enabled_toolsets", None) or ()):
+    if _keeps_toolsets(enabled) or "onboarding" not in (getattr(agent, "enabled_toolsets", None) or ()):
         return enabled
+    return _with_onboarding(enabled)
+
+
+def _keeps_toolsets(enabled) -> bool:
+    """An explicit empty list is a zero-tool chat; None is unrestricted and still gets the fold-in."""
+    return enabled is not None and (not enabled or "onboarding" in enabled)
+
+
+def _with_onboarding(enabled) -> list[str]:
+    """*enabled* plus onboarding. None (every toolset outside the session-gated ones, which onboarding
+    is) is spelled out by name: the agent's other toolset gates read the names, as they read None."""
+    if enabled is None:
+        from toolsets import TOOLSET_SESSION_PLATFORMS, get_all_toolsets
+        enabled = [name for name in get_all_toolsets() if name not in TOOLSET_SESSION_PLATFORMS]
     return [*enabled, "onboarding"]
 
 
