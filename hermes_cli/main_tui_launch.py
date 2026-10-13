@@ -54,6 +54,25 @@ def _short_resume_id(db, session_id: str) -> str:
         return session_id
 
 
+def _branch_lineage(db, session: dict) -> list:
+    """*session* plus each ``/branch`` ancestor it was cut from. Main's epilogue after ``/branch`` still
+    named the parent and so reported the conversation's tokens; a canonical branch child is named
+    itself, and its copied history was billed on the ancestors."""
+    rows, seen = [session], {session.get("id")}
+    while True:
+        try:
+            config = json.loads(rows[-1].get("model_config") or "{}")
+        except (TypeError, ValueError):
+            break
+        parent_id = config.get("_branched_from") if isinstance(config, dict) else None
+        parent = db.get_session(parent_id) if parent_id and parent_id not in seen else None
+        if not parent:
+            break
+        seen.add(parent_id)
+        rows.append(parent)
+    return rows
+
+
 def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Optional[str] = None) -> None:
     """Print a shell-visible epilogue after TUI exits."""
     from hermes_cli.main import _resolve_last_session
@@ -77,9 +96,10 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
         message_count = int(session.get("message_count") or 0)
         if message_count == 0:
             return  # No real conversation — don't show resume info
-        tokens = {
-            k: int(session.get(f"{k}_tokens") or 0)
-            for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
+        tokens = {k: 0 for k in ("input", "output", "cache_read", "cache_write", "reasoning")}
+        for row in _branch_lineage(db, session):
+            for k in tokens:
+                tokens[k] += int(row.get(f"{k}_tokens") or 0)
     except Exception:
         return
     finally:

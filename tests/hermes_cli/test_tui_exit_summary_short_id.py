@@ -61,3 +61,23 @@ def test_stored_ids_print_unchanged(home, capsys):
     _seed(home, '20261012_185208_a67483')
     _print_tui_exit_summary('20261012_185208_a67483')
     assert 'hermes --tui --resume 20261012_185208_a67483\n' in capsys.readouterr().out
+
+
+def test_branch_child_epilogue_counts_the_branched_conversation(home, capsys):
+    """Main's epilogue after /branch reported the conversation's tokens (it still named the parent);
+    the canonical child is named, and its total includes the branch it was cut from."""
+    import json
+    from hermes_state import SessionDB
+    from hermes_cli.main_tui_launch import _print_tui_exit_summary
+    parent = 'local-' + '1' * 64
+    child = 'local-' + '2' * 64
+    _seed(home, parent, tokens=(300, 60))
+    db = SessionDB(db_path=home / 'state.db')
+    db.create_session(child, source='tui', model_config={'_branched_from': parent}, parent_session_id=parent)
+    db.append_message(child, 'user', 'q')
+    db.append_message(child, 'assistant', 'a')
+    db.close()
+    _print_tui_exit_summary(child)
+    out = capsys.readouterr().out
+    assert f'--resume {child[:22]}' in out
+    assert 'Tokens:         360 (in 300, out 60' in out
