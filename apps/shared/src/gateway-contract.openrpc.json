@@ -8791,6 +8791,18 @@
             ],
             "default": null,
             "title": "Cwd Explicit"
+          },
+          "run_budget": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Budget"
           }
         },
         "title": "CanonicalCreateParams",

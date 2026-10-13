@@ -39,6 +39,8 @@ class CanonicalCreateParams(ProfileParams):
     follow_profile_config: bool | None = None
     service_tier: str | None = None
     cwd_explicit: bool | None = None
+    # Wall-clock budget per run in seconds (the classic CLI's `--run-budget`).
+    run_budget: float | None = None
 
 
 class CanonicalResumeParams(ProfileParams):

@@ -360,3 +360,13 @@ def test_run_budget_is_a_frozen_launch_option(tmp_path):
     for bad in (0, -5, True, 'soon'):
         with pytest.raises(RuntimeStoreError, match='invalid_params'):
             build_policy(dict(cwd=str(tmp_path), run_budget=bad), cfg)
+
+
+def test_run_budget_passes_the_session_create_contract():
+    """The canonical dispatcher refuses undeclared session.create keys before the policy sees them."""
+    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    from gateway.session_policy import CREATE_FIELDS
+    contract = CANONICAL_METHODS['session.create']
+    assert canonical_param_problems(contract, {'request_id': 'r', 'source': 'cli', 'run_budget': 120.0}) == []
+    declared = set(contract.params.model_fields)
+    assert CREATE_FIELDS <= declared | {'request_id'}, CREATE_FIELDS - declared
