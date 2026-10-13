@@ -128,3 +128,43 @@ async def run_tui_read(authority, ref, live, policy, render, arg) -> dict:
         with owner_scope(authority), _session_workspace(authority.runner, live.source):
             return render(authority, ref, live, policy, agent, arg)
     return {'type': 'exec', 'output': await asyncio.to_thread(build)}
+
+
+async def context_breakdown(connection, ref, params) -> dict:
+    """``session.context_breakdown`` on the owner: the category estimate (``compute_session_context_
+    breakdown``) and context-file manifest of this session's resident agent over its stored
+    transcript, built in the session's workspace. Before the agent exists: empty categories plus the
+    session's stored usage (the contract's pre-build shape)."""
+    from gateway.session_busy_controls import authorize
+    from hermes_state_runtime import RuntimeStoreError
+    if set(params) - {'session_id', 'profile'} or not isinstance(ref.session_id, str) or not ref.session_id:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:read')
+    authority = connection.authority
+    live = authority.sessions.get(ref.session_id)
+    if live is None:
+        raise RuntimeStoreError('not_found')
+    agent = authority.agent(ref)
+    if agent is None:
+        from gateway.session_usage import stats
+        usage = await stats(connection, ref, {'session_id': ref.session_id})
+        usage = usage.get('usage') if isinstance(usage.get('usage'), dict) else usage
+        return {'categories': [], 'context_max': int(usage.get('context_max') or 0),
+                'context_percent': int(usage.get('context_percent') or 0),
+                'context_used': int(usage.get('context_used') or 0), 'estimated_total': 0,
+                'context_estimated': bool(usage.get('context_estimated', False)),
+                'context_source': str(usage.get('context_source') or 'provider_usage'),
+                'model': str(usage.get('model') or '')}
+    from gateway.session_authorities import owner_scope
+    from gateway.session_commands import _session_workspace
+    stored = _stored_id(authority, ref)
+
+    def build():
+        from agent.context_breakdown import compute_session_context_breakdown
+        from agent.context_file_sources import context_file_sources_for_agent
+        with owner_scope(authority), _session_workspace(authority.runner, live.source):
+            conversation = authority.db.get_messages_as_conversation(stored, include_ancestors=True)
+            payload = compute_session_context_breakdown(agent, conversation)
+            payload['context_files'] = context_file_sources_for_agent(agent)
+            return payload
+    return await asyncio.to_thread(build)

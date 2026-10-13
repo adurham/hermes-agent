@@ -630,6 +630,9 @@ class CLIInfoMixin:
         """`/context [all]` — 5×20 glyph grid (cell ≈ 1% of the window) plus an estimated
         per-category table; `all` appends per-skill / per-toolset costs. Read-only: same chars/4
         engine as the desktop popover (agent.context_breakdown) — no provider calls, no cache impact."""
+        from hermes_cli.gateway_side import connection_for
+        if (connection := connection_for(self)) is not None:
+            return self._show_gateway_context_breakdown(connection)
         if not self.agent:
             print(f"  {t('cli.shared.no_active_agent')}")
             return
@@ -663,6 +666,28 @@ class CLIInfoMixin:
         print(f"  {t('cli.context.header', model=payload.get('model') or self.model)}")
         print()
         for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
+            print(f"  {line}")
+        print()
+
+    def _show_gateway_context_breakdown(self, connection):
+        """Main's ``/context`` grid and table over the gateway agent's own breakdown
+        (``session.context_breakdown``): the session's prompt, tools and transcript live there."""
+        from agent.context_breakdown import render_context_breakdown_lines
+        from agent.context_file_sources import render_context_file_lines
+        from hermes_cli.gateway_client import GatewayClientError
+        try:
+            payload = connection.call("session.context_breakdown", session_id=self.session_id)
+        except GatewayClientError as e:
+            print(f"  {t('cli.context.compute_failed', error=str(e))}")
+            return
+        if not payload.get("categories"):
+            print(f"  {t('cli.shared.no_active_agent')}")
+            return
+        file_lines = render_context_file_lines(payload.get("context_files") or [])
+        print()
+        print(f"  {t('cli.context.header', model=payload.get('model') or self.model)}")
+        print()
+        for line in render_context_breakdown_lines(payload, grid=True) + (["", *file_lines] if file_lines else []):
             print(f"  {line}")
         print()
 

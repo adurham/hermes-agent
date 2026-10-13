@@ -118,3 +118,22 @@ async def test_other_surfaces_keep_the_gateway_handlers(owner):
         policy = SimpleNamespace(source=source)
         assert tui_read(policy, 'status', '') is None and tui_read(policy, 'context', '') is None
     assert tui_read(None, 'status', '') is None
+
+
+@pytest.mark.asyncio
+async def test_context_breakdown_verb_serves_the_owner_agents_categories(owner, monkeypatch):
+    """The classic CLI's /context (and Desktop's popover) read the breakdown of the gateway's own
+    agent through ``session.context_breakdown``; before the agent exists it is the empty shape."""
+    sid = (await owner.call('session.create', request_id='c', source='cli', cwd=str(owner.workdir)))['session_id']
+    empty = await owner.call('session.context_breakdown', session_id=sid)
+    assert empty['categories'] == [] and empty['estimated_total'] == 0
+    from agent import context_breakdown, context_file_sources
+    agent = SimpleNamespace(model='fake-model', provider='custom')
+    owner.authority.runner._cached_agent_for = lambda route: agent
+    monkeypatch.setattr(context_breakdown, 'compute_session_context_breakdown', lambda a, m: {
+        'categories': [{'id': 'system', 'label': 'System prompt', 'tokens': 3000, 'color': '#fff'}],
+        'context_max': 128000, 'context_used': 120, 'context_percent': 0, 'estimated_total': 3000,
+        'context_estimated': False, 'context_source': 'provider_usage', 'model': 'fake-model'} if a is agent else {})
+    monkeypatch.setattr(context_file_sources, 'context_file_sources_for_agent', lambda a: [])
+    live = await owner.call('session.context_breakdown', session_id=sid)
+    assert live['categories'][0]['tokens'] == 3000 and live['model'] == 'fake-model', live
