@@ -153,22 +153,20 @@ def _(rid, params: dict) -> dict:
         if load(db, stored) is None:
             return _ok(rid, {"skipped": False})
         step = advance(db, stored, SkipAll())
-    from tui_gateway import server_requests
     # The card that waits returns to setup_beat, which reads the skipped record.
-    server_requests.cancel(params["session_id"], "resolved", method="setup_beat")
+    _cancel_session_requests(params["session_id"], "resolved", method="setup_beat")
     return _ok(rid, {"skipped": bool(step.result.get("skipped_all"))})
 
 
 def _withdraw_setup_cards(stored_ids: list[str]) -> None:
     """Close the card still waiting in a chat whose run just ended; its answer would be refused."""
-    from tui_gateway import server_requests
     if not stored_ids:
         return
     with _sessions_lock:
         live = [sid for sid, sess in _sessions.items()
                 if (getattr(sess.get("agent"), "session_id", None) or sess.get("session_key")) in stored_ids]
     for sid in live:
-        server_requests.cancel(sid, "resolved", method="setup_beat")
+        _cancel_session_requests(sid, "resolved", method="setup_beat")
 
 
 def _setup_beat_request(sid: str, payload: dict) -> dict | None:

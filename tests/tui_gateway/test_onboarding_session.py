@@ -179,6 +179,34 @@ def test_skip_setup_ends_the_run_and_closes_the_waiting_card(root, monkeypatch):
     assert onboarding["run"] is False and onboarding["seen"]["profile_build_offered"] is True
 
 
+def test_skip_withdraws_the_card_a_compute_host_child_waits_on(root, monkeypatch):
+    """dashboard.turn_isolation: the opening ran in the child, which owns the setup_beat wait; the
+    parent holds only a mirror, so a local cancel never reaches it."""
+    forwarded = []
+
+    class _Supervisor:
+        def respond(self, sid, params, *, timeout=15.0):
+            forwarded.append((sid, dict(params)))
+            return {"type": "respond.ack", "response": {"result": {"cancelled": 1}}}
+
+    db = server._get_db()
+    db.create_session("onb", "desktop")
+    onboarding_record.start(db, "onb", FACTS)
+    sid = "ui-onb"
+    monkeypatch.setitem(server._sessions, sid, {"session_key": "onb", "agent": None, "source": "desktop",
+                                                "agent_ready": threading.Event(), "_compute_host_active": True,
+                                                "history_lock": threading.Lock()})
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: _Supervisor())
+    monkeypatch.setattr(server, "write_json", lambda _message: True)
+    server._relay_compute_host_rpc({"jsonrpc": "2.0", "id": "srq-host", "method": "setup_beat",
+                                    "params": {"session_id": sid, "beat": "theme", "card": {"picker": "accent"}}})
+
+    assert _call("onboarding.skip", {"session_id": sid})["result"] == {"skipped": True}
+    assert forwarded == [(sid, {"cancel": {"method": "setup_beat", "reason": "resolved"}})]
+    assert onboarding_record.load(db, "onb")["phase"] == "skipped"
+
+
 def test_a_compression_rotation_carries_the_run_record(root):
     db = server._get_db()
     db.create_session("parent", "desktop")
