@@ -73,6 +73,28 @@ def _project(cwd):
         "id": project.id, "slug": project.slug, "name": project.name, "primary_path": project.primary_path}
 
 
+def _cli_startup_notices(enabled):
+    """The lines main's HermesCLI printed under its banner, computed where the tools run: the toolset
+    availability warning (``cli.py::_show_tool_availability_warnings``) and the Browser Use downgrade
+    notice (``_show_browser_backend_notice``). The classic CLI renders them with its own console."""
+    notices: dict = {"tool_availability_warnings": [], "browser_backend_notice": None}
+    with contextlib.suppress(Exception):
+        from hermes_cli.tool_availability_notices import (
+            current_terminal_backend, filter_to_enabled_toolsets, tool_availability_warning_lines)
+        from model_tools import check_tool_availability
+        from tools.terminal_tool import terminal_backend_unavailable_reason
+        from toolsets import resolve_toolset
+        _, unavailable = check_tool_availability()
+        unavailable = filter_to_enabled_toolsets(unavailable, enabled or [], resolve_toolset)
+        notices["tool_availability_warnings"] = tool_availability_warning_lines(
+            unavailable, terminal_reason=terminal_backend_unavailable_reason(),
+            terminal_backend=current_terminal_backend())
+    with contextlib.suppress(Exception):
+        from tools.browser_use_cli import default_downgrade_notice
+        notices["browser_backend_notice"] = default_downgrade_notice()
+    return notices
+
+
 def session_inventory(authority, policy, agent, cwd):
     """Main's banner/status fields for one session. Each section degrades to main's empty value on
     its own, so one failing builder never blanks the others (main wrapped each in ``suppress``)."""
@@ -107,6 +129,8 @@ def session_inventory(authority, policy, agent, cwd):
             # The classic CLI banner colours lazy (yellow) / disabled (red) tools from this.
             from hermes_cli.banner import compute_toolset_availability
             info["tool_availability"] = compute_toolset_availability(enabled)
+        if policy is not None and policy.source == "cli":
+            info.update(_cli_startup_notices(enabled))
         with contextlib.suppress(Exception):
             from hermes_cli.banner import get_available_skills
             info["skills"] = get_available_skills()

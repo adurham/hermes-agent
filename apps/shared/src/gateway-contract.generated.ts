@@ -4531,6 +4531,8 @@ export interface CanonicalSessionInfo {
   context_length?: number | null
   enabled_toolsets?: string[] | null
   tool_availability?: Record<string, unknown> | null
+  tool_availability_warnings?: string[] | null
+  browser_backend_notice?: string | null
   source: string
   model?: string | null
   lazy: boolean
@@ -4839,6 +4841,8 @@ export interface CanonicalSnapshotInfo {
   context_length?: number | null
   enabled_toolsets?: string[] | null
   tool_availability?: Record<string, unknown> | null
+  tool_availability_warnings?: string[] | null
+  browser_backend_notice?: string | null
   desktop_protocol: 'hermes-gateway-v1'
   source?: string | null
   model?: string | null

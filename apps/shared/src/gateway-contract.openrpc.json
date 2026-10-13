@@ -9921,6 +9921,33 @@
             "default": null,
             "title": "Tool Availability"
           },
+          "tool_availability_warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Availability Warnings"
+          },
+          "browser_backend_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser Backend Notice"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -10456,6 +10483,33 @@
             ],
             "default": null,
             "title": "Tool Availability"
+          },
+          "tool_availability_warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Availability Warnings"
+          },
+          "browser_backend_notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser Backend Notice"
           },
           "desktop_protocol": {
             "const": "hermes-gateway-v1",

@@ -74,3 +74,45 @@ async def test_created_session_snapshot_carries_inventory_for_frozen_toolsets(tm
 
     narrowed = await call('session.create', request_id='narrow', source='cli', cwd=str(repo), toolsets=['terminal'])
     assert set(narrowed['info']['tools']) - {'other'} == {'terminal'}, narrowed['info']['tools']
+
+
+@pytest.mark.asyncio
+async def test_cli_surface_snapshot_carries_main_cli_toolsets_and_startup_warnings(tmp_path, monkeypatch, repo):
+    """``source: cli`` is the classic CLI surface: exactly main's ``_get_platform_tools(cfg, 'cli')`` and
+    the warnings main's HermesCLI printed under its banner, computed in the process that runs the tools."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli import banner
+    from hermes_cli.tools_config import _get_platform_tools
+    from tools import browser_use_cli
+
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'config.yaml').write_text(
+        'model: {default: gpt-5.4, provider: custom, base_url: "http://127.0.0.1:9/v1"}\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setattr(run, '_hermes_home', home)
+    monkeypatch.setattr(banner, '_available_skills_cache', None)
+    monkeypatch.setattr(browser_use_cli, 'default_downgrade_notice', lambda: 'browser-harness is missing')
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
+                             _cached_agent_for=lambda route: None)
+    runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
+    authority = await initialize_session_authority(runner, profile_id=str(home), instance_id='first')
+    connection = AuthorityConnection(authority, object(), {'user_id': 'human'})
+
+    async def call(method, **params):
+        reply = await connection.dispatch({'id': 1, 'method': method, 'params': params})
+        assert 'result' in reply, reply
+        return reply['result']
+
+    from hermes_cli.config import load_config
+    cli = (await call('session.create', request_id='cli', source='cli', cwd=str(repo)))['info']
+    assert cli['enabled_toolsets'] == sorted(_get_platform_tools(load_config(), 'cli'))
+    assert isinstance(cli['tool_availability_warnings'], list)
+    assert cli['browser_backend_notice'] == 'browser-harness is missing'
+    tui = (await call('session.create', request_id='tui', source='tui', cwd=str(repo)))['info']
+    assert 'tool_availability_warnings' not in tui and 'browser_backend_notice' not in tui
