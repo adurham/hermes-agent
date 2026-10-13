@@ -102,6 +102,7 @@ class CLIInfoMixin:
         from hermes_cli.banner import build_welcome_banner
         self.console.clear()
         ctx_len = None
+        gateway_inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
         from agent.context_pin import is_context_pinned
@@ -128,7 +129,6 @@ class CLIInfoMixin:
                 enabled_toolsets=self.enabled_toolsets, session_id=self.session_id,
                 context_length=ctx_len, provider=self.provider, context_pinned=ctx_pinned)
 
-            gateway_inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
             if gateway_inventory is not None:
                 from hermes_cli.gateway_session_store import session_label
                 # The gateway session's snapshot (the TUI banner's data): the CLI enumerates nothing.
@@ -181,7 +181,14 @@ class CLIInfoMixin:
         # Tool discovery is deferred on the Termux bare prompt path (warnings show once tools
         # init). On the snapshot fast path the check walks every check_fn (~180ms) — run it in
         # the background and let its output land above the prompt (patch_stdout-safe).
-        if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
+        gateway_lines = (gateway_inventory or {}).get("tool_availability_warnings")
+        if isinstance(gateway_lines, list):
+            # The gateway resolved this session's tools: print main's warning lines from its snapshot.
+            if gateway_lines:
+                self._console_print()
+                for line in gateway_lines:
+                    self._console_print(line)
+        elif os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             if getattr(self, "_defer_tool_warnings", False):
                 threading.Thread(
                     target=self._show_tool_availability_warnings,

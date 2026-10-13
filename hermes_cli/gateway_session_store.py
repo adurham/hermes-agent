@@ -213,6 +213,9 @@ class GatewaySessionStore:
             "enabled_toolsets": info.get("enabled_toolsets"),
             "context_length": info.get("context_length"),
             "cwd": info.get("cwd"),
+            # Main's startup lines under the banner, computed in the gateway (``source: cli`` only).
+            "tool_availability_warnings": info.get("tool_availability_warnings"),
+            "browser_backend_notice": info.get("browser_backend_notice"),
         }
 
 
