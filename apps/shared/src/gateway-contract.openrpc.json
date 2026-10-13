@@ -9157,6 +9157,18 @@
             ],
             "default": null,
             "title": "Multi Select"
+          },
+          "timeout_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout S"
           }
         },
         "required": [

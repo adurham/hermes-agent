@@ -494,7 +494,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         result = await self._ctx._status_adapter.send_clarify(**kwargs)
         if self._approval_owner is not None and result.success:
             authority, session_id, generation = self._approval_owner
-            authority.register_clarify(session_id, generation, entry)
+            from gateway import local_viewer_events
+            authority.register_clarify(session_id, generation, entry,
+                                       timeout_s=local_viewer_events.prompt_timeout_s(self, "clarify"))
         return result
 
     def _clarify_callback_sync(self, questions) -> dict:
@@ -619,7 +621,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # A native decline must finish before any observer can authorize work.
         self._render_approval_sync(approval_data)
         if self._approval_owner is not None:
-            authority.register_approval(session_id, generation, self._ctx.session_key, approval_data)
+            from gateway import local_viewer_events
+            authority.register_approval(session_id, generation, self._ctx.session_key, approval_data,
+                                        timeout_s=local_viewer_events.prompt_timeout_s(self, "approval"))
 
     def _render_approval_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button

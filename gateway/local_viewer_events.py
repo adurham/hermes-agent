@@ -133,3 +133,23 @@ def todo_state(tool_name, result) -> dict | None:
         return _normalize_todo_state(json.loads(result) if isinstance(result, str) else result)
     except (TypeError, ValueError):
         return None
+
+
+def prompt_timeout_s(turn, kind) -> int | None:
+    """``timeout_s`` of a local viewer's approval / clarify prompt: the window the gateway's own wait
+    enforces (``approvals.timeout`` / the clarify timeout), so the classic CLI's modal shows the
+    same countdown and gives up when the gateway does. ``None`` on a messaging turn (frame
+    unchanged) and for an unlimited clarify wait."""
+    from gateway.run_turn_progress import local_viewer_turn
+    if not local_viewer_turn(turn):
+        return None
+    try:
+        if kind == "approval":
+            from tools.approval_context import _get_approval_timeout
+            seconds = int(_get_approval_timeout())
+        else:
+            from tools.clarify_gateway import get_clarify_timeout
+            seconds = int(get_clarify_timeout())
+    except Exception:
+        return None
+    return seconds if seconds > 0 else None

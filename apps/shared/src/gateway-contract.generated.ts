@@ -4793,6 +4793,7 @@ export interface CanonicalPendingPrompt {
   edit?: Record<string, unknown> | null
   question?: string | null
   multi_select?: boolean | null
+  timeout_s?: number | null
 }
 export interface CanonicalSnapshotInfo {
   provider?: string | null

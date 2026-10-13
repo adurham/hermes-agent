@@ -226,3 +226,34 @@ def test_messaging_tool_events_carry_no_diff_or_todo_frame():
     turn.combined_tool_complete_callback('t1', 'todo', {'todos': todos}, json.dumps({'todos': todos, 'revision': 1}))
     assert [kind for kind, _ in published] == ['tool.start', 'tool.complete']
     assert 'inline_diff' not in published[1][1] and 'todos' not in published[1][1]
+
+
+@pytest.mark.parametrize('platform', [Platform.LOCAL, Platform.TELEGRAM])
+def test_prompts_carry_the_gateway_wait_window_only_for_local_viewers(monkeypatch, platform):
+    from gateway.session_pending_controls import PendingControls
+    import threading
+    monkeypatch.setattr('tools.approval_context._get_approval_timeout', lambda: 90)
+    monkeypatch.setattr('tools.clarify_gateway.get_clarify_timeout', lambda: 600)
+    published = []
+    events = SimpleNamespace(lock=threading.RLock(), publish=lambda sid, prompt, event_type: published.append((event_type, prompt)))
+    controls = PendingControls(events)
+    authority = SimpleNamespace(
+        check_approval_generation=lambda *a: None,
+        register_approval=lambda sid, gen, route, data, timeout_s=None: controls.register(sid, route, gen, data, timeout_s=timeout_s),
+        register_clarify=lambda sid, gen, entry, timeout_s=None: controls.register_clarify(sid, gen, entry, timeout_s=timeout_s))
+    turn = _turn(platform, [])
+    turn._approval_owner = (authority, 's', 1)
+    turn._render_approval_sync = lambda data: None
+    turn._ctx.session_key = 'k'
+    turn._approval_notify_sync({'request_id': 'a1', 'command': 'rm -rf build', 'description': 'delete'})
+    entry = SimpleNamespace(clarify_id='c1', question='Which?', choices=['x'], multi_select=False)
+    from gateway import local_viewer_events
+    authority.register_clarify('s', 1, entry, timeout_s=local_viewer_events.prompt_timeout_s(turn, 'clarify'))
+    approval, clarify = published[0][1], published[1][1]
+    if platform == Platform.LOCAL:
+        assert (approval['timeout_s'], clarify['timeout_s']) == (90, 600)
+        from tui_gateway.contracts.canonical_sessions import CanonicalPendingPrompt
+        CanonicalPendingPrompt.model_validate(approval)
+        CanonicalPendingPrompt.model_validate(clarify)
+    else:
+        assert 'timeout_s' not in approval and 'timeout_s' not in clarify

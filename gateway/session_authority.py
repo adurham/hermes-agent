@@ -730,17 +730,17 @@ class SessionAuthority:
             observed = publish_api_event(self, session_id, event_type, payload)
             return bool(delivered or observed)
 
-    def register_approval(self, session_id, generation, route, data):
+    def register_approval(self, session_id, generation, route, data, *, timeout_s=None):
         live = self.sessions[session_id]
         with live.event_stream.lock:
             self.check_approval_generation(session_id, generation)
-            live.controls.register(session_id, route, generation, data)
+            live.controls.register(session_id, route, generation, data, timeout_s=timeout_s)
 
-    def register_clarify(self, session_id, generation, entry):
+    def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
         live = self.sessions[session_id]
         with live.event_stream.lock:
             self.check_approval_generation(session_id, generation)
-            live.controls.register_clarify(session_id, generation, entry)
+            live.controls.register_clarify(session_id, generation, entry, timeout_s=timeout_s)
 
     async def respond(self, actor, ref, generation, prompt_id, response, *, kind="approval"):
         capability = {"approval": "session:approve", "clarify": "session:respond"}.get(kind)

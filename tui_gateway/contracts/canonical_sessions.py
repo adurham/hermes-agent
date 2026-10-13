@@ -81,6 +81,8 @@ class CanonicalPendingPrompt(Result):
     edit: dict[str, JsonValue] | None = None
     question: str | None = None
     multi_select: bool | None = None
+    # Local viewer turns: the seconds the gateway waits before it gives up on this prompt.
+    timeout_s: int | None = None
 
 
 class CanonicalSnapshotInfo(SessionInventoryFields):
