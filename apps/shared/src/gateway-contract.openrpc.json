@@ -33656,6 +33656,108 @@
         "title": "SessionArchiveResult",
         "type": "object"
       },
+      "SessionAutomationParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "goal",
+              "loop",
+              "heartbeat"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "call": {
+            "title": "Call",
+            "type": "string"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Args"
+          },
+          "kwargs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kwargs"
+          }
+        },
+        "required": [
+          "session_id",
+          "kind",
+          "call"
+        ],
+        "title": "SessionAutomationParams",
+        "type": "object"
+      },
+      "SessionAutomationResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own\nJSON, ``null`` when none) and the call's value, or the refusal main's manager raised.",
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "SessionAutomationResult",
+        "type": "object"
+      },
       "SessionBranchParams": {
         "additionalProperties": false,
         "properties": {
@@ -45867,6 +45969,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/RuntimeDescribeResult"
+        }
+      }
+    },
+    {
+      "name": "session.automation",
+      "summary": "The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionAutomationParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionAutomationResult"
         }
       }
     },

@@ -327,6 +327,10 @@ class GatewayGoalsMixin:
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
+        from gateway.session_authorities import active_authority
+        from gateway.session_viewer_automation import viewer_driven
+        if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
+            return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         try:
             session_entry = await self.async_session_store.get_or_create_session(

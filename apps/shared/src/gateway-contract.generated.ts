@@ -4585,6 +4585,19 @@ export interface SessionStats {
   provider: string
   fallback_model?: string | null
 }
+export interface SessionAutomationParams {
+  session_id: string
+  kind: 'goal' | 'loop' | 'heartbeat'
+  call: string
+  args?: unknown[] | null
+  kwargs?: Record<string, unknown> | null
+}
+/** ``gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own JSON, ``null`` when none) and the call's value, or the refusal main's manager raised. */
+export interface SessionAutomationResult {
+  state: string | null
+  value?: unknown | null
+  error?: Record<string, string> | null
+}
 export interface SessionDetachParams {
   session_id: string
   subscription_id: string
@@ -6544,6 +6557,8 @@ export interface CanonicalRpcMethods {
   'prompt.submit': { params: CanonicalSubmitParams; result: AdmissionStatus }
   /** Owner identity and the canonical capabilities a client may rely on. */
   'runtime.describe': { params: RuntimeDescribeParams; result: RuntimeDescribeResult }
+  /** The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the goal judge, quality gates), run by the owner on the session's row. */
+  'session.automation': { params: SessionAutomationParams; result: SessionAutomationResult }
   'session.create': { params: CanonicalCreateParams; result: CanonicalSnapshot }
   /** Drop this connection's subscription; a stale subscription id answers detached=false. end_reason (snake_case): the viewer is closing the conversation; the last viewer leaving an idle local session ends its row with that reason. */
   'session.detach': { params: SessionDetachParams; result: SessionDetachResult }
@@ -6596,6 +6611,7 @@ export const CANONICAL_RPC_METHODS = [
   'prompt.resolve_unknown',
   'prompt.submit',
   'runtime.describe',
+  'session.automation',
   'session.create',
   'session.detach',
   'session.events.since',

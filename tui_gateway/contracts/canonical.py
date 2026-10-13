@@ -219,6 +219,28 @@ canonical_method("session.stats", params=SessionStatsParams, result=SessionStats
                  doc="The session.usage dict on demand: what main's classic CLI read off its agent.")
 
 
+class SessionAutomationParams(Params):
+    session_id: str
+    kind: Literal["goal", "loop", "heartbeat"]
+    call: str
+    args: list[JsonValue] | None = None
+    kwargs: dict[str, JsonValue] | None = None
+
+
+class SessionAutomationResult(Result):
+    """``gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own
+    JSON, ``null`` when none) and the call's value, or the refusal main's manager raised."""
+
+    state: str | None
+    value: JsonValue | None = None
+    error: dict[str, str] | None = None
+
+
+canonical_method("session.automation", params=SessionAutomationParams, result=SessionAutomationResult,
+                 doc="The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the "
+                     "goal judge, quality gates), run by the owner on the session's row.")
+
+
 class SessionDetachParams(Params):
     session_id: str
     subscription_id: str
