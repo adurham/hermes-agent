@@ -5601,6 +5601,25 @@ def _status_host_kind() -> str:
     return "windows" if is_windows() else "other"
 
 
+def _incompatible_owner_verdict() -> str | None:
+    """``incompatible: <reason>`` when the gateway answering for this home is one this Hermes's clients
+    (TUI, Desktop, chat) refuse, e.g. an older Hermes's daemon left running across an upgrade."""
+    try:
+        from hermes_cli.gateway_runtime import discover_gateway_endpoint
+        observed = discover_gateway_endpoint(get_hermes_home(), timeout=1.5)
+    except Exception:
+        return None
+    if observed.state != "incompatible":
+        return None
+    return f"incompatible: {observed.reason_code or 'unknown'}"
+
+
+def _print_incompatible_owner_hint() -> None:
+    print("  It was started by another Hermes version; TUI, Desktop and chat cannot attach to it.")
+    print("  Replace it with this version:")
+    print("    hermes gateway restart")
+
+
 def _cmd_status(args):
     from hermes_cli.gateway_profile_lifecycle import print_parked_status
     deep = getattr(args, "deep", False)
@@ -5634,11 +5653,18 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
+        if stale := _incompatible_owner_verdict():
+            print(f"✗ The running gateway cannot serve this Hermes ({stale})")
+            _print_incompatible_owner_hint()
         _print_multiplex_standalone_reason()
         _print_served_ingress_urls()
     else:
         pids = list(snapshot.gateway_pids)
-        if pids:
+        if pids and (stale := _incompatible_owner_verdict()):
+            # An older Hermes's gateway: alive, but no client of this version can attach to it.
+            print(f"✗ Gateway is running (PID: {', '.join(map(str, pids))}) but cannot serve this Hermes ({stale})")
+            _print_incompatible_owner_hint()
+        elif pids:
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
