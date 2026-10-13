@@ -184,8 +184,11 @@ async def forward(view, name, rest):
         from hermes_cli.commands import resolve_command
         print(refusal(name) if resolve_command(name) else f"Unknown command: /{name} (use /help)")
         return
-    if reply.get("type") == "skill":
-        # A skill directive is the client's durable submit (same contract as Ink and Desktop).
+    if reply.get("type") in ("skill", "send"):
+        # A prompt directive is the client's durable submit (same contract as Ink and Desktop):
+        # a skill body, or the turn a command built (/plan, /goal's kickoff...) after its notice.
+        if reply.get("notice"):
+            print(reply["notice"])
         print(f"\n{'─' * 40}\n● {reply.get('display') or '/' + name}", flush=True)
         await view.submit(reply["message"])
     else:
