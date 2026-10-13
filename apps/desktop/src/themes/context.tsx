@@ -223,8 +223,9 @@ export const accentBase = (theme: DesktopTheme): DesktopTheme =>
 
 /**
  * `theme` with only its accent moved to `accent`, both modes painted exactly as the live accent preview
- * paints them. Every other colour and the CSS stay the base's. One `<base>-accent` copy per base, so
- * re-tinting replaces it; the base's own accent returns the base itself.
+ * paints them. Every other colour and the CSS stay the base's. One `<base>-accent-<hex>` copy per base and
+ * colour: user themes are shared by every profile, so a copy per base alone let one profile's accent
+ * overwrite another's. The base's own accent returns the base itself.
  */
 export function accentedTheme(theme: DesktopTheme, accent: string): DesktopTheme {
   const base = accentBase(theme)
@@ -238,7 +239,7 @@ export function accentedTheme(theme: DesktopTheme, accent: string): DesktopTheme
 
   return {
     ...base,
-    name: `${base.name}-accent`,
+    name: `${base.name}-accent-${hex.slice(1)}`,
     label: `${base.label} · ${hex}`,
     accentOf: base.name,
     colors: tint('light'),

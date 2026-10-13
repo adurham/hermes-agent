@@ -110,7 +110,7 @@ export interface DesktopTheme {
    *  Persists across updates because it lives in ~/.hermes/skins/,
    *  not inside app.asar. */
   customCSS?: string
-  /** On a saved accent retint (`<base>-accent`): the theme it was retinted from. */
+  /** On a saved accent retint (`<base>-accent-<hex>`): the theme it was retinted from. */
   accentOf?: string
 }
 

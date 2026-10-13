@@ -91,13 +91,39 @@ describe('persistAccent', () => {
     expect(theme.theme.colors).toEqual(previewed.colors)
     expect(theme.theme.customCSS).toBe(previewed.customCSS)
 
-    // A second accent on the same base replaces the copy instead of adding one.
+    // A different colour makes its own copy; the same base and colour reuses it.
+    const pink = theme.themeName
     act(() => persistAccent('#2ea043'))
-    expect(Object.keys($userThemes.get()).sort()).toEqual([ember.name, theme.themeName].sort())
-    expect(resolveTheme(theme.themeName)!.colors.background).toBe(ember.colors.background)
+    const green = theme.themeName
+    expect(green).not.toBe(pink)
+    expect(resolveTheme(green)!.colors.background).toBe(ember.colors.background)
+    act(() => persistAccent('#e0218a'))
+    expect(theme.themeName).toBe(pink)
+    expect(Object.keys($userThemes.get()).sort()).toEqual([ember.name, pink, green].sort())
 
     // The theme's own accent puts the theme itself back.
     act(() => persistAccent(null))
     expect(theme.themeName).toBe(ember.name)
+  })
+
+  it("never overwrites another profile's saved accent", () => {
+    $activeGatewayProfile.set('home')
+    render(
+      <ThemeProvider>
+        <ThemeProbe />
+      </ThemeProvider>
+    )
+
+    act(() => persistAccent('#8a2be2'))
+    const violet = skinPref.resolve('home')
+
+    act(() => $activeGatewayProfile.set('work'))
+    act(() => persistAccent('#e0218a'))
+
+    expect(skinPref.resolve('work')).not.toBe(violet)
+    expect(skinPref.resolve('home')).toBe(violet)
+    expect(resolveTheme(violet)!.accentOf).toBe(nousTheme.name)
+    expect(resolveTheme(skinPref.resolve('work'))!.label).toContain('#e0218a')
+    expect(resolveTheme(violet)!.label).toContain('#8a2be2')
   })
 })

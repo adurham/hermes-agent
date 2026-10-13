@@ -5,7 +5,7 @@ import { requestTheme } from './request'
 import { installUserTheme } from './user-themes'
 
 /**
- * Save an accent on the live profile's theme: only its accent moves, saved as the `<base>-accent` user theme
+ * Save an accent on the live profile's theme: only its accent moves, saved as the `<base>-accent-<hex>` user theme
  * the `$accentOverride` preview painted. `null` (or the base's own accent) returns to the base theme itself.
  * Clears the unsaved preview. An unparseable colour changes nothing.
  */
