@@ -11,6 +11,7 @@ import os
 import platform
 import sys
 import sysconfig
+from typing import NamedTuple
 
 from hermes_platform.host import darwin_pci
 
@@ -272,23 +273,28 @@ def _linux_gpu_vendor_ids() -> list[str] | None:
     return [_read_text(f"{root}/{card}/device/vendor", 16).strip() for card in cards]
 
 
-def parse_windows_display_adapters(rows: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
-    """``(vendor id, description)`` per adapter from display-class ``(subkey, MatchingDeviceId, DriverDesc)``.
+def _hex_after(text: str, tag: str) -> str:
+    return text.split(tag, 1)[1][:4] if tag in text else ""
+
+
+def parse_windows_display_adapters(rows: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    """``(vendor id, device id, description)`` per adapter from ``(subkey, MatchingDeviceId, DriverDesc)`` rows.
 
     Virtual adapters (no ``VEN_`` id, such as the remote-display driver) are skipped; an
-    adapter subkey without a readable id keeps an empty vendor so it counts as unreadable.
+    adapter subkey without a readable id keeps empty ids so it counts as unreadable.
     """
     adapters = []
-    for subkey, device_id, description in rows:
-        if "VEN_" in device_id.upper():
-            adapters.append((device_id.upper().split("VEN_", 1)[1][:4], description))
-        elif subkey.isdigit() and not device_id:
-            adapters.append(("", description))
+    for subkey, matching_id, description in rows:
+        upper = matching_id.upper()
+        if "VEN_" in upper:
+            adapters.append((_hex_after(upper, "VEN_"), _hex_after(upper, "DEV_"), description))
+        elif subkey.isdigit() and not matching_id:
+            adapters.append(("", "", description))
     return adapters
 
 
 @functools.cache
-def _windows_display_adapters() -> tuple[tuple[str, str], ...] | None:
+def _windows_display_adapters() -> tuple[tuple[str, str, str], ...] | None:
     import winreg
 
     rows = []
@@ -324,7 +330,7 @@ def gpu_class() -> str:
             vendors = darwin_pci.display_vendor_ids()
         elif sys.platform == "win32":
             adapters = _windows_display_adapters()
-            vendors = None if adapters is None else [vendor for vendor, _ in adapters]
+            vendors = None if adapters is None else [vendor for vendor, _, _ in adapters]
         elif os.path.exists("/proc/driver/nvidia/version") or os.path.exists(_WSL_NVIDIA_CUDA):
             return "nvidia"
         else:
@@ -335,6 +341,8 @@ def gpu_class() -> str:
 
 
 _NVIDIA_PROC_GPUS = "/proc/driver/nvidia/gpus"
+_NVIDIA_PCI_VENDOR = 0x10DE
+_SYS_PCI_DEVICES = "/sys/bus/pci/devices"
 
 
 def parse_nvidia_gpu_model(information: str) -> str:
@@ -345,23 +353,45 @@ def parse_nvidia_gpu_model(information: str) -> str:
     return ""
 
 
-@functools.cache
-def nvidia_gpu_names() -> tuple[str, ...]:
-    """Names of the NVIDIA GPUs: Windows display-class ``DriverDesc``, Linux driver procfs ``Model``; else empty."""
-    if sys.platform == "win32":
-        try:
-            adapters = _windows_display_adapters() or ()
-        except (AttributeError, OSError, TypeError, ValueError):
-            return ()
-        return tuple(name for vendor, name in adapters if vendor.lower() == "10de" and name)
-    if not sys.platform.startswith("linux"):
-        return ()
+class NvidiaGpu(NamedTuple):
+    name: str
+    pci_id: int | None  # NVML packing: device id above the 16-bit vendor id
+
+
+def _pci_id(device_hex: str) -> int | None:
+    try:
+        return int(device_hex, 16) << 16 | _NVIDIA_PCI_VENDOR
+    except ValueError:
+        return None
+
+
+def nvidia_gpus_from_adapters(adapters: list[tuple[str, str, str]]) -> tuple[NvidiaGpu, ...]:
+    """The NVIDIA entries of parsed Windows display adapters."""
+    return tuple(NvidiaGpu(description, _pci_id(device)) for vendor, device, description in adapters
+                 if vendor.lower() == "10de")
+
+
+def _linux_nvidia_gpus() -> tuple[NvidiaGpu, ...]:
     try:
         buses = sorted(os.listdir(_NVIDIA_PROC_GPUS))[:_GPU_SCAN_LIMIT]
     except OSError:
         return ()
-    names = (parse_nvidia_gpu_model(_read_text(f"{_NVIDIA_PROC_GPUS}/{bus}/information", 4096)) for bus in buses)
-    return tuple(name for name in names if name)
+    gpus = (NvidiaGpu(parse_nvidia_gpu_model(_read_text(f"{_NVIDIA_PROC_GPUS}/{bus}/information", 4096)),
+                      _pci_id(_read_text(f"{_SYS_PCI_DEVICES}/{bus}/device", 16).strip().removeprefix("0x")))
+            for bus in buses)
+    return tuple(gpu for gpu in gpus if gpu.name)
+
+
+@functools.cache
+def nvidia_gpus() -> tuple[NvidiaGpu, ...]:
+    """Name and PCI id of each NVIDIA GPU: the Windows display-class registry, or Linux driver procfs
+    with sysfs PCI ids; empty elsewhere or without the driver."""
+    if sys.platform == "win32":
+        try:
+            return nvidia_gpus_from_adapters(list(_windows_display_adapters() or ()))
+        except (AttributeError, OSError, TypeError, ValueError):
+            return ()
+    return _linux_nvidia_gpus() if sys.platform.startswith("linux") else ()
 
 
 def _windows_interactive_session() -> bool:
@@ -395,5 +425,5 @@ def interactive_session() -> bool:
 def clear_caches() -> None:
     """Clear every cached host fact."""
     for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
-                 nvidia_gpu_names, _windows_display_adapters):
+                 nvidia_gpus, _windows_display_adapters):
         fact.cache_clear()

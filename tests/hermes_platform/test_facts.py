@@ -54,7 +54,7 @@ _N1X_DISPLAY_ROWS = [
 )
 def test_windows_display_adapters_classify_the_gpu(rows, gpu_class) -> None:
     adapters = facts.parse_windows_display_adapters(rows)
-    assert facts.classify_gpu_vendors([vendor for vendor, _ in adapters]) == gpu_class
+    assert facts.classify_gpu_vendors([vendor for vendor, _, _ in adapters]) == gpu_class
 
 
 @pytest.mark.parametrize(

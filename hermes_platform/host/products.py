@@ -21,22 +21,22 @@ def is_nvidia_n1x_pci_id(pci_id: int) -> bool:
 
 
 def classify_nvidia_platform(*, os_family: str, native_arch: str, cpu_model: str, gpu_class: str,
-                             nvidia_gpu_names: tuple[str, ...]) -> NvidiaPlatform | None:
+                             nvidia_gpus: tuple[facts.NvidiaGpu, ...]) -> NvidiaPlatform | None:
     """Return the NVIDIA platform the supplied host facts describe, or ``None`` without an NVIDIA GPU.
 
-    - ``rtx_spark``: Windows on arm64 with an NVIDIA GPU or the N1X CPU marker. NVIDIA ships no
-      Windows-on-Arm driver for a discrete card, so an NVIDIA adapter there is the N1X; a GPU in
-      ``is_nvidia_n1x_pci_id``'s range is therefore always this platform.
+    - ``rtx_spark``: Windows on arm64 whose CPU name carries the N1X marker or whose GPU is in
+      ``is_nvidia_n1x_pci_id``'s range, the same range the local catalog's measured row uses.
     - ``dgx_spark``: Linux on arm64 whose NVIDIA driver names a GB10 GPU, or whose CPU or
       device-tree model names GB10 or DGX Spark. Other arm64 NVIDIA servers are ``discrete``.
     - ``discrete``: any other host with an NVIDIA GPU.
     """
     cpu = cpu_model.replace("_", " ").upper()
     if native_arch == "arm64" and os_family == "win32":
-        if gpu_class == "nvidia" or _RTX_SPARK_CPU_MARKER in cpu:
+        n1x_gpu = any(gpu.pci_id is not None and is_nvidia_n1x_pci_id(gpu.pci_id) for gpu in nvidia_gpus)
+        if n1x_gpu or _RTX_SPARK_CPU_MARKER in cpu:
             return "rtx_spark"
     if native_arch == "arm64" and os_family.startswith("linux"):
-        names = " ".join(nvidia_gpu_names).upper()
+        names = " ".join(gpu.name for gpu in nvidia_gpus).upper()
         if any(marker in names or marker in cpu for marker in _DGX_SPARK_MARKERS):
             return "dgx_spark"
     return "discrete" if gpu_class == "nvidia" else None
@@ -54,4 +54,4 @@ def nvidia_platform() -> NvidiaPlatform | None:
     """
     return classify_nvidia_platform(
         os_family=facts.os_family(), native_arch=facts.native_arch(), cpu_model=facts.cpu_model(),
-        gpu_class=facts.gpu_class(), nvidia_gpu_names=facts.nvidia_gpu_names())
+        gpu_class=facts.gpu_class(), nvidia_gpus=facts.nvidia_gpus())
