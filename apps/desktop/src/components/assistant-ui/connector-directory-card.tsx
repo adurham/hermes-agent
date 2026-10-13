@@ -258,7 +258,8 @@ function DirectoryBody({ onContinue, owner, returnRoute, suggested = NO_SUGGESTI
         )}
       </div>
       <div className="px-3.5">
-        <Button className={CARD_ACTION_CLASS} onClick={finish} size="sm">
+        {/* Continue reports the apps connected; while the list loads it would report none. */}
+        <Button className={CARD_ACTION_CLASS} disabled={hosted.phase === 'loading'} onClick={finish} size="sm">
           {t.common.continue}
         </Button>
       </div>

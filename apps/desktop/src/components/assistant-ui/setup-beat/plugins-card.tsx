@@ -4,15 +4,17 @@ import type { CatalogPluginPresence, PluginsManageResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { Puzzle } from 'lucide-react'
+import { useEffect } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/chip'
 import { useI18n } from '@/i18n'
 import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
-import { $agentPlugins } from '@/store/agent-plugins'
+import { $agentPlugins, $agentPluginsProfile, loadAgentPlugins } from '@/store/agent-plugins'
 import type { ConnectionOwner } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
@@ -63,6 +65,15 @@ export function PluginsCard({
   const storedId = useStore(useSessionView().$storedId)
   const owner = useConnectionOwner(storedId, true)
   const plugins = useStore($agentPlugins)
+  const pluginsProfile = useStore($agentPluginsProfile)
+  const { requestGateway } = useGatewayRequest()
+
+  // The shared plugin list may be empty or another profile's: load the chat's own.
+  useEffect(() => {
+    if (owner) {
+      void loadAgentPlugins(requestGateway, owner.profile)
+    }
+  }, [owner, requestGateway])
 
   const presence = useQuery({
     enabled: Boolean(owner) && names.length > 0,
@@ -71,7 +82,8 @@ export function PluginsCard({
     staleTime: Infinity
   })
 
-  const installed = new Set(plugins.flatMap(row => (row.catalog_name ? [row.catalog_name, row.name] : [row.name])))
+  const ownRows = owner && pluginsProfile === owner.profile ? plugins : []
+  const installed = new Set(ownRows.flatMap(row => (row.catalog_name ? [row.catalog_name, row.name] : [row.name])))
 
   const rows = presence.data ?? []
 
