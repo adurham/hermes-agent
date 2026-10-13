@@ -21,7 +21,7 @@ _profile_scoped = _registry.profile_scoped
 @method("plugins.catalog.lookup")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from hermes_cli.plugin_catalog import find_removed, load_catalog_live
+    from hermes_cli.plugin_catalog import load_catalog_live, match_removed, resolved_removed_entries
     from hermes_cli.plugins_cmd_catalog import looks_like_catalog_name
 
     name = str(params.get("name") or "").strip()
@@ -34,7 +34,8 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"status": "unavailable"})
     entry = next((e for e in entries if e.name == name), None)
     # A removed name or repo is never offered: install would refuse it anyway.
-    if entry is None or find_removed(entry.name) or find_removed(entry.repo):
+    removed = resolved_removed_entries() if entry else []
+    if entry is None or match_removed(entry.name, removed) or match_removed(entry.repo, removed):
         return _ok(rid, {"status": "unknown"})
     return _ok(rid, {"status": "found", "entry": {"name": entry.name, "repo": entry.repo, "sha": entry.sha,
                                                   "subdir": entry.subdir}})

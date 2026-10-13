@@ -9,15 +9,17 @@
  * always agree on the repo, subdir and reviewed pin for a name.
  *
  * The lookup asks the backend (`plugins.catalog.lookup`), which reads the live
- * catalog with its cache, kill list and in-tree fallback. The renderer can't
- * fetch the JSON itself: the docs host answers with a cross-origin 301 that
- * carries no CORS header, so the browser rejects it (hermes-agent 136483). Only
- * a backend that predates the method falls back to the direct fetch.
+ * catalog with its cache, kill list and in-tree fallback: the same catalog the
+ * install resolves its pin from. A renderer fetch of the JSON also depends on
+ * the docs host's cross-origin redirect carrying a CORS header, which it did
+ * not until 2026-10-13 (hermes-agent 136483). Only a backend that predates the
+ * method falls back to the direct fetch.
  *
  * Everything here only classifies — nothing installs. Callers open the Install
  * Plugin dialog, which still requires the user's explicit confirmation.
  */
 
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
 
 export const CATALOG_ORIGIN = 'https://hermes-agent.nousresearch.com'
@@ -64,16 +66,20 @@ function asEntry(raw: unknown): null | PluginCatalogEntry {
   }
 }
 
-/** A gateway RPC, as `requestGatewayForProfile` sends it for the active profile. */
-export type CatalogRequest = <T>(method: string, params: Record<string, unknown>) => Promise<T>
-
-interface CatalogLookupReply {
+/** What `plugins.catalog.lookup` answers; `entry` is parsed by `asEntry`, so a malformed one degrades. */
+export interface CatalogLookupReply {
   entry?: unknown
   status?: string
 }
 
+/** The lookup RPC for one name, as `requestGatewayForProfile` sends it for the active profile. */
+export type CatalogRequest = (
+  method: 'plugins.catalog.lookup',
+  params: { name: string }
+) => Promise<CatalogLookupReply | null | undefined>
+
 const activeProfileRequest: CatalogRequest = (method, params) =>
-  requestGatewayForProfile(activeGatewayProfileKey(), method, params, LOOKUP_TIMEOUT_MS)
+  requestGatewayForProfile<CatalogLookupReply>(activeGatewayProfileKey(), method, params, LOOKUP_TIMEOUT_MS)
 
 async function lookupFromFeed(name: string, fetchImpl: typeof fetch): Promise<PluginCatalogLookup> {
   let rows: unknown
@@ -106,8 +112,8 @@ async function lookupFromFeed(name: string, fetchImpl: typeof fetch): Promise<Pl
 /**
  * Look one name up in the live catalog. Unknown names are a hard `unknown`,
  * never a guess: the deep link must not turn an arbitrary string into a git
- * identifier the dialog would then clone. The backend answers; a backend that
- * can't (older than the method, or unreachable) falls back to the direct fetch.
+ * identifier the dialog would then clone. The backend answers; only a backend
+ * older than the method falls back to the direct fetch.
  */
 export async function lookupPluginCatalogEntry(
   name: string,
@@ -125,9 +131,10 @@ export async function lookupPluginCatalogEntry(
   let reply: CatalogLookupReply | null | undefined
 
   try {
-    reply = await request<CatalogLookupReply>('plugins.catalog.lookup', { name: trimmed })
-  } catch {
-    return lookupFromFeed(trimmed, fetchImpl)
+    reply = await request('plugins.catalog.lookup', { name: trimmed })
+  } catch (error) {
+    // Only a backend that predates the method falls back; an unreachable one can't run the install either.
+    return isMissingRpcMethod(error) ? lookupFromFeed(trimmed, fetchImpl) : { ok: false, error: 'unavailable' }
   }
 
   // A malformed success reply (null, no status) degrades like every other failure.
