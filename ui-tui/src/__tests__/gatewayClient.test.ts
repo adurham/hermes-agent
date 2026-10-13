@@ -178,6 +178,28 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
+  it('/logs carries the attach lifecycle like main\'s sidecar spawn line (row 24)', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+    const gw = new GatewayClient(async () => ({
+      url: 'ws://127.0.0.1:9/api/ws?token=secret', protocols: [], instance_id: 'owner-1', profile_id: '/home/u/.hermes/profiles/work'
+    }))
+
+    try {
+      gw.start()
+      await vi.advanceTimersByTimeAsync(0)
+      const tail = gw.getLogTail(20)
+      expect(tail).toMatch(/^\[lifecycle\] attached shared gateway /m)
+      expect(tail).toContain('profile=/home/u/.hermes/profiles/work')
+      expect(tail).toContain('instance=owner-1')
+      expect(tail).not.toContain('secret')
+    } finally {
+      gw.kill()
+      vi.useRealTimers()
+    }
+  })
+
   it("boots the owner's profile skin: runtime.describe.skin rides the client-local ready (row 3)", async () => {
     vi.useFakeTimers()
     delete process.env.HERMES_TUI_GATEWAY_URL

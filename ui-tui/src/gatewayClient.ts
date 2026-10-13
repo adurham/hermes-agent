@@ -593,6 +593,9 @@ export class GatewayClient extends EventEmitter {
       if (this.disposed || generation !== this.localGeneration) { return }
       this.attachUrl = grant.url
       this.isCanonical = true
+      // Main's /logs opened with the sidecar's spawn line; the shared owner's equivalent is the attach.
+      this.lifecycle(`[lifecycle] attached shared gateway ${start ? 'start' : recover ? 'recover' : 'discover'} ` +
+        `url=${redactUrl(grant.url)} profile=${grant.profile_id} instance=${grant.instance_id}`)
       this.startAttachedGateway(grant.url, grant.protocols)
     }).catch(error => {
       if (this.disposed || generation !== this.localGeneration) { return }
