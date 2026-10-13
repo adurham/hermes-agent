@@ -73,6 +73,16 @@ def test_start_creates_one_onboarding_chat_and_plays_the_opening_once(client):
     assert _call("onboarding.start", {"rerun": True})["result"]["stored_session_id"] != stored
 
 
+def test_leaving_the_intro_is_kept_on_the_run_and_a_rerun_plays_it_again(client):
+    _call("onboarding.start")
+    assert _call("onboarding.state")["result"]["intro_seen"] is False
+    assert _call("onboarding.intro_seen")["result"]["intro_seen"] is True
+    assert _call("onboarding.state")["result"]["intro_seen"] is True
+
+    _call("onboarding.start", {"rerun": True})
+    assert _call("onboarding.state")["result"]["intro_seen"] is False
+
+
 def test_a_restart_before_the_opening_turn_plays_the_opening_on_relaunch(client, monkeypatch):
     def lost_submit(rid, params):
         client.append(("lost", params))
@@ -339,7 +349,7 @@ def test_the_first_state_read_after_the_quiet_spell_says_do_not_run(root):
     record = onboarding_record.load(db, "onb")
     db.patch_session_model_config("onb", {"onboarding_run": {**record, "updated_at": record["updated_at"] - QUIET_COMPLETE_S}})
 
-    assert _call("onboarding.state")["result"] == {"run": False, "eligible": False, "session_id": None}
+    assert _call("onboarding.state")["result"] == {"run": False, "eligible": False, "session_id": None, "intro_seen": False}
 
 
 def test_the_onboarding_facts_are_read_in_the_default_profile(root, client, monkeypatch):

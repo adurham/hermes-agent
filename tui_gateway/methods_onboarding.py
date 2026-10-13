@@ -71,9 +71,23 @@ def _(rid, params: dict) -> dict:
 def _run_state() -> dict:
     from hermes_cli.anon_auth import guest_enabled
     from hermes_cli.onboarding_run import should_run
+
+    from agent.onboarding_record import active_session_id, intro_seen
     # The lookup ends a run whose quiet spell ran out and closes the flag, so it goes first.
-    session_id = _active_onboarding_session()
-    return {"run": should_run(), "eligible": guest_enabled(), "session_id": session_id}
+    with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+        session_id = None if db is None else active_session_id(db)
+        seen = db is not None and intro_seen(db, session_id)
+    return {"run": should_run(), "eligible": guest_enabled(), "session_id": session_id, "intro_seen": seen}
+
+
+@method("onboarding.intro_seen")
+def _(rid, params: dict) -> dict:
+    from agent.onboarding_record import active_session_id, mark_intro_seen
+    with _profile_db(_ONBOARDING_PROFILE, writer=True) as db:
+        session_id = None if db is None else active_session_id(db)
+        if session_id is not None:
+            mark_intro_seen(db, session_id)
+    return _ok(rid, _run_state())
 
 
 # ── first-run onboarding: one chat in the default profile, driven by setup_beat ───────────────

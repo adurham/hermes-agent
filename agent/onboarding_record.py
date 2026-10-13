@@ -114,6 +114,16 @@ def active_session_id(db) -> str | None:
     return next(iter(open_session_ids(db)), None)
 
 
+def intro_seen(db, session_id: str | None) -> bool:
+    return bool((_read(db, session_id) or {}).get("intro_seen")) if session_id else False
+
+
+def mark_intro_seen(db, session_id: str) -> None:
+    """Kept on the run, so a rerun plays the intro again."""
+    db.update_session_model_config_value(
+        session_id, KEY, lambda current: {**current, "intro_seen": True} if isinstance(current, dict) else current)
+
+
 def observe_tool_result(agent, name: str, args: Mapping[str, Any], result: Any) -> Any:
     """Settle a beat from a general tool's result (``set_theme``, ``manage_connections`` display,
     ``gui_tour``). Runs for every tool result; only an onboarding chat (one whose agent carries

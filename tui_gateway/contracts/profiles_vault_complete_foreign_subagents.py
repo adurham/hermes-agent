@@ -401,15 +401,19 @@ method("onboarding.mark_seen", params=Params, result=OnboardingStateResult)
 class OnboardingRunStateResult(Result):
     """``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh
     install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).
-    ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it."""
+    ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it.
+    ``intro_seen``: the user left that run's intro once, so a relaunch reopens it as a normal chat."""
 
     run: bool
     eligible: bool
     session_id: str | None = None
+    intro_seen: bool = False
 
 
 method("onboarding.state", params=Params, result=OnboardingRunStateResult,
        doc="Whether desktop first-run onboarding is due, and the chat in progress; reads the root profile's config.")
+method("onboarding.intro_seen", params=Params, result=OnboardingRunStateResult,
+       doc="Record that the user left the intro of the run in progress; returns onboarding.state.")
 
 
 class OnboardingSetRunParams(Params):

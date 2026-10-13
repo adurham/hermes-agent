@@ -2203,11 +2203,12 @@ export interface OnboardingStateResult {
   profile?: string | null
 }
 export type OnboardingIntro = 'unseen' | 'seen'
-/** ``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it. */
+/** ``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh install). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``). ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it. ``intro_seen``: the user left that run's intro once, so a relaunch reopens it as a normal chat. */
 export interface OnboardingRunStateResult {
   run: boolean
   eligible: boolean
   session_id?: string | null
+  intro_seen?: boolean
 }
 /** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after onboarding gets the plain intro instead of the profile offer. */
 export interface OnboardingSetRunParams {
@@ -5400,6 +5401,8 @@ export interface RpcMethods {
   /** Create-or-read the backend-owned setup profile; the backend picks the name. */
   'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
   'onboarding.ensure_setup_session': { params: OnboardingEnsureSetupSessionParams; result: OnboardingEnsureSetupSessionResult }
+  /** Record that the user left the intro of the run in progress; returns onboarding.state. */
+  'onboarding.intro_seen': { params: Params; result: OnboardingRunStateResult }
   'onboarding.mark_seen': { params: Params; result: OnboardingStateResult }
   'onboarding.record_failed_start': { params: Params; result: OnboardingStateResult }
   /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
@@ -5813,6 +5816,7 @@ export const RPC_METHODS = [
   'model.save_key',
   'onboarding.ensure_setup_profile',
   'onboarding.ensure_setup_session',
+  'onboarding.intro_seen',
   'onboarding.mark_seen',
   'onboarding.record_failed_start',
   'onboarding.reset_setup_profile',

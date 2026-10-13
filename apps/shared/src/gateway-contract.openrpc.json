@@ -2059,6 +2059,24 @@
       }
     },
     {
+      "name": "onboarding.intro_seen",
+      "summary": "Record that the user left the intro of the run in progress; returns onboarding.state.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingRunStateResult"
+        }
+      }
+    },
+    {
       "name": "onboarding.mark_seen",
       "summary": "",
       "params": [
@@ -20523,7 +20541,7 @@
       },
       "OnboardingRunStateResult": {
         "additionalProperties": false,
-        "description": "``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).\n``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it.",
+        "description": "``run``: onboarding opens on this launch (root config ``onboarding.run``, else a fresh\ninstall). ``eligible``: the free tier is on for this backend (``anon_auth.guest_enabled``).\n``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it.\n``intro_seen``: the user left that run's intro once, so a relaunch reopens it as a normal chat.",
         "properties": {
           "run": {
             "title": "Run",
@@ -20544,6 +20562,11 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "intro_seen": {
+            "default": false,
+            "title": "Intro Seen",
+            "type": "boolean"
           }
         },
         "required": [

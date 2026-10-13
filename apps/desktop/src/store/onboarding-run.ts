@@ -11,8 +11,7 @@
 import type {
   MachineFactsResult,
   OnboardingRunStateResult,
-  OnboardingStartResult,
-  OnboardingStateResult
+  OnboardingStartResult
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
@@ -131,7 +130,7 @@ interface StartOptions {
   /** Points the window's gateway at the profile onboarding runs in (`store/profile.ts::ensureGatewayProfile`). */
   ensureProfile?: (profile: string) => Promise<void>
   intro?: OnboardingIntroHooks
-  /** The user left the intro on an earlier launch (`onboarding.mark_seen`). */
+  /** The user left this run's intro on an earlier launch (`onboarding.intro_seen`). */
   introSeen?: boolean
   rerun?: boolean
 }
@@ -208,7 +207,7 @@ function markSeenOnLeave(request: OnboardingRequest): void {
     stop()
 
     if (view === 'ended' && $onboardingPhase.get() === 'shown') {
-      void request('onboarding.mark_seen').catch(error => console.warn('[onboarding] mark_seen failed', error))
+      void request('onboarding.intro_seen').catch(error => console.warn('[onboarding] intro_seen failed', error))
     }
   })
 }
@@ -247,12 +246,10 @@ export function decideOnboarding(
 
 async function readAndStart(request: OnboardingRequest, resume: OnboardingResume, options?: StartOptions): Promise<void> {
   try {
-    const state = await request<OnboardingRunStateResult & Partial<Pick<OnboardingStateResult, 'intro'>>>(
-      'onboarding.state'
-    )
+    const state = await request<OnboardingRunStateResult>('onboarding.state')
 
     if (state.run && state.eligible) {
-      await startOnboarding(request, resume, { ...options, introSeen: state.intro === 'seen' })
+      await startOnboarding(request, resume, { ...options, introSeen: state.intro_seen })
     }
   } catch (error) {
     console.warn('[onboarding] state could not be read', error)

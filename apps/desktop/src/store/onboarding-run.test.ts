@@ -134,7 +134,7 @@ describe('onboarding run', () => {
     $introView.set('ended')
     $introView.set('off')
 
-    expect(calls.filter(method => method === 'onboarding.mark_seen')).toHaveLength(1)
+    expect(calls.filter(method => method === 'onboarding.intro_seen')).toHaveLength(1)
   })
 
   it('keeps the run when the backend refuses the skip', async () => {
