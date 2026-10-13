@@ -38,6 +38,10 @@ def wire(turn, agent) -> dict:
     # Kawaii spinner text ("" clears it) and hearts; neither changes what the provider is sent.
     agent.thinking_callback = lambda text: publish("thinking.delta", {"text": str(text or "")})
     agent.reaction_callback = lambda kind: publish("reaction", {"kind": str(kind or "")})
+    owner = getattr(turn, "_approval_owner", None)
+    if owner is not None:
+        from gateway.session_usage import seed_compression_count
+        seed_compression_count(owner[0].sessions.get(owner[1]), agent)
     if show_reasoning(turn):
         # Only on request: a reasoning sink makes the agent ask the provider for reasoning.
         agent.reasoning_callback = lambda text: publish("reasoning.delta", {"text": str(text or "")})

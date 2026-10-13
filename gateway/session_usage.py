@@ -83,6 +83,30 @@ def usage_stats(agent) -> dict:
     return stats
 
 
+def carried_compression_count(live, agent=None) -> int:
+    """Compactions of this conversation: main's agent counted them on its compressor for the
+    session's life. A canonical compress evicts the gateway's agent (a session boundary), so the
+    count rides the live session and seeds the successor (``seed_compression_count``)."""
+    own = getattr(getattr(agent, "context_compressor", None), "compression_count", 0)
+    carried = getattr(live, "compression_count", 0)
+    return max(carried if isinstance(carried, int) else 0, own if isinstance(own, int) else 0)
+
+
+def note_compression(authority, ref, live) -> None:
+    """A committed (never an exact-retried) compress: one more compaction than the evicted agent saw."""
+    agent = None
+    with contextlib.suppress(AttributeError, KeyError):  # a runner without an agent cache has none
+        agent = authority.agent(ref)
+    live.compression_count = carried_compression_count(live, agent) + 1
+
+
+def seed_compression_count(live, agent) -> None:
+    compressor = getattr(agent, "context_compressor", None)
+    if live is not None and compressor is not None:
+        with contextlib.suppress(Exception):
+            compressor.compression_count = carried_compression_count(live, agent)
+
+
 def publish_usage(turn, agent) -> None:
     """One ``session.usage`` frame on the viewer's stream; never breaks the turn."""
     if agent is None:
@@ -97,4 +121,7 @@ async def stats(connection, ref, params):
     if set(params) - {"session_id", "profile"}:
         raise RuntimeStoreError("invalid_params")
     await connection.authority.resolve(connection.actor, ref)
-    return usage_stats(connection.authority.agent(ref))
+    agent = connection.authority.agent(ref)
+    result = usage_stats(agent)
+    result["compression_count"] = carried_compression_count(connection.authority.sessions.get(ref.session_id), agent)
+    return result

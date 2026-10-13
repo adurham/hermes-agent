@@ -178,6 +178,12 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
         current = authority.db.get_session(ref.session_id)
         owns_projection = current is not None and (
             current['runtime_generation'] == result.get('execution_generation', params.get('expected_generation')))
+        if operation == 'compress' and applied and owns_projection and live is not None:
+            # Before the boundary evicts the agent whose compressor holds the running count.
+            from gateway.session_usage import note_compression
+            note_compression(authority, ref, live)
+        elif operation == 'reset' and applied and live is not None:
+            live.compression_count = 0  # a fresh conversation, as main's /new builds a fresh agent
         if operation not in {*_POLICY, 'reset', 'compress', 'rewind'} or owns_projection:
             _project_committed(authority, ref, operation, result)
         if live is not None:
