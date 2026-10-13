@@ -305,7 +305,8 @@ def _mcp_reload_confirm_required() -> bool:
         return True
 
 
-def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: str = "") -> None:
+def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
+                           plugin_note: tuple[str, str] | None = None) -> None:
     """Rebuild live sessions' cached tool snapshots from the registry and push session.info (agents
     never re-read the registry). The MCP pool is process-global, so refreshing only the requester
     would leave sibling sessions on stale tools until /new — and a request without a resolvable
@@ -314,8 +315,9 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
     (config or a just-installed plugin) is in the session's ``tool_call`` scope.
 
     ``home``: only sessions of that profile home (a session with no ``profile_home`` belongs to the
-    launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``note``: queued
-    for each session's next turn on the one-shot turn-note channel (``agent/turn_context.py``)."""
+    launch home). ``preserve_prefix``: append-only rebuild inside a live conversation. ``plugin_note``:
+    ``(plugin_key, text)`` queued once per session for its next tool result or turn
+    (``agent/plugin_live_notes.py``)."""
     from hermes_constants import hermes_home_key
     want = hermes_home_key(home) if home is not None else None
     with _sessions_lock:
@@ -332,17 +334,17 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
                         quiet_mode=True, preserve_prefix=preserve_prefix)
         except Exception as _exc:
             logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc)
-        if note:
-            prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
-            agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
+        if plugin_note:
+            _tools_mod("agent.plugin_live_notes").queue_plugin_notice(agent, *plugin_note)
         _emit("session.info", sid, _session_info(agent, sess))
 
 
-def refresh_plugin_sessions(home, note: str) -> None:
+def refresh_plugin_sessions(home, plugin_key: str, note: str) -> None:
     """A plugin just went live in ``home``: append its MCP tools to that profile's open chats (deferred
-    behind tool_search, so the model-facing tool array is unchanged) and queue ``note`` for their next
-    turn. Called by ``hermes_cli.plugins_activation_live``."""
-    _refresh_live_sessions(home, preserve_prefix=True, note=note)
+    behind tool_search, so the model-facing tool array is unchanged) and queue ``note``, replacing an
+    older one for ``plugin_key``, for their next tool result or turn. Called by
+    ``hermes_cli.plugins_activation.load_and_go_live``."""
+    _refresh_live_sessions(home, preserve_prefix=True, plugin_note=(plugin_key, note) if note else None)
 
 
 @_rpc("reload.mcp", 5015)
