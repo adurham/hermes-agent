@@ -13,6 +13,7 @@ live session leaves the model-facing tool array (and the cached prompt prefix) b
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,25 @@ def plugin_skills(plugin_key: str) -> list[dict[str, str]]:
         return []
     return [{"name": qualified, "description": str(entry.get("description") or "")}
             for qualified, entry in sorted(skills.items()) if entry.get("plugin_key") == plugin_key]
+
+
+def catalog_plugin_skill(written: str) -> Optional[str]:
+    """The registered name of a plugin skill written ``<catalog-name>:<skill>`` (``blender:blender``), or
+    None when that catalog plugin is not installed in this profile or registered no such skill. A
+    portable plugin's skills register under a collision-resistant namespace
+    (``agent-plugin-<slug>-<sha8>:<skill>``, ``hermes_cli/plugins_manifest.py``), so the readable form
+    is never itself a name ``skill_view`` resolves."""
+    from hermes_cli.plugins import get_plugin_manager
+    from hermes_cli.plugins_cmd import _catalog_installed_dir
+    catalog_name, _, bare = written.partition(":")
+    target = _catalog_installed_dir(catalog_name)
+    if target is None:
+        return None
+    manager = get_plugin_manager()
+    keys = {key for key, loaded in manager._plugins.items()
+            if loaded.manifest.path and Path(loaded.manifest.path).resolve() == target.resolve()}
+    return next((qualified for qualified, entry in sorted(manager._plugin_skills.items())
+                 if entry.get("plugin_key") in keys and entry.get("bare_name") == bare), None)
 
 
 def live_notice(activation: dict[str, Any]) -> str:

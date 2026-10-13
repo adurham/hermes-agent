@@ -25,8 +25,8 @@ OWN_ID = "own"
 @dataclass(frozen=True)
 class FirstTask:
     """``skills`` load first, before the work; an entry ``a|b`` means one of them, whichever fits.
-    Plugin skills use the ``<plugin>:<skill>`` form skill_view resolves. ``goal`` finishes the
-    sentence "Your job: ..."."""
+    A plugin skill is written ``<catalog plugin>:<skill>``; :func:`task_skills` names it by the name it
+    registered under on this install. ``goal`` finishes the sentence "Your job: ..."."""
 
     id: str
     label: str
@@ -304,13 +304,14 @@ def pick_error(options: Any, facts: Facts, picks: Mapping[str, Any]) -> str | No
             f"{MAX_PICKS} of these ids: {', '.join(eligible)}.")
 
 
-def task_skills(option: str, has_skill: Callable[[str], bool]) -> list[str]:
-    """The skills a task loads first, humanizer last. A bundled skill missing here is dropped; a plugin
-    skill (``plugin:skill``) is kept, since the plugin being installed is the row's gate."""
+def task_skills(option: str, resolve_skill: Callable[[str], str | None]) -> list[str]:
+    """The skills a task loads first, humanizer last, each by the name ``skill_view`` loads it with here:
+    ``resolve_skill`` maps a written name to that name (a plugin skill's registered name differs from
+    its ``<plugin>:<skill>`` form), or to None for a skill missing here, which is dropped."""
     names = [*TASK_BY_ID.get(option, OWN_TASK).skills, EVERY_TASK_SKILL]
     kept = []
     for entry in names:
-        found = [name for name in entry.split("|") if ":" in name or has_skill(name)]
+        found = [resolved for name in entry.split("|") if (resolved := resolve_skill(name))]
         if found:
             kept.append(" or ".join(found))
     return kept

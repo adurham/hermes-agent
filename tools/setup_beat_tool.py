@@ -74,17 +74,21 @@ def _reply_event(beat: str, reply: Mapping[str, Any] | None) -> flow.Event:
     return flow.Answered(beat, answer) if isinstance(answer, dict) and answer else flow.TimedOut(beat, _present(beat))
 
 
-def _installed_skills() -> Callable[[str], bool]:
+def _skill_resolver() -> Callable[[str], str | None]:
+    """A written first-task skill name -> the name skill_view loads it with here, or None. A plugin skill
+    (``blender:blender``) resolves through the installed catalog plugin to its registered name."""
+    from hermes_cli.plugins_activation_live import catalog_plugin_skill
     from tools.skills_tool import _find_all_skills
 
-    return {skill["name"] for skill in _find_all_skills()}.__contains__
+    bundled = {skill["name"] for skill in _find_all_skills()}
+    return lambda name: catalog_plugin_skill(name) if ":" in name else (name if name in bundled else None)
 
 
 def _result(step: flow.Step, beat: str | None = None) -> str:
     facts = flow.Facts.from_stored(step.record["facts"])
     # Only a first task's reminder names skills; the skills scan is skipped for every other result.
-    has_skill = _installed_skills() if step.reminder.startswith("build_") else (lambda name: True)
-    text = reminder(step.reminder, step.record, facts, beat, has_skill)
+    resolve_skill = _skill_resolver() if step.reminder.startswith("build_") else (lambda name: name)
+    text = reminder(step.reminder, step.record, facts, beat, resolve_skill)
     return json.dumps({**step.result, **({"reminder": text} if text else {})}, ensure_ascii=False)
 
 

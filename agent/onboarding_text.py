@@ -183,12 +183,12 @@ _SPARK_LINE = "This machine is built for local models; say so once when it fits 
 _REMOTE_LINE = "Hermes runs on another computer than the user's: say which machine anything is installed on."
 
 
-def _task_prompt(option: str, label: str, has_skill: Callable[[str], bool]) -> list[str]:
+def _task_prompt(option: str, label: str, resolve_skill: Callable[[str], str | None]) -> list[str]:
     task = TASK_BY_ID.get(option, OWN_TASK)
     picked = f'They picked "{label or task.label}". ' if (label or task.label) else ""
     steps = [f"{n}. {step}" for n, step in enumerate(task.steps, 1)]
     return [f"{picked}Your job: {task.goal}.",
-            f"Load these skills with skill_view first: {', '.join(task_skills(option, has_skill))}.",
+            f"Load these skills with skill_view first: {', '.join(task_skills(option, resolve_skill))}.",
             "Steps:", *steps, f"Output: {task.output}", f"Quality bar: {task.quality}", f"Done when: {task.done}"]
 
 
@@ -196,10 +196,10 @@ def _bullets(title: str, lines) -> str:
     return "\n".join([f"{title}:", *(f"- {line}" for line in lines)])
 
 
-def build_guidance(option: str, facts: Facts, has_skill: Callable[[str], bool] = lambda name: True,
+def build_guidance(option: str, facts: Facts, resolve_skill: Callable[[str], str | None] = lambda name: name,
                    label: str = "") -> str:
-    """The prompt once a first task is picked; ``label`` is the card text they clicked, ``has_skill``
-    says whether a bundled skill is on this install."""
+    """The prompt once a first task is picked; ``label`` is the card text they clicked, ``resolve_skill``
+    names a skill as this install loads it (None: missing here)."""
     work = [*_HOW_TO_WORK, _preview_line(facts), *((_CONNECTORS,) if option in _CONNECTOR_TASKS else ())]
     page = [_bullets("When you make a page", _PAGE)] if option in _PAGE_TASKS else []
     host = [_OS_LINES.get(facts.os, _OS_LINES["linux"])]
@@ -209,7 +209,7 @@ def build_guidance(option: str, facts: Facts, has_skill: Callable[[str], bool] =
         host.append(_SPARK_LINE)
     if facts.facts_source == "remote":
         host.append(_REMOTE_LINE)
-    return "\n\n".join(["\n".join(_task_prompt(option, label, has_skill)), _bullets("How to work", work), *page,
+    return "\n\n".join(["\n".join(_task_prompt(option, label, resolve_skill)), _bullets("How to work", work), *page,
                          _bullets("This computer", host), f"When it is shown:\n{_CLOSE}"])
 
 
@@ -305,9 +305,9 @@ def _timed_out(record, facts, beat: str) -> str:
 
 
 def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None = None,
-             has_skill: Callable[[str], bool] = lambda name: True) -> str:
+             resolve_skill: Callable[[str], str | None] = lambda name: name) -> str:
     """The text for a reminder key; ``beat`` names the card a ``wrote`` / ``timed_out`` result is about;
-    ``has_skill`` drops a first task's bundled skill missing on this install."""
+    ``resolve_skill`` names a first task's skill as this install loads it, None dropping a missing one."""
     if not key:
         return ""
     if key in ("wrote", "timed_out"):
@@ -315,7 +315,7 @@ def reminder(key: str, record: Mapping[str, Any], facts: Facts, beat: str | None
     if key.startswith("build_"):
         option = key.removeprefix("build_")
         label = next((o["label"] for o in record["picks"].get("build_options") or () if o["id"] == option), "")
-        return build_guidance(option, facts, has_skill, label)
+        return build_guidance(option, facts, resolve_skill, label)
     if key.startswith("already_"):
         return _already(record, key.removeprefix("already_"))
     return _REMINDERS[key](record, facts)

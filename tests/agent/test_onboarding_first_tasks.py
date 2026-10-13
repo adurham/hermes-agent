@@ -36,15 +36,16 @@ def test_brief_and_week_need_an_app_connected_this_run_and_mac_helpers_need_maco
 
 
 def test_a_task_reminder_opens_with_its_skills_and_drops_a_bundled_skill_this_install_lacks():
-    text = reminder("build_explain", new_record(MAC), MAC, has_skill=lambda name: name != "p5js")
+    text = reminder("build_explain", new_record(MAC), MAC, resolve_skill=lambda name: None if name == "p5js" else name)
 
     goal, skills = text.split("\n")[:2]
     assert goal.startswith('They picked "Explain a topic I care about". Your job: ')
     assert skills == ("Load these skills with skill_view first: grounded-citations, claude-design, "
                       "blocked-page-recovery, humanizer.")
-    # Plugin skills come with the plugin, which is the row's gate; a typed task starts from hermes-agent.
-    assert reminder("build_games", new_record(PC), PC, has_skill=lambda name: False).split("\n")[1] == (
-        "Load these skills with skill_view first: nvidia-app:nvidia-app.")
+    # A plugin skill is named as it registered; a typed task starts from hermes-agent.
+    registered = {"nvidia-app:nvidia-app": "agent-plugin-nvidia-app-f9a26bc6:nvidia-app"}
+    assert reminder("build_games", new_record(PC), PC, resolve_skill=registered.get).split("\n")[1] == (
+        "Load these skills with skill_view first: agent-plugin-nvidia-app-f9a26bc6:nvidia-app.")
     assert reminder("build_own", new_record(MAC), MAC).split("\n")[:2] == [
         "Your job: build the task they named in their own words.",
         "Load these skills with skill_view first: hermes-agent, humanizer."]
