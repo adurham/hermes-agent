@@ -345,3 +345,25 @@ def test_run_budget_flag_rides_session_create():
     from hermes_cli.gateway_session_store import _creation_policy
     assert _creation_policy({"run_budget": 90})["run_budget"] == 90.0
     assert "run_budget" not in _creation_policy({"run_budget": None})
+
+
+def test_bare_continue_finds_the_last_session_the_cli_created(tmp_path, monkeypatch):
+    """Bare ``-c`` (main.py ``_resolve_last_session``) reads main's labels too: a gateway row labelled
+    ``local`` that the CLI created is CLI history."""
+    import sqlite3
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_state import SessionDB
+    writer = SessionDB(db_path=tmp_path / "state.db")
+    writer.create_session("local-cli", source="local")
+    writer.append_message("local-cli", "user", "hi")
+    writer.create_session("local-tui", source="local")
+    writer.append_message("local-tui", "user", "later")
+    writer.close()
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.executemany("UPDATE sessions SET created_source=? WHERE id=?", [("cli", "local-cli"), ("tui", "local-tui")])
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
+    from hermes_cli.main import _resolve_last_session
+    assert _resolve_last_session("cli") == "local-cli"
+    assert _resolve_last_session("tui") == "local-tui"

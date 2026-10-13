@@ -1313,7 +1313,9 @@ def _session_db():
     except Exception:
         pass
     try:
-        yield db  # body errors (incl. AttributeError on a None db) are swallowed
+        # Gateway rows the CLI/TUI created are labelled ``local``; source-scoped lookups read main's labels.
+        from hermes_cli.gateway_session_store import SurfaceLabelReader
+        yield SurfaceLabelReader(db) if db is not None else None  # body errors (incl. AttributeError on a None db) are swallowed
     except Exception:
         pass
     finally:
