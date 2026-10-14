@@ -227,7 +227,8 @@ def validate_candidates(manifest: dict, tag: str, commit: str, public_base: str,
     never is.
     """
     rows = _validated_rows(manifest, tag, commit, public_base, release_epoch, archive=archive)
-    if not rows:
+    # A Store-only release has no package rows: the Store bundle is a file, never an update target.
+    if not rows and not manifest.get("files"):
         raise ValueError("Candidate manifest has no packages")
     # Which targets a release must carry is its claim's business (require_targets_match_claim),
     # not the manifest's: a release may build any subset of the lanes.
@@ -427,7 +428,7 @@ def validate_claim(metadata: object, *, version: str, attempt: int, commit: str)
         raise ValueError("Stable claim metadata is invalid")
     base = {*expected, "autopublish", "claimEpoch"}
     legacy = {"skipBundles", "skipTests"}
-    shapes = ({*base, "lanes"}, {*base, *legacy}, {*base, *legacy, "includeMacosIntel"},
+    shapes = ({*base, "lanes"}, {*base, "lanes", "lanesRevision"}, {*base, *legacy}, {*base, *legacy, "includeMacosIntel"},
               {*base, *legacy, "includeTermux"}, {*base, *legacy, "includeMacosIntel", "includeTermux"})
     if set(metadata) not in shapes:
         raise ValueError("Stable claim metadata is invalid")
@@ -813,7 +814,7 @@ def candidate_manifest(env: dict) -> None:
               includes=list(CANDIDATE_INCLUDES))
         out = root / "release-candidates.json"
         assemble(root, tag, commit, base, out, smoke_results=smoke,
-                 release_epoch=claim["claim_epoch"], archive=archive, handoffs=handoffs)
+                 release_epoch=claim["claim_epoch"], archive=archive, lanes=lanes)
         digest = hashlib.sha256(out.read_bytes()).hexdigest()
     emit({"manifest-url": f"{base}/releases/tag/{archive}/release-candidates.json",
           "manifest-sha256": digest}, env)

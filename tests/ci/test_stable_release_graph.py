@@ -149,10 +149,15 @@ def test_lane_inputs_reach_the_workflows_they_configure():
     for name in ("candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                  "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"):
         assert jobs[name]["with"]["skip-tests"] == "${{ !fromJSON(needs.admit.outputs.lanes).smoke }}", name
-    # The Store submission follows the windows lane.
-    assert jobs["publish-bundles"]["with"]["store"] == "${{ fromJSON(needs.admit.outputs.lanes).windows }}"
+    # Which Windows packages the shared builds make follows the two Windows lanes, and the Store
+    # submission follows the Store lane.
+    store_off = "${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}"
+    for name in ("candidates-win32-arm64", "candidates-win32-x64", "candidates-win32-bundle"):
+        assert jobs[name]["with"]["skip-signed"] == "${{ !fromJSON(needs.admit.outputs.lanes).windows }}", name
+        assert jobs[name]["with"]["skip-store"] == store_off, name
+    assert jobs["publish-bundles"]["with"]["skip-store"] == store_off
     desktop = workflow("desktop-bundled-release.yml")["jobs"]
-    assert "inputs.store" in desktop["stable-store"]["if"]
+    assert "inputs.skip-store" in desktop["stable-store"]["if"]
     assert {"lanes", "jobs"} <= set(jobs["admit"]["outputs"])
     for name in ("acceptance", "publication", "complete"):
         gate_step = next(step for step in jobs[name]["steps"]
