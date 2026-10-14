@@ -124,6 +124,8 @@ class AuthorityConnection:
         handlers['session.prune'] = partial(prune, self)
         from gateway.session_usage import stats
         handlers['session.stats'] = partial(stats, self)
+        from gateway.session_active_list import active_list
+        handlers['session.active_list'] = partial(active_list, self)
         from gateway.session_viewer_automation import automation
         handlers['session.automation'] = partial(automation, self)
         return handlers
