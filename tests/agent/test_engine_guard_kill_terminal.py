@@ -251,3 +251,107 @@ class TestGuardKillEndsTheTurn:
             truncated_tool_call_retries=0, retry_count=0, compression_attempts=0,
         )
         assert verdict.result is None or verdict.result.get("final_response") != _GUARD_KILL_PARTIAL_FINAL
+
+
+# ── Stream-retry layer: the exact shape openai's SDK raises in production ──
+
+
+def _sdk_guard_kill_error():
+    """The error openai's SDK raises for exo's in-band guard-kill frame.
+
+    openai >= 2.x ``_streaming.py`` raises on ANY SSE data frame whose JSON has a truthy
+    ``error`` key (``data.get("error")``) BEFORE the client's chunk loop can consume it — so in
+    production the kill arrives as a RAISE, not as the chunk the wire-level fixtures above feed.
+    That raise is what the tests below pin.
+    """
+    import httpx
+    from openai import APIError
+
+    return APIError(
+        message=GUARD_KILL_MESSAGE,
+        request=httpx.Request("POST", "http://macstudio-tailnet:52415/v1/chat/completions"),
+        body={"message": GUARD_KILL_MESSAGE, "type": "InternalServerError", "code": "repetition_loop"},
+    )
+
+
+class TestSdkRaisedGuardKillIsTerminal:
+    """Live 2026-10-14 (exo dsv41): the SDK-raised guard-kill fell through _handle_stream_error's
+    transient branch — its message's "Generation terminated" matched _SSE_CONN_PHRASES' bare
+    "terminated" — and the stream retried the SAME degenerate generation three times
+    (byte-identical: 69706 bytes / 1613 chunks / ~51s each) before the turn ended anyway."""
+
+    def test_raised_guard_kill_is_terminal_no_re_stream(self, monkeypatch):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+        err = _sdk_guard_kill_error()
+        attempts = {"n": 0}
+
+        def _stream():
+            attempts["n"] += 1
+            yield _content_chunk("checking pve02 unsafe shutdowns …")
+            raise err
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _stream()
+        with patch("run_agent.AIAgent._create_request_openai_client", return_value=mock_client), \
+                patch("run_agent.AIAgent._close_request_openai_client"):
+            agent = _make_agent()
+            response = agent._interruptible_streaming_api_call({})
+
+        assert attempts["n"] == 1, "a guard-kill is deterministic — re-streaming re-runs the same decode"
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert getattr(response, "_engine_guard_kill", False) is True
+        preserved = getattr(response, "_provider_stream_error", None)
+        assert preserved is not None
+        assert "repetition-loop degeneration" in str(preserved.body)
+
+    def test_raised_guard_kill_with_nothing_streamed_raises_after_one_attempt(self, monkeypatch):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+        err = _sdk_guard_kill_error()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = err
+        with patch("run_agent.AIAgent._create_request_openai_client", return_value=mock_client), \
+                patch("run_agent.AIAgent._close_request_openai_client"):
+            agent = _make_agent()
+            with pytest.raises(Exception) as excinfo:
+                agent._interruptible_streaming_api_call({})
+        assert "repetition-loop degeneration" in str(excinfo.value)
+        assert mock_client.chat.completions.create.call_count == 1
+
+
+def test_sse_phrase_check_no_longer_matches_guard_kill_prose():
+    from agent.chat_completion_helpers import _is_sse_connection_error
+
+    assert _is_sse_connection_error(_sdk_guard_kill_error()) is False
+
+
+def test_sse_phrase_check_still_matches_relay_transport_drops():
+    import httpx
+    from openai import APIError
+
+    from agent.chat_completion_helpers import _is_sse_connection_error
+
+    relay = APIError(
+        message="Network connection lost.",
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        body={"message": "Network connection lost."})
+    assert _is_sse_connection_error(relay) is True
+
+
+# ── Exhausted-transient wording: reachable-but-dying ≠ could-not-connect ────
+
+
+def test_exhausted_notice_distinguishes_midstream_from_connect_failure():
+    from agent.stream_diag import connect_exhausted_notice
+
+    err = _sdk_guard_kill_error()
+    mid = connect_exhausted_notice(err, attempts=3, base_url="http://macstudio-tailnet:52415/v1",
+                                   diag={"chunks": 1613, "bytes": 69706})
+    assert "Could not open a stream" not in mid
+    assert "mid-response" in mid and "68 KB" in mid
+
+    never_opened = connect_exhausted_notice(err, attempts=3, base_url="http://macstudio-tailnet:52415/v1",
+                                            diag={"chunks": 0, "bytes": 0})
+    assert "Could not open a stream" in never_opened
+
+    no_diag = connect_exhausted_notice(err, attempts=3, base_url="http://macstudio-tailnet:52415/v1")
+    assert "Could not open a stream" in no_diag
