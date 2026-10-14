@@ -83,6 +83,16 @@ DEFAULT_CONFIG = {
         # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
         # `hermes chat --run-budget N`.
         "run_budget_seconds": None,
+        # Silence guard: bounded progress/convergence pressure for a turn that keeps running tool
+        # rounds while emitting no user-visible assistant text. enabled=false disables both
+        # nudges and the end-of-turn warning. status_after_rounds: silent assistant rounds before
+        # a one-per-streak "post a progress update" nudge. converge_after_rounds: assistant rounds
+        # this turn before a one-per-turn "deliver your best answer now" nudge.
+        "silence_guard": {
+            "enabled": True,
+            "status_after_rounds": 20,
+            "converge_after_rounds": 50,
+        },
         # Gateway inactivity timeout (seconds). Only fires when the agent is completely idle — not
         # while calling tools or receiving API responses. 0 = unlimited.
         "gateway_timeout": 1800,

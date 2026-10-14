@@ -136,6 +136,11 @@ def normalize_model_response(
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
 
+    # FORK: count this assistant API round for the silence guard before any continuation
+    # branch — a retried/empty round still consumed an API round (mirrors api_call_count).
+    from agent.fork.silence_guard import note_assistant_round
+    note_assistant_round(agent, assistant_message)
+
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)
