@@ -35,7 +35,7 @@ def test_options_flatten_repeats_and_commas():
 
 def test_every_job_names_real_lanes():
     for job, needs in lane_set.JOB_LANES.items():
-        assert needs <= {*lane_set.NAMES, "bundles"}, job
+        assert needs <= {*lane_set.NAMES, *lane_set.DERIVED}, job
     for target, lane in lane_set.TARGET_LANE.items():
         assert lane in lane_set.NAMES, target
     for handoff, lane in lane_set.HANDOFF_LANE.items():
@@ -59,6 +59,8 @@ def test_a_job_runs_only_when_every_lane_it_needs_is_on():
 def test_flags_round_trip_and_refuse_anything_loose():
     flags = lane_set.flags(["windows", "docker"])
     assert flags["bundles"] is True and flags["macos-arm64"] is False
+    assert flags["desktop-channel"] is False
+    assert lane_set.flags(lane_set.DEFAULT)["desktop-channel"] is True
     assert lane_set.from_flags(flags) == {"windows", "docker"}
     assert lane_set.flags(["docker"])["bundles"] is False
     for bad in (None, {}, {**flags, "extra": True}, {**flags, "ci": "true"},

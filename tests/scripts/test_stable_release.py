@@ -558,9 +558,7 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
     _stage_windows_handoff(built, "arm64")
     _stage_universal_bundle(built)
     monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lane_set.DEFAULT))
-    calls = {call: {"result": "success"} for call in stable.CALL_SMOKE_JOBS
-             if call != "candidates-darwin-x64"}
-    calls["candidates-darwin-x64"] = {"result": "skipped"}
+    calls = _calls(lane_set.DEFAULT)
     env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
     stable.main(["candidate-manifest"], env)
     stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
@@ -581,10 +579,34 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
                                    RELEASE_EPOCH, archive=ATTEMPT)
     # A claim that built Termux needs its handoff: a missing one leaves no manifest.
     del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
-    monkeypatch.setattr(stable, "stable_context",
-                        _fake_stable_context(lanes=lane_set.select(with_=["termux"])))
+    termux = lane_set.select(with_=["termux"])
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=termux))
     with pytest.raises(Exception, match="handoff-termux"):
-        stable.main(["candidate-manifest"], env)
+        stable.main(["candidate-manifest"], {**env, "RELEASE_NEEDS": json.dumps(_calls(termux))})
+    assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
+
+
+def test_a_termux_only_claim_assembles_a_termux_only_manifest(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """--only termux: no desktop call exists, so there is no smoke to judge, only the Termux call."""
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_termux_handoff(built)
+    lanes = lane_set.select(only=["termux", "docker"])
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(_calls(lanes))}
+    stable.main(["candidate-manifest"], env)
+    manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
+    assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {"termux/aarch64"}
+    stable.require_targets_match_claim(manifest, lanes)
+    # The Termux call is judged like any other: a failed one leaves no manifest.
+    del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
+    failed = {**env, "RELEASE_NEEDS": json.dumps({"candidates-termux": {"result": "failure"}})}
+    with pytest.raises(ValueError, match="candidates-termux=failure"):
+        stable.main(["candidate-manifest"], failed)
     assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
 
 
@@ -601,7 +623,7 @@ def test_a_windows_only_claim_assembles_a_windows_only_manifest(
     _stage_universal_bundle(built)
     lanes = lane_set.select(only=["windows", "docker"])
     monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
-    calls = {"candidates-win32-x64": {"result": "success"}, "candidates-win32-arm64": {"result": "success"}}
+    calls = _calls(lanes)
     env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
     stable.main(["candidate-manifest"], env)
     manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
@@ -936,6 +958,12 @@ WINDOWS_VERSION = "2026.5761.123.0"
 RELEASE_EPOCH = 1_787_965_323
 
 
+def _calls(lanes=lane_set.NAMES):
+    """The candidate calls' results: success for each the claim built, skipped for the rest."""
+    runs = lane_set.jobs_to_run(lanes)
+    return {call: {"result": "success" if runs[call] else "skipped"} for call in lane_set.CANDIDATE_CALLS}
+
+
 def _fake_stable_context(*, lanes=lane_set.NAMES):
     def context(env):
         return "v1.2.3", RECEIPT_COMMIT, {"claim_tag": ATTEMPT, "claim_object": "0" * 40,
@@ -1229,8 +1257,7 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     _stage_termux_handoff(built)
     monkeypatch.setattr(stable, "stable_context", _fake_stable_context())
     env = {**_receipt_env(tmp_path, https_origin.base),
-           "RELEASE_NEEDS": json.dumps({call: {"result": "success"}
-                                        for call in stable.CALL_SMOKE_JOBS})}
+           "RELEASE_NEEDS": json.dumps(_calls())}
     stable.main(["candidate-manifest"], env)
 
     stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
@@ -1248,9 +1275,7 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     # A candidate call that did not succeed (a failed smoke behind it) leaves
     # no accepted manifest in the archive.
     failed = dict(env)
-    failed["RELEASE_NEEDS"] = json.dumps({**{call: {"result": "success"}
-                                             for call in stable.CALL_SMOKE_JOBS},
-                                          "candidates-darwin-x64": {"result": "failure"}})
+    failed["RELEASE_NEEDS"] = json.dumps({**_calls(), "candidates-darwin-x64": {"result": "failure"}})
     del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
     (tmp_path / "output").unlink()
     with pytest.raises(ValueError, match="smoke-darwin-x64"):
@@ -1272,7 +1297,7 @@ def test_a_claim_without_the_smoke_lane_records_skipped_smokes_never_passed(
     _stage_universal_bundle(built)
     _stage_termux_handoff(built)
     monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lane_set.select(only=lane_set.NAMES, without=["smoke"])))
-    calls = {call: {"result": "success"} for call in stable.CALL_SMOKE_JOBS}
+    calls = _calls()
     env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
     # A build call that failed still leaves no manifest, even with the smokes off.
     failed = {**env, "RELEASE_NEEDS": json.dumps({**calls, "candidates-win32-x64": {"result": "failure"}})}

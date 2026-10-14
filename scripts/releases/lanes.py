@@ -51,10 +51,12 @@ BUNDLES = (*DESKTOP, "termux")
 # built every desktop package the channel serves. A partial set still stages, verifies and (for
 # Windows) submits its packages, but leaves the channels on the previous release.
 CHANNEL_DESKTOP = ("windows", "macos-arm64")
+DERIVED = ("bundles", "desktop-channel")
 
 # Each stable-release.yml job and the lanes that must all be on for it to run. A job named here
-# reports `skipped` when one is off and `success` otherwise; a job not named never skips. "bundles"
-# is derived: any build lane except docker.
+# reports `skipped` when one is off and `success` otherwise; a job not named never skips. DERIVED
+# names are computed from the lanes: "bundles" is any build lane except docker, "desktop-channel"
+# is the full desktop set the protected channel serves.
 JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs in {
     "ci": ("ci",),
     "nix": ("nix",),
@@ -80,6 +82,8 @@ JOB_LANES: dict[str, frozenset[str]] = {name: frozenset(needs) for name, needs i
     "macos-packaged-x64": ("macos-intel", "upgrade"),
     "windows-packaged": ("windows", "upgrade"),
 }.items()}
+
+CANDIDATE_CALLS = tuple(job for job in JOB_LANES if job.startswith("candidates-"))
 
 # Candidate handoff group and manifest target, each with the lane that builds it.
 HANDOFF_LANE = {"win32-x64": "windows", "win32-arm64": "windows", "windows-universal": "windows",
@@ -121,18 +125,19 @@ def parse_list(values: Iterable[str] | None) -> list[str] | None:
 
 def effective(lanes: Iterable[str]) -> frozenset[str]:
     lanes = frozenset(lanes)
-    return lanes | {"bundles"} if lanes & set(BUNDLES) else lanes
+    return lanes | {name for name, derived in (("bundles", has_bundles(lanes)),
+                                               ("desktop-channel", advances_desktop(lanes))) if derived}
 
 
 def flags(lanes: Iterable[str]) -> dict[str, bool]:
-    """One flag per lane plus the derived ``bundles``: what ``admit`` hands the workflow."""
+    """One flag per lane plus the derived names: what ``admit`` hands the workflow."""
     on = effective(lanes)
-    return {name: name in on for name in (*NAMES, "bundles")}
+    return {name: name in on for name in (*NAMES, *DERIVED)}
 
 
 def from_flags(raw: object) -> frozenset[str]:
     """The lane set of a ``flags`` mapping; refuses anything but a boolean for every lane."""
-    if not isinstance(raw, Mapping) or set(raw) != {*NAMES, "bundles"} \
+    if not isinstance(raw, Mapping) or set(raw) != {*NAMES, *DERIVED} \
             or any(not isinstance(value, bool) for value in raw.values()):
         raise ValueError("lanes must be a boolean for every lane")
     return frozenset(name for name in NAMES if raw[name])

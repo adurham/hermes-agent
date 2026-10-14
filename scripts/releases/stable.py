@@ -797,14 +797,14 @@ def candidate_manifest(env: dict) -> None:
     runs = lane_set.jobs_to_run(lanes)
     calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if runs[call]}
     smoke = {job: {"result": "skipped"} for job in CALL_SMOKE_JOBS.values()}
-    if not lane_set.runs_smokes(lanes):
-        # The calls built and staged their groups but ran no smoke. Record
-        # that as skipped. Never let a green call stand in for a smoke.
-        require_success(needs, list(calls))
-    else:
+    if lane_set.runs_smokes(lanes):
         ran = {job: {"result": (needs.get(call) or {}).get("result")} for call, job in calls.items()}
         require_success(ran, list(ran))
         smoke.update(ran)
+    # Every call the claim built, smoked or not (Termux has no smoke): a green call never stands in
+    # for a smoke, but a failed or missing one leaves no manifest. A claim that builds a bundle
+    # runs at least one call, so this list is never empty.
+    require_success(needs, [call for call in lane_set.CANDIDATE_CALLS if runs[call]])
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
     with tempfile.TemporaryDirectory() as directory:

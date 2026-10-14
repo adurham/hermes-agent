@@ -643,16 +643,21 @@ jobs:
           RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
           CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
-          # It lists the archive and writes the tag and channel pages on R2.
+          DESKTOP_CHANNEL: ${{ fromJSON(needs.admit.outputs.lanes)['desktop-channel'] }}
+          # It lists the archive and writes the tag page, and the shared channel page when the
+          # release built every desktop package the channel serves.
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
         run: |
+          args=()
+          if [ "$DESKTOP_CHANNEL" != true ]; then args+=(--no-channel-page); fi
           python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --archive "$RELEASE_CLAIM_TAG" \
-            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT"
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
+            "${args[@]}"
       - name: Set up Docker Buildx for ordered alias promotion
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to Docker Hub for ordered alias promotion
