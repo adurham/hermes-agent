@@ -796,7 +796,9 @@ def candidate_manifest(env: dict) -> None:
     handoffs = lane_set.handoffs(lanes, CANDIDATE_HANDOFFS)
     # A call the claim did not build never ran, so it has no smoke to record.
     runs = lane_set.jobs_to_run(lanes)
-    calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if runs[call]}
+    # A call whose package is not a target (the Store variant is not install-smoked) has no smoke.
+    built = lane_set.targets(lanes)
+    calls = {call: job for call, job in CALL_SMOKE_JOBS.items() if runs[call] and SMOKE_TARGETS[job] in built}
     smoke = {job: {"result": "skipped"} for job in CALL_SMOKE_JOBS.values()}
     if lane_set.runs_smokes(lanes):
         ran = {job: {"result": (needs.get(call) or {}).get("result")} for call, job in calls.items()}

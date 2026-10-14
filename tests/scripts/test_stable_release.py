@@ -663,6 +663,35 @@ def test_a_store_only_claim_assembles_a_manifest_with_the_store_bundle_and_no_pa
     stable.require_targets_match_claim(manifest, lanes)
 
 
+def test_a_store_plus_macos_claim_records_only_the_macos_smoke(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """--without windows: the Windows candidate calls run for the Store bundle and succeed, but no
+    Windows package is smoked, so their success is not a smoke result."""
+    from scripts.releases import handoff, stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_darwin_handoff(built, "arm64")
+    for arch in ("x64", "arm64"):
+        (built / f"Store-Product-1.2.3-win-{arch}.msix").write_bytes(f"store msix: {arch}".encode())
+        handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, [f"Store-Product-1.2.3-win-{arch}.msix"])
+    _stage_universal_bundle(built, signed=False)
+    lanes = lane_set.select(without=["windows"])
+    assert lane_set.runs_smokes(lanes) and "windows-store" in lanes
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+    calls = _calls(lanes)
+    assert calls["candidates-win32-x64"] == {"result": "success"}
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
+    stable.main(["candidate-manifest"], env)
+    manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
+    assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {"macos/arm64"}
+    assert manifest["smoke_results"]["smoke-darwin-arm64"] == {"result": "success"}
+    assert manifest["smoke_results"]["smoke-win32-x64"] == {"result": "skipped"}
+    stable.require_smokes_match_claim(manifest, lanes)
+    stable.require_targets_match_claim(manifest, lanes)
+
+
 def test_the_manifest_refuses_a_windows_bundle_the_claims_lanes_did_not_build(
         tmp_path, r2_server, https_origin, monkeypatch):
     """A signed bundle under a Store-only claim, or a missing Store bundle under `windows` + `windows-store`."""

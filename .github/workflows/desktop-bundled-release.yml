@@ -655,15 +655,17 @@ jobs:
       - name: Build and package
         shell: powershell
         timeout-minutes: 900
+        # A Store-only build gets no signing vars: after-pack and electron-builder sign payload binaries
+        # whenever they are set, and this job skips the Azure login that would let them.
         env:
           HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           PYTHONUTF8: '1'
-          AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
-          AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
-          AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
-          AZURE_SIGN_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SIGN_ENDPOINT: ${{ inputs.skip-signed != true && vars.AZURE_SIGN_ENDPOINT || '' }}
+          AZURE_SIGN_ACCOUNT: ${{ inputs.skip-signed != true && vars.AZURE_SIGN_ACCOUNT || '' }}
+          AZURE_SIGN_PROFILE: ${{ inputs.skip-signed != true && vars.AZURE_SIGN_PROFILE || '' }}
+          AZURE_SIGN_PUBLISHER: ${{ inputs.skip-signed != true && vars.AZURE_SIGN_PUBLISHER || '' }}
+          AZURE_CLIENT_ID: ${{ inputs.skip-signed != true && vars.AZURE_CLIENT_ID || '' }}
+          AZURE_TENANT_ID: ${{ inputs.skip-signed != true && vars.AZURE_TENANT_ID || '' }}
           AZURE_TOKEN_CREDENTIALS: prod
           SKIP_SIGNED: ${{ inputs.skip-signed }}
           SKIP_STORE: ${{ inputs.skip-store }}

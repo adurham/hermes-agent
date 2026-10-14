@@ -168,6 +168,18 @@ def test_lane_inputs_reach_the_workflows_they_configure():
         assert set(gated) <= set(direct_needs(jobs, name)), name
 
 
+def test_a_store_only_build_is_handed_no_signing_variables():
+    """after-pack and electron-builder sign whenever AZURE_SIGN_* are set; the Azure login is skipped
+    with the signed lane, so the build step must see them empty."""
+    jobs = workflow("desktop-bundled-release.yml")["jobs"]
+    step = next(step for step in jobs["build-win32-x64-release"]["steps"] if step.get("name") == "Build and package")
+    azure = {key: value for key, value in step["env"].items() if key.startswith("AZURE_") and key != "AZURE_TOKEN_CREDENTIALS"}
+    assert set(azure) == {"AZURE_SIGN_ENDPOINT", "AZURE_SIGN_ACCOUNT", "AZURE_SIGN_PROFILE", "AZURE_SIGN_PUBLISHER",
+                          "AZURE_CLIENT_ID", "AZURE_TENANT_ID"}
+    for key, value in azure.items():
+        assert value == f"${{{{ inputs.skip-signed != true && vars.{key} || '' }}}}", key
+
+
 def test_admit_emits_the_same_lanes_and_jobs_the_gate_reads(tmp_path):
     from scripts.releases import stable
 
