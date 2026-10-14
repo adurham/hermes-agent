@@ -202,13 +202,27 @@ def _request_body_bytes(request: Any) -> Optional[int]:
     return None
 
 
-def connect_exhausted_notice(error: BaseException, *, attempts: int, base_url: Any) -> str:
-    """The one user-facing line for \"no stream event ever arrived and the connect retries are spent\":
-    names the host, the attempt count and the serialized request size so a body-size limit is
-    distinguishable from an outage without reading agent.log."""
+def connect_exhausted_notice(error: BaseException, *, attempts: int, base_url: Any,
+                             diag: Optional[dict[str, Any]] = None) -> str:
+    """The one user-facing line for an exhausted transient stream failure: names the host, the attempt
+    count and the serialized request size so a body-size limit is distinguishable from an outage
+    without reading agent.log. FORK: when *diag* shows the attempt DID stream data, says so instead of
+    \"could not open a stream\" — that wording made a mid-response death (exo guard-kill, 2026-10-14,
+    69 KB already streamed) read as a connect/size problem."""
     from urllib.parse import urlparse
     request = _failed_request(error)
     host = urlparse(str(getattr(request, "url", None) or base_url or "")).hostname or "the endpoint"
+    _chunks = _streamed = 0
+    if isinstance(diag, dict):
+        try:
+            _chunks = int(diag.get("chunks") or 0)
+            _streamed = int(diag.get("bytes") or 0)
+        except Exception:
+            _chunks = _streamed = 0
+    if _chunks or _streamed:
+        kb = f" ({max(1, round(_streamed / 1024))} KB received before the last drop)" if _streamed else ""
+        return (f"❌ The stream kept dying mid-response from {host} after {attempts} attempts{kb}; "
+                "the endpoint is reachable — try again in a moment.")
     size = _request_body_bytes(request)
     line = f"❌ Could not open a stream to {host} after {attempts} attempt{'s' if attempts != 1 else ''}"
     if size is None:
@@ -219,10 +233,11 @@ def connect_exhausted_notice(error: BaseException, *, attempts: int, base_url: A
     return line + "; the endpoint looks unreachable — try again in a moment."
 
 
-def buffer_connect_exhausted_notice(agent: Any, error: BaseException, *, attempts: int, base_url: Any) -> None:
+def buffer_connect_exhausted_notice(agent: Any, error: BaseException, *, attempts: int, base_url: Any,
+                                    diag: Optional[dict[str, Any]] = None) -> None:
     """Buffer :func:`connect_exhausted_notice` once per turn: the outer retry/fallback loop re-enters the
     stream call several times, and every pass exhausting the same budget must not add another copy."""
-    text = connect_exhausted_notice(error, attempts=attempts, base_url=base_url)
+    text = connect_exhausted_notice(error, attempts=attempts, base_url=base_url, diag=diag)
     if any(str(msg) == text for _kind, msg in getattr(agent, "_retry_status_buffer", None) or ()):
         return
     agent._buffer_diagnostic_status(text)

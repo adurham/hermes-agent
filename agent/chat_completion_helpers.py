@@ -28,7 +28,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
-    _extract_status_code, is_generation_terminated_error)
+    _extract_error_code, _extract_status_code, is_generation_terminated_error)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
@@ -2697,8 +2697,14 @@ _SKILL_REVIEW_PROMPT = (
 # connection lost."}}) surface as SDK APIError without a status_code (unlike
 # APIStatusError). They mean the upstream stream died: retry with a fresh
 # connection like an httpx drop.
+# FORK: bare "terminated" REMOVED from the list. It false-matched engine guard-kill prose —
+# "Generation terminated: repetition-loop degeneration detected …" — classifying a deterministic
+# engine kill as a transient relay drop and re-streaming the same degenerate decode (live
+# 2026-10-14 exo/dsv41: 3 attempts, byte-identical, ~51s each). "connection terminated" covers the
+# actual transport wording, and the guard-kill family is terminal before this check anyway
+# (see _handle_stream_error).
 _SSE_CONN_PHRASES = ("connection lost", "connection reset", "connection closed", "connection terminated",
-    "network error", "network connection", "terminated", "peer closed", "broken pipe",
+    "network error", "network connection", "peer closed", "broken pipe",
     "upstream connect error")
 
 
@@ -4055,6 +4061,21 @@ class _StreamingCall(StreamingWaitMonitor):
         if self._request_cancelled["value"]:
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
+        # FORK: an engine guard-kill can arrive as a RAISED error instead of a chunk — openai's
+        # SDK raises APIError on ANY in-band SSE ``{"error": …}`` frame (its ``_streaming.py``
+        # reads ``data.get("error")``) before the chunk loop at ``_call_chat_completions`` can
+        # consume it, so exo's kill never reaches that recognition. Terminal HERE as well:
+        # the kill is deterministic for the prompt that produced it, and the engine's Greedy
+        # decode replays byte-identical across attempts (live 2026-10-14 exo/dsv41: three
+        # IDENTICAL kills — 69706 bytes / 1613 chunks / ~51s each — because this raise fell
+        # through to the transient branch below). ``run`` translates it through the partial
+        # stub, whose guard-kill branch ends the turn terminally.
+        if is_generation_terminated_error(str(e), _extract_error_code(getattr(e, "body", None) or {})):
+            logger.warning(
+                "Engine guard-kill raised on the wire (provider=%s) — terminal; not re-streaming: %s",
+                getattr(self.agent, "provider", "") or "unknown", e)
+            self.result["error"] = e
+            return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
         # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
         # ECONNRESET) — the retry loop owns recovery.
@@ -4136,7 +4157,8 @@ class _StreamingCall(StreamingWaitMonitor):
                     f"❌ {_what} {max_retries + 1} attempts. The provider may be experiencing issues — try again in a moment.")
             else:
                 from agent.stream_diag import buffer_connect_exhausted_notice
-                buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1, base_url=self.agent.base_url)
+                buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1,
+                                                base_url=self.agent.base_url, diag=self.clients.diag)
         else:
             self._maybe_disable_streaming(e)
             logger.exception("Streaming failed before delivery: %s", e)
@@ -4425,6 +4447,28 @@ class _StreamingCall(StreamingWaitMonitor):
             return _build_partial_stream_stub(
                 "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
                 dropped_tool_names=_partial_names, overflow_terminal=True,
+                api_mode=getattr(self.agent, "api_mode", None),
+            )
+        # FORK: a guard-kill that was never seen as a chunk (openai's SDK raises on the in-band
+        # ``{"error": …}`` frame — see _handle_stream_error's terminal branch) ends the turn the
+        # SAME way as the chunk-level recognition: partial kept and marked terminal, nothing
+        # auto-continued into the same degenerate state.
+        if _cls is not None and _cls.reason == FailoverReason.generation_terminated:
+            _gk_body = getattr(error, "body", None)
+            _gk_body = dict(_gk_body) if isinstance(_gk_body, dict) else {"message": str(error)}
+            _gk_status = _extract_status_code(error) or 500
+            logger.warning(
+                "Partial stream ended on an engine guard-kill (%s chars recovered); NOT seeding a "
+                "continuation — the kill is deterministic for this prompt: %s",
+                len(_partial_text or ""), error,
+            )
+            return _build_partial_stream_stub(
+                "assistant", _partial_text, None, getattr(self.agent, "model", "unknown"), None,
+                dropped_tool_names=_partial_names,
+                terminal_error=ProviderStreamError(
+                    status_code=_gk_status,
+                    body=_provider_error_body(_gk_body, _gk_status),
+                    raw_text=str(error)),
                 api_mode=getattr(self.agent, "api_mode", None),
             )
         if not _partial_names:
