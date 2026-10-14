@@ -1,0 +1,15 @@
+: keep-alive
+
+data: {"id":"gen-stats-fixture","object":"chat.completion","created":1792012706,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"[synthetic reasoning]"}}]}
+
+: generation_stats {"prompt_tps":0.0,"generation_tps":0.0,"prompt_tokens":41864,"generation_tokens":408,"peak_memory_usage":{"in_bytes":123782766245},"prefix_cache_hit":"partial","mtp_cycles_cumulative":43644,"mtp_accepted_drafts_cumulative":30216,"phase_marks_ms":null,"api_phase_marks_ms":null}
+
+data: {"id":"gen-stats-fixture","object":"chat.completion","created":1792012706,"model":"test-model","choices":[{"index":0,"delta":{"content":"[synthetic content]"}}]}
+
+: generation_stats {"prompt_tps":0.0,"generation_tps":0.0,"prompt_tokens":78375,"generation_tokens":1295,"peak_memory_usage":{"in_bytes":123996778246},"prefix_cache_hit":"partial","mtp_cycles_cumulative":67554,"mtp_accepted_drafts_cumulative":46018,"phase_marks_ms":null,"api_phase_marks_ms":null}
+
+data: {"id":"gen-stats-fixture","object":"chat.completion","created":1792012706,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"gen-stats-fixture","object":"chat.completion","created":1792012706,"model":"test-model","choices":[],"usage":{"prompt_tokens":78375,"completion_tokens":8,"total_tokens":78383}}
+
+data: [DONE]
