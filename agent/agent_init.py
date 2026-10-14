@@ -587,6 +587,13 @@ _TURN_STATE: dict[str, Any] = {
     "_budget_grace_call": False,
     "_run_budget_started_at": None,  # set by turn_context.prepare_turn when a budget is active
     "_run_budget_wrapup_injected": False,  # one-shot latch for the 80% wrap-up notice
+    # FORK: silence guard per-turn counters/latches (agent/fork/silence_guard.py). ``rounds``
+    # counts assistant API rounds this turn; ``silent_streak`` counts consecutive rounds whose
+    # assistant message had no user-visible text; both reset in turn_context at turn start.
+    "_silence_guard_rounds": 0,
+    "_silence_guard_silent_streak": 0,
+    "_silence_guard_status_injected": False,
+    "_silence_guard_converge_injected": False,
     # Activity tracking (API call / tool / stream chunk) for the gateway timeout handler and
     # "still working" notifications. Named provenances are stamped only by compression writers.
     "_last_activity_ts": lambda: time.time(),
@@ -1464,6 +1471,14 @@ def _apply_agent_section(agent, _agent_cfg):
     agent.budget_warning_ratio = normalize_budget_warning_ratio(
         _agent_section.get("budget_warning_ratio")
     )
+    # FORK: silence guard config — (enabled, status_after_rounds, converge_after_rounds).
+    # Partial/invalid blocks fall back to defaults per key; enabled=false disables everything.
+    from agent.fork.silence_guard import resolve_silence_guard_settings
+    (
+        agent._silence_guard_enabled,
+        agent._silence_guard_status_after_rounds,
+        agent._silence_guard_converge_after_rounds,
+    ) = resolve_silence_guard_settings(_agent_section.get("silence_guard"))
     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
     # of each other (gates in agent/system_prompt.py).
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")

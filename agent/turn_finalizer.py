@@ -643,6 +643,11 @@ def finalize_turn(
 
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
+    # FORK: silence guard — one WARNING when a long turn stayed text-starved
+    # (agent/fork/silence_guard.py). Reads the per-turn counters before the next turn resets them.
+    from agent.fork.silence_guard import maybe_log_silent_long_turn
+    maybe_log_silent_long_turn(agent)
+
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)

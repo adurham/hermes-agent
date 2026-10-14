@@ -208,6 +208,12 @@ def prepare_iteration(
     # Appended to the newest tool result; never a synthetic user/system row.
     _maybe_inject_iteration_budget_warning(agent, messages)
 
+    # FORK: silence guard — bounded progress/convergence pressure when this turn has run
+    # tool rounds with no user-visible assistant text (agent/fork/silence_guard.py). Same
+    # newest-tool-result channel as the two notices above; independent of both.
+    from agent.fork.silence_guard import maybe_inject_silence_guard
+    maybe_inject_silence_guard(agent, messages)
+
     request_logger = getattr(agent, "logger", None) or logger  # same name as the origin module
     # Per-agent validation cursor skips re-parsing tool_call args already validated.
     # Identity-keyed; a rewritten list breaks the prefix match and forces a re-scan.

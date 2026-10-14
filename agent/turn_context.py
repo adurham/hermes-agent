@@ -613,6 +613,10 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0),
+    # FORK: silence-guard per-turn counters/latches (agent/fork/silence_guard.py) — the
+    # streak/latch must not leak into the next message on a gateway-cached agent.
+    ("_silence_guard_rounds", 0), ("_silence_guard_silent_streak", 0),
+    ("_silence_guard_status_injected", False), ("_silence_guard_converge_injected", False),
     # FORK: one-shot cache-strip-on-overload arm (turn_recovery.route_classified_error
     # sets it; turn_api_request.build_api_request consumes it). Cleared here so an arm
     # that outlives its request (terminal error, abort) can never strip a later turn.
