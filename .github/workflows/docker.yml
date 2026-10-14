@@ -19,6 +19,10 @@ on:
     branches: [main]
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       release-phase:
         description: "Stable-release phase: 'test' or 'publish'. Empty keeps the standalone triggers."
         required: false
@@ -100,6 +104,8 @@ jobs:
       build: ${{ steps.gate.outputs.build }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Detect affected areas
         id: classify
@@ -163,9 +169,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          # Release calls are dispatched on the stable tag: pin to the exact
-          # candidate commit, never a mutable branch ref.
-          ref: ${{ needs.mode.outputs.release == 'true' && github.sha || '' }}
+          # Stable dispatches from the default branch and names the claim commit.
+          # Pin it, never a mutable branch ref.
+          ref: ${{ inputs.commit || (needs.mode.outputs.release == 'true' && github.sha || '') }}
           # Dev identity is the distance from the highest reachable final
           # release, so the stamp needs both its ancestry and release tags.
           fetch-depth: 0
@@ -352,6 +358,7 @@ jobs:
       - name: Checkout trusted source
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 0
 
       # Same python3 steps as the build job; pin it the same way.
@@ -539,7 +546,7 @@ jobs:
       - name: Checkout release code (helper scripts only, no build)
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
 
       - name: Download tested image archive from the test phase (same run)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -630,7 +637,7 @@ jobs:
       - name: Checkout release code (helper scripts only)
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.commit || github.sha }}
 
       - name: Download per-arch digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1

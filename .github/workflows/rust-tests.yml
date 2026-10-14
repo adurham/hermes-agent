@@ -16,6 +16,11 @@ name: Rust tests
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -37,6 +42,8 @@ jobs:
         working-directory: apps/bootstrap-installer/src-tauri
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       # Tauri links against the system webkit2gtk on Linux, so the crate does
       # not compile without these even for `cargo test --lib`.

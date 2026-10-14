@@ -2,6 +2,11 @@ name: E2E Desktop
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
     outputs:
       review_status:
         description: Screenshot and visual-diff status for the CI review comment.
@@ -26,6 +31,8 @@ jobs:
       review_status: ${{ steps.review-status.outputs.review_status }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       # ── System deps for Electron on headless Ubuntu ───────────────────
       # Electron needs GTK, NSS,atk, etc. even under xvfb. Playwright's

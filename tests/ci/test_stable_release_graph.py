@@ -81,7 +81,8 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
             ("transitions-darwin-x64", "candidates-darwin-x64", "macos-packaged-x64", "macos"),
             ("transitions-win32", "candidates-win32-bundle", "windows-packaged", "windows")):
         assert jobs[receipt]["needs"] == ["admit", call]
-        assert jobs[packaged]["needs"] == receipt
+        # The packaged leg names the claim commit, so it reads admit directly.
+        assert jobs[packaged]["needs"] == ["admit", receipt]
         assert jobs[packaged]["strategy"]["matrix"] == \
             "${{ fromJSON(needs." + receipt + ".outputs." + matrix + ") }}"
     # B5: publish-docker starts when the docker tests pass; it does not wait
