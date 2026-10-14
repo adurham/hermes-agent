@@ -271,9 +271,9 @@ def test_release_gates_extract_consumer_facing_versions():
     assert "actual != expected" in nix_check
     # A path: flake has no git metadata; without ?rev= the stamp has no commit
     # and the packaged CLI reports "unknown".
-    assert 'release-source?rev=$GITHUB_SHA' in nix_check
+    assert 'release-source?rev=$CANDIDATE_COMMIT' in nix_check
     flake_check = next(step["run"] for step in nix["flake-check"]["steps"] if step.get("name") == "nix flake check")
-    assert "release-source?rev={1}" in flake_check and "github.sha" in flake_check
+    assert "release-source?rev={1}" in flake_check and "env.CANDIDATE_COMMIT" in flake_check
 
 
 def test_versioned_docker_images_belong_to_one_attempt():

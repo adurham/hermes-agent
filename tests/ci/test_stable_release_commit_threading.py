@@ -57,6 +57,11 @@ def test_every_call_forwards_the_commit():
                 continue  # Admits the claim itself and checks out the admitted SHA.
             key = commit_input(called)
             assert key in (job.get("with") or {}), f"{name}:{job_name} does not pass {key} to {called}"
+            if name not in {"stable-release.yml", "desktop-bundled-release.yml"}:
+                # A nested call must pass its own commit down. An empty or hard-coded value
+                # would silently test the controller tip.
+                value = job["with"][key]
+                assert "inputs.commit" in value, f"{name}:{job_name} passes {value!r} to {called}"
 
 
 def test_every_checkout_follows_the_commit_input():
@@ -83,3 +88,55 @@ def test_stable_release_calls_pass_the_admitted_commit():
         assert value == "${{ needs.admit.outputs.commit }}", f"{job_name}: {value}"
         needs = job.get("needs", [])
         assert "admit" in ([needs] if isinstance(needs, str) else needs), f"{job_name} reads admit without needing it"
+
+
+# Groups that name the run keep a stable run away from pushes to the same branch.
+RUN_SCOPED = ("github.run_id", ("inputs.commit", "inputs.release"))
+# docker.yml keys its group on the release phase, which a push never uses.
+PHASE_SCOPED = {"docker.yml": "inputs.release-phase"}
+
+
+def test_no_lane_shares_a_concurrency_group_with_pushes_to_the_default_branch():
+    for name, doc in reachable().items():
+        if name in {"stable-release.yml", "desktop-bundled-release.yml"}:
+            continue
+        blocks = [("workflow", doc.get("concurrency"))]
+        blocks += [(job_name, job.get("concurrency")) for job_name, job in (doc.get("jobs") or {}).items()]
+        for where, block in blocks:
+            group = block.get("group", "") if isinstance(block, dict) else block or ""
+            if not group:
+                continue
+            if name in PHASE_SCOPED:
+                assert PHASE_SCOPED[name] in group, f"{name}:{where} group {group!r}"
+                continue
+            needed, scopes = RUN_SCOPED
+            assert needed in group and any(scope in group for scope in scopes), \
+                f"{name}:{where} group {group!r} would share main's group with a push"
+
+
+# Uses of the triggering ref or SHA that are not a commit under test, with the reason each is safe.
+CONTROLLER_REFERENCES = (
+    ("github.event_name == 'push'", "a stable run is a workflow_dispatch, so push-only steps skip"),
+    ("-${{ github.sha }}", "artifact display name, unique per run"),
+    ("description:", "input documentation"),
+    ("HEAD_REF:", "label on the lint summary"),
+    ("key: visual-baselines-${{ github.ref_name }}", "restores main's baselines and never writes them for a stable run"),
+    ("inputs.ref == github.sha", "saves candidates only for the triggering commit, so a stable claim never writes"),
+    ("inputs.channel-build != '' && inputs.controller-sha", "smoke tests the staged artifact with the dispatched ref's scripts"),
+)
+FALLBACK = re.compile(r"inputs\.(commit|ref|sha) \|\|")
+REFERENCE = re.compile(r"GITHUB_SHA|github\.sha|github\.ref_name|github\.ref\b|GITHUB_REF")
+
+
+def test_no_lane_uses_the_controller_commit_as_the_commit_under_test():
+    for name in reachable():
+        if name in {"stable-release.yml", "desktop-bundled-release.yml"}:
+            continue
+        for number, line in enumerate((WORKFLOWS / name).read_text(encoding="utf-8").splitlines(), 1):
+            text = line.strip()
+            if text.startswith(("#", "group:")) or not REFERENCE.search(text):
+                continue
+            if FALLBACK.search(text) or "inputs.commit" in text:
+                continue
+            assert any(allowed in text for allowed, _reason in CONTROLLER_REFERENCES), \
+                f"{name}:{number} uses the triggering ref or SHA: {text}"

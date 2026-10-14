@@ -123,6 +123,10 @@ concurrency:
   group: install-e2e-${{ inputs.release == true && github.run_id || github.ref }}
   cancel-in-progress: ${{ inputs.release != true }}
 
+env:
+  # A stable run is on the default branch, so GITHUB_SHA is not the commit under test.
+  HERMES_TESTED_COMMIT: ${{ inputs.commit || github.sha }}
+
 jobs:
   pick-releases:
     name: Pick release tags

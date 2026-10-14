@@ -25,8 +25,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: remote-backends-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: remote-backends-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 env:
   # One small image for both the sshd host and the docker backend's sandbox, pinned

@@ -25,8 +25,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-desktop-update-${{ github.ref }}
-  cancel-in-progress: true
+  group: e2e-desktop-update-${{ inputs.commit != '' && github.run_id || github.ref }}
+  # A stable run is on the default branch. It must not queue behind or cancel a push.
+  cancel-in-progress: ${{ inputs.commit == '' }}
 
 jobs:
   update:

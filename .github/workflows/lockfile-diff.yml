@@ -33,8 +33,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: lockfile-diff-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: lockfile-diff-${{ inputs.commit != '' && github.run_id || github.event.pull_request.number || github.ref }}
+  # A stable run is on the default branch. It must not queue behind or cancel a push.
+  cancel-in-progress: ${{ inputs.commit == '' }}
 
 jobs:
   diff:
