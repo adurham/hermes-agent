@@ -463,7 +463,10 @@ def publish_release(policy: str, env: dict, root: Path) -> dict:
     publisher.verify_build = qualified
     if accepted is not None:
         log("Writing releases/stable/release-candidates.json and promoting the stable feeds")
-        publisher._write("releases/stable/release-candidates.json", accepted)
+        # The head already names the previous release after the first bundled one: replace it
+        # under its current ETag, since a create-only write refuses an existing object.
+        head = publisher.store.get("releases/stable/release-candidates.json")
+        publisher._write("releases/stable/release-candidates.json", accepted, head[1] if head else None)
         if publisher.reader.read_bytes("releases/stable/release-candidates.json") != canonical_json(accepted):
             raise ChannelError("Stable candidate pointer read-back differs")
         promote_stable_feeds(accepted, root, publisher.public_base)

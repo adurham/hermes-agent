@@ -541,12 +541,15 @@ def test_accepted_release_receipts_feed_the_protected_head_without_rebuilding(tm
         def put(**kwargs):
             pub.store.put(kwargs["key"], __import__("pathlib").Path(kwargs["file"]).read_bytes())
         monkeypatch.setattr(r2, "put", put)
+        # A previous bundled release already owns the stable head.
+        pub.store.put("releases/stable/release-candidates.json", b'{"tag":"v1.9.0"}')
         with pytest.raises(ChannelError, match="fixture feed failure"):
             channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "failed")
         assert pub._read("released")[0]["head"] is None
         result = channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "downloaded")
         assert result["name"] == "released"
         assert pub.reader.resolve("released").manifest == manifest
+        assert json.loads(pub.store.get("releases/stable/release-candidates.json")[0]) == accepted
         assert manifest["request"]["sourceVersion"] == "2.0.0"
         before = dict(objects)
         assert channel_releases.publish_release("stable-release", {"GITHUB_REPOSITORY": pub.repository}, tmp_path / "retry") == result
