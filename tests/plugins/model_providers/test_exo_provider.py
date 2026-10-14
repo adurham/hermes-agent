@@ -54,7 +54,9 @@ class TestExoProviderProfile:
         assert exo_provider.aliases == ("exo-cluster", "exo_cluster")
         assert exo_provider.api_mode == "chat_completions"
         assert exo_provider.supports_vision is False
-        assert exo_provider.default_max_tokens == 65536
+        # Client-side max_tokens cap: a bounded default on a shared local box (see the
+        # profile for the truncation tradeoff and the per-model `max_tokens` escape hatch).
+        assert exo_provider.default_max_tokens == 16384
 
     def test_provider_no_env_vars(self, exo_provider):
         """Exo has no fixed API key — env_vars is empty."""

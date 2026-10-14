@@ -79,7 +79,32 @@ exo = ExoProfile(
     base_url="",  # User-configured in providers.exo.base_url
     api_mode="chat_completions",
     supports_vision=False,
-    default_max_tokens=65536,
+    # CLIENT-SIDE max_tokens CAP (item D). 16K is the sane default for this route: the
+    # cluster is a shared, KV-cache-bound local box, and an UNBOUNDED request lets a
+    # thinking model (dsv41) spend the whole generation on hidden reasoning before any
+    # visible answer, which is exactly the "reasoning exhausted the budget" failure the
+    # loop then has to recover from. The earlier 65536 reserved a 64K output window on
+    # every call whether or not the model needs it.
+    #
+    # THE TRADEOFF (deliberate, and the reason this is only a DEFAULT): a 16K output
+    # window can be cut mid-answer — a long prose reply, or a `write_file`/`patch` tool
+    # call whose ARGUMENTS exceed 16K, hits the cap and ends the stream with
+    # finish_reason="length". The turn loop's length-continuation path then re-asks for
+    # the remainder (up to 4 times) or retries a truncated tool call with a boosted cap,
+    # so nothing is silently lost — but a task that routinely writes very large files
+    # should raise this per model rather than pay the continuation round-trips.
+    #
+    # ESCAPE HATCH (existing, documented config, no code change needed):
+    #   providers:
+    #     exo:
+    #       models:
+    #         <model-id>:
+    #           max_tokens: 65536     # per-model; read by agent_init ->
+    #                                 # hermes_cli.config.get_custom_provider_max_tokens
+    # and `agent.max_tokens` / the CLI --max-tokens beats BOTH (see
+    # agent/transports/chat_completions.py::_apply_max_tokens precedence:
+    # ephemeral > agent.max_tokens > profile.get_max_tokens(model)).
+    default_max_tokens=16384,
 )
 
 register_provider(exo)
