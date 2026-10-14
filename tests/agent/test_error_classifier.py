@@ -68,6 +68,7 @@ class TestFailoverReason:
             "invalid_encrypted_content",
             "multimodal_tool_content_unsupported",
             "reasoning_mandatory",
+            "generation_terminated",
             "provider_policy_blocked",
             "content_policy_blocked",
             "model_entitlement",

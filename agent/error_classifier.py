@@ -58,6 +58,12 @@ class FailoverReason(enum.Enum):
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
 
+    # Serving engine stopped the generation itself, with its own typed in-band error
+    # (exo's degeneration / repetition-loop guard-kill, delivered as an OpenAI-shaped
+    # ErrorResponse frame INSIDE the SSE stream). Deterministic for the prompt that
+    # produced it: never retry, and never auto-continue the truncated turn.
+    generation_terminated = "generation_terminated"
+
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
@@ -521,6 +527,10 @@ _V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
 # other provider can fix that output, so falling back only replays the same broken turn 4-5 times
 # (20-60s per occurrence, #12770). Abort this call; the loop's argument repair handles the retry.
 _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
+# Engine guard-kill: the engine already decided this generation is degenerate, so neither a
+# re-ask on the same route nor a different provider can help with the SAME prompt — and the
+# partial text already reached the user, so a replay would duplicate it. Terminal.
+_V_GENERATION_TERMINATED = _v(_R.generation_terminated, retryable=False, should_fallback=False)
 # A bug in our own code inside the API call path is deterministic: fail fast
 # instead of burning the retry budget on a flaky-provider impersonation.
 _V_INTERNAL_CODE_ERROR = _v(_R.internal_code_error, retryable=False)
@@ -605,6 +615,40 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
         return False
     near = msg[max(0, token.start() - 32):token.end() + 32]
     return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+
+
+# ── Engine guard-kill ("Generation terminated", in-band) ─────────────────
+# The SERVING ENGINE may stop a generation mid-stream with its own typed error instead of a
+# transport failure. exo ships, inside the SSE body and followed by ``data: [DONE]``:
+#   data: {"error": {"message": "Generation terminated: repetition-loop degeneration detected …",
+#                    "type": "InternalServerError", "code": 500}}
+# when its degeneration guard fires. Two things go wrong if that frame is read as an ordinary
+# drop: the status-NUMBER code (500) classifies as a retryable ``server_error``, and the partial
+# stream looks like a plain truncation, so the turn is re-sent into the same degenerate state.
+# Matched on the MESSAGE, plus the canonical code a future engine build may stamp instead
+# (``error.code == "repetition_loop"``), BEFORE the status/message stages ever see it.
+GENERATION_TERMINATED_ERROR_CODE = "repetition_loop"
+_GENERATION_TERMINATED_PATTERNS = (
+    "repetition-loop degeneration",
+    "repetition_loop",
+)
+
+
+def is_generation_terminated_error(message: Any, code: Any = None) -> bool:
+    """True when *message*/*code* name an engine guard-kill ("Generation terminated …").
+
+    Accepts BOTH shapes the engine family uses: the free-text message its degeneration
+    detector writes (``"Generation terminated: repetition-loop degeneration detected"``)
+    and a future structured ``error.code`` (``"repetition_loop"``, or this reason's own
+    name). Non-string codes (the status-number ``500`` the current engine sends) never
+    match on the code alone — they match, if at all, on the message.
+    """
+    if isinstance(code, str) and code.strip().lower() in {
+        GENERATION_TERMINATED_ERROR_CODE, FailoverReason.generation_terminated.value,
+    }:
+        return True
+    text = str(message or "").lower()
+    return any(pattern in text for pattern in _GENERATION_TERMINATED_PATTERNS)
 
 
 def _billing_hints(error_msg: str) -> Verdict:
@@ -937,6 +981,19 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     return _v(_R.model_not_found, retryable=False) if isinstance(c.error, MoAPresetNotFoundError) else None
 
 
+def _by_engine_guard_kill(c: _Ctx) -> Optional[Verdict]:
+    """An engine's own in-band guard-kill ("Generation terminated") → terminal.
+
+    Runs BEFORE ``_by_status``: these frames carry the status-NUMBER code (500), which would
+    otherwise classify as a retryable ``server_error`` and re-earn the exact retry loop the
+    guard-kill exists to end. The reason is matched on the message plus the engine's canonical
+    code, so a future build stamping ``error.code == "repetition_loop"`` is covered too.
+    """
+    if is_generation_terminated_error(c.msg, _extract_error_code(c.body)):
+        return _V_GENERATION_TERMINATED
+    return None
+
+
 def _by_error_code(c: _Ctx) -> Optional[Verdict]:
     """Structured error codes from the response body."""
     # Request-validation failure as plain-text ``event: error`` SSE data behind
@@ -1016,11 +1073,11 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 
 
 # Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →
-# HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
-# large session → transport types → unknown (retryable with backoff).
+# engine guard-kill (in-band typed error) → HTTP status → MoA shapes → structured error code →
+# message patterns → SSL → disconnect + large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
-    _by_error_code, _by_message, _by_transport,
+    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_engine_guard_kill, _by_status,
+    _moa_special_cases, _by_error_code, _by_message, _by_transport,
 )
 
 

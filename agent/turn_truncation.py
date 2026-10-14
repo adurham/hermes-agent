@@ -42,6 +42,58 @@ _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
     "chats are reset automatically)."
 )
 
+# A guard-kill is the ENGINE's own verdict on this generation ("Generation terminated:
+# repetition-loop degeneration detected …"), delivered as a typed in-band SSE error. Retrying
+# or continuing re-enters the same degenerate state, so the turn ends here — with the partial
+# kept (marked incomplete) rather than presented as the answer.
+_GUARD_KILL_PARTIAL_FINAL = (
+    "⚠️ **Response Stopped by the Engine**\n\n"
+    "The model fell into a repetition loop and the inference engine terminated the generation "
+    "mid-response. The partial text above was kept but is marked incomplete — it is not a "
+    "complete answer, and the turn was not auto-continued.\n\n"
+    "→ Resend your message (your conversation history is preserved)\n"
+    "→ Or switch to a different model with `/model`"
+)
+
+
+def _end_guard_killed_turn(st: "_Trunc", guard_error: Any, classified: Any) -> TruncationVerdict:
+    """End a turn the ENGINE terminated itself (guard-kill), terminally.
+
+    The classifier already said this cannot be retried; continuing the turn would re-send the
+    prompt into the same degenerate state (the report that motivated this: up to ~4 automatic
+    continuations, each ending in the same repetition loop). The delivered text is kept as a
+    MARKED partial row — dropping it would present a mid-loop excerpt as the answer — and the
+    engine's own message becomes the turn's error, so a delegated CHILD reports the guard-kill
+    (and its partial) instead of a bare "truncated" stub with no cause.
+    """
+    agent = st.agent
+    agent._flush_status_buffer()
+    agent._vprint(
+        f"{agent.log_prefix}🛑 The engine terminated the generation ({classified.reason.value}) — "
+        "not retrying or continuing; the partial response is kept and marked incomplete.",
+        force=True, diagnostic=True,
+    )
+    try:
+        _partial_msg = normalize_response_for_agent(agent, st.response)
+    except Exception:  # malformed stub must not lose the terminal verdict
+        _partial_msg = None
+    _partial_text = ""
+    if _partial_msg is not None:
+        _raw = getattr(_partial_msg, "content", None)
+        if isinstance(_raw, str) and _raw:
+            _partial_text = agent._strip_think_blocks(_raw).strip()
+    if _partial_text:
+        append_message(st.messages, {
+            "role": "assistant", "content": _partial_text,
+            "finish_reason": st.finish_reason,
+            "_truncated_partial": True, "_engine_guard_kill": True,
+        })
+    _engine_msg = agent._clean_error_message(str(guard_error))
+    return st.end_turn(
+        _GUARD_KILL_PARTIAL_FINAL, _engine_msg, failed=True,
+        failure=(classified.reason.value, False),
+    )
+
 def collapse_continuation_trail(
     agent: Any, messages: list[dict[str, Any]], current_turn_user_idx: Any, *,
     finish_reason: str, parts: Optional[list[str]] = None,
@@ -533,6 +585,22 @@ def recover_from_truncation(
         line, user_response, error = _REPETITION_STREAM_CUT
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         return st.end_turn(user_response, error)
+    _guard_error = getattr(response, "_provider_stream_error", None)
+    if _guard_error is not None:
+        # The ENGINE ended this generation itself with its own typed in-band error
+        # ("Generation terminated: repetition-loop degeneration detected …"). Reading that as an
+        # ordinary length-cut is what made it non-terminal: the turn was auto-continued up to ~4x
+        # straight back into the same degenerate state. Consult the classifier (the failure is
+        # pinned non-retryable there) and end the turn when it says so.
+        from agent.error_classifier import classify_api_error
+
+        _guard_classified = classify_api_error(
+            _guard_error, provider=str(getattr(agent, "provider", "") or ""),
+            model=str(getattr(agent, "model", "") or ""), base_url=str(getattr(agent, "base_url", "") or ""),
+            api_key=getattr(agent, "api_key", None),
+        )
+        if not _guard_classified.retryable:
+            return _end_guard_killed_turn(st, _guard_error, _guard_classified)
     st.window_filled = _prompt_filled_window(agent, response)
     if st.is_stub and getattr(response, "_clean_eof", False):
         _banner = ("Response truncated — server ended the stream without ever sending finish_reason "
