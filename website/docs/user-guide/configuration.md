@@ -1265,6 +1265,20 @@ When a budget is set, two things happen:
 
 The budget is per `run_conversation` turn (it resets on each user message) and the feature is completely dormant when unset — no clock reads, no injection, no timeout changes.
 
+## Silence Guard
+
+A long turn can keep issuing tool-call rounds while producing no user-visible assistant text — on a slow local model a single turn once ran dozens of rounds over many minutes and never reported progress or converged. The silence guard notices that and applies bounded, task-agnostic pressure: a progress nudge once a silent streak gets long, and a wrap-up nudge once a turn has run many rounds without a final answer.
+
+```yaml
+agent:
+  silence_guard:
+    enabled: true              # false disables both nudges and the end-of-turn warning (default: true)
+    status_after_rounds: 20    # silent rounds before a one-per-streak progress nudge (default: 20)
+    converge_after_rounds: 50  # rounds this turn before a one-per-turn wrap-up nudge (default: 50)
+```
+
+A **round** is one assistant API call in the turn. A round is *silent* when its assistant message carried no user-visible text (a tool-call-only or empty response); any response with visible text resets the silent streak. Both notices are delivered cache-safely — appended to the newest tool result, never a synthetic user or system row — so they don't break the prompt cache. The progress notice fires at most once per silent streak (it re-arms after the streak resets) and the wrap-up notice at most once per turn, and both coexist with the iteration-budget and run-budget notices. A malformed or partial block falls back to the defaults per key. Separately, a turn that runs at least 25 rounds with no user-visible text at all logs one `WARNING` (`silent long turn: rounds=N no user-visible text`) at turn end.
+
 ## Verify-on-Stop (coding verification)
 
 When enabled, Hermes refuses to accept a final answer on a turn where the agent edited code in a workspace but produced no fresh verification evidence (a passing test run, build, lint, etc.) — it injects a synthetic follow-up asking the agent to verify or explain why it can't. Doc/markdown/skill-only edits never trigger it, and the loop is bounded so it can never trap the agent.
