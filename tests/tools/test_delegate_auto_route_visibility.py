@@ -11,12 +11,14 @@ event):
    All three used to be silent. Now whichever one fired is named in a
    warning. ``agent_type='auto'`` is an EXPLICIT opt-in to auto-routing and
    is exempt (routes identically, no warning).
-2. **Escalate-only.** A task that DID state an ``agent_type`` is now
-   classified too (same batch call) purely to compare tiers; a strictly
-   deeper recommendation REPLACES the stated agent_type, and the swap is
-   surfaced. Equal-or-lighter recommendations change nothing.
+2. **Explicit agent_type is BINDING (2026-10-13).** A task that DID state an
+   ``agent_type`` may still be classified (same batch call) purely to compare
+   tiers, but a deeper recommendation is now surfaced as an ADVISORY only —
+   the stated agent_type, and therefore its role-map model, is NEVER replaced.
+   (Before this change the classifier could silently escalate the role, which
+   contradicted the documented precedence "explicit agent_type is intent".)
 3. **Explicit model= is untouched.** It bypasses auto-route AND the
-   escalate-only check entirely — regression-guarded here.
+   escalate-check entirely — regression-guarded here.
 
 Harness mirrors ``test_delegate_orchestrator_agent_type_gap.py`` /
 ``test_delegate_model_roster_guardrail.py``.
@@ -142,7 +144,7 @@ def _omission_warnings(result):
 
 
 def _escalation_warnings(result):
-    return [w for w in _warnings(result) if "ESCALATED" in w]
+    return [w for w in _warnings(result) if "is BINDING" in w]
 
 
 # ── Fix #1: silent omission is surfaced ───────────────────────────────────
@@ -262,33 +264,32 @@ def test_auto_agent_type_does_not_hit_the_role_model_map():
     assert captured[0]["model"] == "claude-sonnet-5"  # batch default
 
 
-# ── Fix #2: escalation is applied and surfaced ────────────────────────────
+# ── Fix #2: explicit agent_type is BINDING (advisory never overrides) ──────
 
 
-def test_escalation_replaces_stated_agent_type_and_warns():
-    """A router escalation swaps the dispatched agent_type (and therefore
-    its role-map model) and is surfaced in the warnings channel."""
+def test_advisory_never_replaces_stated_agent_type_but_warns():
+    """The router now returns an ADVISORY entry (no model/agent_type) for a
+    deeper recommendation. The dispatched agent_type and its role-map model
+    MUST survive verbatim, and the mismatch is surfaced as a warning."""
     routes = {
         0: {
-            "model": "claude-opus-4-7",
-            "tier": "deep",
-            "role": "system-architect",
-            "agent_type": "system-architect",
+            "advisory": True,
+            "recommended_agent_type": "system-architect",
+            "recommended_tier": "deep",
+            "stated_agent_type": "researcher",
+            "stated_rank": 0,
+            "recommended_rank": 2,
             "reason": "auth surface",
-            "escalated": True,
-            "escalated_from": "researcher",
-            "escalated_from_rank": 0,
-            "rank": 2,
         }
     }
     result, captured, _ = _dispatch(
         [{"goal": _G0, "agent_type": "researcher"}, {"goal": _G1, "agent_type": "coder"}],
         routes=routes,
     )
-    esc = next(c for c in captured if c["task_index"] == 0)
-    assert esc["agent_type"] == "system-architect"
-    # The escalated role's model_by_role entry is what actually runs.
-    assert esc["model"] == "claude-opus-4-7"
+    kept = next(c for c in captured if c["task_index"] == 0)
+    # BINDING: the stated role — and therefore ITS role-map model — is what runs.
+    assert kept["agent_type"] == "researcher"
+    assert kept["model"] == "claude-haiku-4-5"
     # The untouched sibling keeps its stated choice.
     other = next(c for c in captured if c["task_index"] == 1)
     assert other["agent_type"] == "coder"
@@ -300,12 +301,14 @@ def test_escalation_replaces_stated_agent_type_and_warns():
     assert "'system-architect'" in warns[0]
     assert "0→2" in warns[0]
     assert "auth surface" in warns[0]
-    assert "never downgrades" in warns[0]
+    assert "BINDING" in warns[0]
+    # Must NOT claim a change happened.
+    assert "Nothing was changed" in warns[0]
 
 
-def test_no_escalation_entry_leaves_stated_choice_untouched():
-    """The router emits NO entry for an equal/lighter recommendation, so the
-    stated agent_type must survive verbatim with no escalation warning."""
+def test_no_advisory_entry_leaves_stated_choice_untouched():
+    """No router entry (equal/lighter recommendation) → stated agent_type
+    survives verbatim with no advisory warning."""
     result, captured, _ = _dispatch(
         [{"goal": _G0, "agent_type": "system-architect"}, {"goal": _G1}], routes={}
     )
@@ -315,9 +318,10 @@ def test_no_escalation_entry_leaves_stated_choice_untouched():
     assert _escalation_warnings(result) == []
 
 
-def test_escalation_ignored_without_the_escalated_marker():
-    """A plain (non-escalation) route entry must never rewrite a stated
-    agent_type — only an entry explicitly marked escalated may."""
+def test_plain_route_entry_cannot_rewrite_stated_agent_type():
+    """Even a full route entry (model + agent_type) must never rewrite a
+    stated agent_type — only the explicit ``advisory`` marker is honoured, and
+    even then only to warn."""
     routes = {
         0: {
             "model": "claude-opus-4-7",
@@ -336,13 +340,76 @@ def test_escalation_ignored_without_the_escalated_marker():
     assert _escalation_warnings(result) == []
 
 
+def test_every_role_explicit_agent_type_resolves_to_its_own_model(monkeypatch):
+    """ACCEPTANCE REGRESSION: for EVERY configured role, passing that role as
+    an explicit agent_type must resolve to that role's own model, with NO
+    classifier side effect — even when the router (impossibly) returns a bogus
+    advisory recommending a deeper role."""
+    tasks = [{"goal": _G0, "agent_type": role} for role in ROSTER_ENTRY_MAP]
+    routes = {
+        i: {
+            "advisory": True,
+            "recommended_agent_type": "system-architect",
+            "recommended_tier": "deep",
+            "stated_agent_type": role,
+            "stated_rank": 0,
+            "recommended_rank": 2,
+            "reason": "always deeper",
+        }
+        for i, role in enumerate(ROSTER_ENTRY_MAP)
+    }
+    _result, captured, _ = _dispatch(tasks, routes=routes)
+    by_index = {c["task_index"]: c for c in captured}
+    for i, role in enumerate(ROSTER_ENTRY_MAP):
+        assert by_index[i]["agent_type"] == role, by_index[i]
+        assert by_index[i]["model"] == ROSTER_ENTRY_MAP[role]["model"], by_index[i]
+
+
+def test_pinned_role_never_inherits_the_parent_fallback_chain():
+    """A ``pinned: true`` role is a HARD INVARIANT: it must not inherit the
+    ambient parent fallback chain (which could silently reroute it). It gets
+    an explicitly empty chain instead."""
+    entry_map = {
+        "exo-dsv41": {"model": "dsv41", "provider": "exo", "pinned": True},
+    }
+    from tools.delegate_tool import _resolve_task_routes
+
+    with patch.object(dt, "_load_config", return_value=dict(ROSTER_CFG)), patch.object(
+        ruflo, "get_role_entry_map", return_value=dict(entry_map)
+    ), patch.object(
+        ruflo, "get_role_model_map", return_value={"exo-dsv41": "dsv41"}
+    ), patch.object(
+        dt, "_resolve_delegation_credentials", return_value=dict(ROSTER_CREDS)
+    ):
+        routes, err = _resolve_task_routes(
+            [{"goal": _G0, "agent_type": "exo-dsv41"}],
+            dict(ROSTER_CREDS),
+            cfg=dict(ROSTER_CFG),
+            parent_agent=_pinned_parent(),
+            top_role="leaf",
+            roster_warnings=[],
+        )
+    assert err is None, err
+    assert routes[0]["agent_type"] == "exo-dsv41"
+    assert routes[0]["fallback_chain"] == [], routes[0]["fallback_chain"]
+
+
+def _pinned_parent():
+    parent = MagicMock()
+    parent.model = "PARENT-MODEL"
+    parent.provider = "anthropic"
+    parent.api_key = "sk-test"
+    parent._delegate_depth = 0
+    return parent
+
+
 # ── Fix #3: explicit model= bypasses everything (regression) ──────────────
 
 
-def test_explicit_model_bypasses_autoroute_and_escalation():
-    """Even if the router (impossibly) returned an escalation for a task
-    carrying an explicit model=, the stated model must still win and no
-    escalation may be applied — 'a stated choice is intent'."""
+def test_explicit_model_bypasses_autoroute_and_advisory():
+    """Even if the router (impossibly) returned an advisory for a task
+    carrying an explicit model=, the stated model must still win and nothing
+    may be applied — 'a stated choice is intent'."""
     routes = {
         0: {
             "model": "claude-opus-4-7",
@@ -350,10 +417,11 @@ def test_explicit_model_bypasses_autoroute_and_escalation():
             "role": "system-architect",
             "agent_type": "system-architect",
             "reason": "x",
-            "escalated": True,
-            "escalated_from": "researcher",
-            "escalated_from_rank": 0,
-            "rank": 2,
+            "advisory": True,
+            "recommended_agent_type": "system-architect",
+            "recommended_tier": "deep",
+            "stated_rank": 0,
+            "recommended_rank": 2,
         }
     }
     result, captured, _ = _dispatch(

@@ -359,6 +359,32 @@ def test_dict_entry_splits_into_model_and_provider(monkeypatch):
     assert personas.lookup_provider_for_role("jr-coder") == "ollama-cloud"
 
 
+def test_pinned_flag_is_carried_through_the_entry_map(monkeypatch):
+    """A dict entry may mark itself ``pinned: true`` — a HARD INVARIANT role
+    whose (provider, model) must never be auto-substituted. The flag survives
+    normalization as a bool; the flattened model map is unaffected."""
+    _cfg(
+        monkeypatch,
+        {
+            "exo-dsv41": {"model": "dsv41", "provider": "exo", "pinned": True},
+            "jr-coder": {"model": "qwen3-coder:480b-cloud", "provider": "ollama-cloud"},
+        },
+    )
+    entries = personas.get_role_entry_map()
+    assert entries["exo-dsv41"]["pinned"] is True
+    assert entries["exo-dsv41"]["model"] == "dsv41"
+    assert entries["exo-dsv41"]["provider"] == "exo"
+    # A non-pinned entry carries no ``pinned`` key at all.
+    assert "pinned" not in entries["jr-coder"]
+    # Flattening ignores the bool.
+    assert personas.get_role_model_map()["exo-dsv41"] == "dsv41"
+
+
+def test_pinned_flag_absent_when_falsy(monkeypatch):
+    _cfg(monkeypatch, {"coder": {"model": "m", "provider": "p", "pinned": False}})
+    assert "pinned" not in personas.get_role_entry_map()["coder"]
+
+
 def test_mixed_bare_and_dict_entries_resolve_independently(monkeypatch):
     _cfg(
         monkeypatch,
