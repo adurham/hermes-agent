@@ -87,6 +87,9 @@ async def await_peer_receipt(authority, record, timeout, *, should_stop=None):
         current = _receipt(authority, record)
         if live is None and current['status'] in _PENDING:
             continue  # The derived retry committed while the receipt was being read.
+        if live == record['admission_id'] and not interim and current['status'] == 'failed' \
+                and not current.get('retry_admission_id'):
+            continue  # The original settled failed after the live read: re-derive (its retry may be owed).
         if interim:
             current['status'] = 'claimed'  # the retry is being admitted
         if live is None or current['status'] not in _PENDING:
