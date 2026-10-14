@@ -901,7 +901,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         let createdId: null | string
 
         try {
-          createdId = await createBackendSessionForSend(bubbleText, undefined, {
+          createdId = await createBackendSessionForSend(bubbleText, {
             onComposerScopeAssigned: options?.onComposerScopeAssigned
           })
         } catch (err) {

@@ -213,7 +213,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   return useCallback(
     async (
       rawCommand: string,
-      options?: SubmitTextOptions & { hidden?: boolean; recordInput?: boolean; typed?: boolean }
+      options?: SubmitTextOptions & { recordInput?: boolean; typed?: boolean }
     ) => {
       const initialRuntimeId = options?.sessionId ?? activeSessionIdRef.current
       const initialSelectedId = selectedStoredSessionIdRef.current
@@ -232,13 +232,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
       const requestGateway = destination.requestGateway
 
-      // `hidden` (the first-run `/initiate-setup`) types the saved user row hidden: no bubble, live
-      // or after a reload. It rides retryOptions so a prepared-submission retry stays hidden too.
-      const retryOptions = {
-        ...options,
-        retryText: rawCommand,
-        ...(options?.hidden && { displayKind: 'hidden' as const })
-      }
+      const retryOptions = { ...options, retryText: rawCommand }
 
       try {
         // An explicit retry of this exact invocation reuses its retained expansion; the same
@@ -511,7 +505,6 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // its kickoff as a user message into whatever conversation was on
           // screen. Every other target the dispatcher serves (tile, background
           // queue drain, a session created by this very call) had the same leak.
-          // retryOptions carries main's `hidden` → displayKind 'hidden' for the first-run kickoff.
           submitted = await submitPromptText(message, {
             ...retryOptions,
             sessionId,

@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-103 registry commands: 29 control, 18 read, 56 refused.
+102 registry commands: 28 control, 18 read, 56 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -68,7 +68,6 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/import` | refused | HermesCLI._handle_import_command | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
 | `/indicator` | refused | HermesCLI._handle_indicator_command | config.get, config.set | unavailable: terminal | refused | client-local (cli_only) |
 | `/init` | control | HermesCLI._handle_init_command | slash.exec | slash.exec | refused |  |
-| `/initiate-setup` (/initiate_setup) | control | HermesCLI._handle_initiate_setup_command | slash.exec | slash.exec | refused |  |
 | `/insights` | read | HermesCLI._show_insights | slash.exec | unavailable: advanced | refused |  |
 | `/journey` (/learning, /memory-graph) | refused | HermesCLI._handle_journey_command | local | action: journey | refused | client-local (cli_only) |
 | `/kanban` | read (list/show/stats/assignees/context/runs/log/diagnostics) | HermesCLI._handle_kanban_command | slash.exec | unavailable: advanced | refused |  |

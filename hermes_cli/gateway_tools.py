@@ -169,7 +169,7 @@ def background_counts():
 
 
 def session_tools():
-    """``/tools`` / ``/initiate-setup``: the gateway session's tool catalog (``tools.show``) as
+    """``/tools``: the gateway session's tool catalog (``tools.show``) as
     ``(tools, toolset_of)``: ``get_tool_definitions``-shaped rows (first description sentence) and
     a name -> toolset lookup. None when the CLI is not gateway-backed."""
     view = process_view()

@@ -30,7 +30,7 @@ async def standalone_lifespan(app: "FastAPI"):
     from hermes_cli.web_server import (
         _eager_reconcile_own_session_db, _warm_gateway_module,
         _start_desktop_cron_ticker, _dashboard_selftest_loop,
-        _auto_archive_ticker_loop, _terminate_desktop_managed_gateway,
+        _auto_archive_ticker_loop, _terminate_desktop_managed_gateway, _probe_install_before_state_db,
     )
     from hermes_cli.web_server_chat import PTY_REGISTRY
 
@@ -52,6 +52,10 @@ async def standalone_lifespan(app: "FastAPI"):
     # connection closed from the main thread mid-probe (pytest's leaked-DB
     # sweep) and segfaulted the interpreter. The worker is time-bounded by
     # SessionDB's lock patience, so the join cannot hang shutdown.
+    # The first-install check reads the default root's state.db: on the desktop's own backend it runs
+    # before this process starts creating or healing that database, and its answer is kept.
+    _probe_install_before_state_db()
+
     eager_reconcile_thread = threading.Thread(
         target=_eager_reconcile_own_session_db,
         name="statedb-eager-reconcile",
@@ -152,13 +156,15 @@ async def standalone_lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
-    # Nous free tier: the one boot-time creator of its identity. Inventories credentials, mints only
-    # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
-    # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
-    # first setup.status waits on the record (bounded) instead.
+    # Records who carries inference for setup.status / free_tier.status and broadcasts `setup.ready`
+    # (no identity is created at boot). Off-thread; the desktop's first setup.status waits on the
+    # record (bounded) instead.
     from hermes_cli.free_tier_bootstrap import start_background_bootstrap
 
     start_background_bootstrap()
+    # The desktop's onboarding due answer, worked out after that bootstrap and before it is asked.
+    # Through the server: methods_* functions run with the server's globals (``bind_module``).
+    tui_gateway.server.start_due_boot()
 
     try:
         yield
