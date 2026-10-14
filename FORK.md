@@ -3,6 +3,62 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-10-14 (silence guard: text-starvation / convergence nudge + silent-long-turn warning)
+
+**Motivation.** A turn on a slow local model once made 75 tool-call rounds over 36 minutes and
+emitted ZERO user-visible assistant text the whole time — the loop kept issuing tool calls and
+never reported or converged; the user killed it by hand. The harness had no mechanism to notice
+"no user-visible output for N rounds" or to apply convergence pressure. This adds that net,
+task-agnostic and knobbed (not coupled to any task).
+
+**Config shape** (`agent.silence_guard` in `config.yaml`; defaults live in
+`hermes_cli/config_defaults.py` and resolve per-key on a partial/invalid block):
+
+```yaml
+agent:
+  silence_guard:
+    enabled: true              # false disables both nudges AND the end-of-turn warning
+    status_after_rounds: 20    # silent assistant rounds before a one-per-streak progress nudge
+    converge_after_rounds: 50  # assistant rounds this turn before a one-per-turn wrap-up nudge
+```
+
+**Behavior.** A "round" is one assistant API call in the turn; a round is *silent* when its
+assistant message carried no user-visible text (tool-call-only or empty). Two one-shot notices are
+appended to the NEWEST tool result — the same cache-safe channel as the iteration-budget warning
+and the run-budget wrap-up, never a synthetic user/system row — so the prompt cache is untouched:
+
+* `[SYSTEM NOTICE — no user-visible output] …` fires at `status_after_rounds`, once per silent
+  streak (re-arms only after the streak resets).
+* `[SYSTEM NOTICE — turn round limit] …` fires at `converge_after_rounds`, once per turn.
+
+At turn end, a turn of ≥ 25 rounds with no user-visible text at all logs ONE `WARNING`:
+`silent long turn: rounds=N no user-visible text (session=…)`.
+
+**Files.** New fork-only module `agent/fork/silence_guard.py` (resolver, counters, the two
+notices, the warning) + wiring: `agent/agent_init.py` (per-turn counters in `_TURN_STATE`, config
+resolution next to `budget_warning_ratio`), `agent/turn_context.py` (`_PER_TURN_RESET_STATE`),
+`agent/turn_response_intake.py` (`note_assistant_round` per normalized response),
+`agent/turn_iteration_prep.py` (`maybe_inject_silence_guard` in `prepare_iteration`, beside the
+two existing notices), `agent/turn_finalizer.py` (`maybe_log_silent_long_turn` at the
+`_log_turn_exit` chokepoint), `hermes_cli/config_defaults.py` (the documented default block),
+`website/docs/user-guide/configuration.md` (§ Silence Guard).
+
+**Merge guidance.** Every edit is an additive FORK-marked block; on an upstream merge re-apply
+the added lines (they append to the existing nudge sequence in `prepare_iteration`, add four keys
+to `_TURN_STATE` / `_PER_TURN_RESET_STATE`, and add one line after `_log_turn_exit`). The module
+itself is fork-only and conflict-free. `agent_init` resolution mirrors `normalize_budget_warning_ratio`.
+
+**Tests.** New `tests/agent/test_silence_guard.py` (20 tests): config normalization
+(missing/partial/invalid/`enabled:false`), round/streak tracking + reset, progress nudge exactly
+once at its threshold and re-arm after a reset, convergence nudge once per turn, `enabled:false`
+disables nudges + warning, multimodal/persisted-row cache contract, coexistence with
+`_maybe_inject_iteration_budget_warning` on one tool row, the end-of-turn WARNING, and the
+`prepare_iteration` wiring seam. Mutation-checked (neutering the notice selector fails 9;
+neutering the streak reset + warning fails 3). Run:
+`scripts/run_tests.sh tests/agent/test_silence_guard.py` (20✓) alongside the two neighbor files
+(`test_iteration_budget_warning.py` 4✓, `test_run_budget.py` 31✓). `ruff check` clean;
+`scripts/ci/check_docs_drift.py` ok.
+
 ### Follow-ups — 2026-10-13 (post-v0.21.7 sync): holographic seam restore, bell default aligned, vision fix re-ported
 
 **R1 — holographic restore (owner-ruled: "upstream moved it to a plugin, so we should follow suit").**
