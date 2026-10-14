@@ -30,6 +30,9 @@ from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_error_code, _extract_status_code, is_generation_terminated_error)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
+# FORK: capture+persist the exo engine's per-response ``: generation_stats`` SSE comment frames
+# (see agent/fork/generation_stats.py). Best-effort; a no-op for every endpoint that never sends it.
+from agent.fork.generation_stats import attach_generation_stats_tap
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
@@ -3370,6 +3373,9 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
         response = self._attempt_stream_response = getattr(raw_stream, "response", None)
+        # FORK: shim the SDK's SSE decoder so the engine's ``: generation_stats`` comment frames
+        # (dropped by ``SSEDecoder.decode``) are captured for this attempt. None for non-SDK streams.
+        self._generation_stats_tap = attach_generation_stats_tap(raw_stream)
         self.agent._capture_rate_limits(response)
         self.agent._capture_credits(response)
         self.agent._capture_nous_model_switch(response)
@@ -3457,6 +3463,7 @@ class _StreamingCall(StreamingWaitMonitor):
         role = "assistant"
         _diag = self._new_diag()
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
+        self._generation_stats_tap = None  # FORK: reset the per-attempt exo generation-stats tap
         from agent.chat_completion_helpers_relay import RelayChatAccumulator
         relay_response = RelayChatAccumulator()
         # The raw channels, not the callback-delivered text: cron, subagents and callback-less
@@ -4235,9 +4242,39 @@ class _StreamingCall(StreamingWaitMonitor):
         self.result["response"] = replayed
         return True
 
+    def _attach_generation_stats(self, response: Any) -> None:
+        """FORK: stamp this call's captured exo ``generation_stats`` onto the response object so
+        ``turn_usage._record_api_call_row`` persists it in ``api_calls.extra`` (the SDK drops the SSE
+        comment frames themselves — see ``agent/fork/generation_stats.py``).
+
+        Best-effort by contract: a missing tap or any failure here must never affect the turn, and an
+        endpoint that never sends the frame (every non-exo provider) is a clean no-op.
+        """
+        tap = getattr(self, "_generation_stats_tap", None)
+        snapshot = None
+        if tap is not None:
+            try:
+                snapshot = tap.snapshot()
+            except Exception:  # pragma: no cover - telemetry must never break a turn
+                snapshot = None
+        if not snapshot:
+            return
+        try:
+            response._generation_stats = snapshot
+        except Exception:  # pragma: no cover - a response object that refuses attribute writes
+            return
+        logger.info(
+            "%sFORK exo generation_stats: mtp_cycles_cumulative=%s mtp_accepted_drafts_cumulative=%s "
+            "prefix_cache_hit=%s generation_tokens=%s frames=%s",
+            getattr(self.agent, "log_prefix", ""), snapshot.get("mtp_cycles_cumulative"),
+            snapshot.get("mtp_accepted_drafts_cumulative"), snapshot.get("prefix_cache_hit"),
+            snapshot.get("generation_tokens"), snapshot.get("frames"))
+
     def _call_wire(self, stream_attempt_id: int):
         if self.agent.api_mode != "anthropic_messages":
-            return self._call_chat_completions(stream_attempt_id)
+            response = self._call_chat_completions(stream_attempt_id)
+            self._attach_generation_stats(response)  # FORK: exo per-response stats -> api_calls.extra
+            return response
         # Per-request client so the watchdog aborts its socket, not the shared one.
         request_client = self.clients.set_client(
             self.agent._create_request_anthropic_client(reason="anthropic_stream_request"), kind="anthropic_messages")

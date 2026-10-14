@@ -125,6 +125,12 @@ def _record_api_call_row(agent: Any, response: Any, canonical_usage, *, api_dura
         served_by = getattr(response, "provider", None)
         if isinstance(served_by, str) and served_by:
             routing["upstream"] = served_by
+        extra: dict[str, Any] = {"raw_usage": canonical_usage.raw_usage, "routing": routing}
+        # FORK: exo's per-response ``: generation_stats`` (captured from the SSE comment frames the
+        # SDK drops — ``agent/fork/generation_stats.py``). Absent for every other provider/endpoint.
+        generation_stats = getattr(response, "_generation_stats", None)
+        if isinstance(generation_stats, dict) and generation_stats:
+            extra["generation_stats"] = generation_stats
         session_db.record_api_call(
             session_id,
             call_seq=agent.session_api_calls,
@@ -140,7 +146,7 @@ def _record_api_call_row(agent: Any, response: Any, canonical_usage, *, api_dura
             request_id=_response_request_id(response),
             stop_reason=getattr(response, "stop_reason", None) or getattr(response, "finish_reason", None),
             call_type="main",
-            extra={"raw_usage": canonical_usage.raw_usage, "routing": routing},
+            extra=extra,
         )
     except Exception:  # pragma: no cover - telemetry must never break a turn
         logger.debug("api_calls row skipped for session %s", session_id, exc_info=True)

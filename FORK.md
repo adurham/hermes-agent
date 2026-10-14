@@ -3,6 +3,93 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-10-14 (exo generation_stats telemetry: the engine's per-response speculative-decode counters were dropped by the SDK and never persisted)
+
+**Motivation (forensics data gap).** Three waves of investigation into a degeneration regression on the
+local exo cluster were data-blind in one respect: exo's dsv41/MTP runner has been sending per-response
+generation statistics all along, inside the SSE stream, as an SSE **comment** frame —
+`: generation_stats {…}` — carrying cumulative `mtp_cycles_cumulative` (total speculative rounds = sum
+of gamma), `mtp_accepted_drafts_cumulative` (accepted draft tokens) and `prefix_cache_hit`. Example
+(`~/.hermes/cache/scratch/replay-loop/live-probe/caps/*.sse`, 31 unique 2026-10-14 captures;
+`…/capture_A_warm.sse`):
+
+    : generation_stats {"prompt_tps":0.0,"generation_tps":0.0,"prompt_tokens":41864,
+                        "generation_tokens":408,"peak_memory_usage":{"in_bytes":123782766245},
+                        "prefix_cache_hit":"partial","mtp_cycles_cumulative":43644,
+                        "mtp_accepted_drafts_cumulative":30216,"phase_marks_ms":null,...}
+
+None was ever parsed or persisted, so speculative-decode acceptance/exposure could NOT be quantified
+across days (`state.db`'s `accepted_prediction_tokens` are hard zeros and the engine's own `[MTP]` lines
+belong to a different code path with no timestamps). The NEXT incident must be diagnosable from stored
+data.
+
+**Root cause (where the frames die).** The OpenAI SDK drops every SSE comment line before any consumer
+sees it: `openai/_streaming.py::SSEDecoder.decode` returns `None` for a line starting with `:`
+(SSE-spec comment), and `Stream.__stream__` skips the `None`. So the frames reach the socket and are
+discarded inside the decoder — the only surviving copies were raw `.sse` captures.
+
+**Hook (minimal + safe).** New fork-only module `agent/fork/generation_stats.py` installs a **per-stream
+decoder shim** on the stream instance the SDK returns from `chat.completions.create(stream=True)` — NOT a
+process-wide patch of the SDK class (the Anthropic ping observer's class-level `Stream._iter_events`
+monkeypatch is the precedent; here the instance-level tap is narrower and concurrency-safe). It wraps
+`stream._decoder.decode`, the per-line entry point inside `SSEDecoder.iter_bytes`, so each already-decoded
+raw SSE line is offered to the tap before the SDK drops it. Guarded: a facade/non-SDK object (no
+`_decoder.decode`) returns `None` and nothing changes.
+
+Wiring (`agent/chat_completion_helpers.py`):
+* `:35` import; `:3378` `_chat_stream_created` installs the tap on the raw stream (alongside the existing
+  `_attempt_stream_response` capture, so it is set before iteration begins); `:3466`
+  `_call_chat_completions` resets it per attempt;
+* `:4245` `_attach_generation_stats(response)` — the persistence seam, called from `_call_wire` `:4276`
+  (the single choke point for the chat_completions wire, so normal AND partial-stub/guard-kill responses
+  are covered) — stamps `response._generation_stats = tap.snapshot()` and logs one compact INFO line
+  (`FORK exo generation_stats: mtp_cycles_cumulative=… mtp_accepted_drafts_cumulative=… prefix_cache_hit=…
+  generation_tokens=… frames=…`).
+
+**Persistence.** `agent/turn_usage.py::_record_api_call_row` (`:128`–`:133`) adds
+`extra["generation_stats"] = {…}` to the existing `api_calls.extra` JSON (the fork's per-call telemetry
+row), keeping the engine's own self-describing key names plus `frames` (how many frames were seen).
+Additive: a provider that never sends the frame writes the same `extra` as before.
+
+**Robustness.** Absence (any non-exo endpoint) and malformed frames (bad JSON, non-object payload, empty
+object) are clean no-ops; parsing never raises and a frozen response object is tolerated. The hot path is
+O(1) per SSE line — a leading `:` check before any allocation — so data frames pay no measurable parse.
+
+**Tests.** New `tests/agent/test_generation_stats_capture.py` (31 tests) against the sanitized real
+fixture `tests/fixtures/generation_stats_stream.sse` (the two `: generation_stats` lines are verbatim from
+`cap_p8_k1_20261014-161826.sse` / `cap_p40d_k3_20261014-165725.sse`; the `data:` frames are synthetic so
+no captured prompt/completion text is committed): parser accepts a real frame and rejects 11 non-frame
+shapes; the shim captures frames the SDK itself discards (asserted directly — the consumer's event list is
+byte-identical with and without the tap); a frame split across byte chunks; absence + malformed
+robustness; `_record_api_call_row` persists into `extra` (and leaves it clean without stats);
+`_chat_stream_created` installs the tap end-to-end. Mutation-checked: (A) parser neutered → 6 fail;
+(B) persist block disabled → the persistence test fails; (C) attach returns `None` → 5 fail. Restored:
+31/31 green (dev-clone venv; run from `~/repos/hermes-agent`, the live install-layout clone trips
+`tests/home_io_guard.py` — pre-existing).
+
+**Live end-to-end (1 bounded call).** Dev tree, tiny prompt (`max_tokens=8`, temp 0) to the loaded exo
+instance `dealignai/DeepSeek-V4.1-Flash-UNCENSORED-EXL3-2.9bpw` via the fork's own tap, then through the
+real `_attach_generation_stats` → `_record_api_call_row` → `SessionDB.record_api_call`, read back from
+`api_calls.extra`:
+
+    captured snapshot: {"mtp_cycles_cumulative":67564,"mtp_accepted_drafts_cumulative":46023,
+                        "prompt_tokens":9,"generation_tokens":8,"prefix_cache_hit":"none",
+                        "peak_memory_bytes":123996778246,"frames":1}
+    persisted extra["generation_stats"] == the same record (read back from the api_calls row)
+
+**Merge guidance.** Fork-only module (conflict-free); the four upstream-file edits are additive,
+FORK-marked blocks (one import, one line in `_chat_stream_created`, one reset line, one method +
+one call in `_call_wire`, one `extra` block). Re-apply on upstream sync if the streaming helper moves.
+
+**NOT verified / known limits.** Only the streaming chat_completions wire is tapped — the non-streaming
+`interruptible_api_call` path has no SSE to carry comments, the anthropic_messages wire sends no such
+frame, and gateway/codex/bedrock paths are untouched. `record_api_call` is not called for usage-less
+responses, so a response with no usage keeps no row (pre-existing). The live probe drove the tap + the
+real writer directly rather than a full `AIAgent` turn (no live config/session was touched).
+
+**Upstreamable:** the dropped-SSE-comment observation is generic (any OpenAI-compatible engine that
+signals on comment frames); candidate for the PR pipeline if a neutral capture seam is wanted.
+
 ### Fix — 2026-10-14 (guard-kill, raised shape: an engine kill the OpenAI SDK surfaced as APIError was re-streamed 3x, and the exhausted-attempt notice called it a connect failure)
 
 **Trigger.** Live exo/dsv41 incident (session `20261014_133551_efaf86`; dsv41 degeneration guard armed,
