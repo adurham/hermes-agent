@@ -3,6 +3,55 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-10-14 (guard-kill, raised shape: an engine kill the OpenAI SDK surfaced as APIError was re-streamed 3x, and the exhausted-attempt notice called it a connect failure)
+
+**Trigger.** Live exo/dsv41 incident (session `20261014_133551_efaf86`; dsv41 degeneration guard armed,
+digest `633711af`): the model collapsed into a tight 12-token reasoning loop (`. OK. Let me write. Go.
+Now. Writing`, period 12, ≥6×) after ~1613 tokens at a ~78,375-token prompt, and the engine guard
+clean-failed the turn — correctly (it is the 2026-10-13 port working as designed; dump:
+`~/.exo/exo_log/dsv41-degeneration-guard-token-20261014-1351*.json` on the studio). The CLIENT then
+re-streamed the IDENTICAL generation twice more — the engine's greedy decode is deterministic, so all
+three attempts were byte-identical (69706 bytes / 1613 chunks / ~51s each) — and finally told the user
+"❌ Could not open a stream … (request 308 KB); the endpoint or a proxy in front of it may reject
+requests this large" — a connect/size story for a kill that had already streamed 69 KB.
+
+**Root cause.** The 2026-10-13 recognition (`9ff0c361a3`) handles the kill as a CHUNK
+(`_call_chat_completions` breaks on the in-band `{"error": …}` frame), but openai's SDK >= 2.x consumes
+that frame itself and RAISES `APIError` (its `_streaming.py` reads `data.get("error")`), so in
+production the kill arrives as an exception. `_handle_stream_error` then ran its transient
+classification — the kill message's "Generation terminated" matches `_SSE_CONN_PHRASES`' bare
+`"terminated"` — and retried; the think-only deltas had been reset by the "undelivered"
+reclassification, so the partial-delivery stop did not fire either. The exhausted-attempt notice
+(`connect_exhausted_notice`) also assumes "no stream event ever arrived" although its caller feeds it
+every exhausted transient, mid-stream deaths included.
+
+**Fix.**
+- `agent/chat_completion_helpers.py::_handle_stream_error`: a raised guard-kill
+  (`is_generation_terminated_error(str(e), _extract_error_code(e.body or {}))`, checked before every
+  transient test) is terminal on FIRST sight — `result["error"] = e`, no re-stream. Same doctrine as
+  `error_classifier._by_engine_guard_kill`.
+- `_partial_stream_stub`: a partial ending on a `generation_terminated` classification builds the SAME
+  marked terminal stub as the chunk-level recognition (`_engine_guard_kill` + `_provider_stream_error`
+  via `_build_partial_stream_stub(terminal_error=…)`) — nothing is auto-continued.
+- `_SSE_CONN_PHRASES`: bare `"terminated"` REMOVED (upstream's `"connection terminated"` entry stays for
+  the actual transport wording).
+- `agent/stream_diag.py`: `connect_exhausted_notice` / `buffer_connect_exhausted_notice` take the
+  attempt `diag`; when it shows chunks/bytes streamed, the line says "stream kept dying mid-response
+  (… KB received before the last drop)" instead of "could not open a stream".
+
+**Tests.** 7 new in `tests/agent/test_engine_guard_kill_terminal.py`: the SDK-raised shape end-to-end
+(exactly ONE create call, marked terminal stub, preserved error), nothing-streamed raises after one
+attempt, the phrase matcher both ways (guard-kill prose → no; relay "Network connection lost." → yes),
+and the exhausted-notice wording with/without diag. Mutation-checked: (A) handler branch disabled →
+both SDK tests fail (3 attempts vs 1); (B) stub branch disabled → the stub-contract test fails (falls
+to the plain "length-truncated … so the loop can continue" stub); (C) bare phrase re-added → phrase
+test fails; (D) wording branch disabled → notice test fails. Restored: 15/15 green (single-file run via
+`~/repos/hermes-agent`'s venv; note: the LIVE install-layout clone trips `tests/home_io_guard.py` on
+`~/.hermes/manifest.json` at run_agent import — pre-existing, run tests from the dev clone or CI).
+
+**Upstreamable:** the phrase-list collision and the raised-vs-chunk recognition gap are generic (any
+OpenAI-compatible engine guard that clean-fails in-band); candidate for the PR pipeline.
+
 ### Feature — 2026-10-14 (silence guard: text-starvation / convergence nudge + silent-long-turn warning)
 
 **Motivation.** A turn on a slow local model once made 75 tool-call rounds over 36 minutes and
