@@ -169,9 +169,8 @@ def admit_transaction(policy: str, env: dict, *, require_published: bool = False
     default = ""
     if policy == "stable-release":
         default = run(["gh", "api", f"repos/{repository}", "--jq", ".default_branch"])
-        claim_tag = env.get("RELEASE_CLAIM_TAG", "")
         expected = {
-            f"{repository}/.github/workflows/stable-release.yml@refs/tags/{claim_tag}",
+            f"{repository}/.github/workflows/stable-release.yml@refs/heads/{default}",
             f"{repository}/.github/workflows/stable-release-publication.yml@refs/heads/{default}",
         }
         if (env.get("GITHUB_EVENT_NAME") not in {"workflow_dispatch", "workflow_run", "schedule"}
