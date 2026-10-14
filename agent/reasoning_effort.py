@@ -82,6 +82,15 @@ GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
+#: exo (local distributed-inference cluster) chat-completions wire: a top-level
+#: ``reasoning_effort`` validated against ``none``..``xhigh``
+#: (exo/src/exo/shared/types/text_generation.py, ReasoningEffort). ``max``/``ultra``
+#: are ABOVE that ceiling — a current exo build clamps them down to ``xhigh`` at its
+#: API boundary, but an older build 422s instead, so the client never emits an
+#: out-of-vocabulary level. ``xhigh`` IS exo's model-max tier (its DeepSeek-V4
+#: encoder maps wire ``xhigh`` onto its own strongest effort prompt).
+EXO_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh")
+
 #: Ollama Cloud /v1/chat/completions: rejects ``minimal`` with HTTP 400.
 OLLAMA_CLOUD_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "max")
 OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
