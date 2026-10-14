@@ -232,14 +232,16 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       })
     }
   } else {
-    cancelParkedCredentialRequest(key, sessionId, id)
+    cancelParkedCredentialRequest(ctx, key, id)
   }
 
   return true
 }
 
-/** Withdraw the sudo / secret / vault card parked under `id`, first match wins. */
-function cancelParkedCredentialRequest(key: string, sessionId: GatewayEventContext['sessionId'], id: string): void {
+/** Withdraw the sudo / secret / vault / setup card parked under `id`, first match wins. */
+function cancelParkedCredentialRequest(ctx: GatewayEventContext, key: string, id: string): void {
+  const { sessionId } = ctx
+
   if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
   } else if ($sudoRequests.get()['']?.requestId === id) {

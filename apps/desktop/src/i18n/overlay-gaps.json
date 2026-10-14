@@ -320,7 +320,6 @@
   "connectors.directory.allApps": ["ar","ja","ru","zh-hant"],
   "connectors.directory.receiptConnected": ["ar","ja","ru","zh-hant"],
   "connectors.directory.receiptNone": ["ar","ja","ru","zh-hant"],
-  "connectors.directory.receiptSaid": ["ar","ja","ru","zh-hant"],
   "connectors.directory.receiptTimedOut": ["ar","ja","ru","zh-hant"],
   "connectors.directory.suggested": ["ar","ja","ru","zh-hant"],
   "connectors.disabled": ["ar","ja","ru","zh-hant"],

@@ -87,10 +87,11 @@ export function ComposerControls({
   // Steer is just send: a payload keeps the Send affordance mid-turn (it answers
   // a waiting card). Stop only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
-  const showQueueButton =
-    busy && busyAction !== 'stop' && busyAction !== 'queue' && hasComposerPayload && !cardWaiting
 
-  const sendLabel = composerSendLabel(busy, busyAction, c)
+  const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
+
+  // A waiting card takes the draft as its answer through Send, whatever the busy action.
+  const sendLabel = composerSendLabel(busy && !cardWaiting, busyAction, c)
 
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
@@ -189,6 +190,17 @@ export function ComposerControls({
       {hudMode ? <HudWindowButtons /> : null}
     </div>
   )
+}
+
+// Queue is the secondary mid-turn action: never while the primary button already queues or stops, and
+// never while a card waits (its Send answers the card).
+function queueButtonVisible(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  hasPayload: boolean,
+  cardWaiting: boolean
+): boolean {
+  return busy && busyAction !== 'stop' && busyAction !== 'queue' && hasPayload && !cardWaiting
 }
 
 function composerSendLabel(

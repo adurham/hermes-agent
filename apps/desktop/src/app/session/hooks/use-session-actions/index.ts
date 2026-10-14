@@ -2691,7 +2691,9 @@ export function useSessionActions({
             // Stable per-attempt key: a lost-response retry of session.branch /
             // session.branch_whole returns the SAME child (#65410).
             idempotency_key: key,
-            ...(branchCount !== undefined ? { count: branchCount, through_message_id: branchThroughRowId(branchMessages) } : {})
+            ...(branchCount !== undefined
+              ? { count: branchCount, through_message_id: branchThroughRowId(branchMessages) }
+              : {})
           }
 
           const createParams = {

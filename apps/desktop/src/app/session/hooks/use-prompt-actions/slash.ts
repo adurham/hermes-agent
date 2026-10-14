@@ -211,10 +211,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (
-      rawCommand: string,
-      options?: SubmitTextOptions & { recordInput?: boolean; typed?: boolean }
-    ) => {
+    async (rawCommand: string, options?: SubmitTextOptions & { recordInput?: boolean; typed?: boolean }) => {
       const initialRuntimeId = options?.sessionId ?? activeSessionIdRef.current
       const initialSelectedId = selectedStoredSessionIdRef.current
       const initialRoutedId = getRoutedStoredSessionId()
@@ -238,16 +235,18 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         // An explicit retry of this exact invocation reuses its retained expansion; the same
         // command typed again is a new invocation.
         const prepared = options?.submission_id
-          ? (await adoptPreparedSubmission(
-              preparedSubmissionKey(
-                resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
-                destination,
-                rawCommand,
-                options?.attachments ?? $composerAttachments.get(),
-                retryOptions
-              ),
-              options.submission_id
-            ))?.entry
+          ? (
+              await adoptPreparedSubmission(
+                preparedSubmissionKey(
+                  resolveComposerSessionKey(initialStoredId ?? initialRuntimeId, $sessions.get()),
+                  destination,
+                  rawCommand,
+                  options?.attachments ?? $composerAttachments.get(),
+                  retryOptions
+                ),
+                options.submission_id
+              )
+            )?.entry
           : undefined
 
         if (prepared) {
