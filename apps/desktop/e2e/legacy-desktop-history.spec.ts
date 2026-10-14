@@ -252,12 +252,12 @@ seed(home / 'profiles' / 'developer' / 'state.db', [{'id': sys.argv[2], 'source'
     await mock.close()
     spawnSync(python, ['-c', `
 import psutil,sys,os
-home=sys.argv[1]
+home=os.path.realpath(sys.argv[1])
 owned=[]
 for p in psutil.process_iter():
     if p.pid==os.getpid(): continue
     try:
-        if p.environ().get('HERMES_HOME')==home:
+        if os.path.realpath(p.environ().get('HERMES_HOME') or os.sep)==home:
             owned.append(p);p.terminate()
     except (psutil.NoSuchProcess,psutil.AccessDenied): pass
 _,alive=psutil.wait_procs(owned,timeout=5)
