@@ -301,7 +301,9 @@ class HostedRoomAuthorityRPC:
     def resume(self, *, profile, session_id, source):
         return self._call('resume', profile=profile, session_id=session_id, source=source)
 
-    def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal, attachments=None):
+    def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal,
+               member_id="", attachments=None):
+        del member_id  # this producer belongs to one member binding, like the peer transport
         return self._call('submit', profile=profile, session_id=session_id, source=source,
                           prompt=prompt, task=task, execution_generation=execution_generation, on_terminal=on_terminal,
                           attachments=attachments)
