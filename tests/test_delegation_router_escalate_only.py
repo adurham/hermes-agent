@@ -1,18 +1,20 @@
-"""Tests for the ESCALATE-ONLY half of ``tools.delegation_router`` (2026-09-04).
+"""Tests for the ESCALATE-CHECK half of ``tools.delegation_router``.
 
-Before this change, a task carrying an explicit ``agent_type`` was excluded
-from classification entirely. Now it rides along in the SAME batch classifier
-call purely so the classifier's recommended tier can be compared against the
-stated role's configured tier rank — and the stated choice is replaced ONLY
-when the recommendation ranks strictly higher.
+A task carrying an explicit ``agent_type`` rides along in the SAME batch
+classifier call purely so the classifier's recommended tier can be compared
+against the stated role's configured tier rank. As of 2026-10-13 that
+comparison is **ADVISORY-ONLY**: a strictly-deeper recommendation is returned
+as an ``advisory: True`` entry carrying NO ``model`` and NO ``agent_type`` —
+the caller must only REPORT it, never apply it, because an explicit
+``agent_type`` is BINDING.
 
 The properties under test:
 
-* **Escalate up** — a deeper recommendation replaces the stated agent_type
-  with the recommended tier's role, and carries its provenance
-  (``escalated``/``escalated_from``/ranks).
-* **Never downgrade** — an equal or lighter recommendation produces NO entry
-  at all, so the stated choice reaches dispatch untouched.
+* **Advisory up** — a deeper recommendation produces an advisory carrying the
+  recommended role/tier/rank and the stated rank, but NOT a model or
+  agent_type (so it can never rewrite the route).
+* **Never a mismatch on equal/lighter** — an equal or lighter recommendation
+  produces NO entry at all.
 * **Both ladders** — rank resolution works for roles pinned to Anthropic
   models (``family_of``/``tier_rank_map``) AND for roles pinned to
   local/ollama-cloud models (``local_ladder``, anchored jr-coder=0 /
@@ -21,9 +23,9 @@ The properties under test:
   an ollama-cloud slug, so ``family_of()`` returns None for them and rank
   resolution MUST fall through to the local ladder.
 * **Fail open** — when a rank can't be resolved for either side, the task is
-  left alone (no escalation, no error).
+  left alone (no advisory, no error).
 * **model= bypass** — an explicit per-task model is never classified at all,
-  so it can be neither auto-routed nor escalated.
+  so it can be neither auto-routed nor advised on.
 """
 
 from __future__ import annotations
@@ -83,57 +85,59 @@ def _seed_local_config(tmp_path, model_by_role):
     )
 
 
-# ── Anthropic ladder: escalate up ─────────────────────────────────────────
+# ── Anthropic ladder: advisory (never an override) ─────────────────────────
 
 
-def test_explicit_agent_type_escalated_when_classifier_says_deeper():
+def test_explicit_agent_type_yields_advisory_when_classifier_says_deeper():
     """agent_type='researcher' (haiku, rank 0) + a 'deep' recommendation
-    (system-architect, opus, rank 2) → escalated to system-architect."""
+    (system-architect, opus, rank 2) → an ADVISORY (no model, no agent_type)."""
     tasks = [{"goal": "rewrite the session cookie auth surface", "agent_type": "researcher"}]
     with patch.object(dr, "_classify", return_value={0: ("deep", "auth surface", "")}):
         out = route(tasks)
-    assert out[0]["escalated"] is True
-    assert out[0]["escalated_from"] == "researcher"
-    assert out[0]["agent_type"] == "system-architect"
-    assert out[0]["role"] == "system-architect"
-    assert out[0]["model"] == "claude-opus-4-7"
-    assert out[0]["tier"] == "deep"
-    assert out[0]["escalated_from_rank"] == 0
-    assert out[0]["rank"] == 2
+    assert out[0]["advisory"] is True
+    assert out[0]["stated_agent_type"] == "researcher"
+    assert out[0]["recommended_agent_type"] == "system-architect"
+    assert out[0]["recommended_tier"] == "deep"
+    assert out[0]["stated_rank"] == 0
+    assert out[0]["recommended_rank"] == 2
+    # The whole point: an advisory can NEVER rewrite the route.
+    assert "model" not in out[0]
+    assert "agent_type" not in out[0]
+    assert "escalated" not in out[0]
 
 
-def test_escalation_is_single_step_when_recommendation_is_one_up():
-    """rank 0 stated + 'standard' (sonnet, rank 1) recommendation → rank 1."""
+def test_advisory_is_single_step_when_recommendation_is_one_up():
+    """rank 0 stated + 'standard' (sonnet, rank 1) recommendation → advisory
+    naming coder, still no model/agent_type."""
     tasks = [{"goal": "add a bounded unit test", "agent_type": "researcher"}]
     with patch.object(dr, "_classify", return_value={0: ("standard", "bounded", "")}):
         out = route(tasks)
-    assert out[0]["agent_type"] == "coder"
-    assert out[0]["model"] == "claude-sonnet-4-6"
-    assert out[0]["escalated_from_rank"] == 0
-    assert out[0]["rank"] == 1
+    assert out[0]["recommended_agent_type"] == "coder"
+    assert out[0]["recommended_rank"] == 1
+    assert "model" not in out[0]
 
 
-# ── Anthropic ladder: NEVER downgrade ─────────────────────────────────────
+# ── Anthropic ladder: NO entry on equal/lighter ────────────────────────────
 
 
-def test_explicit_agent_type_not_downgraded_when_classifier_says_lighter():
+def test_explicit_agent_type_no_advisory_when_classifier_says_lighter():
     """agent_type='system-architect' (opus, rank 2) + a 'light' (haiku,
-    rank 0) recommendation → NO entry, stated choice survives untouched."""
+    rank 0) recommendation → NO entry, stated choice untouched."""
     tasks = [{"goal": "look up a constant", "agent_type": "system-architect"}]
     with patch.object(dr, "_classify", return_value={0: ("light", "lookup", "")}):
         out = route(tasks)
     assert out == {}
 
 
-def test_explicit_agent_type_not_changed_when_classifier_says_equal():
-    """Equal rank is not an escalation — no entry, no change."""
+def test_explicit_agent_type_no_advisory_when_classifier_says_equal():
+    """Equal rank is not a mismatch worth reporting — no entry, no change."""
     tasks = [{"goal": "bounded refactor", "agent_type": "coder"}]
     with patch.object(dr, "_classify", return_value={0: ("standard", "bounded", "")}):
         out = route(tasks)
     assert out == {}
 
 
-def test_top_of_ladder_stated_choice_never_escalates():
+def test_top_of_ladder_stated_choice_never_advised():
     """A stated role already at the top rank can only ever be matched."""
     tasks = [{"goal": "design a new subsystem", "agent_type": "system-architect"}]
     with patch.object(dr, "_classify", return_value={0: ("deep", "design", "")}):
@@ -144,13 +148,13 @@ def test_top_of_ladder_stated_choice_never_escalates():
 # ── Local (ollama-cloud) ladder — the live-config shape ───────────────────
 
 
-def test_local_ladder_escalation_ollama_cloud_models(monkeypatch, tmp_path):
+def test_local_ladder_advisory_ollama_cloud_models(monkeypatch, tmp_path):
     """The critical non-Anthropic path: every role's PRIMARY model is an
     ollama-cloud slug, so family_of() is None for all of them and ranks MUST
     come from local_ladder() (jr-coder=0 / mid-coder=1 / sr-coder=2).
 
     agent_type='jr-coder' (gemma4:31b, local rank 0) + a 'deep'
-    recommendation (sr-coder, glm-5.3, local rank 2) → escalated.
+    recommendation (sr-coder, glm-5.3, local rank 2) → advisory, no rewrite.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _seed_local_config(tmp_path, LOCAL_ROLE_MAP)
@@ -164,17 +168,17 @@ def test_local_ladder_escalation_ollama_cloud_models(monkeypatch, tmp_path):
     tasks = [{"goal": "redesign the token refresh flow", "agent_type": "jr-coder"}]
     with patch.object(dr, "_classify", return_value={0: ("deep", "security surface", "")}):
         out = route(tasks, role_map=LOCAL_ROLE_MAP, cfg=cfg)
-    assert out[0]["escalated"] is True
-    assert out[0]["escalated_from"] == "jr-coder"
-    assert out[0]["agent_type"] == "sr-coder"
-    assert out[0]["model"] == "glm-5.3"
-    assert out[0]["escalated_from_rank"] == 0
-    assert out[0]["rank"] == 2
+    assert out[0]["advisory"] is True
+    assert out[0]["stated_agent_type"] == "jr-coder"
+    assert out[0]["recommended_agent_type"] == "sr-coder"
+    assert out[0]["stated_rank"] == 0
+    assert out[0]["recommended_rank"] == 2
+    assert "model" not in out[0]
 
 
-def test_local_ladder_never_downgrades(monkeypatch, tmp_path):
+def test_local_ladder_no_advisory_on_lighter(monkeypatch, tmp_path):
     """Same local roster: sr-coder (rank 2) + a 'light' (jr-coder, rank 0)
-    recommendation must NOT demote."""
+    recommendation must produce NO entry."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _seed_local_config(tmp_path, LOCAL_ROLE_MAP)
     cfg = {"auto_route": {"tier_roles": LOCAL_TIER_ROLES}}
@@ -265,7 +269,7 @@ def test_escalate_and_autoroute_share_one_classifier_call():
     ONE classifier call covering both — no second API round-trip."""
     tasks = [
         {"goal": "bare task, route me fully"},
-        {"goal": "stated task, escalate-check me", "agent_type": "researcher"},
+        {"goal": "stated task, advise me", "agent_type": "researcher"},
     ]
     with patch.object(
         dr,
@@ -276,12 +280,16 @@ def test_escalate_and_autoroute_share_one_classifier_call():
     assert m.call_count == 1
     (pending_arg,) = m.call_args.args
     assert sorted(idx for idx, _ in pending_arg) == [0, 1]
-    # Task 0: full auto-route (no escalation marker).
+    # Task 0: full auto-route.
     assert out[0]["model"] == "claude-sonnet-4-6"
     assert "escalated" not in out[0]
-    # Task 1: escalated from researcher (rank 0) to system-architect (rank 2).
-    assert out[1]["escalated"] is True
-    assert out[1]["escalated_from"] == "researcher"
+    # Task 1: ADVISORY only — researcher (rank 0) vs recommended
+    # system-architect (rank 2), and crucially NO model/agent_type.
+    assert out[1]["advisory"] is True
+    assert out[1]["stated_agent_type"] == "researcher"
+    assert out[1]["recommended_agent_type"] == "system-architect"
+    assert "model" not in out[1]
+    assert "agent_type" not in out[1]
 
 
 # ── agent_type="auto" is a full-route opt-in, not a persona ───────────────

@@ -689,7 +689,16 @@ def _resolve_task_routes(
         # so it normalises to None here (identical routing to omitting the field — no
         # bogus model_by_role["auto"] lookup, no "auto" persona prompt) while still
         # counting as an explicit choice that does not trip the omission warning.
-        stated_agent_type = (t.get("agent_type") or "").strip()
+        #
+        # EXPLICITNESS SENTINEL: read the RAW value BEFORE any default fill-in. A
+        # missing key (None) or a non-string means the caller did NOT state an
+        # agent_type; only a non-empty string is an explicitly-passed, BINDING choice
+        # (2026-10-13 — the auto-route classifier may no longer override it). The
+        # batch-wide default seeding in delegate_task() has already run by the time we
+        # get here, but it only ever forwards a caller-supplied TOP-LEVEL agent_type,
+        # which is itself an explicit choice, so the sentinel remains truthful.
+        _raw_agent_type = t.get("agent_type")
+        stated_agent_type = _raw_agent_type.strip() if isinstance(_raw_agent_type, str) else ""
         agent_type_is_auto = stated_agent_type.lower() == AUTO_AGENT_TYPE
         agent_type_omitted = not stated_agent_type
         task_agent_type = None if (agent_type_omitted or agent_type_is_auto) else stated_agent_type
@@ -714,33 +723,39 @@ def _resolve_task_routes(
                 # guaranteed wrong-endpoint 404.
                 tier_route_role = (route.get("role") or "").strip() or None
 
-        # Escalate-only override: the task DID state an agent_type and the classifier
-        # judged the work to need a strictly DEEPER tier. Replacing task_agent_type makes
-        # the whole existing machinery (role→model, role→provider pin, role→persona
-        # prompt, role→iteration budget) follow the escalation with no duplicated logic.
-        # The router only ever emits an escalation UPWARD, so a stated choice can never be
-        # silently demoted here.
-        escalation = None
-        if task_agent_type is not None and route and route.get("escalated") and (route.get("agent_type") or "").strip():
-            escalation = {
-                "from": task_agent_type, "to": (route.get("agent_type") or "").strip(),
-                "tier": route.get("tier"), "from_rank": route.get("escalated_from_rank"),
-                "to_rank": route.get("rank"), "reason": route.get("reason"),
+        # ADVISORY-ONLY (2026-10-13): an explicit agent_type is BINDING. The
+        # auto-route classifier may still flag a stated role as shallower than
+        # the work warrants, but that is a NOTICE, never an override — we do
+        # NOT touch task_agent_type (so role→model, role→provider pin,
+        # role→persona prompt and role→iteration budget all stay on the
+        # caller's explicit choice). The regression that motivated this: a
+        # 'reviewer' task was silently re-dispatched as 'mid-coder' because the
+        # classifier's tier ranked higher, contradicting the documented
+        # precedence ("explicit agent_type is intent").
+        advisory = None
+        if route and route.get("advisory"):
+            advisory = {
+                "stated": route.get("stated_agent_type"),
+                "recommended": route.get("recommended_agent_type"),
+                "tier": route.get("recommended_tier"),
+                "stated_rank": route.get("stated_rank"),
+                "recommended_rank": route.get("recommended_rank"),
+                "reason": route.get("reason"),
             }
-            task_agent_type = escalation["to"]
             roster_warnings.append(
-                f"Task {i}: agent_type={escalation['from']!r} was ESCALATED to "
-                f"{escalation['to']!r} (tier {escalation['tier']!r}, rank "
-                f"{escalation['from_rank']}→{escalation['to_rank']}) by the auto-route classifier"
-                + (f": {escalation['reason']}" if escalation.get("reason") else "")
-                + ". Auto-route only ever escalates, never downgrades. Pass an explicit model= to "
-                "bypass classification entirely, or set delegation.auto_route.escalate_only: false "
-                "in config.yaml to disable this check."
+                f"Task {i}: agent_type={advisory['stated']!r} is BINDING (an explicit choice is "
+                f"intent). The auto-route classifier recommends the deeper role "
+                f"{advisory['recommended']!r} (tier {advisory['tier']!r}, rank "
+                f"{advisory['stated_rank']}→{advisory['recommended_rank']})"
+                + (f": {advisory['reason']}" if advisory.get("reason") else "")
+                + ". Nothing was changed — to dispatch that role, pass "
+                "agent_type=<role> explicitly."
             )
-            logger.warning(
-                "delegate_task: task %d agent_type=%r escalated to %r (tier=%r, rank %s->%s) by auto-route classifier",
-                i, escalation["from"], escalation["to"], escalation["tier"],
-                escalation["from_rank"], escalation["to_rank"],
+            logger.info(
+                "delegate_task: task %d advisory — stated agent_type=%r kept; classifier "
+                "recommends %r (rank %s->%s)",
+                i, advisory["stated"], advisory["recommended"],
+                advisory["stated_rank"], advisory["recommended_rank"],
             )
 
         # role= grants CAPABILITY (can this child spawn children) and is entirely
@@ -784,19 +799,30 @@ def _resolve_task_routes(
             )
 
         # The classifier's model is only a FALLBACK for tasks it was allowed to route:
-        # ones that stated no agent_type (or opted in with "auto"), plus escalations
-        # (where task_agent_type was already replaced, so role_map_model is the escalated
-        # role's own model). For a task whose stated agent_type SURVIVED, a route entry
-        # must not contribute a model at all — otherwise a role with no model_by_role
-        # entry would silently pick up the classifier's tier model, the exact downgrade
-        # path escalate-only exists to prevent.
-        stated_survived = stated_agent_type and not agent_type_is_auto and escalation is None
+        # ones that stated no agent_type (or opted in with "auto"). For a task whose
+        # stated agent_type survived — which is now ALWAYS, since an explicit agent_type
+        # is binding — a route entry must not contribute a model at all, otherwise a role
+        # with no model_by_role entry would silently pick up the classifier's tier model.
+        stated_survived = bool(stated_agent_type) and not agent_type_is_auto
         auto_route_model = route.get("model") if (route and not stated_survived) else None
 
         task_creds = creds
         task_fallback_chain: Optional[list[dict[str, Any]]] = None
         role_entry = role_entry_map.get(role_cfg_key) if role_cfg_key else None
         role_provider = str(role_entry.get("provider") or "").strip() if isinstance(role_entry, dict) else ""
+        # A role marked ``pinned: true`` in delegation.model_by_role is a HARD INVARIANT:
+        # its (provider, model) pair must never be substituted by any automatic mechanism.
+        # An explicit agent_type is already binding (above), so the remaining leak is the
+        # AMBIENT fallback chain the child would otherwise inherit from the parent session
+        # — that could silently reroute a pinned role (e.g. the custom exo-dsv41 role) onto
+        # a different provider at runtime. A pinned role gets NO inherited chain; it may
+        # still declare its own explicit ``fallback`` bundle, which is a deliberate choice.
+        role_pinned = bool(isinstance(role_entry, dict) and role_entry.get("pinned"))
+        if role_pinned:
+            auto_route_model = None
+            # An EMPTY list (not None) is the "do not inherit" signal: ``None`` means
+            # "consult the ambient parent chain", ``[]`` means "no runtime fallback".
+            task_fallback_chain = []
         # Per-role fallback: a second full {model, provider, ...} bundle, consulted at
         # construction time (below) and at runtime (via override_fallback_chain). Only
         # meaningful alongside a provider pin — a fallback identity with no primary
@@ -909,10 +935,11 @@ def _resolve_task_routes(
                 "tier": route.get("tier"), "role": route.get("role"), "model": route.get("model"),
                 "reason": route.get("reason"), "agent_type": route.get("agent_type"),
             }
-            if escalation is not None:
+            if advisory is not None:
                 route_info.update({
-                    "escalated": True, "escalated_from": escalation["from"],
-                    "escalated_from_rank": escalation["from_rank"], "rank": escalation["to_rank"],
+                    "advisory": True, "recommended_agent_type": advisory["recommended"],
+                    "recommended_tier": advisory["tier"], "stated_rank": advisory["stated_rank"],
+                    "recommended_rank": advisory["recommended_rank"],
                 })
 
         routes.append({

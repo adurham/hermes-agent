@@ -43,19 +43,21 @@ A task that DOES carry an explicit ``agent_type`` is no longer excluded
 outright: it rides along in the SAME batch classifier call (no extra API
 call, no extra latency) purely so its tier recommendation can be compared
 against the tier the caller actually picked. That comparison is
-**escalate-only**: when the classifier's tier ranks HIGHER than the stated
-role's tier, the stated role is replaced by the higher tier's role (same
-``tier_roles`` map the full auto-route path uses); when it ranks equal or
-lower, the stated choice is kept completely unchanged. Auto-route can
-therefore only ever move a task UP the ladder, never quietly demote a
-deliberate choice. Ranks come from ``hermes_cli.model_tiers`` and resolve on
-EITHER ladder — the Anthropic one (``family_of``/``tier_rank_map``) or the
-local/non-Anthropic one (``local_ladder``, anchored on
-jr-coder=0/mid-coder=1/sr-coder=2/pm=2) — which matters because a role whose
-primary model is an ollama-cloud slug has no Anthropic family at all. When a
-rank cannot be resolved for either side, the task fails open (stated choice
-kept, no escalation, not an error). Toggleable via
-``delegation.auto_route.escalate_only`` (default True).
+**ADVISORY-ONLY** (2026-10-13): when the classifier's tier ranks HIGHER than
+the stated role's tier, the mismatch is surfaced as an advisory the caller
+can report — the stated role is **never replaced**. An explicit
+``agent_type`` is BINDING: the classifier can only ever move a task UP the
+ladder when the caller left the choice OPEN (no ``agent_type``, or the
+explicit opt-in ``agent_type="auto"``). Ranks come from
+``hermes_cli.model_tiers`` and resolve on EITHER ladder — the Anthropic one
+(``family_of``/``tier_rank_map``) or the local/non-Anthropic one
+(``local_ladder``, anchored on jr-coder=0/mid-coder=1/sr-coder=2/pm=2) —
+which matters because a role whose primary model is an ollama-cloud slug has
+no Anthropic family at all. When a rank cannot be resolved for either side,
+the task yields no advisory (not an error). Toggleable via
+``delegation.auto_route.escalate_only`` (default True); setting it ``false``
+excludes stated-``agent_type`` tasks from classification entirely, producing
+no advisory at all.
 
 An explicit per-task ``model`` bypasses BOTH paths — full auto-route and the
 escalate-only check — and is never sent to the classifier at all. A stated
@@ -420,14 +422,16 @@ def route_task_models(
         tier/model-only routing. Tasks absent from the map fall through to
         the existing precedence chain (fail-open). Never raises.
 
-        ESCALATION entries (a task that stated an explicit ``agent_type``
-        whose configured tier ranks BELOW the classifier's recommendation)
-        additionally carry ``escalated: True``, ``escalated_from`` (the
-        stated role), ``escalated_from_rank`` and ``rank``. Their
-        ``agent_type`` is the higher tier's role — the caller REPLACES the
-        stated agent_type with it. Escalation never fires downward: an
-        equal-or-lower recommendation yields no entry at all, leaving the
-        stated choice untouched.
+        ADVISORY entries (a task that stated an explicit ``agent_type`` whose
+        configured tier ranks BELOW the classifier's recommendation)
+        additionally carry ``advisory: True``, ``recommended_agent_type``
+        (the deeper tier's role), ``recommended_tier``,
+        ``recommended_rank``, ``stated_agent_type`` and ``stated_rank``, and
+        a ``reason``. They deliberately carry NO ``model`` and NO
+        ``agent_type``: an explicit ``agent_type`` is BINDING, so the caller
+        must NOT apply anything from an advisory entry — it exists only so
+        the mismatch can be reported. An equal-or-lower recommendation
+        produces no entry at all.
     """
     def _skip(reason: str, **extra: Any) -> dict[int, dict[str, Any]]:
         if diagnostics is not None:
@@ -452,10 +456,12 @@ def route_task_models(
                 provider=(active_provider or ""), allowed=list(providers),
             )
 
-        # Escalate-only checking for tasks that DID state an agent_type.
-        # On by default; delegation.auto_route.escalate_only: false restores
-        # the pre-2026-09-04 behavior (explicit agent_type excluded from
-        # classification entirely).
+        # Escalate-check (ADVISORY-ONLY) for tasks that DID state an agent_type.
+        # On by default; delegation.auto_route.escalate_only: false excludes
+        # stated-agent_type tasks from classification entirely (pre-2026-09-04).
+        # NOTE (2026-10-13): a stated agent_type is BINDING. This check no longer
+        # rewrites it — a strictly-deeper recommendation is returned as an
+        # advisory entry the caller reports, never applies. See route_task_models.
         escalate_only = bool(ar.get("escalate_only", True))
 
         # Two eligible populations, ONE classifier call:
@@ -463,8 +469,8 @@ def route_task_models(
         #   pending  — no model AND (no agent_type, or the explicit opt-in
         #              agent_type="auto"). Fully routed: tier→role→model.
         #   escalate — no model AND an explicit agent_type. Classified only
-        #              to compare tiers; the result can raise the task's
-        #              tier but never lower it.
+        #              to compare tiers and produce an advisory; the result
+        #              can never change the task's route.
         #
         # An explicit per-task model is in NEITHER population — a stated
         # model is intent and always wins, so it is never even classified.
@@ -548,11 +554,15 @@ def route_task_models(
             model = _entry_model(role_model_map.get(role)) if role else ""
 
             if idx in escalate:
-                # ── Escalate-only path ────────────────────────────────────
+                # ── Escalate-check path: ADVISORY-ONLY ─────────────────────
+                # A stated agent_type is BINDING. We still compare tiers so a
+                # clearly-too-shallow choice can be reported, but the entry we
+                # return carries NO model/agent_type — the caller must not
+                # apply it, only surface the advisory.
                 stated_role = escalate[idx]
                 if not model:
                     # The recommended tier's role has no model — nothing to
-                    # escalate TO. Fail open, keep the stated choice.
+                    # advise TO. Fail open, no advisory.
                     continue
                 stated_rank = _role_rank(
                     stated_role, role_model_map, _anthropic_ranks, _local_ranks
@@ -562,27 +572,24 @@ def route_task_models(
                 )
                 if stated_rank is None or rec_rank is None:
                     # Rank unresolvable on EITHER ladder for one side — fail
-                    # open for this task (keep the stated choice, no error).
+                    # open for this task (no advisory, no error).
                     logger.debug(
                         "delegation escalate-check: task %s rank unresolved "
-                        "(stated %r -> %r, recommended %r -> %r); keeping "
-                        "stated choice",
+                        "(stated %r -> %r, recommended %r -> %r); no advisory",
                         idx, stated_role, stated_rank, role, rec_rank,
                     )
                     continue
                 if rec_rank <= stated_rank:
-                    # Equal or lower — NEVER downgrade a stated choice.
+                    # Equal or lower — never a mismatch worth reporting.
                     continue
                 routes[idx] = {
-                    "model": model,
-                    "tier": tier,
-                    "role": role,
-                    "agent_type": role,
+                    "advisory": True,
+                    "recommended_agent_type": role,
+                    "recommended_tier": tier,
+                    "recommended_rank": rec_rank,
+                    "stated_agent_type": stated_role,
+                    "stated_rank": stated_rank,
                     "reason": reason,
-                    "escalated": True,
-                    "escalated_from": stated_role,
-                    "escalated_from_rank": stated_rank,
-                    "rank": rec_rank,
                 }
                 continue
 

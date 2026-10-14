@@ -41,6 +41,21 @@ refusing the dispatch::
             model: claude-fable-5
             provider: anthropic
 
+A dict entry may also carry ``pinned: true`` — a HARD INVARIANT marker for a
+role whose (provider, model) pair must never be substituted by an automatic
+mechanism. An explicit ``agent_type`` is already binding (the auto-route
+classifier can no longer override it), but a pinned role additionally does NOT
+inherit the ambient parent fallback chain, so a runtime failover can't
+silently reroute it onto another provider. The role's own explicit
+``fallback``, if any, is still honoured::
+
+    delegation:
+      model_by_role:
+        exo-dsv41:
+          model: dsv41
+          provider: exo
+          pinned: true
+
 The fallback bundle is resolved and used in two situations, both handled
 by ``tools/delegate_tool.py``: (1) the primary's credential resolution
 fails at dispatch time (missing/invalid provider config) — the child is
@@ -77,7 +92,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_cli.persona_library import (
     DEFAULT_PERSONAS_PATH,
@@ -310,7 +325,7 @@ def _normalize_entry_fields(v: dict) -> dict[str, str]:
     return entry
 
 
-def get_role_entry_map() -> dict[str, dict[str, str | dict[str, str]]]:
+def get_role_entry_map() -> dict[str, dict[str, Any]]:
     """Read ``delegation.model_by_role`` as normalized per-role entries.
 
     Every entry is normalized to a dict.  A bare-string value ``"foo"``
@@ -349,15 +364,22 @@ def get_role_entry_map() -> dict[str, dict[str, str | dict[str, str]]]:
     raw = delegation.get("model_by_role")
     if not isinstance(raw, dict):
         return {}
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for k, v in raw.items():
         if not isinstance(k, str):
             continue
-        entry: dict[str, str] = {}
+        entry: dict[str, Any] = {}
         if isinstance(v, str):
             entry["model"] = v.strip()
         elif isinstance(v, dict):
             entry = _normalize_entry_fields(v)
+            # ``pinned: true`` marks a HARD INVARIANT role: its (provider, model)
+            # pair must never be substituted by any automatic mechanism (auto-route
+            # escalation, ambient fallback-chain inheritance). Carried through as a
+            # bool rather than a credential string (see _ENTRY_KEYS) so
+            # tools/delegate_tool.py can honour it.
+            if v.get("pinned"):
+                entry["pinned"] = True
             if entry.get("provider"):
                 raw_fallback = v.get("fallback")
                 if isinstance(raw_fallback, dict):
