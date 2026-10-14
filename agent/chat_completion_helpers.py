@@ -28,7 +28,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
-    _extract_status_code)
+    _extract_status_code, is_generation_terminated_error)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
@@ -279,6 +279,40 @@ def _is_provider_stream_empty_frame_error(exc: BaseException) -> bool:
     body = getattr(exc, "body", None)
     error_obj = body.get("error") if isinstance(body, dict) else None
     return isinstance(error_obj, dict) and error_obj.get("code") == PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE
+
+
+def _in_stream_error_payload(chunk: Any) -> Optional[dict]:
+    """Typed in-band error carried by a choiceless SSE chunk, or None.
+
+    Two shapes are seen in the wild, and both must be read or the error is silently
+    swallowed (the stream then looks like a plain drop → a "length" stub + retries):
+      * an OpenAI-shaped nested ``error`` object — what an inference ENGINE sends for its
+        own failures, e.g. exo's degeneration guard-kill
+        ``{"error": {"message": "Generation terminated: …", "type": "InternalServerError",
+        "code": 500}}`` (#65631's DeepInfra shape is the flat sibling of this one);
+      * the FLAT ``error_type``/``error_message`` pair DeepInfra uses.
+
+    Returns ``{"code", "message", "type"?}`` with whichever fields the frame carried.
+    """
+    error_obj = getattr(chunk, "error", None)
+    if error_obj is None and isinstance(getattr(chunk, "model_extra", None), dict):
+        error_obj = chunk.model_extra.get("error")
+    if isinstance(error_obj, str) and error_obj.strip():
+        error_obj = {"message": error_obj}
+    if isinstance(error_obj, dict) and error_obj:
+        message = str(error_obj.get("message") or "").strip()
+        code = error_obj.get("code") if error_obj.get("code") is not None else error_obj.get("error_code")
+        code = code if code is not None else error_obj.get("type")
+        if message or code is not None:
+            payload = {"code": code, "message": message or str(code)}
+            if error_obj.get("type") is not None:
+                payload["type"] = error_obj["type"]
+            return payload
+    _err_type = getattr(chunk, "error_type", None)
+    _err_msg = getattr(chunk, "error_message", None)
+    if _err_type or _err_msg:
+        return {"code": _err_type, "message": str(_err_msg or chunk)}
+    return None
 
 
 def _iter_provider_stream_chunks(stream, *, response: Any = None):
@@ -2488,7 +2522,7 @@ _MEMORY_REVIEW_PROMPT = (
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False):
+    dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False, terminal_error=None):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
@@ -2510,7 +2544,12 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
     clean-EOF sites in ``_finish_chat_stream`` pass True; the stub built after a
     real transport exception keeps False so the loop can word the two failure
     modes differently (#102766).
+
+    ``terminal_error``: the engine's own typed in-band error (guard-kill). The stub then
+    carries it (``_provider_stream_error``) and is marked ``_engine_guard_kill`` so the
+    truncation path ends the turn — partial content kept, nothing auto-continued.
     """
+    _guard_kill = terminal_error is not None
     if api_mode == "anthropic_messages":
         return SimpleNamespace(
             id=PARTIAL_STREAM_STUB_ID,
@@ -2524,6 +2563,8 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
             _dropped_tool_names=dropped_tool_names or None,
             _overflow_terminal=overflow_terminal,
             _clean_eof=clean_eof,
+            _provider_stream_error=terminal_error,
+            _engine_guard_kill=_guard_kill,
         )
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
@@ -2538,6 +2579,8 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
         _dropped_tool_names=dropped_tool_names or None,
         _overflow_terminal=overflow_terminal,
         _clean_eof=clean_eof,
+        _provider_stream_error=terminal_error,
+        _engine_guard_kill=_guard_kill,
     )
 
 _SKILL_REVIEW_PROMPT = (
@@ -3284,13 +3327,17 @@ class _StreamingCall(StreamingWaitMonitor):
         usage = chunk.usage if hasattr(chunk, "usage") and chunk.usage else None  # final usage chunk
         # Without this check the error is silently dropped and the stream ends empty → EmptyStreamError →
         # misleading "empty stream" message and pointless retries on the same bad request. (#65631)
-        _err_type = getattr(chunk, "error_type", None)
-        _err_msg = getattr(chunk, "error_message", None)
-        if _err_type or _err_msg:
-            _status = _status_code_from_payload({"code": _err_type, "message": _err_msg}) or _status_code_from_value(_err_type)
+        payload = _in_stream_error_payload(chunk)
+        if payload is not None:
+            _status = (_status_code_from_payload({"code": payload.get("code"), "message": payload.get("message")})
+                       or _status_code_from_value(payload.get("type")))
             body = _provider_error_body(
-                {"code": _err_type or "provider_in_stream_error", "message": str(_err_msg or chunk)}, _status)
-            raise ProviderStreamError(status_code=_status, body=body, raw_text=f"{_err_type}: {_err_msg}")
+                {"code": payload.get("code") or payload.get("type") or "provider_in_stream_error",
+                 "message": payload.get("message"),
+                 **({"type": payload["type"]} if payload.get("type") else {})}, _status)
+            raise ProviderStreamError(
+                status_code=_status, body=body,
+                raw_text=f"{payload.get('code') or payload.get('type')}: {payload.get('message')}")
         # Nous Portal usage frames (choices=[] + lastOne=true, no [DONE]) are a
         # clean terminal, not a drop; relabelled upstreams send 1 / "true".
         # See #90848.
@@ -3445,6 +3492,10 @@ class _StreamingCall(StreamingWaitMonitor):
                 if self._attempt_request_client is not None:
                     self.agent._abort_request_openai_client(self._attempt_request_client, reason=reason)
 
+        # Set when the engine ends the generation itself with its own typed in-band error
+        # (guard-kill). Read after the loop and handed to _finish_chat_stream, which turns the
+        # partial into a TERMINAL stub instead of a continued "length" one.
+        terminal_stream_error: Optional[ProviderStreamError] = None
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
             self.first_event_seen["yes"] = True  # FORK: ends the cold-start grace window
             self._count_chunk(_diag, chunk)
@@ -3462,6 +3513,28 @@ class _StreamingCall(StreamingWaitMonitor):
                 upstream_provider = chunk.provider  # OpenRouter stamps who served
                 _diag["serving_provider"] = upstream_provider.strip()[:64]  # attribute a mid-stream drop (#90216)
             if not chunk.choices:
+                # An engine's own in-band guard-kill ("Generation terminated …") is TERMINAL and
+                # must not be reported as a generic in-stream error: break out of the chunk loop
+                # instead of raising, so the text already streamed survives into the partial stub
+                # built below and the truncation path can end the turn instead of re-sending the
+                # prompt into the same degenerate state. Every other in-band error keeps raising.
+                _typed = _in_stream_error_payload(chunk)
+                if _typed is not None and is_generation_terminated_error(_typed.get("message"), _typed.get("code")):
+                    _gk_status = (_status_code_from_payload({"code": _typed.get("code"), "message": _typed.get("message")})
+                                  or _status_code_from_value(_typed.get("type")))
+                    terminal_stream_error = ProviderStreamError(
+                        status_code=_gk_status,
+                        body=_provider_error_body(
+                            {"code": _typed.get("code") or "provider_in_stream_error",
+                             "message": _typed.get("message"),
+                             **({"type": _typed["type"]} if _typed.get("type") else {})}, _gk_status),
+                        raw_text=f"{_typed.get('code')}: {_typed.get('message')}")
+                    logger.warning(
+                        "%sEngine guard-kill mid-stream (model=%s, provider=%s): %s — ending the "
+                        "turn terminally; the partial response is kept and marked incomplete.",
+                        getattr(self.agent, "log_prefix", ""), self.api_kwargs.get("model", "unknown"),
+                        getattr(self.agent, "provider", "") or "unknown", _typed.get("message"))
+                    break
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
                 self._mark_finish_seen(_diag, finish_reason)
@@ -3571,7 +3644,7 @@ class _StreamingCall(StreamingWaitMonitor):
         response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
-            refusal_parts=refusal_parts)
+            refusal_parts=refusal_parts, terminal_error=terminal_stream_error)
         carriers.apply(response)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
@@ -3653,11 +3726,16 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
         model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None,
-        refusal_parts=None):
+        refusal_parts=None, terminal_error=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
-        args or stamping "stop"."""
+        args or stamping "stop".
+
+        ``terminal_error``: the engine ended the generation itself with this typed in-band
+        error (guard-kill). The partial is kept and marked terminal — the loop must NOT
+        continue a generation the engine has already rejected.
+        """
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
         if not full_reasoning and full_content:
@@ -3667,6 +3745,13 @@ class _StreamingCall(StreamingWaitMonitor):
 
             full_reasoning = extract_reasoning(self.agent, SimpleNamespace(content=full_content))
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
+        # Engine guard-kill: the engine's own typed error ended this generation. Build the
+        # terminal stub FIRST — before the zero-chunk guard, which would otherwise turn an
+        # immediate guard-kill into a misleading EmptyStreamError plus pointless retries.
+        if terminal_error is not None:
+            return _build_partial_stream_stub(
+                role, full_content, full_reasoning, model_name, usage_obj, terminal_error=terminal_error,
+                dropped_tool_names=[(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)] or None)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
             raise EmptyStreamError(
