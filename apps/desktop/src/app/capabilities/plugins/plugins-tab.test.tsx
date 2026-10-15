@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
-import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
+import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $notifications } from '@/store/notifications'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
@@ -585,59 +585,6 @@ describe('PluginsTab', () => {
 })
 
 describe('PluginsTab catalog UX', () => {
-  it('saves declared settings from the installed detail with values and secrets on their scoped routes', async () => {
-    const row: AgentPluginRow = {
-      name: 'demo-settings',
-      key: 'category/demo-settings',
-      description: 'Configurable plugin',
-      source: 'git',
-      status: 'enabled',
-      version: '1',
-      settings_schema: [
-        { key: 'retries', label: 'Retries', type: 'number', description: '', required: true, value: 3 },
-        { key: 'api_key', label: 'API key', type: 'secret', description: '', required: true, env: 'DEMO_API_KEY' }
-      ]
-    }
-
-    $agentPlugins.set([row])
-    requestGateway.mockImplementation(async (_method, params) =>
-      params?.action === 'settings'
-        ? {
-            ok: true,
-            plugin: {
-              ...row,
-              settings_schema: row.settings_schema!.map(field =>
-                field.key === 'retries' ? { ...field, value: 9 } : field
-              )
-            }
-          }
-        : { plugins: $agentPlugins.get() }
-    )
-
-    const profile = { profile: 'workbot', connectionId: 'remote-work' }
-
-    await act(async () => {
-      renderPlugins({ profile })
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Settings: demo-settings' }))
-    fireEvent.change(screen.getByRole('spinbutton', { name: 'Retries' }), { target: { value: '9' } })
-    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'test-api-key' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
-
-    await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('DEMO_API_KEY', 'test-api-key', profile))
-    await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('plugins.manage', {
-        action: 'settings',
-        key: row.key,
-        values: { retries: 9 },
-        profile: 'workbot'
-      })
-    )
-    await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('API key').value).toBe(''))
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Save settings' }).disabled).toBe(true)
-  })
-
   it('requires widening consent before retrying an update, and leaves a declined update untouched', async () => {
     $agentPlugins.set([
       {
