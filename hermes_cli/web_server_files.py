@@ -1,6 +1,7 @@
 """Managed-files policy for the dashboard file browser: root resolution, path containment, entry metadata.
 """
 
+import logging
 import mimetypes
 import os
 import stat
@@ -10,6 +11,7 @@ from fastapi import HTTPException, Request
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+logger = logging.getLogger(__name__)
 
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
@@ -65,6 +67,56 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
         return candidate
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def _agent_container_path(raw: str) -> Path | None:
+    """Map an agent-visible container path to its host bind mount, or None.
+
+    Docker agents emit container paths (``/workspace/...``, ``/root/...``) in
+    transcripts and MEDIA tags, while the dashboard fs routes stat the gateway
+    HOST filesystem (#85238). Reuse the gateway's MEDIA volume translator, and
+    when no terminal scope is bound (``serve --isolated`` after a failed early
+    bridge) retry once under the profile's complete terminal policy, never
+    replacing an already-bound scope or refusal (retry from #104992).
+
+    Runs on the raw string, before host normalization: on a Windows gateway
+    ``Path("/workspace/x").resolve()`` anchors to the current drive and the
+    container path is gone before translation sees it.
+    """
+    if not raw.startswith("/") or raw.startswith("//"):
+        return None
+    try:
+        from gateway.platforms.base import _translate_docker_container_media_path
+
+        candidate = Path(raw)
+        translated = _translate_docker_container_media_path(candidate)
+        if translated is not None:
+            return translated
+
+        from tools.terminal_scope import (
+            build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope,
+            set_terminal_scope,
+        )
+        if get_terminal_scope() is not None:
+            return None
+        from hermes_cli.config import get_hermes_home
+
+        token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
+        try:
+            return _translate_docker_container_media_path(candidate)
+        finally:
+            reset_terminal_scope(token)
+    except Exception:  # fail open: translation is additive, the host path still serves
+        logger.debug("agent container path translation failed for %s", raw, exc_info=True)
+        return None
+
+
+def _agent_fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
+    """``_fs_path`` for agent-facing reads: container paths resolve to their host
+    mount first, so callers' boundary guards see the real host target. Fails open
+    to the plain host path — translation is additive, not a gate."""
+    translated = _agent_container_path(str(raw_path or "").strip())
+    return translated if translated is not None else _fs_path(raw_path, cwd=cwd)
 
 
 def _canonical_path(path: Path, *, require_exists: bool = False) -> Path:
@@ -159,11 +211,20 @@ def _managed_files_policy(request: Optional[Request], *, create_root: bool = Tru
 
 
 def _resolve_managed_path(
-    raw_path: str | None, request: Request, *, for_write: bool = False
+    raw_path: str | None, request: Request, *, for_write: bool = False,
+    for_agent_read: bool = False,
 ) -> tuple[ManagedFilesPolicy, Path, str]:
     policy = _managed_files_policy(request)
     text = _path_text(raw_path)
     root = policy.locked_root
+
+    if for_agent_read and text and not text.startswith("file:"):
+        # Agent-emitted container paths (/workspace/...) resolve to their host
+        # bind mount before the root checks, so the locked-root refusal below
+        # still governs the translated target (#85238).
+        translated = _agent_container_path(text)
+        if translated is not None:
+            text = str(translated)
 
     if root is not None and (not text or text in {".", "/"}):
         candidate = root

@@ -1,5 +1,6 @@
 import base64
 import urllib.parse
+import json
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -28,6 +29,25 @@ def client(monkeypatch):
                 pass
         else:
             web_server.app.state.auth_required = previous_auth_required
+
+
+@pytest.fixture
+def docker_volumes(monkeypatch, tmp_path):
+    """Docker backend env whose ``/workspace`` is bind-mounted to a fresh host dir.
+
+    Returns the host dir; writes there are what the agent's ``/workspace/...``
+    paths must resolve to."""
+    host = tmp_path / "host-workspace"
+    host.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{host}:/workspace"]))
+    monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+    monkeypatch.delenv("TERMINAL_CONTAINER_PERSISTENT", raising=False)
+    return host
+
+
+def _no_scope_builder(_home):
+    return {"TERMINAL_ENV": "docker", "TERMINAL_DOCKER_VOLUMES": "[]"}
 
 
 def test_fs_list_sorts_and_hides_noise(client, tmp_path):
@@ -227,7 +247,7 @@ def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
 
     response = client.get(
         "/api/fs/download",
-        params={"path": "/srv/repos/report.txt", "profile": "remote-dev"},
+        params={"path": "/srv/repos/project/report.txt", "profile": "remote-dev"},
     )
 
     assert response.status_code == 200
@@ -390,3 +410,135 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     assert response.status_code == 200
     assert sibling.read_text() == "existing"
     assert (tmp_path / "report%20v2.md").read_text() == "new"
+@pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
+def test_fs_reads_translate_docker_workspace_path_to_host(
+    client, docker_volumes, monkeypatch, endpoint,
+):
+    """#85238: an agent in a docker container emits /workspace/... paths; the
+    authenticated fs API runs on the host gateway and must resolve them through
+    the same docker volume translator MEDIA delivery uses."""
+    target = docker_volumes / "generated report.txt"
+    target.write_text("container output", encoding="utf-8")
+
+    response = client.get(f"/api/fs/{endpoint}", params={"path": "/workspace/generated report.txt"})
+
+    assert response.status_code == 200
+    if endpoint == "read-text":
+        assert response.json()["text"] == "container output"
+    elif endpoint == "read-data-url":
+        expected = base64.b64encode(b"container output").decode("ascii")
+        assert response.json()["dataUrl"] == f"data:text/plain;base64,{expected}"
+    else:
+        assert response.text == "container output"
+
+
+def test_fs_reads_translate_after_binding_profile_terminal_scope(client, tmp_path, monkeypatch):
+    """`serve --isolated` reaches these routes with no terminal scope bound, so
+    the first translation attempt sees the launch env only; the retry under the
+    profile's complete terminal policy must find the mount (from #104992)."""
+    target = tmp_path / "isolated report.txt"
+    target.write_text("isolated output", encoding="utf-8")
+
+    from tools.terminal_scope import get_terminal_scope
+
+    def translate(path):
+        if path == Path("/workspace/isolated report.txt") and get_terminal_scope() is not None:
+            return target
+        return None
+
+    monkeypatch.setattr(
+        "gateway.platforms.base._translate_docker_container_media_path", translate,
+    )
+    monkeypatch.setattr("tools.terminal_scope.build_profile_terminal_scope", _no_scope_builder)
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    response = client.get("/api/fs/read-text", params={"path": "/workspace/isolated report.txt"})
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "isolated output"
+    assert get_terminal_scope() is None  # the retry's scope never leaks
+
+
+def test_fs_read_untranslated_container_path_names_the_agent_sandbox(
+    client, docker_volumes,
+):
+    """A container-shaped path that fails translation under the docker backend
+    must 404 with the honest sandbox reason, not a bare missing-file 404."""
+    response = client.get("/api/fs/read-text", params={"path": "/workspace/never-written.txt"})
+
+    assert response.status_code == 404
+    assert "agent sandbox" in response.json()["detail"]
+
+
+def test_fs_list_translates_docker_workspace_path_to_host(client, docker_volumes):
+    (docker_volumes / "report.txt").write_text("one", encoding="utf-8")
+    (docker_volumes / "nested").mkdir()
+
+    response = client.get("/api/fs/list", params={"path": "/workspace"})
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert [(entry["name"], entry["isDirectory"]) for entry in entries] == [
+        ("nested", True), ("report.txt", False),
+    ]
+    # Children carry the host path so the browser's next read/list works.
+    assert entries[0]["path"] == str(docker_volumes / "nested")
+    assert entries[1]["path"] == str(docker_volumes / "report.txt")
+
+
+def test_fs_download_maps_root_home_to_persistent_sandbox(client, monkeypatch, tmp_path):
+    """#85238 Discord repro: a persistent docker agent writes /root/fileIwant.zip;
+    the host copy lives at <sandbox>/docker/default/home. The download click must
+    serve that file, not stat the gateway's own /root ("File is not readable")."""
+    sandbox = tmp_path / "sandboxes"
+    home = sandbox / "docker" / "default" / "home"
+    home.mkdir(parents=True)
+    (home / "fileIwant.zip").write_bytes(b"PK\x03\x04zip")
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+
+    response = client.get("/api/fs/download", params={"path": "/root/fileIwant.zip"})
+
+    assert response.status_code == 200
+    assert response.content == b"PK\x03\x04zip"
+
+
+def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_path):
+    """On a Windows gateway ``_fs_path("/workspace/x")`` anchors to the current
+    drive (``D:\\workspace\\x``) and could serve an unrelated host file; the
+    container path must reach the translator verbatim, before normalization."""
+    from hermes_cli import web_server_files
+
+    mapped = tmp_path / "x.txt"
+    seen = []
+
+    def translate(candidate, session_key=""):
+        seen.append(candidate.as_posix())
+        return mapped
+
+    monkeypatch.setattr("gateway.platforms.base._translate_docker_container_media_path", translate)
+
+    def boom(*_a, **_k):
+        raise AssertionError("_fs_path must not run when translation succeeds")
+
+    monkeypatch.setattr(web_server_files, "_fs_path", boom)
+
+    assert web_server_files._agent_fs_path("/workspace/x.txt") == mapped
+    assert seen == ["/workspace/x.txt"]
+
+
+def test_agent_fs_path_leaves_host_paths_to_fs_path(monkeypatch, tmp_path):
+    from hermes_cli import web_server_files
+
+    def translate(*_a, **_k):
+        raise AssertionError("relative/UNC/drive paths are not container paths")
+
+    monkeypatch.setattr("gateway.platforms.base._translate_docker_container_media_path", translate)
+    target = tmp_path / "note.txt"
+    target.write_text("x")
+
+    assert web_server_files._agent_fs_path("note.txt", cwd=str(tmp_path)) == target.resolve()
+    assert web_server_files._agent_container_path("//server/share/x") is None
+    assert web_server_files._agent_container_path("C:/data/x") is None
