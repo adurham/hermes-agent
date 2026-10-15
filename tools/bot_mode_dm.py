@@ -434,8 +434,10 @@ def _dm_delivery_id(dm_file: str | os.PathLike) -> str:
 
 
 class LiveTargetUnavailableError(RuntimeError):
-    """No canonical Bot Chat owner was found BEFORE any intent was pinned: nothing was admitted, so
-    this is a definite no-send the sender may retry, not the ambiguous post-admission state."""
+    """The canonical Bot Chat owner could not be reached with anything admitted — before the
+    intent was pinned, or on a dial that died before the deliver RPC went out: nothing was
+    sent, so this is a definite no-send the sender may retry, not the ambiguous
+    post-admission state."""
 
     reason = "runtime_unavailable"
     resend = "once the target is up"
@@ -483,7 +485,8 @@ def _held_disposition(record: dict | None) -> bool:
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
-    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+    from tools.bot_live_delivery import (PreDialError, deliver_to_live_owner, find_canonical_live_owner,
+                                         read_delivery_result)
     from utils import fsync_directory
 
     intent: dict[str, Any]
@@ -528,6 +531,12 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
             # Nothing was admitted while that refusal held the owner's lock, but a same-id attempt
             # may have admitted since: only the owner's settle decides, under that same lock.
             record = settle_held_delivery(home, intent["owner"], intent["message"], **identity)
+        except PreDialError as exc:
+            # The dial died before bot_relay.deliver reached the socket: nothing was admitted
+            # and this intent can never settle, so drop it and report the definite no-send
+            # the sender may retry (#139303).
+            _unlink_dm_file(_live_intent_file(dm_file))
+            raise LiveTargetUnavailableError(f"live authority dial failed before admission ({exc})") from exc
     if _held_disposition(record):
         # The callers remove the intent and payload (``_settled_no_send``).
         raise LiveTargetHeldError("Bot Chat is held by another session writer")

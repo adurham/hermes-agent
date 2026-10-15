@@ -326,6 +326,45 @@ def test_authority_delivery_dials_from_a_thread_with_a_running_loop(tmp_path, mo
     async def tool_call_on_loop():
         return mailbox.authority_delivery(tmp_path, {"id": "0" * 64, "message": "probe"})
 
-    with pytest.raises(ValueError, match="profile authority is not ready"):
+    with pytest.raises(mailbox.PreDialError, match="profile authority is not ready"):
         asyncio.run(tool_call_on_loop())
     assert probed == [tmp_path.resolve()]
+
+
+def _spy_dm_files(bot_mode_dm, monkeypatch):
+    dm_files = []
+    real_write = bot_mode_dm._write_dm_file
+
+    def spy_write(content):
+        path = real_write(content)
+        dm_files.append(path)
+        return path
+
+    monkeypatch.setattr(bot_mode_dm, "_write_dm_file", spy_write)
+    return dm_files
+
+
+def test_pre_dial_failure_is_a_definite_no_send_not_ambiguous(tmp_path, monkeypatch):
+    """#139303: a dial that dies before ``bot_relay.deliver`` reached the socket admits
+    nothing — the pinned intent is dropped and the sender hears 'safe to resend',
+    instead of the old 'ambiguous / do not resend' that stranded the DM."""
+    from tools import bot_live_delivery as live
+    from tools import bot_mode_dm
+
+    def refused(home, params):
+        raise live.PreDialError("dial refused before the RPC went out")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda home: _owner(tmp_path))
+    monkeypatch.setattr(live, "authority_delivery", refused)
+    dm_files = _spy_dm_files(bot_mode_dm, monkeypatch)
+
+    payload = json.loads(bot_mode_dm._start_delivery(
+        ["hermes", "-p", "researcher"], "hello", "@researcher",
+        stdin_file=False, task_id=None, agent=None, profile_home=tmp_path))
+
+    assert payload["reason"] == "runtime_unavailable"
+    assert "safe to resend" in payload["error"]
+    assert "Do not resend" not in payload["error"]
+    dm_file = Path(dm_files[0])
+    assert not dm_file.exists()  # nothing was admitted: no evidence to retain
+    assert not Path(str(dm_file) + ".live.json").exists()  # the pinned intent can never settle
