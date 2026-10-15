@@ -118,3 +118,31 @@ async def test_session_create_selects_the_posture_for_its_named_folder(project, 
     finally:
         store._db.close()
     assert policy['coding_posture'] is True and policy['toolsets'] == ['coding']
+
+
+def test_a_following_session_takes_a_profile_coding_context_change(project, tmp_path, monkeypatch):
+    """Replay through the real follow merge (``policy.config(authority)``), not a hand-built dict."""
+    import json
+    from types import SimpleNamespace
+    home = tmp_path / 'home'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    config = {**FOCUS, 'model': {'default': 'm'}}
+    (home / 'config.yaml').write_text(json.dumps(config))
+    policy = create({'source': 'cli', 'cwd': str(project), 'follow_profile_config': True}, config)
+    authority = SimpleNamespace(db=SimpleNamespace(db_path=str(home / 'state.db')))
+    assert policy.current_toolsets(policy.config(authority, secrets=False)) == ('coding',)
+    (home / 'config.yaml').write_text(json.dumps({**config, 'agent': {'coding_context': 'off'}}))
+    assert policy.current_toolsets(policy.config(authority, secrets=False)) == ('terminal',)
+
+
+def test_a_resolved_mode_keeps_its_own_focus_decision(project, tmp_path, monkeypatch):
+    """A mode resolved from a supplied ``focus`` config ignores the on-disk ``auto``."""
+    import json
+    from agent.coding_context import resolve_runtime_mode
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'config.yaml').write_text(json.dumps({'agent': {'coding_context': 'auto'}}))
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    mode = resolve_runtime_mode(platform='cli', cwd=project, config={'agent': {'coding_context': 'focus'}})
+    assert mode.toolset_selection() == ['coding']

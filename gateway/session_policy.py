@@ -19,7 +19,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
                    'platform_toolsets')
-FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets')
+FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
 # What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
 SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
                   'api_key_env')
@@ -54,7 +54,8 @@ class LocalSessionPolicy:
     # ephemeral prompt never re-reads the skill files, like the CLI's startup preload.
     skills_prompt: str | None = None
     # Whether creation chose the coding posture (``agent.coding_context: focus`` in a client-named code
-    # workspace). A following session replays this decision rather than re-probing its folder each turn.
+    # workspace). A following session replays this decision rather than re-probing its folder each turn: it
+    # drops the posture when its profile leaves ``focus``, and one created outside it never gains it later.
     coding_posture: bool = False
 
     def config(self, authority=None, *, secrets=True):
