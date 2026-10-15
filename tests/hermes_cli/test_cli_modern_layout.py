@@ -65,3 +65,24 @@ def test_panel_rows_never_carry_a_newline():
 
     rows = _wrap_panel_text_keep_ws("python3 - <<'PY'\nprint(sum(range(10)))\nPY", 30)
     assert rows == ["python3 - <<'PY'", "print(sum(range(10)))", "PY"]
+
+
+@pytest.mark.parametrize("display, modern, busy", [
+    ({}, True, "steer"),
+    ({"cli_layout": "classic"}, False, "interrupt"),
+    ({"busy_input_mode": "queue"}, True, "queue"),
+    ({"cli_layout": "classic", "busy_input_mode": "steer"}, False, "steer"),
+])
+def test_layout_and_busy_default_through_the_config_loader(tmp_path, monkeypatch, display, modern, busy):
+    import hermes_yaml as yaml
+    import cli
+    from hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(cli, "_hermes_home", home)
+    (home / "config.yaml").write_text(yaml.safe_dump({"display": display} if display else {"model": {}}))
+    loaded = cli.load_cli_config()["display"]
+    assert layout_from_config(loaded) is modern
+    assert busy_input_mode_from_config(loaded) == busy

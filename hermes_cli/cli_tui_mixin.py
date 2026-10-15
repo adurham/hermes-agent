@@ -39,7 +39,7 @@ from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
 from hermes_cli.cli_footer_split import FooterSplit
-from hermes_cli.cli_render import _Panel
+from hermes_cli.cli_panel import _Panel
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -1480,7 +1480,7 @@ class CLITuiMixin:
         event.app.invalidate()
         return True
 
-    def _tui_enter_while_busy(self, text: str, images: list, payload) -> None:
+    def _tui_enter_while_busy(self, text: str, images: list, payload, mode: str | None = None) -> None:
         """Route a submission typed while the agent runs, per ``busy_input_mode``.
 
         steer → agent.steer(text) mid-run (images can't ride along and a missing/rejecting
@@ -1489,7 +1489,7 @@ class CLITuiMixin:
         multimodal follow-ups, or a turn that finished in the race). queue → next turn.
         """
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
-        _effective_mode = getattr(self, "_busy_mode_override", None) or self.busy_input_mode
+        _effective_mode = mode or self.busy_input_mode
         redirected = False
         if _effective_mode == "steer":
             if images or not text:

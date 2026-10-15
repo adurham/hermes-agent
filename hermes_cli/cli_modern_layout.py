@@ -34,6 +34,12 @@ def layout_from_config(display: dict) -> bool:
     return str((display or {}).get("cli_layout", "modern") or "modern").strip().lower() != "classic"
 
 
+def busy_input_mode_from_config(display: dict) -> str:
+    """``display.busy_input_mode`` when set; unset steers in this layout and interrupts in classic."""
+    mode = (display or {}).get("busy_input_mode") or ("steer" if layout_from_config(display) else "interrupt")
+    return str(mode).strip().lower()
+
+
 def _skin_hex(key: str, fallback: str) -> str:
     from hermes_cli.skin_engine import get_active_skin
     return get_active_skin().get_color(key, fallback) or fallback
@@ -109,19 +115,17 @@ def completed_tool_line(cli, function_name: str, args: dict | None, duration: fl
 def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False) -> str:
     """``● Read calc.py  0.2s`` / ``✗ Ran $ pytest -q  0.4s [exit 1]`` — one row per completed call."""
     from agent.display import get_tool_row_parts
-    rows, failed, suffix = get_tool_row_parts(function_name, args or {}, result)
-    failed = failed or bool(is_error)
-    glyph = f"{_RED}✗{_RST}" if failed else "●"
+    rows = get_tool_row_parts(function_name, args or {}, result, is_error=bool(is_error))
     out = []
-    for index, (verb, detail) in enumerate(rows):
+    for index, (verb, detail, suffix) in enumerate(rows):
         verb = (verb or function_name).strip()
-        line = f"{glyph} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
+        line = f"{f'{_RED}✗{_RST}' if suffix is not None else '●'} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
         if detail:
             line += f" {detail}"
         if index == len(rows) - 1 and duration >= 0.1:
             line += f"  {_DIM}{duration:.1f}s{_RST}"
-            if failed and suffix:
-                line += f"{_RED}{suffix}{_RST}"
+        if suffix:
+            line += f"{_RED}{suffix}{_RST}"
         out.append(line)
     return "\n".join(out)
 
@@ -320,7 +324,7 @@ def _render_safely(render, cli) -> list:
 
 # Live-state badges the classic bar shows, minus its throughput/clock fields: what changes per turn.
 _DEFAULT_FIELDS = frozenset({"model", "context_pct", "compressions", "bg_tasks", "bg_processes", "bg_subagents",
-                             "goal", "focus", "yolo", "stash"})
+                             "goal", "focus", "yolo", "stash", "battery"})
 
 
 def _status_line_fragments(cli) -> list:
@@ -337,6 +341,13 @@ def _status_line_fragments(cli) -> list:
     stash = cli._prompt_stash.indicator() if "stash" in fields and hasattr(cli, "_prompt_stash") else ""
     if stash:  # a parked draft is never silently forgotten
         left += [(dim, " · "), (strong, stash)]
+    battery = snapshot.get("battery_label") or ""  # only set while /battery is on
+    if battery and "battery" in fields:
+        left[0:0] = [("", " "), (cli._battery_status_style(snapshot.get("battery_category", "dim")), battery),
+                     (dim, " ·")]
+    vim = cli._vim_mode_label()
+    if vim:
+        left += [(dim, " · "), (strong, vim)]
     right: list = []
     for key, text in hint_pairs(cli) if width >= 76 else []:
         if right:
@@ -377,10 +388,13 @@ def modern_input_rules(cli, kb):
 
     @kb.add("tab", filter=Condition(_can_queue), eager=True)
     def _queue_while_busy(event):
-        cli._busy_mode_override = "queue"
-        try:
-            cli._tui_handle_enter(event)
-        finally:
-            cli._busy_mode_override = None
+        # Not _tui_handle_enter: its paste/continuation rules would turn this key into a newline.
+        buf = event.app.current_buffer
+        text, images = buf.text.strip(), list(cli._attached_images)
+        cli._attached_images.clear()
+        cli._tui_enter_while_busy(text, images, (text, images) if images else text, mode="queue")
+        cli._inline_pastes(buf)
+        buf.reset(append_to_history=True)
+        event.app.invalidate()
 
     return top, bottom

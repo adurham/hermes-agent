@@ -692,7 +692,7 @@ class CLIChatTurnMixin:
                 from hermes_cli.cli_modern_layout import answer_label
                 _cprint(answer_label())
                 ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
-                                    style=_resp_text, width=self._scrollback_box_width())
+                                    style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
             else:
                 ChatConsole().print(Panel(
                     _render_final_assistant_content(response, mode=self.final_response_markdown),
