@@ -3,6 +3,36 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Live updates executed — 2026-10-15 (MacBook + hermes-gw-01 to v0.22.2 @ 0988db4a)
+
+Owner-authorized ("go for it on the gateway and local macbook"). Both boxes now run
+`v0.22.2+644.g0988db4` (`0988db4a`).
+
+- **Personal MacBook** (live install `~/.hermes/hermes-agent`): `hermes update --yes` after realizing the
+  PM toolchain (`pm.install.ensure` for python+uv; `hermes pm doctor` pre-check ✓ 3.14.7/uv/npm/ripgrep).
+  The plan reported "no services detected — code swap only" (no session kill). The update synced deps,
+  cleared stale pycache, rebuilt TUI/web + the Desktop app (reinstalled at `/Applications/Hermes.app`,
+  ad-hoc signing), synced bundled skills (3 user-modified kept). Verified: fresh-process
+  `hermes --version` = v0.22.2+644; the live runtime is the PM-managed **Python 3.14.7** shim
+  (`.hermes/bin/hermes` → managed env — the legacy `venv/bin/python` is the 3.11 install bridge, not the
+  runtime); `hermes doctor` green (Python 3.14.7, dashboard surface imports, config v50, aux routing
+  resolves).
+- **hermes-gw-01** (native path as the service user): PM toolchain already realized ✓ (python 3.14.7,
+  uv 0.12.3, node, npm, ripgrep); `hermes update --yes --keep-stash` → v0.22.2 @ 0988db4a with
+  drain-first restarts of all three services (`hermes-gateway`, `hermes-gateway-dashboard`,
+  `hermes-serve`). Verified: systemctl active ×3; web UI 302; new gateway pid 1319914 with control
+  socket + API server on 8642 + discord/api_server connected ("Gateway running with 2 platform(s)");
+  errors.log carries only the known by-design warnings. The updater's auto-attempted multiplex
+  migration refused without root — LEFT REFUSED per policy (it fights the ansible-managed unit
+  topology). Holographic catalog plugin (BOTH copies: `~hermes/.hermes/plugins/` + dashboard profile)
+  already wired to `adurham/hermes-plugin-holographic` @ `0c58cda` with the warm-tier delta present
+  (`get_warm_store()._after_recall` at `__init__.py:496`) — verified post-update, no re-wire needed
+  (installed 2026-10-13).
+
+Remaining fleet item: `amd-workstation` (tailnet-unreachable during the sync; run the CI-parity 3.14
+suite there when it returns).
+
+
 ### Follow-up — 2026-10-15 (post-v0.22.2 review): Fable review dispositions, fork-symbol sweep, live-update runbook
 
 **Review.** The post-sync Fable review (consult; artifacts = the two entries above + the round-5 record)
