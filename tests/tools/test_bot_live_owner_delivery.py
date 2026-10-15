@@ -63,6 +63,21 @@ def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path,
             assert path.stat().st_mode & 0o077 == 0
 
 
+def test_mailbox_lock_continues_when_directory_hardening_is_denied(tmp_path, monkeypatch, caplog):
+    """An inherited Windows ACL may deny chmod without making the mailbox unusable."""
+    real_chmod = Path.chmod
+
+    def deny_mailbox_chmod(path, mode, *, follow_symlinks=True):
+        if path == tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME:
+            raise PermissionError("[WinError 5] Access is denied")
+        return real_chmod(path, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", deny_mailbox_chmod)
+    with mailbox._locked(tmp_path) as root:
+        assert root == tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    assert "could not harden mailbox directory" in caplog.text
+
+
 def test_cancel_queued_delivery_cancels_only_an_unadmitted_receipt(tmp_path, monkeypatch):
     """main's cancel fence on the owner seam: a legacy unadmitted queued receipt is cancelled
     once (idempotent); an authority admission is never cancelled from the mailbox."""

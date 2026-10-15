@@ -121,7 +121,12 @@ def _locked(home: Path | str):
     created = not root.is_dir()
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
-    root.chmod(0o700)
+    try:
+        root.chmod(0o700)
+    except OSError as exc:
+        # A foreign Windows ACL can deny WRITE_DAC even when this process can
+        # still use the existing mailbox. Hardening must not abort recovery.
+        log.warning("bot_live_delivery: could not harden mailbox directory %s (%s)", root, exc)
     if created:
         # Only a fresh mailbox dir needs its parents durably linked; the live
         # poller re-enters this lock twice a second per profile, and two
