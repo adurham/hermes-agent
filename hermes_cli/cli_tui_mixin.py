@@ -438,6 +438,8 @@ class CLITuiMixin:
             input_rule_bot,
             voice_status_bar,
             completions_menu]
+        if getattr(self, "_modern_layout", False):  # footer under the composer and its completions
+            ordered.append(ordered.pop(ordered.index(status_bar)))
         return [item for item in ordered if item is not None]
 
     def _tui_spinner_loop(self):
@@ -819,6 +821,8 @@ class CLITuiMixin:
         if self._command_running:
             return f"{self._command_spinner_frame()} {self._command_status or t('cli.tui.placeholder_processing_command')}"
         if self._agent_running:
+            if getattr(self, "_modern_layout", False):
+                return t(f"cli.modern.placeholder_busy_{self.busy_input_mode}")
             return t("cli.tui.placeholder_busy")
         if self._voice_mode:
             return t("cli.tui.placeholder_voice_idle", shortcut=self._voice_record_key_label())
@@ -1510,7 +1514,7 @@ class CLITuiMixin:
         multimodal follow-ups, or a turn that finished in the race). queue → next turn.
         """
         from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
-        _effective_mode = self.busy_input_mode
+        _effective_mode = getattr(self, "_busy_mode_override", None) or self.busy_input_mode
         redirected = False
         if _effective_mode == "steer":
             if images or not text:
@@ -2159,6 +2163,9 @@ class CLITuiMixin:
         input_rule_bot = Window(
             char='─', height=lambda: cli_ref._tui_input_rule_height("bottom"), style='class:input-rule',
         )
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import modern_input_rules
+            input_rule_top, input_rule_bot = modern_input_rules(self, kb)
         image_bar = Window(
             content=FormattedTextControl(self._tui_image_bar_fragments),
             height=Condition(lambda: bool(cli_ref._attached_images)))

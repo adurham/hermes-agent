@@ -125,7 +125,10 @@ class CLILoopsMixin:
         out.cursor_goto(0, 0)
         out.flush()
         cc = ChatConsole()
-        if self.compact or shutil.get_terminal_size().columns < 80:
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import header_markup
+            cc.print(header_markup(self))
+        elif self.compact or shutil.get_terminal_size().columns < 80:
             cc.print(_build_compact_banner())
         else:
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets,
