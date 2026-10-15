@@ -42,7 +42,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
 from agent.turn_context import compression_made_progress
-from agent.session_activity import ActivityProvenance
+from agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
 from hermes_cli.fallback_config import pre_agent_fallback_notice
 from gateway.turn_executor import _UnboundedThreadExecutor
@@ -2746,6 +2746,7 @@ def _watch_gateway_turn_inactivity(
     retain the session turn lease forever because every watchdog poll just skips it.
     """
     activity_origin = time.monotonic()
+    awake_idle = AwakeIdleMeter()  # host sleep is not idleness
     while not worker_done.wait(max(0.01, poll_interval)):
         now = time.monotonic()
         idle_seconds = now - activity_origin
@@ -2754,7 +2755,7 @@ def _watch_gateway_turn_inactivity(
             try:
                 reported_idle = agent.get_activity_summary().get("seconds_since_activity")
                 if reported_idle is not None:
-                    idle_seconds = max(0.0, float(reported_idle))
+                    idle_seconds = awake_idle.measure(max(0.0, float(reported_idle)))
                     # Preserve the most recent usable activity clock as the fallback if
                     # a later provider-side diagnostic read raises or returns None.
                     activity_origin = now - idle_seconds
