@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from utils import file_signature, mtime_is_racy
+
 logger = logging.getLogger("hermes.mcp_serve")
 
 # mcp 2.0 removed `mcp.server.fastmcp`; `mcp.server.MCPServer` keeps the same
@@ -49,11 +51,24 @@ def _get_sessions_dir() -> Path:
     return _hermes_home() / "sessions"
 
 
-def _read_state_db_mtime() -> float:
-    try:
-        return (_hermes_home() / "state.db").stat().st_mtime
-    except OSError:  # missing file included
-        return 0.0
+def _read_state_db_sig() -> tuple:
+    """Per-file stat signature of state.db and its WAL. In WAL mode a commit lands in
+    state.db-wal and leaves state.db untouched until a checkpoint, so the main file alone misses it."""
+    entries = []
+    for name in ("state.db", "state.db-wal"):
+        try:
+            st = (_hermes_home() / name).stat()
+        except OSError:  # missing file included
+            continue
+        entries.append((name, *file_signature(st)))
+    return tuple(entries)
+
+
+def _settled_state_db_sig(sig: tuple) -> Optional[tuple]:
+    """``sig``, or None (never equal to a read) while a file's mtime may still hide a same-tick commit."""
+    if any(mtime_is_racy(entry[1]) for entry in sig):
+        return None
+    return sig
 
 
 def _read_json(path: Path):
@@ -275,7 +290,7 @@ class EventBridge:
         self._thread: Optional[threading.Thread] = None
         self._last_poll_timestamps: dict[str, float] = {}  # session_key -> unix timestamp
         self._pending_approvals: dict[str, dict] = {}  # populated from events
-        self._state_db_mtime: float = 0.0  # skip polling work when state.db is unchanged
+        self._state_db_sig: Optional[tuple] = ()  # skip polling work when state.db (+ WAL) is unchanged
         self._cached_sessions_index: dict = {}
 
     def start(self):
@@ -351,14 +366,14 @@ class EventBridge:
         self._new_event.set()
 
     def _establish_baseline(self) -> None:
-        """Record per-session latest timestamps and the state.db mtime WITHOUT
+        """Record per-session latest timestamps and the state.db signature WITHOUT
         emitting events. Only sessions existing now are baselined; later ones
         default to last_seen=0.0 in _poll_once, so their first message is delivered."""
         db = _get_session_db()
         if not db:
             return
         try:
-            self._state_db_mtime = _read_state_db_mtime()
+            self._state_db_sig = _settled_state_db_sig(_read_state_db_sig())
             try:
                 self._cached_sessions_index = _load_sessions_index()
             except Exception:
@@ -395,17 +410,17 @@ class EventBridge:
     def _poll_once(self, db):
         """Check for new messages across all sessions.
 
-        One state.db mtime check gates all work, making 200ms polling nearly free.
-        The routing index lives in the same file as the messages, so a new
-        conversation and its first message land under a single mtime change (no
+        One state.db (+ WAL) stat check gates all work, making 200ms polling nearly free.
+        The routing index lives in the same database as the messages, so a new
+        conversation and its first message land under a single signature change (no
         dual-file race that could drop brand-new conversations).
 
         See #8925, #9006.
         """
-        db_mtime = _read_state_db_mtime()
-        if db_mtime == self._state_db_mtime:
+        db_sig = _read_state_db_sig()
+        if db_sig == self._state_db_sig:
             return
-        self._state_db_mtime = db_mtime
+        self._state_db_sig = _settled_state_db_sig(db_sig)
         # Refresh the index on every change tick: one indexed query, never lags messages.
         self._cached_sessions_index = _load_sessions_index()
 

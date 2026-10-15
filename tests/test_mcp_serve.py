@@ -1043,8 +1043,14 @@ class TestEventBridgePollE2E:
                 conn.close()
                 return [dict(r) for r in rows]
 
+        # The index comes from sessions.json: a real SessionDB open would migrate this minimal
+        # DB and move its mtime between the polls.
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: None)
         db = TestDB()
         bridge = mcp_serve.EventBridge()
+        # Files written within the racy-tick window are always re-read; settle them first.
+        settled = time.time_ns() - 60 * 1_000_000_000
+        os.utime(db_path, ns=(settled, settled))
 
         # First poll — should process
         bridge._poll_once(db)
@@ -1174,7 +1180,7 @@ class TestEventBridgePollE2E:
         # Bridge has never seen this db state (mtime differs) and has an
         # empty cached index — exactly the state after a new conversation's
         # first write.
-        bridge._state_db_mtime = 0.0
+        bridge._state_db_sig = ()
         assert bridge._cached_sessions_index == {}
 
         bridge._poll_once(DB())
@@ -1271,3 +1277,73 @@ class TestEventBridgePollE2E:
         assert len(events) == 1
         assert events[0]["session_key"] == "agent:main:telegram:dm:fresh"
         assert events[0]["content"] == "hello after baseline"
+
+    def test_wal_commit_without_checkpoint_is_delivered(self, tmp_path, monkeypatch):
+        """A WAL-mode commit lands in state.db-wal; state.db's own mtime moves only at a
+        checkpoint, so a gate keyed on the main file alone kept new messages undelivered."""
+        import mcp_serve
+        from hermes_state import SessionDB
+
+        def commit_message(role, content, ts):
+            # Another process's connection: its commit lands in the WAL like a gateway turn's.
+            conn = sqlite3.connect(str(tmp_path / "state.db"))
+            with conn:
+                conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                             ("s1", role, content, ts))
+            conn.close()
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: SessionDB(tmp_path / "state.db"))
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.create_session("s1", "telegram", session_key="agent:main:telegram:dm:wal",
+                              chat_id="wal", chat_type="dm")
+            commit_message("user", "before baseline", 100.0)
+            bridge = mcp_serve.EventBridge()
+            bridge._establish_baseline()
+            # Settle every file, then let one poll record that settled signature.
+            settled = time.time_ns() - 60 * 1_000_000_000
+            for name in ("state.db", "state.db-wal"):
+                os.utime(tmp_path / name, ns=(settled, settled))
+            bridge._poll_once(db)
+            assert bridge.poll_events(after_cursor=0)["events"] == []
+
+            for i in range(5):
+                commit_message("assistant", f"reply {i} after baseline", 101.0 + i)
+            # No checkpoint ran: the main database file is untouched by these commits.
+            os.utime(tmp_path / "state.db", ns=(settled, settled))
+            bridge._poll_once(db)
+        finally:
+            db.close()
+
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert [e["content"] for e in events] == [f"reply {i} after baseline" for i in range(5)]
+
+    def test_commit_in_the_baseline_mtime_tick_is_delivered(self, tmp_path, monkeypatch):
+        """A commit in the same coarse mtime tick as the bridge's stat leaves the
+        database files' signature unchanged, so a fresh signature must not count as
+        'nothing changed' (racily clean)."""
+        import mcp_serve
+
+        now = time.time_ns()
+        for name in ("state.db", "state.db-wal"):
+            (tmp_path / name).write_bytes(b"\0" * 4096)
+            os.utime(tmp_path / name, ns=(now, now))
+        monkeypatch.setattr(mcp_serve, "_load_sessions_index", lambda: {
+            "agent:main:telegram:dm:tick": {"session_id": "sid-tick", "platform": "telegram"},
+        })
+        store = [{"id": 1, "role": "user", "content": "before baseline", "timestamp": 100.0}]
+
+        class DB:
+            def get_messages(self, sid):
+                return list(store)
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: DB())
+        bridge = mcp_serve.EventBridge()
+        bridge._establish_baseline()
+
+        # Committed within the baseline's mtime tick: no stat field the bridge reads moved.
+        store.append({"id": 2, "role": "assistant", "content": "same tick", "timestamp": 101.0})
+        bridge._poll_once(DB())
+
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert [e["content"] for e in events] == ["same tick"]
