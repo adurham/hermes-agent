@@ -2985,14 +2985,13 @@ def _prepare_agent_startup(args) -> None:
     try:
         from hermes_cli.config import load_config
         from agent.shell_hooks import register_from_config
+        from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
 
         _hooks_cfg = load_config()
         register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-
-        from agent.outbound_webhooks import (
-            register_from_config as register_outbound_webhooks,
-        )
-
+        if _accept_hooks and args.command == "gateway":  # every session-open re-sync keeps honouring it
+            from agent.shell_hooks import accept_for_process
+            accept_for_process()
         register_outbound_webhooks(_hooks_cfg)
     except Exception:
         logger.debug(

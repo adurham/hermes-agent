@@ -70,7 +70,7 @@ def test_gateway_resync_follows_config_and_allowlist_without_prompting(home, tmp
 
     # Unreadable inputs never disarm a guard: an empty config (the loader fails open to {}), or a
     # corrupt allowlist.
-    shell_hooks.sync_from_config({})
+    shell_hooks.sync_from_config(dict)
     assert len(_wired()) == 2
     allowlist = home / shell_hooks.ALLOWLIST_FILENAME
     saved = allowlist.read_text()
@@ -101,6 +101,76 @@ def test_gateway_resync_follows_config_and_allowlist_without_prompting(home, tmp
     accept_launch_hooks(bypass)
     refresh_profile_hooks(bypass)
     assert _wired() == []
+
+
+def test_resync_keeps_in_memory_consent_and_never_disarms_on_bad_input(home, tmp_path, monkeypatch):
+    """Review of #139067: a launch's --accept-hooks survives a failed allowlist write; the gateway's
+    own --accept-hooks covers hooks added later; a malformed hooks: entry or allowlist record
+    never disarms a guard; an older snapshot never lands after a newer one."""
+    import threading
+    from gateway import run
+    from gateway.session_policy import accept_launch_hooks, build_policy, refresh_profile_hooks
+    a, b = _script(tmp_path, "a.sh"), _script(tmp_path, "b.sh")
+    cfg = _cfg(a)
+    monkeypatch.setattr(run, "_load_gateway_config", lambda: cfg)
+    policy = build_policy({"source": "cli", "cwd": str(tmp_path)}, {})
+    # Unwritable allowlist: the launch's consent is kept in memory, as main registered it.
+    with monkeypatch.context() as unwritable:
+        unwritable.setattr(shell_hooks, "atomic_json_write", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
+        accept_launch_hooks(build_policy({"source": "cli", "cwd": str(tmp_path), "accept_hooks": True}, {}))
+        refresh_profile_hooks(policy)
+        refresh_profile_hooks(policy)
+    assert _wired() == [f"shell_hook[pre_tool_call:{a}]"]
+
+    # A malformed entry (a list written as a mapping, or a bad record) adds but never removes.
+    allowlist = home / shell_hooks.ALLOWLIST_FILENAME
+    allowlist.write_text(json.dumps({"approvals": [{"event": "pre_tool_call", "command": []},
+                                                   {"event": "pre_tool_call", "command": b}]}))
+    cfg["hooks"]["pre_tool_call"] = {"command": a}
+    refresh_profile_hooks(policy)
+    assert _wired() == [f"shell_hook[pre_tool_call:{a}]"]
+    cfg["hooks"]["pre_tool_call"] = [{"command": a}, {"command": b}]
+    refresh_profile_hooks(policy)
+    assert len(_wired()) == 2
+
+    # `gateway run --accept-hooks`: a hook added after start registers with no allowlist entry.
+    c = _script(tmp_path, "c.sh")
+    cfg["hooks"]["pre_tool_call"].append({"command": c})
+    refresh_profile_hooks(policy)
+    assert f"shell_hook[pre_tool_call:{c}]" not in _wired()
+    shell_hooks.accept_for_process()
+    refresh_profile_hooks(policy)
+    assert f"shell_hook[pre_tool_call:{c}]" in _wired()
+    shell_hooks.reset_for_tests()
+    from hermes_cli import plugins
+    plugins.get_plugin_manager()._hooks = {}
+
+    # Ordering: a sync that read the old config first still applies before the newer one.
+    old_read, release = threading.Event(), threading.Event()
+
+    def stale():
+        old_read.set()
+        release.wait(5)
+        return _cfg(a)
+
+    first = threading.Thread(target=shell_hooks.sync_from_config, args=(stale,))
+    first.start()
+    old_read.wait(5)
+    second = threading.Thread(target=shell_hooks.sync_from_config, args=(lambda: _cfg(b),))
+    second.start()
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert _wired() == [f"shell_hook[pre_tool_call:{b}]"]
+
+
+def test_register_never_reasks_for_a_wired_hook(home, tmp_path, monkeypatch):
+    a = _script(tmp_path, "a.sh")
+    shell_hooks.register_from_config(_cfg(a), accept_hooks=True)
+    shell_hooks.revoke(a)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr("builtins.input", lambda *_: pytest.fail("re-prompted for a wired hook"))
+    assert shell_hooks.register_from_config(_cfg(a)) == []
 
 
 def test_classic_cli_asks_on_its_terminal_before_opening_the_session(home, tmp_path, monkeypatch):

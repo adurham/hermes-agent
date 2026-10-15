@@ -55,6 +55,14 @@ _registered_lock = threading.Lock()
 # Non-POSIX fallback for allowlist read-modify-write. Must be separate from _registered_lock, which
 # register_from_config already holds when it triggers _record_approval (Lock is non-reentrant).
 _allowlist_write_lock = threading.Lock()
+# sync_from_config: read + apply as one step, so an older snapshot never lands after a newer one.
+_sync_lock = threading.Lock()
+# Consent that lives only in this process (guarded by _sync_lock): (home, event, command) a launch's
+# --accept-hooks approved but the allowlist does not hold yet, this process's own --accept-hooks, and
+# the skipped hooks already logged.
+_launch_consent: set[tuple[str, str, str]] = set()
+_process_accept = False
+_skip_logged: set[tuple[str, str, str]] = set()
 
 
 def _home_key() -> str:
@@ -141,12 +149,14 @@ class ShellHookSpec(_ToolMatcherMixin):
 def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = False) -> list[ShellHookSpec]:
     """Register every configured shell hook (idempotent); returns the newly wired specs. Skipped
     entries (unknown, malformed, not allowlisted, already registered) are logged only."""
-    specs = _hook_specs(cfg)
+    specs, _complete = _hook_specs(cfg)
     if not specs:
         return []
-    accept, allowed = _resolve_effective_accept(cfg, accept_hooks), _allowlisted_pairs()
     from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
     manager, home_key = get_plugin_manager(), _home_key()
+    with _registered_lock:  # an already-wired hook is never re-asked for (main checked this first)
+        specs = [spec for spec in specs if _key(home_key, spec) not in _registered]
+    accept, allowed = _resolve_effective_accept(cfg, accept_hooks), _allowlisted_pairs()
     # TTY prompt outside the lock; _wire takes the lock and re-checks.
     consented = []
     for spec in specs:
@@ -160,36 +170,50 @@ def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = 
         return _wire(manager, home_key, consented)
 
 
-def sync_from_config(cfg: dict[str, Any]) -> None:
-    """Bring this home's registered shell hooks in step with ``cfg`` and its consent, for a
-    long-lived process (the gateway) that must behave as a new process would: hooks configured and
-    consented since start register, hooks removed from ``cfg`` or revoked are unregistered. Consent
-    is the allowlist, or an opt-in in force (``hooks_auto_accept`` / ``HERMES_ACCEPT_HOOKS``), which
-    approves every configured hook as on main, even one whose allowlist write failed. Never prompts
-    or writes. An empty ``cfg`` (a loader that failed open) or an unreadable allowlist must never
-    disarm a ``fail_closed`` guard, so either adds but never removes."""
-    specs = _hook_specs(cfg)
-    if not specs and not cfg:
-        return
-    allowlist, readable = _read_allowlist()
-    allowed = _approved_pairs(allowlist["approvals"])
-    accept = _resolve_effective_accept(cfg, False)
-    wanted = [spec for spec in specs or [] if accept or (spec.event, spec.command) in allowed]
+def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
+    """Bring this home's registered shell hooks in step with its config (``load_cfg()``) and
+    consent, for a long-lived process (the gateway) that must behave as a new process would: hooks
+    configured and consented since start register, hooks removed from config or revoked are
+    unregistered. Consent is the allowlist, an opt-in in force (``hooks_auto_accept`` /
+    ``HERMES_ACCEPT_HOOKS`` / this process's own ``--accept-hooks``), or a launch's ``--accept-hooks``
+    whose allowlist write failed (``accept_for_launch``). Never prompts or writes. An empty config
+    (a loader that failed open), a malformed ``hooks:`` entry or an unreadable allowlist must never
+    disarm a ``fail_closed`` guard, so each adds but never removes. Config and allowlist are read
+    under the same lock as the apply, so the last sync to run always applies the newest state."""
     from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
-    manager, home_key = get_plugin_manager(), _home_key()
-    # One lock hold for add + remove: a concurrent sync on an older snapshot can never drop what a
-    # newer one just added.
-    with _registered_lock:
-        _wire(manager, home_key, wanted)
-        if specs is None or not readable:
+    with _sync_lock:
+        cfg = load_cfg()
+        specs, complete = _hook_specs(cfg)
+        if specs is None or not cfg:
             return
-        keep = {(home_key, spec.event, spec.matcher, spec.command) for spec in wanted}
-        stale = {k for k in _registered if k[0] == home_key and k not in keep}
-        _registered.difference_update(stale)
-        for event in {k[1] for k in stale}:
-            # Replaced, never edited in place: a concurrent invoke_hook keeps iterating the old list.
-            manager._hooks[event] = [cb for cb in manager._hooks.get(event, [])
-                                     if getattr(cb, "shell_hook_key", None) not in stale]
+        allowlist, readable = _read_allowlist()
+        allowed = _approved_pairs(allowlist["approvals"])
+        home_key = _home_key()
+        # A launch approval the allowlist now holds is the allowlist's to keep (or revoke).
+        _launch_consent.difference_update({(home_key, *pair) for pair in allowed})
+        allowed |= {(event, command) for home, event, command in _launch_consent if home == home_key}
+        accept = _resolve_effective_accept(cfg, False)
+        wanted = []
+        for spec in specs:
+            if accept or (spec.event, spec.command) in allowed:
+                wanted.append(spec)
+            elif (home_key, spec.event, spec.command) not in _skip_logged:  # once per process, not per open
+                _skip_logged.add((home_key, spec.event, spec.command))
+                logger.warning("shell hook for %s (%s) not allowlisted — skipped. Approve it at a CLI prompt, "
+                               "or use --accept-hooks / HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true.",
+                               spec.event, spec.command)
+        manager = get_plugin_manager()
+        with _registered_lock:
+            _wire(manager, home_key, wanted)
+            if not (readable and complete):
+                return
+            keep = {_key(home_key, spec) for spec in wanted}
+            stale = {k for k in _registered if k[0] == home_key and k not in keep}
+            _registered.difference_update(stale)
+            for event in {k[1] for k in stale}:
+                # Replaced, never edited in place: a concurrent invoke_hook keeps iterating the old list.
+                manager._hooks[event] = [cb for cb in manager._hooks.get(event, [])
+                                         if getattr(cb, "shell_hook_key", None) not in stale]
     for _home, event, _matcher, command in stale:
         logger.info("shell hook unregistered (removed from config or allowlist): %s -> %s", event, command)
 
@@ -198,7 +222,7 @@ def record_consent_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: b
     """First-use consent without registering anything, for a client whose turns run in a gateway that
     has no TTY: the prompt (or an opt-in) for each configured hook not yet allowlisted. The gateway
     registers from the same allowlist when the client opens its session."""
-    specs = _hook_specs(cfg)
+    specs, _complete = _hook_specs(cfg)
     if not specs:
         return
     accept, allowed = _resolve_effective_accept(cfg, accept_hooks), _allowlisted_pairs()
@@ -206,24 +230,50 @@ def record_consent_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: b
         _consented(spec, accept, allowed)
 
 
-def _hook_specs(cfg: Optional[dict[str, Any]]) -> Optional[list[ShellHookSpec]]:
-    """The configured hooks, or ``None`` when this process must run none (safe worker, safe mode,
-    no config) — the one guard every registrar and the consent path share."""
+def accept_for_launch(cfg: Optional[dict[str, Any]]) -> None:
+    """A launch's ``--accept-hooks`` on the gateway: record every configured hook in the allowlist,
+    and keep the consent in memory until the allowlist holds it, so a failed write still registers
+    the hook at the next ``sync_from_config`` (main registered it in memory)."""
+    specs, _complete = _hook_specs(cfg)
+    if not specs:
+        return
+    record_consent_from_config(cfg, accept_hooks=True)
+    home_key = _home_key()
+    with _sync_lock:
+        _launch_consent.update((home_key, spec.event, spec.command) for spec in specs)
+
+
+def accept_for_process() -> None:
+    """This process's own ``--accept-hooks`` (``hermes gateway run --accept-hooks``): an opt-in in
+    force for its lifetime, as ``HERMES_ACCEPT_HOOKS`` would be, without exporting that variable to
+    every tool subprocess."""
+    global _process_accept
+    _process_accept = True
+
+
+def _hook_specs(cfg: Optional[dict[str, Any]]) -> tuple[Optional[list[ShellHookSpec]], bool]:
+    """``(specs, complete)``: the configured hooks, or ``None`` when this process must run none
+    (safe worker, safe mode, no config) — the one guard every registrar and the consent path share;
+    ``complete`` is False when a configured entry was dropped as malformed."""
     from agent.safe_worker_policy import safe_worker_enabled
     from utils import env_var_enabled
     if safe_worker_enabled() or not isinstance(cfg, dict):
-        return None
+        return None, True
     if env_var_enabled("HERMES_SAFE_MODE"):  # hooks are user customizations too — fire zero user-configured code
-        logger.debug("HERMES_SAFE_MODE=1 — shell-hook registration skipped")
-        return None
-    return _parse_hooks_block(cfg.get("hooks"))
+        logger.info("HERMES_SAFE_MODE=1 — shell-hook registration skipped")
+        return None, True
+    return _parse_hooks(cfg.get("hooks"))
+
+
+def _key(home_key: str, spec: ShellHookSpec) -> tuple[str, str, Optional[str], str]:
+    return (home_key, spec.event, spec.matcher, spec.command)
 
 
 def _wire(manager: Any, home_key: str, specs: list[ShellHookSpec]) -> list[ShellHookSpec]:
     """Register ``specs`` not yet wired for this home; caller holds ``_registered_lock``."""
     registered = []
     for spec in specs:
-        key = (home_key, spec.event, spec.matcher, spec.command)
+        key = _key(home_key, spec)
         if key in _registered:
             continue
         callback = _make_callback(spec)
@@ -236,15 +286,16 @@ def _wire(manager: Any, home_key: str, specs: list[ShellHookSpec]) -> list[Shell
     return registered
 
 
-def _approved_pairs(approvals: list[Any]) -> set[tuple[Any, Any]]:
-    return {(e.get("event"), e.get("command")) for e in approvals if isinstance(e, dict)}
+def _approved_pairs(approvals: list[Any]) -> set[tuple[str, str]]:
+    return {(e["event"], e["command"]) for e in approvals
+            if isinstance(e, dict) and isinstance(e.get("event"), str) and isinstance(e.get("command"), str)}
 
 
-def _allowlisted_pairs() -> set[tuple[Any, Any]]:
+def _allowlisted_pairs() -> set[tuple[str, str]]:
     return _approved_pairs(load_allowlist()["approvals"])
 
 
-def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[Any, Any]]) -> bool:
+def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[str, str]]) -> bool:
     """Allowlisted, or approved now (opt-in or TTY prompt, recorded); ``allowed`` caches one read."""
     pair = (spec.event, spec.command)
     if pair in allowed:
@@ -281,24 +332,38 @@ def re_register_config_hooks() -> None:
 
 def reset_for_tests() -> None:
     """Test-only: clear the idempotence set."""
+    global _process_accept
     with _registered_lock:
         _registered.clear()
+    _launch_consent.clear()
+    _skip_logged.clear()
+    _process_accept = False
 
 
 # --- Config parsing ---
 
 def _parse_hooks_block(hooks_cfg: Any) -> list[ShellHookSpec]:
     """Normalise ``hooks:`` into specs; malformed entries warn-and-skip, never raise."""
+    return _parse_hooks(hooks_cfg)[0]
+
+
+def _parse_hooks(hooks_cfg: Any) -> tuple[list[ShellHookSpec], bool]:
+    """``(specs, complete)``: ``complete`` is False when an entry was dropped as malformed (a typo
+    must not read as a deliberate removal); an absent or empty ``hooks:`` is complete."""
     from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
+    if hooks_cfg is None:
+        return [], True
     if not isinstance(hooks_cfg, dict):
-        return []
+        return [], False
     specs: list[ShellHookSpec] = []
+    complete = True
     for event_name, entries in hooks_cfg.items():
         if event_name in ("output_spill", "outbound"):  # reserved non-event sub-sections under `hooks:`
             continue
         if event_name in SHELL_UNSUPPORTED_HOOKS:  # _parse_response has no channel for these directives — refuse loudly
             logger.warning("hook event %r is Python-plugin-only: shell hooks cannot return its directive, "
                            "so this registration is refused rather than silently ignored", event_name)
+            complete = False
             continue
         if event_name not in VALID_HOOKS:
             suggestion = difflib.get_close_matches(str(event_name), VALID_HOOKS, n=1, cutoff=0.6)
@@ -306,14 +371,18 @@ def _parse_hooks_block(hooks_cfg: Any) -> list[ShellHookSpec]:
                 logger.warning("unknown hook event %r in hooks: config — did you mean %r?", event_name, suggestion[0])
             else:
                 logger.warning("unknown hook event %r in hooks: config (valid: %s)", event_name, ", ".join(sorted(VALID_HOOKS)))
+            complete = False
             continue
         if entries is None:
             continue
         if not isinstance(entries, list):
             logger.warning("hooks.%s must be a list of hook definitions; got %s", event_name, type(entries).__name__)
+            complete = False
             continue
-        specs.extend(filter(None, (_parse_single_entry(event_name, i, raw) for i, raw in enumerate(entries))))
-    return specs
+        parsed = [_parse_single_entry(event_name, i, raw) for i, raw in enumerate(entries)]
+        complete = complete and None not in parsed
+        specs.extend(spec for spec in parsed if spec is not None)
+    return specs, complete
 
 
 def _parse_single_entry(event: str, index: int, raw: Any) -> Optional[ShellHookSpec]:
@@ -626,14 +695,15 @@ def load_allowlist() -> dict[str, Any]:
 
 
 def save_allowlist(data: dict[str, Any]) -> None:
-    """Atomic write; on OSError log and keep the in-process approval."""
+    """Atomic write; on OSError log and carry on (the approval is not saved)."""
     p = allowlist_path()
     try:
         atomic_json_write(p, data, sort_keys=True, mode=0o600)
     except OSError as exc:
-        logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval is in-memory for this run, "
-                       "but the next startup will re-prompt (or skip registration on non-TTY runs without "
-                       "--accept-hooks / HERMES_ACCEPT_HOOKS).", p, exc)
+        logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval is not saved: the next "
+                       "run re-prompts (non-TTY runs skip the hook) unless --accept-hooks / HERMES_ACCEPT_HOOKS "
+                       "/ hooks_auto_accept is in force; a gateway keeps a launch's --accept-hooks until it "
+                       "restarts.", p, exc)
 
 
 @contextmanager
@@ -710,8 +780,9 @@ def _command_script_path(command: str) -> str:
 
 
 def _resolve_effective_accept(cfg: dict[str, Any], accept_hooks_arg: bool) -> bool:
-    """Any truthy opt-in channel wins: explicit arg, HERMES_ACCEPT_HOOKS, hooks_auto_accept."""
-    if accept_hooks_arg or os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in _TRUTHY:
+    """Any truthy opt-in channel wins: explicit arg, this process's --accept-hooks, HERMES_ACCEPT_HOOKS,
+    hooks_auto_accept."""
+    if accept_hooks_arg or _process_accept or os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in _TRUTHY:
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)
     return cfg_val if isinstance(cfg_val, bool) else isinstance(cfg_val, str) and cfg_val.strip().lower() in _TRUTHY

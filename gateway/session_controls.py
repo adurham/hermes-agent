@@ -490,6 +490,8 @@ class AuthorityConnection:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp
             resume_editor_mcp(self.authority, ref, params['editor'])
+        if params.get('accept_hooks') is True:  # consent recorded for the whole profile: a control
+            self.authority.authorize(self.actor, ref, 'session:control')
         if 'api_key' in params:
             # A launch-only key re-supplied after a restart (`--resume <id> --api-key`).
             self.authority.authorize(self.actor, ref, 'session:control')
@@ -507,7 +509,9 @@ class AuthorityConnection:
         source = self.authority.sessions[snapshot.handle.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL:
             from gateway.session_policy import policy_for_source, refresh_profile_hooks
-            await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
+            # `--resume <id> --accept-hooks`: this launch's consent, for hooks added since creation.
+            await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source),
+                                    accept=params.get('accept_hooks') is True)
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         display = {}
         if params.get('display_projection'):
