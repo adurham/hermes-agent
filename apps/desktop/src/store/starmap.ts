@@ -12,6 +12,10 @@ export const $starmapError = atom<null | string>(null)
 
 let inflight: Promise<void> | null = null
 
+// Bumped by resetStarmapGraph on a profile switch: a load still awaiting the
+// previous profile's graph must not publish it, nor clear the newer slot.
+let starmapEpoch = 0
+
 export async function loadStarmapGraph(force = false): Promise<void> {
   if (inflight) {
     return inflight
@@ -24,14 +28,26 @@ export async function loadStarmapGraph(force = false): Promise<void> {
   $starmapLoading.set(true)
   $starmapError.set(null)
 
+  const epoch = starmapEpoch
+
   inflight = (async () => {
     try {
-      $starmapGraph.set(await getStarmapGraph())
+      const graph = await getStarmapGraph()
+
+      if (epoch === starmapEpoch) {
+        $starmapGraph.set(graph)
+      }
     } catch (err) {
-      $starmapError.set(err instanceof Error ? err.message : String(err))
+      if (epoch === starmapEpoch) {
+        $starmapError.set(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      $starmapLoading.set(false)
-      inflight = null
+      // Same epoch means this is still the only flight; a stranded one leaves
+      // the newer load's spinner and slot alone.
+      if (epoch === starmapEpoch) {
+        $starmapLoading.set(false)
+        inflight = null
+      }
     }
   })()
 
@@ -59,7 +75,10 @@ export function evictStarmapNode(id: string): () => void {
 
 /** Drop the cache so the next open refetches against the now-active profile. */
 export function resetStarmapGraph(): void {
+  starmapEpoch += 1
   inflight = null
   $starmapGraph.set(null)
   $starmapError.set(null)
+  // The stranded load no longer owns the spinner; a fresh load re-raises it.
+  $starmapLoading.set(false)
 }
