@@ -104,3 +104,102 @@ def test_follower_wakes_when_the_leaders_notify_fails(monkeypatch):
     assert decision["resolved"] is False and decision["choice"] is None and decision["coalesced"] is True
     # Never delivered, so it is a withdrawal — not a user deny and not a silent timeout.
     assert decision["cancelled"]
+
+
+def test_identical_requests_racing_to_lead_send_one_prompt(monkeypatch):
+    """Two identical approvals that both reach the leader lookup before either is enqueued must still
+    coalesce: the lookup and the enqueue are one critical section, so the second sees the first."""
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: APPROVAL_TIMEOUT)
+    both_built = threading.Barrier(2)
+    prompted = threading.Event()
+    settled = threading.Event()  # a second prompt went out, or the second caller started following
+    notified: list[str] = []
+    notified_lock = threading.Lock()
+
+    class _BothBuildBeforeEitherEnqueues(wait_mod._ApprovalEntry):
+        __slots__ = ()
+
+        def __init__(self, data):
+            both_built.wait(10)
+            super().__init__(data)
+
+    real_follow = wait_mod._await_coalesced_leader
+
+    def follow(session_key, leader, payload):
+        settled.set()
+        return real_follow(session_key, leader, payload)
+
+    def notify(data):
+        with notified_lock:
+            notified.append(data["request_id"])
+            prompted.set()
+            if len(notified) == 2:
+                settled.set()
+
+    monkeypatch.setattr(wait_mod, "_ApprovalEntry", _BothBuildBeforeEitherEnqueues)
+    monkeypatch.setattr(wait_mod, "_await_coalesced_leader", follow)
+    results: list[dict] = []
+
+    def run():
+        results.append(wait_mod._await_gateway_decision(SESSION_KEY, notify, dict(APPROVAL)))
+
+    threads = [threading.Thread(target=run, daemon=True) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    assert prompted.wait(10)
+    assert settled.wait(10)
+    prompts = len(notified)
+    queued = len(mod._gateway_queues.get(SESSION_KEY, []))
+    # One /approve answers the only prompt (and, on failure, every duplicate so the threads exit).
+    mod.resolve_gateway_approval(SESSION_KEY, "session", resolve_all=True)
+    for thread in threads:
+        thread.join(10)
+    assert (prompts, queued) == (1, 1)
+    assert sorted((r["resolved"], r["choice"], bool(r.get("coalesced"))) for r in results) == [
+        (True, "session", False), (True, "session", True)]
+
+
+def test_followers_released_by_once_share_one_fresh_prompt(monkeypatch):
+    """``once`` covers only the leader's execution, so each follower still needs consent of its own —
+    but one prompt at a time: released followers coalesce again behind the first to re-prompt instead
+    of each sending a duplicate."""
+    from tests.waiting import wait_until
+
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: APPROVAL_TIMEOUT)
+    notified: list[str] = []
+    follows: list[str] = []
+    real_follow = wait_mod._await_coalesced_leader
+
+    def follow(session_key, leader, payload):
+        follows.append(leader.data["request_id"])
+        return real_follow(session_key, leader, payload)
+
+    monkeypatch.setattr(wait_mod, "_await_coalesced_leader", follow)
+    results: list[dict] = []
+
+    def run():
+        results.append(wait_mod._await_gateway_decision(SESSION_KEY, notified.append, dict(APPROVAL)))
+
+    threads = [threading.Thread(target=run, daemon=True) for _ in range(3)]
+    threads[0].start()
+    wait_until(lambda: len(notified) == 1, what="the leader's prompt")
+    for thread in threads[1:]:
+        thread.start()
+    wait_until(lambda: len(follows) == 2, what="both followers waiting on the leader")
+
+    assert mod.resolve_gateway_approval(SESSION_KEY, "once") == 1
+    # Settled: either a duplicate prompt went out per follower, or one follower re-led and the other follows it.
+    wait_until(lambda: len(notified) == 3 or (len(notified) == 2 and len(follows) == 3),
+               what="released followers re-prompted or re-coalesced")
+    prompts = len(notified)
+    queued = len(mod._gateway_queues.get(SESSION_KEY, []))
+    while any(thread.is_alive() for thread in threads):  # answer each remaining execution once
+        mod.resolve_gateway_approval(SESSION_KEY, "once", resolve_all=True)
+        for thread in threads:
+            thread.join(0.05)
+    assert (prompts, queued) == (2, 1)
+    assert [r["choice"] for r in results] == ["once"] * 3
