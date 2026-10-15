@@ -267,9 +267,9 @@ async def test_telegram_video_size_gate_rejects_oversized_media_before_download(
     assert "exceeds" in handled[0].text
 
 
-def _voice_event(source, urls):
+def _voice_event(source, urls, text=""):
     return MessageEvent(
-        text="",
+        text=text,
         message_type=MessageType.VOICE,
         source=source,
         media_urls=list(urls),
@@ -277,3 +277,77 @@ def _voice_event(source, urls):
     )
 
 
+
+
+@pytest.mark.asyncio
+async def test_voice_note_merged_during_pending_stt_is_transcribed():
+    """A 2nd voice note merged into the pending event while the interrupt monitor's STT is in
+    flight must not be dropped by the monitor publishing a transcript of the 1st note only."""
+    from gateway.platforms.base import merge_pending_message_event
+
+    runner = _runner()
+    source = _source()
+    stt_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_enrich(text, paths):
+        stt_started.set()
+        await release.wait()
+        transcripts = [f"<{Path(p).name}>" for p in paths]
+        return text + " ".join(transcripts), transcripts
+
+    runner._enrich_message_with_transcription = fake_enrich
+    pending = {}
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/A.ogg"]))
+    event = pending["k"]
+
+    monitor = asyncio.create_task(runner._transcribe_pending_audio_event_once(event, ""))
+    await stt_started.wait()
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/B.ogg"]))
+    release.set()
+    await monitor
+
+    drain_text, drain_transcripts = await runner._transcribe_pending_audio_event_once(event, "")
+
+    assert drain_transcripts == ["<A.ogg>", "<B.ogg>"]
+    assert "<B.ogg>" in drain_text
+
+
+@pytest.mark.asyncio
+async def test_caption_of_voice_note_merged_during_pending_stt_is_kept():
+    """The interrupt path hands over a snapshot of the caption; the merged note's caption lands on
+    ``event.text`` during the STT await and must reach both the interrupt and the cached drain text."""
+    from gateway.platforms.base import merge_pending_message_event
+
+    runner = _runner()
+    source = _source()
+    stt_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_enrich(text, paths):
+        stt_started.set()
+        await release.wait()
+        transcripts = [f"<{Path(p).name}>" for p in paths]
+        return " ".join(transcripts) + " | " + text, transcripts
+
+    runner._enrich_message_with_transcription = fake_enrich
+    pending = {}
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/A.ogg"], "first caption"))
+    event = pending["k"]
+
+    interrupt = asyncio.create_task(runner._transcribe_and_echo_pending_voice(
+        event, None, source, event.text or "", log_context="Voice-priority-interrupt",
+    ))
+    await stt_started.wait()
+    merge_pending_message_event(pending, "k", _voice_event(source, ["/tmp/B.ogg"], "second caption"))
+    release.set()
+    interrupt_text, _ = await interrupt
+
+    drain_text, _ = await runner._transcribe_and_echo_pending_voice(
+        event, None, source, event.text or "", log_context="Voice-drain",
+    )
+
+    for text in (interrupt_text, drain_text):
+        assert "<B.ogg>" in text
+        assert "first caption" in text
+        assert "second caption" in text

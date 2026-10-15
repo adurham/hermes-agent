@@ -1894,7 +1894,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         self, event, user_text: Optional[str] = None
     ) -> tuple[str | None, list[str]]:
         """Transcribe a pending audio event once and cache the result on the event: the interrupt
-        monitor and the pending-drain path both need it — one STT call and one echo per message."""
+        monitor and the pending-drain path both need it — one STT call and one echo per message.
+        ``user_text`` is a deliberate override of the caption; ``None`` reads ``event.text`` live."""
         if hasattr(event, "_gateway_pending_stt_text"):
             return event._gateway_pending_stt_text, list(getattr(event, "_gateway_pending_stt_transcripts", []) or [])
         audio_paths = self._pending_event_audio_paths(event)
@@ -1902,6 +1903,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             return user_text if user_text is not None else (getattr(event, "text", None) or None), []
         text = user_text if user_text is not None else (getattr(event, "text", "") or "")
         enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
+        # A voice note merged in during the await dropped a cache that did not exist yet; re-run on
+        # the merged media rather than publish a transcript that silently omits the new note.
+        while self._pending_event_audio_paths(event) != audio_paths:
+            audio_paths = self._pending_event_audio_paths(event)
+            text = user_text if user_text is not None else (getattr(event, "text", "") or "")
+            enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths)
         event._gateway_pending_stt_text = enriched_text
         event._gateway_pending_stt_transcripts = list(successful_transcripts)
         return enriched_text, successful_transcripts
@@ -1927,11 +1934,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
     ) -> tuple[str, list[str]]:
         """Transcribe a pending voice event and echo transcripts once → ``(enriched_text,
         transcripts)`` for ``agent.interrupt()`` or the pending-drain flow; ``(text, [])`` when there
-        is no STT-eligible media (caller owns the ``_build_media_placeholder`` fallback)."""
+        is no STT-eligible media (caller owns the ``_build_media_placeholder`` fallback). ``text`` is
+        only that fallback: the caption is read live from ``event.text`` so one merged in during
+        the STT await is kept."""
         if not self._pending_event_audio_paths(event):
             return text, []
         try:
-            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event, text)
+            enriched_text, transcripts = await self._transcribe_pending_audio_event_once(event)
             if metadata is _UNSET:
                 metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
             await self._echo_pending_stt_transcripts_once(
