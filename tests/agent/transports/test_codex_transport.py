@@ -207,6 +207,30 @@ class TestCodexBuildKwargs:
         )
         assert kw1["prompt_cache_key"] == kw2["prompt_cache_key"]
 
+    def test_cache_key_stable_for_unified_cron_session_ids(self, transport):
+        """A scheduler admission, not the local physical id, scopes cron cache reuse."""
+        from gateway.session_cron import _execution
+
+        messages = [{"role": "user", "content": "Hi"}]
+        token = _execution.set((object(), "local-first-fire", "job42", "fire-1"))
+        try:
+            first = transport.build_kwargs(
+                model="gpt-5.4", messages=messages, tools=[], session_id="local-first-fire",
+            )
+            _execution.set((object(), "local-second-fire", "job42", "fire-2"))
+            second = transport.build_kwargs(
+                model="gpt-5.4", messages=messages, tools=[], session_id="local-second-fire",
+            )
+            _execution.set((object(), "local-other-job", "job99", "fire-3"))
+            other = transport.build_kwargs(
+                model="gpt-5.4", messages=messages, tools=[], session_id="local-other-job",
+            )
+        finally:
+            _execution.reset(token)
+
+        assert first["prompt_cache_key"] == second["prompt_cache_key"]
+        assert first["prompt_cache_key"] != other["prompt_cache_key"]
+
     def test_cache_key_differs_across_unrelated_sessions(self, transport):
         """#78941: two unrelated sessions (different users/conversations)
         sharing the same static prefix must NOT collapse onto the same
