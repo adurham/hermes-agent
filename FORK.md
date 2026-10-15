@@ -3,6 +3,68 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Follow-up — 2026-10-15 (post-v0.22.2 review): Fable review dispositions, fork-symbol sweep, live-update runbook
+
+**Review.** The post-sync Fable review (consult; artifacts = the two entries above + the round-5 record)
+returned 11 concerns; dispositions, each with the evidence that resolves or flags it:
+
+- **Suite differential (c1):** the "no merge-caused failures" claim rests on the 62-file red set being
+  run BOTH-ARMS (merged vs pre-merge tip / tag for new files) — 42+ files fail at both arms
+  (env/pre-existing class), 4 files were head-red-only and were the merge defects fixed above, plus
+  the memory-contract and env-name items; the method caught 4/4 real defects, so its power is
+  demonstrated, not assumed. `known_failing.txt` was regenerated WITHOUT adding entries (98 kept /
+  0 dropped; the 98-count matching the old exemption table is a coincidence — the prior cleanup left
+  98 resolving node-ids).
+- **Fork-only symbol sweep (c6, run because of this review):** every top/class-level def present at
+  the pre-merge tip and absent at the tag, checked for survival + references in merged — 387 missing
+  from merged, 10 still referenced, ALL string/param false positives (plugin hook names, retired-tool
+  name sets, ordinary locals). No further silent-drop losses beyond `_route_model_for_banner`
+  (restored above). The banner class slipped past the scan layer because the scans ran AFTER the
+  resolvers had already restored it; it was caught by the resolver reading the file.
+- **Health self-heal (c8a) — proven:** `scripts/check --only health --base a9d2196bc8e` reports "no
+  measured files changed" (0 blocking) against the new main; the 4 FILE_LINES growths no longer fire.
+- **`getattr` default (c9):** `_PER_TURN_RESET_STATE` (agent/turn_context.py) seeds
+  `_empty_content_retries = 0` at every real turn start; the missing-attribute case is only minimal
+  harness agents, and 0 is exactly the reset value — semantically identical, and the fork's own
+  `empty_response_guard` already used the same `getattr(..., 0)` pattern for this attribute.
+- **Targeted integration proof (c7):** the focused suite (run and green this sync):
+  test_delegate_role_{provider,fallback,runtime}, test_delegate_tier_role_provider,
+  test_delegate_auto_route_{gate,diagnostics,visibility}, test_delegate_routing_schema,
+  test_delegate_model_roster_guardrail, test_delegate_by_provider_credentials,
+  test_delegate_external_provider, test_delegate_fallback_matrix, test_delegate_child_fallback_visibility,
+  test_subagent_lifecycle, test_local_prompt_progress, test_stream_stale_circuit_breaker,
+  test_anthropic_stream_phase_classifier.
+- **Live-install hazard (c2) — runbook added below** (the previous "Note" understated it).
+- **Single-OS coverage (c8c):** acknowledged — the station (Linux, CI-parity) was unreachable and the
+  Mac run is the owner-sanctioned fallback; Linux/Windows lanes run on the next scheduled station pass.
+
+**Flagged for owner visibility (adopted upstream behavior; revert recipes on file):**
+- **Memory model-facing target is now REQUIRED for hot writes** — an omitted `target` is refused with
+  a retry message (upstream's v0.22 "explicit top-level targets" contract; the fork's older
+  default-to-`memory` behavior is retired with it). This is a deliberate behavior change for the
+  model surface, adopted as part of the replace→patch rework; revert = re-add the hot-path
+  `None → "memory"` default (breaks `tests/tools/test_memory_target_contract.py`; not recommended).
+- **`[tool.uv.exclude-newer-package]` exemption table retired** — forced by upstream's wholesale
+  redesign (their tree now asserts the table's absence in manifest AND lock; keeping it fails the
+  suite). The fork's three test-tooling entries die with upstream's table; owner-ack pending by
+  intent, but no fork code can re-carry it against the merged tests.
+- **`test_provider_is_plugin_facing_only` relaxed to the fork stance** (model=/agent_type stay;
+  provider/base_url/api_key must not leak) — revert recipe recorded in the sync entry; the reviewer's
+  ask (prove roster-validation can't be bypassed) holds: `model=` selects a slug but the child's
+  provider/credentials come from the resolved bundle — it cannot redirect credentials.
+
+**Live-update runbook (owner-timed; the new head requires Python 3.14):**
+1. Pick a moment when no CLI session must survive — the update restarts the local gateway.
+2. Realize the PM toolchain first (pre-3.14 venv dead-end): from the live checkout,
+   `venv/bin/python -c "from pm.install import ensure; ensure('python', explicit=True); ensure('uv', explicit=True)"`
+   then `hermes pm doctor` (expect ✓ python 3.14.7 / uv / node / npm / ripgrep).
+3. `hermes update --plan` (read-only), then `hermes update --yes`.
+4. First boot after the update fires the (upstream) serve-boot onboarding latch for a canary/RC
+   `hermes-setup` profile, if one exists — expected, one-time.
+5. Verify in fresh processes: `hermes --version` = new head; Desktop backend (tui_gateway) starts
+   (this is the surface that requires 3.14); `hermes pm doctor` clean.
+
+
 ### Upstream sync — 2026-10-15 (v0.21.7 → v0.22.2, 2983 commits, 1274 changed files, 15 conflict files)
 
 Merged tag `v0.22.2` (released 2026-10-15; tag object `7b77e29eedd8`, commit `d923a5eb487`) into `main`
