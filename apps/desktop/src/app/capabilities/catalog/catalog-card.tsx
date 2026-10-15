@@ -74,6 +74,24 @@ interface CatalogCardProps {
   style?: CSSProperties
 }
 
+const isEditorialArt = (entry: CatalogEntry) => Boolean(entry.imageUrl?.includes('official-art'))
+
+/** Compact and showcase cards only show first-party editorial art; the hero paints its own. */
+const showsCardImage = (entry: CatalogEntry, variant: CatalogCardVariant) =>
+  variant !== 'hero' && Boolean(entry.imageUrl) && ((variant !== 'compact' && variant !== 'showcase') || isEditorialArt(entry))
+
+function CatalogCardFooter({ entry, action, hero }: { entry: CatalogEntry; action: ReactNode; hero: boolean }) {
+  return (
+    <div className="catalog-card-footer">
+      <CatalogHeaderMeta entry={entry} />
+      <span className="flex shrink-0 items-center gap-3">
+        <CatalogRating entry={entry} />
+        {hero && <span className="catalog-hero-action relative shrink-0">{action}</span>}
+      </span>
+    </div>
+  )
+}
+
 export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, onTag, onSearch, variant = 'default', style }: CatalogCardProps) {
   return (
     <article
@@ -82,12 +100,12 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
         CARD_ACCENTS[accentIndex % CARD_ACCENTS.length]
       )}
       data-catalog-card
-      data-catalog-editorial-art={(variant !== 'hero' && entry.imageUrl?.includes("official-art")) || undefined}
+      data-catalog-editorial-art={(variant !== 'hero' && isEditorialArt(entry)) || undefined}
       data-catalog-variant={variant}
       data-entry-id={entry.id}
       style={style}
     >
-      {variant !== 'hero' && entry.imageUrl && ((variant !== 'compact' && variant !== 'showcase') || entry.imageUrl.includes('official-art')) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl} src={entry.imageUrl} />}
+      {showsCardImage(entry, variant) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl!} src={entry.imageUrl!} />}
       {variant !== 'default' && <div className="catalog-card-topline">
         <span className="min-w-0 truncate" title={entry.author || catalogLabel(entry.source)}>{entry.author || catalogLabel(entry.source)}</span>
         {variant !== 'hero' && <span className="relative shrink-0">{action}</span>}
@@ -131,15 +149,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
           onTag={onTag}
         />
       </div>}
-      {variant !== 'default' && (
-        <div className="catalog-card-footer">
-          <CatalogHeaderMeta entry={entry} />
-          <span className="flex shrink-0 items-center gap-3">
-            <CatalogRating entry={entry} />
-            {variant === 'hero' && <span className="catalog-hero-action relative shrink-0">{action}</span>}
-          </span>
-        </div>
-      )}
+      {variant !== 'default' && <CatalogCardFooter action={action} entry={entry} hero={variant === 'hero'} />}
       {variant === 'default' && <div className="catalog-card-dates mt-auto px-3 pb-3">
         <CatalogDates entry={entry} />
       </div>}
