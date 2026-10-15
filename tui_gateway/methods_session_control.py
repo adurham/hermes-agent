@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -214,6 +215,12 @@ def _goal_blocks_loop_tick(session_key: str) -> bool:
 _SESSION_CONTROL_SLASHES = frozenset({"goal", "heartbeat", "loop", "subgoal"})
 
 
+# Tool completions publish from the agent thread while control actions and slash commands publish from
+# RPC threads: the snapshot read, the revision compare and the emit happen as one step, so an update read
+# before a user's change can never be emitted after it.
+_PUBLISH_LOCK = threading.Lock()
+
+
 def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if_present: bool = False,
                                       only_if_changed: bool = False) -> None:
     """Best-effort ``session.control.update`` for one live session. Also called after the post-turn hooks,
@@ -224,13 +231,14 @@ def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if
     if not session or not (session_key := str(session.get("session_key") or "")):
         return
     try:
-        with _session_profile_runtime_scope(session):
-            control = _snapshot_control(session_key)
-        if (only_if_present and not control["revision"]) or (
-                only_if_changed and control["revision"] == session.get("control_revision", "")):
-            return
-        session["control_revision"] = control["revision"]
-        _emit("session.control.update", sid, {"control": control})
+        with _PUBLISH_LOCK:
+            with _session_profile_runtime_scope(session):
+                control = _snapshot_control(session_key)
+            if (only_if_present and not control["revision"]) or (
+                    only_if_changed and control["revision"] == session.get("control_revision", "")):
+                return
+            session["control_revision"] = control["revision"]
+            _emit("session.control.update", sid, {"control": control})
     except Exception:
         logger.debug("session.control.update publish failed for %s", sid, exc_info=True)
 
