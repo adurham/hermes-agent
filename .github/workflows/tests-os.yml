@@ -82,7 +82,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Two slices on the free standard runner (3 cores, 3 workers): one lane ran
+          # Two slices: on the old free standard runner (3 cores, 3 workers) one lane ran
           # ~7.5 min and became the slowest required job once the Linux suite split.
           - name: macOS-only tests (1/2)
             runner: blacksmith-12vcpu-macos-latest
@@ -100,7 +100,7 @@ jobs:
             marker: windows
             timeout: 60
             slice: 1/2
-          - name: Windows-only tests (arm64, 1/2)
+          - name: Windows-only tests (arm64, 2/2)
             runner: windows-latest-32-arm-core
             marker: windows
             timeout: 60

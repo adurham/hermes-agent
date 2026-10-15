@@ -31,8 +31,8 @@ sleep() { return 1; }
 '''
 
 
-# Blacksmith runners use its drop-in checkout (same inputs, cached on the runner);
-# GitHub-hosted runners keep actions/checkout.
+# Workflows use Blacksmith's drop-in checkout (same inputs, cached on its runners;
+# it also works on the remaining GitHub-hosted jobs); a few still use actions/checkout.
 CHECKOUT_ACTIONS = ("actions/checkout@", "useblacksmith/checkout@")
 
 
