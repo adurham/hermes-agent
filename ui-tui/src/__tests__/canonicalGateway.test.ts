@@ -32,12 +32,6 @@ it('carries -s/--checkpoints/--pass-session-id/--accept-hooks (and exported HERM
   expect(canonicalRequest('session.create', { request_id: 'owned', ...options }, contract).params).toMatchObject(options)
 })
 
-it('carries --accept-hooks onto session.resume for hooks configured since creation', () => {
-  const resume = (env: Record<string, string>) => canonicalRequest('session.resume', { session_id: 'sid' }, undefined, env as NodeJS.ProcessEnv).params
-  expect(resume({ HERMES_ACCEPT_HOOKS: '1' }).accept_hooks).toBe(true)
-  expect(resume({ HERMES_ACCEPT_HOOKS: '0' })).not.toHaveProperty('accept_hooks')
-})
-
 it('rebuilds --max-turns from the launcher environment as the integer the session policy requires', () => {
   const options = localCreationOptions({ HERMES_TUI_MAX_TURNS: '5', HERMES_MODEL: 'local-model' } as NodeJS.ProcessEnv)
   expect(options.max_turns).toBe(5)

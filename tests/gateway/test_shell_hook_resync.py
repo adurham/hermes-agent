@@ -105,8 +105,9 @@ def test_gateway_resync_follows_config_and_allowlist_without_prompting(home, tmp
 
 def test_resync_keeps_in_memory_consent_and_never_disarms_on_bad_input(home, tmp_path, monkeypatch):
     """Review of #139067: a launch's --accept-hooks survives a failed allowlist write; the gateway's
-    own --accept-hooks covers hooks added later; a malformed hooks: entry or allowlist record
-    never disarms a guard; an older snapshot never lands after a newer one."""
+    own --accept-hooks covers hooks added later; a malformed hooks: entry never disarms a guard and
+    a malformed allowlist record never breaks the valid ones; an older snapshot never lands after a
+    newer one."""
     import threading
     from gateway import run
     from gateway.session_policy import accept_launch_hooks, build_policy, refresh_profile_hooks
@@ -161,6 +162,18 @@ def test_resync_keeps_in_memory_consent_and_never_disarms_on_bad_input(home, tmp
     release.set()
     first.join(5)
     second.join(5)
+    assert _wired() == [f"shell_hook[pre_tool_call:{b}]"]
+
+
+def test_saved_launch_approval_stays_revocable_and_bad_records_are_skipped(home, tmp_path):
+    a, b = _script(tmp_path, "a.sh"), _script(tmp_path, "b.sh")
+    shell_hooks.accept_for_launch(_cfg(a))  # saved, so not held in memory
+    shell_hooks.revoke(a)  # before any session open
+    shell_hooks.sync_from_config(lambda: _cfg(a))
+    assert _wired() == []
+    (home / shell_hooks.ALLOWLIST_FILENAME).write_text(json.dumps({"approvals": [
+        {"event": "pre_tool_call", "command": []}, {"event": "pre_tool_call", "command": b}]}))
+    shell_hooks.sync_from_config(lambda: _cfg(b))
     assert _wired() == [f"shell_hook[pre_tool_call:{b}]"]
 
 

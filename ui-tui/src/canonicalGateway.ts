@@ -7,9 +7,7 @@ export const sharedControlParams = (prompt?: { sharedControl?: SharedControl } |
 
 export interface CreationContract { sources: string[]; parameters: string[] }
 
-const truthy = (value?: string) => ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
-
-export function canonicalRequest(method: string, original: Record<string, unknown>, contract?: CreationContract, env = process.env) {
+export function canonicalRequest(method: string, original: Record<string, unknown>, contract?: CreationContract) {
   const params = { ...original }
 
   if (method === 'session.create') {
@@ -37,10 +35,6 @@ export function canonicalRequest(method: string, original: Record<string, unknow
     delete params.omit_messages
 
     if (renders) { params.display_projection = true }
-
-    // `--resume <id> --accept-hooks`: hooks configured since the session was created need this
-    // launch's consent too (session.create carries it in localCreationOptions).
-    if (truthy(env.HERMES_ACCEPT_HOOKS)) { params.accept_hooks = true }
   }
 
   return { method, params }
@@ -128,6 +122,8 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   // `hermes --tui --yolo` / `--ignore-rules` export HERMES_YOLO_MODE / HERMES_IGNORE_RULES (the in-process
   // TUI read them); over the canonical gateway they must ride session.create as frozen launch flags or the
   // session prompts anyway / still loads rules, SOUL, memory and skills.auto_load.
+  const truthy = (value?: string) => ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
+
   // `--checkpoints` / `--pass-session-id` / `--accept-hooks` (and an exported HERMES_ACCEPT_HOOKS=1)
   // are this session's creation policy too: the owner applies them, nothing reads them in-process.
   for (const [field, value] of [

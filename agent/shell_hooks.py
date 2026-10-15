@@ -52,8 +52,8 @@ _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id
 # per-tool under one event), home so multiplexed-gateway profiles can register identical triples.
 _registered: set[tuple[str, str, Optional[str], str]] = set()
 _registered_lock = threading.Lock()
-# Non-POSIX fallback for allowlist read-modify-write. Must be separate from _registered_lock, which
-# register_from_config already holds when it triggers _record_approval (Lock is non-reentrant).
+# Non-POSIX fallback for allowlist read-modify-write; separate from _registered_lock so an allowlist
+# write never waits on (or nests inside) a registry update.
 _allowlist_write_lock = threading.Lock()
 # sync_from_config: read + apply as one step, so an older snapshot never lands after a newer one.
 _sync_lock = threading.Lock()
@@ -156,7 +156,7 @@ def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = 
     manager, home_key = get_plugin_manager(), _home_key()
     with _registered_lock:  # an already-wired hook is never re-asked for (main checked this first)
         specs = [spec for spec in specs if _key(home_key, spec) not in _registered]
-    accept, allowed = _resolve_effective_accept(cfg, accept_hooks), _allowlisted_pairs()
+    accept, allowed = _resolve_effective_accept(cfg, accept_hooks), allowlisted_pairs()
     # TTY prompt outside the lock; _wire takes the lock and re-checks.
     consented = []
     for spec in specs:
@@ -206,6 +206,12 @@ def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
         with _registered_lock:
             _wire(manager, home_key, wanted)
             if not (readable and complete):
+                suspended = (home_key, "", "removal")
+                if suspended not in _skip_logged:
+                    _skip_logged.add(suspended)
+                    logger.warning("shell hooks: %s, so removed or revoked hooks stay registered until it is "
+                                   "fixed", "the allowlist is unreadable" if not readable
+                                   else "a hooks: entry in config.yaml is malformed")
                 return
             keep = {_key(home_key, spec) for spec in wanted}
             stale = {k for k in _registered if k[0] == home_key and k not in keep}
@@ -218,29 +224,29 @@ def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
         logger.info("shell hook unregistered (removed from config or allowlist): %s -> %s", event, command)
 
 
-def record_consent_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = False) -> None:
+def record_consent_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = False) -> list[ShellHookSpec]:
     """First-use consent without registering anything, for a client whose turns run in a gateway that
     has no TTY: the prompt (or an opt-in) for each configured hook not yet allowlisted. The gateway
-    registers from the same allowlist when the client opens its session."""
+    registers from the same allowlist when the client opens its session. Returns the consented specs."""
     specs, _complete = _hook_specs(cfg)
     if not specs:
-        return
-    accept, allowed = _resolve_effective_accept(cfg, accept_hooks), _allowlisted_pairs()
-    for spec in specs:
-        _consented(spec, accept, allowed)
+        return []
+    accept, allowed = _resolve_effective_accept(cfg, accept_hooks), allowlisted_pairs()
+    return [spec for spec in specs if _consented(spec, accept, allowed)]
 
 
 def accept_for_launch(cfg: Optional[dict[str, Any]]) -> None:
     """A launch's ``--accept-hooks`` on the gateway: record every configured hook in the allowlist,
-    and keep the consent in memory until the allowlist holds it, so a failed write still registers
-    the hook at the next ``sync_from_config`` (main registered it in memory)."""
-    specs, _complete = _hook_specs(cfg)
+    and keep the consent in memory when that write fails, so it still registers
+    the hook at the next ``sync_from_config`` (main registered it in memory). Only an unsaved approval
+    is held, so a later ``hermes hooks revoke`` of a saved one takes effect."""
+    specs = record_consent_from_config(cfg, accept_hooks=True)
     if not specs:
         return
-    record_consent_from_config(cfg, accept_hooks=True)
-    home_key = _home_key()
+    saved, home_key = allowlisted_pairs(), _home_key()
     with _sync_lock:
-        _launch_consent.update((home_key, spec.event, spec.command) for spec in specs)
+        _launch_consent.update((home_key, spec.event, spec.command) for spec in specs
+                               if (spec.event, spec.command) not in saved)
 
 
 def accept_for_process() -> None:
@@ -291,7 +297,7 @@ def _approved_pairs(approvals: list[Any]) -> set[tuple[str, str]]:
             if isinstance(e, dict) and isinstance(e.get("event"), str) and isinstance(e.get("command"), str)}
 
 
-def _allowlisted_pairs() -> set[tuple[str, str]]:
+def allowlisted_pairs() -> set[tuple[str, str]]:
     return _approved_pairs(load_allowlist()["approvals"])
 
 
@@ -700,10 +706,9 @@ def save_allowlist(data: dict[str, Any]) -> None:
     try:
         atomic_json_write(p, data, sort_keys=True, mode=0o600)
     except OSError as exc:
-        logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval is not saved: the next "
-                       "run re-prompts (non-TTY runs skip the hook) unless --accept-hooks / HERMES_ACCEPT_HOOKS "
-                       "/ hooks_auto_accept is in force; a gateway keeps a launch's --accept-hooks until it "
-                       "restarts.", p, exc)
+        logger.warning("Failed to persist shell hook allowlist to %s: %s. The approval holds for this process "
+                       "only (a gateway keeps a launch's --accept-hooks until it restarts); a gateway session "
+                       "opened from a CLI prompt skips the hook, and the next run re-prompts.", p, exc)
 
 
 @contextmanager
@@ -759,7 +764,8 @@ def _record_approval(event: str, command: str) -> None:
 
 def revoke(command: str) -> int:
     """Remove every allowlist entry for ``command``; returns the count. A gateway unregisters it at its
-    next local session open (``sync_from_config``); other live processes keep it until restart."""
+    next local session open (``sync_from_config``) unless an opt-in approves every hook; other live
+    processes keep it until restart."""
     with _locked_update_approvals() as data:
         before = len(data.get("approvals", []))
         data["approvals"] = [e for e in data.get("approvals", []) if not _entry_matches(e, None, command)]
@@ -782,7 +788,8 @@ def _command_script_path(command: str) -> str:
 def _resolve_effective_accept(cfg: dict[str, Any], accept_hooks_arg: bool) -> bool:
     """Any truthy opt-in channel wins: explicit arg, this process's --accept-hooks, HERMES_ACCEPT_HOOKS,
     hooks_auto_accept."""
-    if accept_hooks_arg or _process_accept or os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower() in _TRUTHY:
+    from utils import env_var_enabled
+    if accept_hooks_arg or _process_accept or env_var_enabled("HERMES_ACCEPT_HOOKS"):
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)
     return cfg_val if isinstance(cfg_val, bool) else isinstance(cfg_val, str) and cfg_val.strip().lower() in _TRUTHY
