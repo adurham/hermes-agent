@@ -199,9 +199,11 @@ Added multiply; pytest isn't installed here, so I ran the tests directly: 2 pass
 - `❯` your message, `∴` a reasoning step collapsed to its title and duration (`/reasoning full` prints the text under a `│` gutter), `●` a finished tool call (`✗` in red when it failed, with its exit code), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
 - The composer's top rule carries the live activity (spinner, what's running, elapsed time) on the left and the session title on the right; no spinner row is printed into the scrollback.
 - The status line sits under the composer: model, context gauge, and working directory (with git branch) on the left; the keys that do something right now on the right.
-- Launch shows a two-line header instead of the full banner; `/tools` and `/skills` list what is loaded.
+- The welcome banner is the same in both layouts.
 
-Set `display.cli_layout: classic` to keep the boxed reasoning and answer panels, the status bar above the input, and the full welcome banner (which shows your model, terminal backend, working directory, available tools, and installed skills).
+Set `display.cli_layout: classic` to keep the boxed reasoning and answer panels and the status bar above the input.
+
+The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
 
 ### Status Bar
 

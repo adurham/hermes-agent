@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
 import time
 from datetime import datetime
 
@@ -178,44 +177,6 @@ def turn_footer(summary: str) -> str:
     body = summary.lstrip("⋯ ").strip()
     clock = datetime.now().strftime("%-I:%M %p") if os.name != "nt" else datetime.now().strftime("%I:%M %p")
     return f"{_DIM}─ {body} · {clock}{_RST}" if body else f"{_DIM}─ {clock}{_RST}"
-
-
-def _short_version() -> str:
-    """``0.22.1`` from ``0.22.1+127.g7bf3766.dirty``; nothing for an unstamped ``git.<sha>`` tree."""
-    from hermes_cli.version_info import get_version_info
-    version = get_version_info().derived_version.split("+", 1)[0]
-    return version if version[:1].isdigit() else ""
-
-
-def header_markup(cli) -> str:
-    """Two-line launch header that replaces the full banner: identity + model, then cwd (branch)."""
-    from rich.markup import escape
-    accent, label = _skin_hex("ui_accent", "#FFBF00"), _skin_hex("ui_label", "#DAA520")
-    glyph, name = _brand_glyph()
-    model = str(getattr(cli, "model", "") or "")
-    model = model.split("/")[-1] if "/" in model else model
-    provider = str(getattr(cli, "provider", "") or "")
-    via = f" [dim]via {escape(provider)}[/]" if provider and provider != "auto" else ""
-    version = _short_version()
-    version = f" [dim]v{escape(version)} ·[/]" if version else " [dim]·[/]"
-    line1 = f"[bold {accent}]{glyph}[/] [bold {label}]{escape(name)} Agent[/]{version} {escape(model)}{via}"
-    cwd, room = _cwd_label(), max(12, shutil.get_terminal_size((100, 24)).columns - 2)
-    cwd = cwd if len(cwd) <= room else "…" + cwd[-(room - 1):]
-    return f"\n{line1}\n  [dim]{escape(cwd)}[/]"
-
-
-def print_short_banner(cli) -> bool:
-    """Launch header short of the full banner: the two-line header in this layout, the compact
-    banner for ``display.compact`` or a terminal under 80 columns. False → print the full banner."""
-    if is_modern(cli):
-        cli._console_print(header_markup(cli))
-        return True
-    if cli.compact or shutil.get_terminal_size().columns < 80:  # the full banner wraps below ~80 cols
-        from cli import _build_compact_banner
-        cli._console_print(_build_compact_banner())
-        cli._show_status()
-        return True
-    return False
 
 
 # ── live region (prompt_toolkit fragments, redrawn every frame) ─────────────────────────────
