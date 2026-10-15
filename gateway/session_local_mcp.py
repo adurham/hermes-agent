@@ -60,8 +60,14 @@ def validate_servers(servers):
                 raise ValueError('duplicate server')
             names.add(model.name)
     except (ValidationError, KeyError, AttributeError, TypeError, ValueError) as exc:
+        # Never the message: pydantic's carries ``input_value=`` and a server's argv may hold a credential.
+        if isinstance(exc, ValidationError):
+            why = '; '.join(f"{'.'.join(map(str, err['loc']))}: {err['type']}"
+                            for err in exc.errors(include_input=False))
+        else:
+            why = 'duplicate server' if str(exc) == 'duplicate server' else type(exc).__name__
         raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
-                                detail=f'unusable server spec: {str(exc)[:120]}') from exc
+                                detail=f'unusable server spec: {why}') from exc
 
 
 def private_editor_request(request, private):

@@ -20,9 +20,19 @@ class RuntimeStoreError(ValueError):
 
     def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None):
         self.reason = reason
-        self.field = field
-        self.detail = detail
+        self.field = _one_line(field, 80)
+        self.detail = _one_line(detail, 160)
         super().__init__(reason)
+
+
+def _one_line(value, limit):
+    """A refusal's ``field``/``detail`` as the log line and the client frame carry it: either may hold
+    client text, so whitespace collapses to single spaces, other non-printables drop (no forged log
+    lines), and the length is bounded below the client's frame limit."""
+    if value is None:
+        return None
+    text = ''.join(ch for ch in ' '.join(str(value).split()) if ch.isprintable())
+    return text[:limit] or None
 
 
 def _text(value):

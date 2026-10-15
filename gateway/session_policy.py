@@ -37,9 +37,9 @@ def _refuse(field, detail=None):
 
     ``reason`` stays the bounded wire code every caller compares as a string; ``field`` and
     ``detail`` are what tells ~20 different create checks apart, in the client and in the
-    gateway log, without a second run to find out which one fired."""
-    raise RuntimeStoreError('invalid_params', field=str(field)[:80],
-                            detail=None if detail is None else str(detail)[:160])
+    gateway log, without a second run to find out which one fired (``RuntimeStoreError`` bounds
+    and flattens both)."""
+    raise RuntimeStoreError('invalid_params', field=field, detail=detail)
 
 
 @dataclass(frozen=True)
@@ -309,7 +309,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     # pick wins anyway; skipping it here also spares the probe.
     named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
     coding_posture = named and _in_coding_workspace(config, source, cwd)
-    enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture)
+    enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture, bypass=ignore_user_config)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
@@ -408,22 +408,30 @@ def _apply_launch_overrides(params, config):
         config['agent'].pop('reasoning_overrides', None)
 
 
-def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
+def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, bypass=False):
     """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, a
     *coding_posture* session runs ``focus_toolsets`` instead of the profile default while the profile
     stays on ``focus``; the gateway decides it, never the client."""
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
     from hermes_cli.toolset_validation import saved_toolset_resolver
+    from toolsets import validate_toolset
     explicit = params.get('toolsets')
     if 'toolsets' in params:
         if not isinstance(explicit, list):
             _refuse('toolsets', f'must be a list of toolset names, got {type(explicit).__name__}')
         # The CLI validator's rule: a configured MCP server's toolset registers only after its first
-        # connect, so an offline server is inactive, not a typo (#138748, #139154).
-        known = saved_toolset_resolver(config)
+        # connect, so an offline server is inactive, not a typo (#138748, #139154). A bypass launch never
+        # reads the profile, so it takes the in-process registry alone.
+        known = validate_toolset if bypass else saved_toolset_resolver(config)
+        configured = config.get('mcp_servers') if isinstance(config.get('mcp_servers'), dict) else {}
+        enabled_servers = enabled_mcp_server_names(config) if configured else set()
         for name in explicit:
             if not isinstance(name, str) or not known(name):
                 _refuse('toolsets', f'unknown or invalid toolset name: {name!r}')
+            server = name[4:] if name.startswith('mcp-') and name not in configured else name
+            if server in configured and server not in enabled_servers:
+                # Picking a disabled server must not match nothing and fall through to every enabled one.
+                _refuse('toolsets', f'MCP server {server!r} is disabled in config')
         if 'desktop_ui' in explicit and source != 'gui':
             _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit

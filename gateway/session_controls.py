@@ -352,7 +352,7 @@ class AuthorityConnection:
         # the frozen request: the policy re-reads the profile's current route every turn.
         hidden = params.pop('hidden', False)
         if type(hidden) is not bool:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if not ref:
             skills_prompt = None

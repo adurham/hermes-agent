@@ -50,6 +50,9 @@ def _refusal(params, cfg=None, **kwargs):
     ({'source': 'acp', 'editor': {'edit_approval_policy': 'always'}}, 'editor.edit_approval_policy'),
     ({'source': 'acp', 'editor': {'mcp_servers': 'terminal'}}, 'editor.mcp_servers'),
     ({'source': 'acp', 'editor': {'mcp_servers': [{'type': 'stdio'}]}}, 'editor.mcp_servers'),
+    ({'source': 'acp', 'editor': {'bad\nkey': 1}}, 'editor.bad key'),  # client text: one line, no forged log line
+    ({'source': 'cli', 'toolsets': [None]}, 'toolsets'),                # a literal None is the bad element
+    ({'source': 'cli', 'toolsets': [False]}, 'toolsets'),
 ])
 def test_every_create_check_names_the_field_it_read(tmp_path, extra, field):
     refusal = _refusal({'cwd': str(tmp_path), **extra})
@@ -199,3 +202,46 @@ def test_a_refusal_without_a_named_field_reads_exactly_as_before():
     message = agent_init_failure_message(GatewayRPCError('storage_unavailable', 5001,
                                                          {'reason': 'storage_unavailable'}))
     assert message.count('storage_unavailable') == 1 and '(' not in message
+
+
+def test_a_bypass_launch_without_a_model_names_the_model():
+    """`--ignore-user-config` has no profile to inherit a model from: the refusal says so."""
+    from gateway.session_local import _bypass_policy
+
+    with pytest.raises(RuntimeStoreError) as caught:
+        _bypass_policy({'source': 'cli'}, private_secrets=None)
+    assert (caught.value.field, caught.value.reason) == ('model', 'invalid_params')
+
+
+@pytest.mark.parametrize('name', ['deadserver', 'mcp-deadserver'])
+def test_an_explicit_pick_of_a_disabled_mcp_server_is_refused_by_name(tmp_path, name):
+    """A disabled server matched no allowlist entry and fell through to every enabled server; main
+    refused it (it never registers), and so does this, by name."""
+    servers = {'deadserver': {'command': str(tmp_path / 'absent'), 'enabled': False},
+               'other': {'command': str(tmp_path / 'absent')}}
+    refusal = _refusal({'cwd': str(tmp_path), 'toolsets': ['terminal', name]}, {**_CFG, 'mcp_servers': servers})
+    assert refusal.field == 'toolsets' and "'deadserver' is disabled" in refusal.detail
+
+
+def test_a_server_literally_named_mcp_prefix_keeps_its_own_name(tmp_path):
+    servers = {'foo': {'command': str(tmp_path / 'absent')}, 'mcp-foo': {'command': str(tmp_path / 'absent')}}
+    policy = build_policy({'source': 'cli', 'cwd': str(tmp_path), 'toolsets': ['terminal', 'mcp-foo']},
+                          {**_CFG, 'mcp_servers': servers})
+    assert 'mcp-foo' in policy.toolsets and 'foo' not in policy.toolsets, policy.toolsets
+
+
+def test_an_unusable_server_spec_never_echoes_its_values(tmp_path):
+    """pydantic's message carries ``input_value=``, and a server's argv may hold a credential."""
+    spec = {'type': 'stdio', 'name': 'x', 'command': 'srv', 'args': '--token=SECRETSECRET', 'env': []}
+    refusal = _refusal({'cwd': str(tmp_path), 'source': 'acp', 'editor': {'mcp_servers': [spec]}})
+    assert refusal.field == 'editor.mcp_servers' and 'args' in refusal.detail
+    assert 'SECRET' not in refusal.detail and '\n' not in refusal.detail
+
+
+def test_a_bypass_launch_never_reads_profile_plugin_state(tmp_path, monkeypatch):
+    def _profile_read(_config):
+        raise AssertionError('a bypass launch read the profile toolset resolver')
+    monkeypatch.setattr('hermes_cli.toolset_validation.saved_toolset_resolver', _profile_read)
+    policy = build_policy({'source': 'cli', 'cwd': str(tmp_path), 'ignore_user_config': True, 'model': 'fixture',
+                           'toolsets': ['terminal']}, dict(_CFG))
+    assert 'terminal' in policy.toolsets
