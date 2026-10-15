@@ -2,7 +2,7 @@
 """Memory Tool - persistent curated memory (MEMORY.md = agent notes, USER.md = user
 profile). Both enter the system prompt as a FROZEN snapshot at session start;
 mid-session writes hit disk but never change the prompt (prefix cache intact).
-Single `memory` tool: add/replace/remove or a batch `operations` list."""
+Single `memory` tool: add/patch/remove or a batch `operations` list."""
 
 import copy
 import json
@@ -41,7 +41,7 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
+    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore, _scan_memory_content)
 
 
 # FORK: warm-tier status block for the system prompt. Upstream extracted MemoryStore into
@@ -501,7 +501,8 @@ def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[
                       ensure_ascii=False)
 
 
-# action -> (store call, gate (summary, detail) text) for the live tool path and staged replay.
+# action -> (store call, gate (summary, detail) text) for the live tool path and staged replay
+# ('replace' only replays writes staged before it was removed from the tool).
 _STORE_ACTIONS = {
     "add": (lambda store, target, content, old_text, entry=None: store.add(target, content),
             lambda label, content, old_text: (f"add to {label}", content or "")),
@@ -509,7 +510,11 @@ _STORE_ACTIONS = {
                 lambda label, content, old_text: (f"replace in {label}",
                                                   f"entry matching: {old_text}\nwhole entry becomes: {content}")),
     "remove": (lambda store, target, content, old_text, entry=None: store.remove(target, old_text, entry),
-               lambda label, content, old_text: (f"remove from {label}", old_text or ""))}
+               lambda label, content, old_text: (f"remove from {label}", old_text or "")),
+    "patch": (lambda store, target, content, old_text, entry=None: store.patch(target, old_text, content, entry),
+              lambda label, content, old_text: (f"patch in {label}",
+                                                f"entry matching: {old_text}\nspan '{old_text}' becomes: {content} "
+                                                "(rest of the entry is kept)"))}
 
 
 def _batch_op_line(op: dict[str, Any]) -> str:
@@ -517,9 +522,9 @@ def _batch_op_line(op: dict[str, Any]) -> str:
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
         return f"- remove: {old}"
-    # Whole-entry contract (#117952): the approver must not read this as a span patch.
-    return (f"- replace entry matching '{old}' -> whole entry becomes: {content}" if act == "replace"
-            else f"- {act}: {content}")
+    if act == "patch":
+        return f"- patch span '{old}' -> '{content}' (rest of the entry is kept)"
+    return f"- {act}: {content}"
 
 
 def _apply_write_gate(store: MemoryStore, action: str, target: str, content: Optional[str],
@@ -541,24 +546,27 @@ def _validate_single_op(store, action, target, content, old_text) -> Optional[st
     if action == "add" and not content:
         FAILURE_CLASS.set("missing_content")
         return tool_error("Content is required for 'add' action.", success=False)
-    if action in ("replace", "remove") and not old_text:
+    if action in ("remove", "patch") and not old_text:
         FAILURE_CLASS.set("missing_old_text")
-        replace_hint = (" For 'replace', content is the COMPLETE new entry -- the whole "
-                        "matched entry is overwritten, not just the old_text span."
-                        if action == "replace" else "")
         return json.dumps({
             "success": False,
             "error": (f"'{action}' needs old_text -- a short unique substring of the entry "
                       f"to {action}. None was provided. Reissue the {action} with old_text "
-                      f"set to part of one of the current_entries below.{replace_hint}"),
+                      f"set to part of one of the current_entries below."),
             "current_entries": store._entries_for(target), "usage": store._usage(target)}, ensure_ascii=False)
-    if action == "replace" and not content:
+    if action == "patch" and not content:
         FAILURE_CLASS.set("missing_content")
-        return tool_error("content is required for 'replace' action.", success=False)
+        return tool_error(f"content (the new text for the old_text span) is required for 'patch' action. "
+                          f"{PATCH_DROP_HINT}", success=False)
     return None
 
 
-_BG_DELETE_ACTIONS = ("replace", "remove")
+# 'replace' is no longer offered to the model; it stays here so writes staged before its
+# removal still pin, display and replay.
+_BG_DELETE_ACTIONS = ("replace", "remove", "patch")
+_REPLACE_REMOVED = ("'replace' is not available; use 'patch'. old_text is the exact span to change and "
+                    "content is its new text; the rest of the entry is kept. To rewrite a whole entry, "
+                    "set old_text to the whole entry. Nothing was written.")
 
 
 def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -570,7 +578,7 @@ def destructive_ops(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _background_delete_gate(store, action, operations, target="memory", content=None,
                             old_text=None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
+    stays available (it is all any review prompt asks for), while ``patch``/``remove`` —
     single or inside a batch — are never applied unattended. The op is staged in the pending
     store instead of merely denied: the fork's own review summary is never published back, so
     a plain denial would drop the consolidation request with no surfacing path at all. A
@@ -606,17 +614,21 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
         FAILURE_CLASS.set("gate_refused")
         return tool_error(
-            "Background review may not delete memory entries ('replace'/'remove', including in a "
+            "Background review may not delete memory entries ('patch'/'remove', including in a "
             "batch); 'add' is still available.", success=False)
 
 
 def memory_tool(
-    # action may be None when using the batch `operations` shape (upstream);
-    # target stays Optional/None so the warm-tier promote/demote dispatch can
-    # tell "defaulted" from "explicit" (fork). Hot-tier ops default target to
-    # 'memory' internally (_memory_tool).
+    # action may be None when using the batch `operations` shape (upstream).
+    # ``target`` keeps UPSTREAM's signature default of 'memory': a DIRECT Python call that
+    # names no target gets 'memory' (tests, in-process helpers). The model-facing routes
+    # (registry lambda, inline executor, staged replay) pass ``args.get("target")`` — an
+    # EXPLICIT None when the model omitted it — which _memory_target_error REFUSES
+    # (upstream: "require explicit top-level targets"), while warm promote/demote read that
+    # None as "not specified". Do not re-default None anywhere in the hot path: that erases
+    # the direct-vs-model distinction (tests/tools/test_memory_target_contract.py pins it).
     action: str | None = None,
-    target: Optional[str] = None,
+    target: str = "memory",
     content: str | None = None,
     old_text: str | None = None,
     new_text: str | None = None,
@@ -638,15 +650,18 @@ def memory_tool(
     """Tool entry point; returns a JSON string. Dispatches to MemoryStore (hot tier) or
     WarmStore (warm tier) based on the ``tier`` arg or action.
 
-    Hot tier: ``add``/``replace``/``remove``/``read`` — small, always-loaded, file-backed
+    Hot tier: ``add``/``patch``/``remove``/``read`` — small, always-loaded, file-backed
     (MEMORY.md / USER.md), bounded by char_limit. Single op (action + content/old_text) or
     batch (``operations``, atomic against the final budget). ``new_text`` aliases ``content``;
-    for 'replace' both mean the COMPLETE new entry (the whole matched entry is overwritten,
-    old_text only locates it).
+    for 'patch' content replaces exactly the ``old_text`` span and the rest of the entry is
+    kept. The whole-entry 'replace' action is no longer offered on the hot tier — it is
+    refused with a pointer to 'patch' (see ``_REPLACE_REMOVED``); it survives only in the
+    internal action tables so writes staged before its removal still replay.
 
     Warm tier: ``add``/``recall``/``recall_related``/``read``/``replace``/``remove``/
     ``feedback`` — unbounded, search-only via FTS5 + BM25, SQLite-backed at
-    ``$HERMES_HOME/memory_store.db``. Plus cross-tier: ``promote`` (warm → hot),
+    ``$HERMES_HOME/memory_store.db``. Warm ``replace`` (fact_id + content) rewrites a whole
+    fact by id and is unrelated to hot ``patch``. Plus cross-tier: ``promote`` (warm → hot),
     ``demote`` (hot → warm).
 
     Only the hot tier (upstream's built-in store) records shared memory metrics; the
@@ -710,16 +725,19 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     # An omitted optional string can arrive as "" (#90468): let the new_text alias fill it.
     if not content and new_text:
         content = new_text
-    # Strict providers send JSON null for optional fields; treat as omitted. The warm path
-    # handles its own target resolution (None means "not specified" — see _handle_warm_action's
-    # promote/demote branches), so this default is applied only on the hot-tier path.
-    target = "memory" if target is None else target
-    target_error = _memory_target_error(store, target)
+    # ``target=None`` reaching here is the MODEL-FACING omission signal (registry/inline
+    # pass an explicit None) and is refused by the validator below — never re-default it
+    # to 'memory': direct Python callers already get 'memory' from the entry signature,
+    # and re-defaulting would silently accept model calls that never named a store
+    # (breaks tests/tools/test_memory_target_contract.py's rejection contract).
+    target_error = _memory_target_error(store, target, operations)
     if target_error is not None:
         return "rejected", json.dumps(target_error)
     if operations:
         if not isinstance(operations, list):
             return _invalid("operations must be a list of {action, content?, old_text?} objects.")
+        if any(isinstance(op, dict) and op.get("action") == "replace" for op in operations):
+            return _invalid(_REPLACE_REMOVED)
         denied = _background_delete_gate(store, action, operations, target)
         if denied is not None:
             return "rejected", denied
@@ -734,11 +752,11 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     # *why* the call was malformed and can trigger repeated retries. (#64291)
     if not action and not operations:
         return _invalid(
-            "Missing required parameter: provide 'action' (add/replace/remove) "
+            "Missing required parameter: provide 'action' (add/patch/remove) "
             "or 'operations' (batch list). Got neither."
         )
     # FORK: hot-tier "read" returns live entries. _success_response() is deliberately
-    # write-shaped (entries are withheld after add/replace/remove to avoid inviting the
+    # write-shaped (entries are withheld after add/patch/remove to avoid inviting the
     # model to re-issue redundant writes); a read has no such write to guard against and
     # its entire purpose is to surface the entries, so build the response directly.
     # See tests/tools/test_memory_warm.py::TestBackwardCompat::test_hot_read_returns_state.
@@ -750,11 +768,19 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
             "success": True, "target": target, "entries": _entries, "entry_count": len(_entries),
             "usage": f"{_pct}% — {_current:,}/{_limit:,} chars",
             "message": "Hot tier entries returned."}, ensure_ascii=False)
+    # Upstream dropped the whole-entry hot 'replace'. It stays in _STORE_ACTIONS so
+    # writes staged before its removal still replay by action name, but it must never
+    # run on the model-facing hot path. Only hot/absent-tier calls reach here: a
+    # tier='warm' + action='replace' call was already dispatched to _handle_warm_action
+    # by memory_tool() above, so warm replace (fact_id + content) is unaffected.
+    if action == "replace":
+        return _invalid(_REPLACE_REMOVED)
     if action not in _STORE_ACTIONS:
         return _invalid(
-            f"Unknown action '{action}'. Hot-tier actions: add, replace, remove, read. "
-            f"Warm-tier actions (use tier='warm' or these names): "
-            f"recall, recall_related, feedback, promote, demote")
+            f"Unknown action '{action}'. Hot-tier actions: add, patch, remove, read. "
+            f"Warm-only actions (dispatched by name): recall, recall_related, feedback, "
+            f"promote, demote, pin, unpin, pinned. Warm 'replace' (fact_id+content) needs "
+            f"tier='warm'.")
     invalid = (_validate_single_op(store, action, target, content, old_text)
                or _background_delete_gate(store, action, None, target, content, old_text)
                or _apply_write_gate(store, action, target, content, old_text))
@@ -792,13 +818,31 @@ def check_memory_requirements() -> bool:
     return flags[0] or flags[1]
 
 
-def _memory_target_error(store: MemoryStore, target: str) -> Optional[dict[str, Any]]:
-    """Return a shared validation error for an invalid or disabled target."""
-    if target not in {"memory", "user"}:
+def _memory_target_error(
+    store: MemoryStore, target: str | None, operations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Validate one explicit store before writing, staging, or replaying a batch."""
+    if target is None:
+        FAILURE_CLASS.set("invalid_args")
+        return {"success": False, "error": (
+            "Missing required target. Retry with target='memory' or target='user' at the top level. "
+            "For a batch, remove target from every operation; use separate calls for different stores. "
+            "Nothing was written or staged.")}
+    if not isinstance(target, str) or target not in {"memory", "user"}:
         from tools.registry import _bound_error_text
         FAILURE_CLASS.set("invalid_args")
         return {"success": False,
                 "error": _bound_error_text(f"Invalid memory target '{target}'. Use 'memory' or 'user'.")}
+    if isinstance(operations, list):
+        for index, op in enumerate(operations, 1):
+            # A nested target equal to the call's (or null) is redundant, not wrong; only a
+            # different one asks for two stores in one call, which a batch cannot do.
+            if isinstance(op, dict) and op.get("target") not in (None, target):
+                FAILURE_CLASS.set("invalid_args")
+                return {"success": False, "error": (
+                    f"Operation {index} names a different target than the one at the top level. "
+                    "One call writes one store: retry with separate calls for different stores. "
+                    "Nothing was written or staged.")}
     if store.target_enabled(target):
         return None
     label = "USER.md" if target == "user" else "MEMORY.md"
@@ -853,12 +897,15 @@ def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[st
     replace/remove applies to exactly its pinned ``matched_entry`` or is refused; a record
     staged before pinning has no verifiable target, so it is refused rather than replayed by
     old_text (which could hit a newer entry the approver never saw)."""
-    action, target = payload.get("action"), payload.get("target", "memory")
+    action, target = payload.get("action"), payload.get("target")
     # Warm-tier extraction proposals don't write through MemoryStore at all, so the
-    # hot-tier target check below doesn't apply to them (their 'target' is unset).
+    # hot-tier target check below doesn't apply to them (their 'target' is unset, and the
+    # merged _memory_target_error now rejects a missing target rather than defaulting it).
+    # tier='hot' proposals are ordinary MEMORY.md/USER.md adds and DO carry an explicit
+    # target; they fall through to the second extraction branch below, after the check.
     if action == "extraction_proposal" and (payload.get("tier") or "warm").lower() != "hot":
         return _apply_extraction_proposal(payload, store)
-    target_error = _memory_target_error(store, target)
+    target_error = _memory_target_error(store, target, payload.get("operations"))
     if target_error is not None:
         return target_error
     if action == "extraction_proposal":
@@ -879,7 +926,7 @@ MEMORY_SCHEMA = {
     "description": (
         "Save durable information to persistent memory and recall it across sessions. "
         "TWO TIERS, ONE TOOL — pick the right tier per fact.\n\n"
-        "HOT TIER (tier='hot', the default for add/replace/remove with target='memory' or 'user'):\n"
+        "HOT TIER (tier='hot', the default for add/patch/remove with target='memory' or 'user'):\n"
         "  - Always loaded into the system prompt at session start. Costs tokens every turn forever.\n"
         "  - SMALL CAP (~600+400 chars combined). Use only for facts that MUST influence every turn.\n"
         "  - Best fit: user preferences, recurring corrections, routing rules, hot environment quirks.\n"
@@ -892,7 +939,7 @@ MEMORY_SCHEMA = {
         "  - DEFAULT for new content unless it genuinely belongs in hot tier — when in doubt, warm.\n\n"
         "BATCH (hot tier): make multiple hot-tier changes in ONE call via an 'operations' array "
         "(each item: {action, content?, old_text?}). The batch applies atomically and the hot-tier "
-        "char limit is checked only on the FINAL result — so a single call can remove/replace stale "
+        "char limit is checked only on the FINAL result — so a single call can remove/patch stale "
         "entries to free room AND add new ones, even when an add alone would overflow. Use the bare "
         "action/content/old_text fields only for a single lone change.\n\n"
         "WHEN TO SAVE (proactively, don't wait):\n"
@@ -901,11 +948,13 @@ MEMORY_SCHEMA = {
         "- You discover environment / project / API quirks → WARM\n"
         "- You learn a stable fact useful in future sessions → WARM unless it's a recurring correction\n\n"
         "ACTIONS:\n"
-        "  HOT-TIER: add (target+content), replace (target+old_text+content), "
-        "remove (target+old_text), read (target). Batch via 'operations'.\n"
+        "  HOT-TIER: add (target+content), patch (target+old_text+content) — content replaces "
+        "exactly the old_text span and the rest of the entry is kept, remove (target+old_text), "
+        "read (target). 'replace' is NOT available on the hot tier: use 'patch' (set old_text to "
+        "the whole entry to rewrite it). Batch via 'operations'.\n"
         "  WARM-TIER: add (content [+category +tags]), recall (query [+top_k +category]), "
         "recall_related (query OR fact_id), read ([+category +top_k]), "
-        "replace (fact_id+content), remove (fact_id), "
+        "replace (fact_id+content) — replaces a whole warm fact by id, remove (fact_id), "
         "feedback (fact_id+helpful) — train trust scores by rating retrieved facts.\n"
         "  SESSION-PIN: pin (fact_id) — keep a warm fact visible in the system prompt "
         "for the rest of THIS session; unpin (fact_id); pinned — list current pins. "
@@ -929,14 +978,19 @@ MEMORY_SCHEMA = {
             "action": {
                 "type": "string",
                 "enum": [
-                    "add", "replace", "remove", "read",
+                    "add", "patch", "remove", "read",
                     "recall", "recall_related",
                     "feedback", "promote", "demote",
                     "pin", "unpin", "pinned",
+                    "replace",
                 ],
                 "description": (
                     "The action to perform (single-op shape). Omit when using the "
-                    "hot-tier 'operations' batch array."
+                    "hot-tier 'operations' batch array. Hot-tier edit actions are "
+                    "'add'/'patch'/'remove' ('patch' replaces exactly the old_text span; "
+                    "set old_text to the whole entry to rewrite it). Hot 'replace' is not "
+                    "available — use 'patch'. The 'replace' enum member is WARM-tier only "
+                    "(fact_id + content)."
                 ),
             },
             "tier": {
@@ -954,35 +1008,38 @@ MEMORY_SCHEMA = {
                 "enum": ["memory", "user"],
                 "description": (
                     "'memory' for personal notes, 'user' for user profile. "
-                    "Hot tier (add/replace/remove/read): which file to operate on. "
-                    "Cross-tier promote: which hot file the fact lands in. "
-                    "Cross-tier demote: which hot file the fact comes from. "
-                    "Defaults to 'memory'. Ignored for warm-tier-only actions "
-                    "(add/recall/recall_related/read/replace/remove/feedback)."
+                    "Hot tier (add/patch/remove/read): which file to operate on — REQUIRED "
+                    "for a hot write (a call that omits it is refused; retry with "
+                    "target='memory' or target='user'). Cross-tier promote: which hot file "
+                    "the fact lands in (defaults to 'memory'). Cross-tier demote: which hot "
+                    "file the fact comes from (defaults to 'memory'). Ignored for "
+                    "warm-tier-only actions (add/recall/recall_related/read/replace/remove/feedback)."
                 ),
             },
             "content": {
                 "type": "string",
                 "description": (
-                    "The entry content. Required for 'add' and 'replace' (both tiers). "
-                    "For 'replace' it is the COMPLETE new entry text: the whole matched "
-                    "entry is overwritten, so include everything you want to keep. "
-                    "Alias: 'new_text' is also accepted (same full-entry meaning)."
+                    "The entry content. Required for 'add' and 'patch' (hot tier) and for "
+                    "warm 'add'/'replace'. For hot 'patch' it is the text that replaces the "
+                    "old_text span — the rest of the entry is kept. For warm 'replace' it is "
+                    "the COMPLETE new fact text, applied by fact_id. "
+                    "Alias: 'new_text' is also accepted."
                 ),
             },
             "old_text": {
                 "type": "string",
                 "description": (
-                    "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique "
-                    "substring IDENTIFYING the existing entry to modify — it locates the "
-                    "entry, it is not spliced out. Omit only for 'add'. Hot tier (and "
-                    "cross-tier demote): the substring identifies the entry to replace, "
-                    "remove, or demote. Ignored for warm tier (warm uses fact_id)."
+                    "REQUIRED for 'patch' and 'remove' (single-op shape). For 'patch': text "
+                    "from one entry that replaces exactly this span (the span must occur once "
+                    "in the entry). For 'remove': a short unique substring IDENTIFYING the "
+                    "entry to delete (it locates the entry, it is not spliced out). Omit only "
+                    "for 'add'. Hot tier (and cross-tier demote) use this substring; it is "
+                    "ignored for the warm tier (warm uses fact_id)."
                 ),
             },
             "new_text": {
                 "type": "string",
-                "description": "Alias for 'content' (single-op shape): the COMPLETE new entry for 'replace', not a patch of old_text. If both are set, 'content' wins."
+                "description": "Alias for 'content'. If both are set, 'content' wins."
             },
             "operations": {
                 "type": "array",
@@ -994,12 +1051,13 @@ MEMORY_SCHEMA = {
                 "items": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten). Alias: 'new_text'."},
+                        "action": {"type": "string", "enum": ["add", "patch", "remove"]},
+                        "content": {"type": "string", "description": "Required for add and patch, as 'content' above."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
-                        "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
+                        "old_text": {"type": "string", "description": "As 'old_text' above."},
                     },
                     "required": ["action"],
+                    "additionalProperties": False,
                 },
             },
             "query": {
@@ -1085,8 +1143,9 @@ registry.register(
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
         action=args.get("action", ""),
-        # target=None means "not specified" — memory_tool defaults it to 'memory' on
-        # hot-tier ops and treats None as a signal to the warm promote/demote branches.
+        # target=None means "not specified": memory_tool treats None as a signal to the
+        # warm promote/demote branches, and the hot-tier path now REQUIRES an explicit
+        # target (the merged _memory_target_error rejects None — no silent default).
         target=args.get("target"),
         store=kw.get("store"),
         **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations",

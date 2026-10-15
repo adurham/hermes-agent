@@ -33,7 +33,7 @@ import pytest
 
 @pytest.fixture(scope="module")
 def exo_profile():
-    import model_tools  # noqa: F401 — triggers bundled provider discovery
+    import model_tools  # triggers bundled provider discovery
     from providers import get_provider_profile
 
     profile = get_provider_profile("exo")

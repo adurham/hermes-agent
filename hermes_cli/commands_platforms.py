@@ -383,7 +383,7 @@ _SLACK_RESERVED_COMMANDS = frozenset({
 # parity test reads this set. Aliases are never pinned ahead of canonicals.
 _SLACK_VIA_HERMES_ONLY = frozenset({
     "topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat",
-    "refine", "review", "pause", "whoami", "platform", "insights", "login", "initiate-setup"})
+    "refine", "review", "pause", "whoami", "platform", "insights", "login"})
 
 # Fork-only demotions, kept as a separate union so upstream edits to the set above merge cleanly.
 # The fork adds two gateway-available canonicals on top of upstream's registry, which already
