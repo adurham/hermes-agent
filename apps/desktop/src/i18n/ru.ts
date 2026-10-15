@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruBoot } from './ru_boot'
+import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
 import { ruConnectors } from './ru_connectors'
 import { ruFirstRun } from './ru_first_run'
@@ -38,66 +39,7 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 
 export const ruOverrides = {
 
-  catalog: {
-    add: 'Добавить',
-    added: 'Добавлено',
-    discover: 'Открывайте новое',
-    featured: 'Рекомендуемые',
-    explorePlugins: 'Обзор плагинов',
-    exploreSkills: 'Обзор навыков',
-    mostStarred: 'Больше всего звёзд',
-    newest: 'Новинки',
-    recentlyUpdated: 'Недавно обновлённые',
-    alphabetical: 'Название',
-    sortBy: 'Сортировать по',
-    seeAll: 'Показать все',
-    related: 'Похожие',
-    tags: 'Теги',
-    screenshots: 'Снимки экрана',
-    listView: 'Список',
-    cardView: 'Карточки',
-    installTitle: (name: string) => `Установить «${name}»?`,
-    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
-    installTo: 'Установить в',
-    thisComputer: 'Этот компьютер',
-    installing: 'Установка…',
-    installComplete: (name: string) => `«${name}» установлен`,
-    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-    installed: 'Установленные',
-    searchSkills: 'Поиск навыков',
-    searchPlugins: 'Поиск плагинов',
-    allSources: 'Все источники',
-    allCategories: 'Все категории',
-    about: 'Описание',
-    author: 'Автор',
-    source: 'Источник',
-    category: 'Категория',
-    version: 'Версия',
-    platforms: 'Платформы',
-    requires: 'Требования',
-    tools: 'Инструменты',
-    hooks: 'Хуки',
-    middleware: 'Промежуточное ПО',
-    commands: 'Команды',
-    license: 'Лицензия',
-    addedDate: 'Добавлено',
-    updatedDate: 'Обновлено',
-    repository: 'Репозиторий',
-    documentation: 'Документация',
-    noResults: 'Совпадений нет',
-    tryAnother: 'Попробуйте другой запрос или сбросьте фильтры.',
-    clearFilters: 'Сбросить фильтры',
-    filters: 'Фильтры',
-    loadFailed: 'Не удалось загрузить каталог',
-    retry: 'Попробовать снова',
-    more: 'Показать ещё',
-    pinned: 'Проверенный коммит',
-    snapshotHint: 'Из каталога Hermes. При просмотре нет обращений к исходным репозиториям.',
-    installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
-    results: (count: number) =>
-      `${count.toLocaleString('ru')} ${RU_PLURAL(count, 'результат', 'результата', 'результатов')}`,
-    back: 'Назад к результатам'
-  },
+  catalog: ruCatalog,
   connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
   firstRun: ruFirstRun,
@@ -1565,17 +1507,7 @@ export const ruOverrides = {
       }
     }
   },
-  skillDeepLink: {
-    installTitle: (name: string) => `Установить «${name}»?`,
-    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
-    installTo: 'Установить в',
-    thisComputer: 'Этот компьютер',
-    installing: 'Установка…',
-    installComplete: (name: string) => `«${name}» установлен`,
-    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-    installed: 'Установленные',
-    source: 'Источник'
-  },
+  skillDeepLink: ruSkillDeepLink,
   skills: {
     plugins: {
       pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'

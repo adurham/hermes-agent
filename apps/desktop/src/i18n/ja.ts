@@ -4,6 +4,7 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
 import { jaBoot } from './ja_boot'
+import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
 import { jaClarify } from './ja_clarify'
 import { jaConnectors } from './ja_connectors'
 import { jaFirstRun } from './ja_first_run'
@@ -19,67 +20,7 @@ import { jaUpdateChannel } from './ja_update_channel'
 
 export const jaOverrides = {
 
-  catalog: {
-    add: '追加',
-    added: '追加済み',
-    discover: '見つける',
-    featured: 'おすすめ',
-    explorePlugins: 'プラグインを探す',
-    exploreSkills: 'スキルを探す',
-    mostStarred: 'スターが多い順',
-    newest: '新着',
-    recentlyUpdated: '最近の更新',
-    alphabetical: '名前',
-    sortBy: '並べ替え',
-    seeAll: 'すべて表示',
-    related: '類似の項目',
-    tags: 'タグ',
-    screenshots: 'スクリーンショット',
-    listView: 'リスト表示',
-    cardView: 'カード表示',
-    installTitle: (name: string) => `「${name}」をインストールしますか？`,
-    installDescription:
-      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-    installTo: 'インストール先',
-    thisComputer: 'このコンピューター',
-    installing: 'インストール中…',
-    installComplete: (name: string) => `「${name}」をインストールしました`,
-    destinationChanged:
-      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-    installed: 'インストール済み',
-    searchSkills: 'スキルを検索',
-    searchPlugins: 'プラグインを検索',
-    allSources: 'すべての提供元',
-    allCategories: 'すべてのカテゴリ',
-    about: '概要',
-    author: '作者',
-    source: '提供元',
-    category: 'カテゴリ',
-    version: 'バージョン',
-    platforms: '対応プラットフォーム',
-    requires: '必要なもの',
-    tools: 'ツール',
-    hooks: 'フック',
-    middleware: 'ミドルウェア',
-    commands: 'コマンド',
-    license: 'ライセンス',
-    addedDate: '追加日',
-    updatedDate: '更新日',
-    repository: 'リポジトリ',
-    documentation: 'ドキュメント',
-    noResults: '一致する項目がありません',
-    tryAnother: '別の検索を試すか、フィルターをクリアしてください。',
-    clearFilters: 'フィルターをクリア',
-    filters: 'フィルター',
-    loadFailed: 'カタログを読み込めませんでした',
-    retry: '再試行',
-    more: 'さらに表示',
-    pinned: 'レビュー済みコミット',
-    snapshotHint: 'Hermesカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
-    installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
-    results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
-    back: '結果に戻る'
-  },
+  catalog: jaCatalog,
   connectors: jaConnectors.connectors,
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
@@ -1440,19 +1381,7 @@ export const jaOverrides = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `「${name}」をインストールしますか？`,
-    installDescription:
-      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
-    installTo: 'インストール先',
-    thisComputer: 'このコンピューター',
-    installing: 'インストール中…',
-    installComplete: (name: string) => `「${name}」をインストールしました`,
-    destinationChanged:
-      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
-    installed: 'インストール済み',
-    source: '提供元'
-  },
+  skillDeepLink: jaSkillDeepLink,
   skills: {
     plugins: {
       pageBlurb:

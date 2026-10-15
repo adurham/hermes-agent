@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
 import { zhConnectorCard } from './zh_connector_card'
 import { zhFirstRun } from './zh_first_run'
@@ -17,65 +18,7 @@ import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
 
-  catalog: {
-    add: '添加',
-    added: '已添加',
-    discover: '发现',
-    featured: '精选',
-    explorePlugins: '探索插件',
-    exploreSkills: '探索技能',
-    mostStarred: '星标最多',
-    newest: '最新发布',
-    recentlyUpdated: '最近更新',
-    alphabetical: '名称',
-    sortBy: '排序方式',
-    seeAll: '查看全部',
-    related: '类似推荐',
-    tags: '标签',
-    screenshots: '截图',
-    listView: '列表视图',
-    cardView: '卡片视图',
-    installTitle: (name: string) => `安装“${name}”？`,
-    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
-    installTo: '安装到',
-    thisComputer: '此电脑',
-    installing: '正在安装…',
-    installComplete: (name: string) => `已安装“${name}”`,
-    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
-    installed: '已安装',
-    searchSkills: '搜索技能',
-    searchPlugins: '搜索插件',
-    allSources: '所有来源',
-    allCategories: '所有分类',
-    about: '简介',
-    author: '作者',
-    source: '来源',
-    category: '分类',
-    version: '版本',
-    platforms: '支持的平台',
-    requires: '依赖项',
-    tools: '工具',
-    hooks: '钩子',
-    middleware: '中间件',
-    commands: '命令',
-    license: '许可证',
-    addedDate: '添加日期',
-    updatedDate: '更新日期',
-    repository: '代码仓库',
-    documentation: '文档',
-    noResults: '没有匹配项',
-    tryAnother: '请尝试其他搜索或清除筛选条件。',
-    clearFilters: '清除筛选条件',
-    filters: '筛选条件',
-    loadFailed: '无法加载目录',
-    retry: '重试',
-    more: '显示更多',
-    pinned: '已审核的提交',
-    snapshotHint: '内容来自 Hermes 目录。浏览时不会连接来源代码仓库。',
-    installHint: '安装前请检查源代码。更改将在新会话中生效。',
-    results: (count: number) => `${count.toLocaleString('zh')} 个结果`,
-    back: '返回结果'
-  },
+  catalog: zhCatalog,
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -2130,17 +2073,7 @@ export const zhOverrides = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `安装“${name}”？`,
-    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
-    installTo: '安装到',
-    thisComputer: '此电脑',
-    installing: '正在安装…',
-    installComplete: (name: string) => `已安装“${name}”`,
-    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
-    installed: '已安装',
-    source: '来源'
-  },
+  skillDeepLink: zhSkillDeepLink,
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',

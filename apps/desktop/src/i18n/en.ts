@@ -4,6 +4,7 @@ import { enAppTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
 import { enBilling } from './en_billing'
 import { enBoot } from './en_boot'
+import { enCatalog, enSkillDeepLink } from './en_catalog'
 import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
@@ -38,65 +39,7 @@ export const en: Translations = {
   intro: { stock: {}, custom: () => [] },
   connectors: enConnectorCard,
 
-  catalog: {
-    add: 'Add',
-    added: 'Added',
-    discover: 'Discover',
-    featured: 'Featured',
-    explorePlugins: 'Explore plugins',
-    exploreSkills: 'Explore skills',
-    mostStarred: 'Most starred',
-    newest: 'Newest',
-    recentlyUpdated: 'Recently updated',
-    alphabetical: 'Name',
-    sortBy: 'Sort by',
-    seeAll: 'See all',
-    related: 'More like this',
-    tags: 'Tags',
-    screenshots: 'Screenshots',
-    listView: 'List view',
-    cardView: 'Card view',
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    installed: 'Installed',
-    searchSkills: 'Search skills',
-    searchPlugins: 'Search plugins',
-    allSources: 'All sources',
-    allCategories: 'All categories',
-    about: 'About',
-    author: 'Author',
-    source: 'Source',
-    category: 'Category',
-    version: 'Version',
-    platforms: 'Platforms',
-    requires: 'Requires',
-    tools: 'Tools',
-    hooks: 'Hooks',
-    middleware: 'Middleware',
-    commands: 'Commands',
-    license: 'License',
-    addedDate: 'Added',
-    updatedDate: 'Updated',
-    repository: 'Repository',
-    documentation: 'Documentation',
-    noResults: 'No matches',
-    tryAnother: 'Try another search or clear your filters.',
-    clearFilters: 'Clear filters',
-    filters: 'Filters',
-    loadFailed: 'Could not load the catalog',
-    retry: 'Try again',
-    more: 'Show more',
-    pinned: 'Reviewed commit',
-    snapshotHint: 'From the Hermes catalog. Browsing never contacts source repositories.',
-    installHint: 'Review the source before installing. Changes apply to new sessions.',
-    results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
-    back: 'Back to results'
-  },
+  catalog: enCatalog,
   // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
   connectorsPage: {
     title: 'Connectors',
@@ -2162,17 +2105,7 @@ export const en: Translations = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    installed: 'Installed',
-    source: 'Source'
-  },
+  skillDeepLink: enSkillDeepLink,
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
