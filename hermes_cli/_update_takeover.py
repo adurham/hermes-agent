@@ -112,12 +112,14 @@ def _head_sha(root: Path) -> str:
 
 def _record_failure(request: dict, result: Path, code: int, detail: str) -> None:
     from hermes_cli import update_receipt
+    from hermes_cli.runtime_state import _atomic_bytes
     from hermes_constants import get_hermes_home
 
     update_receipt.record_step("historical_takeover", False, detail)
     saved = update_receipt.finalize_pending_update_receipt(code, detail)
     if request.get("gateway_mode"):
-        (get_hermes_home() / ".update_exit_code").write_text(f"{code}\n", encoding="utf-8")
+        # Atomic: the gateway watcher polls this file and reads an empty one as exit 1.
+        _atomic_bytes(get_hermes_home() / ".update_exit_code", f"{code}\n".encode())
     result.write_text(json.dumps({"receipt_handled": saved is not None, "resume_handled": False}), encoding="utf-8")
 
 
@@ -207,9 +209,10 @@ def _record_owed_finish(request: dict, result: Path, detail: str) -> None:
         saved = update_receipt.finalize_pending_update_receipt(0, f"committed; finishing steps owed: {detail}")
     if request.get("gateway_mode"):
         with suppress(Exception):  # health: allow BLE001 -- post-commit boundary: see above
+            from hermes_cli.runtime_state import _atomic_bytes
             from hermes_constants import get_hermes_home
 
-            (get_hermes_home() / ".update_exit_code").write_text("0\n", encoding="utf-8")
+            _atomic_bytes(get_hermes_home() / ".update_exit_code", b"0\n")
     with suppress(OSError):  # no result file: the old updater keeps its own receipt and resumes
         result.write_text(json.dumps({"receipt_handled": saved is not None, "resume_handled": False}),
                           encoding="utf-8")
