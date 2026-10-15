@@ -1694,7 +1694,6 @@ cli:
     thought: "Pensou"
     working: "Trabalhando…"
     preparing: "Preparando {what}…"
-    header_hint: "/help para comandos · /tools e /skills mostram o que está carregado"
     hint_steer: "guiar"
     hint_queue: "enfileirar"
     hint_interrupt: "interromper"

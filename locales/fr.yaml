@@ -1946,7 +1946,6 @@ cli:
     thought: "Réflexion"
     working: "En cours…"
     preparing: "Préparation de {what}…"
-    header_hint: "/help pour les commandes · /tools et /skills listent ce qui est chargé"
     hint_steer: "orienter"
     hint_queue: "mettre en file"
     hint_interrupt: "interrompre"

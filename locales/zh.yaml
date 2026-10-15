@@ -1694,7 +1694,6 @@ cli:
     thought: "思考"
     working: "工作中…"
     preparing: "正在准备 {what}…"
-    header_hint: "/help 查看命令 · /tools 和 /skills 列出已加载内容"
     hint_steer: "引导"
     hint_queue: "排队"
     hint_interrupt: "中断"

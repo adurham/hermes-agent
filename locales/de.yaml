@@ -1694,7 +1694,6 @@ cli:
     thought: "Nachgedacht"
     working: "Arbeitet…"
     preparing: "Bereite {what} vor…"
-    header_hint: "/help für Befehle · /tools und /skills zeigen, was geladen ist"
     hint_steer: "lenken"
     hint_queue: "einreihen"
     hint_interrupt: "unterbrechen"

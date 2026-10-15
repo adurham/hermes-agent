@@ -177,12 +177,14 @@ def turn_footer(summary: str) -> str:
 
 
 def _short_version() -> str:
+    """``0.22.1`` from ``0.22.1+127.g7bf3766.dirty``; nothing for an unstamped ``git.<sha>`` tree."""
     from hermes_cli.version_info import get_version_info
-    return get_version_info().derived_version.split("+", 1)[0]
+    version = get_version_info().derived_version.split("+", 1)[0]
+    return version if version[:1].isdigit() else ""
 
 
-def header_markup(cli, width: int = 0) -> str:
-    """Two-line launch header that replaces the full banner: identity + model, then where + help."""
+def header_markup(cli) -> str:
+    """Two-line launch header that replaces the full banner: identity + model, then cwd (branch)."""
     from rich.markup import escape
     accent, label = _skin_hex("ui_accent", "#FFBF00"), _skin_hex("ui_label", "#DAA520")
     glyph, name = _brand_glyph()
@@ -193,11 +195,9 @@ def header_markup(cli, width: int = 0) -> str:
     version = _short_version()
     version = f" [dim]v{escape(version)} ·[/]" if version else " [dim]·[/]"
     line1 = f"[bold {accent}]{glyph}[/] [bold {label}]{escape(name)} Agent[/]{version} {escape(model)}{via}"
-    hint, cwd = t("cli.modern.header_hint"), _cwd_label()
-    width = width or shutil.get_terminal_size((100, 24)).columns
-    room = max(12, width - 2 - 3 - len(hint))
+    cwd, room = _cwd_label(), max(12, shutil.get_terminal_size((100, 24)).columns - 2)
     cwd = cwd if len(cwd) <= room else "…" + cwd[-(room - 1):]
-    return f"\n{line1}\n  [dim]{escape(cwd)} · {escape(hint)}[/]"
+    return f"\n{line1}\n  [dim]{escape(cwd)}[/]"
 
 
 def print_short_banner(cli) -> bool:

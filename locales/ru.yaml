@@ -1694,7 +1694,6 @@ cli:
     thought: "Размышлял"
     working: "Работаю…"
     preparing: "Готовлю {what}…"
-    header_hint: "/help — команды · /tools и /skills показывают загруженное"
     hint_steer: "направить"
     hint_queue: "в очередь"
     hint_interrupt: "прервать"

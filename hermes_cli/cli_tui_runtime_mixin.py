@@ -314,8 +314,7 @@ class CLITuiRuntimeMixin:
             _welcome_color = _welcome_skin.get_color("banner_text", _welcome_color)
         except Exception:
             pass
-        if not getattr(self, "_modern_layout", False):  # the glyph layout's header already greets
-            self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
 
         self._tui_startup_prewarm_and_warnings(_welcome_skin)
         self._print_random_tip()

@@ -1694,7 +1694,6 @@ cli:
     thought: "考えました"
     working: "作業中…"
     preparing: "{what} を準備中…"
-    header_hint: "/help でコマンド · /tools と /skills で読み込み内容を表示"
     hint_steer: "誘導"
     hint_queue: "キュー"
     hint_interrupt: "中断"

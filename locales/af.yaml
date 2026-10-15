@@ -1694,7 +1694,6 @@ cli:
     thought: "Het gedink"
     working: "Besig…"
     preparing: "Berei {what} voor…"
-    header_hint: "/help vir opdragte · /tools en /skills wys wat gelaai is"
     hint_steer: "stuur"
     hint_queue: "in tou"
     hint_interrupt: "onderbreek"

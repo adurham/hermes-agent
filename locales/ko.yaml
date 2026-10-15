@@ -1694,7 +1694,6 @@ cli:
     thought: "생각함"
     working: "작업 중…"
     preparing: "{what} 준비 중…"
-    header_hint: "/help 명령어 · /tools, /skills 로 로드된 항목 보기"
     hint_steer: "유도"
     hint_queue: "대기열"
     hint_interrupt: "중단"

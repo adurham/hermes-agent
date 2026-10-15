@@ -1694,7 +1694,6 @@ cli:
     thought: "Smaoinigh"
     working: "Ag obair…"
     preparing: "{what} á ullmhú…"
-    header_hint: "/help le haghaidh orduithe · liostaíonn /tools agus /skills a bhfuil luchtaithe"
     hint_steer: "stiúir"
     hint_queue: "cuir sa scuaine"
     hint_interrupt: "cuir isteach air"

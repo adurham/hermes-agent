@@ -1694,7 +1694,6 @@ cli:
     thought: "Düşündü"
     working: "Çalışıyor…"
     preparing: "{what} hazırlanıyor…"
-    header_hint: "/help komutlar · /tools ve /skills yüklenenleri listeler"
     hint_steer: "yönlendir"
     hint_queue: "sıraya al"
     hint_interrupt: "kes"
