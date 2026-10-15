@@ -6,6 +6,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from pathlib import Path
+
 import pytest
 
 from gateway.platforms.base import (
@@ -905,6 +907,17 @@ class TestDockerContainerMediaPathTranslation:
         assert BasePlatformAdapter.validate_media_delivery_path(
             "/output/report.pdf"
         ) == str(media.resolve())
+
+    def test_windows_drive_letter_host_mount_parses(self, monkeypatch):
+        """``C:/data:/workspace`` must split on the container colon, not the drive."""
+        import json
+
+        from gateway.platforms import base
+
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps(["C:/data:/workspace:ro"]))
+        monkeypatch.setattr(base, "_resolve_path", lambda p, **_k: p)
+
+        assert base._parse_docker_volume_mounts() == [(Path("C:/data"), Path("/workspace"))]
 
     def test_longest_prefix_wins(self, tmp_path, monkeypatch):
         import json
