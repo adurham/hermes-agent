@@ -29,7 +29,7 @@ from tools.environments.base_session_env import (
     _wrap_command_script,
 )
 from tools.environments.base_wait import _WaitTrace
-from utils import env_var_enabled
+from utils import env_var_enabled, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -208,11 +208,13 @@ def _save_json_store(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
-    """Return ``(mtime, size)`` for cache comparison, or ``None`` if unreadable."""
+def _file_mtime_key(host_path: str) -> tuple[int, int, int, int] | None:
+    """Return the ``file_signature`` change key, or ``None`` if unreadable.
+
+    mtime + size alone miss a same-size credential refresh landing in the same mtime tick;
+    inode and ctime catch the atomic replace / rewrite."""
     try:
-        st = Path(host_path).stat()
-        return (st.st_mtime, st.st_size)
+        return file_signature(Path(host_path).stat())
     except OSError:
         return None
 
