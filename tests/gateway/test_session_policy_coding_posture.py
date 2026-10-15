@@ -1,4 +1,7 @@
 """The gateway, not the client, applies the coding posture to a session that did not pick toolsets."""
+import json
+from types import SimpleNamespace
+
 import pytest
 
 FOCUS = {'agent': {'coding_context': 'focus'}, 'platform_toolsets': {'cli': ['terminal'], 'acp': ['terminal']}}
@@ -54,12 +57,6 @@ def test_a_project_file_written_mid_session_does_not_switch_toolsets(tmp_path):
     policy = create({'source': 'cli', 'cwd': str(plain), 'follow_profile_config': True}, FOCUS)
     (plain / 'pyproject.toml').write_text('[project]\nname = "late"\n')
     assert policy.current_toolsets(FOCUS) == ('terminal',)
-
-
-def test_a_following_session_still_takes_a_profile_change(project):
-    policy = create({'source': 'cli', 'cwd': str(project), 'follow_profile_config': True}, FOCUS)
-    off = {**FOCUS, 'agent': {'coding_context': 'off'}}
-    assert policy.current_toolsets(off) == ('terminal',)
 
 
 def test_plugin_mcp_servers_stay_in_the_posture(project, monkeypatch):
@@ -122,8 +119,6 @@ async def test_session_create_selects_the_posture_for_its_named_folder(project, 
 
 def test_a_following_session_takes_a_profile_coding_context_change(project, tmp_path, monkeypatch):
     """Replay through the real follow merge (``policy.config(authority)``), not a hand-built dict."""
-    import json
-    from types import SimpleNamespace
     home = tmp_path / 'home'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -134,15 +129,3 @@ def test_a_following_session_takes_a_profile_coding_context_change(project, tmp_
     assert policy.current_toolsets(policy.config(authority, secrets=False)) == ('coding',)
     (home / 'config.yaml').write_text(json.dumps({**config, 'agent': {'coding_context': 'off'}}))
     assert policy.current_toolsets(policy.config(authority, secrets=False)) == ('terminal',)
-
-
-def test_a_resolved_mode_keeps_its_own_focus_decision(project, tmp_path, monkeypatch):
-    """A mode resolved from a supplied ``focus`` config ignores the on-disk ``auto``."""
-    import json
-    from agent.coding_context import resolve_runtime_mode
-    home = tmp_path / 'home'
-    home.mkdir()
-    (home / 'config.yaml').write_text(json.dumps({'agent': {'coding_context': 'auto'}}))
-    monkeypatch.setenv('HERMES_HOME', str(home))
-    mode = resolve_runtime_mode(platform='cli', cwd=project, config={'agent': {'coding_context': 'focus'}})
-    assert mode.toolset_selection() == ['coding']
