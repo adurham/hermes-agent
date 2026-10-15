@@ -18,8 +18,9 @@ from urllib.parse import urlparse
 import hermes_yaml as yaml
 
 from agent import model_metadata_http
+from agent.model_metadata_cache import _write_context_cache, locked_context_cache
 
-from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, UNPRICED_REPLAY_FIELDS, without_persistence_fields
@@ -1126,20 +1127,12 @@ def _load_context_cache() -> dict[str, int]:
     return _load_context_cache_document().get("context_lengths") or {}
 
 
-def _write_context_cache(cache: dict[str, int], bedrock_confirmed: dict | None = None) -> None:
-    """Atomic write (a truncating write killed mid-dump leaves a partial file that
-    _load_context_cache() swallows as {}, wiping EVERY cached length). Raises on failure."""
-    document = {"context_lengths": cache}
-    if bedrock_confirmed:
-        document["bedrock_confirmed_v1"] = bedrock_confirmed
-    atomic_yaml_write(_get_context_cache_path(), document)
-
-
 def _context_cache_key(model: str, base_url: str) -> str:
     """Canonical ``model@base_url`` key; trailing slashes stripped so ``/v1`` and ``/v1/`` share one entry."""
     return f"{model}@{(base_url or '').rstrip('/')}"
 
 
+@locked_context_cache
 def save_context_length(model: str, base_url: str, length: int, *, source: str = "") -> None:
     """Persist a discovered context length under ``model@base_url`` (same model, different providers, different limits)."""
     # 0/negative is always a bug and would make get_model_context_length() return 0 (`0 is not None`).
@@ -1196,6 +1189,7 @@ def get_cached_context_length(model: str, base_url: str, *, bedrock_confirmed: b
     return length
 
 
+@locked_context_cache
 def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     """Drop a stale entry and its probe cooldown using the persisted cache URL.
 
