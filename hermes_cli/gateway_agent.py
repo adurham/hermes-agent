@@ -137,6 +137,9 @@ class GatewayAgent:
         # (``request.cancel``: another viewer answered, the turn ended); called off the agent thread.
         self.modal_withdraw_callback = modal_withdraw_callback
         self._open_request = None  # (request id, method) of the server request a modal is answering
+        # Set by the CLI after construction: a ``session.control.update`` mid-turn (a tool moved the goal
+        # or loop) marks its mirrored managers stale; the dock re-reads them off this thread.
+        self.control_update_callback = None
         self.suppress_status_output = False
         self._print_fn = None
         # Inert private attributes main's CLI writes (CALLMAP §3.2).
@@ -946,6 +949,10 @@ class GatewayAgent:
         if isinstance(payload.get("todos"), list):
             self._todo_store.items = list(payload["todos"])
 
+    def _on_control_update(self, payload, stream_callback, starts):
+        if self.control_update_callback is not None:
+            self.control_update_callback()
+
     def _on_thinking(self, payload, stream_callback, starts):
         if self.thinking_callback is not None:
             self.thinking_callback(payload.get("text") or "")
@@ -1304,6 +1311,7 @@ _HANDLERS = {
     "tool.start": GatewayAgent._on_tool_start,
     "tool.complete": GatewayAgent._on_tool_complete,
     "todo.updated": GatewayAgent._on_todo,
+    "session.control.update": GatewayAgent._on_control_update,
     "thinking.delta": GatewayAgent._on_thinking,
     "reasoning.delta": GatewayAgent._on_reasoning,
     "reasoning.available": GatewayAgent._on_reasoning_available,

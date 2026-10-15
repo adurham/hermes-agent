@@ -856,6 +856,13 @@ class GatewayTurnProgressMixin:
         if self._ctx._native_slack_task_cards:
             self.native_tool_start_callback(call_id, tool_name, args)
 
+    def _publish_control_if_changed(self):
+        """A tool (a plugin adding goal criteria, parking the goal) can move automation state mid-turn:
+        viewers' cards repaint now instead of at turn end. Revision-gated, so other tools publish nothing."""
+        from gateway.session_control_actions import publish
+        authority, canonical_id, _generation = self._approval_owner
+        publish(authority, canonical_id, only_if_changed=True)
+
     def combined_tool_complete_callback(self, call_id, tool_name, args, result):
         from agent.display import _detect_tool_failure
         is_error, _ = _detect_tool_failure(tool_name, result)
@@ -872,6 +879,8 @@ class GatewayTurnProgressMixin:
             # Task state is application data, not tool chrome: the full snapshot, as the TUI gateway emits it.
             self._publish_execution("todo.updated", {"todos": payload["todos"], "revision": payload.get("revision", 0)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
+        if local_viewer_turn(self):
+            self._publish_control_if_changed()
         if self._ctx._native_slack_task_cards:
             self.native_tool_complete_callback(call_id, tool_name, args, result)
 

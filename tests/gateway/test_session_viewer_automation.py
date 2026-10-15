@@ -145,3 +145,21 @@ async def test_a_read_that_clears_a_goal_barrier_repaints_the_other_viewers(owne
     await owner.call(kind, call)
     assert len(updates) == 1 and 'wait_barrier' not in updates[0]['control']['goal']
     assert updates[0]['control']['loop']['deferred_by_goal'] is True
+
+
+@pytest.mark.asyncio
+async def test_a_tool_that_moves_the_goal_mid_turn_repaints_the_viewers_once(owner):
+    """A plugin tool writes goal criteria mid-turn; the tool-completion republish
+    (``run_turn_progress`` → ``publish(only_if_changed=True)``) sends the new snapshot, other tools nothing."""
+    from gateway.session_control_actions import publish
+    from hermes_cli.goals import GoalManager
+    await owner.call('goal', 'set', 'ship it')
+    updates = []
+    owner.authority.sessions[owner.ref.session_id].event_stream.observers.add(
+        lambda frame: frame['params']['type'] == 'session.control.update' and updates.append(frame['params']['payload']))
+    publish(owner.authority, owner.ref.session_id, only_if_changed=True)
+    assert updates == []
+    GoalManager(session_id=owner.target).add_subgoal('tests pass')
+    publish(owner.authority, owner.ref.session_id, only_if_changed=True)
+    publish(owner.authority, owner.ref.session_id, only_if_changed=True)
+    assert [u['control']['goal']['subgoals'] for u in updates] == [['tests pass']]
