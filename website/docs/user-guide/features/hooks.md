@@ -2008,7 +2008,7 @@ printf '{}\n'
 
 ### Consent model
 
-Each unique `(event, command)` pair prompts the user for approval the first time Hermes sees it, then persists the decision to `~/.hermes/shell-hooks-allowlist.json`. Subsequent runs (CLI or gateway) skip the prompt.
+Each unique `(event, command)` pair prompts the user for approval the first time Hermes sees it, then persists the decision to `~/.hermes/shell-hooks-allowlist.json`. Subsequent runs (CLI or gateway) skip the prompt. The classic CLI asks on its terminal before it opens its gateway session; the gateway re-reads `hooks:` and the allowlist whenever a local session (CLI, TUI, Desktop) is created or resumed, so a hook added, approved, removed or revoked since the gateway started takes effect then.
 
 Three escape hatches bypass the interactive prompt — any one is sufficient:
 
@@ -2043,7 +2043,7 @@ The command string must match the configured hook command exactly. A path-keyed 
 |---------|--------------|
 | `hermes hooks list` | Dump configured hooks with matcher, timeout, and consent status |
 | `hermes hooks test <event> [--for-tool X] [--payload-file F]` | Fire every matching hook against a synthetic payload and print the parsed response |
-| `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (takes effect on next restart) |
+| `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (the gateway stops running it when the next local session opens; messaging-only gateways on restart) |
 | `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time |
 
 ### Security

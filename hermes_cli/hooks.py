@@ -263,8 +263,8 @@ def _cmd_revoke(args) -> None:
         return
     print(f"Removed {removed} allowlist entry/entries for: {args.command}")
     print(
-        "Note: currently running CLI / gateway processes keep their "
-        "already-registered callbacks until they restart."
+        "Note: a running gateway stops running it when the next local session opens; "
+        "other running processes keep it until they restart."
     )
 
 
