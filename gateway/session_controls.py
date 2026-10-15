@@ -508,7 +508,10 @@ class AuthorityConnection:
             # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
             await refresh_settled(self.authority, ref.session_id)
             row = self.authority.db.get_session(ref.session_id)
-            if row and row['source'] in LEGACY_LOCAL_SOURCES:
+            # Canonical LOCAL compression/reset segments keep the receipt on their logical
+            # owner, not on the physical transcript ID the history picker / Desktop supplies
+            # after list_sessions projects the tip (#139306).
+            if row and row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
                 ref = resolve_local_target(self.authority, self.actor,
                     self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
         if params.get('editor') is not None:
