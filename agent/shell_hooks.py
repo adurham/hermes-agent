@@ -213,6 +213,9 @@ def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
                                    "fixed", "the allowlist is unreadable" if not readable
                                    else "a hooks: entry in config.yaml is malformed")
                 return
+            # In-memory consent ends with the hook's config entry, so a removed-and-re-added hook asks again.
+            configured = {(home_key, spec.event, spec.command) for spec in specs}
+            _launch_consent.difference_update({c for c in _launch_consent if c[0] == home_key and c not in configured})
             keep = {_key(home_key, spec) for spec in wanted}
             stale = {k for k in _registered if k[0] == home_key and k not in keep}
             _registered.difference_update(stale)
@@ -369,8 +372,7 @@ def _parse_hooks(hooks_cfg: Any) -> tuple[list[ShellHookSpec], bool]:
         if event_name in SHELL_UNSUPPORTED_HOOKS:  # _parse_response has no channel for these directives — refuse loudly
             logger.warning("hook event %r is Python-plugin-only: shell hooks cannot return its directive, "
                            "so this registration is refused rather than silently ignored", event_name)
-            complete = False
-            continue
+            continue  # well-formed and deliberate: refused, but not a typo that should suspend removal
         if event_name not in VALID_HOOKS:
             suggestion = difflib.get_close_matches(str(event_name), VALID_HOOKS, n=1, cutoff=0.6)
             if suggestion:

@@ -177,6 +177,28 @@ def test_saved_launch_approval_stays_revocable_and_bad_records_are_skipped(home,
     assert _wired() == [f"shell_hook[pre_tool_call:{b}]"]
 
 
+def test_unsaved_launch_consent_ends_with_the_config_entry(home, tmp_path, monkeypatch):
+    a = _script(tmp_path, "a.sh")
+    with monkeypatch.context() as unwritable:
+        unwritable.setattr(shell_hooks, "atomic_json_write", lambda *a, **k: (_ for _ in ()).throw(OSError("ro")))
+        shell_hooks.accept_for_launch(_cfg(a))
+    shell_hooks.sync_from_config(lambda: _cfg(a))
+    assert _wired() == [f"shell_hook[pre_tool_call:{a}]"]
+    shell_hooks.sync_from_config(lambda: {"hooks": {}})  # removed from config.yaml
+    shell_hooks.sync_from_config(lambda: _cfg(a))  # added back: needs consent again
+    assert _wired() == []
+
+
+def test_refused_plugin_only_entry_does_not_suspend_removal(home, tmp_path):
+    a = _script(tmp_path, "a.sh")
+    shell_hooks.register_from_config(_cfg(a), accept_hooks=True)
+    shell_hooks.revoke(a)
+    cfg = _cfg(a)
+    cfg["hooks"]["transform_api_error_classification"] = [{"command": a}]
+    shell_hooks.sync_from_config(lambda: cfg)
+    assert _wired() == []
+
+
 def test_register_never_reasks_for_a_wired_hook(home, tmp_path, monkeypatch):
     a = _script(tmp_path, "a.sh")
     shell_hooks.register_from_config(_cfg(a), accept_hooks=True)
