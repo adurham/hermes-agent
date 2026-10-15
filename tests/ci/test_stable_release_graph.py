@@ -155,6 +155,8 @@ def test_lane_inputs_reach_the_workflows_they_configure():
     for name in ("candidates-win32-arm64", "candidates-win32-x64", "candidates-win32-bundle"):
         assert jobs[name]["with"]["skip-signed"] == "${{ !fromJSON(needs.admit.outputs.lanes).windows }}", name
         assert jobs[name]["with"]["skip-store"] == store_off, name
+        # The MSIX smokes run in the bundle call, so the bundle never waits for them.
+        assert jobs[name]["with"]["windows-smokes-with-bundle"] == "true", name
     assert jobs["publish-bundles"]["with"]["skip-store"] == store_off
     desktop = workflow("desktop-bundled-release.yml")["jobs"]
     assert "inputs.skip-store" in desktop["stable-store"]["if"]
