@@ -16,8 +16,8 @@ from unittest.mock import patch
 # Thread-safe cache entry update (hermes_cli/models.py)
 # ---------------------------------------------------------------------------
 
-class TestUpdateProviderCacheEntry:
-    """Verify ``update_provider_cache_entry`` writes safely under concurrency."""
+class TestStoreCacheEntry:
+    """Verify ``_store_cache_entry`` writes safely under concurrency."""
 
     def test_writes_new_entry(self, tmp_path, monkeypatch):
         """A new entry is persisted to the cache file."""
@@ -26,8 +26,7 @@ class TestUpdateProviderCacheEntry:
         cache_path = tmp_path / "provider_models_cache.json"
         monkeypatch.setattr(mod, "_provider_models_cache_path", lambda: cache_path)
 
-        with patch.object(mod, "_credential_fingerprint", return_value="fp1"):
-            mod.update_provider_cache_entry("openrouter", ["m1", "m2"])
+        mod._store_cache_entry("openrouter", mod._cache_entry("fp1", ["m1", "m2"]))
 
         cache = mod._load_provider_models_cache()
         assert "openrouter" in cache
@@ -42,29 +41,16 @@ class TestUpdateProviderCacheEntry:
         monkeypatch.setattr(mod, "_provider_models_cache_path", lambda: cache_path)
 
         # Seed with one entry
-        with patch.object(mod, "_credential_fingerprint", return_value="fp_a"):
-            mod.update_provider_cache_entry("provider_a", ["a1"])
+        mod._store_cache_entry("provider_a", mod._cache_entry("fp_a", ["a1"]))
 
         # Write a second entry
-        with patch.object(mod, "_credential_fingerprint", return_value="fp_b"):
-            mod.update_provider_cache_entry("provider_b", ["b1"])
+        mod._store_cache_entry("provider_b", mod._cache_entry("fp_b", ["b1"]))
 
         cache = mod._load_provider_models_cache()
         assert "provider_a" in cache
         assert cache["provider_a"]["models"] == ["a1"]
         assert "provider_b" in cache
         assert cache["provider_b"]["models"] == ["b1"]
-
-    def test_skips_empty_models(self, tmp_path, monkeypatch):
-        """Empty model lists are not written to cache."""
-        import hermes_cli.models as mod
-
-        cache_path = tmp_path / "provider_models_cache.json"
-        monkeypatch.setattr(mod, "_provider_models_cache_path", lambda: cache_path)
-
-        mod.update_provider_cache_entry("empty_provider", [])
-        cache = mod._load_provider_models_cache()
-        assert "empty_provider" not in cache
 
     def test_concurrent_writes_no_lost_entries(self, tmp_path, monkeypatch):
         """Multiple threads writing different providers concurrently — all land."""
@@ -76,12 +62,11 @@ class TestUpdateProviderCacheEntry:
 
         providers = [f"prov_{i}" for i in range(10)]
 
-        with patch.object(mod, "_credential_fingerprint", side_effect=lambda p: f"fp_{p}"):
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                list(executor.map(
-                    lambda p: mod.update_provider_cache_entry(p, [f"model_{p}"]),
-                    providers,
-                ))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            list(executor.map(
+                lambda p: mod._store_cache_entry(p, mod._cache_entry(f"fp_{p}", [f"model_{p}"])),
+                providers,
+            ))
 
         cache = mod._load_provider_models_cache()
         for p in providers:
@@ -127,8 +112,7 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp_f"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
             _prefetch_provider_models_parallel(["fresh_prov", "stale_prov"])
 
         assert "fresh_prov" not in fetch_calls
@@ -156,8 +140,7 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value={}), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
             _prefetch_provider_models_parallel(slugs)
 
         assert max_concurrent[0] > 1, "fetches were serial, not parallel"
@@ -171,8 +154,7 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value={}), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
             # Should not raise
             _prefetch_provider_models_parallel(["failing_prov"])
 
@@ -222,8 +204,54 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
             _prefetch_provider_models_parallel(["openrouter"])
 
         assert fetched == ["openrouter"]
+
+    def test_slow_worker_does_not_drop_rows_persisted_during_its_fetch(self, tmp_path, monkeypatch):
+        """A worker whose fetch outlasts another's must not write back its pre-fetch snapshot."""
+        import threading
+
+        import hermes_cli.models as mod
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+
+        monkeypatch.setattr(mod, "_provider_models_cache_path", lambda: tmp_path / "provider_models_cache.json")
+        monkeypatch.setattr(mod, "_credential_fingerprint", lambda provider: "fp")
+        fast_persisted = threading.Event()
+
+        def fake_provider_model_ids(slug, force_refresh=False):
+            if slug != "openrouter":
+                # The slow provider answers only after the fast one fully persisted.
+                assert fast_persisted.wait(10)
+            return [f"{slug}/model"]
+
+        real_store = mod._store_cache_entry
+
+        def store_then_signal(cache_key, entry):
+            real_store(cache_key, entry)
+            if cache_key == "openrouter":
+                fast_persisted.set()
+
+        monkeypatch.setattr(mod, "provider_model_ids", fake_provider_model_ids)
+        # Observe the canonical write: the slow worker's own store must re-read past the fast one's.
+        monkeypatch.setattr(mod, "_store_cache_entry", store_then_signal)
+        _prefetch_provider_models_parallel(["openrouter", "anthropic"])
+
+        assert sorted(mod._load_provider_models_cache()) == ["anthropic", "openrouter"]
+
+    def test_failed_live_fetch_leaves_the_stale_row_untouched(self, tmp_path, monkeypatch):
+        """A prefetch whose live fetch returns nothing serves the old rows but must not re-stamp
+        them: the stale row stays stale so the next open retries instead of trusting it for a TTL."""
+        import hermes_cli.models as mod
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+
+        monkeypatch.setattr(mod, "_provider_models_cache_path", lambda: tmp_path / "provider_models_cache.json")
+        monkeypatch.setattr(mod, "_credential_fingerprint", lambda provider: "fp")
+        monkeypatch.setattr(mod, "provider_model_ids", lambda slug, force_refresh=False: [])
+        stale_at = time.time() - mod._PROVIDER_MODELS_STALE_SERVE_MAX - 3600
+        mod._save_provider_models_cache({"openrouter": {"fp": "fp", "at": stale_at, "models": ["openrouter/model"]}})
+
+        _prefetch_provider_models_parallel(["openrouter"])
+
+        assert mod._load_provider_models_cache()["openrouter"]["at"] == stale_at
