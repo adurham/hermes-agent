@@ -1,8 +1,8 @@
 """Anthropic Messages API adapter: client construction + the Messages call for Hermes's
-OpenAI-style internals. Auth: API keys (``sk-ant-api*``) -> x-api-key; OAuth setup-tokens
-(``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header. Endpoint predicates,
-payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
-credentials}.py``; import them from there.
+OpenAI-style internals. Auth: Console API keys (``sk-ant-api*``/``-usr*``/``-svc*``/``-admin*``) ->
+x-api-key; OAuth setup-tokens (``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header.
+Endpoint predicates, payload conversion and credentials live in ``agent/anthropic_{endpoints,
+message_convert,credentials}.py``; import them from there.
 
 FORK: targets ``client.beta.messages.{create,stream}`` (anthropic SDK 0.100+) — the beta
 namespace exposes typed kwargs for ``thinking``, ``output_config``, ``context_management``,
@@ -48,8 +48,10 @@ from agent.anthropic_credentials import (  #   # compat re-export surface for te
     _resolve_claude_code_token_from_credentials,
     _write_claude_code_credentials,
     _write_hermes_oauth_credentials,
+    anthropic_route_is_oauth,
     claude_code_credentials_path,
     is_claude_code_token_valid,
+    is_native_anthropic_host,
     is_rotation_consumed_uncommitted,
     mark_rotation_consumed_uncommitted,
     read_claude_code_credentials,
@@ -857,10 +859,16 @@ def _build_anthropic_client_with_bearer_hook(
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
-    kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
+    # A key_cmd on the native host can print a Console API key, which (as in the static path's
+    # _auth_style) belongs in x-api-key; OAuth tokens and Azure/third-party routes keep Bearer. The
+    # auth header follows each mint, the OAuth identity below the first one: a key_cmd switching
+    # between OAuth and a Console key mid-session needs a client rebuild.
+    kwargs["http_client"] = build_bearer_http_client(
+        token_provider, timeout=kwargs["timeout"],
+        sends_as_api_key=(lambda token: not _is_oauth_token(token)) if is_native_anthropic_host(base_url) else None,
+    )
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
-    from agent.anthropic_credentials import anthropic_route_is_oauth
     if anthropic_route_is_oauth(base_url, token_provider):
         # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
         # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the

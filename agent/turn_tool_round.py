@@ -21,6 +21,9 @@ logger = logging.getLogger("agent.conversation_loop")
 
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
+# Rounds whose visible line is the turn's reply if the follow-up is empty (no empty-response nudge):
+# housekeeping, and setup_beat, whose card already blocked for the user's answer.
+_LINE_IS_REPLY_TOOLS = _HOUSEKEEPING_TOOLS | {"setup_beat"}
 
 
 @dataclass
@@ -263,6 +266,8 @@ def stage_tool_call_message(
     _all_housekeeping = all(
         tc.function.name in _HOUSEKEEPING_TOOLS for tc in assistant_message.tool_calls
     )
+    # The line written with a blocking card is the reply when the follow-up comes back empty.
+    _line_is_reply = all(tc.function.name in _LINE_IS_REPLY_TOOLS for tc in assistant_message.tool_calls)
     if assistant_message.tool_calls and not _all_housekeeping:
         agent._last_content_with_tools = None
         agent._last_content_tools_all_housekeeping = False
@@ -273,7 +278,7 @@ def stage_tool_call_message(
     # post-response housekeeping; substantive tools keep output on.
     if turn_content and agent._has_content_after_think_block(turn_content):
         agent._last_content_with_tools = turn_content
-        agent._last_content_tools_all_housekeeping = _all_housekeeping
+        agent._last_content_tools_all_housekeeping = _line_is_reply
         if _all_housekeeping and agent._has_stream_consumers():
             agent._mute_post_response = True
         elif agent._should_emit_quiet_tool_messages():
@@ -291,7 +296,7 @@ def stage_tool_call_message(
     if _had_prefill:
         agent._thinking_prefill_retries = 0
         agent._empty_content_retries = 0
-    elif agent._empty_content_retries:
+    elif getattr(agent, "_empty_content_retries", 0):
         # FORK: on a transient-empty route a landed tool round ends the empty streak even
         # without a prefill stub to pop (its carrier-only empties no longer prefill), so
         # isolated hiccups spread across a long run never pool into one fallback-worthy streak.

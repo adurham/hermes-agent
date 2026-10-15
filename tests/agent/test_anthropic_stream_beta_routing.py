@@ -64,6 +64,9 @@ def _make_agent():
     """A MagicMock agent wired for anthropic_messages streaming."""
     agent = MagicMock()
     agent.api_mode = "anthropic_messages"
+    # FORK: a concrete string — the v0.22.2 stream monitor urlsplits agent.base_url
+    # (sleep-watch loopback probe), which raises TypeError on a bare MagicMock.
+    agent.base_url = "https://api.anthropic.com"
     agent._interrupt_requested = False
     agent.verbose_logging = False
     agent._consecutive_stale_streams = 0

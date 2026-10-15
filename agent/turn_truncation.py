@@ -56,7 +56,7 @@ _GUARD_KILL_PARTIAL_FINAL = (
 )
 
 
-def _end_guard_killed_turn(st: "_Trunc", guard_error: Any, classified: Any) -> TruncationVerdict:
+def _end_guard_killed_turn(st: _Trunc, guard_error: Any, classified: Any) -> TruncationVerdict:
     """End a turn the ENGINE terminated itself (guard-kill), terminally.
 
     The classifier already said this cannot be retried; continuing the turn would re-send the

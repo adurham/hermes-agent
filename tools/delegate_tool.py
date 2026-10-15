@@ -949,6 +949,18 @@ def _resolve_task_routes(
     return routes, None
 
 
+def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) -> dict[str, Any]:
+    """``_build_child_agent`` override kwargs for a resolved credential bundle (delegate_task and the lifecycle API)."""
+    return {
+        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
+        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
+        "override_request_overrides": creds.get("request_overrides"),
+        "override_acp_command": creds.get("command"),
+        "override_acp_args": creds.get("args"),
+        "routing_cfg": routing_cfg,
+    }
+
+
 def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
@@ -995,12 +1007,11 @@ def _build_children(
                 toolsets=None,  # always inherit the parent's toolsets
                 model=_route["model"], max_iterations=task_max_iter, task_count=len(task_list),
                 parent_agent=parent_agent, role=_route["role"], agent_type=_route["agent_type"],
-                override_provider=_creds["provider"], override_base_url=_creds["base_url"],
-                override_api_key=_creds["api_key"], override_api_mode=_creds["api_mode"],
-                override_request_overrides=_creds.get("request_overrides"),
+                # Shared override bundle (also used by the lifecycle API) from THIS task's routed
+                # creds; the fork-only per-role max_tokens + fallback chain ride alongside it.
+                **_credential_overrides(_creds, routing_cfg),
                 override_max_tokens=_creds.get("max_output_tokens"),
-                override_acp_command=_creds.get("command"), override_acp_args=_creds.get("args"),
-                override_fallback_chain=_route["fallback_chain"], routing_cfg=routing_cfg,
+                override_fallback_chain=_route["fallback_chain"],
             )
         except ValueError as exc:
             return [], str(exc)

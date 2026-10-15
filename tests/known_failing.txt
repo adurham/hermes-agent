@@ -12,6 +12,8 @@
 # nothing, so they were dropped. 98 kept.
 # (method renamed/removed) and were dropped. Re-verify this file periodically the same way:
 # check every nodeid's file exists, then actually run each one to confirm it still fails.
+# Cleaned up 2026-10-15 (v0.22.2 sync): re-verified every nodeid the same way (file exists AND
+# the test name (params ignored) still appears in that file's source). 98 entries kept, 0 dropped as unresolvable.
 # ── Flaky under xdist, pass when run in isolation ──────────────────────
 # Both pass via ``pytest tests/agent/test_vision_resolved_args.py``
 # (~1s) and ``pytest tests/agent/lsp/`` (~1.5s). Under
