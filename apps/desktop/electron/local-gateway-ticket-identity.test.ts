@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 
 import { expect, test } from 'vitest'
 
-import { type GatewayEndpoint, mintLocalGatewayTicket, nativeGatewayHttpHeaders, reservedHome } from './local-gateway'
+import { type GatewayEndpoint, isStaleLocalGatewayError, mintLocalGatewayTicket, nativeGatewayHttpHeaders, reservedHome } from './local-gateway'
 import { shortSocketTmpDir } from './local-gateway.test-helpers'
 
 // A gateway ticket names a profile home by the identity the gateway reserved for it: its
@@ -78,19 +78,23 @@ async function controlSocket(home: string, served: string[]) {
 
 // The gateway serves a linked `profiles/<name>` at its resolved home, so it never mints for the
 // joined path. Identity is not a licence to follow links in an ADVERTISED home: one that leads to
-// another directory is still refused, without asking the gateway.
+// another directory is still refused, without asking the gateway. A profile with no directory is
+// a definitive answer, not a stale gateway: re-ensuring the shared connection cannot create it.
 test.skipIf(process.platform === 'win32')('a linked profile mints for the home the gateway reserved; an advertised home that leads elsewhere is refused', async () => {
   const [root, target, links] = await Promise.all(['gw-root-', 'gw-target-', 'gw-links-'].map(shortSocketTmpDir))
   await fs.mkdir(path.join(root, 'profiles'), { mode: 0o700 })
   await fs.symlink(target, path.join(root, 'profiles', 'work'), 'dir')
   await fs.symlink(root, path.join(links, 'home'), 'dir')
   const gateway = await controlSocket(root, [root, target])
+  const descriptor = { gatewayEndpoint: endpointFor(root), baseUrl: ORIGIN }
 
   try {
-    expect(await nativeGatewayHttpHeaders({ gatewayEndpoint: endpointFor(root), baseUrl: ORIGIN }, `${ORIGIN}/api/sessions?profile=work`))
+    expect(await nativeGatewayHttpHeaders(descriptor, `${ORIGIN}/api/sessions?profile=work`))
       .toEqual({ 'X-Hermes-Gateway-Ticket': 'grant-1' })
     await expect(mintLocalGatewayTicket(endpointFor(path.join(links, 'home')), 'native-http')).rejects.toThrow('Noncanonical gateway profile')
     await expect(mintLocalGatewayTicket({ ...endpointFor(root), control_home: path.join(links, 'home') }, 'native-http')).rejects.toThrow('Noncanonical gateway profile')
+    const gone = await nativeGatewayHttpHeaders(descriptor, `${ORIGIN}/api/sessions?profile=gone`).catch(error => error)
+    expect([gone.message.includes(`Profile 'gone' does not exist`), isStaleLocalGatewayError(gone)]).toEqual([true, false])
     expect(gateway.requests).toEqual([{ profile_id: target, instance_id: 'owner', purpose: 'native-http' }])
   } finally {
     await gateway.close()
