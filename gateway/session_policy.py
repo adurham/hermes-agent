@@ -421,9 +421,9 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
         # The CLI validator's rule: a configured MCP server's toolset registers only after its first
         # connect, so an offline server is inactive, not a typo (#138748, #139154).
         known = saved_toolset_resolver(config)
-        bad_toolset = next((x for x in explicit if not isinstance(x, str) or not known(x)), None)
-        if bad_toolset is not None:
-            _refuse('toolsets', f'unknown or invalid toolset name: {bad_toolset!r}')
+        for name in explicit:
+            if not isinstance(name, str) or not known(name):
+                _refuse('toolsets', f'unknown or invalid toolset name: {name!r}')
         if 'desktop_ui' in explicit and source != 'gui':
             _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit

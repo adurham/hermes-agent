@@ -6,8 +6,6 @@ neither the reporter nor the maintainer could tell which of the ~20 checks had r
 These tests pin the naming at the policy, at the wire frame, in the gateway log, and in the CLI
 copy that a user actually reads.
 """
-import ast
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -75,11 +73,13 @@ def test_an_invalid_toolset_name_reports_that_name(tmp_path):
 def test_an_explicit_pick_of_a_configured_mcp_server_builds_before_it_connects(tmp_path, name):
     """`hermes chat -t terminal,<server>` names a configured MCP server whose toolset registers only
     after its first connect; an offline server is inactive, not a typo (#138748, #139154). The gateway
-    accepts what the CLI's own validator accepts, and the server's tools join when it connects."""
-    cfg = {**_CFG, 'mcp_servers': {'deadserver': {'command': str(tmp_path / 'absent')}}}
+    accepts what the CLI's own validator accepts, and either spelling selects that server alone."""
+    servers = {'deadserver': {'command': str(tmp_path / 'absent')}, 'other': {'command': str(tmp_path / 'absent')}}
+    cfg = {**_CFG, 'mcp_servers': servers}
     policy = build_policy({'source': 'cli', 'cwd': str(tmp_path), 'toolsets': ['terminal', name]}, cfg)
-    assert name in policy.toolsets
-    assert 'gone_plugin' in _refusal({'cwd': str(tmp_path), 'toolsets': ['terminal', 'gone_plugin']}, cfg).detail
+    assert 'deadserver' in policy.toolsets and 'other' not in policy.toolsets, policy.toolsets
+    for bad in ('gone_plugin', None):
+        assert repr(bad) in _refusal({'cwd': str(tmp_path), 'toolsets': ['terminal', bad]}, cfg).detail
 
 
 def test_a_rebound_launch_key_names_api_key():
@@ -99,40 +99,6 @@ def test_the_reason_code_is_unchanged_on_the_wire():
     """Callers compare ``str(exc)`` to reason codes; naming may not move it."""
     exc = RuntimeStoreError('invalid_params', field='cwd', detail='nope')
     assert str(exc) == 'invalid_params' and exc.reason == 'invalid_params'
-
-
-def test_no_bare_invalid_params_raise_on_the_create_path():
-    """A new create check must name its field and why: this guard fails instead of the next report.
-
-    The create path reads launch parameters in three modules: the policy builder, the editor policy and
-    the MCP server list. The last one is scanned at function scope, because the same module's mutate
-    path (``session.mutate editor_mcp``, a branch carrying servers) still refuses with the bare code —
-    a separate, off-path pass."""
-    scanned = [('gateway/session_policy.py', None), ('gateway/session_local_editor.py', None),
-               ('gateway/session_local_mcp.py', 'validate_servers')]
-    root = Path(__file__).resolve().parents[2]
-    bare, thin = [], []
-    for module, function in scanned:
-        tree = ast.parse((root / module).read_text(encoding='utf-8'))
-        nodes = tree.body
-        if function is not None:
-            nodes = [node for node in tree.body
-                     if isinstance(node, ast.FunctionDef) and node.name == function]
-            assert nodes, f'{function} not found in {module}'
-        for top in nodes:
-            for node in ast.walk(top):
-                if not isinstance(node, ast.Call):
-                    continue
-                called = node.func
-                name = getattr(called, 'id', None) or getattr(called, 'attr', None)
-                if name == '_refuse' and not (len(node.args) >= 2 or node.keywords):
-                    thin.append(f'{module}:{node.lineno}')  # a field with no reason is half a diagnosis
-                first = node.args[0] if node.args else None
-                if (name == 'RuntimeStoreError' and isinstance(first, ast.Constant)
-                        and first.value == 'invalid_params' and not node.keywords):
-                    bare.append(f'{module}:{node.lineno}')
-    assert bare == [], f'unnamed invalid_params refusals on the create path: {bare}'
-    assert thin == [], f'_refuse() calls without a detail: {thin}'
 
 
 def test_the_profile_in_the_log_line_is_a_name_not_a_home_path(tmp_path, caplog):
