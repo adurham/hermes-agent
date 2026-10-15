@@ -1,19 +1,19 @@
 name: rea-captcha
 repo: https://github.com/masakaai/rea-captcha
-sha: 36b631818b5b9965ef0791f880cdc5c1985ef332
+sha: fba05f0a47784b44eb635e0d9da30b3c1aef2765
 subdir: integrations/hermes
 description: 'Inspect captured browser verification evidence locally when an agent task is interrupted
   by a CAPTCHA. Portable Agent Plugins v1 package (pinned stateless mcp.json + skill); needs Node.js
   22.19+/24.11+/26+ with npx on PATH. Disclosure — first start asks the user to approve the exact
-  rea-captcha@0.2.3 npm package; captcha_analyze is local and read-only; session tools fail closed without a separately
+  rea-captcha@0.2.4 npm package; captcha_analyze is local and read-only; session tools fail closed without a separately
   configured stateful server; no production CAPTCHA automation, telemetry, hosted solver, browser
   profile copying, or cookie/token transfer.'
 maintainer: masakaai
 tier: community
 category: automation
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/masakaai/rea-captcha/tree/36b631818b5b9965ef0791f880cdc5c1985ef332/integrations/hermes
-version: "0.2.3"
+docs_url: https://github.com/masakaai/rea-captcha/tree/fba05f0a47784b44eb635e0d9da30b3c1aef2765/integrations/hermes
+version: "0.2.4"
 platforms: []
 capabilities:
   provides_tools: []
