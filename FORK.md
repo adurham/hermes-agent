@@ -3,6 +3,35 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork Actions surface trimmed — 2026-10-15 (all 53 upstream workflows disabled; fork CI revival is one command)
+
+**Decision (owner-directed, 2026-10-15).** The fork actively uses **none** of the inherited
+upstream workflows, so every one is now `disabled_manually` — 53 disabled today, plus `ci.yaml`
+already off since 2026-09-29: 54/54. Fork CI has been deliberately disabled since the de-fork work
+(full suites run on amd-workstation / hlxc), nothing on the wall is fork-authored, and the rest
+was: upstream-only machinery gated to `NousResearch/hermes-agent` (35 workflows that never ran in
+the fork — release / site / desktop / installer pipelines), `workflow_call`-only callees of the
+disabled ci.yaml, or periodic noise (`Skills Index` ×2 + `Live provider canaries` ≈ 1,000 combined
+skip-runs; `Install & Update E2E` failed nightly). Owner's standard applied: failing continuously =
+evidently unused. Judgment call on the record: `OSV-Scanner` (weekly CVE scan — the one periodic
+job that succeeded, no consumer) disabled with the rest. Files are untouched, so upstream merges
+stay clean; the trim is per-workflow state, not deletion.
+
+**Actions availability at trim time.** A live dispatch probe verified the repo's Actions create
+runs again (run `38762195302`, 2026-10-15 15:39Z, concluded `skipped` as designed) — the "no runs
+since 2026-10-09" repo-wide state observed earlier that day cleared alongside the account-wide
+Actions incident resolved via the UI on adurham/sunnypilot the same afternoon. No repo-level
+setting was changed here.
+
+**Revival.** Fork CI: `gh workflow enable ci.yaml`; if a callee call then fails while disabled
+(disabled `workflow_call` callees are undocumented — community reports say calls still run),
+enable the callees from `grep 'uses: ./\.github/workflows' .github/workflows/ci.yaml`. Single
+workflow: `gh workflow enable <file>.yml`. `gh workflow list` hides disabled workflows — use
+`--all`. Last fork-CI run (2026-09-26) was green on every fork lane except `OS-specific tests (macOS)`.
+
+**Post-sync check.** New workflow files pulled from upstream arrive **enabled** — after each sync,
+`gh workflow list --all` and re-disable anything new, or the runs/skip-noise come back.
+
 ### Feature — 2026-10-14 (exo generation_stats telemetry: the engine's per-response speculative-decode counters were dropped by the SDK and never persisted)
 
 **Motivation (forensics data gap).** Three waves of investigation into a degeneration regression on the
