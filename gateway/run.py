@@ -777,11 +777,10 @@ def _approval_send_outcome(future, timeout: float) -> str:
         return "failed"
     if getattr(result, "success", False):
         return "sent"
-    # P5(b): a connector DECLINE is not a lane failure. The connector
-    # authorized the destination and refused it; re-sending the same content as
-    # plain text into that same chat is the exfiltration the egress guard
-    # exists to stop. `failed` is the cue to fall back, so a decline needs its
-    # own verdict — callers must surface it and send nothing further.
+    # P5(b): a connector DECLINE is not a lane failure. The connector authorized the destination and refused it;
+    # re-sending the same content as plain text into that same chat is the exfiltration the egress guard exists
+    # to stop. `failed` is the cue to fall back, so a decline needs its own verdict — callers must surface it 
+    # and send nothing further.
     #
     # CLASSIFY THE STRUCTURED RESPONSE, NOT THE ERROR STRING. The adapter
     # preserves the connector's own dict in `raw_response`; rebuilding a dict
