@@ -413,12 +413,15 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
     *coding_posture* session runs ``focus_toolsets`` instead of the profile default while the profile
     stays on ``focus``; the gateway decides it, never the client."""
     from hermes_cli.tools_config import _get_platform_tools
-    from toolsets import validate_toolset
+    from hermes_cli.toolset_validation import saved_toolset_resolver
     explicit = params.get('toolsets')
     if 'toolsets' in params:
         if not isinstance(explicit, list):
             _refuse('toolsets', f'must be a list of toolset names, got {type(explicit).__name__}')
-        bad_toolset = next((x for x in explicit if not isinstance(x, str) or not validate_toolset(x)), None)
+        # The CLI validator's rule: a configured MCP server's toolset registers only after its first
+        # connect, so an offline server is inactive, not a typo (#138748, #139154).
+        known = saved_toolset_resolver(config)
+        bad_toolset = next((x for x in explicit if not isinstance(x, str) or not known(x)), None)
         if bad_toolset is not None:
             _refuse('toolsets', f'unknown or invalid toolset name: {bad_toolset!r}')
         if 'desktop_ui' in explicit and source != 'gui':

@@ -71,6 +71,17 @@ def test_an_invalid_toolset_name_reports_that_name(tmp_path):
     assert 'gone_plugin' in refusal.detail
 
 
+@pytest.mark.parametrize('name', ['deadserver', 'mcp-deadserver'])
+def test_an_explicit_pick_of_a_configured_mcp_server_builds_before_it_connects(tmp_path, name):
+    """`hermes chat -t terminal,<server>` names a configured MCP server whose toolset registers only
+    after its first connect; an offline server is inactive, not a typo (#138748, #139154). The gateway
+    accepts what the CLI's own validator accepts, and the server's tools join when it connects."""
+    cfg = {**_CFG, 'mcp_servers': {'deadserver': {'command': str(tmp_path / 'absent')}}}
+    policy = build_policy({'source': 'cli', 'cwd': str(tmp_path), 'toolsets': ['terminal', name]}, cfg)
+    assert name in policy.toolsets
+    assert 'gone_plugin' in _refusal({'cwd': str(tmp_path), 'toolsets': ['terminal', 'gone_plugin']}, cfg).detail
+
+
 def test_a_rebound_launch_key_names_api_key():
     """``session.resume`` re-supplying a launch key refuses before it touches the authority."""
     with pytest.raises(RuntimeStoreError) as caught:
