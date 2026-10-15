@@ -138,6 +138,7 @@ export {
   type SkillCommandDispatchResponse,
   SLASH_COMMAND_RE
 } from './slash'
+
 export {
   THEME_PRESET_PALETTES,
   type ThemePresetColors,
@@ -176,6 +177,8 @@ export {
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
 } from './translucency'
+
+export { type UpdateDebt, updateDebt, type UpdateDebtReceipt, type UpdateDebtStep } from './update-debt'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,
