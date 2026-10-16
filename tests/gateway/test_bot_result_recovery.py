@@ -112,3 +112,54 @@ def test_settled_bot_receipt_relays_empty_reply_for_a_bare_silence_marker(tmp_pa
         assert prose['reply'] == 'The NO_REPLY marker means do not answer.'
     finally:
         db.close()
+
+
+def test_owner_startup_recovery_survives_a_denied_mailbox_chmod(tmp_path, monkeypatch):
+    """#139485: an inherited Windows ACL denies FILE_WRITE_ATTRIBUTES on the mailbox dir, so
+    ``chmod`` raises WinError 5. Owner startup recovery must still run and settle the receipts."""
+    import asyncio
+    from pathlib import Path
+    from tools.bot_live_delivery import DELIVERY_DIR_NAME, _locked, _read, _write
+    from gateway.session_bot import recover_bot_deliveries
+    path = tmp_path / 'state.db'
+    db = SessionDB(path)
+    db.create_session('bot', source='gui')
+    epoch = begin_runtime_epoch(db, instance_id='first')
+    settled = admit_session_input(db, epoch=epoch, principal_id='owner', session_id='bot',
+                                  request_id='bot:' + 'a' * 32, payload={'text': 'done'})
+    row = claim_session_input(db, epoch=epoch, session_id='bot')
+    retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': 'hi'}, 'usage': {}})
+    queued = admit_session_input(db, epoch=epoch, principal_id='owner', session_id='bot',
+                                 request_id='bot:' + 'b' * 32, payload={'text': 'waiting'})
+    with _locked(tmp_path) as root:
+        for key, admission in (('a' * 32, settled), ('b' * 32, queued)):
+            _write(root / f'{key}.json', dict(status='canonical', admission_id=admission['admission_id'],
+                                              delivery_id=key, profile_home=str(tmp_path.resolve()),
+                                              session_id='bot', message=key, principal_id='owner'))
+    db.close()
+    mailbox_dir = tmp_path.resolve() / 'runtime' / DELIVERY_DIR_NAME
+    real_chmod = Path.chmod
+
+    def deny(target, mode, *, follow_symlinks=True):
+        if Path(target) == mailbox_dir:
+            raise PermissionError(13, '[WinError 5] Access is denied', str(target))
+        return real_chmod(target, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, 'chmod', deny)
+    db = SessionDB(path)
+    try:
+        epoch = begin_runtime_epoch(db, instance_id='restart')
+        recover_session_inputs(db, epoch=epoch)
+        authority = SimpleNamespace(db=db, waiters={})
+
+        async def boot():
+            await recover_bot_deliveries(authority)
+            return set(authority._bot_reply_watchers)
+
+        watched = asyncio.run(boot())
+        with _locked(tmp_path) as root:
+            done = _read(root / ('a' * 32 + '.json'))
+        assert (done['status'], done['reply']) == ('settled', 'hi')
+        assert watched == {'b' * 32}
+    finally:
+        db.close()
