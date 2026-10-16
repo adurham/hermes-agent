@@ -105,6 +105,7 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
         # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
         # the provider chain, which keeps the credential pool an explicit URL would drop.
         if not fallback:
+            # Takes no config argument: it reads `frozen` only through the frozen_runtime_config scope above, so it must stay inside that `with`.
             return resolve_runtime_provider(requested=provider, target_model=model,
                 explicit_base_url=launch_url, explicit_api_key=key), None
         return resolve_runtime_with_fallback(frozen, requested=provider,
