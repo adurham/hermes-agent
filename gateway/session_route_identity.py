@@ -8,6 +8,17 @@ URL), never raw spellings. ``ollama``/``vllm`` resolve to ``custom``, ``deep-inf
 """
 
 
+# Every ``model:`` key that belongs to one endpoint; a route change drops them all, so none of the
+# replaced endpoint's values is paired with the new one:
+# - route itself (provider, base_url): which endpoint the turn goes to;
+# - wire protocol (api_mode): how that endpoint speaks; another host may speak another protocol;
+# - window (context_length): the replaced model's context size, wrong for the new one;
+# - credentials (api_key, api, api_key_from, key_env, api_key_env): a key authenticates only the
+#   endpoint that issued it, and sending it anywhere else leaks it.
+ROUTE_BOUND_KEYS = ('provider', 'base_url', 'api_mode', 'context_length',
+                    'api_key', 'api', 'api_key_from', 'key_env', 'api_key_env')
+
+
 def _named_entry(name: str, config: dict) -> dict | None:
     from hermes_cli.runtime_provider_custom import _get_named_custom_provider
     return _get_named_custom_provider(name, config=config, resolve_credentials=False)
