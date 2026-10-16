@@ -287,7 +287,12 @@ export function localGatewayDial<T extends { baseUrl: string; gatewayEndpoint?: 
     forget: opts.forget,
     // A shared-primary descriptor answers for a sibling profile too: the ticket must name
     // THAT profile's home or its sessions are another owner's.
-    use: async current => opts.prepare(current.baseUrl, await mint(await routedTicketEndpoint(current.gatewayEndpoint!, opts.profile, opts.launchHome), purpose))
+    use: async current => {
+      // Callers check the first descriptor; a re-ensure may still answer without one.
+      if (!current.gatewayEndpoint) {throw new Error('Local gateway connection has no gateway endpoint')}
+
+      return opts.prepare(current.baseUrl, await mint(await routedTicketEndpoint(current.gatewayEndpoint, opts.profile, opts.launchHome), purpose))
+    }
   })
 }
 
