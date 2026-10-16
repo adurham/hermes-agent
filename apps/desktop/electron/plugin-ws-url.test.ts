@@ -81,6 +81,36 @@ test('mints a native-http grant for a local gateway and null elsewhere', async (
   expect(mint).toHaveBeenCalledTimes(1)
 })
 
+// The renderer cannot tell a refused upgrade from a gateway that is away. Main can name the one case it
+// knows is not transient, a grant mint refused for a permission reason, and answers it as plain data.
+test('a mint refused for a permission reason is a named reply, any other failure stays an error', async () => {
+  const unsafe = new Error('Unsafe gateway control path: \'/home/u/.hermes\' is accessible to other users (mode 755): run chmod go-rwx \'/home/u/.hermes\'')
+  const groupWritable = new Error('Profile home is writable by a group other accounts share: run chmod g-w \'/home/u/.hermes\'')
+  const bridged = Object.assign(new Error('Gateway ticket bootstrap failed'), { reason: 'unsafe_control_permissions' })
+  const mint = vi.fn(async (): Promise<string> => { throw unsafe })
+
+  const handler = createPluginWsUrlHandler({
+    ensureBackend: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:9', gatewayEndpoint: endpoint })),
+    ensureRegistryBackend: vi.fn(),
+    forgetLocalGatewayDescriptor: vi.fn(),
+    forgetRegistryLocalGatewayDescriptor: vi.fn(),
+    launchHome: '/home/u/.hermes',
+    mint,
+    prepare: vi.fn(() => 'unused')
+  })
+
+  const request = { path: '/events', pluginId: 'kanban', profile: 'default' }
+
+  for (const error of [unsafe, groupWritable, bridged]) {
+    mint.mockRejectedValueOnce(error)
+    await expect(handler(request, 3)).resolves.toEqual({ refused: 'permission' })
+  }
+
+  // An owner that is gone (redialed once, then still gone) is a connection failure: the renderer retries.
+  mint.mockRejectedValue(new Error('Gateway ticket control socket missing'))
+  await expect(handler(request, 3)).rejects.toThrow('Gateway ticket control socket missing')
+})
+
 test('the shared local dial keeps the gateway socket on an interactive grant', async () => {
   const { localGatewayDial } = await import('./local-gateway')
   const mint = vi.fn(async () => 'interactive-2')

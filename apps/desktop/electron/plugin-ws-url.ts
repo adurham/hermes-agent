@@ -10,6 +10,21 @@ export interface PluginWsUrlRequest {
   profile?: unknown
 }
 
+/** `hermes:plugin:ws-url`'s reply: a one-use URL, null to stay on polling (not a local gateway), or
+ *  the one refusal main can name, which the renderer stops on. Any other failure rejects, and the
+ *  renderer keeps its capped retry: it cannot tell a refusal from a gateway that is away. */
+export type PluginWsUrlReply = null | string | { refused: 'permission' }
+
+/** A grant mint refused for a permission reason: an unsafe control path or a group-writable home
+ *  (this Desktop's own checks, or the runtime bridge's `unsafe_control_permissions`). Unlike an
+ *  owner that is restarting, draining or being re-ensured, it does not clear by itself. */
+export function isMintPermissionRefusal(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+
+  return message.startsWith('Unsafe gateway control path') || message.startsWith('Profile home is writable by a group')
+    || (error as { reason?: unknown })?.reason === 'unsafe_control_permissions'
+}
+
 interface ResolvedBackend {
   baseUrl: string
   gatewayEndpoint?: GatewayEndpoint
@@ -65,7 +80,7 @@ export function createPluginWsUrlHandler(deps: {
   mint?: typeof mintLocalGatewayTicket
   prepare: (origin: string, path: string, ticket: string, webContentsId: number) => string
 }) {
-  return async (request: PluginWsUrlRequest, webContentsId: number): Promise<null | string> => {
+  return async (request: PluginWsUrlRequest, webContentsId: number): Promise<PluginWsUrlReply> => {
     const path = pluginWsPath(request?.pluginId, request?.path)
     const { connectionId, profile } = request
     const ensure = () => (connectionId ? deps.ensureRegistryBackend(connectionId, profile) : deps.ensureBackend(profile))
@@ -74,14 +89,19 @@ export function createPluginWsUrlHandler(deps: {
       return null
     }
 
-    return localGatewayDial({
-      ensure,
-      forget: () => (connectionId ? deps.forgetRegistryLocalGatewayDescriptor(connectionId, profile) : deps.forgetLocalGatewayDescriptor(profile)),
-      launchHome: deps.launchHome,
-      mint: deps.mint,
-      prepare: (baseUrl, ticket) => deps.prepare(baseUrl, path, ticket, webContentsId),
-      profile: typeof profile === 'string' ? profile : '',
-      purpose: 'native-http'
-    })
+    try {
+      return await localGatewayDial({
+        ensure,
+        forget: () => (connectionId ? deps.forgetRegistryLocalGatewayDescriptor(connectionId, profile) : deps.forgetLocalGatewayDescriptor(profile)),
+        launchHome: deps.launchHome,
+        mint: deps.mint,
+        prepare: (baseUrl, ticket) => deps.prepare(baseUrl, path, ticket, webContentsId),
+        profile: typeof profile === 'string' ? profile : '',
+        purpose: 'native-http'
+      })
+    } catch (error) {
+      if (isMintPermissionRefusal(error)) {return { refused: 'permission' }}
+      throw error
+    }
   }
 }

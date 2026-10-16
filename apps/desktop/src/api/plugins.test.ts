@@ -68,8 +68,8 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     }
   }
 
-  const desktop = (connection: Record<string, unknown>, minted: null | string = 'ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=n') => {
-    const getPluginWsUrl = vi.fn(async () => minted)
+  const desktop = (connection: Record<string, unknown>, minted: unknown = 'ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=n') => {
+    const getPluginWsUrl = vi.fn(async (): Promise<unknown> => minted)
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
       value: { getConnection: vi.fn(async () => connection), getPluginWsUrl }
@@ -90,6 +90,7 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     FakeSocket.all = []
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+    setApiRequestConnection(null)
     setApiRequestProfile(null)
     Reflect.deleteProperty(window, 'hermesDesktop')
     vi.useRealTimers()
@@ -121,21 +122,76 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     dispose()
   })
 
-  it('stops re-dialing after repeated refusals', async () => {
+  // The browser cannot tell a refused upgrade from a gateway that is restarting, draining or being
+  // re-ensured: those dials keep the capped retry, however long the outage lasts.
+  it('keeps retrying through a restart-length outage and reconnects', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', FakeSocket)
     const mint = desktop(local)
+    const frames: unknown[] = []
 
-    const dispose = pluginSocket('kanban', '/events', () => undefined)
+    const dispose = pluginSocket('kanban', '/events', frame => frames.push(frame))
     await vi.advanceTimersByTimeAsync(0)
 
     for (let i = 0; i < 20; i += 1) {
       await refuseLatest()
     }
 
-    expect(FakeSocket.all).toHaveLength(5)
-    expect(mint).toHaveBeenCalledTimes(5)
+    // The mint itself failing while the owner is away is a connection failure too.
+    mint.mockRejectedValueOnce(new Error('Gateway ticket control socket missing'))
+    await refuseLatest()
+    await vi.advanceTimersByTimeAsync(31_000)
+
+    expect(FakeSocket.all).toHaveLength(22)
+    expect(mint).toHaveBeenCalledTimes(23)
+    const socket = FakeSocket.all.at(-1)!
+    socket.onopen?.()
+    socket.onmessage?.({ data: '{"ok":1}' })
+    expect(frames).toEqual([{ ok: 1 }])
     dispose()
+  })
+
+  // Main names the one refusal it can identify: a grant mint refused for a permission reason.
+  it('stops after repeated permission refusals from main', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const mint = desktop(local, { refused: 'permission' })
+
+    const dispose = pluginSocket('kanban', '/events', () => undefined)
+    await vi.advanceTimersByTimeAsync(600_000)
+
+    expect(mint).toHaveBeenCalledTimes(5)
+    expect(FakeSocket.all).toHaveLength(0)
+    dispose()
+  })
+
+  it('a profile or connection change resets the refusal count and dials again', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    setApiRequestProfile('coder')
+    const mint = desktop(local, { refused: 'permission' })
+
+    const dispose = pluginSocket('kanban', '/events', () => undefined)
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(mint).toHaveBeenCalledTimes(5)
+
+    // Still refused under the new profile: a fresh budget of five, then stop again.
+    setApiRequestProfile('research')
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(mint).toHaveBeenCalledTimes(10)
+    expect(mint).toHaveBeenLastCalledWith(expect.objectContaining({ profile: 'research' }))
+
+    mint.mockResolvedValue('ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=m')
+    setApiRequestConnection('homelab')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mint).toHaveBeenCalledTimes(11)
+    expect(FakeSocket.all.map(socket => socket.url)).toEqual(['ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=m'])
+    dispose()
+
+    // A disposed socket no longer follows the scope.
+    setApiRequestProfile('coder')
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(mint).toHaveBeenCalledTimes(11)
   })
 
   it('keeps reconnecting a socket that stayed open before it dropped', async () => {
