@@ -105,8 +105,10 @@ _UNUSABLE_CHILD = _DROP_PRIVILEGES + textwrap.dedent(r"""
     except PermissionError:
         denied = True
     if not denied:
-        priv = subprocess.run(["whoami", "/priv"], capture_output=True, text=True, check=False).stdout
-        print(json.dumps({"denied": False, "priv": priv}))
+        priv = subprocess.run(["whoami", "/user", "/groups", "/priv"], capture_output=True, text=True,
+                              check=False).stdout
+        acl = subprocess.run(["icacls", str(root)], capture_output=True, text=True, check=False).stdout
+        print(json.dumps({"denied": False, "priv": priv + "\n" + acl}))
         sys.exit(0)
 
     records = []
@@ -138,10 +140,12 @@ _UNUSABLE_CHILD = _DROP_PRIVILEGES + textwrap.dedent(r"""
 def test_startup_skips_bot_recovery_on_the_reporters_mailbox_acl(tmp_path):
     root = tmp_path / "runtime" / "bot_live_delivery"
     root.mkdir(parents=True)
-    # The reporters' shape: Administrators-owned, inheritance cut, only SYSTEM granted. A
-    # privilege-dropped token has no ACE to list or create in it; as owner it keeps only the
-    # implicit READ_CONTROL/WRITE_DAC, so os.open(.lock) fails exactly as in #138872.
-    for args in (["/setowner", "*S-1-5-32-544"], ["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F"]):
+    # The reporters' shape: owned by someone else, inheritance cut, no ACE for this token. The CI
+    # runner's own identity is not knowable up front (it may hold SYSTEM or Administrators, which an
+    # Administrators-owner/SYSTEM-only DACL would still let in), so the owner and the only ACE go to
+    # LocalService (S-1-5-19), which no runner token carries. Without SeBackup/SeRestore the child has
+    # no route to list or create in it, so os.open(.lock) fails exactly as in #138872.
+    for args in (["/inheritance:r", "/grant:r", "*S-1-5-19:(OI)(CI)F"], ["/setowner", "*S-1-5-19"]):
         subprocess.run(["icacls", str(root), *args], check=True, capture_output=True)
     try:
         child = subprocess.run([sys.executable, "-c", _UNUSABLE_CHILD, str(tmp_path)], cwd=_REPO,
@@ -156,6 +160,8 @@ def test_startup_skips_bot_recovery_on_the_reporters_mailbox_acl(tmp_path):
         assert str(root.resolve()) in warnings[0] and "(owner " in warnings[0]
         assert "icacls" in warnings[0] and "/reset" in warnings[0]
     finally:
-        # Give the dir back to this (elevated) test so pytest can delete tmp_path.
+        # Give the dir back to this (elevated) test so pytest can delete tmp_path: take ownership
+        # (icacls uses SeRestore), then the owner's implicit WRITE_DAC lets the grant and reset through.
+        subprocess.run(["icacls", str(root), "/setowner", "*S-1-5-32-544"], check=False, capture_output=True)
         subprocess.run(["icacls", str(root), "/grant", "*S-1-5-32-544:(OI)(CI)F"], check=False, capture_output=True)
         subprocess.run(["icacls", str(root), "/reset", "/t", "/c"], check=False, capture_output=True)
