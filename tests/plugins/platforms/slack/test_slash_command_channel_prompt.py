@@ -4,14 +4,18 @@ A ``/hermes <question>`` turn is a human turn, so the gateway re-pins ``channel_
 session-context key from it. Built without ``channel_prompt``, ``chat_name`` and ``user_name``,
 it ran without the configured channel prompt and flipped both pins, and the next ordinary
 message flipped them back: two agent rebuilds and two prompt-cache misses per slash turn. Without
-``auto_skill``, a session opened by ``/hermes <question>`` never loaded the channel's bound skill.
+``auto_skill``, a session opened by ``/hermes <question>`` never loaded the channel's bound skill,
+and neither did the turn a ``/goal <text>`` kickoff queues.
 """
 
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+import gateway.run as gateway_run
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.session import build_session_context
+from gateway.slash_commands_goals import GatewayGoalCommandsMixin
 from plugins.platforms.slack.adapter import SlackAdapter
 
 
@@ -35,29 +39,59 @@ def _adapter(channel_id: str) -> SlackAdapter:
     return a
 
 
+def _agent_turn(event):
+    """The turn the agent runs for *event*: for ``/goal <text>`` that is the kickoff the gateway
+    queues (real ``_enqueue_goal_turn``), not the command itself."""
+    if event.get_command() != "goal":
+        return event
+    runner, queued = object.__new__(GatewayGoalCommandsMixin), []
+    runner._adapter_and_key_for = lambda _event: (object(), "sk")
+    runner._enqueue_fifo = lambda _key, turn, _adapter: queued.append(turn)
+    runner._enqueue_goal_turn(event, event.get_command_args(), label="kickoff", kickoff=True)
+    return queued[0]
+
+
+def _distinct_pins(turns) -> int:
+    """Distinct (session-context prompt, channel prompt) pairs the real gateway pins render."""
+    runner = object.__new__(gateway_run.GatewayRunner)
+    config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")})
+    pins = set()
+    for turn in turns:
+        channel_prompt, _ = runner._pinned_channel_inputs(
+            "k", turn.channel_prompt, turn.source, internal=False)
+        context = runner._pinned_session_context_prompt(
+            build_session_context(turn.source, config), False, "k")
+        pins.add((context, channel_prompt))
+    return len(pins)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_id, channel_type, chat_name, text", [
     ("C_OPS", "channel", "ops", "what broke?"), ("D_ALICE", "im", "Alice", "what broke?"),
-    ("C_OPS", "channel", "ops", "queue what broke?")], ids=["channel", "dm", "queue-command"])
+    ("C_OPS", "channel", "ops", "queue what broke?"), ("C_OPS", "channel", "ops", "goal fix what broke"),
+], ids=["channel", "dm", "queue-command", "goal-kickoff"])
 async def test_slash_turn_matches_message_turn_prompt_and_names(channel_id, channel_type, chat_name, text):
-    """``queue-command``: a registered command that starts a turn (``/queue <prompt>``) is a human
-    turn like the free-form question, so it carries the same inputs."""
+    """message -> slash -> message in one thread session renders one pinned prompt pair.
+    ``queue-command``: a registered command that starts a turn (``/queue <prompt>``) is a human
+    turn like the free-form question. ``goal-kickoff``: the turn ``/goal <text>`` queues carries
+    the same inputs too."""
     adapter = _adapter(channel_id)
+    message = {"text": "<@U_BOT> what broke?", "user": "U_ALICE", "channel": channel_id,
+               "channel_type": channel_type, "ts": "1700.000100", "thread_ts": "1700.000050"}
+    await adapter._handle_slack_message(message, {"team_id": "T1"})
     await adapter._handle_slash_command(
         {"command": "/hermes", "text": text, "user_id": "U_ALICE",
-         "channel_id": channel_id, "team_id": "T1"})
-    await adapter._handle_slack_message(
-        {"text": "<@U_BOT> what broke?", "user": "U_ALICE", "channel": channel_id,
-         "channel_type": channel_type, "ts": "1700.000100"},
-        {"team_id": "T1"})
-    assert adapter.handle_message.await_count == 2
-    slash, message = (c.args[0] for c in adapter.handle_message.await_args_list)
-    assert message.channel_prompt and "Answer in haiku." in message.channel_prompt
-    assert slash.channel_prompt == message.channel_prompt
-    assert slash.auto_skill == message.auto_skill == ["triage"]
-    assert (message.source.chat_name, message.source.user_name) == (chat_name, "Alice")
-    assert (slash.source.chat_name, slash.source.user_name) == (
-        message.source.chat_name, message.source.user_name)
+         "channel_id": channel_id, "team_id": "T1", "thread_ts": "1700.000050"})
+    await adapter._handle_slack_message(dict(message, ts="1700.000200"), {"team_id": "T1"})
+    assert adapter.handle_message.await_count == 3
+    first, slash, last = (c.args[0] for c in adapter.handle_message.await_args_list)
+    slash = _agent_turn(slash)
+    assert first.channel_prompt and "Answer in haiku." in first.channel_prompt
+    assert slash.channel_prompt == first.channel_prompt
+    assert slash.auto_skill == first.auto_skill == ["triage"]
+    assert (first.source.chat_name, first.source.user_name) == (chat_name, "Alice")
+    assert (slash.source.chat_name, slash.source.user_name) == (chat_name, "Alice")
+    assert _distinct_pins((first, slash, last)) == 1
 
 
 @pytest.mark.asyncio
