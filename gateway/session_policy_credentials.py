@@ -149,9 +149,20 @@ def _entry_owner_path(entry, config):
 def disable_dropped_secrets(config, dropped, session=None):
     """Disable, in the session's effective *config*, whatever authenticated with a *dropped* frozen
     secret, instead of leaving it with a null key (null means 'resolve another credential' and would
-    send another account's key). A fallback using it is removed from the chain. Never substitutes."""
+    send another account's key). A fallback using it is removed from the chain; an ``auxiliary.<task>``
+    override using it is replaced by the session's primary route (``provider: main``). Never substitutes."""
     if not dropped:
         return config
+    from agent.auxiliary_task_config import _AUX_ROUTE_KEYS
+    auxiliary = config.get('auxiliary') if isinstance(config.get('auxiliary'), dict) else {}
+    for task in sorted({path[1] for path in dropped if path[0] == 'auxiliary' and len(path) > 2}, key=str):
+        block = auxiliary.get(task)
+        if isinstance(block, dict):
+            # The task's own route is gone with its key: the session's primary route, its own credential.
+            auxiliary[task] = {**{k: v for k, v in block.items() if k not in _AUX_ROUTE_KEYS
+                                  and k != 'fallback_chain'}, 'provider': 'main'}
+            logger.warning('Session %s: auxiliary task %s returned to the primary route: its credential '
+                           'changed in config.yaml since this session started', session, task)
     owners = {path[:2] for path in dropped if path[0] in ('providers', 'custom_providers') and len(path) > 2}
     for section in ('fallback_providers', 'fallback_model'):
         raw = config.get(section)

@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -768,8 +769,12 @@ def policy_scope(policy, *, authority=None):
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
+        from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
-        with editor_scope(policy), editor_mcp_scope(authority, policy):
+        # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
+        auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
+        aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
+        with editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope:
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)

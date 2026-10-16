@@ -304,3 +304,41 @@ def test_a_changed_fallback_secret_removes_that_fallback(tmp_path, monkeypatch, 
         assert not any('sk-different-account' in a or 'sk-rotated' in a for a in sent), sent
         assert backup.requests == []
     assert any('fallback' in r.getMessage() and 'removed' in r.getMessage() for r in caplog.records)
+
+
+def test_a_changed_auxiliary_secret_returns_that_task_to_the_primary_route(tmp_path, monkeypatch, caplog):
+    """A frozen ``auxiliary.compression`` key rotated in config.yaml used to be dropped while the
+    auxiliary client read live YAML and sent the ROTATED key. The task's override now leaves the
+    session's effective policy: compression runs on the session's primary route with its own key."""
+    from agent.auxiliary_client import get_text_auxiliary_client, reset_runtime_main, set_runtime_main
+    from gateway.session_policy import policy_scope
+    from tests.fakes.fake_llm_provider import FakeLLMServer
+    with FakeLLMServer() as main, FakeLLMServer() as aux:
+        cfg = {'model': {'provider': 'custom', 'default': 'primary-model', 'base_url': main.base_url,
+                         'api_key': 'sk-main-route'},
+               'auxiliary': {'compression': {'provider': 'custom', 'model': 'aux-model',
+                                             'base_url': aux.base_url, 'api_key': 'sk-original-aux'}}}
+        policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
+
+        def compress():
+            authority = owner()
+            with policy_scope(policy, authority=authority):
+                _model, runtime = _policy_runtime(policy, owner)
+                token = set_runtime_main(runtime['provider'], 'primary-model', base_url=runtime['base_url'],
+                                         api_key=runtime['api_key'], api_mode=runtime.get('api_mode') or '')
+                try:
+                    client, model = get_text_auxiliary_client('compression')
+                    client.chat.completions.create(model=model, messages=[{'role': 'user', 'content': 'hi'}])
+                finally:
+                    reset_runtime_main(token)
+        compress()  # unchanged: the frozen auxiliary route serves with its frozen key
+        assert [r['auth'] for r in aux.requests] == ['Bearer sk-original-aux']
+
+        cfg['auxiliary']['compression']['api_key'] = 'sk-rotated-aux'
+        config_path.write_text(json.dumps(cfg))
+        compress()
+        sent = [r['auth'] for r in main.requests + aux.requests]
+        assert not any('sk-rotated-aux' in a for a in sent), sent
+        assert len(aux.requests) == 1  # nothing more reached the auxiliary endpoint
+        assert main.requests[-1]['auth'] == 'Bearer sk-main-route'
+    assert any('auxiliary' in r.getMessage() and 'primary route' in r.getMessage() for r in caplog.records)
