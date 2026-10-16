@@ -38,7 +38,7 @@ def _adopt_and_resolve(home, legacy_route, source='tui', billing=None):
     reasoning = {'enabled': True, 'effort': 'xhigh'}
     authority.db.create_session(SID, source=source, model='legacy-model', model_config={
         'model': 'legacy-model', **legacy_route, 'api_mode': 'chat_completions',
-        'reasoning_config': reasoning, 'service_tier': 'priority'} if source == 'tui' else {
+        'reasoning_config': reasoning, 'service_tier': 'priority'} if source in ('tui', 'desktop') else {
         'max_iterations': 90, 'reasoning_config': reasoning, 'max_tokens': None})
     if billing:
         authority.db.update_token_counts(SID, input_tokens=1, model='legacy-model', **billing)
@@ -190,3 +190,35 @@ def test_unchanged_route_keeps_the_profile_credential_for_that_endpoint(monkeypa
         assert result['final_response'] == 'legacy ok'
         assert [r['model'] for r in legacy.main_requests()] == ['legacy-model']
         assert {r['auth'] for r in legacy.requests} == {'Bearer sk-profile-only'}
+
+
+@pytest.mark.parametrize('shape', ['desktop-custom', 'auto-base-url', 'stored-api-key', 'cli-billing-auto'])
+def test_v0_21_19_row_shapes_go_to_their_own_endpoint_with_its_own_key(monkeypatch, shape):
+    """v0.21.19 row shapes beyond the TUI/CLI ones: a Desktop chat (tui_gateway with ``source='desktop'``,
+    same ``model_config`` writer), a route whose provider is ``auto`` with a base_url (in model_config,
+    or the CLI's ``billing_provider='auto'`` bucket), and a row whose model_config carries an
+    ``api_key`` (no v0.21.19 writer stores one; a hand-edited or imported row may). Each turn reaches
+    the row's endpoint with that endpoint's configured key; the profile endpoint gets nothing, and a
+    stored row key is never sent anywhere."""
+    with FakeLLMServer([Text('profile')], api_key='sk-profile-only') as profile, \
+            FakeLLMServer([Text('legacy ok')], api_key='sk-legacy-own') as legacy:
+        home = Path(os.environ['HERMES_HOME'])
+        monkeypatch.setattr('gateway.run._hermes_home', home)
+        _write_profile(home, profile.base_url, extra=(
+            f'custom_providers:\n  - name: legacy-box\n    base_url: {legacy.base_url}\n    api_key: sk-legacy-own\n'))
+        if shape == 'cli-billing-auto':
+            resolved = _adopt_and_resolve(home, {}, source='cli', billing={
+                'billing_provider': 'auto', 'billing_base_url': legacy.base_url})
+        else:
+            route = {'provider': 'auto' if shape == 'auto-base-url' else 'custom:legacy-box',
+                     'base_url': legacy.base_url}
+            if shape == 'stored-api-key':
+                route['api_key'] = 'sk-row-stored'
+            resolved = _adopt_and_resolve(home, route, source='desktop' if shape == 'desktop-custom' else 'tui')
+        policy, (model, runtime) = resolved
+        result = _run_turn(policy, model, runtime)
+        assert result['final_response'] == 'legacy ok'
+        assert profile.requests == []
+        assert [r['model'] for r in legacy.main_requests()] == ['legacy-model']
+        assert {r['auth'] for r in legacy.requests} == {'Bearer sk-legacy-own'}
+        assert 'sk-row-stored' not in str(policy) + str(runtime)
