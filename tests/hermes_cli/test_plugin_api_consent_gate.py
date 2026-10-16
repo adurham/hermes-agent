@@ -197,6 +197,31 @@ def test_hot_mount_keeps_the_launch_profiles_isolation(daemon):
     assert not imported.exists() and daemon.hosted == ["iso-probe"]
 
 
+def test_launch_consent_read_under_a_secondary_grant_keeps_the_launch_secrets(daemon, monkeypatch):
+    """A secondary profile's plugin socket binds that profile's secrets before the gate reads the
+    launch profile's lists. That read must expand the launch config's ``${VAR}`` refs with the
+    launch profile's secrets: otherwise the launch home's last-good config holds the secondary's
+    values, and the launch profile is served them once its config.yaml stops parsing."""
+    from hermes_cli.config import load_config
+    from hermes_cli.web_server_profiles import _config_profile_scope
+
+    monkeypatch.delenv("PLG_SCOPE_PROBE", raising=False)
+    _install(daemon.launch, "scope-probe")
+    config = {"plugins": {"enabled": ["scope-probe"], "disabled": []}, "scope_probe": "${PLG_SCOPE_PROBE}"}
+    (daemon.launch / "config.yaml").write_text(json.dumps(config))
+    (daemon.launch / ".env").write_text("PLG_SCOPE_PROBE=launch-value\n")
+    _plugins(daemon.beta, enabled=["scope-probe"])
+    (daemon.beta / ".env").write_text("PLG_SCOPE_PROBE=beta-value\n")
+    assert daemon.client.get("/api/plugins/scope-probe/ping", headers=daemon.owner).status_code == 200
+    with daemon.client.websocket_connect("/api/plugins/scope-probe/events", headers=daemon.beta_ticket()) as ws:
+        assert ws.receive_text() == "hello"
+
+    (daemon.launch / "config.yaml").write_text("plugins: [unclosed\n")
+
+    with _config_profile_scope(None):
+        assert load_config()["scope_probe"] == "launch-value"
+
+
 def test_profile_selector_cannot_run_a_plugin_on_a_profile_that_disabled_it(daemon):
     """``?profile=`` with the session token binds the selected profile's scope for the handler, so
     that profile's opt-out holds there exactly as it does for its own ticket, HTTP and WebSocket."""

@@ -813,11 +813,15 @@ def _plugin_api_mount_skip_reason(plugin: dict[str, Any], enabled_set: set, disa
 
 @contextmanager
 def _launch_profile_scope():
-    """Resolve config as the launch profile's, whichever profile the request is scoped to."""
+    """Resolve config as the launch profile's, whichever profile the request is scoped to: home and
+    secrets switch together, so the launch config's ``${VAR}`` refs (and its last-good copy) never
+    expand through another profile's secrets."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli.web_server_profiles import _config_profile_scope
     token = set_hermes_home_override(None)
     try:
-        yield
+        with _config_profile_scope(None):
+            yield
     finally:
         reset_hermes_home_override(token)
 
