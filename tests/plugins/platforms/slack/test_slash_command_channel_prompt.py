@@ -119,6 +119,27 @@ async def test_slash_that_starts_no_turn_costs_no_slack_lookup(channel_id, autho
 
 
 @pytest.mark.asyncio
+async def test_thread_routed_sender_is_checked_against_the_routed_thread():
+    """A thread-scoped ``profile_routes`` entry points this thread at a profile whose pairing store
+    approved the caller; the default store did not. The gateway's auth callback resolves the store
+    from ``thread_id``, so the early reject must pass it on both entry points, or the caller's
+    ``/stop`` and messages in that thread are dropped before the runner sees them."""
+    routed_thread = "1700.000050"
+    adapter = _adapter("C_OPS")
+    adapter.set_authorization_check(
+        lambda _uid, _chat_type, _chat_id, *, thread_id=None, **_kw: thread_id == routed_thread)
+    await adapter._handle_slash_command(
+        {"command": "/stop", "text": "", "user_id": "U_ALICE", "channel_id": "C_OPS",
+         "team_id": "T1", "thread_ts": routed_thread})
+    await adapter._handle_slack_message(
+        {"text": "<@U_BOT> what broke?", "user": "U_ALICE", "channel": "C_OPS",
+         "channel_type": "channel", "ts": "1700.000100", "thread_ts": routed_thread}, {"team_id": "T1"})
+    handed = [c.args[0] for c in adapter.handle_message.await_args_list]
+    assert [(e.text, e.source.thread_id) for e in handed] == [
+        ("/stop", routed_thread), ("what broke?", routed_thread)]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_slashes_reach_the_gateway_in_arrival_order():
     """Two ``/hermes queue`` slashes through the Bolt listener: the first is held on a cold
     ``users.info`` while the second's lookup is warm. They still reach the gateway in arrival

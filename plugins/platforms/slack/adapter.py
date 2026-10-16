@@ -4160,20 +4160,21 @@ class SlackAdapter(BasePlatformAdapter):
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         return getattr(runner, "_is_user_authorized", None)
 
-    def _early_reject_unauthorized(self, user_id: str, channel_id: str, is_dm: bool) -> bool:
+    def _early_reject_unauthorized(
+            self, user_id: str, channel_id: str, is_dm: bool, *, thread_id: Optional[str] = None) -> bool:
         """True (logged) when the sender is definitively unauthorized. Injected profile-bound check
         first (works under multiplex, where the handler has no ``__self__``), then runner
-        introspection. Unknown (None) is NOT a rejection."""
+        introspection. Unknown (None) is NOT a rejection. ``thread_id``: thread-scoped profile_routes."""
         chat_type = "dm" if is_dm else "group"
         decision = (
-            self._is_sender_authorized(user_id, chat_type, channel_id)
+            self._is_sender_authorized(user_id, chat_type, channel_id, thread_id=thread_id)
             if user_id and getattr(self, "_authorization_check", None) is not None
             else None)
         auth_fn = self._runner_auth_fn()
         if decision is None and user_id and callable(auth_fn):
             source = self.build_source(
-                chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name=""
-            )
+                chat_id=channel_id, chat_name="", chat_type=chat_type, user_id=user_id, user_name="",
+                thread_id=thread_id)
             decision = bool(auth_fn(source))
         if decision is False:
             logger.warning(
@@ -4621,9 +4622,9 @@ class SlackAdapter(BasePlatformAdapter):
         is_one_to_one_dm = channel_type == "im"
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
-        if self._early_reject_unauthorized(user_id, channel_id, is_dm):
-            return
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
+        if self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_ts):
+            return
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.
         # See #52387.
@@ -6081,7 +6082,7 @@ class SlackAdapter(BasePlatformAdapter):
         # A sender the gateway rejects must not cost Slack lookups first (the message path's rule).
         # In a channel the runner only drops them; in a DM it answers per unauthorized_dm_behavior
         # (pairing code or decline), so it still gets the event, without names.
-        rejected = self._early_reject_unauthorized(user_id, channel_id, is_dm)
+        rejected = self._early_reject_unauthorized(user_id, channel_id, is_dm, thread_id=thread_id)
         if rejected and not is_dm:
             return
         source = self.build_source(
