@@ -31,13 +31,19 @@ def _route_paths(policy):
     """Secret paths the session's own route authenticates with: its ``model:`` block, a direct alias's
     key (``api_key_from``) and the one ``providers:`` / ``custom_providers:`` entry the runtime's own
     named-provider selection routes its provider through."""
-    from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
+    from hermes_cli.runtime_provider_custom import (custom_provider_config_path_for_url,
+                                                    named_custom_provider_config_path)
     config = json.loads(policy.config_json)
     model = config.get('model') if isinstance(config.get('model'), dict) else {}
     paths = {('model', key) for key in model}
     if isinstance(model.get('api_key_from'), list):
         paths.add(tuple(model['api_key_from']))
-    selected = named_custom_provider_config_path(str(model.get('provider') or ''), config)
+    provider = str(model.get('provider') or '')
+    if provider.strip().lower() == 'custom':
+        # A bare custom route authenticates with the entry owning its base_url (the pool's owner).
+        selected = custom_provider_config_path_for_url(model.get('base_url'), config)
+    else:
+        selected = named_custom_provider_config_path(provider, config)
     entry = _defined(config, selected) if selected else _ABSENT
     if isinstance(entry, dict):
         paths |= {selected + (field,) for field in entry}

@@ -214,3 +214,29 @@ def test_a_custom_prefixed_providers_key_is_the_route(tmp_path, monkeypatch):
     with pytest.raises(RuntimeStoreError) as refused:
         policy.config(owner())
     assert refused.value.field == 'providers.custom:foo.api_key'
+
+
+def test_a_bare_custom_key_selected_by_url_is_the_route(tmp_path, monkeypatch):
+    """A bare ``model.provider: custom`` with a ``base_url`` authenticates with the
+    ``custom_providers`` entry owning that URL. Rotating that key and recovering cold used to skip
+    the frozen value as an unrelated secret, so the pool seeded the rotated key from live config;
+    it now refuses by name, like a named route."""
+    from hermes_state_runtime import RuntimeStoreError
+    url = 'http://127.0.0.1:1234/v1'
+    cfg = {'model': {'provider': 'custom', 'base_url': url, 'default': 'm'},
+           'custom_providers': [
+               {'name': 'Other', 'base_url': 'http://127.0.0.1:9999/v1', 'api_key': 'other-token'},
+               {'name': 'Local', 'base_url': url + '/', 'api_key': 'url-token'}]}
+    policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
+    assert policy.config(owner())['custom_providers'][1]['api_key'] == 'url-token'
+
+    cfg['custom_providers'][0]['api_key'] = 'rotated-other'  # not the route: simply not supplied
+    config_path.write_text(json.dumps(cfg))
+    assert policy.config(owner())['custom_providers'][0]['api_key'] is None
+
+    cfg['custom_providers'][1]['api_key'] = 'rotated-url-token'
+    config_path.write_text(json.dumps(cfg))
+    with pytest.raises(RuntimeStoreError) as refused:
+        policy.config(owner())
+    assert refused.value.field == 'custom_providers.1.api_key'
+    assert 'rotated' not in str(refused.value.detail)

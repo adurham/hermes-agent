@@ -207,6 +207,19 @@ def named_custom_provider_config_path(requested_provider: str, config: dict[str,
     return found[1] if found else None
 
 
+def custom_provider_config_path_for_url(base_url: Any, config: dict[str, Any]) -> Optional[tuple]:
+    """The config path of the entry a bare ``custom`` route at *base_url* takes its key from: the
+    first compatible ``custom_providers`` / ``providers`` entry with that URL (trailing slash
+    ignored), the same owner the credential pool seeds from. Reads no credential."""
+    url = str(base_url or "").strip().rstrip("/")
+    if not url or isinstance(config.get("custom_providers"), dict):
+        return None
+    for entry in _rp().get_compatible_custom_providers(config) or ():
+        if isinstance(entry, dict) and str(entry.get("base_url") or "").strip().rstrip("/") == url:
+            return _compatible_entry_path(config, entry)
+    return None
+
+
 def _select_named_custom_provider(
     requested_provider: str, *, config: Optional[dict[str, Any]], resolve_credentials: bool,
 ) -> Optional[tuple[dict[str, Any], Optional[tuple]]]:
