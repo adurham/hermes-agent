@@ -130,3 +130,32 @@ def test_disable_without_an_answering_gateway_says_a_restart_is_needed(home, mon
     out = capsys.readouterr().out
     assert "next session" not in out
     assert "hermes gateway restart" in out
+
+
+def test_disable_says_the_running_gateway_unloaded_it(home, monkeypatch, capsys):
+    """Live, an open session stops running the disabled plugin's commands at once: not only new ones."""
+    _gateway(monkeypatch, {"reloaded": True, "plugins": []})
+
+    plugins_cmd.cmd_disable("probe")
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "running gateway reloaded its plugins and unloaded probe" in out, out
+    assert "new sessions" not in out, out
+
+
+@pytest.mark.parametrize("reloaded", [True, False])
+def test_enable_prints_only_the_outcome_that_applies(home, monkeypatch, capsys, reloaded):
+    """``enable`` knows whether the running gateway took the plugin: it prints that outcome, never
+    "Takes effect on next session." above a line saying it is active in the running gateway now."""
+    from hermes_cli import plugins_activation
+    save_config({**load_config(), "plugins": {"enabled": [], "disabled": ["probe"]}})
+    outcome = {"gateway_reloaded": reloaded, "restart_required": not reloaded,
+               "activation": {"activated_now": {"hooks": 1}} if reloaded else None}
+    monkeypatch.setattr(plugins_activation, "activate_plugin_now", lambda *_a, **_k: outcome)
+
+    plugins_cmd.cmd_enable("probe", allow_tool_override=False)
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Plugin probe enabled." in out and "next session" not in out, out
+    assert ("active in the running gateway now" in out) is reloaded, out
+    assert ("hermes gateway restart" in out) is (not reloaded), out

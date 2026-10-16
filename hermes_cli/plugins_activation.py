@@ -118,8 +118,8 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
 
 def reload_running_gateway() -> Optional[dict[str, Any]]:
     """Ask the gateway serving this profile (its own socket, else the multiplexer's for a served
-    secondary) to force plugin re-discovery, so an enable loads and a disable unloads for every session
-    the gateway starts from now on. The ``reload-plugins`` answer, or None when no gateway answered."""
+    secondary) to force plugin re-discovery, so an enable loads and a disable unloads in the running
+    gateway now. The ``reload-plugins`` answer, or None when no gateway answered."""
     try:
         from gateway.control_socket import reload_gateway_plugins
         from hermes_constants import get_default_hermes_root, get_hermes_home
@@ -135,10 +135,11 @@ def reload_running_gateway() -> Optional[dict[str, Any]]:
         return None
 
 
-def gateway_reload_hint(answer: Optional[dict[str, Any]]) -> str:
-    """One honest sentence after a plugin-set change that only the gateway's re-discovery applies."""
+def gateway_reload_hint(answer: Optional[dict[str, Any]], name: str) -> str:
+    """One honest sentence after disabling plugin ``name``, a change only the gateway's re-discovery
+    applies (an open session stops running its commands at once)."""
     if answer and answer.get("reloaded"):
-        return "The running gateway reloaded its plugins; new sessions use this change."
+        return f"The running gateway reloaded its plugins and unloaded {name}."
     if answer is not None:  # a gateway answered and refused: say so, with its reason
         return (f"The running gateway refused to reload its plugins: {answer.get('error') or 'no reason given'}.\n"
                 "Only the saved config changed; restart the gateway serving this profile to apply it:\n"
