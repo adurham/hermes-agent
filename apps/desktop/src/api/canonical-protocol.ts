@@ -191,7 +191,9 @@ const POLICY_EDIT_METHODS = new Set(['slash.exec', 'config.set', 'session.worksp
 const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
 // Value-setting mutations: re-applying one is harmless, so a later acknowledged edit retires it.
 const VALUE_OPERATIONS = new Set(['rename', 'archive', 'model', 'reasoning', 'workspace'])
-const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', 'session.rewind', ...BRANCH_METHODS])
+// `session.model`: a whole canonical model selection (model / provider / reasoning) plus the owner's
+// token, as the owner asked it (a deferred pick's confirmation): the same request the TUI resends.
+const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', 'session.rewind', 'session.model', ...BRANCH_METHODS])
 
 export class CanonicalDesktopProtocol {
   private creates = new Map<string, string>()
@@ -354,6 +356,12 @@ export class CanonicalDesktopProtocol {
     } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
 
     if (fenced) { return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true) }
+
+    if (method === 'session.model') {
+      const payload = { ...(params.payload as Record<string, unknown>), ...(typeof params.confirm === 'string' ? { confirm: params.confirm } : {}) }
+
+      return this.retainedMutation(params.session_id, params.profile, 'model', payload, true)
+    }
 
     if (method === 'session.branch_stored' || method === 'session.branch_whole') {
       // The stored-parent form names the parent as `parent_session_id`; the live form as `session_id`.
