@@ -2212,6 +2212,7 @@ class CLITuiMixin:
         from cli import _estimate_tui_input_height, get_skill_bundles, get_skill_commands
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
+        from hermes_cli import gateway_plugin_commands
         cli_ref = self
 
         def get_prompt():
@@ -2220,7 +2221,7 @@ class CLITuiMixin:
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: get_skill_commands(),
             command_filter=cli_ref._command_available,
-            skill_bundles_provider=lambda: get_skill_bundles())
+            skill_bundles_provider=lambda: get_skill_bundles(), plugin_commands_provider=lambda: gateway_plugin_commands.names(cli_ref))
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,
@@ -2229,10 +2230,9 @@ class CLITuiMixin:
             wrap_lines=True,
             read_only=Condition(lambda: bool(cli_ref._command_blocks_input)),
             history=FileHistory(str(self._history_file)),
-            # The completer does blocking work (fuzzy @-file indexing shells out to rg/fd with a
-            # 2s timeout; path completion hits os.listdir/stat), so complete_while_typing inline
-            # would stall the render loop per keystroke (WSL2/slow FS). ThreadedCompleter moves
-            # it off the UI event loop.
+            # The completer does blocking work (fuzzy @-file indexing shells out to rg/fd with a 2s timeout;
+            # path completion hits os.listdir/stat), so complete_while_typing inline would stall the render
+            # loop per keystroke (WSL2/slow FS). ThreadedCompleter moves it off the UI event loop.
             completer=ThreadedCompleter(_completer),
             complete_while_typing=True,
             auto_suggest=SlashCommandAutoSuggest(history_suggest=AutoSuggestFromHistory(), completer=_completer),

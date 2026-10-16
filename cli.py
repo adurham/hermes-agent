@@ -1212,7 +1212,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         user_args = cmd_original[len(base_cmd):].strip()
         if bare in quick_commands:
             return self._run_quick_command(base_cmd, quick_commands[bare], user_args)
-        if bare in _get_plugin_cmd_handler_names():
+        from hermes_cli import gateway_plugin_commands
+        try:
+            plugin = gateway_plugin_commands.lookup(self, bare)  # the gateway's; None off the gateway
+        except gateway_plugin_commands.CatalogUnavailable:
+            return True  # printed; an unreadable catalog never selects a skill, bundle or expansion
+        if plugin or (plugin is None and bare in _get_plugin_cmd_handler_names()):
             self._run_plugin_slash_command(base_cmd, user_args)
         elif base_cmd in skill_bundles:
             self._run_skill_bundle_command(base_cmd, skill_bundles[base_cmd], user_args)
@@ -1265,8 +1270,10 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         return True
 
     def _run_plugin_slash_command(self, base_cmd: str, user_args: str) -> None:
+        from hermes_cli import gateway_plugin_commands
+        if gateway_plugin_commands.run(self, base_cmd.lstrip("/"), user_args):
+            return  # ran beside the plugin's hooks, tools and MCP servers in the gateway
         from hermes_cli.plugins import get_plugin_command_handler, resolve_plugin_command_result
-
         plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
         if not plugin_handler:
             return
