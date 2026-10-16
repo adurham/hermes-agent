@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import base64
 import struct
-from typing import Iterable, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 OUTBOUND_IMAGE_LIMIT = 20
 # Hard per-request image count on 200K-context Claude models; the ceiling once the many-image
@@ -188,6 +188,69 @@ def outbound_image_retire_count(
         limit = outbound_image_block_limit(many_image_safe)
     total = len(carrier_blocks_newest_first)
     sizes = carrier_bytes_newest_first
+    return max(
+        (
+            _retire_count_for_request(
+                carrier_blocks_newest_first[total - m:],
+                reserved_blocks,
+                None if sizes is None else sizes[total - m:],
+                reserved_bytes,
+                limit,
+                budget,
+                batch,
+                floor,
+            )
+            for m in range(1, total + 1)
+        ),
+        default=0,
+    )
+
+
+
+def outbound_retired_image_ids(agent: Any) -> set[str]:
+    """The session's latched set of tool-call ids whose images the send path has retired.
+
+    Keyed on ``agent.session_id`` so a new session (or a compaction rotation, which rewrites the
+    prefix anyway) starts clean and a reused provider call id cannot retire a fresh screenshot.
+    """
+    session_id = getattr(agent, "session_id", None)
+    held = getattr(agent, "_outbound_retired_image_ids", None)
+    if held is None or held[0] != session_id:
+        held = (session_id, set())
+        agent._outbound_retired_image_ids = held
+    return held[1]
+
+
+def latched_retire_count(
+    retire: int, carrier_ids_newest_first: Sequence[Optional[str]], retired_ids: Optional[set[str]]
+) -> int:
+    """Widen ``retire`` so every carrier up to the newest previously retired one stays retired,
+    then record the carriers being retired into ``retired_ids``.
+
+    The per-request decision cannot see history: a request that drops an upload (once it leaves
+    the replay window) relaxes the ceiling, and re-deciding from scratch would restore
+    screenshots an earlier request already retired, rewriting the cached prefix back.
+    """
+    if retired_ids is None:
+        return retire
+    total = len(carrier_ids_newest_first)
+    latched = [n for n, cid in enumerate(carrier_ids_newest_first) if cid and cid in retired_ids]
+    retire = max(retire, total - latched[0]) if latched else retire
+    retired_ids.update(cid for cid in carrier_ids_newest_first[total - retire:] if cid)
+    return retire
+
+def _retire_count_for_request(
+    carrier_blocks_newest_first: Sequence[int],
+    reserved_blocks: int,
+    sizes: Optional[Sequence[int]],
+    reserved_bytes: int,
+    limit: int,
+    budget: int,
+    batch: int,
+    floor: int,
+) -> int:
+    """Retire count for one request in isolation; see :func:`outbound_image_retire_count`."""
+    total = len(carrier_blocks_newest_first)
     blocks_kept = [0] * (total + 1)
     bytes_kept = [0] * (total + 1)
     for i in range(total):
