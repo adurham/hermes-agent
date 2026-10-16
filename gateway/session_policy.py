@@ -375,11 +375,49 @@ def _profile_workspace_cwd(home):
     return configured if configured and os.path.isdir(configured) else None
 
 
+def _without_auto_pick(params):
+    """`provider: auto` is the thin client's "no pick" sentinel: the profile's route stands as configured."""
+    if isinstance(params.get('provider'), str) and params['provider'].strip().lower() == 'auto':
+        return {k: v for k, v in params.items() if k != 'provider'}
+    return params
+
+
+def _keeps_profile_route(picked, config):
+    """Whether a provider pick resolves to the profile's own route, so its endpoint and key pins stay.
+
+    The same resolved provider under another spelling (`vllm` for `custom`, `deep-infra` for
+    `deepinfra`, `custom:<name>` for a named entry) is the same route. A block with an endpoint
+    and no provider (or `auto`) already routes to `custom` there.
+    """
+    from gateway.session_route_identity import resolved_route
+    held = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
+    if str(held.get('provider') or '').strip().lower() in ('', 'auto') and str(held.get('base_url') or '').strip():
+        held['provider'] = 'custom'
+    held_id = resolved_route(held, config)[0]
+    if held_id == 'auto' or not isinstance(picked, str) or not picked.strip():
+        return False
+    return resolved_route({'provider': picked}, config)[0] == held_id
+
+
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
+    params = _without_auto_pick(params)
+    if 'provider' in params and not _keeps_profile_route(params['provider'], config):
+        model = config.setdefault('model', {})
+        # A provider pick is a route change: the profile's endpoint, wire protocol and
+        # credential pointers belong to the provider being replaced, and pairing the new one
+        # with them sends its key to the old host (401) or the old key down the new route.
+        # They are dropped before the overrides fold in, so the target provider resolves its
+        # own — the same route keys a committed /model switch rewrites (#138843). An explicit
+        # base_url is applied after the drop, so a pinned endpoint survives without carrying
+        # the replaced provider's other pins, and a same-provider re-pick keeps the profile's.
+        from gateway.session_route_identity import ROUTE_BOUND_KEYS
+        # The replaced provider's context window goes too: it was sized for the old model.
+        for stale in ROUTE_BOUND_KEYS:
+            model.pop(stale, None)
     for key in ('provider', 'base_url'):
         if key in params:
             value = params[key]
