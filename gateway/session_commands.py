@@ -169,7 +169,8 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
     # the handler starts records this session as its parent.
     entry = await asyncio.to_thread(runner.session_store.lookup_by_session_key, live.route)
     try:
-        return await runner._hm_run_plugin_handler(handler, event, live.source, entry)
+        # The argument as typed, like main's CLI: no messaging dash repair.
+        return await runner._hm_run_plugin_handler(handler, event, live.source, entry, args=arg)
     except Exception as e:  # main's CLI printed it; messaging (run_inbound_hooks) still only logs it
         logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
         return t('cli.plugin.command_error', error=str(e) or type(e).__name__)

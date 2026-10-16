@@ -55,6 +55,7 @@ def register(ctx):
                                     "key": get_session_env("HERMES_SESSION_KEY"),
                                     "parent": getattr(job, "parent_session_id", None), "started": started})
     ctx.register_command("probe-sid", sid, description="The calling session")
+    ctx.register_command("probe-args", lambda arg: "ARGS=" + json.dumps(arg), description="Echo the argument")
 '''
 # One command per gateway life: A serves /alpha, the restarted B only /beta.
 _LIFE = '''import os
@@ -169,7 +170,8 @@ def test_cli_plugin_command_runs_in_the_gateway_and_reaches_its_mcp_registry(tmp
                 out = capsys.readouterr().out
                 calls = list(wire.calls)
                 typed_outs = {}
-                for typed in ('/probe_under', '/probe_only', '/probe-boom', '/probe-cwd', '/probe-sid'):
+                for typed in ('/probe_under', '/probe_only', '/probe-boom', '/probe-cwd', '/probe-sid',
+                              '/probe-args 2026–2027 — x'):
                     assert c._process_unregistered_slash(typed, typed) is True
                     typed_outs[typed] = capsys.readouterr().out
             finally:
@@ -189,6 +191,9 @@ def test_cli_plugin_command_runs_in_the_gateway_and_reaches_its_mcp_registry(tmp
     ident = json.loads(typed_outs['/probe-sid'].split('SID=', 1)[1].strip())
     assert ident['id'] == sid and ident['key'] == where['key'], ident
     assert ident['parent'] == sid, ident
+    # as typed: the messaging path's dash repair (MessageEvent.get_command_args) is not applied
+    args = json.loads(typed_outs['/probe-args 2026–2027 — x'].split('ARGS=', 1)[1].strip())
+    assert args == '2026–2027 — x', args
     assert proc.pid != os.getpid()
     assert f'PLUGIN_PID={proc.pid} ' in out, out  # the handler ran in the gateway process
     mcp = json.loads(json.loads(out.split('MCP=', 1)[1].strip())['result'])
