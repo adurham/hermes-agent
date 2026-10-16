@@ -134,6 +134,8 @@ class RelayDiscordInteractionMixin:
                 message_type = MessageType.COMMAND
         elif itype == 3:
             text = str(data.get("custom_id") or "")
+        elif itype == 5:
+            text = self._render_modal_submit(data)
         else:
             text = ""
         member = payload.get("member") or {}
@@ -208,6 +210,26 @@ class RelayDiscordInteractionMixin:
         if not _PROMPT_ID_RE.match(parts[1]) or not _PROMPT_ID_RE.match(parts[2]):
             return None
         return parts[1], parts[2]
+
+    @staticmethod
+    def _render_modal_submit(data) -> str:
+        """A MODAL_SUBMIT as text: the modal's custom_id, then one ``input_id: value`` line per
+        submitted input. Inputs sit in action rows (``components``) or labels (``component``);
+        an empty optional input is left out."""
+        lines = [str(data.get("custom_id") or "")]
+        stack = list(reversed(data.get("components") or []))
+        while stack:
+            comp = stack.pop()
+            if not isinstance(comp, dict):
+                continue
+            nested = comp.get("components") or ([comp["component"]] if comp.get("component") else [])
+            stack.extend(reversed(nested if isinstance(nested, list) else []))
+            value = comp.get("value", comp.get("values"))
+            if isinstance(value, list):
+                value = ", ".join(str(v) for v in value)
+            if value is not None and str(value).strip():
+                lines.append(f"{comp.get('custom_id') or ''}: {value}")
+        return "\n".join(lines).strip()
 
     @staticmethod
     def _render_interaction_options(options) -> list:
