@@ -48,3 +48,18 @@ export function curatedFeaturedRank(kind: 'skills' | 'plugins', row: CurationRow
 
   return key && rank ? rank : undefined
 }
+
+export type PluginTier = 'nous' | 'trusted' | 'community'
+
+/** Plugin trust tiers for the discovery page. `official`/`bundled` are Nous;
+ *  `trusted` is a curated allowlist in catalog-curation.json (placeholder picks
+ *  until the trust policy is settled); everything else is community. */
+export function pluginTier(entry: { source: string; name: string; identifier: string }): PluginTier {
+  if (entry.source === 'official' || entry.source === 'bundled') {
+    return 'nous'
+  }
+
+  const trusted = curation.trusted.plugins as string[]
+
+  return trusted.includes(entry.name) || trusted.includes(entry.identifier) ? 'trusted' : 'community'
+}

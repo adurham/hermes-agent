@@ -9,6 +9,7 @@ import { useI18n } from '@/i18n'
 
 import { BENTO_COLUMNS, packBento } from './catalog-bento'
 import type { CatalogCardVariant } from './catalog-card'
+import { pluginTier, type PluginTier } from './catalog-curation'
 import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
 import { CatalogDeveloper } from './catalog-developer'
 import { catalogCategories } from './catalog-query'
@@ -18,6 +19,15 @@ const MIN_SHELF = 3
 
 /** First-party sources, per kind, for the hero's fallback when the feed curates nothing. */
 const OFFICIAL = { plugins: ['official'], skills: ['built-in', 'bundled', 'optional', 'official'] } as const
+
+/** A shelf ranks by its most-starred entry, so the strongest categories lead. */
+const topStars = (items: CatalogEntry[]) => Math.max(-1, ...items.map(entry => entry.stars ?? -1))
+
+/** Plugin tiers in page order; community keeps its category shelves. */
+const PLUGIN_TIERS: { tier: Exclude<PluginTier, 'community'>; title: string; blurb: string }[] = [
+  { tier: 'nous', title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },
+  { tier: 'trusted', title: 'Trusted Plugins', blurb: 'From established teams, reviewed for Hermes.' }
+]
 
 export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
   entries: CatalogEntry[]
@@ -40,14 +50,16 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
     stars: entry.stars
   }))
 
-  const remaining = entries.filter(entry => entry !== featured)
+  const others = entries.filter(entry => entry !== featured)
+  const tiered = kind === 'plugins' ? PLUGIN_TIERS.map(meta => ({ ...meta, items: others.filter(entry => pluginTier(entry) === meta.tier) })).filter(({ items }) => items.length) : []
+  const remaining = kind === 'plugins' ? others.filter(entry => pluginTier(entry) === 'community') : others
 
   // Plugins with an unlisted category land in `general`, as in every other plugin grouping.
   const sections: [string, string, CatalogEntry[]][] = (
     kind === 'plugins'
       ? groupCatalogPlugins(remaining).map(([key, items]) => [key, PLUGIN_CATEGORIES[key].label, items] as [string, string, CatalogEntry[]])
       : catalogCategories(remaining).map(([key, meta]) => [key, meta.label, remaining.filter(entry => entry.category === key)] as [string, string, CatalogEntry[]])
-  ).sort((a, b) => Number(b[2].some(entry => entry.imageUrl)) - Number(a[2].some(entry => entry.imageUrl)))
+  ).sort((a, b) => topStars(b[2]) - topStars(a[2]))
 
   // A category too small to fill a row reads as a stray full-width strip; those
   // fold into one mixed shelf at the end instead.
@@ -71,6 +83,17 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
         <header className="catalog-section-heading"><h2>{t.catalog.discover} {title}</h2></header>
         {card(featured, 0, 'hero')}
       </section>}
+      {tiered.map(({ tier, title: tierTitle, blurb, items }, index) => (
+        <section data-catalog-section={tier} data-catalog-tier={tier} key={tier}>
+          <header className="catalog-section-heading">
+            <div>
+              <h2>{tierTitle}</h2>
+              <p>{blurb}</p>
+            </div>
+          </header>
+          {bento(items, Math.ceil(items.length / BENTO_COLUMNS) + 1, index % 2 === 1)}
+        </section>
+      ))}
       {shelves.slice(0, categoryLimit).map(([category, label, items], index) => {
         return <section data-catalog-section={category} key={category}>
           <header className="catalog-section-heading">
