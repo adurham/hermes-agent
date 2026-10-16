@@ -163,3 +163,65 @@ def test_owner_startup_recovery_survives_a_denied_mailbox_chmod(tmp_path, monkey
         assert watched == {'b' * 32}
     finally:
         db.close()
+
+
+def _deny_mailbox_lock(monkeypatch, home):
+    """The reporters' ACL (#139485, #138872) as this token sees it: the mailbox dir exists, but
+    ``.lock`` inside it cannot be opened (Windows: no ACE for the user on an Administrators-owned dir)."""
+    import os
+    from tools.bot_live_delivery import DELIVERY_DIR_NAME
+    lock = home.resolve() / 'runtime' / DELIVERY_DIR_NAME / '.lock'
+    lock.parent.mkdir(parents=True)
+    real_open = os.open
+
+    def deny(path, *args, **kwargs):
+        if os.fspath(path) == str(lock):
+            raise PermissionError(13, 'Permission denied', str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', deny)
+    return lock.parent
+
+
+def test_gateway_startup_skips_bot_recovery_when_the_mailbox_dir_is_unusable(tmp_path, monkeypatch, caplog):
+    """#139485/#138872: an unusable mailbox dir pauses Bot Chat recovery instead of aborting
+    ``start_gateway``; the log names the dir, its owner and the remedy."""
+    import asyncio
+    import logging
+    from gateway import run_api, run_runtime
+    root = _deny_mailbox_lock(monkeypatch, tmp_path)
+    db = SessionDB(tmp_path / 'state.db')
+    try:
+        runner = SimpleNamespace(session_authority=SimpleNamespace(db=db, waiters={}),
+                                 session_runtime_descriptor={})
+
+        async def api(_runner):
+            return SimpleNamespace(api_origin='http://127.0.0.1:1')
+
+        monkeypatch.setattr(run_api, 'start_gateway_api', api)
+        with caplog.at_level(logging.DEBUG):
+            asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+        assert runner.session_runtime_descriptor['api_origin'] == 'http://127.0.0.1:1'
+        warnings = [r.getMessage() for r in caplog.records
+                    if r.levelno == logging.WARNING and 'not usable by this process' in r.getMessage()]
+        assert len(warnings) == 1 and str(root) in warnings[0] and '(owner ' in warnings[0]
+        assert 'To repair' in warnings[0]
+    finally:
+        db.close()
+
+
+def test_unusable_mailbox_warns_once_per_dir_for_the_live_readers(tmp_path, monkeypatch, caplog):
+    """The receipt readers re-enter ``_locked`` twice a second: one WARNING, DEBUG after, and a
+    ``PermissionError`` the callers already handle (never a new exception type)."""
+    import logging
+    import pytest
+    from tools import bot_live_delivery as mailbox
+    root = _deny_mailbox_lock(monkeypatch, tmp_path)
+    with caplog.at_level(logging.DEBUG, logger=mailbox.log.name):
+        for _ in range(3):
+            with pytest.raises(PermissionError):
+                with mailbox._locked(tmp_path):
+                    pass
+    levels = [r.levelno for r in caplog.records if 'not usable by this process' in r.getMessage()]
+    assert levels == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+    assert root in mailbox._warned_unusable

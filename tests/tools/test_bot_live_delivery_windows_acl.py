@@ -1,10 +1,13 @@
-"""#139485 on a real Windows ACL: a mailbox dir that denies FILE_WRITE_ATTRIBUTES makes ``chmod``
-raise WinError 5 (as on an Administrators-owned dir seen by a non-elevated user), yet the dir stays usable.
+"""#139485 / #138872 on real Windows ACLs.
 
-CPython's Windows ``Path.chmod`` opens the dir with FILE_FLAG_BACKUP_SEMANTICS, so a token with
-SeBackupPrivilege/SeRestorePrivilege enabled (an elevated CI runner) bypasses the deny ACE. The
-reporter's non-elevated token has neither. The probe runs in a child that drops both privileges from
-its own token first, then exercises the production lock.
+The reporters' mailbox dir was created by an elevated process: owner BUILTIN\\Administrators, a DACL
+with no entry for the user. Their non-elevated gateway can't chmod it, list it or open ``.lock`` in
+it, and startup must skip Bot Chat recovery instead of aborting. A second, milder shape (only
+FILE_WRITE_ATTRIBUTES denied) leaves the dir usable, and the lock must keep working there.
+
+CPython opens dirs with FILE_FLAG_BACKUP_SEMANTICS, so a token with SeBackupPrivilege/SeRestorePrivilege
+enabled (an elevated CI runner) bypasses every ACE. The reporter's token has neither. Each probe runs in a
+child that removes both privileges from its own token first, then exercises the production code.
 """
 import json
 import subprocess
@@ -18,7 +21,7 @@ pytestmark = pytest.mark.platforms("windows")
 
 _REPO = Path(__file__).resolve().parents[2]
 
-_CHILD = textwrap.dedent(r"""
+_DROP_PRIVILEGES = textwrap.dedent(r"""
     import ctypes, ctypes.wintypes as w, json, subprocess, sys
     from pathlib import Path
 
@@ -50,7 +53,9 @@ _CHILD = textwrap.dedent(r"""
         tp = TOKEN_PRIVILEGES(1, (LUID_AND_ATTRIBUTES * 1)(LUID_AND_ATTRIBUTES(luid, 0x00000004)))
         if not advapi.AdjustTokenPrivileges(token, False, ctypes.byref(tp), 0, None, None):
             raise ctypes.WinError(ctypes.get_last_error())
+""")
 
+_CHILD = _DROP_PRIVILEGES + textwrap.dedent(r"""
     from tools import bot_live_delivery as mailbox
 
     home = Path(sys.argv[1])
@@ -86,3 +91,71 @@ def test_mailbox_lock_survives_a_dir_whose_acl_denies_write_attributes(tmp_path)
         assert result["read"] == {"status": "queued"}
     finally:
         subprocess.run(["icacls", str(root), "/remove:d", "*S-1-1-0"], check=False, capture_output=True)
+
+
+_UNUSABLE_CHILD = _DROP_PRIVILEGES + textwrap.dedent(r"""
+    import asyncio, logging, os
+    from types import SimpleNamespace
+
+    home = Path(sys.argv[1])
+    root = home / "runtime" / "bot_live_delivery"
+    try:
+        os.close(os.open(root / ".lock", os.O_CREAT | os.O_WRONLY, 0o600))
+        denied = False
+    except PermissionError:
+        denied = True
+    if not denied:
+        priv = subprocess.run(["whoami", "/priv"], capture_output=True, text=True, check=False).stdout
+        print(json.dumps({"denied": False, "priv": priv}))
+        sys.exit(0)
+
+    records = []
+    handler = logging.Handler()
+    handler.emit = lambda record: records.append((record.levelname, record.getMessage()))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.DEBUG)
+
+    from gateway import run_api, run_runtime
+    from hermes_state import SessionDB
+
+    async def api(_runner):
+        return SimpleNamespace(api_origin="http://127.0.0.1:1")
+
+    run_api.start_gateway_api = api
+    db = SessionDB(home / "state.db")
+    try:
+        runner = SimpleNamespace(session_authority=SimpleNamespace(db=db, waiters={}),
+                                 session_runtime_descriptor={})
+        # The step start_gateway runs per authority; on main it raised and aborted the gateway.
+        asyncio.run(run_runtime.start_gateway_runtime_api(runner))
+    finally:
+        db.close()
+    print(json.dumps({"denied": True, "api_origin": runner.session_runtime_descriptor.get("api_origin"),
+                      "logs": [r for r in records if "bot" in r[1].lower()]}))
+""")
+
+
+def test_startup_skips_bot_recovery_on_the_reporters_mailbox_acl(tmp_path):
+    root = tmp_path / "runtime" / "bot_live_delivery"
+    root.mkdir(parents=True)
+    # The reporters' shape: Administrators-owned, inheritance cut, only SYSTEM granted. A
+    # privilege-dropped token has no ACE to list or create in it; as owner it keeps only the
+    # implicit READ_CONTROL/WRITE_DAC, so os.open(.lock) fails exactly as in #138872.
+    for args in (["/setowner", "*S-1-5-32-544"], ["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F"]):
+        subprocess.run(["icacls", str(root), *args], check=True, capture_output=True)
+    try:
+        child = subprocess.run([sys.executable, "-c", _UNUSABLE_CHILD, str(tmp_path)], cwd=_REPO,
+                               capture_output=True, text=True, check=False, timeout=180)
+        assert child.returncode == 0, f"gateway startup aborted on the reporters' ACL:\n{child.stderr}"
+        result = json.loads(child.stdout.strip().splitlines()[-1])
+        assert result["denied"], f"os.open(.lock) succeeded without backup/restore privileges:\n{result['priv']}"
+        assert result["api_origin"] == "http://127.0.0.1:1"
+        warnings = [message for level, message in result["logs"]
+                    if level == "WARNING" and "not usable by this process" in message]
+        assert len(warnings) == 1, result["logs"]
+        assert str(root.resolve()) in warnings[0] and "(owner " in warnings[0]
+        assert "icacls" in warnings[0] and "/reset" in warnings[0]
+    finally:
+        # Give the dir back to this (elevated) test so pytest can delete tmp_path.
+        subprocess.run(["icacls", str(root), "/grant", "*S-1-5-32-544:(OI)(CI)F"], check=False, capture_output=True)
+        subprocess.run(["icacls", str(root), "/reset", "/t", "/c"], check=False, capture_output=True)
