@@ -36,6 +36,15 @@ def register(ctx):
     def boom(arg):
         raise RuntimeError("probe handler exploded")
     ctx.register_command("probe-boom", boom, description="Always fails")
+
+    def where(arg):  # what the plugin docs tell a handler to read instead of os.getcwd()/os.environ
+        from agent.runtime_cwd import resolve_agent_cwd
+        from gateway.session_context import get_session_env
+        return "WHERE=" + json.dumps({"cwd": str(resolve_agent_cwd()), "getcwd": os.getcwd(),
+                                      "source": get_session_env("HERMES_SESSION_SOURCE"),
+                                      "platform": get_session_env("HERMES_SESSION_PLATFORM"),
+                                      "key": get_session_env("HERMES_SESSION_KEY")})
+    ctx.register_command("probe-cwd", where, description="Where the handler runs")
 '''
 # One command per gateway life: A serves /alpha, the restarted B only /beta.
 _LIFE = '''import os
@@ -147,7 +156,7 @@ def test_cli_plugin_command_runs_in_the_gateway_and_reaches_its_mcp_registry(tmp
                 out = capsys.readouterr().out
                 calls = list(wire.calls)
                 typed_outs = {}
-                for typed in ('/probe_under', '/probe_only', '/probe-boom'):
+                for typed in ('/probe_under', '/probe_only', '/probe-boom', '/probe-cwd'):
                     assert c._process_unregistered_slash(typed, typed) is True
                     typed_outs[typed] = capsys.readouterr().out
             finally:
@@ -159,6 +168,10 @@ def test_cli_plugin_command_runs_in_the_gateway_and_reaches_its_mcp_registry(tmp
     assert 'UNDERSCORE_ONLY' in typed_outs['/probe_only'], typed_outs
     # main's local path printed a failing handler's error; the gateway path must not swallow it
     assert 'Plugin command error: probe handler exploded' in typed_outs['/probe-boom'], typed_outs
+    where = json.loads(typed_outs['/probe-cwd'].split('WHERE=', 1)[1].strip())
+    # the session's folder and session vars are bound around the handler; the process cwd is the gateway's
+    assert where['cwd'] == str(work) and where['getcwd'] != str(work), where
+    assert where['platform'] == 'local' and where['key'], where
     assert proc.pid != os.getpid()
     assert f'PLUGIN_PID={proc.pid} ' in out, out  # the handler ran in the gateway process
     mcp = json.loads(json.loads(out.split('MCP=', 1)[1].strip())['result'])

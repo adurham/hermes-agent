@@ -120,6 +120,16 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Call an MCP tool (capability-gated) | `ctx.call_mcp(server, tool, arguments, timeout=30)` — see [Calling MCP servers from plugins](#calling-mcp-servers-from-plugins) |
 | Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](../../developer-guide/model-provider-plugin.md) (uses a separate discovery system) |
 
+:::note Slash command handlers run in the gateway
+A `/command` registered with `ctx.register_command()` runs in the gateway process that owns the session, beside the plugin's hooks, tools and MCP servers. That includes commands typed in the classic `hermes chat` CLI. So a handler should:
+
+- **Return its text** instead of calling `print()`. Printed output goes to the gateway's stdout, not to the user's chat.
+- **Read the session's working directory with `agent.runtime_cwd.resolve_agent_cwd()`**, not `os.getcwd()`, which is the gateway's own directory. The gateway pins the session's directory while the handler runs.
+- **Read session identity with `gateway.session_context.get_session_env("HERMES_SESSION_PLATFORM")`** (and the other `HERMES_SESSION_*` names), not `os.environ`. These values are bound per session around the handler.
+
+See [Register slash commands](../../developer-guide/plugins/index.md#register-slash-commands).
+:::
+
 ## Plugin discovery
 
 | Source | Path | Use case |
