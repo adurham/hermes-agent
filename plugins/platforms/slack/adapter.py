@@ -54,9 +54,11 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling modules; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .adapter_slash_lane import SlashHandoffLanes
     from .adapter_slash_payload import slash_command_text, slash_thread_id
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from adapter_slash_lane import SlashHandoffLanes  # type: ignore
     from adapter_slash_payload import slash_command_text, slash_thread_id  # type: ignore
 
 
@@ -1121,6 +1123,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
         # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
         self._slash_command_contexts: dict[tuple[str, ...], dict[str, Any]] = {}
+        self._slash_lanes = SlashHandoffLanes()  # arrival order of one session's slashes
         # Native streaming state per _stream_key: {"ts", "draft_id", "sent", "started", "base"}.
         # ``sent`` is the raw pre-mrkdwn text of the whole segment; the API is append-only so
         # deltas diff against it. ``base`` is where this Slack message starts inside ``sent``
@@ -6100,21 +6103,28 @@ class SlackAdapter(BasePlatformAdapter):
         cmd = resolve_command(event.get_command() or "")
         controls_running_turn = cmd is not None and (
             cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny", "pause"))
+        lane = ahead = handed_off = None
         if not rejected and not controls_running_turn:
-            source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
-            source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
-        # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
-        # events only: free-form "/hermes <question>" replies must stay public.
-        response_url = command.get("response_url", "")
-        if response_url and user_id and channel_id and text.startswith("/"):
-            self._stash_slash_context(team_id, channel_id, user_id, response_url)
-        # ContextVar lets send() match the right response_url under
-        # concurrent slashes from multiple users.
-        _slash_user_id_token = _slash_user_id.set(user_id or None)
+            lane = self._event_session_key(event)  # slot taken before any lookup is awaited
+            ahead, handed_off = self._slash_lanes.reserve(lane)
+        # ContextVar lets send() match the right response_url under concurrent slashes.
+        slash_user_token = _slash_user_id.set(user_id or None)
         try:
+            if lane is not None:
+                source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
+                source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
+                if ahead is not None:
+                    await asyncio.wait((ahead,))
+            # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
+            # events only: free-form "/hermes <question>" replies must stay public.
+            response_url = command.get("response_url", "")
+            if response_url and user_id and channel_id and text.startswith("/"):
+                self._stash_slash_context(team_id, channel_id, user_id, response_url)
+            # The slot opens once handle_message returns: the gateway may suspend before queueing.
             await self.handle_message(event)
         finally:
-            _slash_user_id.reset(_slash_user_id_token)
+            _slash_user_id.reset(slash_user_token)
+            self._slash_lanes.release(lane, ahead, handed_off)
 
     def _stash_slash_context(
         self, team_id: str, channel_id: str, user_id: str, response_url: str) -> None:

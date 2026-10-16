@@ -8,6 +8,7 @@ message flipped them back: two agent rebuilds and two prompt-cache misses per sl
 and neither did the turn a ``/goal <text>`` kickoff queues.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -115,3 +116,30 @@ async def test_slash_that_starts_no_turn_costs_no_slack_lookup(channel_id, autho
     adapter._app.client.users_info.assert_not_awaited()
     adapter._app.client.conversations_info.assert_not_awaited()
     assert adapter.handle_message.await_count == reaches_runner
+
+
+@pytest.mark.asyncio
+async def test_concurrent_slashes_reach_the_gateway_in_arrival_order():
+    """Two ``/hermes queue`` slashes through the Bolt listener: the first is held on a cold
+    ``users.info`` while the second's lookup is warm. They still reach the gateway in arrival
+    order, and a ``/stop`` sent meanwhile is handed over at once, not behind the held lookup."""
+    adapter, entered, release = _adapter("C_OPS"), asyncio.Event(), asyncio.Event()
+
+    async def users_info(**_kwargs):
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        return {"user": {"profile": {"display_name": "Alice"}, "real_name": "Alice"}}
+
+    adapter._app.client.users_info = AsyncMock(side_effect=users_info)
+    base = {"command": "/hermes", "user_id": "U_ALICE", "channel_id": "C_OPS", "team_id": "T1"}
+    first = asyncio.create_task(adapter._handle_hermes_command(AsyncMock(), {**base, "text": "queue first"}))
+    await asyncio.wait_for(entered.wait(), 5)
+    second = asyncio.create_task(adapter._handle_hermes_command(AsyncMock(), {**base, "text": "queue second"}))
+    await asyncio.wait_for(adapter._handle_hermes_command(AsyncMock(), {**base, "text": "stop"}), 5)
+    handed = lambda: [c.args[0].text for c in adapter.handle_message.await_args_list]
+    assert handed() == ["/stop"]
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 5)
+    assert handed() == ["/stop", "/queue first", "/queue second"]
+    assert not adapter._slash_lanes.tails
