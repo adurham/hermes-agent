@@ -139,13 +139,19 @@ async def test_a_hook_waiting_for_another_chat_does_not_block_it_and_one_chat_st
         if event.message_id == "b1":
             b_arrived.set()
 
+    async def deliver(buffer_id, message_id, chat_id):
+        event = _inbound(message_id, chat_id)
+        await ws.send(json.dumps({"type": "inbound", "event": event, "bufferId": buffer_id}) + "\n")
+
     _hook(hook)
     async with _relay(tmp_path, monkeypatch) as (adapter, ws, outgoing, authority, _admissions):
         assert getattr(adapter, "_admission_lanes", None) == {}  # declared adapter state, not added lazily
-        for buffer_id, message_id, chat_id in (("buf-1", "a1", "chat-a"), ("buf-2", "a2", "chat-a"),
-                                               ("buf-3", "b1", "chat-b")):
-            event = _inbound(message_id, chat_id)
-            await ws.send(json.dumps({"type": "inbound", "event": event, "bufferId": buffer_id}) + "\n")
+        await deliver("buf-1", "a1", "chat-a")
+        await deliver("buf-2", "a2", "chat-a")
+        # B is sent once A's first hook waits for it: sent together, B's lane may reach the hook first.
+        await async_wait_until(lambda: fired, timeout=20, what="chat A's first hook")
+        assert fired == ["a1"]
+        await deliver("buf-3", "b1", "chat-b")
         await async_wait_until(lambda: len(_acked(outgoing)) == 3, timeout=20, what="all three acknowledged")
         rows = authority.db._read_all("SELECT request_id FROM session_admissions ORDER BY rowid")
         assert adapter._admission_lanes == {}  # each chat's lane is dropped once its last admission is done
