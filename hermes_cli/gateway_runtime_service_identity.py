@@ -77,7 +77,17 @@ def _launch_module(argv: list[str]) -> tuple[str, list[str]] | None:
     return None
 
 
-def verify_gateway_argv(argv: list[str], home: Path) -> None:
+def _own_store_launcher(executable: str) -> bool:
+    from hermes_cli import gateway
+    launcher = Path(gateway.PROJECT_ROOT).resolve() / ".hermes" / "bin" / "hermes"
+    return os.path.normcase(str(Path(executable).resolve())) == os.path.normcase(str(launcher))
+
+
+def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -> None:
+    """``wrapped``: a launcher wrapper was already stripped. A ``hermes`` launcher a wrapper runs must be
+    the one ``installation_command`` writes for THIS root (``<root>/.hermes/bin/hermes``), never another
+    checkout's. A bare unwrapped ``hermes`` keeps verifying by name, as older systemd/schtasks/launchd
+    definitions persisted it; a wrapped ``python`` is held to ``_launch_module`` as before."""
     from gateway.status import looks_like_gateway_command_line
 
     # The installer wraps launchd stderr with this fixed, non-shell module.
@@ -86,7 +96,7 @@ def verify_gateway_argv(argv: list[str], home: Path) -> None:
         args = wrapper[1]
         if len(args) < 4 or args[0] != "--error-log" or args[2] != "--":
             _unverified()
-        argv = args[3:]
+        argv, wrapped = args[3:], True
     if not argv or not looks_like_gateway_command_line(subprocess_command(argv)):
         _unverified()
     executable = Path(argv[0]).name.lower()
@@ -95,7 +105,7 @@ def verify_gateway_argv(argv: list[str], home: Path) -> None:
         if entry is None or entry[0] != "hermes_cli.main":
             _unverified()
         args = entry[1]
-    elif executable in {"hermes", "hermes.exe"}:
+    elif executable in {"hermes", "hermes.exe"} and (not wrapped or _own_store_launcher(argv[0])):
         args = argv[1:]
     else:
         _unverified()
@@ -202,6 +212,11 @@ _LAUNCHD_JXA = re.compile(
     r'\$\.exit\(status === -1 \? 1 : signal === 0 \? \(status >> 8\) & 255 : 128 \+ signal\);')
 
 
+def _verify_launchd_argv(argv: list[str], home: Path) -> None:
+    command = _launchd_command(argv)
+    verify_gateway_argv(command, home, wrapped=command is not argv)
+
+
 def _launchd_command(argv: list[str]) -> list[str]:
     if argv[:1] != ["/usr/bin/osascript"]:
         return argv
@@ -249,7 +264,7 @@ def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -
     programs = re.findall(r"^\tprogram = (.+)$", output, re.MULTILINE)
     if len(programs) != 1 or not argv or programs[0] != argv[0]:
         _unverified()
-    verify_gateway_argv(_launchd_command(argv), home)
+    _verify_launchd_argv(argv, home)
 
 
 def verify_launchd_plist(definition: dict, label: str, home: Path) -> None:
@@ -268,7 +283,7 @@ def verify_launchd_plist(definition: dict, label: str, home: Path) -> None:
         _unverified()
     if definition.get("Program", argv[0] if argv else None) != (argv[0] if argv else None):
         _unverified()
-    verify_gateway_argv(_launchd_command(argv), home)
+    _verify_launchd_argv(argv, home)
     if home.parent.name != "profiles" and not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified()
 
