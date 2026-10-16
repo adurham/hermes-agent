@@ -128,15 +128,36 @@ class GatewayPluginInjectionMixin:
         return authorized
 
     def _plugin_session_key_admissible(self, session_key: str, *, plugin_home: Optional[Path], plugin_id: str) -> bool:
-        """Synchronous refusal of a keyed injection into another profile's local session, so the
-        plugin gets ``False``; any other key is decided at dispatch, as before. Dispatch rechecks."""
+        """Synchronous refusal of a keyed injection into another profile's session (local or
+        messaging), so the plugin gets ``False``; an unknown key is decided at dispatch, as before.
+        Dispatch rechecks."""
         entry = self.session_store.lookup_by_session_key(session_key)
         if entry is None or entry.origin is None:
             return True
         from gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))
-        return source.platform != Platform.LOCAL or self._plugin_local_session(
-            source, session_key, plugin_home=plugin_home, plugin_id=plugin_id) is not None
+        if source.platform == Platform.LOCAL:
+            return self._plugin_local_session(source, session_key, plugin_home=plugin_home,
+                                              plugin_id=plugin_id) is not None
+        return self._plugin_messaging_session_owned(session_key, plugin_home=plugin_home, plugin_id=plugin_id)
+
+    def _plugin_messaging_session_owned(self, session_key: str, *, plugin_home: Optional[Path],
+                                        plugin_id: str) -> bool:
+        """A messaging session belongs to the profile its key names (``agent:<profile>:...``) under
+        multiplexing, and to the one served profile of a standalone gateway; it must be the plugin's
+        own, as on the origin path. A caller with no plugin home is left to dispatch, as before."""
+        if plugin_home is None:
+            return True
+        profile = self._served_profile_for_home(plugin_home)
+        owner = profile
+        if profile is not None and getattr(getattr(self, "config", None), "multiplex_profiles", False) is True:
+            from hermes_state_keys import profile_from_session_key
+            owner = profile_from_session_key(session_key)
+        if profile is not None and owner == profile:
+            return True
+        logger.warning("Plugin message injection refused: plugin=%s session=%s belongs to profile %s, not the "
+                       "plugin's profile %s", plugin_id, session_key, owner, profile)
+        return False
 
     def _plugin_local_session(self, source: SessionSource, session_key: str, *, plugin_home: Optional[Path],
                               plugin_id: str):
@@ -169,6 +190,8 @@ class GatewayPluginInjectionMixin:
         if source.platform == Platform.LOCAL:
             return await self._dispatch_plugin_local_injection(source, entry, content=content, plugin_id=plugin_id,
                                                                plugin_home=plugin_home)
+        if not self._plugin_messaging_session_owned(session_key, plugin_home=plugin_home, plugin_id=plugin_id):
+            return False
         if not self._plugin_injection_authorized(source, plugin_id=plugin_id, target=f"session={session_key}"):
             return False
 

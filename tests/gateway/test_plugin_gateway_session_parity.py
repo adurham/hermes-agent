@@ -153,6 +153,51 @@ async def test_keyed_local_injection_stays_inside_the_plugins_own_profile(tmp_pa
             authority.db.close()
 
 
+@pytest.mark.asyncio
+async def test_keyed_messaging_injection_stays_inside_the_plugins_own_profile(tmp_path, monkeypatch):
+    """A messaging session's key names its profile: beta's plugin naming default's Telegram session
+    gets ``False`` up front (reason in gateway.log) and nothing reaches the adapter, as for a local
+    session; default's own plugin is still accepted and its turn reaches the session's adapter."""
+    from datetime import datetime
+    from unittest.mock import AsyncMock
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry, SessionSource
+
+    launch = tmp_path / ".hermes"
+    beta = launch / "profiles" / "beta"
+    beta.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    runner = GatewayRunner(GatewayConfig(sessions_dir=launch / "sessions"))
+    runner.config.multiplex_profiles = True
+    runner.config._runtime_profile_homes = [("default", launch), ("beta", beta)]
+    key, now = "agent:main:telegram:dm:42", datetime.now()  # default's namespace
+    entry = SessionEntry(session_key=key, session_id="session-42", created_at=now, updated_at=now,
+                         platform=Platform.TELEGRAM,
+                         origin=SessionSource(platform=Platform.TELEGRAM, chat_id="42", chat_type="dm", user_id="42"))
+    monkeypatch.setattr(runner.session_store, "lookup_by_session_key", {key: entry}.get)
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    monkeypatch.setattr(runner, "_delivery_adapter_for", lambda _source: adapter)
+    monkeypatch.setattr(runner, "_plugin_injection_authorized", lambda *_args, **_kwargs: True)
+    (default_ctx, default_manager), (beta_ctx, beta_manager) = _context(launch), _context(beta)
+    for manager in (default_manager, beta_manager):
+        _publish(runner, manager)
+
+    with caplog_at("gateway.run") as records:
+        assert await asyncio.to_thread(beta_ctx.inject_message, "cross", session_key=key) is False
+        # Dispatch rechecks.
+        assert await runner._dispatch_plugin_message_injection(
+            session_key=key, content="cross", plugin_id="desk", plugin_home=beta) is False
+    refusals = [record.getMessage() for record in records if "refused" in record.getMessage()]
+    assert len(refusals) == 2 and all("not the plugin's profile beta" in message for message in refusals)
+    adapter.handle_message.assert_not_awaited()
+
+    assert await asyncio.to_thread(default_ctx.inject_message, "own", session_key=key) is True
+    await async_wait_until(lambda: adapter.handle_message.await_count, timeout=10,
+                           what="the same-profile plugin turn at the session's adapter")
+    assert [call.args[0].text for call in adapter.handle_message.await_args_list] == ["own"]
+
+
 class caplog_at:
     """Collect one logger's records without depending on the caplog fixture's propagation."""
 

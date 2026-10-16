@@ -940,6 +940,7 @@ In gateway mode:
 - `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
 - Exception: a hook or tool running for a classic CLI session (`hermes chat`, whose turns run in the gateway) may omit both `session_key` and `origin`, as it could in the CLI. The text is committed to that session's queue and starts the next turn; it no longer interrupts a running one. `allow_gateway_injection` is still required.
 - Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot change that route through `session_key`.
+- The session must belong to the plugin's own profile: the key of another profile's chat or local session gets `False` right away, with the reason in the gateway log.
 - Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
 - Routes that relied only on an adapter-time or upstream authorisation decision are rejected unless Hermes can revalidate them from current core allowlists, pairing, or explicit allow-all configuration.
 - Injected text is always conversational input. It cannot invoke slash commands, approve tools, or resolve pending confirmation and clarification prompts.
