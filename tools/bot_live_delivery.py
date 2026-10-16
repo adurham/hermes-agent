@@ -115,6 +115,9 @@ def has_mailbox(profile_home: Path | str) -> bool:
     return _root(profile_home).is_dir()
 
 
+_warned_unhardened: set[Path] = set()
+
+
 @contextmanager
 def _locked(home: Path | str):
     root = _root(home)
@@ -124,9 +127,12 @@ def _locked(home: Path | str):
     try:
         root.chmod(0o700)
     except OSError as exc:
-        # A foreign Windows ACL can deny WRITE_DAC even when this process can
-        # still use the existing mailbox. Hardening must not abort recovery.
-        log.warning("bot_live_delivery: could not harden mailbox directory %s (%s)", root, exc)
+        # A foreign Windows ACL can deny FILE_WRITE_ATTRIBUTES even when this process can
+        # still use the existing mailbox. Hardening must not abort recovery. The poller
+        # re-enters twice a second, so WARNING once per dir and DEBUG after.
+        level = logging.DEBUG if root in _warned_unhardened else logging.WARNING
+        _warned_unhardened.add(root)
+        log.log(level, "bot_live_delivery: could not harden mailbox directory %s (%s)", root, exc)
     if created:
         # Only a fresh mailbox dir needs its parents durably linked; the live
         # poller re-enters this lock twice a second per profile, and two
