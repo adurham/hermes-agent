@@ -49,6 +49,20 @@ def defer_pick(authority, actor, ref, params):
     return authority.db._execute_write(write)
 
 
+async def reask_on_attach(authority, ref, live):
+    """A guarded pick asked only the viewers present at its boundary (and an owner restart drops
+    the stream): a newly attached viewer gets the ask again, re-checked at the next boundary."""
+    import asyncio
+
+    def read():
+        with authority.db._read_ctx() as conn:
+            return conn.execute('SELECT value FROM state_meta WHERE key=?', (_PREFIX + ref.session_id,)).fetchone()
+    stored = await asyncio.to_thread(read)
+    if stored is not None and 'awaiting_confirm' in json.loads(stored[0]):
+        live.reask_pick = True
+        authority._schedule(ref)
+
+
 async def apply_deferred_pick(authority, ref, live):
     """Commit a deferred pick. The drain calls this under the claim gate and mutation lock, before
     claiming, so no turn is running. A pick that no longer resolves is dropped and announced."""
@@ -65,7 +79,12 @@ async def apply_deferred_pick(authority, ref, live):
         return
     pick = json.loads(stored[0])
     if 'awaiting_confirm' in pick:
-        return  # asked once; the user's confirmed (or a newer) selection supersedes it
+        if not live.reask_pick:
+            return  # asked; the user's confirmed (or a newer) selection supersedes it
+        # Asked again for a newly attached viewer: re-prepared under the current fences, so a guard
+        # that still applies mints a fresh token (the stored one is never replayed as consent).
+        pick = {k: v for k, v in pick.items() if k != 'awaiting_confirm'}
+    live.reask_pick = False
     application_id = pick['application_id']
     if await asyncio.to_thread(has_mutation_receipt, authority.db, pick['principal_id'], ref.session_id,
                                application_id):
