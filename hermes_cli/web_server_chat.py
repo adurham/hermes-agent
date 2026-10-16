@@ -216,6 +216,10 @@ def _ws_auth_reason(ws: WebSocket) -> tuple[Optional[str], str]:
 
     Either mode: a local Desktop (no static token) presents the private one-use
     ``X-Hermes-Gateway-Ticket`` grant its REST calls use (``authenticate_native_ws``).
+    A socket that sends that header is judged by it alone: on a core socket
+    (``/api/ws``, ``/api/pty``, the audio streams) the grant is refused
+    (``native_invalid``) even when a valid ``token`` query credential rides along.
+    That is intended; only the plugin WebSocket gate accepts the grant.
     """
     from hermes_cli.dashboard_auth.native_http import HEADER, authenticate_native_ws
     from hermes_cli.web_server import _SESSION_TOKEN, app

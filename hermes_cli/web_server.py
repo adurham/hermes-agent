@@ -395,6 +395,10 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# Imported here, beside the plugin gates that use it, like the other mid-module web_server_*
+# groups. Not an import cycle: web_server_dashboard reaches back into this module only inside
+# functions, so the position is not load-bearing. What is load-bearing is the middleware
+# registration order below (the HTTP gate before the auth middlewares, so it runs after them).
 from hermes_cli.web_server_dashboard import (
     PluginApiWebSocketGate, _plugin_api_name, _plugin_api_request_refused,
 )
