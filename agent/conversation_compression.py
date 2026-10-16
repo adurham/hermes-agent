@@ -1292,7 +1292,9 @@ def run_compress_context_with_progress_timeout(
             recovered = _retry_compression_on_fallback_chain(
                 worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
                 idle_timeout_seconds=idle, total_ceiling_seconds=ceiling,
-                precommit_deadline_monotonic=precommit_deadline_monotonic, on_commit_overrun=on_commit_overrun,
+                # Prompt reading moves the fence deadline after the primary armed it.
+                precommit_deadline_monotonic=fence.deadline_monotonic or precommit_deadline_monotonic,
+                on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
                 escalate_deterministic=escalate_deterministic,
             )
