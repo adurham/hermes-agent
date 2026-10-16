@@ -635,11 +635,14 @@ def register_worker_hooks(policy):
     register_outbound_webhooks(config)
 
 
-def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=None):
+def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=None, owner_key=False):
     """CLI keys live only in this authority lifetime, never its durable receipt.
 
     Restart deliberately revokes them. History remains readable; inference must
     report launch_credentials_unavailable, never select a profile fallback key.
+    An ``owner_key`` (an alias's, expanded by the owner) of the same create request as the attempt
+    holding the slot takes the held key: a ``.env`` rotation between overlapping attempts is not a
+    changed request, and the policy then fingerprints the key it runs with.
     """
     from dataclasses import replace
     import hmac
@@ -655,6 +658,12 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         keys = authority._local_launch_keys = {}
     ref = f'{authority.instance_id}:{authority.epoch}:{session_id}'
     old = keys.get(ref)
+    owners = getattr(authority, '_local_owner_key_requests', None)
+    if owners is None:
+        owners = authority._local_owner_key_requests = {}
+    if owner_key and api_key is not None and old is not None and ref in owners:
+        from hermes_state_local import same_create_request
+        api_key = old if same_create_request(owners[ref], policy.request_json) else api_key
     # Only a key that IS being bound can conflict: binding config secrets alone (a provider
     # change drops the launch key) must not be refused by the key the session already holds.
     if api_key is not None and old is not None and not hmac.compare_digest(old, api_key):
@@ -670,6 +679,8 @@ def bind_launch_key(authority, session_id, policy, api_key, *, config_secrets=No
         raise RuntimeStoreError('admission_conflict')
     if config_secrets:
         configs[config_ref] = dict(config_secrets)
+    if api_key is not None and old is None and owner_key:
+        owners[ref] = policy.request_json
     if api_key is not None:
         keys[ref] = api_key
     # The durable ref carries the key's fingerprint (the digest config_secret_ref already
@@ -731,8 +742,10 @@ def release_launch_secrets(authority, session_ids):
     prefix = f'{authority.instance_id}:{authority.epoch}:'
     keys = getattr(authority, '_local_launch_keys', None) or {}
     # A key re-supplied after a restart sits in the slot of the epoch that minted it.
+    owners = getattr(authority, '_local_owner_key_requests', None) or {}
     for ref in [ref for ref in keys if ref.split(':', 2)[-1] in retired]:
         del keys[ref]
+        owners.pop(ref, None)
     configs = getattr(authority, '_local_config_secrets', None) or {}
     for ref in list(configs):
         if ref.startswith(PREFIX):

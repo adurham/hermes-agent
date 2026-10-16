@@ -5,6 +5,7 @@ Source and supported launch settings are frozen per route, never process env.
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -145,6 +146,35 @@ def _bypass_policy(params, *, private_secrets):
     return build_policy(params, defaults, private_secrets=private_secrets, profile_terminal=False)
 
 
+def load_profile_config(home=None):
+    """The profile's effective config.yaml for a NEW session's policy, ``${VAR}`` refs expanded against
+    the profile's CURRENT ``.env`` (the source tool env refreshes from), not the env this daemon
+    started with: a single-profile owner binds no secret scope and never reloads ``.env`` for local
+    turns. A bound scope (a served profile's owner scope) already is that source and is kept; a miss
+    on the launch profile still falls to the process env (systemd / ``op run`` injection)."""
+    from pathlib import Path
+    from gateway.run import _load_gateway_config
+    with profile_env_scope(home):
+        return _load_gateway_config(*(() if home is None else (Path(home) / 'config.yaml',)))
+
+
+@contextmanager
+def profile_env_scope(home=None):
+    """Bind the profile's current ``.env`` (see ``load_profile_config``) unless a scope is bound."""
+    from pathlib import Path
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope, reset_secret_scope, set_secret_scope
+    from gateway.run import _gateway_config_home
+    if current_secret_scope() is not None:
+        yield
+        return
+    home = Path(home) if home is not None else _gateway_config_home()  # default: the active gateway home
+    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
+
+
 def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
     """Stage, commit and publish a local session inline (synchronous callers)."""
     from gateway.session_local_recovery import restore_local_session
@@ -165,26 +195,31 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     from gateway.session_policy import build_policy, BYPASS_FIELDS
-    from gateway.run import _load_gateway_config, _resolve_gateway_model
+    from gateway.run import _resolve_gateway_model
     from dataclasses import replace
     private_secrets = dict(trusted_secrets or {})
+    client_key = params.get('api_key')  # the client's own; an alias's key is the owner's expansion
     if trusted_policy is not None:
         policy = trusted_policy
     elif any(params.get(name) is True for name in BYPASS_FIELDS):
         policy = _bypass_policy(params, private_secrets=private_secrets)
     else:
         from gateway.session_local_route import resolve_launch_route
-        config = _load_gateway_config()
-        raw_model = params.get('model')
-        params = resolve_launch_route(params, config)
+        raw_model, sent = params.get('model'), params
+        with profile_env_scope():  # an alias's ``key_env`` / ``${VAR}`` key reads the same .env
+            config = load_profile_config()
+            params = resolve_launch_route(params, config)
         # A client's session.create is the one caller whose named folder may select the coding posture.
         policy = build_policy(params, config, private_secrets=private_secrets, workspace_posture=True)
-        if isinstance(raw_model, str) and params.get('model') != raw_model:
-            # Owner-stamped provenance (not a create field): a remote client cannot re-resolve the
-            # typed `-m` alias against its own home, so resume compares a repeat against this.
+        if params is not sent:  # resolved, even to a model of the alias's own name
+            # Owner-stamped provenance (not create fields): a remote client cannot re-resolve the typed
+            # `-m` alias against its own home, so resume and an exact retry compare a repeat against the
+            # name, and ``route_derived`` names the fields the route (not the client) filled.
             import json
+            derived = sorted(key for key in ('provider', 'base_url') if key in params and key not in sent)
             policy = replace(policy, request_json=json.dumps(
-                {**json.loads(policy.request_json), 'model_requested': raw_model}, sort_keys=True))
+                {**json.loads(policy.request_json), 'model_requested': raw_model, 'route_derived': derived},
+                sort_keys=True))
         if policy.model is None:
             policy = replace(policy, model=_resolve_gateway_model(policy.config()))
     request_id = params.get('request_id', uuid.uuid4().hex)
@@ -202,11 +237,18 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         from hermes_state_local import local_receipt
         saved = local_receipt(authority.db, sid)
         original = restore_policy(saved['policy'])
-        if original.request_json != policy.request_json:
+        from hermes_state_local import same_create_request
+        if not same_create_request(original.request_json, policy.request_json):
             raise RuntimeStoreError('invalid_params', field='request_id',
                                     detail='a resumed request_id must carry the same frozen request')
-        if original.credential_ref is not None or params.get('api_key') is not None:
-            import hmac
+        import hmac
+        import json
+        if 'model_requested' in json.loads(original.request_json):
+            # An owner-resolved alias: its key came from the profile (a `.env` rotation is not a changed
+            # request) and the client sent none, so one it sends now is a different request.
+            if client_key is not None:
+                raise RuntimeStoreError('admission_conflict')
+        elif original.credential_ref is not None or params.get('api_key') is not None:
             key = launch_key(authority, original)
             if key is None or not hmac.compare_digest(key, params.get('api_key') or ''):
                 raise RuntimeStoreError('admission_conflict')
@@ -218,7 +260,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         raise RuntimeStoreError('invalid_params', field='skills',
                                 detail='the caller must render -s skills before minting the session')
     policy = replace(policy, skills_prompt=skills_prompt)
-    policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets)
+    policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets,
+                             owner_key=client_key is None)  # an overlapping exact retry takes the held one
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
