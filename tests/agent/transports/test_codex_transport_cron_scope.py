@@ -11,41 +11,38 @@ def transport():
     return get_transport("codex_responses")
 
 
-def test_cache_key_stable_for_unified_cron_session_ids(transport):
-    """A scheduler admission, not the opaque local physical id, scopes cron cache reuse."""
-    from gateway.session_cron import _execution
+@pytest.fixture
+def execution_context():
+    """Binds through ``session_cron.bind_execution`` -- the call ``execute()`` makes -- so the
+    admission layout the transport reads is the production one."""
+    from gateway.session_cron import _execution, bind_execution
 
+    token = _execution.set(None)
+    try:
+        yield lambda sid, job_id, execution_id="fire": bind_execution(object(), sid, job_id, execution_id)
+    finally:
+        _execution.reset(token)
+
+
+def test_cache_key_stable_for_unified_cron_session_ids(transport, execution_context):
+    """A scheduler admission, not the opaque local physical id, scopes cron cache reuse."""
     messages = [{"role": "user", "content": "Hi"}]
 
     def build(sid):
         return transport.build_kwargs(model="gpt-5.4", messages=messages, tools=[], session_id=sid)
 
-    token = _execution.set((object(), "local-first-fire", "job42", "fire-1"))
-    try:
-        first = build("local-first-fire")
-        _execution.set((object(), "local-second-fire", "job42", "fire-2"))
-        second = build("local-second-fire")
-        # A session that is not the bound admission (e.g. a delegated child) keeps its own scope.
-        child = build("local-child-of-fire")
-        _execution.set((object(), "local-other-job", "job99", "fire-3"))
-        other = build("local-other-job")
-    finally:
-        _execution.reset(token)
+    execution_context("local-first-fire", "job42", "fire-1")
+    first = build("local-first-fire")
+    execution_context("local-second-fire", "job42", "fire-2")
+    second = build("local-second-fire")
+    # A session that is not the bound admission (e.g. a delegated child) keeps its own scope.
+    child = build("local-child-of-fire")
+    execution_context("local-other-job", "job99", "fire-3")
+    other = build("local-other-job")
 
     assert first["prompt_cache_key"] == second["prompt_cache_key"]
     assert first["prompt_cache_key"] != other["prompt_cache_key"]
     assert child["prompt_cache_key"] != first["prompt_cache_key"]
-
-
-@pytest.fixture
-def execution_context():
-    from gateway.session_cron import _execution
-
-    token = _execution.set(None)
-    try:
-        yield _execution
-    finally:
-        _execution.reset(token)
 
 
 @pytest.mark.parametrize("override", [None, "caller-cache-key"])
@@ -76,7 +73,7 @@ def test_cron_backend_headers_and_legacy_scope(transport, execution_context, ove
     legacy = build(legacy_sid)
     assert _cache_scope_from_session_id(legacy_sid) == "cron_job42"
     for sid in ("local-first-fire", "local-second-fire"):
-        execution_context.set((object(), sid, "job42", "fire"))
+        execution_context(sid, "job42")
         current = build(sid)
         assert _cache_scope_from_session_id(sid) == "cron_job42"
         assert current["prompt_cache_key"] == legacy["prompt_cache_key"]
@@ -99,7 +96,7 @@ def test_cron_compression_rotation_resolves_admitted_scope(transport, execution_
     from hermes_state import SessionDB
 
     root, rotated = "local-admitted-fire", "local-rotated-fire"
-    execution_context.set((object(), root, "job42", "fire-1"))
+    execution_context(root, "job42", "fire-1")
     with SessionDB(db_path=tmp_path / "state.db") as db:
         db.create_session(root, source="cli")
         agent = SimpleNamespace(session_id=root, _session_db=db)
@@ -137,5 +134,5 @@ def test_unadmitted_or_jobless_sessions_keep_scope(execution_context, sid, admis
     from agent.transports.codex import _cache_scope_from_session_id
 
     if admission is not None:
-        execution_context.set((object(), *admission, "fire-1"))
+        execution_context(*admission, "fire-1")
     assert _cache_scope_from_session_id(sid) == sid
