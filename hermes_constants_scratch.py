@@ -306,6 +306,10 @@ def _prune_idle_entries(
         # audit names the failed re-scan instead of inventing a touch that did not
         # happen, so operators can tell an uninspectable candidate from verified
         # recent activity (P3 on #134173).
+        # Size is collected before the re-check, not after it: a full-tree walk between
+        # the re-check and rmtree reopens the window for a write landing during that
+        # walk to be destroyed (review F6 on #139850).
+        size = _tree_bytes(entry)
         state = subtree_touch_state(entry, cutoff)
         if state != _IDLE:
             # Only a missing path is a vanish: a stat that raises PermissionError means
@@ -331,7 +335,6 @@ def _prune_idle_entries(
                     os.fspath(entry),
                 )
             continue
-        size = _tree_bytes(entry)
         try:
             if entry.is_dir() and not entry.is_symlink():
                 shutil.rmtree(entry, ignore_errors=True)

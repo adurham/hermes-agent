@@ -393,6 +393,34 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     assert str(tree) not in listing and not tree.exists()
 
 
+
+def test_write_during_size_walk_is_rescued(tmp_path: Path) -> None:
+    """F6 on #139850: no full-tree walk may sit between the final re-check and rmtree.
+    A writer overwrites an old file while the prune is sizing the doomed entry; the
+    re-check must still see it. Red when the size walk runs after the re-check: the
+    entry is destroyed with the fresh write inside."""
+    import hermes_constants_scratch as scratch_mod
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "sized-lane"
+    entry.mkdir()
+    payload = entry / "payload"
+    payload.write_text("OLD", encoding="utf-8")
+    ancient = time.time() - 48 * 3600
+    for path in (payload, entry):
+        os.utime(path, (ancient, ancient))
+    real_tree_bytes = scratch_mod._tree_bytes
+
+    def write_during_size_walk(path):
+        payload.write_text("FRESH", encoding="utf-8")
+        return real_tree_bytes(path)
+
+    with patch("hermes_constants_scratch._tree_bytes", write_during_size_walk):
+        assert prune_scratch_dir(scratch) == 0
+    assert payload.read_text(encoding="utf-8") == "FRESH", "write during size walk was destroyed"
+    log = (tmp_path / "logs" / "scratch-prune.log").read_text(encoding="utf-8-sig")
+    assert f"rescued {str(entry)!r} " in log, log
+
 def test_midprune_resumed_write_is_rescued(tmp_path: Path) -> None:
     """F1 on #132401, ported from 3f72fd9c8e (#132455): a writer whose cwd is outside
     scratch — invisible to the reap — resumes during the prune's own reap window and

@@ -263,7 +263,7 @@ with its working directory inside that entry (or inside a scratch path that no l
 such as a headless browser left behind by a test run) and drops any `git worktree`
 registration that pointed into it. Each entry is re-checked right before it is deleted, so
 one written to while the prune was stopping processes is kept. Every removal, stopped
-process and kept entry is recorded in `~/.hermes/logs/scratch-prune.log`. `hermes doctor`
+process and entry kept by that re-check is recorded in `~/.hermes/logs/scratch-prune.log`. `hermes doctor`
 reports the directory and its size, and
 warns about directories over 1 GB elsewhere under `cache/` that no pruner covers.
 
