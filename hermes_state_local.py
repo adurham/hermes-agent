@@ -10,7 +10,12 @@ API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
 
 def commit_local_session(db, *, epoch, receipt):
-    """Reserve the row, route and immutable policy together, before publication."""
+    """Reserve the row, route and immutable policy together, before publication. A staged receipt's
+    ``on_create`` (owner memory, never stored) is published by the transaction that creates the row
+    and withdrawn if that transaction fails: an exact retry, a refused or a losing attempt adds none."""
+    on_create = getattr(receipt, 'on_create', None)
+    if on_create is not None:
+        on_create.read()  # its file read: in the caller's thread, outside the write transaction
     encoded = _json(receipt)
     receipt = json.loads(encoded)
     sid, route = receipt['session_id'], receipt['route']
@@ -53,8 +58,15 @@ def commit_local_session(db, *, epoch, receipt):
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
+        if on_create is not None:
+            on_create.publish()  # before the row is visible, so no reader lazy-loads around it
         return receipt
-    return db._execute_write(write)
+    try:
+        return db._execute_write(write)
+    except BaseException:
+        if on_create is not None:
+            on_create.withdraw()  # only this attempt's own snapshot, never another winner's
+        raise
 
 
 def client_request(request_json, derived=None):

@@ -313,3 +313,5 @@ def retire_live_sessions(authority, session_ids):
                 evict(candidate.route)
     from gateway.session_local_mcp import release_editor_mcp
     release_editor_mcp(authority, session_ids)
+    from gateway.session_worker_construct import release_session_prefill
+    release_session_prefill(authority, session_ids)

@@ -269,8 +269,11 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     # naive cutoff, and one aware entry aborts the whole iteration.
     now = _now()
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
-    return {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
-            'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)}
+    # Prefill is read now, at creation (main's CLI: at startup), and held only if this attempt commits.
+    from gateway.session_worker_construct import stage_session_prefill
+    return stage_session_prefill(authority, policy, {
+        'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
+        'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})
 
 
 def publish_local_policy(authority, session_id):
