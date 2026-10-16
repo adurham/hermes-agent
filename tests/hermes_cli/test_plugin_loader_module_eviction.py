@@ -96,7 +96,7 @@ def test_evict_modules_tolerates_concurrent_imports(
                 isolated_modules[name] = None
                 isolated_modules[f"{name}.sub"] = None
                 plugins_loader._evict_modules(name)
-        except BaseException as exc:  # noqa: BLE001 - recorded for the assertion below
+        except BaseException as exc:  # recorded for the assertion below
             failures.append(exc)
 
     churner = threading.Thread(target=churn, daemon=True)
