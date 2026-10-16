@@ -5,7 +5,7 @@ description: Wallaby Token — curated open-weight inference (Kimi K3); adds Wal
 maintainer: Dawncoral
 tier: community
 category: models
-requires_hermes: ">=0.19"
+requires_hermes: ">=0.20.0"
 docs_url: https://github.com/Dawncoral/wallaby-hermes-plugin#readme
 version: "1.0.0"
 capabilities:
