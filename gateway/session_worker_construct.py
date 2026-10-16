@@ -53,6 +53,13 @@ def _prefill(authority, policy):
     return getattr(authority.runner, '_prefill_messages', None) or None
 
 
+def session_routing(authority, policy):
+    """The session's ``provider_routing``: its own profile's, as of its creation (main's CLI read it
+    once at startup). Never the runner's daemon-start copy."""
+    routing = policy.config(authority, secrets=False).get('provider_routing')
+    return routing if isinstance(routing, dict) else {}
+
+
 def construct_kwargs(frame):
     """Child side: the validated ``AIAgent`` keyword arguments; a frame without the object
     (older owner) constructs exactly as before."""
