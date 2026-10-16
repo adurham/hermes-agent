@@ -153,30 +153,36 @@ def test_pre_shrunk_screenshots_do_not_trip_the_many_image_trigger(n):
     assert _wire_image_blocks(wire) == n
 
 
-def test_one_oversized_image_keeps_the_strict_trigger():
+_UNREADABLE = "data:image/png;base64," + base64.b64encode(b"not an image header at all").decode("ascii")
+_REMOTE = "https://example.com/shot.png"
+
+
+@pytest.mark.parametrize("odd", ["oversized", "unreadable", "remote"])
+def test_one_oversized_image_keeps_the_strict_trigger(odd):
     """Invariant 2 (#133999): the stricter cap is per request, so a single image over the cap --
     here a native-size user upload -- must keep the strict 20-block trigger for the whole request,
-    byte-identical to the pre-#133999 behaviour."""
+    byte-identical to the pre-#133999 behaviour. The ceiling relaxes only on dimensions the pass
+    can read: an unreadable payload or a remote URL fails closed the same way."""
     shrunk = _png_data_url(1568, 882)
-    oversized = _png_data_url(MANY_IMAGE_CAP_PX + 1, 8)
+    url = {"oversized": _png_data_url(MANY_IMAGE_CAP_PX + 1, 8), "unreadable": _UNREADABLE, "remote": _REMOTE}[odd]
 
     upload = {
         "role": "user",
         "content": [
             {"type": "text", "text": "look at this"},
-            {"type": "image_url", "image_url": {"url": oversized}},
+            {"type": "image_url", "image_url": {"url": url}},
         ],
     }
     outbound = [upload, *_screenshot_tool_messages(OUTBOUND_IMAGE_LIMIT, shrunk)]
     assert evict_stale_outbound_tool_images(outbound) == IMAGE_EVICTION_BATCH
     # The upload itself is reserved and never rewritten.
-    assert upload["content"][1]["image_url"]["url"] == oversized
+    assert upload["content"][1]["image_url"]["url"] == url
 
-    # Same request on the wire shape: 20 pre-shrunk carriers plus the oversized reserved upload.
+    # Same request on the wire shape: 20 pre-shrunk carriers plus the odd reserved upload.
     wire = _wire_tool_results(OUTBOUND_IMAGE_LIMIT, shrunk)
-    wire[0]["content"].append(
-        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": oversized.split(",", 1)[1]}}
-    )
+    source = ({"type": "url", "url": url} if odd == "remote"
+              else {"type": "base64", "media_type": "image/png", "data": url.split(",", 1)[1]})
+    wire[0]["content"].append({"type": "image", "source": source})
     _evict_old_screenshots(wire)
     assert _wire_image_blocks(wire) == OUTBOUND_IMAGE_LIMIT - IMAGE_EVICTION_BATCH + 1
 
@@ -217,31 +223,6 @@ def test_wire_pass_enforces_the_byte_budget_below_the_block_ceiling():
     assert _wire_image_blocks(result) < blocks_before, (
         "the wire pass ignored byte pressure while under the block ceiling"
     )
-
-
-def test_dimension_classification_reads_headers_and_fails_closed():
-    """The ceiling may only relax on dimensions this module can actually read.
-
-    Imported inside the test so the two invariants above still exercise the pre-change module.
-    """
-    from agent.image_eviction_policy import (
-        MANY_IMAGE_DIMENSION_LIMIT,
-        image_max_side_from_data,
-        image_within_many_image_limit,
-        images_all_within_many_image_limit,
-    )
-
-    shrunk = _png_data_url(1568, 882)
-    assert MANY_IMAGE_DIMENSION_LIMIT == MANY_IMAGE_CAP_PX
-    assert image_max_side_from_data(shrunk) == 1568
-    assert image_within_many_image_limit(_png_data_url(MANY_IMAGE_CAP_PX, 1)) is True
-    assert image_within_many_image_limit(_png_data_url(MANY_IMAGE_CAP_PX + 1, 1)) is False
-    # Unreadable, absent, or non-image sources must keep the strict trigger.
-    assert image_within_many_image_limit(None) is False
-    assert image_within_many_image_limit("data:image/png;base64,not-a-png") is False
-    assert image_within_many_image_limit("https://example.com/shot.png") is False
-    assert images_all_within_many_image_limit([shrunk, shrunk]) is True
-    assert images_all_within_many_image_limit([shrunk, "https://example.com/shot.png"]) is False
 
 
 def test_quantum_shrinks_to_the_fit_window_for_heavy_carriers():
