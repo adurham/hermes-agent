@@ -355,6 +355,9 @@ def _apply_launch_overrides(params, config):
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
     from gateway.session_route_identity import resolved_route
+    if isinstance(params.get('provider'), str) and params['provider'].strip().lower() == 'auto':
+        # `auto` is the thin client's "no pick" sentinel: the profile's route stands as configured.
+        params = {k: v for k, v in params.items() if k != 'provider'}
     held_cfg = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
     if str(held_cfg.get('provider') or '').strip().lower() in ('', 'auto') and str(held_cfg.get('base_url') or '').strip():
         # A block with an endpoint and no provider (or `auto`) already routes to `custom` there.
