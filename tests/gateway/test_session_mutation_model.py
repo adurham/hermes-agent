@@ -227,6 +227,143 @@ async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp
 
 
 @pytest.mark.asyncio
+async def test_model_pick_reads_current_provider_config_when_legacy_policy_lacks_it(tmp_path, monkeypatch):
+    """Regression for #139740: a Desktop pick can outlive a policy written without ``providers``."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_cli import model_switch
+
+    (tmp_path / 'config.yaml').write_text(
+        'providers:\n'
+        '  inkstone:\n'
+        '    api: https://example.invalid/v1\n'
+        '    key_env: INKSTONE_API_KEY\n'
+        '    models: {glm-5.3: {context_length: 1048576}}\n')
+    seen = {}
+
+    def switch(**kwargs):
+        seen.update(kwargs)
+        return model_switch.ModelSwitchResult(
+            success=True, new_model='glm-5.3', target_provider='inkstone',
+            base_url='https://example.invalid/v1', api_mode='chat_completions')
+
+    monkeypatch.setattr(model_switch, 'switch_model', switch)
+    monkeypatch.setenv('INKSTONE_API_KEY', 'inkstone-secret')
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+        runner = SimpleNamespace(session_authority=authority,
+                                 _resolve_session_agent_runtime=lambda **k: (None, {}))
+        authority.runner = runner
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'old'}, {
+            'model': {'provider': 'deepseek', 'default': 'old'},
+            'providers': {'stale': {'base_url': 'https://stale.example.invalid/v1'}}})
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+
+        committed = await prepare_model(authority, SimpleNamespace(source=None, route='r'), {
+            'model': 'glm-5.3', 'provider': 'inkstone'}, prepared)
+
+    assert seen['user_providers']['inkstone']['key_env'] == 'INKSTONE_API_KEY'
+    policy = restore_policy(committed['policy'])
+    model = policy.config()['model']
+    assert model['provider'] == 'inkstone'
+    assert model['key_env'] == 'INKSTONE_API_KEY'
+    _, runtime = _resolve_policy_agent_runtime(runner, policy)
+    assert runtime['base_url'].rstrip('/') == 'https://example.invalid/v1'
+    assert runtime['api_key'] == 'inkstone-secret'
+
+
+@pytest.mark.asyncio
+async def test_model_pick_freezes_legacy_custom_provider_for_the_next_runtime(tmp_path, monkeypatch):
+    """A legacy ``custom_providers`` declaration must also survive a Desktop model pick."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_cli import model_switch
+
+    (tmp_path / 'config.yaml').write_text(
+        'custom_providers:\n'
+        '  - name: inkstone\n'
+        '    base_url: https://example.invalid/v1\n'
+        '    key_env: INKSTONE_API_KEY\n', encoding='utf-8')
+    seen = {}
+
+    def switch(**kwargs):
+        seen.update(kwargs)
+        return model_switch.ModelSwitchResult(
+            success=True, new_model='glm-5.3', target_provider='inkstone',
+            base_url='https://example.invalid/v1', api_mode='chat_completions')
+
+    monkeypatch.setattr(model_switch, 'switch_model', switch)
+    monkeypatch.setenv('INKSTONE_API_KEY', 'inkstone-secret')
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+        runner = SimpleNamespace(session_authority=authority,
+                                 _resolve_session_agent_runtime=lambda **k: (None, {}))
+        authority.runner = runner
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'old'}, {
+            'model': {'provider': 'deepseek', 'default': 'old'}})
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+        committed = await prepare_model(authority, SimpleNamespace(source=None, route='r'), {
+            'model': 'glm-5.3', 'provider': 'inkstone'}, prepared)
+
+    assert seen['custom_providers'][0]['name'] == 'inkstone'
+    _, runtime = _resolve_policy_agent_runtime(runner, restore_policy(committed['policy']))
+    assert runtime['base_url'].rstrip('/') == 'https://example.invalid/v1'
+    assert runtime['api_key'] == 'inkstone-secret'
+
+
+@pytest.mark.asyncio
+async def test_model_pick_keeps_a_nonfollowing_sessions_named_provider_frozen(tmp_path, monkeypatch):
+    """A profile edit must not move an ordinary session's named endpoint on its next pick."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_cli import model_switch
+
+    (tmp_path / 'config.yaml').write_text(
+        'providers:\n'
+        '  inkstone:\n'
+        '    api: https://current.example.invalid/v1\n'
+        '    key_env: CURRENT_KEY\n', encoding='utf-8')
+    seen = {}
+
+    def switch(**kwargs):
+        seen.update(kwargs)
+        return model_switch.ModelSwitchResult(
+            success=True, new_model='new', target_provider='inkstone',
+            base_url=kwargs['user_providers']['inkstone']['api'], api_mode='chat_completions')
+
+    monkeypatch.setattr(model_switch, 'switch_model', switch)
+    monkeypatch.setenv('FROZEN_KEY', 'frozen-secret')
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+        runner = SimpleNamespace(session_authority=authority,
+                                 _resolve_session_agent_runtime=lambda **k: (None, {}))
+        authority.runner = runner
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'old'}, {
+            'model': {'provider': 'deepseek', 'default': 'old'},
+            'providers': {'inkstone': {'api': 'https://frozen.example.invalid/v1', 'key_env': 'FROZEN_KEY'}}})
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+        committed = await prepare_model(authority, SimpleNamespace(source=None, route='r'), {
+            'model': 'new', 'provider': 'inkstone'}, prepared)
+
+    assert seen['user_providers']['inkstone']['key_env'] == 'FROZEN_KEY'
+    _, runtime = _resolve_policy_agent_runtime(runner, restore_policy(committed['policy']))
+    assert runtime['base_url'].rstrip('/') == 'https://frozen.example.invalid/v1'
+    assert runtime['api_key'] == 'frozen-secret'
+
+
+@pytest.mark.asyncio
 async def test_committed_model_selection_is_the_next_resolved_runtime(tmp_path, monkeypatch):
     """custom -> custom on a new origin: the committed policy and the next resolved runtime agree on
     endpoint, protocol and credentials. The creation request's launch URL, the old endpoint's launch

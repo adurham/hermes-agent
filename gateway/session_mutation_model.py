@@ -49,6 +49,7 @@ async def prepare_model(authority, live, payload, prepared):
     from hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config, current = _current_route(authority, live, old)
+    config = _provider_resolution_config(authority, config)
 
     def switch(**kwargs):
         result = switch_model(**kwargs)
@@ -64,6 +65,7 @@ async def prepare_model(authority, live, payload, prepared):
     if refusal is not None:
         return refusal
     frozen = old.config()
+    provider_secrets = _freeze_selected_provider(config, frozen, result.target_provider)
     if old.follows_profile:
         # A following session switches FROM the profile's current route: measured from its creation
         # endpoint, a pick on the current one read as a route change and dropped its key_env pointer.
@@ -101,6 +103,7 @@ async def prepare_model(authority, live, payload, prepared):
     # key is a private config secret at the alias entry's own path (what a restarted owner re-reads)
     # and the receipt keeps only a pointer to it, which config() projects into ``model.api_key``.
     key_env, source, alias_key = alias_credential
+    key_env = key_env or _selected_provider_key_env(config, result.target_provider)
     if key_env:
         frozen['model']['key_env'] = key_env
     if source:
@@ -110,6 +113,7 @@ async def prepare_model(authority, live, payload, prepared):
     # Creation identity (request_json) remains immutable; runtime selection lives in the policy.
     policy = replace(old, model=result.new_model, config_json=json.dumps(frozen))
     secrets = recover_config_secrets(authority, old) if old.config_secret_ref else {}
+    secrets.update(provider_secrets)
     # A cleared field's private value must not be re-hydrated into the new route by config().
     secrets = {path: value for path, value in secrets.items()
                if not (len(path) == 2 and path[0] == 'model' and path[1] not in frozen['model'])}
@@ -129,6 +133,84 @@ async def prepare_model(authority, live, payload, prepared):
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,
                              config_secrets=secrets)
     return dict(prepared, policy=asdict(policy))
+
+
+def _provider_resolution_config(authority, config):
+    """Supply current provider declarations to a legacy policy only for resolving a pick.
+
+    Older local-session receipts can lack ``providers`` after their endpoint secrets were split out
+    of the frozen config.  The committed policy remains frozen; this read is only the same owning
+    profile config that a new session would use to resolve the requested provider.
+    """
+    from pathlib import Path
+    from gateway.run import _load_gateway_config
+    current = _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml')
+    if not isinstance(current, dict):
+        return config
+    resolved = dict(config)
+    frozen_providers = config.get('providers')
+    current_providers = current.get('providers')
+    if isinstance(frozen_providers, dict) or isinstance(current_providers, dict):
+        resolved['providers'] = {**(current_providers if isinstance(current_providers, dict) else {}),
+                                 **(frozen_providers if isinstance(frozen_providers, dict) else {})}
+    frozen_custom = config.get('custom_providers')
+    current_custom = current.get('custom_providers')
+    if isinstance(frozen_custom, list) or isinstance(current_custom, list):
+        frozen_custom = list(frozen_custom) if isinstance(frozen_custom, list) else []
+        names = {_custom_provider_name(entry) for entry in frozen_custom if isinstance(entry, dict)}
+        resolved['custom_providers'] = frozen_custom + [
+            entry for entry in (current_custom if isinstance(current_custom, list) else [])
+            if not isinstance(entry, dict) or _custom_provider_name(entry) not in names]
+    frozen_aliases = config.get('model_aliases')
+    current_aliases = current.get('model_aliases')
+    if isinstance(frozen_aliases, dict) or isinstance(current_aliases, dict):
+        resolved['model_aliases'] = {**(current_aliases if isinstance(current_aliases, dict) else {}),
+                                     **(frozen_aliases if isinstance(frozen_aliases, dict) else {})}
+    return resolved
+
+
+def _custom_provider_name(entry):
+    return str(entry.get('provider_key') or entry.get('name') or '').strip().lower()
+
+
+def _selected_provider_key_env(config, provider):
+    """Return a selected ``providers.<slug>`` credential pointer, never its secret value."""
+    providers = config.get('providers')
+    entry = providers.get(provider) if isinstance(providers, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    return str(entry.get('key_env') or entry.get('api_key_env') or '').strip() or None
+
+
+def _freeze_selected_provider(config, frozen, provider):
+    """Copy only a picked named provider's declaration into its frozen session route.
+
+    A policy must resolve its next turn from its own configuration, not a later profile edit.  Keep
+    private provider fields in the policy's secret store, just as policy creation does.
+    """
+    from copy import deepcopy
+    from gateway.session_policy import _extract_config_secrets
+    from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
+    path = named_custom_provider_config_path(provider, config)
+    if path is None:
+        return {}
+    section, index = path
+    entries = config.get(section)
+    if not isinstance(entries, (dict, list)) or not isinstance(entries[index], dict):
+        return {}
+    copied = deepcopy(entries[index])
+    if section == 'providers':
+        frozen_entries = dict(frozen.get(section) or {})
+        frozen_entries[index] = copied
+        frozen[section] = frozen_entries
+    else:
+        frozen_entries = list(frozen.get(section) or [])
+        frozen_entries.append(copied)
+        frozen[section] = frozen_entries
+        index = len(frozen_entries) - 1
+    secrets = {}
+    _extract_config_secrets(frozen[section][index], secrets, (section, index))
+    return secrets
 
 
 def _alias_credential(authority, result):
