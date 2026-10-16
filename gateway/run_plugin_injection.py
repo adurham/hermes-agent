@@ -50,7 +50,8 @@ class GatewayPluginInjectionMixin:
 
         if origin is not None:
             source = self._plugin_origin_source(origin, plugin_home=plugin_home, plugin_id=plugin_id)
-            if source is None:
+            if source is None or not self._plugin_origin_admissible(source, plugin_home=plugin_home,
+                                                                    plugin_id=plugin_id):
                 return False
             target = f"origin={source.platform.value}/{source.chat_id}"
             coro = self._dispatch_plugin_origin_injection(source=source, content=content, plugin_id=plugin_id)
@@ -219,6 +220,24 @@ class GatewayPluginInjectionMixin:
             return _refuse("origin %s routes to profile %s, not the plugin's profile %s",
                            where, identity.runtime_profile, profile)
         return source
+
+    def _plugin_origin_admissible(self, source: SessionSource, *, plugin_home: Optional[Path], plugin_id: str) -> bool:
+        """Under the session authority a plugin turn borrows the connector provenance of a human
+        message already committed in that chat, and the gateway never mints it for a chat the
+        platform did not deliver: refuse such an origin here, so the plugin gets ``False`` instead of
+        a ``True`` for a turn the dispatch then drops. Dispatch rechecks."""
+        from gateway.session_authorities import authority_for_home
+        from gateway.session_automation import committed_route_envelope
+        authority = authority_for_home(self, plugin_home) if plugin_home is not None else None
+        if authority is None:
+            return True  # no authority: the adapter's normal session path creates the session
+        entry = self.session_store.lookup_by_session_key(self._session_key_for_source(source))
+        if entry is not None and committed_route_envelope(authority, entry) is not None:
+            return True
+        logger.warning("Plugin message injection refused: plugin=%s origin=%s/%s has no human message admitted "
+                       "yet; a plugin can continue a chat, not open one", plugin_id, source.platform.value,
+                       source.chat_id)
+        return False
 
     async def _dispatch_plugin_origin_injection(
         self, *, source: SessionSource, content: str, plugin_id: str
