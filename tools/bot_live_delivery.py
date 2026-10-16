@@ -127,6 +127,9 @@ def _locked(home: Path | str):
     try:
         root.chmod(0o700)
     except OSError as exc:
+        # On POSIX chmod fails only when another uid owns the dir: refuse a mailbox someone else controls.
+        if os.name != "nt" and root.stat().st_uid != os.getuid():  # windows-footgun: ok — POSIX only
+            raise
         # A foreign Windows ACL can deny FILE_WRITE_ATTRIBUTES even when this process can
         # still use the existing mailbox. Hardening must not abort recovery. The poller
         # re-enters twice a second, so WARNING once per dir and DEBUG after.

@@ -158,6 +158,7 @@ def _launchd_gateway_command(tmp_path, monkeypatch, *, store, profile=""):
     ("other_home", "foreign_root"), ("osascript_non_gateway", "service_identity_unverified"),
     ("own_wrapper_foreign_inner", "service_identity_unverified"),
     ("osascript_foreign_bare", "service_identity_unverified"),
+    ("osascript_legacy_module", "service_identity_unverified"),
 ])
 def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(case, reason, tmp_path, monkeypatch):
     """The Local Network wrapper (#71206) is unwrapped only as its exact template, and the command inside
@@ -186,6 +187,11 @@ def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(cas
         command = foreign if case == "osascript_foreign_bare" else installation_command(
             gw.PROJECT_ROOT, ["--error-log", str(tmp_path / "logs" / "gateway.error.log"), "--", *foreign],
             module="hermes_cli.stderr_timestamp", python=sys.executable)
+    if case == "osascript_legacy_module":
+        # The legacy ``python -m`` form from any interpreter: accepted unwrapped, never written inside osascript.
+        command = [sys.executable, "-m", "hermes_cli.stderr_timestamp", "--error-log",
+                   str(tmp_path / "logs" / "gateway.error.log"), "--",
+                   sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--external-supervisor"]
     if case == "osascript_non_gateway":
         command = ["/bin/sh", "-c", "id"]
     if case == "tampered_bootstrap":

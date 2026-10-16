@@ -286,3 +286,23 @@ def test_receipt_wait_polls_the_local_receipt_and_outlives_an_unreachable_owner(
     settled = mailbox.await_delivery(tmp_path, key, 5)
     assert (settled["status"], settled["reply"]) == ("settled", "PONG")
     assert dials == []
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_mailbox_lock_refuses_a_dir_another_uid_owns_when_chmod_is_denied(tmp_path, monkeypatch):
+    """On POSIX chmod fails only for a dir this uid doesn't own: that mailbox is refused, not used."""
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True)
+    real_chmod = Path.chmod
+
+    def deny(target, mode, *, follow_symlinks=True):
+        if Path(target) == root:
+            raise PermissionError(1, "Operation not permitted", str(target))
+        return real_chmod(target, mode, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "chmod", deny)
+    monkeypatch.setattr(os, "getuid", lambda: root.stat().st_uid + 1)
+    with pytest.raises(PermissionError):
+        with mailbox._locked(tmp_path):
+            pass
+

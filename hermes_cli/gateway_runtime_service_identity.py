@@ -55,7 +55,7 @@ def verify_home(home: Path, configured: str) -> None:
     raise ValueError("profile_mismatch")
 
 
-def _launch_module(argv: list[str]) -> tuple[str, list[str]] | None:
+def _launch_module(argv: list[str], *, legacy: bool = True) -> tuple[str, list[str]] | None:
     """``(module, its argv)`` for the module launches the installer persists: ``python -m``, or
     ``_launchers.installation_command``'s two forms for THIS install root (gateway.PROJECT_ROOT): the
     store ``<root>/.hermes/bin/hermes --run-module`` launcher, or ``runtime_command``'s inline bootstrap
@@ -65,7 +65,8 @@ def _launch_module(argv: list[str]) -> tuple[str, list[str]] | None:
     root = Path(gateway.PROJECT_ROOT).resolve()
     executable = Path(argv[0]).name.lower() if argv else ""
     if re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", executable):
-        if argv[1:2] == ["-m"] and len(argv) > 2:
+        # ``python -m`` is the legacy unwrapped plist form; no installer put it inside the osascript wrapper.
+        if legacy and argv[1:2] == ["-m"] and len(argv) > 2:
             return argv[2], argv[3:]
         if argv[1:3] == ["-I", "-c"] and len(argv) > 3:
             module = next((name for name in ("hermes_cli.stderr_timestamp", "hermes_cli.main")
@@ -83,15 +84,16 @@ def _own_store_launcher(executable: str) -> bool:
     return os.path.normcase(str(Path(executable).resolve())) == os.path.normcase(str(launcher))
 
 
-def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -> None:
+def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False, bound: bool = False) -> None:
     """``wrapped``: a launcher wrapper was already stripped. A ``hermes`` launcher a wrapper runs must be
     the one ``installation_command`` writes for THIS root (``<root>/.hermes/bin/hermes``), never another
-    checkout's. A bare unwrapped ``hermes`` keeps verifying by name, as older systemd/schtasks/launchd
+    checkout's. ``bound``: the osascript wrapper was stripped, so only this root's installer forms count
+    (no legacy ``python -m``). A bare unwrapped ``hermes`` keeps verifying by name, as older systemd/schtasks/launchd
     definitions persisted it; a wrapped ``python`` is held to ``_launch_module`` as before."""
     from gateway.status import looks_like_gateway_command_line
 
     # The installer wraps launchd stderr with this fixed, non-shell module.
-    wrapper = _launch_module(argv)
+    wrapper = _launch_module(argv, legacy=not bound)
     if wrapper is not None and wrapper[0] == "hermes_cli.stderr_timestamp":
         args = wrapper[1]
         if len(args) < 4 or args[0] != "--error-log" or args[2] != "--":
@@ -101,7 +103,7 @@ def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -
         _unverified()
     executable = Path(argv[0]).name.lower()
     if re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", executable):
-        entry = _launch_module(argv)
+        entry = _launch_module(argv, legacy=not bound)
         if entry is None or entry[0] != "hermes_cli.main":
             _unverified()
         args = entry[1]
@@ -214,7 +216,7 @@ _LAUNCHD_JXA = re.compile(
 
 def _verify_launchd_argv(argv: list[str], home: Path) -> None:
     command = _launchd_command(argv)
-    verify_gateway_argv(command, home, wrapped=command is not argv)
+    verify_gateway_argv(command, home, wrapped=command is not argv, bound=command is not argv)
 
 
 def _launchd_command(argv: list[str]) -> list[str]:
