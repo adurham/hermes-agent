@@ -100,7 +100,9 @@ class RelayDiscordInteractionMixin:
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
                         str(src.scope_id or ""), src.chat_id)
-                    await self.handle_message(event)
+                    from gateway.session_ingress_context import relay_passthrough_event
+                    with relay_passthrough_event(self._transport, forward, event):
+                        await self.handle_message(event)
                     return
             logger.info(
                 "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
