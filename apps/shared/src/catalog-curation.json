@@ -24,15 +24,5 @@
       "touchdesigner",
       "hermes-telegram-business"
     ]
-  },
-  "trusted": {
-    "plugins": [
-      "junie-acp",
-      "letsfg",
-      "unbrowse",
-      "inline-platform",
-      "phone-harness",
-      "web-search-plus"
-    ]
   }
 }

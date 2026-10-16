@@ -25,8 +25,8 @@ const topStars = (items: CatalogEntry[]) => Math.max(-1, ...items.map(entry => e
 
 /** Plugin tiers in page order; community keeps its category shelves. */
 const PLUGIN_TIERS: { tier: Exclude<PluginTier, 'community'>; title: string; blurb: string }[] = [
-  { tier: 'nous', title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },
-  { tier: 'trusted', title: 'Trusted Plugins', blurb: 'From established teams, reviewed for Hermes.' }
+  { tier: 'official', title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },
+  { tier: 'verified', title: 'Verified Plugins', blurb: 'From the company behind the integration, verified by Nous.' }
 ]
 
 export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
