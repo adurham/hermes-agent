@@ -79,8 +79,9 @@ class LocalSessionPolicy:
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
-            from gateway.session_policy_credentials import recover_config_secrets
-            for path, value in recover_config_secrets(authority, self).items():
+            from gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
+            recovered = recover_config_secrets(authority, self)
+            for path, value in recovered.items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
                 target = config
@@ -88,6 +89,7 @@ class LocalSessionPolicy:
                     # An alias entry added after creation is absent from the frozen tree.
                     target = target.setdefault(key, {}) if isinstance(target, dict) else target[key]
                 target[path[-1]] = value
+            disable_dropped_secrets(config, getattr(recovered, 'dropped', ()), getattr(recovered, 'session', None))
         model = self.model
         if live:
             frozen, request = config.get('model') or {}, json.loads(self.request_json)

@@ -144,12 +144,15 @@ def test_an_unrelated_secret_edit_keeps_the_route_and_a_gone_route_key_is_named(
 
 
 def _bound_session(tmp_path, monkeypatch, cfg):
-    """A session frozen on *cfg*, plus a fresh-authority factory (a restarted owner, no secret cache)."""
+    """A session frozen on *cfg* as the gateway loads it (``${VAR}`` expanded), plus a
+    fresh-authority factory (a restarted owner, no secret cache)."""
+    from gateway.run import _load_gateway_config
     from gateway.session_policy import build_policy, bind_launch_key
     home = tmp_path / 'profile'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
     (home / 'config.yaml').write_text(json.dumps(cfg))
+    cfg = _load_gateway_config(home / 'config.yaml')
 
     def owner():
         return SimpleNamespace(db=SimpleNamespace(db_path=home / 'state.db'),
@@ -240,3 +243,64 @@ def test_a_bare_custom_key_selected_by_url_is_the_route(tmp_path, monkeypatch):
         policy.config(owner())
     assert refused.value.field == 'custom_providers.1.api_key'
     assert 'rotated' not in str(refused.value.detail)
+
+
+def _policy_runtime(policy, owner):
+    """The real gateway resolution a frozen session's turn runs (primary, then its fallback chain)."""
+    from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+    from gateway.session_policy import policy_scope
+    authority = owner()
+    runner = SimpleNamespace(session_authority=authority)
+    with policy_scope(policy, authority=authority):
+        return _resolve_policy_agent_runtime(runner, policy)
+
+
+def _send(model, runtime):
+    from openai import OpenAI
+    OpenAI(api_key=runtime['api_key'], base_url=runtime['base_url'], max_retries=0).chat.completions.create(
+        model=model, messages=[{'role': 'user', 'content': 'hi'}])
+
+
+@pytest.mark.parametrize('form', ['literal', 'reference', 'named'])
+def test_a_changed_fallback_secret_removes_that_fallback(tmp_path, monkeypatch, caplog, form):
+    """The primary has no credential, so the turn walks the fallback chain. A changed frozen fallback
+    key used to leave the entry with ``api_key: null``, which means 'resolve another credential': the
+    fallback then sent the provider's OTHER account key (or the rotated key re-seeded from live
+    config). A changed fallback secret now removes that fallback; no credential is substituted."""
+    from hermes_cli.auth import AuthError
+    from tests.fakes.fake_llm_provider import FakeLLMServer
+    for name in ('ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('BACKUP_PROBE_KEY', 'sk-original-fallback')
+    with FakeLLMServer() as primary, FakeLLMServer() as backup:
+        cfg = {'model': {'provider': 'anthropic', 'default': 'primary-model', 'base_url': primary.base_url},
+               'providers': {'box': {'base_url': backup.base_url, 'api_key': 'sk-different-account'}},
+               'fallback_providers': [{'provider': 'custom:box', 'model': 'backup-model'}]}
+        if form == 'literal':
+            cfg['fallback_providers'][0]['api_key'] = 'sk-original-fallback'
+        elif form == 'reference':
+            cfg['fallback_providers'][0]['api_key'] = '${BACKUP_PROBE_KEY}'
+        else:
+            cfg['providers']['box']['api_key'] = 'sk-original-fallback'
+        policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
+        model, runtime = _policy_runtime(policy, owner)  # unchanged: the frozen fallback serves
+        assert (model, runtime['api_key']) == ('backup-model', 'sk-original-fallback')
+
+        if form == 'literal':
+            cfg['fallback_providers'][0]['api_key'] = 'sk-rotated-fallback'
+        elif form == 'reference':
+            monkeypatch.setenv('BACKUP_PROBE_KEY', 'sk-rotated-fallback')
+        else:
+            cfg['providers']['box']['api_key'] = 'sk-rotated-fallback'
+        config_path.write_text(json.dumps(cfg))
+        assert policy.config(owner())['fallback_providers'] == []
+        try:
+            model, runtime = _policy_runtime(policy, owner)
+        except AuthError:
+            pass  # the primary's own failure: no fallback left to try
+        else:
+            _send(model, runtime)
+        sent = [r['auth'] for r in primary.requests + backup.requests]
+        assert not any('sk-different-account' in a or 'sk-rotated' in a for a in sent), sent
+        assert backup.requests == []
+    assert any('fallback' in r.getMessage() and 'removed' in r.getMessage() for r in caplog.records)

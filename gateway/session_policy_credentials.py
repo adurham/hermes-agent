@@ -50,6 +50,13 @@ def _route_paths(policy):
     return paths
 
 
+class RecoveredSecrets(dict):
+    """The frozen secrets still valid, plus ``dropped``: the paths whose value changed or was removed
+    in config.yaml since the session started (never supplied; the policy disables what used them)."""
+    dropped = ()
+    session = None
+
+
 def policy_identity(policy):
     data = asdict(policy)
     data.pop('credential_ref')
@@ -100,7 +107,7 @@ def recover_config_secrets(authority, policy, skip=None):
         entries = [entry for entry in source['entries'] if entry[0][0] not in skip]
         config = _load_gateway_config(home / 'config.yaml') if any(path[0] is not None for path, _ in entries) else {}
         route = _route_paths(policy)
-        values = {}
+        values, dropped = RecoveredSecrets(), []
         for path, fingerprint in entries:
             value, lookup = config, path
             if path[0] is None:
@@ -118,10 +125,59 @@ def recover_config_secrets(authority, policy, skip=None):
                 # supplied: the frozen tree holds None there, never the profile's new value.
                 logger.warning('Session %s: frozen config secret %s no longer matches the profile '
                                'config; skipping it', source.get('session'), path)
+                dropped.append(tuple(path))
                 continue
             values[tuple(path)] = value
+        values.dropped, values.session = tuple(dropped), source.get('session')
         return values
     except RuntimeStoreError:
         raise
     except (KeyError, TypeError, ValueError, AttributeError, OSError) as exc:
         raise RuntimeStoreError('launch_credentials_unavailable') from exc
+
+
+def _entry_owner_path(entry, config):
+    """The ``providers:`` / ``custom_providers:`` entry a fallback entry authenticates through."""
+    from hermes_cli.runtime_provider_custom import (custom_provider_config_path_for_url,
+                                                    named_custom_provider_config_path)
+    provider = str(entry.get('provider') or '').strip()
+    if provider.lower() == 'custom':
+        return custom_provider_config_path_for_url(entry.get('base_url'), config)
+    return named_custom_provider_config_path(provider, config) if provider else None
+
+
+def disable_dropped_secrets(config, dropped, session=None):
+    """Disable, in the session's effective *config*, whatever authenticated with a *dropped* frozen
+    secret, instead of leaving it with a null key (null means 'resolve another credential' and would
+    send another account's key). A fallback using it is removed from the chain. Never substitutes."""
+    if not dropped:
+        return config
+    owners = {path[:2] for path in dropped if path[0] in ('providers', 'custom_providers') and len(path) > 2}
+    for section in ('fallback_providers', 'fallback_model'):
+        raw = config.get(section)
+        if isinstance(raw, dict):
+            entries, single = [raw], True
+        elif isinstance(raw, list):
+            entries, single = list(raw), False
+        else:
+            continue
+        kept = []
+        for index, entry in enumerate(entries):
+            prefix = (section,) if single else (section, index)
+            own = any(path[:len(prefix)] == prefix for path in dropped)
+            owner = _entry_owner_path(entry, config) if isinstance(entry, dict) and owners else None
+            if own or (owner is not None and tuple(owner) in owners):
+                logger.warning('Session %s: fallback %s/%s removed: its credential changed in config.yaml '
+                               'since this session started', session,
+                               (entry or {}).get('provider') if isinstance(entry, dict) else '?',
+                               (entry or {}).get('model') if isinstance(entry, dict) else '?')
+                continue
+            kept.append(entry)
+        if single:
+            if kept:
+                config[section] = kept[0]
+            else:
+                config.pop(section, None)
+        else:
+            config[section] = kept
+    return config
