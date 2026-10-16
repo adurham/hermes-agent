@@ -131,28 +131,29 @@ const requestScopeKey = () => `${getApiRequestConnection() ?? ''}\n${getApiReque
  *  restarting, draining or being re-ensured. It stops after
  *  MAX_REFUSED_PLUGIN_DIALS refusals in a row that do not clear by themselves:
  *  main refusing the grant mint for a permission reason, or a server that
- *  accepts and closes at once. A connection or profile change resets the count
- *  and dials again. */
+ *  accepts and closes at once. A connection or profile change drops a dial
+ *  still resolving for the old scope, closes a socket bound to it, resets the
+ *  count and dials for the new scope. */
 export function pluginSocket(pluginId: string, path: string, onMessage: (data: unknown) => void): () => void {
   const suffix = pluginPathSuffix('pluginSocket', path)
 
   let socket: null | WebSocket = null
   let disposed = false
-  let stopped = false
   let attempt = 0
   let refused = 0
   let scope = requestScopeKey()
+  // Bumped on every connection or profile change. A lookup, backoff timer or socket started under an
+  // older generation belongs to another scope: its result is dropped and never counts as a refusal.
+  let generation = 0
 
-  const retry = (refusal: boolean) => {
-    refused = refusal ? refused + 1 : refused
-
-    if (disposed) {
+  const retry = (dial: number, refusal: boolean) => {
+    if (disposed || dial !== generation) {
       return
     }
 
-    if (refused >= MAX_REFUSED_PLUGIN_DIALS) {
-      stopped = true
+    refused = refusal ? refused + 1 : refused
 
+    if (refused >= MAX_REFUSED_PLUGIN_DIALS) {
       return
     }
 
@@ -160,11 +161,18 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
     // socket reconnect loops — an immediate-retry loop across many
     // desktop clients floods the gateway with connection attempts
     // during a restart.
-    window.setTimeout(() => void connect(), reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
+    window.setTimeout(() => {
+      if (dial === generation) {
+        void connect()
+      }
+    }, reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
     attempt += 1
   }
 
   const connect = async () => {
+    const dial = generation
+    const stale = () => disposed || dial !== generation
+
     // No bridge: stay on the polling fallback.
     if (!window.hermesDesktop?.getConnection) {
       return
@@ -177,12 +185,12 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
     } catch {
       // The descriptor can't be resolved yet or the lookup timed out (gateway starting, draining,
       // or re-ensured after a stale ticket): a connection failure, like a dial that never opened.
-      return retry(false)
+      return retry(dial, false)
     }
 
     // OAuth cookie auth (WS tickets are single-use, core-managed): stay on the
     // polling fallback rather than half-working.
-    if (disposed || connection.authMode === 'oauth') {
+    if (stale() || connection.authMode === 'oauth') {
       return
     }
 
@@ -192,25 +200,30 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       url = await pluginSocketUrl(connection, pluginId, suffix)
     } catch {
       // The local mint failed or timed out (owner away, re-ensuring): a connection failure.
-      return retry(false)
+      return retry(dial, false)
     }
 
-    if (disposed || !url) {
+    if (stale() || !url) {
       return
     }
 
     if (typeof url !== 'string') {
-      return retry(true)
+      return retry(dial, true)
     }
 
-    socket = new WebSocket(url)
+    const current = new WebSocket(url)
+    socket = current
     let openedAt: null | number = null
 
-    socket.onopen = () => {
+    current.onopen = () => {
       openedAt = Date.now()
     }
 
-    socket.onmessage = event => {
+    current.onmessage = event => {
+      if (stale()) {
+        return
+      }
+
       attempt = 0
 
       try {
@@ -220,8 +233,14 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       }
     }
 
-    socket.onclose = () => {
-      socket = null
+    current.onclose = () => {
+      if (socket === current) {
+        socket = null
+      }
+
+      if (stale()) {
+        return
+      }
 
       // Only a socket that stayed up resets the ladder. An accept-then-close server
       // (Kanban on an archived board) is up and answering, so it counts as a refusal.
@@ -230,27 +249,28 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
         refused = 0
       }
 
-      retry(openedAt !== null && !isStableOpen(openedAt))
+      retry(dial, openedAt !== null && !isStableOpen(openedAt))
     }
   }
 
-  // Another connection or profile is another gateway or another consent: a fresh count, and a
-  // stopped socket dials again.
+  // Another connection or profile is another gateway or another consent. A socket bound to the
+  // old scope would show that profile's stream in this view: close it, and dial for the new scope
+  // with a fresh count.
   const unlisten = $apiRequestScope.listen(() => {
     const next = requestScopeKey()
 
-    if (next === scope) {
+    if (next === scope || disposed) {
       return
     }
 
     scope = next
+    generation += 1
     attempt = 0
     refused = 0
-
-    if (stopped && !disposed) {
-      stopped = false
-      void connect()
-    }
+    const old = socket
+    socket = null
+    old?.close()
+    void connect()
   })
 
   void connect()

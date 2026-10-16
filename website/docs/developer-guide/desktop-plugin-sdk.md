@@ -1894,7 +1894,9 @@ When the socket gives up (your polling fallback is then the only feed):
   path or profile home), or your backend accepting the socket and closing it at
   once. A socket that stays open resets the count.
 - **Starts again** when the active connection or profile changes, with a fresh
-  count, or when the view remounts.
+  count, or when the view remounts. A profile switch also moves a live socket:
+  Desktop closes the one bound to the old profile, drops a grant still being
+  minted for it, and dials for the new profile.
 
 For gateway-wide data (not your own namespace), use `host.request` (JSON-RPC) and
 `host.onEvent` (the gateway event stream) instead.

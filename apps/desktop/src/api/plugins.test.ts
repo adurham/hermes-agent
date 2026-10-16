@@ -57,6 +57,7 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
   class FakeSocket {
     static all: FakeSocket[] = []
     readonly at = Date.now()
+    closed = false
     onclose: (() => void) | null = null
     onmessage: ((event: { data: unknown }) => void) | null = null
     onopen: (() => void) | null = null
@@ -64,6 +65,7 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
       FakeSocket.all.push(this)
     }
     close() {
+      this.closed = true
       this.onclose?.()
     }
   }
@@ -270,6 +272,116 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     setApiRequestProfile('coder')
     await vi.advanceTimersByTimeAsync(600_000)
     expect(mint).toHaveBeenCalledTimes(11)
+  })
+
+  // A grant or descriptor resolved for the profile the user just left, or a socket still bound to
+  // it, would feed that profile's plugin stream into the current view.
+  const urlFor = (profile: null | string) => `ws://127.0.0.1:9/api/plugins/kanban/events?native_dial=${profile}`
+
+  const profileDesktop = () => {
+    const getPluginWsUrl = vi.fn(async ({ profile }: { profile: null | string }): Promise<unknown> => urlFor(profile))
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { getConnection: vi.fn(async () => local), getPluginWsUrl }
+    })
+
+    return getPluginWsUrl
+  }
+
+  const openUrls = () => FakeSocket.all.filter(socket => !socket.closed).map(socket => socket.url)
+
+  it('a profile switch while the grant is being minted dials the new profile, never the old URL', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    setApiRequestProfile('alpha')
+    const mint = profileDesktop()
+    let resolveAlpha: (url: unknown) => void = () => undefined
+    mint.mockImplementationOnce(() => new Promise(resolve => (resolveAlpha = resolve)))
+
+    const dispose = pluginSocket('kanban', '/events', () => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    setApiRequestProfile('beta')
+    await vi.advanceTimersByTimeAsync(0)
+    resolveAlpha(urlFor('alpha'))
+    await vi.advanceTimersByTimeAsync(600_000)
+
+    expect(mint).toHaveBeenLastCalledWith(expect.objectContaining({ profile: 'beta' }))
+    expect(FakeSocket.all.map(socket => socket.url)).toEqual([urlFor('beta')])
+    dispose()
+  })
+
+  it('a profile switch while the connection lookup is pending dials the new profile', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    setApiRequestProfile('alpha')
+    const remote = (profile: string) => ({ authMode: 'token', baseUrl: `http://${profile}.invalid`, token: 'tok' })
+    let resolveAlpha: (connection: unknown) => void = () => undefined
+
+    const getConnection = vi.fn(async (profile: string): Promise<unknown> => remote(profile))
+    getConnection.mockImplementationOnce(() => new Promise(resolve => (resolveAlpha = resolve)))
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { getConnection } })
+
+    const dispose = pluginSocket('kanban', '/events', () => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    setApiRequestProfile('beta')
+    await vi.advanceTimersByTimeAsync(0)
+    resolveAlpha(remote('alpha'))
+    await vi.advanceTimersByTimeAsync(600_000)
+
+    expect(FakeSocket.all.map(socket => socket.url)).toEqual(['ws://beta.invalid/api/plugins/kanban/events?token=tok'])
+    dispose()
+  })
+
+  it('a profile switch closes the open socket and dials the new profile', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    setApiRequestProfile('alpha')
+    const mint = profileDesktop()
+    const frames: unknown[] = []
+
+    const dispose = pluginSocket('kanban', '/events', frame => frames.push(frame))
+    await vi.advanceTimersByTimeAsync(0)
+    const alpha = FakeSocket.all[0]
+    alpha.onopen?.()
+
+    setApiRequestProfile('beta')
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(alpha.closed).toBe(true)
+    expect(openUrls()).toEqual([urlFor('beta')])
+    const beta = FakeSocket.all.at(-1)!
+    beta.onopen?.()
+    beta.onmessage?.({ data: '{"profile":"beta"}' })
+    expect(frames).toEqual([{ profile: 'beta' }])
+
+    // The closed alpha socket neither re-dials nor counts as a refusal.
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(FakeSocket.all).toHaveLength(2)
+    expect(mint).toHaveBeenCalledTimes(2)
+    dispose()
+  })
+
+  it('a quick A to B to A switch ends with exactly one open socket, on A', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    setApiRequestProfile('alpha')
+    profileDesktop()
+    const frames: unknown[] = []
+
+    const dispose = pluginSocket('kanban', '/events', frame => frames.push(frame))
+    await vi.advanceTimersByTimeAsync(0)
+    FakeSocket.all[0].onopen?.()
+
+    setApiRequestProfile('beta')
+    setApiRequestProfile('alpha')
+    await vi.advanceTimersByTimeAsync(600_000)
+
+    expect(openUrls()).toEqual([urlFor('alpha')])
+    const live = FakeSocket.all.find(socket => !socket.closed)!
+    live.onopen?.()
+    live.onmessage?.({ data: '{"profile":"alpha"}' })
+    expect(frames).toEqual([{ profile: 'alpha' }])
+    dispose()
   })
 
   it('keeps reconnecting a socket that stayed open before it dropped', async () => {
