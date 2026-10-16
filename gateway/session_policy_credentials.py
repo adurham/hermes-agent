@@ -106,7 +106,7 @@ def recover_config_secrets(authority, policy, skip=None):
         from gateway.run import _load_gateway_config
         entries = [entry for entry in source['entries'] if entry[0][0] not in skip]
         config = _load_gateway_config(home / 'config.yaml') if any(path[0] is not None for path, _ in entries) else {}
-        route = _route_paths(policy)
+        route = None  # computed on the first mismatch only: an unchanged source never needs it
         values, dropped = RecoveredSecrets(), []
         for path, fingerprint in entries:
             value, lookup = config, path
@@ -116,6 +116,8 @@ def recover_config_secrets(authority, policy, skip=None):
             value = _defined(value, lookup)
             actual = None if value is _ABSENT else _fingerprint(value)
             if actual is None or not hmac.compare_digest(actual, fingerprint):
+                if route is None:
+                    route = _route_paths(policy)
                 if tuple(path) in route:
                     raise RuntimeStoreError('launch_credentials_unavailable',
                         field='.'.join(str(part) for part in path if part is not None),
