@@ -260,6 +260,10 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
     previous one and a local prefix cache reads the whole prompt again. An explicit reload
     (``preserve_prefix`` off) still takes the fresh schemas.
 
+    The carried entry freezes the whole schema (description and parameters), not just prose: if a
+    server changes a live tool's input schema under the same name, the model keeps calling with
+    the old shape and the server rejects those calls until ``/reload-mcp`` or compaction.
+
     The bridge tools are synthesized by ``assemble_tool_defs``, never registered, and a fresh
     snapshot omits them when the deferred set shrinks under the activation threshold: they
     keep their slot regardless (search reads the live catalog at dispatch)."""
