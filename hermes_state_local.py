@@ -10,7 +10,12 @@ API_DECLARED_PREFIX = 'gateway.api.conversation.v1.'
 
 
 def commit_local_session(db, *, epoch, receipt):
-    """Reserve the row, route and immutable policy together, before publication."""
+    """Reserve the row, route and immutable policy together, before publication. A staged receipt's
+    ``on_create`` (owner memory, never stored) is published by the transaction that creates the row
+    and withdrawn if that transaction fails: an exact retry, a refused or a losing attempt adds none."""
+    on_create = getattr(receipt, 'on_create', None)
+    if on_create is not None:
+        on_create.read()  # its file read: in the caller's thread, outside the write transaction
     encoded = _json(receipt)
     receipt = json.loads(encoded)
     sid, route = receipt['session_id'], receipt['route']
@@ -23,7 +28,7 @@ def commit_local_session(db, *, epoch, receipt):
                 saved = json.loads(old[0])
                 same = all(saved[k] == receipt[k] for k in (
                     'profile_id', 'principal_id', 'request_id', 'session_id', 'route'))
-                same = same and saved['policy']['request_json'] == receipt['policy']['request_json']
+                same = same and same_create_request(saved['policy']['request_json'], receipt['policy']['request_json'])
             except (ValueError, TypeError, KeyError) as exc:
                 raise RuntimeStoreError('storage_unavailable') from exc
             if not same:
@@ -53,8 +58,43 @@ def commit_local_session(db, *, epoch, receipt):
         conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",
                      (route, _json(entry), started))
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)', (key, encoded))
+        if on_create is not None:
+            on_create.publish()  # before the row is visible, so no reader lazy-loads around it
         return receipt
-    return db._execute_write(write)
+    try:
+        return db._execute_write(write)
+    except BaseException:
+        if on_create is not None:
+            on_create.withdraw()  # only this attempt's own snapshot, never another winner's
+        raise
+
+
+def client_request(request_json, derived=None):
+    """A frozen create request as the client sent it: an owner-resolved ``-m`` route (``model_requested``)
+    compares by the name the client typed, not by the model and the *derived* fields (a receipt from
+    before ``route_derived``: the endpoint) its ``${VAR}`` refs expanded to at the time."""
+    request = json.loads(request_json)
+    if derived is None:
+        request.pop('route_derived', None)
+    if 'model_requested' in request:
+        request.pop('model', None)
+        for key in ('base_url',) if derived is None else derived:
+            request.pop(key, None)
+    return request
+
+
+def same_create_request(saved_json, retry_json):
+    """Whether a create retry carries the frozen request it resumes: one check for a retry that finds the
+    session committed and one staged before it was. The saved receipt's provenance names the owner's
+    fields; one from before a same-name alias got ``model_requested`` compares exactly, as it did."""
+    derived = json.loads(saved_json).get('route_derived')
+    if client_request(saved_json, derived) == client_request(retry_json, derived):
+        return True
+    retry = json.loads(retry_json)
+    if retry.get('model_requested') == retry.get('model'):
+        retry.pop('model_requested', None)
+        retry.pop('route_derived', None)
+    return json.loads(saved_json) == retry
 
 
 def _row_cwd(policy):
