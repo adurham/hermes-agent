@@ -365,6 +365,52 @@ def test_a_command_a_plugin_reload_removed_is_dispatched_again(tmp_path, monkeyp
         assert 'slash.exec' not in after[2][1] and 'PLUGIN_TWIN' not in after[2][0], after
 
 
+_BROKEN = '''def register(ctx):
+    ctx.register_command("pptwin", lambda arg: "PLUGIN_TWIN", description="Shadows a skill")
+    raise RuntimeError("register exploded")
+'''
+
+
+@pytest.mark.platforms("linux")
+def test_a_plugin_whose_register_fails_leaves_its_name_to_a_same_named_skill(tmp_path, monkeypatch, capsys):
+    """Pins the review-bot question "failed plugins select other commands". The loader catches a failed
+    ``register()``, drops what it registered and records ``loaded.error`` (plugins_loader); the
+    plugin has no command, so the catalog lists none and reports no discovery error, and the typed
+    name goes on to the same-named skill. Main's CLI did the same: its own load dropped the
+    command, ``_get_plugin_cmd_handler_names()`` missed it, and the skill branch ran."""
+    import cli as cli_mod
+    from cli import HermesCLI
+    _no_local_plugins(monkeypatch)
+    ran_skill = []
+    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', lambda: {'/pptwin': {'name': 'pptwin'}})
+    monkeypatch.setattr(cli_mod, 'get_skill_bundles', dict)
+    monkeypatch.setattr(HermesCLI, '_run_skill_slash_command', lambda self, *a: ran_skill.append(a[0]))
+    work = tmp_path / 'work'
+    work.mkdir()
+    with _plugin_home(tmp_path, _BROKEN) as (root, home, env):
+        with daemon(root, home, env, barrier=True, fixture='plugin_mcp_daemon.py') as (proc, desc):
+            wire = _Wire(home, desc)
+            try:
+                sid = wire.call('session.create', request_id='plugin-broken', source='cli', toolsets=[],
+                                cwd=str(work))['session_id']
+                catalog = wire.call('commands.catalog', session_id=sid)
+                monkeypatch.setattr('hermes_cli.gateway_side.connection_for', lambda _cli: wire)
+                c = HermesCLI.__new__(HermesCLI)
+                c.config, c.session_id = {}, sid
+                capsys.readouterr()
+                del wire.calls[:]
+                assert c._process_unregistered_slash('/pptwin', '/pptwin') is True
+                out, calls = capsys.readouterr().out, list(wire.calls)
+            finally:
+                wire.close()
+            proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=20)
+    plugin_rows = [row for cat in catalog['categories'] if cat['name'] == 'Plugin commands' for row in cat['pairs']]
+    assert plugin_rows == [] and not catalog.get('plugin_discovery_error'), catalog
+    assert calls == ['commands.catalog'] and ran_skill == ['/pptwin'], (calls, ran_skill)
+    assert 'PLUGIN_TWIN' not in out, out
+
+
 # /ppslow blocks on the FIFO GATE until the test writes a note; MARKS/started-<arg> and
 # MARKS/done-<arg> show when the handler started and finished in the gateway.
 _SLOW = '''import os
