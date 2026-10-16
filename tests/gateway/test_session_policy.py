@@ -169,6 +169,17 @@ def test_provider_override_drops_the_previous_providers_route(tmp_path):
     assert unrecorded.config()['model'] == {'default': 'm', 'provider': 'xiaomi'}
 
 
+def test_provider_change_drops_the_old_providers_context_window(tmp_path):
+    """The profile's context_length was sized for its own model: a pick to another provider must
+    not pin that window on the new model, while a same-route alias pick keeps it."""
+    from gateway.session_policy import build_policy
+    cfg = {'model': {'default': 'qwen', 'provider': 'custom', 'base_url': 'http://localhost:1234/v1',
+                     'context_length': 8192}}
+    moved = build_policy(dict(cwd=str(tmp_path), model='claude-opus-4.6', provider='anthropic'), cfg)
+    assert 'context_length' not in moved.config()['model']
+    alias = build_policy(dict(cwd=str(tmp_path), model='qwen', provider='vllm'), cfg)
+    assert alias.config()['model']['context_length'] == 8192
+
 def test_provider_pick_over_auto_template_sends_its_key_to_its_own_endpoint(tmp_path, monkeypatch):
     """#139018: the install template (`provider: auto` + OpenRouter base_url) plus a Desktop
     Google AI Studio pick resolved provider=gemini against openrouter.ai, so the Google key went

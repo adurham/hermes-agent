@@ -388,7 +388,9 @@ def _apply_launch_overrides(params, config):
         # own — the same route keys a committed /model switch rewrites (#138843). An explicit
         # base_url is applied after the drop, so a pinned endpoint survives without carrying
         # the replaced provider's other pins, and a same-provider re-pick keeps the profile's.
-        for stale in ('base_url', 'api_mode', 'key_env', 'api_key_env', 'api_key', 'api', 'api_key_from'):
+        from gateway.session_route_identity import ROUTE_BOUND_KEYS
+        # The replaced provider's context window goes too: it was sized for the old model.
+        for stale in ROUTE_BOUND_KEYS:
             model.pop(stale, None)
     for key in ('provider', 'base_url'):
         if key in params:
