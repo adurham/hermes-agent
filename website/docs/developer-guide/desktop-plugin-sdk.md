@@ -1884,10 +1884,11 @@ profile.
 
 When the socket gives up (your polling fallback is then the only feed):
 
-- **Keeps retrying**, with jittered backoff capped at 30 s, while dials fail to
-  open. The client can't tell a refused upgrade from a gateway that is
-  restarting, draining or being re-ensured, so a gateway restart of any length
-  reconnects on its own.
+- **Keeps retrying**, with jittered backoff capped at 30 s, while Desktop can't
+  resolve the gateway connection or mint the grant yet, or dials fail to open.
+  The client can't tell a refused upgrade from a gateway that is restarting,
+  draining or being re-ensured, so the socket keeps retrying through a restart
+  of any length and reconnects once the gateway answers again.
 - **Stops after 5 in a row** of refusals that don't clear by themselves: Desktop
   refusing to mint the grant for a permission reason (an unsafe gateway control
   path or profile home), or your backend accepting the socket and closing it at

@@ -151,6 +151,84 @@ describe('pluginSocket credentials and refusals (PLG-1)', () => {
     dispose()
   })
 
+  // A restart can also fail before any dial: the descriptor lookup re-ensures the gateway, which
+  // rejects while it starts or drains, or after a stale ticket forgets the cached descriptor.
+  const dropOpenSocket = async () => {
+    FakeSocket.all.at(-1)?.onopen?.()
+    await vi.advanceTimersByTimeAsync(RECONNECT_STABLE_OPEN_MS)
+    FakeSocket.all.at(-1)?.close()
+  }
+
+  it('keeps retrying while the connection descriptor cannot be resolved, then reconnects', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    desktop(local)
+    const getConnection = vi.mocked(window.hermesDesktop.getConnection)
+    const frames: unknown[] = []
+
+    const dispose = pluginSocket('kanban', '/events', frame => frames.push(frame))
+    await vi.advanceTimersByTimeAsync(0)
+
+    for (let i = 0; i < 8; i += 1) {
+      getConnection.mockRejectedValueOnce(new Error('Gateway is draining'))
+    }
+
+    await dropOpenSocket()
+    await vi.advanceTimersByTimeAsync(9 * 31_000)
+
+    expect(getConnection).toHaveBeenCalledTimes(10)
+    expect(FakeSocket.all).toHaveLength(2)
+    FakeSocket.all[1].onopen?.()
+    FakeSocket.all[1].onmessage?.({ data: '{"ok":1}' })
+    expect(frames).toEqual([{ ok: 1 }])
+    dispose()
+  })
+
+  it('re-dials when the connection descriptor lookup never answers', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    desktop(local)
+    const getConnection = vi.mocked(window.hermesDesktop.getConnection)
+    const frames: unknown[] = []
+
+    const dispose = pluginSocket('kanban', '/events', frame => frames.push(frame))
+    await vi.advanceTimersByTimeAsync(0)
+    getConnection.mockImplementationOnce(() => new Promise(() => undefined))
+    await dropOpenSocket()
+    await vi.advanceTimersByTimeAsync(RECONNECT_ATTEMPT_TIMEOUT_MS + 2 * 31_000)
+
+    expect(getConnection).toHaveBeenCalledTimes(3)
+    expect(FakeSocket.all).toHaveLength(2)
+    FakeSocket.all[1].onopen?.()
+    FakeSocket.all[1].onmessage?.({ data: '{"ok":2}' })
+    expect(frames).toEqual([{ ok: 2 }])
+    dispose()
+  })
+
+  it('a socket waiting on the descriptor dials the new profile once it resolves', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeSocket)
+    setApiRequestProfile('coder')
+    const mint = desktop(local)
+    const getConnection = vi.mocked(window.hermesDesktop.getConnection)
+
+    const dispose = pluginSocket('kanban', '/events', () => undefined)
+    await vi.advanceTimersByTimeAsync(0)
+    getConnection.mockRejectedValue(new Error('Gateway is starting'))
+    await dropOpenSocket()
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(FakeSocket.all).toHaveLength(1)
+
+    getConnection.mockResolvedValue(local as never)
+    setApiRequestProfile('research')
+    await vi.advanceTimersByTimeAsync(31_000)
+
+    expect(getConnection).toHaveBeenLastCalledWith('research')
+    expect(mint).toHaveBeenLastCalledWith(expect.objectContaining({ profile: 'research' }))
+    expect(FakeSocket.all).toHaveLength(2)
+    dispose()
+  })
+
   // Main names the one refusal it can identify: a grant mint refused for a permission reason.
   it('stops after repeated permission refusals from main', async () => {
     vi.useFakeTimers()

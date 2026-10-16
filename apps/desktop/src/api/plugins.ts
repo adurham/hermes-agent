@@ -125,9 +125,10 @@ const requestScopeKey = () => `${getApiRequestConnection() ?? ''}\n${getApiReque
  *  its REST twin uses; OAuth remotes resolve null (callers keep their polling
  *  fallback — every consumer must have one anyway, since a socket can drop).
  *
- *  Auto-reconnects with capped backoff until disposed. A dial that never opens
- *  keeps retrying: the browser cannot tell a refused upgrade from a gateway that
- *  is restarting, draining or being re-ensured. It stops after
+ *  Auto-reconnects with capped backoff until disposed. A dial that never opens,
+ *  or a connection descriptor or grant that can't be resolved yet, keeps
+ *  retrying: the browser cannot tell a refused upgrade from a gateway that is
+ *  restarting, draining or being re-ensured. It stops after
  *  MAX_REFUSED_PLUGIN_DIALS refusals in a row that do not clear by themselves:
  *  main refusing the grant mint for a permission reason, or a server that
  *  accepts and closes at once. A connection or profile change resets the count
@@ -164,11 +165,24 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
   }
 
   const connect = async () => {
-    const connection = await activeConnection().catch(() => null)
+    // No bridge: stay on the polling fallback.
+    if (!window.hermesDesktop?.getConnection) {
+      return
+    }
 
-    // No bridge / OAuth cookie auth (WS tickets are single-use, core-managed):
-    // stay on the polling fallback rather than half-working.
-    if (disposed || !connection || connection.authMode === 'oauth') {
+    let connection: HermesConnection
+
+    try {
+      connection = await activeConnection()
+    } catch {
+      // The descriptor can't be resolved yet or the lookup timed out (gateway starting, draining,
+      // or re-ensured after a stale ticket): a connection failure, like a dial that never opened.
+      return retry(false)
+    }
+
+    // OAuth cookie auth (WS tickets are single-use, core-managed): stay on the
+    // polling fallback rather than half-working.
+    if (disposed || connection.authMode === 'oauth') {
       return
     }
 
