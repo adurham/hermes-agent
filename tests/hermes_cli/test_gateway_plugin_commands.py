@@ -326,3 +326,51 @@ def test_completion_lists_the_gateways_plugin_commands(local_plugin_reads):
     found = {c.text: c.display_meta_text for c in completer.get_completions(Document("/mcp"), None)}
     assert any("mcp-status" in text for text in found)
     assert local_plugin_reads == []
+
+
+def _unloaded_since_the_cached_read(monkeypatch, name):
+    """The CLI ran ``/name`` and cached the catalog; then a gateway plugin reload dropped it (same
+    session, same gateway life), so ``slash.exec`` refuses it as the gateway does."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    conn = _Conn({name: "Before the reload"})
+    c = _cli(monkeypatch, conn)
+    c._process_unregistered_slash(f"/{name}", f"/{name}")
+    conn._plugins, conn._reply = {}, GatewayRPCError("unsupported_command")
+    return conn, c
+
+
+def test_a_command_a_reload_unloaded_is_named_not_the_raw_refusal(monkeypatch, capsys, local_plugin_reads):
+    conn, c = _unloaded_since_the_cached_read(monkeypatch, "gone-plugin")
+    capsys.readouterr()
+    assert c._process_unregistered_slash("/gone-plugin", "/gone-plugin") is True
+    out = capsys.readouterr().out
+    assert "no longer has this plugin command" in out and "unsupported_command" not in out, out
+    assert _execs(conn) == ["gone-plugin"] * 2 and _catalog_reads(conn) == 2  # one re-read, no retry
+    expanded = []
+    monkeypatch.setattr(HermesCLI, "_expand_slash_prefix", lambda self, *a: expanded.append(a) or True)
+    c._process_unregistered_slash("/gone-plugin", "/gone-plugin")  # the cache is fresh: never sent
+    assert _execs(conn) == ["gone-plugin"] * 2 and len(expanded) == 1 and local_plugin_reads == []
+
+
+def test_a_same_named_skill_runs_once_a_reload_unloaded_the_plugin_command(monkeypatch, capsys):
+    conn, c = _unloaded_since_the_cached_read(monkeypatch, "pptwin")
+    ran = []
+    monkeypatch.setattr(cli_mod, "_ensure_skill_commands", lambda: {"/pptwin": {"name": "pptwin"}})
+    monkeypatch.setattr(HermesCLI, "_run_skill_slash_command", lambda self, *a: ran.append(a[0]))
+    capsys.readouterr()
+    for _ in range(2):
+        assert c._process_unregistered_slash("/pptwin", "/pptwin") is True
+    assert ran == ["/pptwin", "/pptwin"] and "unsupported_command" not in capsys.readouterr().out
+    assert _execs(conn) == ["pptwin"] * 2  # the first run and the one refusal; the skill follows
+
+
+def test_a_skill_reply_for_an_unloaded_plugin_command_runs_the_skill_here(monkeypatch, capsys):
+    """The gateway answers the dropped name for its own same-named skill (``type: skill``): the
+    re-read shows no plugin command, so the CLI's skill dispatch runs it, as for a refusal."""
+    conn, c = _unloaded_since_the_cached_read(monkeypatch, "pptwin")
+    conn._reply = {"type": "skill", "name": "pptwin", "message": "skill body"}
+    ran = []
+    monkeypatch.setattr(cli_mod, "_ensure_skill_commands", lambda: {"/pptwin": {"name": "pptwin"}})
+    monkeypatch.setattr(HermesCLI, "_run_skill_slash_command", lambda self, *a: ran.append(a[0]))
+    assert c._process_unregistered_slash("/pptwin", "/pptwin") is True
+    assert ran == ["/pptwin"] and "nothing was run" not in capsys.readouterr().out

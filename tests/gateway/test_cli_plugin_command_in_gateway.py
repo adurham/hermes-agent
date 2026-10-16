@@ -107,11 +107,11 @@ class _Wire:
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(60)
 
     def call(self, method, **params):
-        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_cli.gateway_client import GatewayRPCError
         self.calls.append(method)
         reply = self._run(rpc(self.ws, method, **params))
-        if 'error' in reply:
-            raise GatewayClientError(str(reply['error'].get('message')))
+        if 'error' in reply:  # an owner refusal, as gateway_client raises it
+            raise GatewayRPCError(str(reply['error'].get('message')), reply['error'].get('code'))
         return reply['result']
 
     def call_tagged(self, method, **params):
@@ -248,3 +248,78 @@ def test_a_redial_to_a_restarted_gateway_and_slash_new_reread_the_plugin_command
     assert c.session_id != first and conn.epoch == epoch_b
     assert new_calls == [('commands.catalog', None), ('slash.exec', c.session_id)], new_calls
     assert f'RAN_beta PID={b.pid}' in after_new, after_new
+
+
+# /pidprobe stays; /pptwin shares its name with a skill. ``TWIN`` is dropped to stop registering it.
+_RELOADED = '''import os
+
+
+def register(ctx):
+    ctx.register_command("pidprobe", lambda arg: "PIDPROBE PID=%d" % os.getpid(), description="Probe")
+    TWIN
+'''
+_TWIN = 'ctx.register_command("pptwin", lambda arg: "PLUGIN_TWIN", description="Shadows a skill")'
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("unload", ["disable", "stop_registering"])
+def test_a_command_a_plugin_reload_removed_is_dispatched_again(tmp_path, monkeypatch, capsys, unload):
+    """The open CLI cached the session's catalog; then the running gateway reloads its plugins (what
+    ``hermes plugins disable`` asks for) without the command, in the same session and gateway life.
+    The cached name gets ``unsupported_command`` from ``slash.exec`` once: the CLI re-reads the catalog
+    and dispatches the name again, so a same-named skill runs, and a name nothing else matches gets
+    the "no longer has this plugin command" line, never the raw code, on that try or a later one."""
+    import cli as cli_mod
+    from cli import HermesCLI
+    from gateway.control_socket import reload_gateway_plugins
+    _no_local_plugins(monkeypatch)
+    ran_skill = []
+    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', lambda: {'/pptwin': {'name': 'pptwin'}})
+    monkeypatch.setattr(cli_mod, 'get_skill_bundles', dict)
+    monkeypatch.setattr(HermesCLI, '_run_skill_slash_command', lambda self, *a: ran_skill.append(a[0]))
+    work = tmp_path / 'work'
+    work.mkdir()
+    with _plugin_home(tmp_path, _RELOADED.replace('TWIN', _TWIN)) as (root, home, env):
+        with daemon(root, home, env, barrier=True, fixture='plugin_mcp_daemon.py') as (proc, desc):
+            wire = _Wire(home, desc)
+            try:
+                sid = wire.call('session.create', request_id='plugin-reload', source='cli', toolsets=[],
+                                cwd=str(work))['session_id']
+                monkeypatch.setattr('hermes_cli.gateway_side.connection_for', lambda _cli: wire)
+                c = HermesCLI.__new__(HermesCLI)
+                c.config, c.session_id = {}, sid
+
+                def typed(text):
+                    del wire.calls[:]
+                    assert c._process_unregistered_slash(text, text) is True
+                    return capsys.readouterr().out, list(wire.calls)
+                capsys.readouterr()
+                before = typed('/pidprobe'), typed('/pptwin')
+                if unload == 'disable':
+                    config = json.loads((home / 'config.yaml').read_text())
+                    config['plugins'].update(enabled=[], disabled=['probe-cmd'])
+                    (home / 'config.yaml').write_text(json.dumps(config))
+                else:
+                    (home / 'plugins' / 'probe-cmd' / '__init__.py').write_text(_RELOADED.replace('TWIN', 'pass'))
+                answer = reload_gateway_plugins(home)
+                order = ('/pidprobe', '/pptwin', '/pidprobe') if unload == 'disable' else ('/pptwin', '/pidprobe', '/pptwin')
+                after = [typed(text) for text in order]
+            finally:
+                wire.close()
+            proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=20)
+    assert f'PIDPROBE PID={proc.pid}' in before[0][0] and 'PLUGIN_TWIN' in before[1][0], before
+    assert (answer or {}).get('reloaded') is True, answer
+    assert not any('unsupported_command' in out for out, _ in after), after
+    if unload == 'disable':
+        # the cached /pidprobe: refused once, one re-read, the existing line; nothing else ran
+        assert after[0][1] == ['slash.exec', 'commands.catalog'], after[0]
+        assert 'no longer has this plugin command' in after[0][0] and 'PIDPROBE' not in after[0][0], after[0]
+        # the re-read is the session's catalog now: the skill runs without asking the gateway to exec
+        assert 'slash.exec' not in after[1][1] and 'slash.exec' not in after[2][1], after
+        assert ran_skill == ['/pptwin'] and 'PIDPROBE' not in after[2][0], (ran_skill, after)
+    else:
+        # the cached /pptwin: refused once, one re-read, then the same-named skill runs
+        assert after[0][1] == ['slash.exec', 'commands.catalog'] and ran_skill == ['/pptwin', '/pptwin'], after
+        assert f'PIDPROBE PID={proc.pid}' in after[1][0], after  # still the plugin's, in the gateway
+        assert 'slash.exec' not in after[2][1] and 'PLUGIN_TWIN' not in after[2][0], after

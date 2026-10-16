@@ -5,16 +5,19 @@ live in the gateway, so its command runs there too (``gateway/session_commands.p
 gateway's own plugin dispatch): ``ctx.call_mcp`` reaches the servers the gateway connected, and this
 process never imports the plugin to run it. The names come from the gateway's ``commands.catalog``,
 read once per session and gateway life (``/new``, resume and a redial read again) and again once when
-a typed name misses, so a plugin the gateway enabled since still dispatches. A catalog whose
-``plugin_discovery_error`` is set lists no plugins because the gateway could not load them, not
-because there are none: it is treated as a failed read and never cached. Off the gateway (tests,
-the TUI slash worker's shadow CLI) main's dispatch applies.
+a typed name misses, so a plugin the gateway enabled since still dispatches; a cached name a plugin
+reload dropped since is re-read once when the gateway refuses it, then dispatched again (:data:`GONE`).
+A catalog whose ``plugin_discovery_error`` is set lists no plugins because the gateway could not load
+them, not because there are none: it is treated as a failed read and never cached. Off the gateway
+(tests, the TUI slash worker's shadow CLI) main's dispatch applies.
 """
 from __future__ import annotations
 
 from hermes_cli.gateway_client import GatewayClientError
 
 _CATEGORY = "Plugin commands"  # tui_gateway/command_discovery.py
+GONE = object()  # run(): the gateway no longer has the command; the caller dispatches the name again
+_GONE_LINE = "  /{}: the gateway no longer has this plugin command; nothing was run."
 
 
 class CatalogUnavailable(Exception):
@@ -94,22 +97,54 @@ def lookup(cli, name):
 
 
 def run(cli, name, arg):
-    """True when the gateway answered ``/name arg`` (the local handler must not run)."""
+    """True when the gateway answered ``/name arg`` (the local handler must not run); :data:`GONE`
+    when it no longer has that plugin command and a fresh catalog read agrees (a plugin reload, e.g.
+    ``hermes plugins disable``, dropped it in this session and gateway life, which no cache boundary
+    sees): nothing ran, and the caller dispatches the name again (bundle, skill, prefix)."""
     from hermes_cli.gateway_side import connection_for
     connection = connection_for(cli)
     if connection is None:
         return False
     from cli import _cprint
+    from hermes_cli.gateway_client import GatewayRPCError
     try:
         reply = connection.call("slash.exec", session_id=cli.session_id, command=name + (" " + arg if arg else ""))
+    except GatewayRPCError as exc:
+        if str(exc) != "unsupported_command":
+            _cprint(f"  /{name}: {exc}")
+            return True
+        reply = {"type": "unsupported"}
     except GatewayClientError as exc:
         _cprint(f"  /{name}: {exc}")
         return True
     reply = reply or {}
-    if reply.get("type", "exec") != "exec":  # it lost the plugin since lookup: a skill/prompt reply
-        _cprint(f"  /{name}: the gateway no longer has this plugin command; nothing was run.")
+    if reply.get("type", "exec") != "exec":  # it lost the plugin since lookup: a refusal or skill reply
+        if _dropped(cli, connection, name):
+            return GONE
+        _cprint(_GONE_LINE.format(name))
         return True
     output = str(reply.get("output") or "")
     if output:
         _cprint(output)
+    return True
+
+
+def _dropped(cli, connection, name):
+    """Whether the gateway's catalog, read again with the cached copy dropped, no longer lists
+    ``name`` (a failed read: not known, so False)."""
+    cli._gateway_plugin_commands = None
+    try:
+        return name not in _read(cli, connection)
+    except GatewayClientError:
+        return False
+
+
+def report_gone(name, *known):
+    """Print that ``/name`` is no longer a plugin command, unless one of the built-in commands or a
+    ``known`` skill or bundle name starts with it (then prefix expansion decides); True when printed."""
+    from hermes_cli.commands import COMMANDS
+    if any(key.startswith("/" + name) for group in (COMMANDS, *known) for key in group):
+        return False
+    from cli import _cprint
+    _cprint(_GONE_LINE.format(name))
     return True
