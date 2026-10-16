@@ -232,3 +232,17 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
   expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
   expect(request.mock.calls.filter(([method]) => method === 'session.resume')).toHaveLength(1)
 })
+
+it('a pick deferred by a running turn says it applies from the next turn', async () => {
+  const { ctx, request, slash } = harness()
+
+  request.mockImplementation(async (method: string) =>
+    method === 'session.mutate'
+      ? { model: 'picked', operation: 'model', status: 'deferred', execution_generation: 4 }
+      : { session_id: 'owner', revision: 8, execution_generation: 4, info })
+
+  slash('/model picked --tui-session')
+  await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+  expect(ctx.transcript.sys.mock.calls[0][0]).toContain('applies next turn')
+  expect(getUiState().info?.model).toBe('old')
+})

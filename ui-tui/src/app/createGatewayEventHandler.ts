@@ -623,8 +623,15 @@ function applyDeferredPickOutcome(
         danger: true,
         detail: (update.confirm_message as string | undefined) || t('slashCmd.session.model.expensiveDetail'),
         onConfirm: () =>
-          void mutateCanonicalSession(gw, sid, 'model', arg, undefined, update.confirm as string).catch((error: unknown) =>
-            sys(`error: ${error instanceof Error ? error.message : String(error)}`)
+          void mutateCanonicalSession(gw, sid, 'model', arg, undefined, update.confirm as string).then(
+            mutation => {
+              // Refused again (a queued turn or another pick moved the session first): say so once,
+              // never re-ask in a loop.
+              if (mutation?.result.status === 'confirmation_required') {
+                sys(t('slashCmd.session.model.confirmStale'))
+              }
+            },
+            (error: unknown) => sys(`error: ${error instanceof Error ? error.message : String(error)}`)
           ),
         title: t('slashCmd.session.model.confirmTitle', String(update.target_model ?? pick.model ?? ''))
       }

@@ -48,4 +48,23 @@ describe('a model pick made during a turn that did not apply at the boundary', (
     await vi.waitFor(() => expect(context.gateway.gw.request).toHaveBeenCalledTimes(2))
     expect(context.gateway.gw.request.mock.calls.at(-1)[1]).toMatchObject({ operation: 'model', payload: { confirm: 'owner-token', model: 'guarded' } })
   })
+
+  it('a confirmation refused again (a queued turn moved the session) is reported, not dropped', async () => {
+    patchUiState({ info: { model: 'frozen' } as any, sid: 'sess-1' })
+    const sys = vi.fn()
+    const context = ctx(sys)
+    context.gateway.gw.request = vi.fn(async (method: string) =>
+      method === 'session.resume'
+        ? { execution_generation: 2, revision: 4 }
+        : { confirm: 'fresh-token', confirm_message: 'Still costly', operation: 'model', session_id: 'sess-1',
+            status: 'confirmation_required', target_model: 'guarded' })
+
+    createGatewayEventHandler(context)({ payload: { confirm: 'old-token', operation: 'model', payload: { model: 'guarded' },
+      session_id: 'sess-1', status: 'confirmation_required', target_model: 'guarded' }, session_id: 'sess-1', type: 'session.updated' } as any)
+
+    getOverlayState().confirm?.onConfirm()
+    await vi.waitFor(() => expect(sys).toHaveBeenCalled())
+    expect(sys.mock.calls[0][0]).toContain('run /model again')
+    expect(getUiState().info?.model).toBe('frozen')
+  })
 })
