@@ -96,12 +96,12 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     resolved matches) — the fail-closed gate for addressed notifications, without the orphan-adoption fallback."""
     if session.get("_finalized"):
         return False
-    # A completion restored after process restart has no in-process owner. A matching
+    # A completion replayed at process start has no in-process owner. A matching
     # persisted key alone can belong to a detached runtime whose old lease survived;
     # requiring a current client prevents it from spending a full model turn unseen.
     # Shared peer membership excludes stdio, even when it is the real TUI RPC channel
     # (possibly wrapped for a dashboard sidecar), rather than a headless fallback sink.
-    if (evt.get("type") == "async_delegation" and evt.get("restored")
+    if (evt.get("type") == "async_delegation" and evt.get("startup_replay")
             and not (_session_has_live_transport(session)
                      or (_stdio_is_rpc_channel and session.get("transport") is _stdio_transport))):
         return False

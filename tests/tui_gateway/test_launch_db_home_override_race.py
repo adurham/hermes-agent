@@ -189,7 +189,7 @@ def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_sto
 def test_restored_delegation_requires_a_live_notification_consumer():
     """Regression for #138343: a persisted completion cannot wake a detached runtime."""
     session = {"session_key": "chat", "transport": None}
-    event = {"type": "async_delegation", "session_key": "chat", "restored": True}
+    event = {"type": "async_delegation", "session_key": "chat", "restored": True, "startup_replay": True}
 
     assert server._session_owns_notification_event("ui1", session, event) is False
 
