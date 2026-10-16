@@ -32,7 +32,9 @@ def session_surface() -> str:
 
 def session_cwd() -> str:
     """The calling session's recorded working directory (a local session's workspace, else the
-    profile's terminal cwd), ``""`` when it has none. Never the gateway process's own cwd."""
+    profile's terminal cwd), ``""`` when it has none. Never the gateway process's own cwd.
+    In ingress hooks (``pre_gateway_dispatch``), which run before any session, it is the profile's
+    terminal cwd, not the workspace of the session the message will reach."""
     from agent.runtime_cwd import scope_terminal_cwd, scoped_session_cwd
     policy = _active_policy()
     return scoped_session_cwd() or (policy.cwd if policy is not None else "") or scope_terminal_cwd().strip()
