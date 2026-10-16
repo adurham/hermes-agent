@@ -45,9 +45,9 @@ def _current_route(authority, live, old):
 
 
 async def prepare_model(authority, live, payload, prepared):
-    from gateway.session_policy import restore_policy, launch_key, bind_launch_key
+    from gateway.session_policy import restore_policy, bind_launch_key, bound_route_holds, route_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
-    from hermes_cli.model_switch import apply_model_selection, selection_route_changed, switch_model
+    from hermes_cli.model_switch import apply_model_selection, switch_model
     from hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config, current = _current_route(authority, live, old)
@@ -70,10 +70,10 @@ async def prepare_model(authority, live, payload, prepared):
         # A following session switches FROM the profile's current route: measured from its creation
         # endpoint, a pick on the current one read as a route change and dropped its key_env pointer.
         followed = config.get('model') or {}
-        from gateway.session_policy import model_route
         # An inline key (or an alias key's pointer) authenticates the route it was picked on: once the
         # followed route moved, the same-route cleanup below would keep it for the new endpoint.
-        bound = () if model_route(frozen.get('model')) == model_route(followed) else ('api_key', 'api_key_from')
+        held = bound_route_holds(frozen.get('model'), frozen, followed, config)
+        bound = () if held else ('api_key', 'api_key_from')
         frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items()
                            if k not in _ROUTE_FIELDS + bound}
         frozen['model'].update({k: followed[k] for k in _ROUTE_FIELDS if k in followed})
@@ -113,8 +113,11 @@ async def prepare_model(authority, live, payload, prepared):
     # Re-fingerprint frozen config references because policy identity includes model.
     # An explicit launch key belongs to the endpoint it authenticated, not to a provider name:
     # custom -> custom on another base_url must not carry it (same route identity as config keys).
-    key = launch_key(authority, old)
-    if selection_route_changed({'provider': old.provider, 'base_url': old.base_url or current.base_url}, result):
+    # Measured on resolved routes (a respelled provider on one endpoint is one route; a named entry
+    # whose base_url moved is another): the key survives only while it still authenticates the route
+    # the session runs now and the pick stays on that route.
+    key = route_launch_key(authority, old, config)
+    if key is None or not bound_route_holds(config.get('model'), config, frozen['model'], config):
         policy = replace(policy, credential_ref=None)
         key = None
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,

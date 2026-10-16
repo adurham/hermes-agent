@@ -280,3 +280,49 @@ async def test_a_superseded_alias_key_never_reaches_the_next_picks_endpoint(home
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+async def _launch(owner, home, provider, key):
+    created = await owner.dispatch({'id': 'create', 'method': 'session.create', 'params': {
+        'request_id': 'launch', 'source': 'cli', 'cwd': str(home), 'toolsets': [],
+        'provider': provider, 'api_key': key, 'follow_profile_config': True}})
+    assert 'result' in created, created
+    return created['result']['session_id']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('before,after', [('custom', 'vllm'), ('team', 'custom:team')])
+async def test_a_respelled_provider_on_the_same_endpoint_keeps_the_launch_key(home, endpoints, before, after):
+    """The profile respells its provider (``custom`` -> ``vllm``, ``team`` -> ``custom:team``) without
+    moving the endpoint. The route is the same, so the key the session was launched with still
+    authenticates it; the profile's own key must not replace it."""
+    (a, url), (b, _) = endpoints
+
+    def profile(provider):
+        model = {'provider': provider, 'default': 'original'}
+        if before == 'custom':
+            model.update(base_url=url, api_key='key-profile')
+        (home / 'config.yaml').write_text(json.dumps({
+            'model': model, 'providers': {'team': {'name': 'team', 'base_url': url, 'api_key': 'key-profile'}},
+        }), encoding='utf-8')
+    profile(before)
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    try:
+        sid = await _launch(owner, home, before, 'key-launch')
+        live = authority.sessions[sid]
+        profile(after)
+        assert _route(runner, live) == ('original', url, 'key-launch')
+        a.received.clear()
+
+        response = await _pick(owner, authority, sid, {'model': 'picked'})
+
+        assert 'result' in response, response
+        # The pick's catalog probe uses a credential of this endpoint; the other server gets nothing.
+        assert a.received and set(a.received) <= {'Bearer key-launch', 'Bearer key-profile'}
+        assert b.received == []
+        assert _route(runner, live) == ('picked', url, 'key-launch')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+

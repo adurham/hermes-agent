@@ -248,6 +248,19 @@ def model_route(block):
     return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
 
 
+def bound_route_holds(bound, bound_config, block, config):
+    """True when *block* (resolved in *config*) is the route *bound* was bound to, *bound* resolved in
+    the config it was bound in: a respelled provider on one endpoint is one route, and a named entry
+    whose ``base_url`` moved is another. An ``auto``/unset side keeps the literal comparison: a
+    credential never follows a route the resolver picks later."""
+    from gateway.session_route_identity import resolved_route, same_route
+    bound = bound if isinstance(bound, dict) else {}
+    identity, url = resolved_route(bound, bound_config)
+    if 'auto' in (identity, resolved_route(block, config)[0]):
+        return model_route(bound) == model_route(block)
+    return same_route({**bound, 'base_url': url} if url else bound, block, config)
+
+
 def _held_pick(frozen, live):
     """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
     ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
@@ -699,7 +712,8 @@ def route_launch_key(authority, policy, config):
     """The launch key a turn on *config* (the route it runs, a followed profile's included) sends.
     A launch key authenticates the frozen route it was bound with: once the followed profile
     supersedes that pick and moves to another endpoint, the key stays behind with its route."""
-    if model_route(policy.config().get('model')) != model_route(config.get('model')):
+    bound = present_sections(json.loads(policy.config_json))  # the route the key was bound with
+    if not bound_route_holds(bound.get('model'), bound, config.get('model'), config):
         return None
     return launch_key(authority, policy)
 
