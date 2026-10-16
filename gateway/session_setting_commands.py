@@ -10,15 +10,7 @@ from types import SimpleNamespace
 
 def local_live(runner, source):
     """The ``LiveSession`` of the local session ``source`` belongs to, else None (messaging chats)."""
-    from gateway.config import Platform
-    if source is None or getattr(source, 'platform', None) != Platform.LOCAL:
-        return None
-    from gateway.session_authorities import all_authorities
-    for authority in all_authorities(runner):
-        live = getattr(authority, 'sessions', {}).get(source.chat_id)
-        if live is not None and live.source.platform == Platform.LOCAL:
-            return live
-    return None
+    return local_authority_live(runner, source)[1]
 
 
 def local_policy(runner, source):
