@@ -141,6 +141,8 @@ def test_disable_says_the_running_gateway_unloaded_it(home, monkeypatch, capsys)
     out = " ".join(capsys.readouterr().out.split())
     assert "running gateway reloaded its plugins and unloaded probe" in out, out
     assert "new sessions" not in out, out
+    # callbacks the plugin already wired into platform adapters outlive the reload (plugin guide)
+    assert "platform hooks it already wired up stay until" in out and "hermes gateway restart" in out, out
 
 
 @pytest.mark.parametrize("reloaded", [True, False])

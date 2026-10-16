@@ -137,9 +137,11 @@ def reload_running_gateway() -> Optional[dict[str, Any]]:
 
 def gateway_reload_hint(answer: Optional[dict[str, Any]], name: str) -> str:
     """One honest sentence after disabling plugin ``name``, a change only the gateway's re-discovery
-    applies (an open session stops running its commands at once)."""
+    applies (an open session stops running its commands at once). Callbacks the plugin already
+    wired into platform adapters outlive a reload (the plugin guide), so a restart still ends those."""
     if answer and answer.get("reloaded"):
-        return f"The running gateway reloaded its plugins and unloaded {name}."
+        return (f"The running gateway reloaded its plugins and unloaded {name}; platform hooks it already "
+                "wired up stay until a gateway restart (hermes gateway restart).")
     if answer is not None:  # a gateway answered and refused: say so, with its reason
         return (f"The running gateway refused to reload its plugins: {answer.get('error') or 'no reason given'}.\n"
                 "Only the saved config changed; restart the gateway serving this profile to apply it:\n"
