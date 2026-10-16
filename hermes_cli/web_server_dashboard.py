@@ -881,18 +881,48 @@ class PluginApiWebSocketGate:
     cannot wait for auth (a gated-mode ticket is single-use: only the route may redeem it). That is
     no plugin-name oracle: a close before accept reaches the client as the same 403 handshake
     answer whether the plugin is disabled, unknown, or the credential was refused.
+
+    A Desktop's native grant is the exception: it names the profile the socket acts for, so it is
+    redeemed here, once (:func:`_native_ws_scope`), and consent is checked in that profile.
     """
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
-        if scope["type"] == "websocket":
-            name = _plugin_api_name(scope)
-            if name and _plugin_api_request_refused(name):
-                await send({"type": "websocket.close", "code": status.WS_1008_POLICY_VIOLATION})
+        name = _plugin_api_name(scope) if scope["type"] == "websocket" else ""
+        if not name:
+            await self.app(scope, receive, send)
+            return
+        with _native_ws_scope(scope) as admitted:
+            if admitted and not _plugin_api_request_refused(name):
+                await self.app(scope, receive, send)
                 return
-        await self.app(scope, receive, send)
+        await send({"type": "websocket.close", "code": status.WS_1008_POLICY_VIOLATION})
+
+
+@contextmanager
+def _native_ws_scope(scope):
+    """Yield whether a plugin socket's native grant (``X-Hermes-Gateway-Ticket``) was admitted,
+    with that grant's home and secret scope bound for the rest of the connection; without the
+    header, True and the ambient scope. The grant is redeemed here only: the route's credential
+    check reads the principal stamped on the connection, and its scope dependency resolves the
+    same profile, so consent, home and ``get_secret`` all follow the grant, as on HTTP
+    (``native_profile_scope``).
+    """
+    from hermes_cli.dashboard_auth.native_http import HEADER, native_profile_scope, redeem_native_ws
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    conn = HTTPConnection(scope)
+    if HEADER not in conn.headers:
+        yield True
+        return
+    grant = redeem_native_ws(conn)
+    if grant is None:
+        yield False
+        return
+    conn.state.native_http_principal = grant
+    with native_profile_scope(conn), _config_profile_scope(None):
+        yield True
 
 
 # Serializes plugin API mounts: concurrent first requests for a freshly enabled plugin must import

@@ -1,4 +1,4 @@
-import { reconnectBackoffDelayMs } from '@hermes/shared'
+import { isStableOpen, reconnectBackoffDelayMs } from '@hermes/shared'
 
 import type { HermesConnection } from '@/global'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
@@ -86,18 +86,63 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
   })
 }
 
+/** Consecutive dials that never stayed open before the socket gives up for good.
+ *  Every attempt is gateway traffic that keeps an idle-exit gateway awake. */
+const MAX_REFUSED_PLUGIN_DIALS = 5
+
+/** The URL a plugin socket dials, or null to stay on polling. A local gateway
+ *  (`authMode: 'native'`, no static token) gets a fresh one-use URL from main:
+ *  its native grant rides a request header main attaches to that one dial. */
+async function pluginSocketUrl(connection: HermesConnection, pluginId: string, suffix: string): Promise<null | string> {
+  if (connection.authMode === 'native') {
+    const mint = window.hermesDesktop.getPluginWsUrl
+
+    // An IPC round-trip with no deadline of its own, bounded like activeConnection().
+    return mint
+      ? withTimeout(
+          mint({ connectionId: getApiRequestConnection(), path: suffix, pluginId, profile: getApiRequestProfile() }),
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          `Timed out preparing plugin socket "${pluginId}"`
+        )
+      : null
+  }
+
+  const base = connection.baseUrl.replace(/^http/, 'ws')
+  const join = suffix.includes('?') ? '&' : '?'
+
+  return `${base}/api/plugins/${pluginId}${suffix}${join}token=${encodeURIComponent(connection.token)}`
+}
+
 /** The plugin WebSocket door — the live twin of `pluginRest`, scoped the same
  *  way: `path` is relative to `/api/plugins/<pluginId>` ('/events' → the
  *  plugin's own event stream). Token-mode backends auth via the same query
- *  credential the app's own sockets use; OAuth remotes resolve null (callers
- *  keep their polling fallback — every consumer must have one anyway, since a
- *  socket can drop). Auto-reconnects with backoff until disposed. */
+ *  credential the app's own sockets use, a local gateway via the native grant
+ *  its REST twin uses; OAuth remotes resolve null (callers keep their polling
+ *  fallback — every consumer must have one anyway, since a socket can drop).
+ *  Auto-reconnects with backoff until disposed, and gives up after
+ *  MAX_REFUSED_PLUGIN_DIALS dials in a row that never stayed open. */
 export function pluginSocket(pluginId: string, path: string, onMessage: (data: unknown) => void): () => void {
   const suffix = pluginPathSuffix('pluginSocket', path)
 
   let socket: null | WebSocket = null
   let disposed = false
   let attempt = 0
+  let refused = 0
+
+  const retry = () => {
+    refused += 1
+
+    if (disposed || refused >= MAX_REFUSED_PLUGIN_DIALS) {
+      return
+    }
+
+    // Full-jitter exponential backoff: same rationale as the gateway
+    // socket reconnect loops — an immediate-retry loop across many
+    // desktop clients floods the gateway with connection attempts
+    // during a restart.
+    window.setTimeout(() => void connect(), reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
+    attempt += 1
+  }
 
   const connect = async () => {
     const connection = await activeConnection().catch(() => null)
@@ -108,11 +153,25 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       return
     }
 
-    const base = connection.baseUrl.replace(/^http/, 'ws')
-    const join = suffix.includes('?') ? '&' : '?'
-    socket = new WebSocket(
-      `${base}/api/plugins/${pluginId}${suffix}${join}token=${encodeURIComponent(connection.token)}`
-    )
+    let url: null | string
+
+    try {
+      url = await pluginSocketUrl(connection, pluginId, suffix)
+    } catch {
+      // The local mint failed (gateway gone or refusing): a refused dial.
+      return retry()
+    }
+
+    if (disposed || !url) {
+      return
+    }
+
+    socket = new WebSocket(url)
+    let openedAt: null | number = null
+
+    socket.onopen = () => {
+      openedAt = Date.now()
+    }
 
     socket.onmessage = event => {
       attempt = 0
@@ -127,14 +186,14 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
     socket.onclose = () => {
       socket = null
 
-      if (!disposed) {
-        // Full-jitter exponential backoff: same rationale as the gateway
-        // socket reconnect loops — an immediate-retry loop across many
-        // desktop clients floods the gateway with connection attempts
-        // during a restart.
-        window.setTimeout(() => void connect(), reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
-        attempt += 1
+      // Only a socket that stayed up resets the ladder: an accept-then-close server
+      // (Kanban on an archived board) counts as a refused dial.
+      if (isStableOpen(openedAt)) {
+        attempt = 0
+        refused = 0
       }
+
+      retry()
     }
   }
 
