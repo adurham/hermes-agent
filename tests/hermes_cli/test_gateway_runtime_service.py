@@ -154,6 +154,8 @@ def _launchd_gateway_command(tmp_path, monkeypatch, *, store, profile=""):
     ("extra_jxa", "service_identity_unverified"), ("foreign_osascript", "service_identity_unverified"),
     ("tampered_bootstrap", "service_identity_unverified"), ("arbitrary_inline", "service_identity_unverified"),
     ("other_run_module", "service_identity_unverified"),
+    ("foreign_root_store", "service_identity_unverified"), ("foreign_root_inline", "service_identity_unverified"),
+    ("other_home", "foreign_root"), ("osascript_non_gateway", "service_identity_unverified"),
 ])
 def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(case, reason, tmp_path, monkeypatch):
     """The Local Network wrapper (#71206) is unwrapped only as its exact template, and the command inside
@@ -162,8 +164,18 @@ def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(cas
     from hermes_cli.gateway_launchd import launchd_program_arguments
     from hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded, verify_launchd_plist
     home = tmp_path / ".hermes"
-    command = _launchd_gateway_command(tmp_path, monkeypatch, store=case not in {"inline", "tampered_bootstrap"},
+    from hermes_cli import gateway as gw
+    command = _launchd_gateway_command(tmp_path, monkeypatch,
+                                       store=case not in {"inline", "tampered_bootstrap", "foreign_root_inline"},
                                        profile="--profile stranger" if case == "store_profile" else "")
+    if case.startswith("foreign_root"):  # the installer's own output, written for another checkout
+        from hermes_cli.gateway_launchd import _timestamped_stderr_gateway_command
+        root = gw.PROJECT_ROOT
+        monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "other-checkout")
+        command = _timestamped_stderr_gateway_command(tmp_path / "logs" / "gateway.error.log", external_supervisor=True)
+        monkeypatch.setattr(gw, "PROJECT_ROOT", root)
+    if case == "osascript_non_gateway":
+        command = ["/bin/sh", "-c", "id"]
     if case == "tampered_bootstrap":
         tampered = command[3].replace("import hermes_bootstrap; ", "import hermes_bootstrap; print('injected'); ")
         assert tampered != command[3]
@@ -182,7 +194,8 @@ def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(cas
         argv[4] += ' $.system("id");'
     if case == "foreign_osascript":
         argv[0] = str(tmp_path / "osascript")
-    env = dict(HERMES_HOME=str(home), HERMES_SUPERVISED_CHILD="1")
+    env = dict(HERMES_HOME=str(home if case != "other_home" else tmp_path / "elsewhere" / ".hermes"),
+               HERMES_SUPERVISED_CHILD="1")
     definition = plistlib.loads(plistlib.dumps(dict(Label="ai.hermes.gateway", ProgramArguments=argv, EnvironmentVariables=env)))
     output = ("gui/123/ai.hermes.gateway = {\n\tstate = not running\n\tprogram = " + argv[0] + "\n\targuments = {\n"
               + "\n".join("\t\t" + arg for arg in argv) + "\n\t}\n\tenvironment = {\n"
