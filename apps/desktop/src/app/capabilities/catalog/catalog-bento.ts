@@ -12,8 +12,9 @@ export interface BentoTile {
   h: number
 }
 
-const weight = (entry: CatalogEntry) =>
-  (entry.imageUrl ? 8 : 0) + Math.min(entry.stars ?? 0, 1000) / 1000 + (entry.description ? 0.2 : 0)
+/** Stars order every shelf (most-starred first, then name); artwork only
+ *  decides which of the shown cards may take a 2x2 showcase slot. */
+const byStars = (a: CatalogEntry, b: CatalogEntry) => (b.stars ?? -1) - (a.stars ?? -1) || a.name.localeCompare(b.name)
 
 /** Pack a section into a `columns`-wide grid that always closes: no holes and
  *  no full-width filler.
@@ -31,7 +32,7 @@ const weight = (entry: CatalogEntry) =>
  *  row's free run is contiguous and even; filling it wides-first then singles
  *  lands exactly on the edge. */
 export function packBento(items: CatalogEntry[], columns = BENTO_COLUMNS, maxRows = 3, flip = false): BentoTile[] {
-  const ranked = [...items].sort((a, b) => weight(b) - weight(a) || a.name.localeCompare(b.name))
+  const ranked = [...items].sort(byStars)
 
   if (ranked.length < 2) {
     return ranked.map(entry => ({ entry, variant: 'compact', column: 0, row: 0, w: Math.min(2, columns), h: 1 }))
