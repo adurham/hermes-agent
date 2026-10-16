@@ -159,7 +159,8 @@ def _bound_session(tmp_path, monkeypatch, cfg):
                                profile_id='owned', instance_id='new', epoch=2)
     private = {}
     policy = build_policy({'cwd': str(home), 'model': 'frozen'}, cfg, private_secrets=private)
-    return bind_launch_key(owner(), 'session', policy, None, config_secrets=private), owner, home / 'config.yaml'
+    owner.running = owner()  # the owner that created the session: it holds the frozen secrets in memory
+    return bind_launch_key(owner.running, 'session', policy, None, config_secrets=private), owner, home / 'config.yaml'
 
 
 def test_an_unchanged_custom_providers_key_survives_a_restart(tmp_path, monkeypatch):
@@ -342,3 +343,30 @@ def test_a_changed_auxiliary_secret_returns_that_task_to_the_primary_route(tmp_p
         assert len(aux.requests) == 1  # nothing more reached the auxiliary endpoint
         assert main.requests[-1]['auth'] == 'Bearer sk-main-route'
     assert any('auxiliary' in r.getMessage() and 'primary route' in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize('phase', ['warm', 'cold'])
+def test_a_rotated_bare_custom_key_is_never_sent(tmp_path, monkeypatch, phase):
+    """A bare ``custom`` route whose key comes from the URL-matched ``custom_providers`` entry. After
+    that key is rotated in config.yaml, neither the running owner (warm: its in-process secret cache)
+    nor a restarted one (cold) sends the rotated key: the credential pool seeds from the session's
+    frozen config, never live config, and cold recovery refuses the changed route key by name."""
+    from hermes_state_runtime import RuntimeStoreError
+    from tests.fakes.fake_llm_provider import FakeLLMServer
+    with FakeLLMServer() as llm:
+        cfg = {'model': {'provider': 'custom', 'default': 'primary-model', 'base_url': llm.base_url},
+               'custom_providers': [{'name': 'box', 'base_url': llm.base_url, 'api_key': 'sk-original-route'}]}
+        policy, owner, config_path = _bound_session(tmp_path, monkeypatch, cfg)
+        running = owner.running  # warm: the in-process owner still running the session
+        _send(*_policy_runtime(policy, lambda: running))  # before the rotation: the frozen key
+        assert [r['auth'] for r in llm.requests] == ['Bearer sk-original-route']
+
+        cfg['custom_providers'][0]['api_key'] = 'sk-rotated-route'
+        config_path.write_text(json.dumps(cfg))
+        authority = running if phase == 'warm' else owner()
+        try:
+            _send(*_policy_runtime(policy, lambda: authority))
+        except RuntimeStoreError as refused:
+            assert phase == 'cold' and refused.field == 'custom_providers.0.api_key'
+        sent = [r['auth'] for r in llm.requests]
+        assert not any('sk-rotated-route' in a for a in sent), sent
