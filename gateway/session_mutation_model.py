@@ -35,8 +35,8 @@ async def prepare_model(authority, live, payload, prepared):
     frozen['model'] = await asyncio.to_thread(apply_model_selection, frozen.get('model'), result)
     if 'reasoning' in payload:
         # The level picked with the model lands in the same commit (as prepare_reasoning writes it).
-        frozen.setdefault('agent', {})['reasoning_effort'] = payload['reasoning']
-        frozen['agent'].pop('reasoning_overrides', None)
+        from gateway.session_policy import pin_reasoning_effort
+        pin_reasoning_effort(frozen, payload['reasoning'])
     if old.follows_profile:
         # A committed /model holds while the profile still targets what it targets now (main's
         # composer_override_profile); a later profile edit supersedes it.
