@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from agent.image_eviction_policy import images_all_within_many_image_limit, outbound_image_retire_count
+from agent.image_eviction_policy import images_all_within_many_image_limit, latched_retire_count, outbound_image_retire_count, outbound_retired_image_ids
 from agent.compression_marker import (
     ELISION_MARKER_MAX_LEN,
     _elision_marker,
@@ -1509,7 +1509,7 @@ def _image_payload(msg: dict[str, Any]) -> list[str]:
     return sources
 
 
-def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]]) -> int:
+def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired_ids: Optional[set[str]] = None) -> int:
     """Drop stale screenshot/vision payloads from the per-call API copy.
 
     Compression's keep-newest pass only runs when prune/compress fires, and the Anthropic
@@ -1522,6 +1522,7 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]]) -> int:
     reserved against the ceiling but never rewritten; the block ceiling depends on the
     request's image dimensions — policy and rationale in :mod:`agent.image_eviction_policy`.
     Returns the number of messages rewritten.
+    ``retired_ids`` latches the frontier per session: see :func:`latched_retire_count`.
     """
     carriers: list[tuple[int, list[str]]] = []  # (index, image sources), newest first
     reserved: list[str] = []
@@ -1539,6 +1540,7 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]]) -> int:
         reserved_bytes=sum(map(len, reserved)),
         many_image_safe=images_all_within_many_image_limit([*reserved, *(x for _, ss in carriers for x in ss)]),
     )
+    retire = latched_retire_count(retire, [api_messages[i].get("tool_call_id") for i, _ in carriers], retired_ids)
     pruned = 0
     for i, _ in carriers[len(carriers) - retire:]:
         new_msg = _strip_images_from_tool_msg(api_messages[i])

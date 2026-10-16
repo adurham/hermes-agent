@@ -267,3 +267,77 @@ def test_unfixable_upload_breach_under_byte_pressure_fits_and_still_steps():
     # bytes allow 6 carriers, floor is 3 -> a 4-carrier quantum, so at most one move per 4 images
     moves = sum(a != b for a, b in itertools.pairwise(counts))
     assert moves <= -(-(len(span) - OUTBOUND_IMAGE_FLOOR) // 4)
+
+
+def _mixed_tool_history(sizes: list[int], uploads: int) -> list[dict]:
+    """Uploads (unreadable headers -> strict ceiling) plus one screenshot tool round per size."""
+    rows: list[dict] = [
+        {"role": "user", "content": [{"type": "text", "text": "look"}]
+         + [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + "U" * 285_000}}] * uploads}
+    ]
+    for i, size in enumerate(sizes):
+        rows.append({"role": "assistant", "content": "shot", "tool_calls": [
+            {"id": f"c{i}", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]})
+        rows.append({"role": "tool", "tool_call_id": f"c{i}", "content": [
+            {"type": "text", "text": f"shot {i}"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "Q" * size}}]})
+    return rows
+
+
+def test_a_small_new_screenshot_never_restores_retired_ones():
+    """#133999 review: appending a small screenshot after large ones widened the byte-derived
+    quantum, so the retire count fell (8 -> 5) and three retired screenshots came back inside
+    already-sent history. Retirement must only grow as the conversation does, on both passes."""
+    from agent.anthropic_adapter import build_anthropic_kwargs
+
+    def retired(sizes: list[int]) -> tuple[set[str], set[str]]:
+        rows = _mixed_tool_history(sizes, uploads=OUTBOUND_IMAGE_LIMIT + 1)
+        outbound = [dict(m) for m in rows]
+        evict_stale_outbound_tool_images(outbound)
+        kept = {m["tool_call_id"] for m in outbound if m["role"] == "tool"
+                and any(p.get("type") == "image_url" for p in m["content"])}
+        wire = build_anthropic_kwargs(model="claude-sonnet-4-5", messages=rows, tools=None,
+                                      max_tokens=None, reasoning_config=None)["messages"]
+        wire_kept = {b["tool_use_id"] for m in wire if isinstance(m["content"], list) for b in m["content"]
+                     if b.get("type") == "tool_result" and isinstance(b.get("content"), list)
+                     and any(x.get("type") == "image" for x in b["content"])}
+        ids = {f"c{i}" for i in range(len(sizes))}
+        return ids - kept, ids - wire_kept
+
+    previous = (set(), set())
+    for extra in range(4):
+        now = retired([2_900_000] * 11 + [100_000] * extra)
+        assert now[0] >= previous[0] and now[1] >= previous[1], (extra, previous, now)
+        previous = now
+    assert len(previous[0]) >= IMAGE_EVICTION_BATCH
+
+
+def test_retirement_is_latched_when_an_upload_leaves_the_request(tmp_path, monkeypatch):
+    """#133999 x #136216 review: once the replay window drops an oversized upload, the request
+    relaxes to the 100-image ceiling and a from-scratch decision restored all eight retired
+    screenshots into already-sent history. Driven through the agent's request builder."""
+    from agent.chat_completion_helpers import _iteration_summary_api_messages
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = AIAgent(api_key="k", base_url="https://api.anthropic.com", provider="anthropic",
+                    model="claude-sonnet-4-5", quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent._cached_system_prompt = "SYS"
+    shrunk, oversized = _png_data_url(1568, 882), _png_data_url(MANY_IMAGE_CAP_PX + 400, 8)
+    tools = [m for i in range(OUTBOUND_IMAGE_LIMIT) for m in (
+        {"role": "assistant", "content": "shot", "tool_calls": [
+            {"id": f"c{i}", "type": "function", "function": {"name": "vision_analyze", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": f"c{i}", "content": [
+            {"type": "text", "text": f"shot {i}"}, {"type": "image_url", "image_url": {"url": shrunk}}]})]
+
+    def kept(upload_url: str | None) -> list[str]:
+        upload = [{"type": "text", "text": "photo"}]
+        if upload_url:
+            upload.append({"type": "image_url", "image_url": {"url": upload_url}})
+        history = [{"role": "user", "content": upload}, *tools, {"role": "user", "content": "next"}]
+        return [m["tool_call_id"] for m in _iteration_summary_api_messages(agent, history)
+                if m.get("role") == "tool" and any(p.get("type") == "image_url" for p in m["content"])]
+
+    before = kept(oversized)
+    assert len(before) == OUTBOUND_IMAGE_LIMIT - IMAGE_EVICTION_BATCH
+    assert kept(None) == before

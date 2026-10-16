@@ -405,7 +405,10 @@ Screenshots are expensive. Hermes applies four layers of optimisation:
   prompt-cache prefix survives; at it, one slower turn per batch instead of
   one per screenshot. Images you attach yourself count against the limit
   but are never removed; when they alone exceed it, screenshots are still
-  retired in whole batches, never one per new image.
+  retired in whole batches, never one per new image. A retired screenshot
+  stays retired for the rest of the session, even when a later request
+  would have room for it again (a smaller new screenshot, or an attached
+  image that has dropped out of the request).
 - **Client-side compression pruning** — the context compressor detects
   multimodal tool results and strips image parts from old ones.
 - **Image-aware token estimation** — each image is counted as ~1500
