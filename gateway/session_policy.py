@@ -20,6 +20,13 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
                    'platform_toolsets')
+def pin_reasoning_effort(config, effort):
+    """Write an explicit session reasoning level into *config*: it wins over a per-model default
+    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one."""
+    config.setdefault('agent', {})['reasoning_effort'] = effort
+    config['agent'].pop('reasoning_overrides', None)
+
+
 FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
 # What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
 SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
@@ -422,9 +429,7 @@ def _apply_launch_overrides(params, config):
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
             _refuse('reasoning', f"not a known effort level: {params['reasoning']!r}")
-        config.setdefault('agent', {})['reasoning_effort'] = params['reasoning']
-        # An explicit launch level wins over a per-model default, just like CLI.
-        config['agent'].pop('reasoning_overrides', None)
+        pin_reasoning_effort(config, params['reasoning'])
 
 
 def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, bypass=False):

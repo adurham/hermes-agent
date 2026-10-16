@@ -23,7 +23,8 @@ def _owner(tmp_path, monkeypatch, handle):
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
-                             _evict_cached_agent=lambda route: None, _handle_message=handle,
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+                             _handle_message=handle,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,
@@ -372,6 +373,43 @@ async def test_a_deferred_pick_that_raises_is_refused_and_the_queue_keeps_draini
         refused = [p for t, p in events if t == 'session.updated' and p.get('status') == 'refused']
         assert refused and refused[0].items() >= {'operation': 'model', 'reason': 'model_resolution_failed',
                                                  'target_model': 'boom', 'model': 'frozen'}.items()
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_model_and_reasoning_pick_commits_both_together(tmp_path, monkeypatch):
+    from gateway.session_contract import Submission
+    from gateway.session_policy import policy_for_source
+    started, release = threading.Event(), asyncio.Event()
+    seen = []
+    state = {}
+
+    async def handle(event):
+        live = state['authority'].sessions[state['ref'].session_id]
+        effort = policy_for_source(state['authority'].runner, live.source).reasoning_config
+        seen.append((event.text, _running_model(state['authority'], state['ref']), (effort or {}).get('effort')))
+        if event.text == 'RUNNING':
+            started.set()
+            await release.wait()
+        return 'ok'
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    state.update(authority=authority, ref=ref)
+    authority.runner._set_session_reasoning_override = lambda *a: None
+    try:
+        await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
+        await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
+        snap = db.get_session(ref.session_id)
+        reply = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'pick', 'expected_revision': snap['runtime_revision'],
+            'expected_generation': snap['runtime_generation'], 'operation': 'model',
+            'payload': {'model': 'picked', 'reasoning': 'high'}}})
+        assert reply.get('result', {}).get('status') == 'deferred', reply
+        release.set()
+        await _run_turn(authority, owner, db, ref, 'NEXT')
+        assert seen[-1] == ('NEXT', 'picked', 'high'), seen
     finally:
         release.set()
         await owner.close()

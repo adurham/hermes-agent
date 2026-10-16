@@ -258,12 +258,12 @@ def _project_committed(authority, ref, operation, result):
         # the old live one and paused; with both now equal, queued input must run, not wait for
         # the next submit or restart.
         authority._schedule(ref)
-    if operation == 'reasoning':
+    if operation == 'reasoning' or (operation == 'model' and 'effort' in result):
         # The picked level is the policy's now; a typed /reasoning override must not shadow it.
         authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
-    if operation in {'reasoning', 'workspace'}:
-        # Every viewer repaints its reasoning pill / workspace from the published policy, as main's
-        # _emit_session_info did after the live change.
+    if operation in {'model', 'reasoning', 'workspace'}:
+        # Every viewer repaints its model, reasoning pill or workspace from the published policy,
+        # as main's _emit_session_info did after the live change.
         from gateway.session_local import local_session_info
         authority.sessions[ref.session_id].event_stream.publish(
             ref.session_id, local_session_info(authority, ref), event_type='session.info')
