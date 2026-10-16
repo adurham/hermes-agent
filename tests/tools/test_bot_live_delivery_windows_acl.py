@@ -1,6 +1,5 @@
 """#139485 on a real Windows ACL: a mailbox dir that denies FILE_WRITE_ATTRIBUTES makes ``chmod``
 raise WinError 5 (as on an Administrators-owned dir seen by a non-elevated user), yet the dir stays usable."""
-import os
 import subprocess
 
 import pytest
@@ -21,7 +20,10 @@ def test_mailbox_lock_survives_a_dir_whose_acl_denies_write_attributes(tmp_path)
     subprocess.run(["icacls", str(root), "/deny", "*S-1-1-0:(WA)"], check=True, capture_output=True)
     try:
         try:
-            os.chmod(root, 0o700)
+            # Path.chmod, as production calls it: on Windows it follows symlinks, so CPython opens the
+            # dir for FILE_WRITE_ATTRIBUTES. os.chmod defaults to follow_symlinks=False there and takes
+            # SetFileAttributesW instead, which this ACE doesn't stop.
+            root.chmod(0o700)
         except PermissionError:
             pass  # the reporter's condition holds on this dir
         else:
