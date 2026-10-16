@@ -326,3 +326,36 @@ async def test_a_respelled_provider_on_the_same_endpoint_keeps_the_launch_key(ho
         await owner.close()
         store.close_all_db_handles()
 
+
+@pytest.mark.asyncio
+async def test_a_named_entry_that_moves_never_sends_its_old_launch_key_to_the_new_endpoint(home, endpoints):
+    """``model.provider: team`` with no ``model.base_url``: the endpoint is ``providers.team.base_url``.
+    When that entry moves from A to B the route moved, so A's launch key stays behind, before and
+    after a pick."""
+    (a, url_a), (b, url_b) = endpoints
+
+    def profile(url):
+        (home / 'config.yaml').write_text(json.dumps({
+            'model': {'provider': 'team', 'default': 'original'},
+            'providers': {'team': {'name': 'team', 'base_url': url, 'api_key': 'key-profile'}},
+        }), encoding='utf-8')
+    profile(url_a)
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    try:
+        sid = await _launch(owner, home, 'team', 'key-launch')
+        live = authority.sessions[sid]
+        assert _route(runner, live) == ('original', url_a, 'key-launch')
+        profile(url_b)
+        assert _route(runner, live) == ('original', url_b, 'key-profile')
+        a.received.clear()
+        b.received.clear()
+
+        response = await _pick(owner, authority, sid, {'model': 'picked'})
+
+        assert 'result' in response, response
+        assert a.received == [] and set(b.received) == {'Bearer key-profile'}
+        assert _route(runner, live) == ('picked', url_b, 'key-profile')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
