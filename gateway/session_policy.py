@@ -349,25 +349,37 @@ def _profile_workspace_cwd(home):
     return configured if configured and os.path.isdir(configured) else None
 
 
+def _without_auto_pick(params):
+    """`provider: auto` is the thin client's "no pick" sentinel: the profile's route stands as configured."""
+    if isinstance(params.get('provider'), str) and params['provider'].strip().lower() == 'auto':
+        return {k: v for k, v in params.items() if k != 'provider'}
+    return params
+
+
+def _keeps_profile_route(picked, config):
+    """Whether a provider pick resolves to the profile's own route, so its endpoint and key pins stay.
+
+    The same resolved provider under another spelling (`vllm` for `custom`, `deep-infra` for
+    `deepinfra`, `custom:<name>` for a named entry) is the same route. A block with an endpoint
+    and no provider (or `auto`) already routes to `custom` there.
+    """
+    from gateway.session_route_identity import resolved_route
+    held = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
+    if str(held.get('provider') or '').strip().lower() in ('', 'auto') and str(held.get('base_url') or '').strip():
+        held['provider'] = 'custom'
+    held_id = resolved_route(held, config)[0]
+    if held_id == 'auto' or not isinstance(picked, str) or not picked.strip():
+        return False
+    return resolved_route({'provider': picked}, config)[0] == held_id
+
+
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
-    from gateway.session_route_identity import resolved_route
-    if isinstance(params.get('provider'), str) and params['provider'].strip().lower() == 'auto':
-        # `auto` is the thin client's "no pick" sentinel: the profile's route stands as configured.
-        params = {k: v for k, v in params.items() if k != 'provider'}
-    held_cfg = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
-    if str(held_cfg.get('provider') or '').strip().lower() in ('', 'auto') and str(held_cfg.get('base_url') or '').strip():
-        # A block with an endpoint and no provider (or `auto`) already routes to `custom` there.
-        held_cfg['provider'] = 'custom'
-    held_id = resolved_route(held_cfg, config)[0]
-    # The same resolved provider under another spelling (`vllm` for `custom`, `deep-infra` for
-    # `deepinfra`, `custom:<name>` for a named entry) is the same route, so it keeps its pins.
-    same = 'provider' in params and held_id != 'auto' and isinstance(params['provider'], str) \
-        and params['provider'].strip() and resolved_route({'provider': params['provider']}, config)[0] == held_id
-    if 'provider' in params and not same:
+    params = _without_auto_pick(params)
+    if 'provider' in params and not _keeps_profile_route(params['provider'], config):
         model = config.setdefault('model', {})
         # A provider pick is a route change: the profile's endpoint, wire protocol and
         # credential pointers belong to the provider being replaced, and pairing the new one
