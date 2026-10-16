@@ -6092,12 +6092,12 @@ class SlackAdapter(BasePlatformAdapter):
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
         # A slash turn is a human turn: it re-pins the channel prompt and session context, so it
         # must carry the same names as a message here or the next message flips them. A command
-        # that interrupts or unblocks the running turn starts none of its own, and a slow
-        # users.info must not hold /stop back while the worker keeps running.
+        # that interrupts, unblocks or pauses work starts no turn of its own, and a slow
+        # users.info must not hold /stop or /pause back while the worker keeps running.
         from hermes_cli.commands import resolve_command
         cmd = resolve_command(event.get_command() or "")
         controls_running_turn = cmd is not None and (
-            cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny"))
+            cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny", "pause"))
         if not rejected and not controls_running_turn:
             source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
             source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)

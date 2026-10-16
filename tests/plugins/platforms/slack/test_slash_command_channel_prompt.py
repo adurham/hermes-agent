@@ -63,14 +63,14 @@ async def test_slash_turn_matches_message_turn_prompt_and_names(channel_id, chan
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_id, authorized, command, reaches_runner", [
     ("C_OPS", False, "/hermes", 0), ("D_ALICE", False, "/hermes", 1),
-    ("C_OPS", True, "/stop", 1), ("C_OPS", True, "/approve", 1),
-], ids=["rejected-channel", "rejected-dm", "stop", "approve"])
+    ("C_OPS", True, "/stop", 1), ("C_OPS", True, "/approve", 1), ("C_OPS", True, "/pause", 1),
+], ids=["rejected-channel", "rejected-dm", "stop", "approve", "pause"])
 async def test_slash_that_starts_no_turn_costs_no_slack_lookup(channel_id, authorized, command, reaches_runner):
     """The message path rejects an unauthorized sender before any Slack lookup, and the names the
     slash path now resolves must not cost one either. In a DM the runner still gets the event,
     without names: it answers an unauthorized DM per ``unauthorized_dm_behavior`` (pairing code
     or decline), and a slash command there is how an unpaired user gets that answer.
-    ``stop`` / ``approve``: a command that interrupts or unblocks the running turn is handed over
+    ``stop`` / ``approve`` / ``pause``: a command that interrupts, unblocks or pauses work is handed over
     before any lookup. A cold ``users.info`` for a second operator must not hold ``/stop`` back
     while the worker keeps running."""
     adapter = _adapter(channel_id)
