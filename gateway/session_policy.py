@@ -241,14 +241,30 @@ def profile_target(config):
     return (model.strip() if isinstance(model, str) else ''), ''
 
 
+def model_route(block):
+    """``(provider, endpoint)`` identity of a ``model:`` block: what an endpoint-bound credential belongs to."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    block = block if isinstance(block, dict) else {}
+    return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
+
+
+def bound_route_holds(bound, bound_config, block, config):
+    """True when *block* (resolved in *config*) is the route *bound* was bound to, *bound* resolved in
+    the config it was bound in: a respelled provider on one endpoint is one route, and a named entry
+    whose ``base_url`` moved is another. An ``auto``/unset side keeps the literal comparison: a
+    credential never follows a route the resolver picks later."""
+    from gateway.session_route_identity import resolved_route, same_route
+    bound = bound if isinstance(bound, dict) else {}
+    identity, url = resolved_route(bound, bound_config)
+    if 'auto' in (identity, resolved_route(block, config)[0]):
+        return model_route(bound) == model_route(block)
+    return same_route({**bound, 'base_url': url} if url else bound, block, config)
+
+
 def _held_pick(frozen, live):
     """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
     ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
-    from hermes_cli.route_identity import normalize_route_base_url
-
-    def route(block):
-        return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
-    if route(frozen) != route(live):
+    if model_route(frozen) != model_route(live):
         return frozen
     return {**{k: v for k, v in live.items() if k not in SELECTION_KEYS},
             **{k: frozen[k] for k in SELECTION_KEYS if k in frozen}}
@@ -692,6 +708,16 @@ def launch_key(authority, policy):
     return value
 
 
+def route_launch_key(authority, policy, config):
+    """The launch key a turn on *config* (the route it runs, a followed profile's included) sends.
+    A launch key authenticates the frozen route it was bound with: once the followed profile
+    supersedes that pick and moves to another endpoint, the key stays behind with its route."""
+    bound = present_sections(json.loads(policy.config_json))  # the route the key was bound with
+    if not bound_route_holds(bound.get('model'), bound, config.get('model'), config):
+        return None
+    return launch_key(authority, policy)
+
+
 def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults."""
     try:
@@ -773,6 +799,18 @@ def policy_scope(policy, *, authority=None):
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
         _TURN_PROFILE.reset(profile_token)
+
+
+@contextmanager
+def profile_read_scope(policy, authority):
+    """Hold ONE read of a following session's profile for every resolution inside, as a turn's
+    ``policy_scope`` does, without that scope's workspace and terminal setup (a session control
+    reads the route, it runs nothing)."""
+    token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    try:
+        yield
+    finally:
+        _TURN_PROFILE.reset(token)
 
 
 def active_policy():
