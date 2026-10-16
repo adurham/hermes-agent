@@ -47,7 +47,7 @@ import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
-import { mutateCanonicalSession } from './slash/canonicalSessionControls.js'
+import { mutateCanonicalSession, openModelConfirmation } from './slash/canonicalSessionControls.js'
 import { loadSlashCatalog } from './slashCatalog.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { markNextSubmitVoice } from './submissionCore.js'
@@ -617,26 +617,18 @@ function applyDeferredPickOutcome(
     // The confirmed resend is the same selection: its level commits with the model.
     const arg = `${pick.model ?? ''}${pick.provider ? ` --provider ${pick.provider}` : ''}${pick.reasoning ? ` --reasoning ${pick.reasoning}` : ''}`
 
-    patchOverlayState({
-      confirm: {
-        cancelLabel: t('slashCmd.session.model.cancel'),
-        confirmLabel: t('slashCmd.session.model.switchAnyway'),
-        danger: true,
-        detail: (update.confirm_message as string | undefined) || t('slashCmd.session.model.expensiveDetail'),
-        onConfirm: () =>
-          void mutateCanonicalSession(gw, sid, 'model', arg, undefined, update.confirm as string).then(
-            mutation => {
-              // Refused again (a queued turn or another pick moved the session first): say so once,
-              // never re-ask in a loop.
-              if (mutation?.result.status === 'confirmation_required') {
-                sys(t('slashCmd.session.model.confirmStale'))
-              }
-            },
-            (error: unknown) => sys(`error: ${error instanceof Error ? error.message : String(error)}`)
-          ),
-        title: t('slashCmd.session.model.confirmTitle', String(update.target_model ?? pick.model ?? ''))
-      }
-    })
+    openModelConfirmation(update.confirm_message as string | undefined, String(update.target_model ?? pick.model ?? ''), () =>
+      void mutateCanonicalSession(gw, sid, 'model', arg, undefined, update.confirm as string).then(
+        mutation => {
+          // Refused again (a queued turn or another pick moved the session first): say so once,
+          // never re-ask in a loop.
+          if (mutation?.result.status === 'confirmation_required') {
+            sys(t('slashCmd.session.model.confirmStale'))
+          }
+        },
+        (error: unknown) => sys(`error: ${error instanceof Error ? error.message : String(error)}`)
+      )
+    )
   }
 }
 

@@ -190,14 +190,21 @@ function askModelConfirmation(refusal: ModelConfirmation, arg: string, ctx: Slas
     throw new Error(`${refusal.confirm_message ?? ''}\n\n${t('slashCmd.session.model.confirmStale')}`.trim())
   }
 
+  openModelConfirmation(refusal.confirm_message, refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '', () =>
+    void runCanonicalSessionControl('model', arg, ctx, refusal.confirm)
+  )
+}
+
+/** The guarded-model dialog: an idle pick's refusal and a deferred pick's boundary ask share it. */
+export function openModelConfirmation(detail: string | undefined, target: string, onConfirm: () => void) {
   patchOverlayState({
     confirm: {
       cancelLabel: t('slashCmd.session.model.cancel'),
       confirmLabel: t('slashCmd.session.model.switchAnyway'),
       danger: true,
-      detail: refusal.confirm_message || t('slashCmd.session.model.expensiveDetail'),
-      onConfirm: () => void runCanonicalSessionControl('model', arg, ctx, refusal.confirm),
-      title: t('slashCmd.session.model.confirmTitle', refusal.target_model ?? arg.trim().split(/\s+/)[0] ?? '')
+      detail: detail || t('slashCmd.session.model.expensiveDetail'),
+      onConfirm,
+      title: t('slashCmd.session.model.confirmTitle', target)
     }
   })
 }
