@@ -76,9 +76,8 @@ interface CatalogCardProps {
 
 const isEditorialArt = (entry: CatalogEntry) => Boolean(entry.imageUrl?.includes('official-art'))
 
-/** Compact and showcase cards only show first-party editorial art; the hero paints its own. */
-const showsCardImage = (entry: CatalogEntry, variant: CatalogCardVariant) =>
-  variant !== 'hero' && Boolean(entry.imageUrl) && ((variant !== 'compact' && variant !== 'showcase') || isEditorialArt(entry))
+/** Every card shows its artwork; the hero paints its own. */
+const showsCardImage = (entry: CatalogEntry, variant: CatalogCardVariant) => variant !== 'hero' && Boolean(entry.imageUrl)
 
 function CatalogCardFooter({ entry, action, hero }: { entry: CatalogEntry; action: ReactNode; hero: boolean }) {
   return (
