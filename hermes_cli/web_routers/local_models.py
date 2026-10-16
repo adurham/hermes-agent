@@ -689,6 +689,7 @@ def _install_engine_job(job: dict[str, Any], backend: str):
 def local_models_runtime_install(body: RuntimeInstallBody, profile: Optional[str] = None):
     tag, backend = _runtime_target(body.backend)
     job = _job("runtime-install", f"llama.cpp {tag} ({backend})")
+    owed = {"restart": False}  # survives a pause: resume runs this job's ``run`` again
 
     def run():
         with _config_profile_scope(profile):
@@ -696,13 +697,17 @@ def local_models_runtime_install(body: RuntimeInstallBody, profile: Optional[str
             engine = _install_engine_job(job, backend)
             drafts = _missing_drafts(engine.tag)
             if drafts:
+                owed["restart"] = True  # the restart is what loads them
                 _step(job, "downloading", "Downloading draft models that speed up generation")
                 _download_job(job, drafts)
             running = bootstrap.get_supervisor()
-            if running is not None and (previous != engine or drafts):
+            serving = bootstrap.serving_engine()
+            stale = previous != engine or (serving is not None and serving.tag != engine.tag)
+            if running is not None and (stale or owed["restart"]):
                 _step(job, "restarting", "Switching the running server to the pinned build"
-                      if previous != engine else "Restarting the local server")
+                      if stale else "Restarting the local server")
                 bootstrap.refresh_local_runtime()
+                owed["restart"] = False
         _finish(job, f"llama.cpp {tag} ready ({backend})")
 
     _spawn_job(job, "lr-runtime-install", run, fail_msg="runtime install failed: %s", resumable=True)

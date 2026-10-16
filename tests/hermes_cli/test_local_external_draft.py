@@ -108,6 +108,24 @@ def test_the_draft_may_shrink_the_window_to_half_native_and_no_further(model):
     assert shrank and declined_with_room
 
 
+def test_the_draft_runs_only_where_it_fits_beside_other_programs(model):
+    """A card too busy for even the floor window holds the model at the floor rather than move
+    weights off it on a live reading. The draft never rides on that: it runs only where the model
+    and the draft fit the free memory on their own."""
+    gguf, _, _ = model
+    capacity = _discrete(32)
+    busy = drafted = 0
+    for quarters in range(56, 120):
+        live = replace(capacity, usable_vram_bytes=int(quarters / 4 * GIB))
+        preset = presets.preset_for_model(gguf, capacity, set(), live=live, engine_tag="b11671")
+        alone = presets.preset_for_model(gguf, live, set(), engine_tag="b11671")
+        busy += alone.spilled
+        if _drafts(preset):
+            drafted += 1
+            assert _drafts(alone) and not alone.spilled, quarters / 4
+    assert busy and drafted
+
+
 def test_a_grown_window_wins_over_the_draft(model):
     """Growth restored the native window on a roomy card, and other programs now hold part of it:
     whatever window still fits goes to the model as it was, not to the draft."""
@@ -133,6 +151,34 @@ def test_each_draft_position_prices_a_copy_of_the_recurrent_state(model):
     use(state=GIB)
 
     assert not _drafts(presets.preset_for_model(gguf, budget, set(), engine_tag="b11671"))
+
+
+def test_growth_counts_the_outgoing_draft_as_freed_memory(model, monkeypatch):
+    """The grown instance loads after the drafting one exits, so all of that instance's memory,
+    draft included, counts as free when growth fits the next window."""
+    from hermes_cli.local_runtime import estimator, gguf as gguf_module, growth, hardware
+
+    path, _, _ = model
+    budget = _discrete(28)
+    running = presets.preset_for_model(path, budget, set(), engine_tag="b11671")
+    assert _drafts(running) and running.window < NATIVE
+    monkeypatch.setattr(bootstrap, "staged_models", lambda: [path])
+    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True))
+    monkeypatch.setattr(growth, "is_managed_endpoint", lambda url: True)
+    monkeypatch.setattr(gguf_module, "read_gguf_header", presets.read_gguf_header)
+    monkeypatch.setattr(estimator, "profile_from_gguf", presets.profile_from_gguf)
+    monkeypatch.setattr(hardware, "probe_budget", lambda **kw: budget)
+    monkeypatch.setattr(presets, "read_preset_decisions", lambda *a: {BUILD.model_id: running})
+    freed = []
+    monkeypatch.setattr(bootstrap, "_launch_budget", lambda b, own_bytes=0: freed.append(own_bytes) or b)
+    monkeypatch.setattr(bootstrap, "refresh_local_runtime", lambda: False)
+
+    growth.maybe_grow_window(BUILD.model_id, base_url="http://127.0.0.1:1/v1",
+                             session_tokens=running.window, current_window=running.window)
+
+    drafting = presets.resident_footprint(path, budget, running.window, drafting=True)
+    assert freed == [drafting]
+    assert drafting > presets.resident_footprint(path, budget, running.window)
 
 
 def test_a_spilled_model_never_takes_the_draft(model):
@@ -205,6 +251,55 @@ def test_the_update_job_downloads_missing_drafts_then_restarts_the_server(client
 
     assert poll(client, job_id, until=("done", "error"))["status"] == "done"
     assert [dest.name for _, dest, _ in fetched] == [ENTRY.draft.local_name]
+    assert events == ["restart"]
+
+
+def _update_job(monkeypatch, *, serving: str, on_download=None):
+    """The engine update over a running server on ``serving``, with b11671 already installed."""
+    lm = _staged(monkeypatch, ENTRY)
+    engine = SimpleNamespace(tag="b11671", backend="cpu")
+    monkeypatch.setattr(lm, "_runtime_target", lambda backend=None: ("b11671", "cpu"))
+    monkeypatch.setattr(lm.binaries, "installed_engine", lambda backend: engine)
+    monkeypatch.setattr(lm, "_install_engine_job", lambda job, backend: engine)
+    monkeypatch.setattr(lm, "_download_job", on_download or (lambda job, plan: None))
+    monkeypatch.setattr(lm.bootstrap, "get_supervisor", lambda: object())
+    monkeypatch.setattr(lm.bootstrap, "serving_engine", lambda: SimpleNamespace(tag=serving, backend="cpu"))
+    events = []
+    monkeypatch.setattr(lm.bootstrap, "refresh_local_runtime", lambda: events.append("restart"))
+    return lm, events
+
+
+def test_a_pause_between_the_drafts_and_the_restart_still_restarts_on_resume(client, monkeypatch):
+    """The pause lands as the last draft finishes. On resume no draft is missing, and the server
+    still needs the restart that loads them."""
+    def download(job, plan):
+        for _, dest, _ in plan:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.touch()
+        lm._RUNNING[job["job_id"]]["pause"].set()
+
+    lm, events = _update_job(monkeypatch, serving="b11671", on_download=download)
+    job_id = client.post("/api/local-models/runtime/install", json={"backend": "cpu"}).json()["job_id"]
+    assert poll(client, job_id, until=("paused", "done", "error"))["status"] == "paused"
+    assert events == []
+
+    assert client.post("/api/local-models/download/resume", json={"job_id": job_id}).json()["resumed"]
+
+    assert poll(client, job_id, until=("done", "error"))["status"] == "done"
+    assert events == ["restart"]
+
+
+def test_the_update_restarts_a_server_still_on_an_older_build(client, monkeypatch):
+    """An earlier update installed b11671 and stopped before its restart: the server still runs
+    the old build, and the next update switches it over."""
+    draft = bootstrap.assets_dir() / ENTRY.draft.local_name
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.touch()
+    _, events = _update_job(monkeypatch, serving="b11370")
+
+    job_id = client.post("/api/local-models/runtime/install", json={"backend": "cpu"}).json()["job_id"]
+
+    assert poll(client, job_id, until=("done", "error"))["status"] == "done"
     assert events == ["restart"]
 
 

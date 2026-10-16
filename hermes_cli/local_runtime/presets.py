@@ -144,6 +144,11 @@ def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | 
     overhead = fixed_overhead + _dflash_extra_bytes(entry, lean)
     plan = plan_launch(lean, budget, fixed_overhead=overhead, requested_window=requested_window)
     if live is not None:
+        # fit_to_free_memory holds a too-busy card at the floor rather than move weights off it on a
+        # live reading. The draft never rides on that hold: it runs only where it fits now.
+        now = plan_launch(lean, live, fixed_overhead=overhead)
+        if isinstance(now.decision, PhysicsRefusal) or now.decision.spilled:
+            return None
         plan = fit_to_free_memory(plan, lean, live, mtp_capable=False, fixed_overhead=overhead)
     decision = plan.decision
     if isinstance(decision, PhysicsRefusal) or decision.spilled:
@@ -243,8 +248,9 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
                        spilled=decision.spilled, keys=keys)
 
 
-def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int | None:
-    """Estimated bytes one staged model holds while loaded at ``window``, or None when unreadable."""
+def resident_footprint(gguf: Path, budget: HardwareBudget, window: int, *, drafting: bool = False) -> int | None:
+    """Estimated bytes one staged model holds while loaded at ``window``, or None when unreadable.
+    ``drafting`` prices the one-slot DFlash launch its preset runs instead of MTP."""
     from hermes_cli.local_runtime.catalog import entry_for_model
 
     model_id = model_id_from_stem(gguf.stem)
@@ -255,10 +261,14 @@ def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int |
         return None
     entry = entry_for_model(model_id)
     companions = _companions(entry)
-    is_mtp = _runs_mtp(entry, companions)
-    plan = plan_launch(profile, budget, mtp_capable=is_mtp,
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + companions.nbytes,
-                       requested_window=window)
+    fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
+    if drafting and _runs_dflash(entry) is not None:
+        lean = replace(profile, kv_scale=1.0)
+        plan = plan_launch(lean, budget, fixed_overhead=fixed_overhead + _dflash_extra_bytes(entry, lean),
+                           requested_window=window)
+    else:
+        plan = plan_launch(profile, budget, mtp_capable=_runs_mtp(entry, companions),
+                           fixed_overhead=fixed_overhead, requested_window=window)
     return footprint_bytes(plan.profile, window, overhead_bytes=plan.overhead_bytes)
 
 
