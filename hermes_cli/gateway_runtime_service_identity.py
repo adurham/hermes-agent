@@ -55,6 +55,18 @@ def verify_home(home: Path, configured: str) -> None:
     raise ValueError("profile_mismatch")
 
 
+# ``python``, ``pythonw``, ``python3``, ``python3.12`` (``.exe`` on Windows): an interpreter launch.
+_PYTHON_EXECUTABLE = re.compile(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?")
+
+
+def _own_store_launcher(executable: str) -> bool:
+    """Whether ``executable`` is the store launcher ``installation_command`` writes for THIS install
+    root (``<root>/.hermes/bin/hermes``, root = gateway.PROJECT_ROOT), never another checkout's."""
+    from hermes_cli import gateway
+    launcher = Path(gateway.PROJECT_ROOT).resolve() / ".hermes" / "bin" / "hermes"
+    return os.path.normcase(str(Path(executable).resolve())) == os.path.normcase(str(launcher))
+
+
 def _launch_module(argv: list[str], *, legacy: bool = True) -> tuple[str, list[str]] | None:
     """``(module, its argv)`` for the module launches the installer persists: ``python -m``, or
     ``_launchers.installation_command``'s two forms for THIS install root (gateway.PROJECT_ROOT): the
@@ -64,7 +76,7 @@ def _launch_module(argv: list[str], *, legacy: bool = True) -> tuple[str, list[s
     from hermes_cli._launchers import runtime_command
     root = Path(gateway.PROJECT_ROOT).resolve()
     executable = Path(argv[0]).name.lower() if argv else ""
-    if re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", executable):
+    if _PYTHON_EXECUTABLE.fullmatch(executable):
         # ``python -m`` is the legacy unwrapped plist form; no installer put it inside the osascript wrapper.
         if legacy and argv[1:2] == ["-m"] and len(argv) > 2:
             return argv[2], argv[3:]
@@ -72,42 +84,36 @@ def _launch_module(argv: list[str], *, legacy: bool = True) -> tuple[str, list[s
             module = next((name for name in ("hermes_cli.stderr_timestamp", "hermes_cli.main")
                            if runtime_command(root, module=name, python=argv[0])[3] == argv[3]), None)
             return (module, argv[4:]) if module else None
-    elif (argv[1:2] == ["--run-module"] and len(argv) > 2
-          and os.path.normcase(str(Path(argv[0]).resolve())) == os.path.normcase(str(root / ".hermes" / "bin" / "hermes"))):
+    elif argv[1:2] == ["--run-module"] and len(argv) > 2 and _own_store_launcher(argv[0]):
         return argv[2], argv[3:]
     return None
 
 
-def _own_store_launcher(executable: str) -> bool:
-    from hermes_cli import gateway
-    launcher = Path(gateway.PROJECT_ROOT).resolve() / ".hermes" / "bin" / "hermes"
-    return os.path.normcase(str(Path(executable).resolve())) == os.path.normcase(str(launcher))
-
-
-def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False, bound: bool = False) -> None:
-    """``wrapped``: a launcher wrapper was already stripped. A ``hermes`` launcher a wrapper runs must be
-    the one ``installation_command`` writes for THIS root (``<root>/.hermes/bin/hermes``), never another
-    checkout's. ``bound``: the osascript wrapper was stripped, so only this root's installer forms count
-    (no legacy ``python -m``). A bare unwrapped ``hermes`` keeps verifying by name, as older systemd/schtasks/launchd
-    definitions persisted it; a wrapped ``python`` is held to ``_launch_module`` as before."""
+def verify_gateway_argv(argv: list[str], home: Path, *, wrapped: bool = False) -> None:
+    """``wrapped``: a launcher wrapper (the osascript Local Network wrapper) was already stripped, so
+    only this root's installer forms count: no legacy ``python -m``, and a ``hermes`` launcher must be
+    ``<root>/.hermes/bin/hermes`` (``_own_store_launcher``). The stderr-timestamp wrapper holds its inner
+    ``hermes`` to the same rule. A bare unwrapped ``hermes`` keeps verifying by name, as older
+    systemd/schtasks/launchd definitions persisted it (binding those is a separate change)."""
     from gateway.status import looks_like_gateway_command_line
 
     # The installer wraps launchd stderr with this fixed, non-shell module.
-    wrapper = _launch_module(argv, legacy=not bound)
+    wrapper = _launch_module(argv, legacy=not wrapped)
+    own_launcher_only = wrapped
     if wrapper is not None and wrapper[0] == "hermes_cli.stderr_timestamp":
         args = wrapper[1]
         if len(args) < 4 or args[0] != "--error-log" or args[2] != "--":
             _unverified()
-        argv, wrapped = args[3:], True
+        argv, own_launcher_only = args[3:], True
     if not argv or not looks_like_gateway_command_line(subprocess_command(argv)):
         _unverified()
     executable = Path(argv[0]).name.lower()
-    if re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", executable):
-        entry = _launch_module(argv, legacy=not bound)
+    if _PYTHON_EXECUTABLE.fullmatch(executable):
+        entry = _launch_module(argv, legacy=not wrapped)
         if entry is None or entry[0] != "hermes_cli.main":
             _unverified()
         args = entry[1]
-    elif executable in {"hermes", "hermes.exe"} and (not wrapped or _own_store_launcher(argv[0])):
+    elif executable in {"hermes", "hermes.exe"} and (not own_launcher_only or _own_store_launcher(argv[0])):
         args = argv[1:]
     else:
         _unverified()
@@ -206,36 +212,32 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
     verify_gateway_argv(argv, home)
 
 
-# The launchd job's Local Network wrapper (gateway_launchd.launchd_program_arguments, #71206) runs ONE shell
-# string through JXA's $.system(). Only that exact template is unwrapped, and only when the shell string
-# re-serializes byte for byte from its own tokens: no operator, substitution or second command rides along.
-_LAUNCHD_JXA = re.compile(
-    r'ObjC\.import\("stdlib"\); const status=\$\.system\(("(?:[^"\\]|\\.)*")\); const signal=status & 127; '
-    r'\$\.exit\(status === -1 \? 1 : signal === 0 \? \(status >> 8\) & 255 : 128 \+ signal\);')
-
-
 def _verify_launchd_argv(argv: list[str], home: Path) -> None:
-    command = _launchd_command(argv)
-    verify_gateway_argv(command, home, wrapped=command is not argv, bound=command is not argv)
+    command, wrapped = _launchd_command(argv)
+    verify_gateway_argv(command, home, wrapped=wrapped)
 
 
-def _launchd_command(argv: list[str]) -> list[str]:
+def _launchd_command(argv: list[str]) -> tuple[list[str], bool]:
+    """``(command, wrapped)``: the command the launchd job runs, and whether it came out of the Local
+    Network wrapper (gateway_launchd.launchd_program_arguments, #71206). The wrapper is accepted only when
+    the installer regenerates it byte for byte from the inner command and the two log paths it carries,
+    so no shell operator, substitution, extra JXA or foreign osascript rides along."""
     if argv[:1] != ["/usr/bin/osascript"]:
-        return argv
-    match = _LAUNCHD_JXA.fullmatch(argv[4]) if len(argv) == 5 and argv[1:4] == ["-l", "JavaScript", "-e"] else None
-    if match is None:
-        _unverified()
+        return argv, False
+    from hermes_cli.gateway_launchd import launchd_program_arguments
+    # Recover the inputs, then let the installer rebuild the whole argv: the comparison is the check.
+    script, opener = argv[-1], "$.system("
     try:
-        shell = json.loads(match[1])
-        tokens = shlex.split(shell)
+        shell = json.JSONDecoder().raw_decode(script, script.index(opener) + len(opener))[0]
+        tokens = shlex.split(shell) if isinstance(shell, str) else []
     except ValueError:
-        _unverified()
+        tokens = []
     if len(tokens) < 6 or tokens[0] != "exec" or tokens[-4] != ">>" or tokens[-2] != "2>>":
         _unverified()
     command = tokens[1:-4]
-    if shell != f"exec {shlex.join(command)} >> {shlex.quote(tokens[-3])} 2>> {shlex.quote(tokens[-1])}":
+    if launchd_program_arguments(command, Path(tokens[-3]), Path(tokens[-1])) != argv:
         _unverified()
-    return command
+    return command, True
 
 
 def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -> None:
