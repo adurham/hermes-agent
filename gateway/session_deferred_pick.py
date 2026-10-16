@@ -114,8 +114,12 @@ async def apply_deferred_pick(authority, ref, live):
         await asyncio.to_thread(authority.db._execute_write, lambda conn: conn.execute(
             'UPDATE state_meta SET value=? WHERE key=? AND value=?',
             (_json({**pick, 'awaiting_confirm': result['confirm']}), key, stored[0])))
-        live.event_stream.publish(ref.session_id, {**result, 'payload': pick['payload']},
-                                  event_type='session.updated')
+        current = await asyncio.to_thread(authority.db.get_session, ref.session_id) or {}
+        provider = json.loads(current.get('model_config') or '{}').get('provider')
+        # The committed selection rides along, so a viewer that declines paints it back.
+        live.event_stream.publish(ref.session_id, {
+            **result, 'payload': pick['payload'], 'committed_model': current.get('model'),
+            **({'committed_provider': provider} if provider else {})}, event_type='session.updated')
         return
     await asyncio.to_thread(authority.db._execute_write, lambda conn: conn.execute(
         'DELETE FROM state_meta WHERE key=? AND value=?', (key, stored[0])))

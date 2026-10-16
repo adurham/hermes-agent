@@ -270,6 +270,7 @@ async def test_a_guarded_deferred_pick_asks_for_confirmation_instead_of_being_dr
         await async_wait_until(lambda: asks(), timeout=10, what='the guarded pick asked for confirmation')
         ask = asks()[0]
         assert ask['target_model'] == 'guarded' and ask['payload'] == {'model': 'guarded'}
+        assert ask['committed_model'] == 'frozen', ask
         assert not [p for t, p in events if p.get('status') == 'refused']
         assert _running_model(authority, ref) == 'frozen'
         # The user confirms: the canonical resend carries the owner's token and commits.
