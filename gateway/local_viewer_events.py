@@ -56,10 +56,20 @@ def wire(turn, agent) -> dict:
 
 
 def show_reasoning(turn) -> bool:
-    """The session's ``show_reasoning`` display flag (``config.set``), off until a viewer sets it."""
+    """The session's ``show_reasoning`` display flag (``config.set``, ``/reasoning show|hide``); unset, the
+    launch's ``display.show_reasoning`` (default on), as main's TUI gateway resolved it for Ink and Desktop."""
     owner = getattr(turn, "_approval_owner", None)
     live = owner[0].sessions.get(owner[1]) if owner is not None else None
-    return getattr(live, "show_reasoning", None) is True
+    flag = getattr(live, "show_reasoning", None)
+    if flag is not None or live is None:
+        return flag is True
+    from gateway.session_policy import active_policy
+    policy = active_policy()
+    if policy is None:
+        return False
+    from utils import is_truthy_value
+    display = policy.config(owner[0], secrets=False).get("display") or {}
+    return is_truthy_value(display.get("show_reasoning"), default=True)
 
 
 def _is_active_session_subagent(turn, payload: dict, event_type: str = "") -> bool:
