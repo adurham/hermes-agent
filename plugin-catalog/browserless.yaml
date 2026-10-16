@@ -12,7 +12,7 @@ maintainer: browserless
 tier: community
 category: web
 docs_url: https://github.com/browserless/browserless-mcp/tree/7006ee45f0f44b3561d7b2b7fbc5c50cdb766e64/hermes
-requires_hermes: ">=0.21.5"
+requires_hermes: ">=0.21.6"
 version: "0.1.1"
 readme: true
 known_issues:
