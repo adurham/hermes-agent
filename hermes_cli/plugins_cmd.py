@@ -761,8 +761,9 @@ def cmd_disable(name: str) -> None:
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
     _toggle_plugin_toolset(key, enable=False, toolset_key=toolset_key)
-    console.print(
-        f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
+    from hermes_cli.plugins_activation import gateway_reload_hint, reload_running_gateway
+    console.print(f"[yellow]⊘[/yellow] Plugin [bold]{key}[/bold] disabled.")
+    console.print(f"[dim]{gateway_reload_hint(reload_running_gateway())}[/dim]")
 
 
 def _read_manifest_info(d: Path, prefix: str):

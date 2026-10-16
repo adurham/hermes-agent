@@ -109,22 +109,42 @@ def activate_plugin_now(name: str, *, in_process: bool = True) -> dict[str, Any]
     activation: Optional[dict[str, Any]] = load_and_go_live(name) if in_process else None
     if not in_process:
         activation = (notify_serve_backend(name, Path(get_hermes_home())) or {}).get("activation")
-    answer = None
+    answer = reload_running_gateway()
+    reloaded = bool(answer and answer.get("reloaded"))
+    if reloaded and activation is None:
+        activation = find_activation((answer or {}).get("activations"), name)
+    return {"gateway_reloaded": reloaded, "activation": activation, "restart_required": not reloaded}
+
+
+def reload_running_gateway() -> Optional[dict[str, Any]]:
+    """Ask the gateway serving this profile (its own socket, else the multiplexer's for a served
+    secondary) to force plugin re-discovery, so an enable loads and a disable unloads for every session
+    the gateway starts from now on. The ``reload-plugins`` answer, or None when no gateway answered."""
     try:
         from gateway.control_socket import reload_gateway_plugins
-        from hermes_constants import get_default_hermes_root
+        from hermes_constants import get_default_hermes_root, get_hermes_home
         home = Path(get_hermes_home())
         answer = reload_gateway_plugins(home)
         if answer is None:
             root = Path(get_default_hermes_root())
             if root.resolve() != home.resolve():  # a served secondary: the multiplexer's socket
                 answer = reload_gateway_plugins(root, profile_home=home)
+        return answer
     except Exception:
-        logger.debug("gateway reload-plugins nudge for %r failed", name, exc_info=True)
-    reloaded = bool(answer and answer.get("reloaded"))
-    if reloaded and activation is None:
-        activation = find_activation((answer or {}).get("activations"), name)
-    return {"gateway_reloaded": reloaded, "activation": activation, "restart_required": not reloaded}
+        logger.debug("gateway reload-plugins nudge failed", exc_info=True)
+        return None
+
+
+def gateway_reload_hint(answer: Optional[dict[str, Any]]) -> str:
+    """One honest sentence after a plugin-set change that only the gateway's re-discovery applies."""
+    if answer and answer.get("reloaded"):
+        return "The running gateway reloaded its plugins; new sessions use this change."
+    if answer is not None:  # a gateway answered and refused: say so, with its reason
+        return (f"The running gateway refused to reload its plugins: {answer.get('error') or 'no reason given'}.\n"
+                "Only the saved config changed; restart the gateway serving this profile to apply it:\n"
+                "  hermes gateway restart")
+    return ("No running gateway answered. If one is running, restart it for this to take effect:\n"
+            "  hermes gateway restart")
 
 
 def load_and_go_live(name: str) -> Optional[dict[str, Any]]:
