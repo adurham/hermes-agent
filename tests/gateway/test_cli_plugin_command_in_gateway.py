@@ -45,6 +45,16 @@ def register(ctx):
                                       "platform": get_session_env("HERMES_SESSION_PLATFORM"),
                                       "key": get_session_env("HERMES_SESSION_KEY")})
     ctx.register_command("probe-cwd", where, description="Where the handler runs")
+
+    def sid(arg):  # the session a background job started from the handler records as its parent
+        from gateway.session_context import get_session_env
+        from tools.process_registry import process_registry
+        started = json.loads(ctx.dispatch_tool("terminal", {"command": "true", "background": True}))
+        job = process_registry.get(started.get("session_id") or "")
+        return "SID=" + json.dumps({"id": get_session_env("HERMES_SESSION_ID"),
+                                    "key": get_session_env("HERMES_SESSION_KEY"),
+                                    "parent": getattr(job, "parent_session_id", None), "started": started})
+    ctx.register_command("probe-sid", sid, description="The calling session")
 '''
 # One command per gateway life: A serves /alpha, the restarted B only /beta.
 _LIFE = '''import os
@@ -159,7 +169,7 @@ def test_cli_plugin_command_runs_in_the_gateway_and_reaches_its_mcp_registry(tmp
                 out = capsys.readouterr().out
                 calls = list(wire.calls)
                 typed_outs = {}
-                for typed in ('/probe_under', '/probe_only', '/probe-boom', '/probe-cwd'):
+                for typed in ('/probe_under', '/probe_only', '/probe-boom', '/probe-cwd', '/probe-sid'):
                     assert c._process_unregistered_slash(typed, typed) is True
                     typed_outs[typed] = capsys.readouterr().out
             finally:
@@ -175,6 +185,10 @@ def test_cli_plugin_command_runs_in_the_gateway_and_reaches_its_mcp_registry(tmp
     # the session's folder and session vars are bound around the handler; the process cwd is the gateway's
     assert where['cwd'] == str(work) and where['getcwd'] != str(work), where
     assert where['platform'] == 'local' and where['key'], where
+    # the calling session's identity, as a turn binds it: a background job records it as its parent
+    ident = json.loads(typed_outs['/probe-sid'].split('SID=', 1)[1].strip())
+    assert ident['id'] == sid and ident['key'] == where['key'], ident
+    assert ident['parent'] == sid, ident
     assert proc.pid != os.getpid()
     assert f'PLUGIN_PID={proc.pid} ' in out, out  # the handler ran in the gateway process
     mcp = json.loads(json.loads(out.split('MCP=', 1)[1].strip())['result'])

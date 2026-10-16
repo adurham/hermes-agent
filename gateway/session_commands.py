@@ -165,8 +165,11 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
     if handler is None:
         raise RuntimeStoreError('unsupported_command')
     event = MessageEvent(text='/' + name + (' ' + arg if arg else ''), source=live.source)
+    # The session's own entry, so HERMES_SESSION_ID is bound as on its turns: a background job
+    # the handler starts records this session as its parent.
+    entry = await asyncio.to_thread(runner.session_store.lookup_by_session_key, live.route)
     try:
-        return await runner._hm_run_plugin_handler(handler, event, live.source)
+        return await runner._hm_run_plugin_handler(handler, event, live.source, entry)
     except Exception as e:  # main's CLI printed it; messaging (run_inbound_hooks) still only logs it
         logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)
         return t('cli.plugin.command_error', error=str(e) or type(e).__name__)

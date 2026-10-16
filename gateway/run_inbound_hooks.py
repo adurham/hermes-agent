@@ -249,18 +249,20 @@ class GatewayInboundHooksMixin:
         return False, None, command
 
     async def _hm_run_plugin_handler(
-        self, plugin_handler, event: MessageEvent, source: SessionSource
+        self, plugin_handler, event: MessageEvent, source: SessionSource, session_entry=None
     ) -> Optional[str]:
         """Run a resolved plugin command handler for *source* → its reply text or None; raises what
         the handler raises (``gateway/session_commands.py`` resolves the exact registered name)."""
         # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
         # sits before it, so a handler reading get_session_env() would see an empty or a
-        # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-        # so session_key is derived from source. Sync handlers run on the gateway pool
-        # (contextvars carried), never the loop thread: blocking I/O there starves the
-        # liveness watchdog and the process exits 75 mid-handler (#105279).
-        _plugin_context = build_session_context(source, self.config)
-        _plugin_context.session_key = self._session_key_for_source(source)
+        # foreign (cron agent's os.environ) session (#108698). A local session's command
+        # passes its live *session_entry* (key and id, as its turns bind them); a messaging
+        # message has none yet, so session_key is derived from source. Sync handlers run on the
+        # gateway pool (contextvars carried), never the loop thread: blocking I/O there starves
+        # the liveness watchdog and the process exits 75 mid-handler (#105279).
+        _plugin_context = build_session_context(source, self.config, session_entry)
+        if session_entry is None:
+            _plugin_context.session_key = self._session_key_for_source(source)
         user_args = event.get_command_args().strip()
         with self._session_env_scope(_plugin_context):
             if asyncio.iscoroutinefunction(plugin_handler):
