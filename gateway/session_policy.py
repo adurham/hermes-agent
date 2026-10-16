@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -79,8 +80,9 @@ class LocalSessionPolicy:
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
-            from gateway.session_policy_credentials import recover_config_secrets
-            for path, value in recover_config_secrets(authority, self).items():
+            from gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
+            recovered = recover_config_secrets(authority, self)
+            for path, value in recovered.items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
                 target = config
@@ -88,6 +90,7 @@ class LocalSessionPolicy:
                     # An alias entry added after creation is absent from the frozen tree.
                     target = target.setdefault(key, {}) if isinstance(target, dict) else target[key]
                 target[path[-1]] = value
+            disable_dropped_secrets(config, getattr(recovered, 'dropped', ()), getattr(recovered, 'session', None))
         model = self.model
         if live:
             frozen, request = config.get('model') or {}, json.loads(self.request_json)
@@ -447,7 +450,8 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
             server = name[4:] if name.startswith('mcp-') and name not in configured else name
             if server in configured and server not in enabled_servers:
                 # Picking a disabled server must not match nothing and fall through to every enabled one.
-                _refuse('toolsets', f'MCP server {server!r} is disabled in config')
+                why = 'is disabled in config' if isinstance(configured[server], dict) else 'has no usable config entry'
+                _refuse('toolsets', f'MCP server {server!r} {why}')
         if 'desktop_ui' in explicit and source != 'gui':
             _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
@@ -791,8 +795,12 @@ def policy_scope(policy, *, authority=None):
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
+        from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
-        with editor_scope(policy), editor_mcp_scope(authority, policy):
+        # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
+        auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
+        aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
+        with editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope:
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)
