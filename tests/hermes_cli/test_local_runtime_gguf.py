@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 import struct
 
+import pytest
+
 from hermes_cli.local_runtime.context_policy import spill_overrides
 from hermes_cli.local_runtime.estimator import profile_from_gguf
 from hermes_cli.local_runtime.gguf import read_gguf_header
@@ -71,3 +73,23 @@ def test_reader_sizes_mxfp4_tensor_blocks(tmp_path):
 
     assert header.tensor_bytes == 34
     assert header.embd_table_bytes == header.tensor_bytes
+
+
+@pytest.mark.parametrize(("ggml_type", "elems", "expected"), [
+    (40, 128, 72),  # NVFP4: 64 elements per block, 4 E4M3 scales + 32 bytes of 4-bit values
+    (41, 256, 36),  # Q1_0: 128 elements per block, an f16 scale + 16 bytes of bits
+    (42, 128, 36),  # Q2_0: 64 elements per block, an f16 scale + 16 bytes of 2-bit values
+])
+def test_reader_sizes_ggml_types_added_after_mxfp4(tmp_path, ggml_type, elems, expected):
+    """Nemotron 3.5 Bolt stores its SSM projections as NVFP4; an unknown type refuses the model."""
+    name = b"blk.0.ssm_in.weight"
+    gguf = tmp_path / "bolt.gguf"
+    gguf.write_bytes(
+        b"GGUF"
+        + struct.pack("<IQQ", 3, 1, 0)
+        + struct.pack("<Q", len(name))
+        + name
+        + struct.pack("<IQIQ", 1, elems, ggml_type, 0)
+    )
+
+    assert read_gguf_header(gguf).tensor_bytes == expected
