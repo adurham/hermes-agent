@@ -354,10 +354,17 @@ def _apply_launch_overrides(params, config):
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
-    from hermes_cli.models import normalize_provider
-    held = str(config.get('model', {}).get('provider') or '').strip()
-    # Aliases (`vllm` for `custom`) name the same provider, so they keep its route.
-    if 'provider' in params and not (held and normalize_provider(held) == normalize_provider(str(params['provider']))):
+    from gateway.session_route_identity import resolved_route
+    held_cfg = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
+    if str(held_cfg.get('provider') or '').strip().lower() in ('', 'auto') and str(held_cfg.get('base_url') or '').strip():
+        # A block with an endpoint and no provider (or `auto`) already routes to `custom` there.
+        held_cfg['provider'] = 'custom'
+    held_id = resolved_route(held_cfg, config)[0]
+    # The same resolved provider under another spelling (`vllm` for `custom`, `deep-infra` for
+    # `deepinfra`, `custom:<name>` for a named entry) is the same route, so it keeps its pins.
+    same = 'provider' in params and held_id != 'auto' and isinstance(params['provider'], str) \
+        and params['provider'].strip() and resolved_route({'provider': params['provider']}, config)[0] == held_id
+    if 'provider' in params and not same:
         model = config.setdefault('model', {})
         # A provider pick is a route change: the profile's endpoint, wire protocol and
         # credential pointers belong to the provider being replaced, and pairing the new one

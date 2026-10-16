@@ -203,6 +203,26 @@ def test_provider_alias_pick_keeps_the_profiles_endpoint(tmp_path, monkeypatch):
     assert (runtime['base_url'], runtime['api_key']) == ('http://localhost:1234/v1', 'sk-local')
 
 
+
+def test_custom_pick_over_unrecorded_or_auto_profile_keeps_its_endpoint(tmp_path, monkeypatch):
+    """A profile block with a base_url and no provider (or `provider: auto`) already routes to
+    `custom` at that URL, so a `custom` pick is the same route: it must keep the endpoint and
+    key pointer instead of dropping them and failing with no endpoint configured."""
+    from gateway.session_policy import build_policy
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    for var in ('CUSTOM_BASE_URL', 'OPENAI_BASE_URL'):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv('LOCAL_KEY', 'sk-local')
+    for held in ({}, {'provider': 'auto'}):
+        cfg = {'model': {'default': 'qwen', 'base_url': 'http://localhost:1234/v1', 'key_env': 'LOCAL_KEY', **held}}
+        policy = build_policy(dict(cwd=str(tmp_path), model='qwen', provider='custom'), cfg)
+        assert policy.config()['model']['key_env'] == 'LOCAL_KEY', held
+        with frozen_runtime_config(policy.config()):
+            runtime = resolve_runtime_provider(requested='custom', target_model='qwen')
+        assert (runtime['provider'], runtime['base_url'], runtime['api_key']) == \
+            ('custom', 'http://localhost:1234/v1', 'sk-local'), held
+
+
 def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
     freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""
