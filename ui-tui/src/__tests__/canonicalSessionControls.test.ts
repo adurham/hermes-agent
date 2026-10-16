@@ -247,7 +247,7 @@ it('a pick deferred by a running turn says it applies from the next turn', async
   expect(getUiState().info?.model).toBe('old')
 })
 
-it('a picker-issued --reasoning rides after the canonical model switch as its own mutation', async () => {
+it('a picker-issued --reasoning rides in the one canonical model selection, deferred or not', async () => {
   const { request, slash } = harness()
   slash('/model picked --provider custom --reasoning HIGH --tui-session')
   await flush()
@@ -257,10 +257,8 @@ it('a picker-issued --reasoning rides after the canonical model switch as its ow
     .filter(([method]) => method === 'session.mutate')
     .map(([, params]) => [params.operation, params.payload])
 
-  expect(sends).toEqual([
-    ['model', { model: 'picked', provider: 'custom' }],
-    ['reasoning', { effort: 'high' }]
-  ])
+  // One request: a busy session defers it and commits model + level together at the boundary.
+  expect(sends).toEqual([['model', { model: 'picked', provider: 'custom', reasoning: 'high' }]])
   expect(request.mock.calls.some(([method]) => method === 'config.set')).toBe(false)
 })
 
@@ -295,9 +293,8 @@ it('a guarded switch re-asks with the effort riding the confirmed re-send', asyn
   await flush()
   const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
   expect(sends).toEqual([
-    { model: 'pricey' },
-    { model: 'pricey', confirm: 'tok-1' },
-    { effort: 'max' }
+    { model: 'pricey', reasoning: 'max' },
+    { model: 'pricey', reasoning: 'max', confirm: 'tok-1' }
   ])
   expect(getUiState().info?.model).toBe('pricey')
 })
