@@ -510,7 +510,6 @@ def test_postremoval_unreadable_entry_is_not_counted_as_removed(tmp_path: Path) 
     def rmtree_leaves_residue(path, *args, **kwargs):
         # rmtree(ignore_errors=True) is allowed to leave the directory in place.
         deny["lstat"] = True
-        return None
 
     real_lstat = os.lstat
 
