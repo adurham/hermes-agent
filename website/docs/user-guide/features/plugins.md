@@ -938,6 +938,7 @@ In CLI mode:
 In gateway mode:
 
 - `session_key` is required and must identify an existing gateway session. It is the stable routing key, not the CLI session ID.
+- Exception: a hook or tool running for a classic CLI session (`hermes chat`, whose turns run in the gateway) may omit both `session_key` and `origin`, as it could in the CLI. The text is committed to that session's queue and starts the next turn; it no longer interrupts a running one. `allow_gateway_injection` is still required.
 - Hermes reuses that session's stored platform, chat, thread, profile, and conversation history. Plugins cannot change that route through `session_key`.
 - Hermes rechecks the stored route against the gateway's current authorisation rules before dispatch.
 - Routes that relied only on an adapter-time or upstream authorisation decision are rejected unless Hermes can revalidate them from current core allowlists, pairing, or explicit allow-all configuration.
@@ -976,6 +977,17 @@ Only grant gateway injection to plugins you trust. Hermes checks this host API p
 :::note
 This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.
 :::
+
+## Plugin code inside the gateway
+
+Hooks, tools and injected turns of every chat and every local session (CLI, TUI, Desktop) run in the one gateway process, not in the client you launched. Some process-level habits from the classic CLI do not carry over:
+
+- `os.getcwd()` is the gateway's own directory, shared by every session; Hermes never changes it. Use `ctx.session_cwd()` for the working directory of the session the hook or tool runs for: the workspace a CLI/TUI/Desktop session was started in, or the profile's terminal cwd for a chat (`""` when there is none). Pass it as `cwd=` to subprocesses. It reads the session from the running turn, so it works in code that runs for a session: turn hooks, tool handlers and approval hooks. Ingress hooks such as `pre_gateway_dispatch` run before the message is admitted to any session; there it returns the profile's terminal cwd, or `""` when none is configured.
+- `ctx.session_surface()` names the calling session's client: `"cli"`, `"tui"`, `"desktop"`, `"acp"`, or the messaging platform (`"telegram"`, …); `""` outside a session.
+- `print()` output goes to the gateway's `gateway-stdio.log`, not to your terminal. Use `logging` instead.
+- `input()` gets end-of-file: the gateway has no terminal. Ask through a tool result or a slash command.
+
+In the classic CLI process itself (for example a plugin slash command), `ctx.session_cwd()` is the launch directory and `ctx.session_surface()` is `"cli"`.
 
 ## Calling MCP servers from plugins
 
