@@ -140,13 +140,15 @@ async def test_a_hook_waiting_for_another_chat_does_not_block_it_and_one_chat_st
             b_arrived.set()
 
     _hook(hook)
-    async with _relay(tmp_path, monkeypatch) as (_adapter, ws, outgoing, authority, _admissions):
+    async with _relay(tmp_path, monkeypatch) as (adapter, ws, outgoing, authority, _admissions):
+        assert getattr(adapter, "_admission_lanes", None) == {}  # declared adapter state, not added lazily
         for buffer_id, message_id, chat_id in (("buf-1", "a1", "chat-a"), ("buf-2", "a2", "chat-a"),
                                                ("buf-3", "b1", "chat-b")):
             event = _inbound(message_id, chat_id)
             await ws.send(json.dumps({"type": "inbound", "event": event, "bufferId": buffer_id}) + "\n")
         await async_wait_until(lambda: len(_acked(outgoing)) == 3, timeout=20, what="all three acknowledged")
         rows = authority.db._read_all("SELECT request_id FROM session_admissions ORDER BY rowid")
+        assert adapter._admission_lanes == {}  # each chat's lane is dropped once its last admission is done
     assert fired == ["a1", "b1", "a2"]
     assert [row["request_id"] for row in rows if row["request_id"].startswith("a")] == ["a1", "a2"]
 

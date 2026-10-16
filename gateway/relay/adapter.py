@@ -156,6 +156,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # (scope, chat) -> (chat_name, chat_topic); the second map is what the store holds.
         self._discord_chat_labels: dict[tuple, tuple] = {}
         self._discord_labels_recorded: dict[tuple, tuple] = {}
+        # (platform, chat_id) -> the chat's latest off-reader admission task (inbound_admission).
+        self._admission_lanes: dict[tuple[str, str], asyncio.Task] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +

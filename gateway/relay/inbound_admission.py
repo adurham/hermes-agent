@@ -20,7 +20,7 @@ async def admit_relay_delivery(adapter, runner, event):
     if not (has_hook('pre_gateway_dispatch') or has_hook(POST_ADMISSION_HOOK)):
         await _admit(adapter, runner, event)
         return None
-    lanes = adapter.__dict__.setdefault('_admission_lanes', {})
+    lanes = adapter._admission_lanes
     lane = (event.source.platform.value, event.source.chat_id)
     task = asyncio.create_task(_admit_after(lanes.get(lane), adapter, runner, event))
     lanes[lane] = task
