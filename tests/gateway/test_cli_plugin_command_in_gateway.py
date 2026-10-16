@@ -126,6 +126,9 @@ class _Wire:
     def call_tagged(self, method, **params):
         return self.call(method, **params), self.epoch
 
+    def call_until(self, method, _wake, **params):
+        return self.call(method, **params)
+
     def close(self):
         self._run(self.ws.close())
         self.loop.call_soon_threadsafe(self.loop.stop)
@@ -212,12 +215,17 @@ def test_a_redial_to_a_restarted_gateway_and_slash_new_reread_the_plugin_command
     with _plugin_home(tmp_path, _LIFE.replace('NAME', 'alpha')) as (root, home, env):
         monkeypatch.setenv('HERMES_HOME', str(home))
         conn = GatewayConnection(connect=_dial_running(home))
-        sent, real = [], conn.call_tagged
+        sent, real, real_until = [], conn.call_tagged, conn.call_until
 
         def spy(method, **params):
             sent.append((method, params.get('session_id')))
             return real(method, **params)
+
+        def spy_until(method, wake, **params):  # slash.exec: no answer deadline
+            sent.append((method, params.get('session_id')))
+            return real_until(method, wake, **params)
         monkeypatch.setattr(conn, 'call_tagged', spy)
+        monkeypatch.setattr(conn, 'call_until', spy_until)
         c = HermesCLI()
         c.agent, c._session_db, c._gateway_session_open = None, GatewaySessionStore(conn), False
 
@@ -336,3 +344,97 @@ def test_a_command_a_plugin_reload_removed_is_dispatched_again(tmp_path, monkeyp
         assert after[0][1] == ['slash.exec', 'commands.catalog'] and ran_skill == ['/pptwin', '/pptwin'], after
         assert f'PIDPROBE PID={proc.pid}' in after[1][0], after  # still the plugin's, in the gateway
         assert 'slash.exec' not in after[2][1] and 'PLUGIN_TWIN' not in after[2][0], after
+
+
+# /ppslow blocks on the FIFO GATE until the test writes a note; MARKS/started-<arg> and
+# MARKS/done-<arg> show when the handler started and finished in the gateway.
+_SLOW = '''import os
+
+
+def register(ctx):
+    def slow(arg):
+        open(os.path.join(MARKS, "started-" + arg), "w").close()
+        with open(GATE) as gate:
+            note = gate.read()
+        open(os.path.join(MARKS, "done-" + arg), "w").close()
+        return "SLOW_DONE %s %s" % (arg, note)
+    ctx.register_command("ppslow", slow, description="Waits for the test")
+    ctx.register_command("ppquick", lambda arg: "QUICK_DONE", description="Answers at once")
+'''
+
+
+def _typed_in_thread(c, text):
+    thread = threading.Thread(target=c._process_unregistered_slash, args=(text, text.lower()), daemon=True)
+    thread.start()
+    return thread
+
+
+def _release(gate, note):
+    with open(gate, 'w') as pipe:  # blocks until the handler opened its end
+        pipe.write(note)
+
+
+@pytest.mark.platforms("linux")
+def test_a_plugin_command_outliving_the_rpc_limit_prints_its_reply_and_ctrl_c_stops_the_wait(
+        tmp_path, monkeypatch, capsys):
+    """Main's CLI ran the handler itself and waited for it. Through the gateway the CLI waits for the
+    reply as long as the handler runs, not the 30 s RPC budget (injected here as 0, so a request on
+    that budget gives up at once). Ctrl+C stops the wait with a line saying what happens next: the
+    handler finishes in the gateway, its reply is dropped, and the connection keeps working once it
+    has (the socket answers in order)."""
+    import cli as cli_mod
+    from types import SimpleNamespace
+    from prompt_toolkit.buffer import Buffer
+    from cli import HermesCLI
+    from hermes_cli import gateway_plugin_commands
+    from hermes_cli.gateway_connection import GatewayConnection
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    _no_local_plugins(monkeypatch)
+    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', dict)
+    monkeypatch.setattr(cli_mod, 'get_skill_bundles', dict)
+    gate, marks = tmp_path / 'gate', tmp_path / 'marks'
+    os.mkfifo(gate)
+    marks.mkdir()
+    source = _SLOW.replace('GATE', repr(str(gate))).replace('MARKS', repr(str(marks)))
+    with _plugin_home(tmp_path, source) as (root, home, env):
+        monkeypatch.setenv('HERMES_HOME', str(home))
+        conn = GatewayConnection(connect=_dial_running(home))
+        c = HermesCLI()
+        c.agent, c._session_db, c._gateway_session_open = None, GatewaySessionStore(conn), False
+        try:
+            with daemon(root, home, env, barrier=True, fixture='plugin_mcp_daemon.py') as (proc, _desc):
+                c._ensure_gateway_session()
+                assert 'ppslow' in (gateway_plugin_commands.names(c) or {})  # cached: no catalog read below
+                monkeypatch.setattr('hermes_cli.gateway_connection.DEFAULT_RPC_TIMEOUT', 0)
+                capsys.readouterr()
+                waiting = _typed_in_thread(c, '/ppslow long')
+                wait_until(lambda: (marks / 'started-long').exists(), timeout=30, what='the handler to start')
+                _release(gate, 'released')
+                waiting.join(60)
+                long_out = capsys.readouterr().out
+                assert not waiting.is_alive()
+                assert 'SLOW_DONE long released' in long_out, long_out
+                assert 'did not answer' not in long_out, long_out
+
+                stopped = _typed_in_thread(c, '/ppslow stop')
+                wait_until(lambda: (marks / 'started-stop').exists(), timeout=30, what='the handler to start')
+                app = SimpleNamespace(current_buffer=Buffer(), invalidate=lambda: None,
+                                      exit=lambda: setattr(c, '_should_exit', True))
+                c._tui_handle_ctrl_c(SimpleNamespace(app=app))  # the classic TUI's Ctrl+C binding
+                stopped.join(60)
+                stop_out = capsys.readouterr().out
+                stop_alive, should_exit = stopped.is_alive(), c._should_exit
+                # The socket answers its requests in order (tui_gateway/ws.py), so the next one waits
+                # for the stopped handler: let it finish before typing again.
+                _release(gate, 'late')
+                wait_until(lambda: (marks / 'done-stop').exists(), timeout=30, what='the handler to finish')
+                assert c._process_unregistered_slash('/ppquick', '/ppquick') is True
+                after_out = capsys.readouterr().out
+                proc.send_signal(signal.SIGINT)
+                proc.wait(timeout=20)
+        finally:
+            conn.close()
+    assert not stop_alive and not should_exit, (stop_alive, should_exit)
+    assert 'stopped waiting' in stop_out and 'keeps running in the gateway' in stop_out, stop_out
+    assert 'SLOW_DONE' not in stop_out, stop_out
+    assert 'QUICK_DONE' in after_out and 'SLOW_DONE' not in after_out, after_out  # the late reply is dropped

@@ -13,11 +13,15 @@ them, not because there are none: it is treated as a failed read and never cache
 """
 from __future__ import annotations
 
+import threading
+
 from hermes_cli.gateway_client import GatewayClientError
 
 _CATEGORY = "Plugin commands"  # tui_gateway/command_discovery.py
 GONE = object()  # run(): the gateway no longer has the command; the caller dispatches the name again
 _GONE_LINE = "  /{}: the gateway no longer has this plugin command; nothing was run."
+_STOPPED_LINE = ("  /{}: stopped waiting. The command keeps running in the gateway and its reply will not be shown;"
+                 " the next gateway request from this CLI waits until it finishes.")
 
 
 class CatalogUnavailable(Exception):
@@ -107,8 +111,17 @@ def run(cli, name, arg):
         return False
     from cli import _cprint
     from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_cli.gateway_connection import CallStopped
+    # No answer deadline: main's CLI waited for the handler, which may wait minutes (ctx.call_mcp).
+    wake = cli._plugin_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
     try:
-        reply = connection.call("slash.exec", session_id=cli.session_id, command=name + (" " + arg if arg else ""))
+        reply = connection.call_until("slash.exec", wake, session_id=cli.session_id,
+                                      command=name + (" " + arg if arg else ""))
+    except (CallStopped, KeyboardInterrupt) as exc:
+        _cprint(_STOPPED_LINE.format(name))
+        if isinstance(exc, KeyboardInterrupt):
+            raise
+        return True
     except GatewayRPCError as exc:
         if str(exc) != "unsupported_command":
             _cprint(f"  /{name}: {exc}")
@@ -117,6 +130,8 @@ def run(cli, name, arg):
     except GatewayClientError as exc:
         _cprint(f"  /{name}: {exc}")
         return True
+    finally:
+        cli._plugin_command_wait = None
     reply = reply or {}
     if reply.get("type", "exec") != "exec":  # it lost the plugin since lookup: a refusal or skill reply
         if _dropped(cli, connection, name):

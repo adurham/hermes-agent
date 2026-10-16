@@ -28,6 +28,10 @@ NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 _GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
 
 
+class CallStopped(GatewayClientError):
+    """The caller stopped waiting (:meth:`GatewayConnection.call_until`); the request was sent."""
+
+
 def lost_before(frame, epoch) -> bool:
     """``frame`` is a transport error from a connection older than ``epoch``: a reconnect replaced it,
     so it is no outcome of anything submitted on ``epoch``."""
@@ -289,9 +293,8 @@ class GatewayConnection:
     def call(self, method, *, timeout=None, **params):
         return self.call_tagged(method, timeout=timeout, **params)[0]
 
-    def call_tagged(self, method, *, timeout=None, **params):
-        """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
-        is tied to that gateway life even if another caller redials before this one reads ``epoch``."""
+    def _send(self, method, budget, params):
+        """``(future, epoch)`` of one request sent on the live socket (see :meth:`call_tagged`)."""
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call() on the gateway loop thread would deadlock")
         self.start()
@@ -299,8 +302,29 @@ class GatewayConnection:
         if live is None or loop is None:
             raise GatewayClientError(NOT_SENT)
         client, epoch = live
+        return asyncio.run_coroutine_threadsafe(client.rpc(method, _timeout=budget, **params), loop), epoch
+
+    def call_until(self, method, wake, **params):
+        """``call`` with no answer deadline, for a verb that lasts as long as the work it runs (a plugin
+        command's handler). Waits for the answer or the transport's error, unless *wake* (a
+        ``threading.Event``, e.g. set by Ctrl+C) is set first: then raises :class:`CallStopped`; the
+        request was sent and its work goes on, but its answer is dropped."""
+        future, _epoch = self._send(method, float("inf"), params)
+        future.add_done_callback(lambda _done: wake.set())
+        try:
+            wake.wait()
+        finally:
+            if not future.done():
+                future.cancel()
+        if future.cancelled():
+            raise CallStopped(method)
+        return future.result()
+
+    def call_tagged(self, method, *, timeout=None, **params):
+        """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
+        is tied to that gateway life even if another caller redials before this one reads ``epoch``."""
         budget = DEFAULT_RPC_TIMEOUT if timeout is None else timeout
-        future = asyncio.run_coroutine_threadsafe(client.rpc(method, _timeout=budget, **params), loop)
+        future, epoch = self._send(method, budget, params)
         try:
             return future.result(budget + 5), epoch
         except TimeoutError as exc:

@@ -918,7 +918,7 @@ class CLITuiMixin:
     def _tui_cancel_foreground_ui(self, event, *, closers) -> bool:
         """Close the first active foreground UI (slash-confirm / picker / palette); True if any."""
         for state_attr, close in closers:
-            if getattr(self, state_attr):
+            if getattr(self, state_attr, None):
                 close()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
@@ -951,16 +951,16 @@ class CLITuiMixin:
             event.app.exit()
 
     def _tui_handle_ctrl_c(self, event):
-        """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt →
-        clear a typed draft, even mid-run (a correction must never kill the turn) → interrupt
-        the running agent → force exit (second press within 2s) → when idle and empty, exit."""
+        """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt or the wait for a
+        gateway plugin command → clear a typed draft, even mid-run (a correction must never kill the turn)
+        → interrupt the running agent → force exit (second press within 2s) → when idle and empty, exit."""
         now = time.time()
         if self._tui_cancel_voice_recording(event):
             return
         if self._tui_cancel_foreground_ui(event, closers=(
             ("_slash_confirm_state", lambda: self._submit_slash_confirm_response("cancel")),
-            ("_model_picker_state", self._close_model_picker),
-            ("_command_palette_state", self._close_command_palette))):
+            ("_model_picker_state", self._close_model_picker), ("_command_palette_state", self._close_command_palette),
+            ("_plugin_command_wait", lambda: self._plugin_command_wait.set()))):
             return
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):

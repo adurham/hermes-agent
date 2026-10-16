@@ -28,6 +28,9 @@ class _Conn:
     def call(self, method, **params):
         return self.call_tagged(method, **params)[0]
 
+    def call_until(self, method, _wake, **params):  # slash.exec: no answer deadline
+        return self.call_tagged(method, **params)[0]
+
     def call_tagged(self, method, **params):
         self.calls.append((method, params))
         if self.closed:  # a hung-up connection redials on its next call (gateway_connection)
