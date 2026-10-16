@@ -237,6 +237,14 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
     throw new Error(t('session.main.invalidModelSwitchResponse'))
   }
 
+  if (result.status === 'deferred') {
+    // A turn is running: the owner keeps the pick for the next turn, and session.info repaints the
+    // model when it lands (or a refusal / confirmation follows on session.updated).
+    ctx.transcript.sys(t('slashCmd.session.model.switchedDeferred', result.model))
+
+    return
+  }
+
   patchUiState(state => ({
     ...state,
     info: {

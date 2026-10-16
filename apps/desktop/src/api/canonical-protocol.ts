@@ -221,11 +221,32 @@ export class CanonicalDesktopProtocol {
     if (typeof reason === 'string') { this.settleModelConfirmation(params) }
 
     // A typed busy refusal of a rewind or a move wrote nothing either; the retry is a new request at the new revision.
-    if (reason !== 'revision_conflict' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
+    if (reason !== 'revision_conflict' && reason !== 'stale_generation' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
 
-    // A confirmed CAS refusal did not mutate. Ambiguous transport failures keep
+    // A confirmed fence refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
     for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    // The owner names its current fences on the refusal: adopt them so the next attempt presents them.
+    const data = (error as { data?: { revision?: unknown; execution_generation?: unknown } })?.data
+    const owner = canonicalSessionKey(params.session_id, params.profile)
+
+    // An older request's refusal can arrive after a newer edit committed: never move the fences backwards.
+    if (typeof data?.revision === 'number' && data.revision > (this.revisions.get(owner) ?? -1)) { this.revisions.set(owner, data.revision) }
+
+    if (typeof data?.execution_generation === 'number' && data.execution_generation > (this.generations.get(owner) ?? -1)) {
+      this.generations.set(owner, data.execution_generation)
+    }
+  }
+
+  // A fence refusal of a value pick (model / reasoning) that named fresh fences is retried once at them:
+  // re-applying the same value is harmless, unlike a CAS edit of shared metadata. Only while it is still the
+  // session's current retained request: a newer pick retired it, and re-preparing it would undo that pick.
+  retryableFence(params: Record<string, unknown>, error: unknown): boolean {
+    const data = (error as { data?: { reason?: unknown; revision?: unknown } })?.data
+    const current = [...this.mutations.values()].some(mutation => mutation.request_id === params.request_id)
+
+    return current && ['model', 'reasoning'].includes(params.operation as string) && typeof data?.revision === 'number'
+      && (data.reason === 'revision_conflict' || data.reason === 'stale_generation')
   }
 
   // Wire method for a prepared request: composer metadata, branch and the
@@ -495,6 +516,13 @@ export class CanonicalDesktopProtocol {
 
     this.adoptEventRevision(event.type, sid, profile, payload)
 
+    // A pick deferred during a turn asked at the boundary (a guarded target): keep the owner's token, so
+    // the user's confirmed resend of that target carries it exactly like an idle pick's confirmation.
+    if (event.type === 'session.updated' && payload.operation === 'model' && payload.status === 'confirmation_required'
+        && typeof payload.confirm === 'string' && payload.payload && typeof payload.payload === 'object') {
+      this.modelConfirmations.set(this.modelConfirmationKey({ session_id: sid, profile }, payload.payload as Record<string, unknown>), { token: payload.confirm, sent: false })
+    }
+
     if (typeof payload.prompt_id === 'string') {
       if (event.type.endsWith('.settled')) { this.prompts.delete(canonicalSessionKey(payload.prompt_id, profile));
 
@@ -577,6 +605,9 @@ export class CanonicalDesktopProtocol {
     }
 
     if (method === 'slash.exec') { return { ...value, type: 'exec', output: mutationSummary(params.operation as string, value) } }
+
+    // A pick on a running session is recorded for the next turn (the legacy `deferred` answer).
+    if (params.operation === 'model' && value.status === 'deferred') { return { ...value, ok: true, deferred: true } }
 
     // The legacy config.set answer every reasoning caller reads (`result.value`).
     return params.operation === 'reasoning' ? { ...value, ok: true, value: value.effort } : { ...value, ok: true }
