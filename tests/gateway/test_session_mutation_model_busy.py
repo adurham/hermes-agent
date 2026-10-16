@@ -324,3 +324,55 @@ async def test_a_refused_deferred_pick_names_the_reason_and_the_committed_model(
         release.set()
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error', [RuntimeError, OSError])
+async def test_a_deferred_pick_that_raises_is_refused_and_the_queue_keeps_draining(tmp_path, monkeypatch, error):
+    from gateway.session_contract import Submission
+    from gateway.session_deferred_pick import _PREFIX
+    from hermes_cli import model_switch
+    import hermes_state_runtime as rt
+    started, release = threading.Event(), asyncio.Event()
+    events, seen, state, raising = [], [], {}, threading.Event()
+
+    async def handle(event):
+        seen.append((event.text, _running_model(state['authority'], state['ref'])))
+        if event.text == 'RUNNING':
+            started.set()
+            await release.wait()
+        return 'ok'
+    store, db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    state.update(authority=authority, ref=ref)
+    switch = model_switch.switch_model
+
+    def resolve(**k):
+        if raising.is_set() and k['raw_input'] == 'boom':
+            raise error('resolver exploded')
+        return switch(**k)
+    monkeypatch.setattr(model_switch, 'switch_model', resolve)
+    stream = authority.sessions[ref.session_id].event_stream
+    publish = stream.publish
+    monkeypatch.setattr(stream, 'publish', lambda sid, payload, **k: (
+        events.append((k.get('event_type'), payload)), publish(sid, payload, **k))[1])
+    try:
+        await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
+        await async_wait_until(started.is_set, timeout=10, what='the first turn is running')
+        assert (await _mutate(owner, db, ref, 'pick', 'boom'))['result']['status'] == 'deferred'
+        raising.set()
+        nxt = await authority.submit(owner.actor, Submission('next', ref, {'text': 'NEXT'}, 'queue'))
+        release.set()
+        await async_wait_until(
+            lambda: rt.get_session_admission(db, admission_id=nxt.admission_id)['status'] == 'terminal',
+            timeout=10, what='the queued turn ran despite the failing pick')
+        assert seen == [('RUNNING', 'frozen'), ('NEXT', 'frozen')]
+        with db._read_ctx() as conn:
+            assert conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                                (_PREFIX + ref.session_id,)).fetchone() is None
+        refused = [p for t, p in events if t == 'session.updated' and p.get('status') == 'refused']
+        assert refused and refused[0].items() >= {'operation': 'model', 'reason': 'model_resolution_failed',
+                                                 'target_model': 'boom', 'model': 'frozen'}.items()
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()

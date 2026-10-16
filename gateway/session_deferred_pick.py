@@ -89,23 +89,28 @@ async def apply_deferred_pick(authority, ref, live):
     if await asyncio.to_thread(has_mutation_receipt, authority.db, pick['principal_id'], ref.session_id,
                                application_id):
         # Committed before a restart, not yet removed: never apply it twice.
-        result = {}
-    else:
-        result = None
+        await asyncio.to_thread(authority.db._execute_write, lambda conn: conn.execute(
+            'DELETE FROM state_meta WHERE key=? AND value=?', (key, stored[0])))
+        return
     row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
     params = {'session_id': ref.session_id, 'request_id': application_id,
               'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
               'operation': 'model', 'payload': pick['payload']}
     from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     try:
-        if result is None:
-            result = await write_mutation(authority, ref, params, None, principal_id=pick['principal_id'])
+        result = await write_mutation(authority, ref, params, None, principal_id=pick['principal_id'])
     except MUTATION_GUARD_REFUSALS:
         return  # a worker still holds the transcript: the pick waits for the next boundary
     except RuntimeStoreError as exc:
         if exc.reason == 'session_busy':
             return
         result = {'session_id': ref.session_id, 'operation': 'model', 'status': 'refused', 'reason': exc.reason}
+    except Exception:
+        # Resolving the pick failed (provider auth, catalog, resolver crash). This runs before the
+        # claim, so letting it escape would kill or wedge the drain on the same pick forever.
+        logger.exception('Deferred model pick on %s failed to resolve', ref.session_id)
+        result = {'session_id': ref.session_id, 'operation': 'model', 'status': 'refused',
+                  'reason': 'model_resolution_failed'}
     if result.get('status') == 'confirmation_required':
         # A guarded target (cost / data policy / large context): nothing was written. The pick stays
         # pending, marked as asked, and the owner's confirmation exchange goes to every viewer; the
