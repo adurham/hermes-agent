@@ -108,9 +108,14 @@ def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HO
             shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink()
         except OSError:
             continue
-        # rmtree ignores errors: only a path that is really gone counts as removed.
-        if not os.path.lexists(f):
+        # rmtree ignores errors: only a path that is really gone counts as removed, and only
+        # an explicit lstat proves absence (lexists() swallows OSError from lstat).
+        try:
+            os.lstat(f)
+        except FileNotFoundError:
             removed += 1
+        except OSError:
+            pass
     return removed
 
 

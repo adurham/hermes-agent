@@ -165,5 +165,34 @@ def test_cleanup_terminal_temp_cache_revalidates_before_each_delete(tmp_path, mo
     assert removed == len(set(fired) - {"hermes_bg_resumed.log"})  # never the stuck dir
 
 
+def test_cleanup_terminal_temp_cache_uninspectable_residue_is_not_counted(tmp_path, monkeypatch):
+    """An entry that survives its delete and cannot be lstat'd is not proven gone."""
+    import pathlib
+    import time
+
+    from tools.environments import local as local_mod
+
+    root = tmp_path / "cache" / "terminal"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(local_mod, "_default_terminal_temp_dir", lambda: root)
+    old = time.time() - 100 * 3600
+    residue = root / "residue.txt"
+    residue.write_text("x")
+    os.utime(residue, (old, old))
+
+    tried = []
+    monkeypatch.setattr(pathlib.Path, "unlink", lambda self, *a, **k: tried.append(self))
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        if tried and os.fspath(path) == os.fspath(residue):
+            raise PermissionError(13, "denied", os.fspath(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(local_mod.os, "lstat", lstat)
+    assert local_mod.cleanup_terminal_temp_cache(max_age_hours=24) == 0
+    assert tried == [residue] and residue.exists()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
