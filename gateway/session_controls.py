@@ -601,7 +601,7 @@ class AuthorityConnection:
         except RuntimeStoreError as exc:
             if exc.reason in {'revision_conflict', 'stale_generation'}:
                 # The fresh fences ride on the refusal, so the client retries once without a re-read.
-                row = self.authority.db.get_session(ref.session_id)
+                row = await asyncio.to_thread(self.authority.db.get_session, ref.session_id)
                 if row is not None:
                     exc.revision, exc.execution_generation = row['runtime_revision'], row['runtime_generation']
             raise
