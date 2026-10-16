@@ -20,7 +20,7 @@ def defer_pick(authority, actor, ref, params):
     mutation receipt in the same transaction, so an exact retry returns this result instead of
     overwriting a newer pick, and the stored pick carries a stable application id."""
     from hermes_state_mutations import validate_action
-    from hermes_state_runtime import _epoch, _json, mutation_receipt_key
+    from hermes_state_runtime import _epoch, _json, mutation_receipt_key, replay_mutation_receipt
     validate_action('model', params['payload'])
     key, digest = mutation_receipt_key(actor.subject, ref.session_id, params['request_id'], operation='model',
                                        payload=params['payload'], expected_revision=params.get('expected_revision'),
@@ -30,12 +30,9 @@ def defer_pick(authority, actor, ref, params):
 
     def write(conn):
         _epoch(conn, authority.epoch)
-        old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
-        if old is not None:
-            receipt = json.loads(old[0])
-            if receipt['digest'] != digest:
-                raise RuntimeStoreError('admission_conflict')
-            return receipt['result']
+        replay = replay_mutation_receipt(conn, key, digest)
+        if replay is not None:
+            return replay
         row = conn.execute('SELECT runtime_revision, runtime_generation FROM sessions WHERE id=?',
                            (ref.session_id,)).fetchone()
         if row is None:
