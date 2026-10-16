@@ -147,18 +147,22 @@ def adopt_legacy_session(authority, actor, row):
     config = _load_gateway_config()
     model_cfg = config.get('model')
     if isinstance(model_cfg, dict) and ('provider' in params or 'base_url' in params):
-        from hermes_cli.route_identity import normalize_route_base_url
-        provider = params.get('provider', model_cfg.get('provider'))
-        if (str(model_cfg.get('provider') or '').strip().lower() != str(provider or '').strip().lower()
-                or normalize_route_base_url(model_cfg.get('base_url'))
-                != normalize_route_base_url(params.get('base_url', model_cfg.get('base_url')))):
+        from gateway.session_route_identity import resolved_route, same_route
+        saved = {'provider': params.get('provider', model_cfg.get('provider')), 'base_url': params.get('base_url')}
+        # ``auto`` matches every route, so an ``auto`` side proves nothing about the saved endpoint.
+        if ('auto' not in (resolved_route(model_cfg, config)[0], resolved_route(saved, config)[0])
+                and same_route(saved, model_cfg, config)):
+            # The profile still selects this endpoint: resume on the profile's route, so its own
+            # credential (inline key, ${ENV} key, key_env) keeps its normal precedence.
+            params.pop('provider', None)
+            params.pop('base_url', None)
+        else:
             # Another route than the profile's: its endpoint, wire mode, context pin and credential
             # (inline key, key_env pointer) stay with the profile, never paired with the legacy route.
             config['model'] = {k: v for k, v in model_cfg.items() if k not in (
                 'base_url', 'api_mode', 'context_length', 'api_key', 'api', 'key_env', 'api_key_env')}
-            if params.get('base_url'):
-                params['provider'] = _endpoint_owner(
-                    {'provider': provider, 'base_url': params['base_url']}, config)
+            if saved['base_url']:
+                params['provider'] = _endpoint_owner(saved, config)
     policy = build_policy(params, config, private_secrets=private)
     if api_mode:
         config = json.loads(policy.config_json)

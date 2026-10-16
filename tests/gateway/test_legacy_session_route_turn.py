@@ -163,3 +163,30 @@ def test_named_provider_moved_never_sends_its_new_key_to_the_saved_endpoint(monk
             assert result['final_response'] == 'legacy ok'
             assert {r['auth'] for r in legacy.requests} == {'Bearer sk-legacy-own'}
 
+
+@pytest.mark.parametrize('shape', ['inline', 'env-ref', 'cli-billing', 'ollama-key-env'])
+def test_unchanged_route_keeps_the_profile_credential_for_that_endpoint(monkeypatch, shape):
+    """The profile still selects exactly the saved endpoint, with a valid credential for it: the
+    adopted session keeps using it (literal key, ``${ENV}`` key, CLI billing row, or an ``ollama``
+    profile whose saved provider is its resolved ``custom``)."""
+    with FakeLLMServer([Text('legacy ok')], api_key='sk-profile-only') as legacy:
+        home = Path(os.environ['HERMES_HOME'])
+        monkeypatch.setattr('gateway.run._hermes_home', home)
+        monkeypatch.setenv('PROFILE_PROBE_KEY', 'sk-profile-only')
+        credential = {'inline': 'api_key: sk-profile-only', 'cli-billing': 'api_key: sk-profile-only',
+                      'env-ref': 'api_key: ${PROFILE_PROBE_KEY}', 'ollama-key-env': 'key_env: PROFILE_PROBE_KEY'}[shape]
+        home.mkdir(parents=True, exist_ok=True)
+        (home / 'config.yaml').write_text(
+            f'model:\n  default: profile-model\n  provider: {"ollama" if shape == "ollama-key-env" else "custom"}\n'
+            f'  base_url: {legacy.base_url}\n  {credential}\n'
+            'agent:\n  api_max_retries: 1\nplatform_toolsets:\n  tui: []\n')
+        if shape == 'cli-billing':
+            resolved = _adopt_and_resolve(home, {}, source='cli', billing={
+                'billing_provider': 'custom', 'billing_base_url': legacy.base_url})
+        else:
+            resolved = _adopt_and_resolve(home, {'provider': 'custom', 'base_url': legacy.base_url})
+        policy, (model, runtime) = resolved
+        result = _run_turn(policy, model, runtime)
+        assert result['final_response'] == 'legacy ok'
+        assert [r['model'] for r in legacy.main_requests()] == ['legacy-model']
+        assert {r['auth'] for r in legacy.requests} == {'Bearer sk-profile-only'}
