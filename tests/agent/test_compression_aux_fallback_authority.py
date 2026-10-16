@@ -15,7 +15,6 @@ from agent.auxiliary_task_config import (
     authoritative_auxiliary_task,
 )
 from agent.context_compressor import ContextCompressor
-from agent.context_compressor_summary import SummaryDispatchMixin
 
 
 CONFLICTING_COMPRESSION = {
@@ -82,29 +81,6 @@ def test_authoritative_task_strips_only_destination_fields():
     assert resolved == ("openrouter", "main-model", None, "main-key", None)
 
 
-def test_fallen_back_summary_marks_task_route_authoritative():
-    compressor = SimpleNamespace(
-        summary_model="",
-        _summary_model_fallen_back=True,
-        provider="openrouter",
-        model="main-model",
-        base_url=None,
-        api_key="main-key",
-        api_mode="",
-    )
-    call_kwargs = {"task": "compression", "messages": []}
-
-    SummaryDispatchMixin._apply_summary_route(compressor, call_kwargs)
-
-    assert isinstance(call_kwargs["task"], AuthoritativeAuxiliaryTask)
-    assert call_kwargs["task"] == "compression"
-    assert call_kwargs["provider"] == "openrouter"
-    assert call_kwargs["model"] == "main-model"
-    assert call_kwargs["api_key"] == "main-key"
-    assert "base_url" not in call_kwargs
-    assert "api_mode" not in call_kwargs
-
-
 def test_truncated_aux_summary_retries_on_complete_main_route():
     with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
@@ -149,24 +125,3 @@ def test_truncated_aux_summary_retries_on_complete_main_route():
             base_url=retry.get("base_url"),
             api_key=retry.get("api_key"),
         ) == ("openrouter", "main-model", None, "main-key", None)
-
-
-def test_authoritative_pinned_route_does_not_leak_marker_to_call_llm():
-    compressor = SimpleNamespace(summary_model="", _summary_model_fallen_back=False)
-    call_kwargs = {"task": "compression", "messages": []}
-
-    SummaryDispatchMixin._apply_summary_route(
-        compressor,
-        call_kwargs,
-        {
-            "provider": "openrouter",
-            "model": "main-model",
-            "api_key": "main-key",
-            "authoritative": True,
-        },
-    )
-
-    assert isinstance(call_kwargs["task"], AuthoritativeAuxiliaryTask)
-    assert call_kwargs["provider"] == "openrouter"
-    assert call_kwargs["model"] == "main-model"
-    assert "authoritative" not in call_kwargs

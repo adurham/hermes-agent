@@ -35,30 +35,20 @@ class SummaryDispatchMixin:
         is refused, so every later attempt aborts (#123362). Name the main runtime explicitly.
         A stall-fallback ``pinned`` route replaces the whole route: merged over the main runtime, the
         main api_key/base_url would ride into the fallback entry's call (to its host, or instead of it).
-
-        A main-model fallback is a *complete* route even when some of its fields are intentionally
-        empty. Mark its task as authoritative so the auxiliary resolver keeps compression policy
-        (timeout, concurrency, progress bounds and fallback chain) but cannot fill unset endpoint,
-        credential, wire-mode or reasoning fields from the route that just failed (#113322, #130895).
+        The main route is complete even with empty fields: an authoritative task keeps compression
+        policy but never fills an unset endpoint/key/wire mode from the failed aux route (#130895).
         """
         if pinned:
-            route = dict(pinned)
-            authoritative = route.pop("authoritative", False) is True
             # Clear first: a keyless pin (local server) resolves its own credential, never the main one.
             for key in ("provider", "model", "base_url", "api_key", "api_mode"):
                 call_kwargs.pop(key, None)
-            call_kwargs.update(route)
-            if authoritative:
-                from agent.auxiliary_task_config import authoritative_auxiliary_task
-
-                call_kwargs["task"] = authoritative_auxiliary_task(call_kwargs.get("task") or "compression")
+            call_kwargs.update(pinned)
             return
         if self.summary_model:
             call_kwargs["model"] = self.summary_model
             return
         if not getattr(self, "_summary_model_fallen_back", False):
             return
-
         from agent.auxiliary_task_config import authoritative_auxiliary_task
 
         call_kwargs["task"] = authoritative_auxiliary_task(call_kwargs.get("task") or "compression")
