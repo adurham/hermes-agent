@@ -4,10 +4,8 @@ import json
 from dataclasses import asdict, replace
 from typing import NamedTuple
 
+from gateway.session_route_identity import ROUTE_BOUND_KEYS
 from hermes_state_runtime import RuntimeStoreError
-
-
-_ROUTE_FIELDS = ('provider', 'base_url', 'key_env', 'api_key_env')
 
 
 class _Route(NamedTuple):
@@ -73,10 +71,14 @@ async def prepare_model(authority, live, payload, prepared):
         # An inline key (or an alias key's pointer) authenticates the route it was picked on: once the
         # followed route moved, the same-route cleanup below would keep it for the new endpoint.
         held = bound_route_holds(frozen.get('model'), frozen, followed, config)
-        bound = () if held else ('api_key', 'api_key_from')
-        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items()
-                           if k not in _ROUTE_FIELDS + bound}
-        frozen['model'].update({k: followed[k] for k in _ROUTE_FIELDS if k in followed})
+        # Every other route-bound key follows the profile's current route.
+        kept = ('api_key', 'api', 'api_key_from') if held else ()
+        moved = tuple(k for k in ROUTE_BOUND_KEYS if k not in kept)
+        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in moved}
+        # The profile's inline key and its private-secret pointer are not copied into the receipt:
+        # its secrets stay at the profile's own path, never re-committed under this session.
+        frozen['model'].update({k: followed[k] for k in moved
+                                if k in followed and k not in ('api_key', 'api', 'api_key_from')})
     # The one selection shape config.yaml gets (#25106): api_mode follows the target, a context pin
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
     # Off-loop: the context-pin check can do cold-start disk I/O.
