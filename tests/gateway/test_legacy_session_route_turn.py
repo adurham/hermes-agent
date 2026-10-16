@@ -127,3 +127,39 @@ def test_adopted_legacy_session_whose_provider_lost_credentials_is_refused_by_na
             _adopt_and_resolve(home, {'provider': 'custom:legacy-box', 'base_url': 'http://127.0.0.1:9/v1'})
         assert 'custom:legacy-box' in str(caught.value)
         assert profile.requests == []
+
+
+def _run_turn(policy, model, runtime):
+    from run_agent import AIAgent
+    agent = AIAgent(model=model, **{k: runtime[k] for k in ('api_key', 'base_url', 'provider', 'api_mode')},
+                    reasoning_config=policy.reasoning_config, quiet_mode=True, skip_context_files=True,
+                    skip_memory=True, enabled_toolsets=['memory'])
+    return agent.run_conversation('hello again')
+
+
+@pytest.mark.parametrize('owner', ['recovered', 'gone'])
+def test_named_provider_moved_never_sends_its_new_key_to_the_saved_endpoint(monkeypatch, owner):
+    """The session saved ``custom:legacy-box`` at B; ``legacy-box`` now serves A with A's key. A's key
+    belongs to A: B gets the credential of the entry that still serves B, or adoption is refused."""
+    with FakeLLMServer([Text('new')]) as new, FakeLLMServer([Text('legacy ok')], api_key='sk-legacy-own') as legacy:
+        home = Path(os.environ['HERMES_HOME'])
+        monkeypatch.setattr('gateway.run._hermes_home', home)
+        _write_profile(home, new.base_url, extra=(
+            f'providers:\n  legacy-box:\n    base_url: {new.base_url}\n    api_key: sk-new-endpoint-only\n'
+            + (f'custom_providers:\n  - name: old-box\n    base_url: {legacy.base_url}\n    api_key: sk-legacy-own\n'
+               if owner == 'recovered' else '')))
+        saved = {'provider': 'custom:legacy-box', 'base_url': legacy.base_url}
+        if owner == 'recovered':
+            policy, (model, runtime) = _adopt_and_resolve(home, saved)
+            result = _run_turn(policy, model, runtime)
+        else:
+            with pytest.raises(Exception) as caught:
+                _adopt_and_resolve(home, saved)
+            assert getattr(caught.value, 'reason', None) == 'launch_credentials_unavailable'
+            assert 'custom:legacy-box' in str(caught.value.detail)
+        assert new.requests == []
+        assert all('sk-new-endpoint-only' not in str(r['headers']) for r in legacy.requests)
+        if owner == 'recovered':
+            assert result['final_response'] == 'legacy ok'
+            assert {r['auth'] for r in legacy.requests} == {'Bearer sk-legacy-own'}
+
