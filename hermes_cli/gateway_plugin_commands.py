@@ -20,8 +20,7 @@ from hermes_cli.gateway_client import GatewayClientError
 _CATEGORY = "Plugin commands"  # tui_gateway/command_discovery.py
 GONE = object()  # run(): the gateway no longer has the command; the caller dispatches the name again
 _GONE_LINE = "  /{}: the gateway no longer has this plugin command; nothing was run."
-_STOPPED_LINE = ("  /{}: stopped waiting. The command keeps running in the gateway and its reply will not be shown;"
-                 " the next gateway request from this CLI waits until it finishes.")
+_STOPPED_LINE = "  /{}: stopped waiting. The command keeps running in the gateway and its reply will not be shown."
 
 
 class CatalogUnavailable(Exception):
@@ -112,7 +111,8 @@ def run(cli, name, arg):
     from cli import _cprint
     from hermes_cli.gateway_client import GatewayRPCError
     from hermes_cli.gateway_connection import CallStopped
-    # No answer deadline: main's CLI waited for the handler, which may wait minutes (ctx.call_mcp).
+    # No answer deadline: main's CLI waited for the handler, which may wait minutes (ctx.call_mcp). On
+    # a socket of its own, so the session's prompts and interrupts never queue behind it.
     wake = cli._plugin_command_wait = threading.Event()  # set by Ctrl+C (cli_tui_mixin)
     try:
         reply = connection.call_until("slash.exec", wake, session_id=cli.session_id,

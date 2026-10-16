@@ -445,8 +445,7 @@ def test_a_plugin_command_outliving_the_rpc_limit_prints_its_reply_and_ctrl_c_st
     """Main's CLI ran the handler itself and waited for it. Through the gateway the CLI waits for the
     reply as long as the handler runs, not the 30 s RPC budget (injected here as 0, so a request on
     that budget gives up at once). Ctrl+C stops the wait with a line saying what happens next: the
-    handler finishes in the gateway, its reply is dropped, and the connection keeps working once it
-    has (the socket answers in order)."""
+    handler finishes in the gateway and its reply is dropped, while the next command already runs."""
     import cli as cli_mod
     from types import SimpleNamespace
     from prompt_toolkit.buffer import Buffer
@@ -489,12 +488,11 @@ def test_a_plugin_command_outliving_the_rpc_limit_prints_its_reply_and_ctrl_c_st
                 stopped.join(60)
                 stop_out = capsys.readouterr().out
                 stop_alive, should_exit = stopped.is_alive(), c._should_exit
-                # The socket answers its requests in order (tui_gateway/ws.py), so the next one waits
-                # for the stopped handler: let it finish before typing again.
-                _release(gate, 'late')
-                wait_until(lambda: (marks / 'done-stop').exists(), timeout=30, what='the handler to finish')
+                # The stopped handler ran on a socket of its own: the next command does not wait for it.
                 assert c._process_unregistered_slash('/ppquick', '/ppquick') is True
                 after_out = capsys.readouterr().out
+                _release(gate, 'late')
+                wait_until(lambda: (marks / 'done-stop').exists(), timeout=30, what='the handler to finish')
                 proc.send_signal(signal.SIGINT)
                 proc.wait(timeout=20)
         finally:
