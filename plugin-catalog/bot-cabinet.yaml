@@ -1,0 +1,26 @@
+name: bot-cabinet
+title: Cabinet
+repo: https://github.com/Dgardenhire/hermes-cabinet
+sha: 5b0e629e297fd422447c2c023c7fe20642483803
+description: "Tell Cabinet the job you need done and it answers with the smallest setup that does it (one chat, a skill, a routine, a Bot or a crew), shows which answers led there, then helps you act: add one of botcabinet.com's 20 Bots (each with its test record shown) as a Hermes profile, plan a new Bot line by line, or set up a crew of Bots in a handoff order with blocked Kanban cards. Everything Cabinet makes can be removed again from My Bots, and a Bot that Hermes's own Bots catalog carries is handed over to it, never duplicated. Disclosure — one https GET to botcabinet.com/catalog.json on open and Refresh (max 2 MB, same-host redirects, strict schema, data only); a new Bot's instructions (its SOUL.md) come from that live catalog, which can change after this review, so Cabinet shows the full instructions for the person to read and edit before it makes anything, and falls back to the copy bundled at this commit when the site is unreachable; creates profiles through the gateway's profiles.create and deletes only profiles it made and you haven't changed, through Hermes's delete_profile; can add and archive Kanban cards for a crew; lists ~/.hermes/profiles and reads/hashes a profile's SOUL.md, profile.yaml, config.yaml and skills to fingerprint what it made, and may write a new profile's SOUL.md if Hermes didn't save it; stores its record in $HERMES_HOME/state/bot-cabinet-v2/; imports private Hermes modules (hermes_cli.profiles, kanban_db, kanban_db_connect, bot_catalog) read-only; no shell commands, background processes, credentials, telemetry or self-updates."
+maintainer: Dgardenhire
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://botcabinet.com/hermes/manual/
+version: "0.3.10"
+image: "https://raw.githubusercontent.com/Dgardenhire/hermes-cabinet/5b0e629e297fd422447c2c023c7fe20642483803/docs/card.png"
+screenshots:
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-cabinet/5b0e629e297fd422447c2c023c7fe20642483803/harness/shots/01-start.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-cabinet/5b0e629e297fd422447c2c023c7fe20642483803/harness/shots/10-answer-bot.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-cabinet/5b0e629e297fd422447c2c023c7fe20642483803/harness/shots/21-add-bot.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-cabinet/5b0e629e297fd422447c2c023c7fe20642483803/harness/shots/27-setup-crew.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-cabinet/5b0e629e297fd422447c2c023c7fe20642483803/harness/shots/31-mybots.png"
+  - "https://raw.githubusercontent.com/Dgardenhire/hermes-cabinet/5b0e629e297fd422447c2c023c7fe20642483803/harness/shots/16-records.png"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
