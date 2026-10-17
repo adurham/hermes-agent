@@ -624,10 +624,19 @@ class GatewayACPAgent(acp.Agent):
         reused = retained if retained is not None and retained[0] == retry_key else None
         if reused is not None:
             staged = reused[2]
+        elif _has_remote_image(content):
+            # Only a remote image fetch leaves the loop. The editor's Stop during that network wait is
+            # held like one during the submit itself, and the prompt then ends without being sent.
+            self._submitting.add(session_id)
+            try:
+                staged = await asyncio.to_thread(_stage_user_content, content)
+            finally:
+                self._submitting.discard(session_id)
+            if session_id in self._pending_cancels:
+                self._pending_cancels.discard(session_id)
+                return PromptResponse(stop_reason='cancelled')
         else:
-            # Only a remote image fetch leaves the loop; every other prompt stages inline, as before.
-            staged = (await asyncio.to_thread(_stage_user_content, content)) \
-                if _has_remote_image(content) else _stage_user_content(content)
+            staged = _stage_user_content(content)
         text, attachments = staged
         command = _slash_command(text) if not attachments else None
         if command is not None:

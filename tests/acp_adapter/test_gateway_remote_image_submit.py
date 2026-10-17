@@ -1,6 +1,7 @@
 """A remote image URL is fetched once per logical prompt: an un-acked submit's retry reuses what the first
 attempt staged (never a re-download that could change the content and so the input_id), and the editor's
 Stop during the download keeps the prompt from being submitted at all (Greptile review on #140188)."""
+import asyncio
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -83,3 +84,20 @@ async def test_unacked_remote_image_retry_reuses_the_first_staging(tmp_path, mon
     assert retry['text'] == first['text'] == 'describe'
     assert retry['attachments'] == first['attachments']
 
+
+@pytest.mark.asyncio
+async def test_stop_during_a_remote_image_download_submits_nothing(tmp_path, monkeypatch, host):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    _allow_loopback(monkeypatch, True)
+    host['gate'] = threading.Event()
+    agent = GatewayACPAgent()
+    agent._gateway = _LosesFirstAck(agent)
+    agent._snapshots['s'] = {}
+    task = asyncio.create_task(agent.prompt(_prompt(host['url']), 's'))
+    assert await asyncio.to_thread(host['started'].wait, 10)
+    await agent.cancel('s')
+    host['gate'].set()
+    response = await asyncio.wait_for(task, 10)
+    assert response.stop_reason == 'cancelled'
+    assert agent._gateway.calls == []
+    assert 's' not in agent._pending_cancels and 's' not in agent._submitting
