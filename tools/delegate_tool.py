@@ -655,6 +655,162 @@ def _persona_exists(name: str) -> bool:
         return True  # cannot tell -> do not reject
 
 
+def _route_advisory(i: int, route: Optional[dict[str, Any]], roster_warnings: list[str]) -> Optional[dict[str, Any]]:
+    """The classifier's advisory for task ``i`` (noticed in ``roster_warnings``), or None.
+
+    ADVISORY-ONLY (2026-10-13): an explicit agent_type is BINDING. The auto-route
+    classifier may still flag a stated role as shallower than the work warrants, but
+    that is a NOTICE, never an override — the caller does NOT touch task_agent_type (so
+    role→model, role→provider pin, role→persona prompt and role→iteration budget all stay
+    on the caller's explicit choice). The regression that motivated this: a 'reviewer'
+    task was silently re-dispatched as 'mid-coder' because the classifier's tier ranked
+    higher, contradicting the documented precedence ("explicit agent_type is intent").
+    """
+    if not (route and route.get("advisory")):
+        return None
+    advisory = {
+        "stated": route.get("stated_agent_type"),
+        "recommended": route.get("recommended_agent_type"),
+        "tier": route.get("recommended_tier"),
+        "stated_rank": route.get("stated_rank"),
+        "recommended_rank": route.get("recommended_rank"),
+        "reason": route.get("reason"),
+    }
+    roster_warnings.append(
+        f"Task {i}: agent_type={advisory['stated']!r} is BINDING (an explicit choice is "
+        f"intent). The auto-route classifier recommends the deeper role "
+        f"{advisory['recommended']!r} (tier {advisory['tier']!r}, rank "
+        f"{advisory['stated_rank']}→{advisory['recommended_rank']})"
+        + (f": {advisory['reason']}" if advisory.get("reason") else "")
+        + ". Nothing was changed — to dispatch that role, pass "
+        "agent_type=<role> explicitly."
+    )
+    logger.info(
+        "delegate_task: task %d advisory — stated agent_type=%r kept; classifier "
+        "recommends %r (rank %s->%s)",
+        i, advisory["stated"], advisory["recommended"],
+        advisory["stated_rank"], advisory["recommended_rank"],
+    )
+    return advisory
+
+
+def _resolve_role_route_creds(
+    role_entry, role_fallback_entry, parent_agent, role_creds_cache, *,
+    role_cfg_key, task_agent_type, role_provider, task_fallback_chain, role_map_model,
+) -> tuple[Optional[dict], Optional[list[dict[str, Any]]], Any, Optional[str]]:
+    """Resolve a provider-pinned role's credentials, engaging its fallback bundle if needed.
+
+    Returns ``(task_creds, task_fallback_chain, role_map_model, None)`` or
+    ``(None, None, None, error)`` when the pin (and its fallback, if any) cannot be resolved.
+    """
+    try:
+        task_creds = _resolve_role_credentials(role_entry, parent_agent, role_creds_cache)
+    except ValueError as primary_exc:
+        via_alias = (
+            f" (dispatched as {task_agent_type!r})"
+            if task_agent_type and role_cfg_key != task_agent_type else ""
+        )
+        if role_fallback_entry is None:
+            # Fail loud: falling back to the batch provider here is exactly the
+            # wrong-model-on-wrong-provider bug this pin exists to prevent. Name
+            # the CONFIG key (the alias target when the dispatched role is a
+            # synonym) so the user can find the entry to fix, and name the
+            # dispatched role too when they differ.
+            return None, None, None, (
+                f"delegation.model_by_role[{role_cfg_key!r}]{via_alias} pins provider "
+                f"{role_provider!r} but it could not be resolved: {primary_exc}"
+            )
+        try:
+            task_creds = _resolve_role_credentials(role_fallback_entry, parent_agent, role_creds_cache)
+        except ValueError as fallback_exc:
+            return None, None, None, (
+                f"delegation.model_by_role[{role_cfg_key!r}]{via_alias} pins provider "
+                f"{role_provider!r} but it could not be resolved: {primary_exc}. "
+                f"Its configured fallback also could not be resolved: {fallback_exc}"
+            )
+        # Fallback resolved — dispatch proceeds on ITS bundle. The primary's
+        # role-map model must not leak into the precedence chain now that the
+        # provider underneath it changed; pin role_map_model to the fallback's own
+        # model so the two can never mix. No further runtime fallback for this hop
+        # (the one hop was already spent getting here).
+        role_map_model = task_creds["model"]
+        fb_provider, fb_model = str(task_creds.get("provider") or ""), str(task_creds.get("model") or "")
+        fb_msg = (
+            f"🔄 Fallback engaged for role {role_cfg_key!r}: primary provider {role_provider!r} "
+            f"unresolvable ({primary_exc}) — using {fb_model} via {fb_provider} instead"
+        )
+        emit = getattr(parent_agent, "_emit_status", None)
+        if callable(emit):
+            with _quiet("delegate_task: fallback notice emit failed", exc_info=True):
+                emit(fb_msg)
+        logger.info(
+            "delegate_task: role %r primary provider %r unresolvable (%s) — engaged configured fallback %s/%s",
+            role_cfg_key, role_provider, primary_exc, fb_provider, fb_model,
+        )
+    else:
+        # Primary resolved fine. Attach the role's own fallback as a ONE-ENTRY
+        # runtime chain in the SAME raw shape the top-level fallback_providers
+        # config uses — no eager resolution. AIAgent's existing
+        # try_activate_fallback()/classify_api_error() machinery resolves it lazily
+        # exactly like any other chain entry, only if the ACTUAL model call fails
+        # with a retryable-class error.
+        if role_fallback_entry is not None:
+            task_fallback_chain = [dict(role_fallback_entry)]
+    return task_creds, task_fallback_chain, role_map_model, None
+
+
+def _warn_unrouted_task(i, route, effective_task_model, auto_route_diag, roster_warnings) -> None:
+    """Notice for a task that stated NEITHER model= nor agent_type=: name who chose its model."""
+    if route:
+        decision = (
+            f"auto-route classifier → tier {route.get('tier')!r} → role "
+            f"{route.get('role')!r} → model {effective_task_model!r}"
+        )
+        reason = str(route.get("reason") or "").strip()
+        if reason:
+            decision += f" ({reason})"
+    elif effective_task_model:
+        # Name WHY auto-route did not run, so "the config default won" is
+        # actionable instead of a dead end (a closed provider gate and a
+        # broken classifier look identical from here otherwise).
+        decision = f"delegation config default → model {effective_task_model!r}"
+        cause = _auto_route_skip_cause(auto_route_diag)
+        if cause:
+            decision += f" (auto-route did not run: {cause})"
+    else:
+        decision = "inherited the PARENT's own model/provider"
+        cause = _auto_route_skip_cause(auto_route_diag)
+        if cause:
+            decision += f" (auto-route did not run: {cause})"
+    roster_warnings.append(
+        f"Task {i}: no agent_type= and no model= were given, so the model was chosen for "
+        f"you: {decision}. To route deliberately, pass agent_type=<role> (resolved through "
+        f"delegation.model_by_role) or model=<model>; pass agent_type='auto' to opt into "
+        f"automatic routing explicitly and silence this notice."
+    )
+    logger.info(
+        "delegate_task: task %d dispatched with no agent_type= and no model=; routing decision: %s",
+        i, decision,
+    )
+
+
+def _route_info(route: Optional[dict[str, Any]], advisory: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Auto-route provenance carried on a task's route (None when the task was not routed)."""
+    if not route:
+        return None
+    route_info = {
+        "tier": route.get("tier"), "role": route.get("role"), "model": route.get("model"),
+        "reason": route.get("reason"), "agent_type": route.get("agent_type"),
+    }
+    if advisory is not None:
+        route_info.update({
+            "advisory": True, "recommended_agent_type": advisory["recommended"],
+            "recommended_tier": advisory["tier"], "stated_rank": advisory["stated_rank"],
+            "recommended_rank": advisory["recommended_rank"],
+        })
+    return route_info
+
+
 def _resolve_task_routes(
     task_list, creds, *, cfg, parent_agent, top_role, roster_warnings,
 ) -> tuple[list[dict[str, Any]], Optional[str]]:
@@ -723,40 +879,9 @@ def _resolve_task_routes(
                 # guaranteed wrong-endpoint 404.
                 tier_route_role = (route.get("role") or "").strip() or None
 
-        # ADVISORY-ONLY (2026-10-13): an explicit agent_type is BINDING. The
-        # auto-route classifier may still flag a stated role as shallower than
-        # the work warrants, but that is a NOTICE, never an override — we do
-        # NOT touch task_agent_type (so role→model, role→provider pin,
-        # role→persona prompt and role→iteration budget all stay on the
-        # caller's explicit choice). The regression that motivated this: a
-        # 'reviewer' task was silently re-dispatched as 'mid-coder' because the
-        # classifier's tier ranked higher, contradicting the documented
-        # precedence ("explicit agent_type is intent").
-        advisory = None
-        if route and route.get("advisory"):
-            advisory = {
-                "stated": route.get("stated_agent_type"),
-                "recommended": route.get("recommended_agent_type"),
-                "tier": route.get("recommended_tier"),
-                "stated_rank": route.get("stated_rank"),
-                "recommended_rank": route.get("recommended_rank"),
-                "reason": route.get("reason"),
-            }
-            roster_warnings.append(
-                f"Task {i}: agent_type={advisory['stated']!r} is BINDING (an explicit choice is "
-                f"intent). The auto-route classifier recommends the deeper role "
-                f"{advisory['recommended']!r} (tier {advisory['tier']!r}, rank "
-                f"{advisory['stated_rank']}→{advisory['recommended_rank']})"
-                + (f": {advisory['reason']}" if advisory.get("reason") else "")
-                + ". Nothing was changed — to dispatch that role, pass "
-                "agent_type=<role> explicitly."
-            )
-            logger.info(
-                "delegate_task: task %d advisory — stated agent_type=%r kept; classifier "
-                "recommends %r (rank %s->%s)",
-                i, advisory["stated"], advisory["recommended"],
-                advisory["stated_rank"], advisory["recommended_rank"],
-            )
+        # ADVISORY-ONLY: an explicit agent_type is BINDING; the advisory is a notice and
+        # task_agent_type is deliberately left untouched (see _route_advisory).
+        advisory = _route_advisory(i, route, roster_warnings)
 
         # role= grants CAPABILITY (can this child spawn children) and is entirely
         # independent of agent_type=, which is what routes the child through
@@ -832,59 +957,13 @@ def _resolve_task_routes(
             role_fallback_entry = None
 
         if role_provider and isinstance(role_entry, dict):
-            try:
-                task_creds = _resolve_role_credentials(role_entry, parent_agent, role_creds_cache)
-            except ValueError as primary_exc:
-                via_alias = (
-                    f" (dispatched as {task_agent_type!r})"
-                    if task_agent_type and role_cfg_key != task_agent_type else ""
-                )
-                if role_fallback_entry is None:
-                    # Fail loud: falling back to the batch provider here is exactly the
-                    # wrong-model-on-wrong-provider bug this pin exists to prevent. Name
-                    # the CONFIG key (the alias target when the dispatched role is a
-                    # synonym) so the user can find the entry to fix, and name the
-                    # dispatched role too when they differ.
-                    return [], (
-                        f"delegation.model_by_role[{role_cfg_key!r}]{via_alias} pins provider "
-                        f"{role_provider!r} but it could not be resolved: {primary_exc}"
-                    )
-                try:
-                    task_creds = _resolve_role_credentials(role_fallback_entry, parent_agent, role_creds_cache)
-                except ValueError as fallback_exc:
-                    return [], (
-                        f"delegation.model_by_role[{role_cfg_key!r}]{via_alias} pins provider "
-                        f"{role_provider!r} but it could not be resolved: {primary_exc}. "
-                        f"Its configured fallback also could not be resolved: {fallback_exc}"
-                    )
-                # Fallback resolved — dispatch proceeds on ITS bundle. The primary's
-                # role-map model must not leak into the precedence chain now that the
-                # provider underneath it changed; pin role_map_model to the fallback's own
-                # model so the two can never mix. No further runtime fallback for this hop
-                # (the one hop was already spent getting here).
-                role_map_model = task_creds["model"]
-                fb_provider, fb_model = str(task_creds.get("provider") or ""), str(task_creds.get("model") or "")
-                fb_msg = (
-                    f"🔄 Fallback engaged for role {role_cfg_key!r}: primary provider {role_provider!r} "
-                    f"unresolvable ({primary_exc}) — using {fb_model} via {fb_provider} instead"
-                )
-                emit = getattr(parent_agent, "_emit_status", None)
-                if callable(emit):
-                    with _quiet("delegate_task: fallback notice emit failed", exc_info=True):
-                        emit(fb_msg)
-                logger.info(
-                    "delegate_task: role %r primary provider %r unresolvable (%s) — engaged configured fallback %s/%s",
-                    role_cfg_key, role_provider, primary_exc, fb_provider, fb_model,
-                )
-            else:
-                # Primary resolved fine. Attach the role's own fallback as a ONE-ENTRY
-                # runtime chain in the SAME raw shape the top-level fallback_providers
-                # config uses — no eager resolution. AIAgent's existing
-                # try_activate_fallback()/classify_api_error() machinery resolves it lazily
-                # exactly like any other chain entry, only if the ACTUAL model call fails
-                # with a retryable-class error.
-                if role_fallback_entry is not None:
-                    task_fallback_chain = [dict(role_fallback_entry)]
+            task_creds, task_fallback_chain, role_map_model, error = _resolve_role_route_creds(
+                role_entry, role_fallback_entry, parent_agent, role_creds_cache,
+                role_cfg_key=role_cfg_key, task_agent_type=task_agent_type, role_provider=role_provider,
+                task_fallback_chain=task_fallback_chain, role_map_model=role_map_model,
+            )
+            if error is not None:
+                return [], error
 
         # INVARIANT: task_model_explicit is FIRST and must stay first. A caller-stated
         # model= is intent and always wins — it bypasses auto-route AND the escalate-only
@@ -897,50 +976,9 @@ def _resolve_task_routes(
         # got its model chosen by something the caller never named. agent_type="auto" is
         # an explicit opt-in and is deliberately exempt.
         if agent_type_omitted and task_model_explicit is None and not agent_type_is_auto:
-            if route:
-                decision = (
-                    f"auto-route classifier → tier {route.get('tier')!r} → role "
-                    f"{route.get('role')!r} → model {effective_task_model!r}"
-                )
-                reason = str(route.get("reason") or "").strip()
-                if reason:
-                    decision += f" ({reason})"
-            elif effective_task_model:
-                # Name WHY auto-route did not run, so "the config default won" is
-                # actionable instead of a dead end (a closed provider gate and a
-                # broken classifier look identical from here otherwise).
-                decision = f"delegation config default → model {effective_task_model!r}"
-                cause = _auto_route_skip_cause(auto_route_diag)
-                if cause:
-                    decision += f" (auto-route did not run: {cause})"
-            else:
-                decision = "inherited the PARENT's own model/provider"
-                cause = _auto_route_skip_cause(auto_route_diag)
-                if cause:
-                    decision += f" (auto-route did not run: {cause})"
-            roster_warnings.append(
-                f"Task {i}: no agent_type= and no model= were given, so the model was chosen for "
-                f"you: {decision}. To route deliberately, pass agent_type=<role> (resolved through "
-                f"delegation.model_by_role) or model=<model>; pass agent_type='auto' to opt into "
-                f"automatic routing explicitly and silence this notice."
-            )
-            logger.info(
-                "delegate_task: task %d dispatched with no agent_type= and no model=; routing decision: %s",
-                i, decision,
-            )
+            _warn_unrouted_task(i, route, effective_task_model, auto_route_diag, roster_warnings)
 
-        route_info = None
-        if route:
-            route_info = {
-                "tier": route.get("tier"), "role": route.get("role"), "model": route.get("model"),
-                "reason": route.get("reason"), "agent_type": route.get("agent_type"),
-            }
-            if advisory is not None:
-                route_info.update({
-                    "advisory": True, "recommended_agent_type": advisory["recommended"],
-                    "recommended_tier": advisory["tier"], "stated_rank": advisory["stated_rank"],
-                    "recommended_rank": advisory["recommended_rank"],
-                })
+        route_info = _route_info(route, advisory)
 
         routes.append({
             "role": effective_role, "agent_type": task_agent_type, "model": effective_task_model,
