@@ -78,3 +78,31 @@ def test_an_issuer_bearing_login_cannot_touch_the_labelled_row(db):
 def test_an_unowned_row_still_admits_any_local_actor(db):
     db.create_session("unowned-row", source="desktop")
     assert _auth(db, LOGIN, "unowned-row") is True
+
+
+def test_one_parser_reads_the_login_subject_for_every_caller():
+    """``authenticated_subject``'s format is parsed in one place: the control socket's
+    forwarded-subject gate and the login label both use its checked result."""
+    from gateway.control_socket import _structured_login_subject
+    from gateway.session_identity import authenticated_subject, parse_authenticated_subject
+
+    subject = authenticated_subject({'provider': 'basic', 'issuer': '', 'user_id': 'e2e'})
+    assert parse_authenticated_subject(subject) == ('basic', '', 'e2e')
+    for bad in ('uid:501', 'auth:v1:"basic"', 'auth:v1:[1,2,3]', 'auth:v1:["a","b"]', 'auth:v1:[', None, 7):
+        assert parse_authenticated_subject(bad) is None
+        assert _login_label(bad) is None
+        if isinstance(bad, str):
+            assert _structured_login_subject(bad) is False
+    assert _structured_login_subject(subject) is True
+
+
+def test_a_forwarded_bob_cannot_mutate_a_row_bound_to_alice(db):
+    """F1 guard: a dashboard login ``bob`` (forwarded ``auth:v1:["basic","",bob]``) is refused on
+    a Desktop row stamped ``basic:alice``, cannot claim it, and alice still owns it afterwards."""
+    alice, bob = 'auth:v1:["basic","","alice"]', 'auth:v1:["basic","","bob"]'
+    db.create_session("alice-row", source="desktop", user_id="basic:alice")
+    with db._read_ctx() as conn:
+        with pytest.raises(Exception) as raised:
+            authorize_history(conn, _actor(bob, db.db_path.parent), "alice-row", claim=True)
+        assert getattr(raised.value, "reason", None) == "permission_denied"
+        assert authorize_history(conn, _actor(alice, db.db_path.parent), "alice-row") is True

@@ -23,13 +23,9 @@ def _login_label(subject):
     """The ``<provider>:<user>`` label Desktop stamps on its rows (tui_gateway/session_transports.py) when it
     names exactly the dashboard subject ``auth:v1:[provider, "", user]`` (gateway/session_identity.py).
     Only an issuer-less login maps: the label drops the issuer, so an issuer-bearing subject must not claim it."""
-    if not isinstance(subject, str) or not subject.startswith('auth:v1:'):
-        return None
-    try:
-        parts = json.loads(subject[len('auth:v1:'):])
-    except ValueError:
-        return None
-    if not (isinstance(parts, list) and len(parts) == 3 and all(isinstance(p, str) for p in parts)):
+    from gateway.session_identity import parse_authenticated_subject
+    parts = parse_authenticated_subject(subject)
+    if parts is None:
         return None
     provider, issuer, user = parts
     if issuer or ':' in provider or not provider.strip() or not user.strip():

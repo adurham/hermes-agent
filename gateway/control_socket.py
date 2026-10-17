@@ -133,13 +133,8 @@ def _structured_login_subject(value: str) -> bool:
     ``auth:v1:[provider, issuer, user]`` (gateway.session_identity) — the only identity
     a same-user peer may forward a ticket for. Bare labels (``admin``, ``uid:501``) fail:
     they can collide with another stored owner representation."""
-    if not value.startswith('auth:v1:'):
-        return False
-    try:
-        parts = json.loads(value[len('auth:v1:'):])
-    except ValueError:
-        return False
-    return isinstance(parts, list) and len(parts) == 3 and all(isinstance(p, str) for p in parts)
+    from gateway.session_identity import parse_authenticated_subject
+    return parse_authenticated_subject(value) is not None
 
 
 def launch_supervisor(identity: dict[str, Any]) -> Optional[str]:
