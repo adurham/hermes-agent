@@ -80,3 +80,27 @@ async def test_the_stored_feed_lists_messaging_and_cron_sessions_and_hides_inter
     resumed = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'tg-chat'}})
     assert 'result' in resumed, resumed
     assert [m['content'] for m in resumed['result']['messages']] == ['tg-chat question', 'tg-chat answer']
+
+
+@pytest.mark.asyncio
+async def test_a_compressed_messaging_conversation_is_listed_under_its_lineage_root(tmp_path, monkeypatch):
+    """The listing projects a compressed lineage onto its tip; the cold mount is the root."""
+    from gateway.session_controls import AuthorityConnection
+
+    authority, db = await _owner(tmp_path, monkeypatch)
+    _messaging_row(db, 'tg-root', '113')
+    root = db.get_session('tg-root')
+    db.create_session('tg-tip', source='telegram', model='m', user_id='111', parent_session_id='tg-root')
+    db._write_sql('UPDATE sessions SET session_key=?, chat_id=?, chat_type=?, origin_json=? WHERE id=?',
+                  (root['session_key'], '113', 'dm', root['origin_json'], 'tg-tip'))
+    db._write_sql("UPDATE sessions SET end_reason='compression' WHERE id='tg-root'")
+    db.append_message('tg-tip', 'user', 'after compression')
+    assert db.get_compression_tip('tg-root') == 'tg-tip'
+    native = AuthorityConnection(authority, object(), {'provider': 'local', 'user_id': 'native',
+                                                       'profile_id': str(tmp_path), 'instance_id': 'owner'},
+                                 operator=True)
+
+    listed = await native.dispatch({'id': 1, 'method': 'session.list', 'params': {'scope': 'stored'}})
+    rows = [row for row in listed['result']['sessions'] if row['id'] in {'tg-root', 'tg-tip'}]
+    assert [(row['id'], row['session_id']) for row in rows] == [('tg-root', 'tg-root')]
+    assert rows[0]['message_count'] == 1  # the tip's segment, as every picker row reads after compression
