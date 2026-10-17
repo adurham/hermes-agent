@@ -137,7 +137,7 @@ def adopt_legacy_session(authority, actor, row):
             or not {'session:read', 'session:create'} <= actor.capabilities):
         raise RuntimeStoreError('not_found')
     from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
-    validate_legacy_row(authority.db, row)
+    validate_legacy_row(authority.db, row, subject=actor.subject)
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from gateway.session_policy import build_policy, bind_launch_key
