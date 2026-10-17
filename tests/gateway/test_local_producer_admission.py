@@ -279,6 +279,53 @@ def _automation_rows(messaging):
 
 
 @pytest.mark.asyncio
+async def test_a_refused_replacement_leaves_the_earlier_tick_queued_and_the_fold_survives_a_restart(messaging):
+    """Cancelling the waiting tick and admitting its replacement are one ledger write, and what the
+    replacement folds in is read from the stored tick, not from the runner's memory."""
+    tick = lambda seq: messaging.event('heartbeat', **_tick_fields('proc_job', seq))
+    assert await _drain_one(messaging.runner, tick(1)) == 0
+    messaging.authority.retiring = True  # the replacement is refused
+    assert await _drain_one(messaging.runner, tick(2)) == 1, 'a refused tick is requeued'
+    assert {key: row['status'] for key, row in _automation_rows(messaging).items()} == {
+        '["heartbeat","proc_job","proc_job-tick-1"]': 'queued'}, 'the accepted tick was cancelled'
+
+    messaging.authority.retiring = False
+    messaging.runner.__dict__.pop('_admitted_heartbeat_ticks', None)  # what a restart forgets
+    assert await _drain_one(messaging.runner, tick(2)) == 0
+    rows = _automation_rows(messaging)
+    assert {key: row['outcome'] for key, row in rows.items()} == {
+        '["heartbeat","proc_job","proc_job-tick-1"]': 'cancelled', '["heartbeat","proc_job","proc_job-tick-2"]': None}
+    assert _tick_output(rows['["heartbeat","proc_job","proc_job-tick-2"]']['payload']['text']) == 'proc_job/1\nproc_job/2\n'
+    # A retry of the admitted replacement (its acknowledgement lost) is dropped, never folded again.
+    assert await _drain_one(messaging.runner, tick(2)) == 0
+    assert len(_automation_rows(messaging)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_tick_whose_replaced_tick_starts_first_is_admitted_with_only_its_own_output(messaging, monkeypatch):
+    authority = messaging.authority
+    tick = lambda seq: messaging.event('heartbeat', **_tick_fields('proc_job', seq))
+    assert await _drain_one(messaging.runner, tick(1)) == 0
+    admit = authority.admit_automation
+
+    async def claimed_first(adapter, event, identity, replaces=None):
+        if replaces is not None:  # the drain claims the waiting tick between the check and the write
+            # (The fixture's human message still heads the FIFO, so the claim is stamped directly.)
+            with authority.db._lock:
+                authority.db._conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=1 "
+                                           "WHERE admission_id=?", (authority.epoch, replaces))
+                authority.db._conn.commit()
+        return await admit(adapter, event, identity, replaces)
+    monkeypatch.setattr(authority, 'admit_automation', claimed_first)
+
+    assert await _drain_one(messaging.runner, tick(2)) == 0
+    rows = _automation_rows(messaging)
+    assert {key: row['status'] for key, row in rows.items()} == {
+        '["heartbeat","proc_job","proc_job-tick-1"]': 'started', '["heartbeat","proc_job","proc_job-tick-2"]': 'queued'}
+    assert _tick_output(rows['["heartbeat","proc_job","proc_job-tick-2"]']['payload']['text']) == 'proc_job/2\n'
+
+
+@pytest.mark.asyncio
 async def test_a_tick_admitted_while_its_completion_lands_never_queues_behind_it(messaging, monkeypatch):
     """The tick's check-and-admit and the completion's admit-and-withdraw are one critical section: a
     completion that lands while a checked tick is still on its way in withdraws it once it is in."""
