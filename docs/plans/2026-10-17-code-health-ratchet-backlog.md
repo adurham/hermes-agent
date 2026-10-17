@@ -2404,3 +2404,12 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   the reported assertion. 196 provider/model-switch test files: 4180 passed, 12 failed — the same 12
   on base (no `acp` module, exo needs egress, meta-ai id, firecrawl). `python scripts/check` green.
   Branch `claude/fix-commandcode-api-key-test-uot9md`. Next: next row of Next pick.
+- 2026-10-17 — C-1053 `plugins/platforms/simplex/adapter.py` (async): ASYNC240×3 + HX008×1 → 0.
+  `_send_command` creates its reply future on `asyncio.get_running_loop()`; the three
+  `Path(...).exists()` guards in `send_image` / `send_document` / `send_voice` now run via
+  `await asyncio.to_thread(...)` (same short-circuit, same error strings, same await order). Left:
+  `send_image`'s synchronous `_prepare_image` (Pillow / `convert`) call — blocking, but not an
+  ASYNC240 hit and moving it off-loop is its own change. Tests: 6 simplex-touching files 95 passed
+  (5 `test_send_cmd` WhatsApp errors = missing `aiohttp`, identical on main); old-vs-new
+  differential over existing/missing/empty paths + `_send_command` timeout identical;
+  `scripts/check` ok. Branch `claude/c1053-async-adapter-ratchet-5o50p4`. Next: C-1054.
