@@ -13,6 +13,7 @@ describe('refreshSlashCatalogOnSkillsChange', () => {
 
     patchUiState({ sid: 'sid-cfg8' })
 
+    // SAFETY: the fake answers only commands.catalog, the one method the refetch calls, with that method's result type.
     expect(refreshSlashCatalogOnSkillsChange({ type: 'skills.changed' }, rpc as never, setCatalog)).toBe(true)
     await vi.waitFor(() => expect(setCatalog).toHaveBeenCalled())
 
@@ -23,6 +24,7 @@ describe('refreshSlashCatalogOnSkillsChange', () => {
   it('leaves every other event to the main handler', () => {
     const rpc = vi.fn()
 
+    // SAFETY: the fake is never called here; the event is not skills.changed, so no RPC goes out.
     expect(refreshSlashCatalogOnSkillsChange({ type: 'skin.changed' }, rpc as never, vi.fn())).toBe(false)
     expect(rpc).not.toHaveBeenCalled()
   })
