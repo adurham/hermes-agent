@@ -3,6 +3,22 @@ from hermes_state_local_migration import validate_legacy_row
 from hermes_state_mutation_binding import authorize_history
 from hermes_state_runtime import RuntimeStoreError
 
+from gateway.session_route_recovery import _messaging_platform, mountable
+
+# Local labels (a cron run is a canonical local session whose last viewer is its own fire).
+_LOCAL_SOURCES = ('cli', 'tui', 'gui', 'desktop', 'local', 'cron')
+
+
+def _messaging_sources():
+    from gateway.config import Platform
+    return [p.value for p in Platform if _messaging_platform(p.value) is not None]
+
+
+def _picker_row(row, tip, sid):
+    return {'id': row['id'], 'session_id': sid, 'resolved_id': sid, 'title': row.get('title') or '',
+            'source': tip['source'], 'started_at': row.get('started_at'),
+            'message_count': row.get('message_count', 0), 'model': tip.get('model'), 'running': False}
+
 
 def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
     """Offer legacy local rows only to the same native transport that may resume them.
@@ -16,14 +32,25 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
             or not {'session:read', 'session:create'} <= actor.capabilities):
         return {'sessions': [], 'scope': 'stored'}
     db = authority.db
+    own_profile = db._own_profile_name() or 'default'
     sessions, offset, seen = [], 0, set()
     while len(sessions) < limit:
-        rows = db.list_sessions_rich(sources=['cli', 'tui', 'gui', 'desktop', 'local'], limit=200, offset=offset,
+        rows = db.list_sessions_rich(sources=[*_LOCAL_SOURCES, *_messaging_sources()], limit=200, offset=offset,
             order_by_last_active=True, compact_rows=True, include_hidden=include_hidden)
         for row in rows:
             sid = db.get_compression_tip(row['id']) or row['id']
             tip = db.get_session(sid)
             if tip is None:
+                continue
+            if row['source'] not in _LOCAL_SOURCES:
+                # A messaging conversation: listed when the cold mount would open it (this profile's,
+                # its lineage root); a row its lane moved past opens read-only.
+                if (row.get('profile_name') in (None, '', own_profile) and mountable(authority, row['id'])
+                        and row['id'] not in seen):
+                    seen.add(row['id'])
+                    sessions.append(_picker_row(row, tip, row['id']))
+                if len(sessions) == limit:
+                    break
                 continue
             closed = _closed_local_session(authority, actor, row, tip)
             if closed is not None:
@@ -42,10 +69,7 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
                 if exc.reason not in {'not_found', 'permission_denied'}:
                     raise
                 continue
-            sessions.append({'id': row['id'], 'session_id': sid, 'resolved_id': sid,
-                'title': row.get('title') or '', 'source': tip['source'],
-                'started_at': row.get('started_at'), 'message_count': row.get('message_count', 0),
-                'model': tip.get('model'), 'running': False})
+            sessions.append(_picker_row(row, tip, sid))
             if len(sessions) == limit:
                 break
         if len(rows) < 200:
