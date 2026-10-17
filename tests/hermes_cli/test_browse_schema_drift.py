@@ -446,3 +446,63 @@ def test_gateway_boot_reserve_waits_out_a_browse_reconcile(tmp_path):
         contender.close()
         gateway.kill()
         gateway.wait()
+
+
+# ── Independent review round 2 ──
+
+
+_RAW_FLOCK_HOLDER = r'''
+import fcntl, os, sys, time
+from pathlib import Path
+home = Path(sys.argv[1]); home.mkdir(parents=True, exist_ok=True)
+fh = open(home / "gateway.lock", "a+")
+fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+fh.seek(0); fh.truncate(); fh.flush()  # flock held, record not yet published (reserve()'s window)
+print("held", flush=True)
+time.sleep(float(sys.argv[2]))
+'''
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_gateway_boot_waits_while_the_holder_has_not_published_its_record(tmp_path):
+    """R2-1: reserve() takes the flock before it writes the purpose record. A boot that loses the
+    flock in that window must retry (bounded), not abort as though a gateway owned the profile."""
+    import os
+    import subprocess
+    import sys
+    import time
+
+    from gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
+    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+
+    home = _profile_home(tmp_path)
+    holder = subprocess.Popen([sys.executable, "-c", _RAW_FLOCK_HOLDER, str(home), "1.0"],
+                              env=os.environ, stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "held"
+    booting = ProfileOwnership()
+    try:
+        assert (home / "gateway.lock").read_text() == ""
+        started = time.monotonic()
+        _reserve_waiting_out_browse_reconcile(booting, [home], wait_s=10)
+        assert booting.owns(home)
+        assert 0.5 < time.monotonic() - started < 9
+    finally:
+        booting.close()
+        holder.kill()
+        holder.wait()
+
+    # Still bounded: an unpublished holder that never lets go is refused once the wait expires.
+    holder = subprocess.Popen([sys.executable, "-c", _RAW_FLOCK_HOLDER, str(home), "30"],
+                              env=os.environ, stdout=subprocess.PIPE, text=True)
+    assert holder.stdout.readline().strip() == "held"
+    contender = ProfileOwnership()
+    try:
+        started = time.monotonic()
+        with pytest.raises(OwnershipConflict):
+            _reserve_waiting_out_browse_reconcile(contender, [home], wait_s=0.6)
+        assert 0.5 < time.monotonic() - started < 3
+    finally:
+        contender.close()
+        holder.kill()
+        holder.wait()
+

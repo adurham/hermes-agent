@@ -552,7 +552,10 @@ _BROWSE_RECONCILE_RESERVE_WAIT_S = 5.0
 
 
 def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float = _BROWSE_RECONCILE_RESERVE_WAIT_S):
-    from gateway.runtime_ownership import OwnershipConflict, maintenance_holder
+    """Reserve *homes*, waiting (bounded) while a contender is a browse reconcile or has not yet
+    published its lock record (flock taken, record unwritten). Only a positively identified holder
+    that is not browse maintenance refuses at once; the flock exclusion itself is never weakened."""
+    from gateway.runtime_ownership import OwnershipConflict, lock_record_unpublished, maintenance_holder
     from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
     deadline = time.monotonic() + wait_s
     logged = False
@@ -560,7 +563,8 @@ def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float = _
         try:
             return ownership.reserve(homes)
         except OwnershipConflict:
-            holders = [h for h in homes if maintenance_holder(h, BROWSE_RECONCILE_PURPOSE)]
+            holders = [h for h in homes
+                       if maintenance_holder(h, BROWSE_RECONCILE_PURPOSE) or lock_record_unpublished(h)]
             if not holders or time.monotonic() >= deadline:
                 raise
             if not logged:

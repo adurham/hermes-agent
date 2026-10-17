@@ -227,6 +227,16 @@ def maintenance_holder(home: Path, purpose: str) -> dict | None:
     return record
 
 
+def lock_record_unpublished(home: Path) -> bool:
+    """True when *home*'s ``gateway.lock`` record names no live holder yet: empty, torn, or a dead
+    previous holder's. :meth:`ProfileOwnership.reserve` takes the flock BEFORE it writes the record,
+    so a contender that loses the flock in that window cannot tell maintenance from a gateway; it
+    must retry (bounded) instead of reporting a runtime owner. Advisory only, never grants the lock."""
+    from gateway.status import _live_pid_from_record, _read_gateway_lock_record
+    record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
+    return not record or _live_pid_from_record(record) is None
+
+
 def live_runtime_owner(home: Path) -> int | None:
     """PID of a live runtime owner of *home* (a gateway, or a reservation that is not marked as
     maintenance), else None. A purpose-marked maintenance holder is never an owner."""
