@@ -271,6 +271,11 @@ def settle_unrecovered_error(
     from agent.conversation_loop import (
         _arm_fallback_restart, _is_copilot_provider, _is_stale_copilot_credential_error
     )
+    # Circuit-breaker bookkeeping: fingerprint this failed attempt for the auto-recovery ladder
+    # (agent/turn_recovery_autorecover.py). Recorded per attempt, so an identical crash-looping
+    # provider is cut off after a couple of failures, not a whole ladder's worth of silent waits.
+    from agent.turn_recovery_autorecover import note_recovery_failure
+    note_recovery_failure(agent, classified, _retry)
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(

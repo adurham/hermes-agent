@@ -4,6 +4,7 @@ Dependency-free so it imports without a cycle."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -48,6 +49,15 @@ class TurnRetryState:
     auth_failover_attempted: bool = False
     # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).
     auto_recovery_cycles_used: int = 0
+    # Identical-failure circuit breaker for the auto-recovery ladder (agent/turn_recovery_autorecover.py):
+    # the fingerprint of the last failed attempt — (provider, base_url, model, error class,
+    # whether any token/chunk arrived) — the number of consecutive identical failures, and the
+    # wall-clock time of the last one (a gap past the 30-minute window restarts the streak). An
+    # attempt that streamed progress, or a different error class, resets it. agent.
+    # auto_recovery_identical_failure_limit caps the streak (0 disables the breaker).
+    auto_recovery_failure_fingerprint: Optional[tuple] = None
+    auto_recovery_identical_failures: int = 0
+    auto_recovery_identical_failure_at: float = 0.0
 
     # Restart signals (read by the outer loop after the attempt)
     restart_with_compressed_messages: bool = False

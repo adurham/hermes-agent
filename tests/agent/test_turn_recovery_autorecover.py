@@ -1,13 +1,17 @@
 """Bounded post-exhaustion auto-recovery ladder (#85426, #107307): fallback first, transient
 outages only, visible on every surface, interrupt cancels."""
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import patch
 
 import pytest
 
 from agent.error_classifier import classify_api_error
 from agent.turn_api_error import settle_unrecovered_error
-from agent.turn_recovery_autorecover import ladder_wait_seconds
+from agent.turn_recovery_autorecover import (
+    auto_recovery_identical_failure_limit, crash_loop_message, failure_fingerprint,
+    identical_failure_limit_reached, ladder_wait_seconds, note_recovery_failure,
+)
 from agent.turn_retry_state import TurnRetryState
 
 
@@ -27,15 +31,20 @@ class _Agent:
     verbose = False
     provider = "custom"
     platform = "cli"
+    base_url = "http://x"
+    model = "m"
     _credential_pool = None
     _current_streamed_assistant_text = ""
     _interrupt_requested = False
+    # Per-attempt "any token/chunk received" marker (agent/turn_api_request.py resets it per call).
+    _last_api_first_chunk_at: Optional[float] = None
     sleep_outcome = None  # what the (patched) interruptible wait returns
 
-    def __init__(self, *, fallback_left=False, cycles=5, platform="cli"):
+    def __init__(self, *, fallback_left=False, cycles=5, platform="cli", identical_limit=2):
         self.statuses, self.waits, self.activated = [], [], []
         self._fallback_left = fallback_left
         self._auto_recovery_cycles = cycles
+        self._auto_recovery_identical_failure_limit = identical_limit
         self.platform = platform
 
     def _has_pending_fallback(self):
@@ -157,3 +166,119 @@ def test_interrupt_during_ladder_wait_returns_interrupted_result():
     verdict, retry = _settle(agent, _Err(503, "down"))
     assert verdict.action == "return" and verdict.result["interrupted"] is True
     assert retry.auto_recovery_cycles_used == 1
+
+
+# ── Identical-failure circuit breaker (agent.auto_recovery_identical_failure_limit) ──────────────
+
+def _classified(reason):
+    return SimpleNamespace(reason=reason)
+
+
+def test_failure_fingerprint_names_provider_endpoint_model_class_and_progress():
+    """The fingerprint is (provider, base_url, model, normalized error class, received_token)."""
+    from agent.error_classifier import FailoverReason
+    agent = _Agent()
+    quiet = failure_fingerprint(agent, _classified(FailoverReason.server_error), received_token=False)
+    assert quiet == ("custom", "http://x", "m", "server_error", False)
+    progressed = failure_fingerprint(agent, _classified(FailoverReason.server_error), received_token=True)
+    assert progressed[-1] is True and progressed[:4] == quiet[:4]
+
+
+def test_note_recovery_failure_counts_consecutive_identical_and_resets_on_class_or_window():
+    from agent.error_classifier import FailoverReason
+    agent = _Agent()
+    retry = TurnRetryState()
+    server = _classified(FailoverReason.server_error)
+    assert note_recovery_failure(agent, server, retry, now=1000.0) == 1
+    assert note_recovery_failure(agent, server, retry, now=1001.0) == 2
+    assert note_recovery_failure(agent, server, retry, now=1002.0) == 3
+    # A different error class is a different fingerprint -> the streak restarts at 1.
+    assert note_recovery_failure(agent, _classified(FailoverReason.overloaded), retry, now=1003.0) == 1
+    # An identical failure more than 30 minutes after the last one restarts the streak too.
+    retry2 = TurnRetryState()
+    assert note_recovery_failure(agent, server, retry2, now=5000.0) == 1
+    assert note_recovery_failure(agent, server, retry2, now=5000.0 + 1801.0) == 1
+    assert note_recovery_failure(agent, server, retry2, now=5001.0 + 1801.0) == 2
+
+
+def test_note_recovery_failure_ignores_attempts_that_received_tokens():
+    from agent.error_classifier import FailoverReason
+    agent = _Agent()
+    server = _classified(FailoverReason.server_error)
+    retry = TurnRetryState()
+    agent._last_api_first_chunk_at = 42.0  # any chunk arrived this attempt
+    assert note_recovery_failure(agent, server, retry, now=10.0) == 0
+    assert note_recovery_failure(agent, server, retry, now=11.0) == 0
+    assert retry.auto_recovery_failure_fingerprint is None
+    # Visible streamed text is progress too.
+    agent._last_api_first_chunk_at = None
+    agent._current_streamed_assistant_text = "half an answer"
+    assert note_recovery_failure(agent, server, retry, now=12.0) == 0
+
+
+def test_identical_failure_limit_reached_respects_config_and_zero_disables():
+    agent = _Agent(identical_limit=2)
+    retry = TurnRetryState(auto_recovery_identical_failures=1)
+    assert not identical_failure_limit_reached(agent, retry)
+    retry.auto_recovery_identical_failures = 2
+    assert identical_failure_limit_reached(agent, retry)
+    off = _Agent(identical_limit=0)
+    assert auto_recovery_identical_failure_limit(off) == 0
+    assert not identical_failure_limit_reached(off, retry)
+
+
+def test_crash_loop_message_states_cause_count_last_error_and_next_step():
+    msg = crash_loop_message(2, "HTTP 502 Bad Gateway")
+    assert "crash-looping" in msg
+    assert "2 times in a row" in msg
+    assert "HTTP 502 Bad Gateway" in msg
+    assert "Auto-recovery stopped" in msg
+    assert "retry manually" in msg
+
+
+def test_breaker_stops_ladder_and_surfaces_crash_loop_after_identical_failures():
+    """Two consecutive identical exhausted attempts trip the breaker; the ladder does not park."""
+    agent = _Agent()
+    retry = TurnRetryState(primary_recovery_attempted=True)
+    first, retry = _settle(agent, _Err(502, "Connection reset by peer"), retry=retry)
+    assert first.action == "continue" and retry.auto_recovery_identical_failures == 1
+    second, retry = _settle(agent, _Err(502, "Connection reset by peer"), retry=retry)
+    assert second.action == "return"
+    assert second.result["auto_recovery_stopped"] is True
+    body = second.result["final_response"]
+    assert "crash-looping" in body
+    assert "2 times in a row" in body
+    assert "Connection reset by peer" in body
+    assert "retry manually" in body
+    # Exactly one cycle was spent before the breaker stopped the loop.
+    assert retry.auto_recovery_cycles_used == 1
+    assert any("crash-looping" in s for s in agent.statuses)
+
+
+def test_breaker_never_trips_when_an_attempt_received_tokens():
+    agent = _Agent()
+    agent._last_api_first_chunk_at = 1.0  # every attempt streamed a chunk then died
+    retry = TurnRetryState(primary_recovery_attempted=True)
+    for _ in range(6):
+        _settle(agent, _Err(502, "down"), retry=retry)
+    assert all("crash-looping" not in s for s in agent.statuses)
+    assert retry.auto_recovery_identical_failures == 0
+
+
+def test_breaker_never_trips_when_error_classes_differ():
+    agent = _Agent()
+    retry = TurnRetryState(primary_recovery_attempted=True)
+    for err in (_Err(503, "down"), _Err(502, "bad gateway"), _Err(503, "down"), _Err(502, "bad gateway")):
+        _settle(agent, err, retry=retry)
+    assert all("crash-looping" not in s for s in agent.statuses)
+    assert retry.auto_recovery_identical_failures == 1
+
+
+def test_breaker_disabled_by_zero_limit_keeps_the_ladder_running():
+    agent = _Agent(identical_limit=0)
+    retry = TurnRetryState(primary_recovery_attempted=True)
+    for _ in range(3):
+        verdict, retry = _settle(agent, _Err(502, "down"), retry=retry)
+    assert verdict.action == "continue"
+    assert retry.auto_recovery_identical_failures == 3  # tracked, but never acted on
+    assert all("crash-looping" not in s for s in agent.statuses)

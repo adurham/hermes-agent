@@ -1543,6 +1543,15 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
     except (TypeError, ValueError):
         agent._auto_recovery_cycles = 5
+    # Circuit breaker for the ladder: after this many consecutive IDENTICAL failures (same provider,
+    # endpoint, model and error class, with no token received) within 30 min, stop the ladder and
+    # report the crash-loop instead of replaying the request. 0 disables the breaker.
+    try:
+        agent._auto_recovery_identical_failure_limit = max(
+            int(_agent_section.get("auto_recovery_identical_failure_limit", 2)), 0
+        )
+    except (TypeError, ValueError):
+        agent._auto_recovery_identical_failure_limit = 2
 
     # FORK: cache-strip-on-overload escape hatch (agent.strip_cache_on_overload). The
     # overloaded-error handler arms ``_strip_cache_for_overload`` for one retry request;
