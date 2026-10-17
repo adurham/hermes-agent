@@ -311,25 +311,31 @@ def _project_committed(authority, ref, operation, result):
     if operation == 'delete':
         # Repeat local retirement on an exact retry too: publication may have
         # failed after the transaction committed. Never repeat the event.
-        retire_live_sessions(authority, result['deleted_ids'])
+        retire_live_sessions(authority, result['deleted_ids'], require_fence=True)
 
 
-def retire_live_sessions(authority, session_ids):
+def retire_live_sessions(authority, session_ids, *, require_fence=False):
     """Drop committed deletions from this owner's memory: routes, launch secrets, live sessions
-    and their cached agents. Shared by canonical delete and the owner-run bulk prune."""
+    and their cached agents. Shared by canonical delete and the owner-run bulk prune.
+    ``require_fence``: refuse ``storage_unavailable`` when the shared routing fence could not be
+    written (canonical delete, whose exact retry replays the receipt and repeats this call)."""
     store = getattr(authority.runner, 'session_store', None)
+    fence_error = None
     if store is not None:
         store.retire_runtime_sessions(session_ids)
-        # The delete transaction dropped routing rows in the owning store; a multiplexed
-        # secondary's routes live in the launch home's shared index, so drop them there too
-        # rather than wait for the next whole-index save (a crash in between left a route to
-        # a deleted session, #138826).
+        # The delete transaction fenced and dropped routes in the owning store; a multiplexed
+        # secondary's routes live in the launch home's shared index, so the store fences them
+        # there too (markers + drop in one transaction). Without the marker in THAT database a
+        # whole-index snapshot taken before this delete and saved after it restored the route
+        # (#138826). A failure surfaces after the rest of the cleanup: an exact retry replays the
+        # committed receipt and repeats this fence.
         routing = getattr(store, '_routing_db', None)
         if session_ids and routing is not None and routing.db_path != authority.db.db_path:
             try:
-                routing._delete_routing_entries_for_sessions(set(session_ids))
-            except Exception:
-                logger.warning('could not drop shared routing rows for deleted sessions', exc_info=True)
+                store.fence_retired_routes(session_ids)
+            except Exception as exc:
+                logger.warning('could not fence shared routing rows for deleted sessions', exc_info=True)
+                fence_error = exc
     from gateway.session_policy import release_launch_secrets
     release_launch_secrets(authority, session_ids)
     from tools.async_delegation import allow_for_session
@@ -345,3 +351,5 @@ def retire_live_sessions(authority, session_ids):
     release_editor_mcp(authority, session_ids)
     from gateway.session_worker_construct import release_session_prefill
     release_session_prefill(authority, session_ids)
+    if fence_error is not None and require_fence:
+        raise RuntimeStoreError('storage_unavailable') from fence_error
