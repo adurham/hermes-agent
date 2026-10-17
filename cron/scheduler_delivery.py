@@ -781,9 +781,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     disposition, never a send) and flagged on the job.
     """
     import hashlib
-    import json
     import tempfile
-    import uuid
     from hermes_constants import get_hermes_home
     from hermes_cli.profiles import get_profile_dir
     from tools.bot_live_delivery import (
@@ -815,60 +813,23 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             BOT_CHAT_POLICY_PLATFORM, load_user_config_effective(home / "config.yaml"))
         if deferred is not None and not (home / "state.db").is_file():
             return f"bot-chat delivery target no longer exists: {home}; do not resend"
-        # run_one_job/claim_fire attach the durable execution id before delivery. The
-        # transient fallback supports direct helper callers, never deduping recurring
-        # runs by their (potentially identical) output or previous last_run timestamp.
-        run_id = job.get("execution_id")
-        if not run_id:
-            run_id = job.setdefault("_bot_chat_run_id", uuid.uuid4().hex)
-        key = hashlib.sha256(json.dumps(
-            [str(source_home), job_id, str(run_id), str(home)],
-            ensure_ascii=False, separators=(",", ":"),
-        ).encode("utf-8")).hexdigest()
-        if deferred is not None:
-            key = deferred["id"]
+        key = _bot_chat.delivery_key(job, job_id, source_home, home, deferred)
         # Read BEFORE discovery: the previous owner may have exited after accepting.
         # No receipt state, including ambiguous/failed, authorizes a CLI replay.
         receipt = read_delivery_result(home, key)
         if receipt is None and not deferred:
-            from cron.bot_chat_delivery import defer, read_pending
-            from tools.bot_live_delivery import find_canonical_owner
-
-            pending = read_pending(key)
-            # Suppression is a durable disposition, not a send: record it under the producer
-            # lock even when a live owner exists, so the deferred lane never replays it.
-            if (pending is not None or suppress_notification
-                    or (find_canonical_live_owner(home) is None and find_canonical_owner(home))):
-                pending = defer(key, dict(job), content, profile, home,
-                                for_failure=for_failure, suppressed=suppress_notification)
+            pending = _bot_chat.admit_pending(key, job, content, profile, home, for_failure=for_failure,
+                                              suppressed=suppress_notification)
             if pending is not None:
-                status = pending["status"]
-                target = f"bot-chat:{profile_label}"
-                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
-                    "status": status, "delivery_id": key}
-                if status == "suppressed":
-                    job["_notification_all_targets_suppressed"] = True
-                return None if status in ("settled", "suppressed") else f"{target} {status} (receipt {key}): completion unverified; do not resend"
+                return _bot_chat.pending_outcome(job, pending, key, profile_label)
         if receipt is None:
             owner = find_canonical_live_owner(home)
             if owner is not None:
                 receipt = deliver_to_live_owner(home, owner, message, delivery_id=key,
                     **({"notification_category": "diagnostic"} if for_failure else {}))
         if receipt is not None:
-            if (receipt["message"] != message
-                    or receipt.get("notification_category", "result") != ("diagnostic" if for_failure else "result")):
-                raise ValueError("delivery id already belongs to a different payload")
-            status = receipt["status"]
-            target = f"bot-chat:{profile_label}"
-            receipts = job.setdefault("_bot_chat_delivery_receipts", {})
-            receipts[target] = {"status": status, "delivery_id": key}
-            logger.info("Job '%s': Bot Chat %s receipt=%s status=%s",
-                        job_id, profile_label, key, status)
-            if status == "settled":
-                return None
-            detail = ("completion unverified; do not resend" if status in ("queued", "claimed")
-                      else receipt.get("error") or receipt.get("reason") or "not completed")
-            return f"{target} {status} (receipt {key}): {detail}"
+            return _bot_chat.receipt_outcome(job, receipt, message, key, profile_label,
+                                             for_failure=for_failure)
     except Exception as exc:
         # Discovery/admission uncertainty must never open a second-writer fallback.
         return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
@@ -909,15 +870,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     except Exception as exc:  # unreadable target home / secret source: refuse, never fall back
         return _fail(f"bot-chat delivery to profile '{profile_label}' could not build the target "
                      f"profile's environment ({type(exc).__name__}: {exc}); do not resend")
-    if home.parent.name != "profiles":
-        argv += ["-p", "default"]
-    if argv[1:3] == ["-m", "hermes_cli.main"]:
-        # served_profile_child_env strips Hermes-owned PYTHONPATH entries; under a store-python
-        # shim the bare interpreter then cannot import the package find_spec just proved (#122487).
-        from pathlib import Path
-
-        from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
-        pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
+    _bot_chat.pin_cli_target(argv, env, home)
 
     query_file = None
     try:
@@ -2126,6 +2079,7 @@ def _deliver_result(
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched
+from cron import scheduler_delivery_bot_chat as _bot_chat
 from cron import scheduler_delivery_origin as _origin
 from cron import scheduler_preflight as _preflight
 from cron import scheduler_script as _script
