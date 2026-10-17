@@ -144,12 +144,22 @@ def _kitty_class_width(cp: int, ambiguous_wide: bool = False) -> int:
 
 
 def test_fixture_is_pinned_to_shipped_xterm_version():
-    """The committed fixture must name the addon version it was generated from."""
+    """The committed fixture must name the addon version it was generated from.
+
+    The shipped version is the committed lockfile's resolution, not an installed
+    node_modules tree: the Python test environment never runs npm.
+    """
     data = json.loads(_FIXTURE.read_text())
     assert data["source"] == "@xterm/addon-unicode11"
     assert data.get("addon_version"), "fixture must record the addon version"
-    pkg = json.loads((_REPO_ROOT / "node_modules/@xterm/addon-unicode11/package.json").read_text())
-    assert data["addon_version"] == pkg["version"], (
+    lock = json.loads((_REPO_ROOT / "package-lock.json").read_text(encoding="utf-8"))
+    shipped = {
+        entry["version"]
+        for path, entry in lock["packages"].items()
+        if path.endswith("node_modules/@xterm/addon-unicode11")
+    }
+    assert shipped, "package-lock.json no longer resolves @xterm/addon-unicode11"
+    assert shipped == {data["addon_version"]}, (
         "@xterm/addon-unicode11 version changed — regenerate the fixture: "
         "node scripts/gen_xterm_width_fixture.js"
     )
