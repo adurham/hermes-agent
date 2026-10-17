@@ -2566,3 +2566,13 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `test_plugin_runtime_disable_gate.py` 235 passed / 25 skipped; differential old-vs-new over 182
   activate/asset cases (bodies, homes, traversal, symlinks, missing, dirs): 0 mismatches.
   `scripts/check` green. Branch `claude/c-0023-dashboard-ui-async-6cb3zu`.
+- 2026-10-17 — C-0024 `hermes_cli/web_routers/files.py` async: ASYNC240 2 → 0. `get_media`'s path
+  resolve / suffix / media-root / `is_file` / size checks moved into a same-file sync
+  `_media_target` run via `await asyncio.to_thread(...)` (same checks, order, status codes and
+  details); `stream_upload_to_path`'s temp cleanup is `await asyncio.to_thread(tmp_path.unlink,
+  missing_ok=True)` (cancellation-cleanup test still green). New invariant test (red on main):
+  `get_media` path probes run off the loop. Left: unflagged sync I/O in other `async def` routes
+  (`list_managed_files`, upload/mkdir/delete, `mkstemp`/`os.replace` in `stream_upload_to_path`) —
+  not ratchet hits, separate change. Tests: unit's 5 files + content-filter scrub 266 passed / 31
+  skipped; ops callers (credential pool, destructive scope, admin endpoints) 82 passed.
+  `scripts/check` ok. FILE_LINES 992 → 997. Branch `claude/fix-c0024-files-async-30hdxi`. Next: C-0025.
