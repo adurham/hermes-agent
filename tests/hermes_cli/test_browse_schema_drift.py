@@ -546,6 +546,7 @@ def slowed(path, *a, **kw):
     conn = original(path, *a, **kw)
     read_only = "mode=ro" in str(path)
     if holding_lock() and (phase == "integrity") == read_only:
+        print("slowed", flush=True)  # this process holds gateway.lock and the slow phase begins
         return SlowConnection(conn)
     return conn
 
@@ -561,11 +562,12 @@ except HTTPException as exc:
 
 
 @pytest.mark.platforms("linux", "macos")
-@pytest.mark.parametrize("phase", ["integrity", "ddl"])
+@pytest.mark.parametrize("phase", ["ddl"])
 def test_slow_browse_reconcile_gives_up_inside_its_budget_and_boot_waits_it_out(tmp_path, phase):
-    """R2-2: the busy timeout bounds lock contention, not SQL execution. A slow integrity scan or
-    DDL must be interrupted at the browse budget (rolled back, retryable 503), and gateway boot's
-    wait must outlast that budget, so a slow browse never turns into a startup refusal."""
+    """R2-2: the busy timeout bounds lock contention, not SQL execution. A slow DDL must be
+    interrupted at the browse budget (rolled back, retryable 503), and gateway boot's wait must
+    outlast that budget, so a slow browse never turns into a startup refusal. (The integrity scan
+    no longer runs under the lock: see test_gateway_boot_never_waits_on_a_slow_integrity_scan.)"""
     import os
     import subprocess
     import sys
@@ -584,10 +586,7 @@ def test_slow_browse_reconcile_gives_up_inside_its_budget_and_boot_waits_it_out(
     browse = subprocess.Popen([sys.executable, "-c", _SLOW_BROWSE, str(path), phase], env=os.environ,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert browse.stdout.readline().strip() == "started"
-    deadline = time.monotonic() + 20
-    while not (home / "gateway.lock").exists() or not (home / "gateway.lock").read_text():
-        assert time.monotonic() < deadline and browse.poll() is None
-        time.sleep(0.01)
+    assert browse.stdout.readline().strip() == "slowed", "the slow phase never ran under the lock"
     booting = ProfileOwnership()
     try:
         bootstrap._reserve_waiting_out_browse_reconcile(booting, [home])  # default wait: must not raise
@@ -653,3 +652,149 @@ def test_failed_column_reconcile_rolls_back_every_addition(tmp_path):
     assert "nothing was changed" in str(caught.value.detail)
     assert _file_state(path) == before
     assert "last_read_at" not in _session_columns(path)
+
+
+# ── Maintainer review round 3 ──
+
+
+def test_integrity_scan_runs_before_the_lock_is_taken(tmp_path, monkeypatch):
+    """alt-glitch C1 / pastels m3: the full integrity scan is read-only and scales with file size.
+    It must run BEFORE gateway.lock is reserved, so a booting gateway never waits on it."""
+    import hermes_state_reconcile as reconcile
+    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+
+    home = _profile_home(tmp_path)
+    path = _lagging_store_with_history(home, rows=10)
+    original = reconcile._integrity_problem
+    lock_free_during_scan = []
+
+    def spy(p, budget):
+        other = ProfileOwnership()  # its own open file description: conflicts with any holder
+        try:
+            other.reserve([home])
+            lock_free_during_scan.append(True)
+        except OwnershipConflict:
+            lock_free_during_scan.append(False)
+        finally:
+            other.close()
+        return original(p, budget)
+
+    monkeypatch.setattr(reconcile, "_integrity_problem", spy)
+    _open_session_db_at_path(path, read_only=True).close()
+    assert lock_free_during_scan == [True]
+    assert "last_read_at" in _session_columns(path)
+
+
+_SLOW_SCAN_BROWSE = r'''
+import sys, time
+from pathlib import Path
+import hermes_cli.sqlite_safe_read as ssr
+from fastapi import HTTPException
+from hermes_cli.web_server_sessions import _open_session_db_at_path
+
+original = ssr.connect_tracked
+
+class SlowScan:
+    """A real read-only connection whose integrity scan runs slowly (a cold multi-GB store)."""
+    def __init__(self, conn):
+        self._conn = conn
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+    def execute(self, sql, *a):
+        if sql.startswith("PRAGMA integrity_check"):
+            time.sleep(float(sys.argv[2]))
+        return self._conn.execute(sql, *a)
+    def close(self):
+        return self._conn.close()
+
+def slowed(path, *a, **kw):
+    conn = original(path, *a, **kw)
+    return SlowScan(conn) if "mode=ro" in str(path) else conn
+
+ssr.connect_tracked = slowed
+print("started", flush=True)
+try:
+    _open_session_db_at_path(Path(sys.argv[1]), read_only=True).close()
+    print("RESULT 200", flush=True)
+except HTTPException as exc:
+    print("RESULT", exc.status_code, exc.detail, flush=True)
+'''
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_gateway_boot_never_waits_on_a_slow_integrity_scan(tmp_path):
+    """alt-glitch C1: a browse scanning a large lagging store must not hold gateway.lock. A gateway
+    booting mid-scan takes the lock at once; the browse then sees the owner and writes nothing."""
+    import os
+    import subprocess
+    import sys
+    import time
+
+    from gateway.runtime_ownership import ProfileOwnership
+
+    home = _profile_home(tmp_path)
+    path = _lagging_store_with_history(home, rows=50)
+    before = _file_state(path)
+    browse = subprocess.Popen([sys.executable, "-c", _SLOW_SCAN_BROWSE, str(path), "4"], env=os.environ,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert browse.stdout.readline().strip() == "started"
+    time.sleep(1.5)  # inside the 4 s scan
+    booting = ProfileOwnership()
+    try:
+        started = time.monotonic()
+        booting.reserve([home])  # no boot wait: the lock must simply be free
+        took = time.monotonic() - started
+        out = browse.communicate(timeout=60)[0]
+    finally:
+        booting.close()
+    assert took < 0.5
+    result = next(line for line in out.splitlines() if line.startswith("RESULT"))
+    assert result.startswith("RESULT 503"), out
+    assert "running gateway owns it" in result
+    assert _file_state(path) == before
+
+
+class _SlowProgress:
+    """A real sqlite connection whose VM runs slowly, chaining to the code's own progress handler."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.set_progress_handler(None, 0)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def set_progress_handler(self, handler, n):
+        import time
+
+        def slow():
+            time.sleep(0.01)
+            return handler() if handler is not None else 0
+        return self._conn.set_progress_handler(slow, 5)
+
+    def close(self):
+        return self._conn.close()
+
+
+def test_slow_integrity_scan_is_bounded_and_not_repeated_on_every_poll(tmp_path, monkeypatch):
+    """alt-glitch C1: the pre-lock scan still has a deadline (retryable 503, nothing written), and a
+    sidebar polling the same unchanged store does not rescan the whole file on every request."""
+    import hermes_cli.sqlite_safe_read as ssr
+    import hermes_state_reconcile as reconcile
+
+    path = _lagging_store_with_history(_profile_home(tmp_path), rows=400)
+    before = _file_state(path)
+    original = ssr.connect_tracked
+    monkeypatch.setattr(ssr, "connect_tracked", lambda p, *a, **kw: (
+        _SlowProgress(original(p, *a, **kw)) if "mode=ro" in str(p) else original(p, *a, **kw)))
+    monkeypatch.setattr(reconcile, "BROWSE_INTEGRITY_BUDGET_S", 0.3)
+    scans = []
+    real_scan = reconcile._integrity_problem
+    monkeypatch.setattr(reconcile, "_integrity_problem", lambda p, b: scans.append(1) or real_scan(p, b))
+    for _ in range(3):
+        with pytest.raises(HTTPException) as caught:
+            _open_session_db_at_path(path, read_only=True)
+        assert caught.value.status_code == 503
+        assert "nothing was changed" in caught.value.detail and "Retry" in caught.value.detail
+    assert scans == [1]
+    assert _file_state(path) == before

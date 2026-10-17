@@ -8,6 +8,7 @@ surgery (:func:`repair_declarative_schema`). Neither runs while a gateway owns t
 import contextlib
 import logging
 import sqlite3
+import threading
 from contextlib import closing
 from pathlib import Path
 
@@ -104,12 +105,15 @@ def _reconcile_locked(path, backup, report):
 # profile's gateway runtime lock. When a gateway owns the store it is the only writer: refuse
 # by name with the remedy instead of becoming a second one.
 #
-# The lock is held for at most BROWSE_RECONCILE_BUDGET_S: one monotonic deadline, starting once the
-# lock is held, covers the integrity check and the DDL transaction. A sqlite progress handler
-# interrupts either one past the deadline (the DDL rolls back) and browse answers a retryable 503.
-# Busy waiting does not run the progress handler, so each connection's busy timeout is capped at
-# the remaining budget. Gateway boot waits this budget out (gateway.run_bootstrap).
+# The full integrity scan is read-only and scales with file size, so it runs BEFORE the lock, on its
+# own budget (BROWSE_INTEGRITY_BUDGET_S); a gateway booting meanwhile simply takes the lock. The
+# scan is tied to the file's (size, mtime) signature: if the store changed by the time the lock is
+# held, the scan no longer vouches for it and nothing is written. Under the lock only the cheap drift
+# re-check and the DDL run, cut off by BROWSE_RECONCILE_BUDGET_S (a sqlite progress handler; the DDL
+# rolls back). Busy waiting does not run the progress handler, so each connection's busy timeout is
+# capped at the remaining budget. Gateway boot waits this budget out (gateway.run_bootstrap).
 BROWSE_RECONCILE_BUDGET_S = 3.0
+BROWSE_INTEGRITY_BUDGET_S = 20.0
 _BUDGET_PROGRESS_OPS = 1000
 
 
@@ -263,6 +267,31 @@ def _wait_for_sibling_reconcile(path: Path, home: Path):
         time.sleep(_BROWSE_SIBLING_POLL_S)
 
 
+def _store_signature(path: Path):
+    """(size, mtime_ns) of the main file and its WAL: any committed write changes one of them."""
+    out = []
+    for p in (path, path.with_name(path.name + '-wal')):
+        try:
+            st = p.stat()
+            out.append((st.st_size, st.st_mtime_ns))
+        except FileNotFoundError:
+            out.append(None)
+    return tuple(out)
+
+
+_scan_guard = threading.Lock()
+_scan_locks: dict[str, threading.Lock] = {}
+# Signatures whose integrity scan could not finish inside BROWSE_INTEGRITY_BUDGET_S. A sidebar polls
+# every few seconds; rescanning a multi-GB file on each poll only burns I/O for the same answer.
+_scan_too_slow: dict[str, tuple] = {}
+
+
+def _path_scan_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _scan_guard:
+        return _scan_locks.setdefault(key, threading.Lock())
+
+
 def reconcile_drift_for_browse(path: Path) -> bool:
     """Catch a lagging store up for a read-only browse; True when DDL ran, False when already current.
 
@@ -271,6 +300,7 @@ def reconcile_drift_for_browse(path: Path) -> bool:
     when the lagging store is also damaged. Never touches a store missing its history tables:
     recreating them empty would hide lost sessions."""
     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance, live_runtime_owner
+    from hermes_state_health import STORAGE_CORRUPT, mark_storage_corrupt, storage_corrupt_reason, storage_state
 
     reason = schema_drift_reason(path)
     if reason is None:
@@ -291,41 +321,76 @@ def reconcile_drift_for_browse(path: Path) -> bool:
             f"Session store for profile '{label}' is behind this Hermes version ({drift}), and a "
             f'running gateway owns it, so browsing will not write to it. Restart that gateway '
             f'(`{remedy}`) to bring the store up to date.', owned=True)
+
+    def too_slow(what):
+        return DeclarativeDriftError(
+            f"Session store for profile '{label}' is behind this Hermes version ({reason}) and could "
+            f'not be {what} while browsing; nothing was changed and the list was not cleared. Retry, '
+            f"or start this profile's gateway (`{remedy}`) or run `hermes sessions repair` to bring "
+            'it up to date.')
+
+    # A gateway already owns it: never scan or write, refuse by name at once. Probe the flock itself
+    # (a record left by a released holder still names a live PID), holding it for no work at all.
     try:
         with exclusive_maintenance([home], purpose=BROWSE_RECONCILE_PURPOSE):
-            budget = _Budget(BROWSE_RECONCILE_BUDGET_S)
-            # Re-check under the lock: a gateway that started and released between probes
-            # (or a sibling browse) may already have caught the store up.
-            if schema_drift_reason(path) is None:
-                return False
-            # A failing column probe hides damage elsewhere in the file: additive DDL is not
-            # corruption recovery, so never write into a store that is not verified clean.
-            if problem := _integrity_problem(path, budget):
-                raise CorruptStoreError(problem)
-            try:
-                _apply_additive_schema(path, budget)
-            except DeclarativeDriftError as exc:
-                raise DeclarativeDriftError(
-                    f"Session store for profile '{label}' is behind this Hermes version and could not "
-                    f'be caught up ({exc}); nothing was changed. Run `hermes sessions repair` for that '
-                    'profile.') from exc
-    except BrowseBudgetExceeded as exc:
-        raise DeclarativeDriftError(
-            f"Session store for profile '{label}' is behind this Hermes version ({reason}) and could "
-            f'not be verified and caught up within {BROWSE_RECONCILE_BUDGET_S:.0f}s while browsing; '
-            f'nothing was changed and the list was not cleared. Retry, or start this profile\'s '
-            f'gateway (`{remedy}`) or run `hermes sessions repair` to bring it up to date.') from exc
+            pass
     except OwnershipConflict as exc:
         if live_runtime_owner(home) is not None:
             raise owned(reason) from exc
-        # No gateway: the holder is a sibling browse's own reconcile (or other short maintenance).
-        if (pending := _wait_for_sibling_reconcile(path, home)) is None:
+    # Already latched corrupt in this process: do not rescan a damaged file on every poll.
+    if storage_state(path) == STORAGE_CORRUPT:
+        raise CorruptStoreError(storage_corrupt_reason(path) or 'latched corrupt')
+    key = str(path.resolve())
+    with _path_scan_lock(path):  # one scan per store per process; concurrent polls wait for it
+        if schema_drift_reason(path) is None:
             return False
-        if live_runtime_owner(home) is not None:
-            raise owned(pending) from exc
-        raise DeclarativeDriftError(
-            f"Session store for profile '{label}' is being brought up to date by another Hermes "
-            f'process ({pending}). Retry in a moment; the list was not cleared.') from exc
+        signature = _store_signature(path)
+        if _scan_too_slow.get(key) == signature:
+            raise too_slow(f'verified within {BROWSE_INTEGRITY_BUDGET_S:.0f}s')
+        # Outside gateway.lock: read-only, may be slow on a large store, never blocks a gateway boot.
+        try:
+            problem = _integrity_problem(path, _Budget(BROWSE_INTEGRITY_BUDGET_S))
+        except BrowseBudgetExceeded as exc:
+            _scan_too_slow[key] = signature
+            raise too_slow(f'verified within {BROWSE_INTEGRITY_BUDGET_S:.0f}s') from exc
+        if problem:
+            # A failing column probe hides damage elsewhere in the file: additive DDL is not
+            # corruption recovery, so never write into a store that is not verified clean.
+            mark_storage_corrupt(path, problem)
+            raise CorruptStoreError(problem)
+        try:
+            with exclusive_maintenance([home], purpose=BROWSE_RECONCILE_PURPOSE):
+                budget = _Budget(BROWSE_RECONCILE_BUDGET_S)
+                # Re-check under the lock: a gateway that started and released between probes
+                # (or a sibling browse) may already have caught the store up.
+                if schema_drift_reason(path) is None:
+                    return False
+                if _store_signature(path) != signature:
+                    # Written since the scan (a gateway that came and went): the scan no longer
+                    # vouches for these bytes. Refuse; the next browse scans the new state.
+                    raise DeclarativeDriftError(
+                        f"Session store for profile '{label}' changed while browsing verified it "
+                        f'({reason}); nothing was changed. Retry in a moment; the list was not cleared.')
+                try:
+                    _apply_additive_schema(path, budget)
+                except DeclarativeDriftError as exc:
+                    raise DeclarativeDriftError(
+                        f"Session store for profile '{label}' is behind this Hermes version and could not "
+                        f'be caught up ({exc}); nothing was changed. Run `hermes sessions repair` for that '
+                        'profile.') from exc
+        except BrowseBudgetExceeded as exc:
+            raise too_slow(f'caught up within {BROWSE_RECONCILE_BUDGET_S:.0f}s') from exc
+        except OwnershipConflict as exc:
+            if live_runtime_owner(home) is not None:
+                raise owned(reason) from exc
+            # No gateway: the holder is a sibling browse's own reconcile (or other short maintenance).
+            if (pending := _wait_for_sibling_reconcile(path, home)) is None:
+                return False
+            if live_runtime_owner(home) is not None:
+                raise owned(pending) from exc
+            raise DeclarativeDriftError(
+                f"Session store for profile '{label}' is being brought up to date by another Hermes "
+                f'process ({pending}). Retry in a moment; the list was not cleared.') from exc
     if after := schema_drift_reason(path):
         raise DeclarativeDriftError(
             f"Session store for profile '{label}' is behind this Hermes version and could not be "
