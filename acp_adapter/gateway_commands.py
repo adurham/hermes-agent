@@ -87,12 +87,23 @@ async def _rewind(agent, client, session_id, command, arg):
     if not retry and arg and not (arg.isdigit() and int(arg) > 0):
         raise CommandRefused('Usage: /undo [N]')
     turns = 1 if retry else int(arg or 1)
-    payload = _rewind_to(turns, retry=retry)
+    target = _rewind_to(turns, retry=retry)
+
+    def payload(snapshot):
+        # The target check runs on the CAS snapshot before anything is archived: its refusal (an
+        # image turn /retry cannot resend) is the command's reply. Transport errors stay failures.
+        try:
+            return target(snapshot)
+        except GatewayClientError as exc:
+            raise CommandRefused(str(exc)) from exc
     result = await agent._mutations.apply(client, session_id, 'rewind', payload)
-    agent._mutations.acknowledge(session_id, 'rewind', payload)
     if result.get('status') == 'nothing' or not result.get('rewound_count'):
+        agent._mutations.acknowledge(session_id, 'rewind', payload)
         return t('cli.session.retry_no_user_message' if retry else 'cli.session.undo_no_user_message'), None
+    # Retained until the refresh lands: a repeat after a lost refresh replays this rewind instead of
+    # deriving a new target from the already-shortened transcript (which would drop the turn before).
     agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+    agent._mutations.acknowledge(session_id, 'rewind', payload)
     content = (result.get('target_message') or {}).get('content')
     if retry:
         from agent.context_compressor import retryable_user_text
