@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -29,10 +28,14 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
+from tests.e2e.core.cli_tmux._classic import kill_home_processes
 from tests.e2e.core.providers._native_helpers import make_home, messages
 from tests.fakes.providers.vertex import PROJECT, REGION, SA_EMBEDDED_PROJECT, FakeVertex, Say, hermes_setup
 
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux")
+pytestmark = [
+    pytest.mark.platforms("linux"),  # cleanup finds this home's processes through /proc
+    pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux"),
+]
 
 BG_MARK = "VERTEXBG"
 BG_ANSWER = "VERTEXBG-ANSWER from the background agent"
@@ -50,24 +53,7 @@ def _respond(record: dict[str, Any]) -> Say:
     return Say(BG_ANSWER if BG_MARK in _user_text(record["body"]) else "foreground ok")
 
 
-def _home_pids(hermes_home: Path) -> set[int]:
-    needle = f"HERMES_HOME={hermes_home}".encode()
-    found = set()
-    for entry in os.listdir("/proc"):
-        if entry.isdigit() and int(entry) != os.getpid():
-            try:
-                with open(f"/proc/{entry}/environ", "rb") as fh:
-                    if needle in fh.read().split(b"\0"):
-                        found.add(int(entry))
-            except OSError:
-                continue
-    return found
-
-
-def test_vertex_config_label_and_background_task_through_the_gateway(tmp_path: Path) -> None:
-    fake = FakeVertex(tmp_path / "fake", project=PROJECT, region=REGION, sa_project=SA_EMBEDDED_PROJECT,
-                      script=_respond, aux=lambda _r: Say("Vertex title"))
-    fake.start()
+def _drive(fake: FakeVertex, tmp_path: Path):
     nh = make_home(tmp_path / "h", **hermes_setup(fake, extra_config={"display": {"interface": "cli"}}))
     sock = f"hermes-e2e-vertex-{uuid.uuid4().hex[:8]}"
     env = nh.env({**fake.child_env(), "TERM": "xterm-256color"})
@@ -98,9 +84,9 @@ def test_vertex_config_label_and_background_task_through_the_gateway(tmp_path: P
     # `-t file` like the sibling Vertex suites: the default toolset trips #109115 (terminal.notify's
     # anyOf schema), tracked in test_native_vertex_tools.py, which is not what this test is about.
     argv = [sys.executable, "-m", "hermes_cli.main", "chat", "--cli", "--yolo", "-t", "file"]
-    subprocess.run(["tmux", "-L", sock, "-f", os.devnull, "new-session", "-d", "-s", "p", "-x", "160", "-y", "48",
-                    "-c", str(nh.project), *argv], env=env, check=True, timeout=30)
     try:
+        subprocess.run(["tmux", "-L", sock, "-f", os.devnull, "new-session", "-d", "-s", "p", "-x", "160", "-y", "48",
+                        "-c", str(nh.project), *argv], env=env, check=True, timeout=30)
         tmux("set", "-g", "remain-on-exit", "on")
         wait_for("\u2624 ", timeout=120)  # the status bar: the app owns the terminal (raw mode)
 
@@ -117,15 +103,25 @@ def test_vertex_config_label_and_background_task_through_the_gateway(tmp_path: P
         submit(f"/bg {BG_MARK} compute something")
         wait_for(BG_ANSWER, timeout=120)
     finally:
-        tmux("kill-server")
-        subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "stop"], cwd=nh.project, env=env,
-                       capture_output=True, text=True, timeout=60, check=False)
-        for pid in _home_pids(nh.hermes_home):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-        fake.stop()
+        # Independent steps: a tmux failure or a graceful stop that times out still kills every
+        # process on this home (the fake server is stopped by the caller's own finally).
+        try:
+            tmux("kill-server")
+        finally:
+            kill_home_processes(nh.hermes_home, lambda: subprocess.run(
+                [sys.executable, "-m", "hermes_cli.main", "gateway", "stop"], cwd=nh.project, env=env,
+                capture_output=True, text=True, timeout=60, check=False))
+    return nh
+
+
+def test_vertex_config_label_and_background_task_through_the_gateway(tmp_path: Path) -> None:
+    fake = FakeVertex(tmp_path / "fake", project=PROJECT, region=REGION, sa_project=SA_EMBEDDED_PROJECT,
+                      script=_respond, aux=lambda _r: Say("Vertex title"))
+    fake.start()
+    try:
+        nh = _drive(fake, tmp_path)
+    finally:
+        fake.stop()  # independent of the CLI cleanup inside _drive, which may itself raise
 
     bg = [r for r in fake.requests if BG_MARK in _user_text(r.get("body") or {})]
     assert bg and all(r.get("status") == 200 and not r.get("rejected") for r in bg), bg

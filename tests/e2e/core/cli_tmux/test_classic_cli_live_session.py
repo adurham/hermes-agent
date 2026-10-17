@@ -32,7 +32,8 @@ import pytest
 from tests.e2e.core.cli_tmux._classic import ClassicHome, Pane, last_user, text_of
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux")
+# Process discovery, cleanup and the witness's pid accounting read /proc.
+pytestmark = pytest.mark.platforms("linux")
 
 WITNESS_DIR = Path(__file__).resolve().parent / "witness"
 TITLE = "Live session title"
@@ -115,11 +116,13 @@ class Session:
         self.steps = 0
 
     def step(self, name: str, action: Callable[[], Any], needles: list[str], *, timeout: float = 60.0,
-             quiet: float = 2.0, full: bool = False) -> str:
+             quiet: float = 2.0) -> str:
+        """Run *action*, then require one of *needles* to appear in output produced after the step's
+        latest input (``Pane.wait``): text already in the scrollback never satisfies a step."""
         self.steps += 1
         started = time.monotonic()
         action()
-        hit = self.pane.wait(needles, timeout, full=full) if needles else True
+        hit = self.pane.wait(needles, timeout) if needles else True
         self.pane.settle(quiet=quiet, timeout=30)
         text = self.pane.scrollback()
         self.timings.append((name, round(time.monotonic() - started, 1)))
@@ -136,6 +139,35 @@ def _witness(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def check_witness_coverage(events: list[dict[str, Any]], spawned: list[tuple[int, str]]) -> None:
+    """Every process the harness spawned, and the gateway daemon, attested at startup.
+
+    The negative checks below read "no event" as "did not happen"; that holds only for a process
+    whose witness was loaded. A spawned CLI with no ``startup`` line (``PYTHONPATH`` lost, witness
+    not imported) fails here instead of passing those checks vacuously.
+    """
+    attested = {e["pid"] for e in events if e["kind"] == "startup"}
+    assert spawned, "the harness recorded no spawned CLI process"
+    missing = [(pid, argv) for pid, argv in spawned if pid not in attested]
+    assert not missing, f"spawned CLI processes with no witness startup attestation: {missing}"
+    assert any(e["kind"] == "startup" and e["role"] == "gateway" for e in events), \
+        "no gateway daemon attested: its tool/agent/state.db events cannot be trusted"
+
+
+def test_witness_coverage_rejects_an_uninstrumented_cli() -> None:
+    """The negative ownership checks are not vacuous: a silent, unattested CLI fails coverage."""
+    gateway = {"pid": 2, "ppid": 1, "role": "gateway", "kind": "startup", "detail": "-m gateway run"}
+    cli = {"pid": 10, "ppid": 1, "role": "cli", "kind": "startup", "detail": "-m chat"}
+    check_witness_coverage([gateway, cli], [(10, "chat")])
+    with pytest.raises(AssertionError, match="no witness startup attestation"):
+        check_witness_coverage([gateway, cli], [(10, "chat"), (11, "chat -c")])
+    with pytest.raises(AssertionError, match="no gateway daemon attested"):
+        check_witness_coverage([cli], [(10, "chat")])
+    with pytest.raises(AssertionError, match="recorded no spawned"):
+        check_witness_coverage([gateway], [])
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux")
 def test_classic_cli_live_session_runs_every_turn_in_the_gateway(tmp_path: Path) -> None:
     llm = FakeLLMServer(_main, aux=_aux)
     witness = tmp_path / "witness.jsonl"
@@ -159,36 +191,35 @@ def test_classic_cli_live_session_runs_every_turn_in_the_gateway(tmp_path: Path)
             s.step("clarify_modal", lambda: pane.submit("LIVE08 ask me"), ["LIVE08 which colour?"], quiet=1.5)
             s.step("clarify_answer", lambda: (pane.keys("Enter"), pane.paste_gap(), pane.keys("Enter")), ["LIVE08 done"])
             s.step("delegate", lambda: pane.submit("LIVE09 delegate"), ["LIVE09 done"], timeout=90)
-            s.step("delegate_result", lambda: None, ["LIVECHILD result"], timeout=90, full=True, quiet=3.0)
+            s.step("delegate_result", lambda: None, ["LIVECHILD result"], timeout=90, quiet=3.0)
             s.step("bg_process", lambda: pane.submit("LIVE10 background"), ["LIVE10 done"])
-            s.step("bg_process_notice", lambda: None, ["live10-bg-finished"], timeout=60, full=True, quiet=3.0)
+            s.step("bg_process_notice", lambda: None, ["live10-bg-finished"], timeout=60, quiet=3.0)
             for command, needle in SLASH_SWEEP:
-                s.step(command, lambda c=command: pane.submit(c), [needle], timeout=30, full=True)
+                s.step(command, lambda c=command: pane.submit(c), [needle], timeout=30)
             s.step("/model", lambda: pane.submit("/model"), ["Model Picker"], timeout=30, quiet=1.5)
             s.step("/model close", lambda: pane.keys("Escape"), [], quiet=1.0)
             s.step("/bg", lambda: pane.submit("/bg LIVE14 compute something"), ["LIVE14 background answer"],
-                   timeout=90, full=True)
+                   timeout=90)
             s.step("/btw", lambda: pane.submit("/btw LIVE15 what did I ask about?"), ["LIVE15 side answer"],
-                   timeout=90, full=True)
+                   timeout=90)
             s.step("/branch", lambda: pane.submit("/branch"), ["Branched session"], timeout=30, quiet=3.0)
             # The sweep's /reasoning retired the CLI's agent (main's _retire_agent, rebuilt on the next
             # turn) and /compress refuses without one, as on main: run a turn first.
             s.step("turn on the branch", lambda: pane.submit("LIVE31 on the branch"), ["LIVE31 ok."])
             s.step("/compress", lambda: pane.submit("/compress"), ["Compressed:", "No changes from compression"],
-                   timeout=90, quiet=3.0, full=True)
+                   timeout=90, quiet=3.0)
             s.step("interrupt", lambda: (pane.submit("LIVE20 long story"), pane.wait(["w030"], 60), pane.keys("C-c")),
-                   ["Interrupted"], timeout=45, full=True, quiet=3.0)
+                   ["Interrupted"], timeout=45, quiet=3.0)
             if "THE-END" in pane.scrollback():
                 s.failures.append("interrupt: the turn streamed to THE-END")
             s.step("/new", lambda: pane.submit("/new"), ["destroys conversation state"], timeout=30, quiet=1.5)
-            s.step("/new confirm", lambda: pane.keys("Enter"), ["New session started"], timeout=30, full=True)
+            s.step("/new confirm", lambda: pane.keys("Enter"), ["New session started"], timeout=30)
             s.step("plain turn after /new", lambda: pane.submit("LIVE30 hello again"), ["LIVE30 ok."])
-            s.step("/quit", lambda: pane.submit("/quit"), ["Resume this session with:"], timeout=30, full=True)
+            s.step("/quit", lambda: pane.submit("/quit"), ["Resume this session with:"], timeout=30)
             if not pane.wait_dead(30):
                 s.failures.append("/quit: the CLI was still running 30 s later")
-            s.step("resume -c", lambda: pane.launch("-c"), ["Resumed session"], timeout=120, quiet=3.0, full=True)
-            s.step("/quit after resume", lambda: pane.submit("/quit"), ["Resume this session with:"], timeout=30,
-                   full=True)
+            s.step("resume -c", lambda: pane.launch("-c"), ["Resumed session"], timeout=120, quiet=3.0)
+            s.step("/quit after resume", lambda: pane.submit("/quit"), ["Resume this session with:"], timeout=30)
             pane.wait_dead(30)
             s.steps += 1
             piped = ch.run("chat", "-q", "LIVE01 one shot")
@@ -199,13 +230,16 @@ def test_classic_cli_live_session_runs_every_turn_in_the_gateway(tmp_path: Path)
             ch.reap()
 
     print("step timings (s):", s.timings)
-    assert not s.failures, f"{len(s.failures)}/{s.steps} steps failed:\n\n" + "\n\n".join(s.failures)
+    assert not s.failures, (f"{len(s.failures)}/{s.steps} steps failed:\n\n" + "\n\n".join(s.failures[:5])
+                            + f"\n\n{ch.diagnostics()}")
 
     events = _witness(witness)
     assert not [e for e in events if e["kind"] == "witness_error"], events
+    check_witness_coverage(events, ch.spawned)
     by_role: dict[str, Counter] = {"cli": Counter(), "gateway": Counter()}
     for e in events:
-        by_role[e["role"]][f"{e['kind']} {e['detail']}"] += 1
+        if e["kind"] != "startup":
+            by_role[e["role"]][f"{e['kind']} {e['detail']}"] += 1
     cli, gateway = by_role["cli"], by_role["gateway"]
     # The one-gateway contract: the CLI only reads and submits.
     assert not [k for k in cli if k.startswith(("agent_init", "tool "))], f"the CLI process ran agent work: {dict(cli)}"

@@ -10,6 +10,12 @@ Driver rule (the CLI reads an Enter processed within 50 ms of the last buffer ch
 newline): type with ``send-keys -l``, wait until the composer shows the text, pause, then send
 ``Enter`` separately. Each step waits for its needle, then until the screen (digits masked) has
 been static for ``quiet`` seconds.
+
+Stale output never counts: every ``submit``/``keys``/``launch`` snapshots the scrollback first, and
+``wait`` accepts a needle only when it occurs more often than in that snapshot. An unchanged
+transcript (a no-op command) therefore fails the step instead of matching old output.
+
+Linux only: process discovery and cleanup read ``/proc/<pid>/environ``.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from tests.fakes.fake_llm_provider import MODEL_ID, OFFER_VERSION
 
@@ -34,6 +41,51 @@ PROMPT = "\u276f"
 STATUS_BAR = f"\u2624 {MODEL_ID}"
 _DIGITS = re.compile(r"\d")
 _TRACEBACK = "Traceback (most recent call last)"
+
+
+def new_needle(needles: list[str], before: str, after: str) -> str | None:
+    """The first needle that occurs more often in *after* than in *before* (output produced since)."""
+    for needle in needles:
+        if after.count(needle) > before.count(needle):
+            return needle
+    return None
+
+
+def home_pids(hermes_home: Path) -> set[int]:
+    """PIDs (never this one) whose environ carries exactly ``HERMES_HOME=<hermes_home>``."""
+    needle = f"HERMES_HOME={hermes_home}".encode()
+    found: set[int] = set()
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/environ", "rb") as fh:
+                if needle in fh.read().split(b"\0"):
+                    found.add(int(entry))
+        except OSError:
+            continue
+    return found
+
+
+def kill_home_processes(hermes_home: Path, stop: Callable[[], object] | None = None) -> None:
+    """Graceful stop, then SIGTERM/SIGKILL whatever still runs against *hermes_home*.
+
+    The signal sweep runs in ``finally``: a ``stop`` that times out or raises still leaves no
+    CLI or gateway behind.
+    """
+    try:
+        if stop is not None:
+            stop()
+    finally:
+        for sig, grace in ((signal.SIGTERM, 8.0), (signal.SIGKILL, 2.0)):
+            for pid in home_pids(hermes_home):
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+            end = time.monotonic() + grace
+            while home_pids(hermes_home) and time.monotonic() < end:
+                time.sleep(0.2)
 
 BASE_CONFIG = f"""model:
   provider: custom
@@ -68,6 +120,8 @@ auxiliary:
 class ClassicHome:
     root: Path
     extra_env: dict[str, str] = field(default_factory=dict)
+    # (pid, argv) of every hermes process the harness started: tmux pane CLIs and piped runs.
+    spawned: list[tuple[int, str]] = field(default_factory=list)
 
     @property
     def home(self) -> Path:
@@ -111,35 +165,38 @@ class ClassicHome:
 
     def run(self, *args: str, timeout: float = 180.0) -> subprocess.CompletedProcess:
         """A non-TTY run (stdout piped): ``chat -q`` one-shots, ``gateway stop``."""
-        return subprocess.run(self.argv(*args), cwd=self.work, env=self.env(), capture_output=True, text=True,
-                              timeout=timeout, stdin=subprocess.DEVNULL, check=False)
+        argv = self.argv(*args)
+        with subprocess.Popen(argv, cwd=self.work, env=self.env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              stdin=subprocess.DEVNULL, text=True) as proc:
+            self.spawned.append((proc.pid, " ".join(args)))
+            try:
+                out, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+                raise subprocess.TimeoutExpired(argv, timeout, out, err) from None
+        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
     def pids(self) -> set[int]:
-        needle = f"HERMES_HOME={self.hermes_home}".encode()
-        found: set[int] = set()
-        for entry in os.listdir("/proc"):
-            if not entry.isdigit() or int(entry) == os.getpid():
-                continue
+        return home_pids(self.hermes_home)
+
+    def diagnostics(self, limit: int = 3000) -> str:
+        """The CLI's stderr and the gateway log tails: why a pane died, for a failure message."""
+        parts = []
+        for label, path in (("cli stderr", self.stderr_log), ("gateway log", self.hermes_home / "logs" / "gateway.log"),
+                            ("agent log", self.hermes_home / "logs" / "agent.log")):
             try:
-                with open(f"/proc/{entry}/environ", "rb") as fh:
-                    if needle in fh.read().split(b"\0"):
-                        found.add(int(entry))
+                text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-        return found
+            if text.strip():
+                parts.append(f"--- {label} ({path.name}) ---\n{text[-limit:]}")
+        return "\n".join(parts)
 
     def reap(self) -> None:
-        """Operator stop for the profile's gateway, then SIGTERM/SIGKILL whatever this home still runs."""
-        self.run("gateway", "stop", timeout=60)
-        for sig, grace in ((signal.SIGTERM, 8.0), (signal.SIGKILL, 2.0)):
-            for pid in self.pids():
-                try:
-                    os.kill(pid, sig)
-                except OSError:
-                    pass
-            end = time.monotonic() + grace
-            while self.pids() and time.monotonic() < end:
-                time.sleep(0.2)
+        """Operator stop for the profile's gateway, then SIGTERM/SIGKILL whatever this home still runs
+        (even when the stop times out)."""
+        kill_home_processes(self.hermes_home, lambda: self.run("gateway", "stop", timeout=60))
 
 
 class Pane:
@@ -148,6 +205,8 @@ class Pane:
     def __init__(self, ch: ClassicHome) -> None:
         self.ch = ch
         self.sock = f"hermes-e2e-classic-{uuid.uuid4().hex[:8]}"
+        # Scrollback snapshot taken just before the latest input: what `wait` must see grow.
+        self.baseline = ""
 
     def tmux(self, *args: str) -> str:
         env = {k: v for k, v in os.environ.items() if not k.startswith("TMUX")}
@@ -165,6 +224,11 @@ class Pane:
                        env={k: v for k, v in os.environ.items() if not k.startswith("TMUX")})
         self.tmux("set", "-g", "remain-on-exit", "on")
         self.tmux("set", "-g", "history-limit", "50000")
+        # `sh -c "exec env -i ... python"` keeps the pane's pid: this IS the CLI process.
+        pid = self.tmux("display-message", "-p", "-t", "p", "#{pane_pid}").strip()
+        if pid.isdigit():
+            self.ch.spawned.append((int(pid), " ".join(("chat", *args)) if args else "chat"))
+        self.baseline = ""  # a fresh tmux server: everything on it is new
 
     def screen(self) -> str:
         return self.tmux("capture-pane", "-p", "-t", "p")
@@ -176,16 +240,17 @@ class Pane:
         return self.tmux("display-message", "-p", "-t", "p", "#{pane_dead}").strip() == "1"
 
     def keys(self, *k: str) -> None:
+        self.baseline = self.scrollback()
         self.tmux("send-keys", "-t", "p", *k)
 
-    def wait(self, needles: list[str], timeout: float = 60.0, *, full: bool = False) -> str | None:
-        """The first needle seen (screen, or the whole scrollback with ``full``), None on timeout/exit."""
+    def wait(self, needles: list[str], timeout: float = 60.0, *, since: str | None = None) -> str | None:
+        """The first needle that appeared after the latest input (or after *since*), None on timeout/exit."""
+        before = self.baseline if since is None else since
         end = time.monotonic() + timeout
         while time.monotonic() < end:
-            text = self.scrollback() if full else self.screen()
-            for needle in needles:
-                if needle in text:
-                    return needle
+            hit = new_needle(needles, before, self.scrollback())
+            if hit is not None:
+                return hit
             if self.dead():
                 return None
             time.sleep(0.25)
@@ -208,10 +273,11 @@ class Pane:
         time.sleep(1.2)  # health: allow HX013 -- the gap IS the behaviour: the CLI's paste detection is time-based
 
     def submit(self, text: str) -> None:
+        self.baseline = self.scrollback()
         self.tmux("send-keys", "-t", "p", "-l", text)
-        self.wait([f"{PROMPT} {text}"[-40:]], 10)
+        self.wait([f"{PROMPT} {text}"[-40:]], 10, since=self.baseline)
         self.paste_gap()
-        self.keys("Enter")
+        self.tmux("send-keys", "-t", "p", "Enter")
 
     def wait_dead(self, timeout: float = 30.0) -> bool:
         end = time.monotonic() + timeout

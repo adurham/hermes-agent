@@ -28,7 +28,10 @@ import pytest
 from tests.e2e.core.cli_tmux._classic import PROMPT, ClassicHome, Pane, assert_no_traceback, last_user
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
-pytestmark = pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux")
+pytestmark = [
+    pytest.mark.platforms("linux"),  # the harness finds and reaps processes through /proc
+    pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux"),
+]
 
 MARKDOWN_REPLY = ("# Heading Two\n\nSome intro text for the markdown check.\n\n- alpha item\n- beta item\n"
                   "- gamma item\n\n```python\ndef hello():\n    return 'hi'\n```\n\nEnd of STEP2 reply.")
@@ -99,7 +102,8 @@ class Steps:
 
     def expect(self, name: str, needles: list[str], text: str) -> None:
         missing = [n for n in needles if n not in text]
-        assert not missing, f"step {name}: main showed {missing!r}; screen now:\n{text[-4000:]}"
+        assert not missing, (f"step {name}: main showed {missing!r}; screen now:\n{text[-4000:]}\n"
+                             f"{self.pane.ch.diagnostics()}")
 
 
 def test_classic_cli_matches_main_baseline_across_fifteen_steps(tmp_path: Path) -> None:
@@ -163,7 +167,7 @@ def test_classic_cli_matches_main_baseline_across_fifteen_steps(tmp_path: Path) 
             assert pane.wait(["w040"], 60), pane.screen()
             pane.keys("C-c")
             # The interrupt round-trips through the gateway; the notice lands when the turn ends.
-            interrupted = pane.wait(["Interrupted"], 45, full=True)
+            interrupted = pane.wait(["Interrupted"], 45)
             pane.settle(quiet=2.0, timeout=30)
             text = s.capture("08_interrupt", scrollback=True)
             assert not pane.dead(), f"08_interrupt: Ctrl+C killed the CLI (main stays at the prompt):\n{text[-3000:]}"

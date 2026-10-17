@@ -4,13 +4,17 @@ Loaded as ``sitecustomize`` by every Python process the CLI test spawns (the ``P
 for this directory is set only in that test's child env). Appends one JSON line per event to
 ``$HERMES_E2E_WITNESS``; never changes behaviour. Events:
 
+* ``startup <argv>``         emitted once, at interpreter start, by every instrumented process: the
+                             attestation that this pid is witnessed. A spawned CLI with no
+                             ``startup`` line was not instrumented, and its silence proves nothing.
 * ``agent_init <class>``     an ``AIAgent`` was constructed in this process
 * ``tool <name>``            ``tools.registry`` dispatched a tool in this process
 * ``sqlite_write <file>:<table>``  an INSERT/UPDATE/DELETE on a ``*.db`` file opened by this process
 
-``role`` is ``gateway`` when the process argv carries ``gateway``, else ``cli``. The test asserts the
-contract of the one-gateway design: the CLI process builds no agent, runs no tool and writes no
-``state.db`` row; the gateway does all three.
+``role`` is ``gateway`` for ``gateway run`` (the daemon), else ``cli``; ``ppid`` lets the test tie
+a line to the process it spawned. The test asserts the contract of the one-gateway design: every
+CLI process it started attests, builds no agent, runs no tool and writes no ``state.db`` row; the
+gateway does all three.
 """
 
 import importlib.abc
@@ -24,10 +28,18 @@ _PATH = os.environ.get("HERMES_E2E_WITNESS")
 _lock = threading.Lock()
 
 
+def _role():
+    argv = list(getattr(sys, "argv", None) or [])
+    for i, word in enumerate(argv[:-1]):
+        if word == "gateway" and argv[i + 1] == "run":
+            return "gateway"
+    return "cli"
+
+
 def _emit(kind, detail=""):
     try:
-        role = "gateway" if "gateway" in sys.argv else "cli"
-        line = json.dumps({"pid": os.getpid(), "role": role, "kind": kind, "detail": str(detail)[:200]})
+        line = json.dumps({"pid": os.getpid(), "ppid": os.getppid(), "role": _role(), "kind": kind,
+                           "detail": str(detail)[:200]})
         with _lock, open(_PATH, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except Exception:  # health: allow BLE001 -- a witness must never break the process it watches
@@ -35,6 +47,10 @@ def _emit(kind, detail=""):
 
 
 if _PATH:
+    # The attestation. At sitecustomize time ``sys.argv`` is already the command's arguments
+    # (``-m`` stands in for the module path until runpy fills it in).
+    _emit("startup", " ".join(getattr(sys, "argv", None) or []))
+
     import sqlite3
 
     _connect = sqlite3.connect
