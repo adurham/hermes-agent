@@ -608,6 +608,12 @@ export function ActiveSessionSwitcher({
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {
       event.stopImmediatePropagation?.()
+
+      // Keys are held while a delete is pending; a click must not open the row mid-delete either.
+      if (deleting) {
+        return
+      }
+
       const kind = rowKind(index)
       const clamped = Math.max(0, Math.min(index, total - 1))
 
@@ -627,7 +633,7 @@ export function ActiveSessionSwitcher({
 
       setSel(0)
     },
-    [history, items, onResume, onSelect, rowKind, total]
+    [deleting, history, items, onResume, onSelect, rowKind, total]
   )
 
   const selectedKind = rowKind(sel)
