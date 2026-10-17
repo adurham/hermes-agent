@@ -123,14 +123,16 @@ def _slash_command(text):
     return command.name if command is not None else None
 
 
-def _submit_fingerprint(session_id, text, attachments):
-    """Content identity of one logical prompt: its text and the staged image bytes (staging names
-    are disposable; the authority reconciles a retry by the same digests)."""
+def _submit_fingerprint(session_id, content):
+    """Identity of one logical prompt as the editor sent it (text, image ``data:`` bytes, remote image
+    URLs), taken before staging: a retry of the same prompt matches without re-fetching a remote image,
+    whose second download could fail or return other bytes and so change what is submitted."""
     import hashlib
-    digest = hashlib.sha256(text.encode())
-    for item in attachments:
-        with open(item['path'], 'rb') as staged:
-            digest.update(item['mime'].encode() + b'\0' + hashlib.sha256(staged.read()).digest())
+    digest = hashlib.sha256()
+    for part in [content] if isinstance(content, str) else content:
+        kind, value = ('text', part) if isinstance(part, str) else \
+            ('text', part['text']) if part.get('type') == 'text' else ('image', part['image_url']['url'])
+        digest.update(kind.encode() + len(value).to_bytes(8, 'big') + value.encode())
     return session_id, digest.hexdigest()
 
 
@@ -613,12 +615,20 @@ class GatewayACPAgent(acp.Agent):
             raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         from acp_adapter.content import _content_blocks_to_openai_user_content
         content = _content_blocks_to_openai_user_content(prompt)
-        # Only a remote image fetch leaves the loop; every other prompt stages inline, as before.
-        text, attachments = (await asyncio.to_thread(_stage_user_content, content)) if _has_remote_image(content) \
-            else _stage_user_content(content)
+        retry_key = _submit_fingerprint(session_id, content)
+        # The editor's retry of an un-acked submit resends what the owner may already hold: the staged
+        # content and input_id are reused, never prepared (a remote image fetched) a second time.
         # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
         # prompt (slash work included) retires the retained identity, so a later repeat is new work.
         retained = self._unacked.pop(session_id, None)
+        reused = retained if retained is not None and retained[0] == retry_key else None
+        if reused is not None:
+            staged = reused[2]
+        else:
+            # Only a remote image fetch leaves the loop; every other prompt stages inline, as before.
+            staged = (await asyncio.to_thread(_stage_user_content, content)) \
+                if _has_remote_image(content) else _stage_user_content(content)
+        text, attachments = staged
         command = _slash_command(text) if not attachments else None
         if command is not None:
             from acp_adapter.gateway_commands import run_command
@@ -633,8 +643,7 @@ class GatewayACPAgent(acp.Agent):
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
-        retry_key = await asyncio.to_thread(_submit_fingerprint, session_id, text, attachments)
-        input_id = retained[1] if retained is not None and retained[0] == retry_key else uuid.uuid4().hex
+        input_id = reused[1] if reused is not None else uuid.uuid4().hex
         self._submitting.add(session_id)
         try:
             # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
@@ -646,7 +655,7 @@ class GatewayACPAgent(acp.Agent):
             if not isinstance(exc, GatewayRPCError):
                 # Transport loss, timeout or cancel before the ack: the owner may hold this admission.
                 # Keep its identity for the editor's retry of the same prompt (latest 64 sessions).
-                self._unacked[session_id] = (retry_key, input_id)
+                self._unacked[session_id] = (retry_key, input_id, staged)
                 while len(self._unacked) > 64:
                     self._unacked.pop(next(iter(self._unacked)))
             self._pending_cancels.discard(session_id)
