@@ -208,8 +208,14 @@ function setMarkerBucket(profile: string, ids: readonly string[]): void {
 
 /** A messaging conversation delivers its completion to its own platform; a
  *  Desktop observer is not an unread recipient of it. */
-export function isMessagingCompletion(storedSessionId: string): boolean {
-  return isMessagingSource(resolveLoadedRow(storedSessionId)?.source)
+export function isMessagingCompletion(storedSessionId: string, profile?: string): boolean {
+  const row = profile
+    ? rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]).find(
+        r => sessionMatchesStoredId(r, storedSessionId) && profileKeyForRow(r) === normalizeProfileKey(profile)
+      )
+    : resolveLoadedRow(storedSessionId)
+
+  return isMessagingSource(row?.source)
 }
 
 /** UNREAD WRITER — the live busy→idle edge (session-states.ts) and any surface
