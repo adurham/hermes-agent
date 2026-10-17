@@ -2310,3 +2310,10 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
 - 2026-10-17 — A-128 `tests/hermes_cli/test_diff_replay_no_stale_cells.py::replay`: CC 26 → 20
   (extracted `_skip_osc`, `_paint_run`; HX011 ladder left inline). Branch
   `claude/reduce-replay-complexity-jcfmyt`. Next: next fork-only row of Next pick.
+- 2026-10-17 — C-1044 `plugins/model-providers/router/__init__.py` F821×2 (real bug): defined
+  `_DISK_TTL_SECONDS = 24 * 3600` (mirrors `hermes_cli/models_reasoning_caps`'s disk-mirror TTL);
+  an unparseable-`ts` mirror and a fresh/stale mirror now hydrate instead of NameError (line 228
+  had broken disk hydration whenever a mirror parsed). New
+  `tests/plugins/model_providers/test_router_disk_mirror.py` (4 tests, all red on base). Branch
+  `claude/fix-disk-ttl-seconds-undefined-npwxbi`. Note: upstream-identical unit, upstream carries
+  the same bug. Next: next row of Next pick.

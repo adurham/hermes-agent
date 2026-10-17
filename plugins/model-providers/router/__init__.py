@@ -34,6 +34,10 @@ _efforts_lock = threading.Lock()
 _warm_started = False
 _disk_checked = False
 
+#: Disk-mirror age past which a hydrated copy is still served but a background refresh is queued
+#: (same 24h as ``hermes_cli/models_reasoning_caps``: effort vocabularies change rarely).
+_DISK_TTL_SECONDS = 24 * 3600
+
 
 class _CacheState:
     """Efforts cache + once-only flags for one Hermes home (same names as the module slots)."""
