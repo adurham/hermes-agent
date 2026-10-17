@@ -148,9 +148,9 @@ class Machine:
     # Git for Windows on PATH (a typical developer box). False: a clean machine, where the
     # installer must stage its own pinned Git.
     system_git: bool = False
-    # Install an older commit (``base``) instead of this checkout, and update to this checkout's
+    # Install an older commit (``base_ref``) instead of this checkout, and update to this checkout's
     # HEAD instead of a synthetic NEXT: a user upgrading a real prior release.
-    base: str = ""
+    base_ref: str = ""
     path_prepend: list[str] = field(default_factory=list)
     head: str = ""
     next: str = ""
@@ -227,13 +227,13 @@ class Machine:
     def stage(self) -> None:
         """serve.git at HEAD (+ NEXT in its object store), the URL redirect, a seeded home."""
         self.root.mkdir(parents=True, exist_ok=True)
-        self.head = harness_git("-C", str(REPO_ROOT), "rev-parse", f"{self.base}^{{commit}}" if self.base else "HEAD")
+        self.head = harness_git("-C", str(REPO_ROOT), "rev-parse", f"{self.base_ref}^{{commit}}" if self.base_ref else "HEAD")
         harness_git("clone", "--bare", "--quiet", str(REPO_ROOT), str(self.serve))
         harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", self.head)
         harness_git("-C", str(self.serve), "symbolic-ref", "HEAD", "refs/heads/main")
         for key in ("uploadpack.allowAnySHA1InWant", "uploadpack.allowFilter"):
             harness_git("-C", str(self.serve), "config", key, "true")
-        self.next = (harness_git("-C", str(REPO_ROOT), "rev-parse", "HEAD") if self.base else self._mint_next())
+        self.next = (harness_git("-C", str(REPO_ROOT), "rev-parse", "HEAD") if self.base_ref else self._mint_next())
         file_url = "file:///" + str(self.serve).replace("\\", "/")
         rewrites = "".join(f"\tinsteadOf = {url}\n" for url in CANONICAL_URLS)
         (self.root / "e2e-gitconfig").write_text(f'[url "{file_url}"]\n{rewrites}', encoding="utf-8")
@@ -391,9 +391,9 @@ class Machine:
     def install(self, *, as_user: bool = False) -> Run:
         """``powershell -File install.ps1 -NonInteractive`` from a directory that is no project.
 
-        With ``base`` set it is that commit's install.ps1, the script that user downloaded then."""
+        With ``base_ref`` set it is that commit's install.ps1, the script that user downloaded then."""
         script = self.root / "install.ps1"
-        if self.base:
+        if self.base_ref:
             raw = subprocess.run([REAL_GIT, "-C", str(self.serve), "show", f"{self.head}:scripts/install.ps1"],
                                  env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
                                  capture_output=True, timeout=120, check=True).stdout
@@ -589,7 +589,7 @@ class Machine:
 
 
 def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
-                system_git: bool = False, base: str = "") -> Machine:
+                system_git: bool = False, base_ref: str = "") -> Machine:
     """A staged machine. Its work dir (serve.git, transcripts) lives under
     ``HERMES_E2E_MACHINE_ROOT`` (else ``tmp_root``); its user profile under
     ``HERMES_E2E_PROFILES_ROOT`` (CI: ``C:\\Users``), named ``[<person> ]hermes-e2e-<id>``."""
@@ -598,7 +598,7 @@ def new_machine(tmp_root: Path, base_url: str, *, label: str, person: str = "",
     profiles = os.environ.get("HERMES_E2E_PROFILES_ROOT")
     name = f"{person} hermes-e2e-{sfx}" if person else f"hermes-e2e-{sfx}"
     machine = Machine(root=base / f"{label}-{sfx}", profile_name=name, base_url=base_url,
-                      profiles_root=Path(profiles) if profiles else None, system_git=system_git, base=base)
+                      profiles_root=Path(profiles) if profiles else None, system_git=system_git, base_ref=base_ref)
     machine.stage()
     return machine
 

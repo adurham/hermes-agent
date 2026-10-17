@@ -115,7 +115,7 @@ def _machine(tmp_path_factory, srv: FakeLLMServer, label: str) -> Machine:
     from tests.e2e.core.windows_update._tokens import grant_user_profile_acl, hand_to_user
 
     machine = new_machine(tmp_path_factory.mktemp(label), srv.base_url, label=label, system_git=True,
-                          base=PRE_RUNTIME_RELEASE)
+                          base_ref=PRE_RUNTIME_RELEASE)
     # A real profile's DACL (the user owns their home), and the origin + gitconfig the user can
     # read: harness facts, so a standard-user verdict is about Hermes and nothing else.
     grant_user_profile_acl(machine.profile)
