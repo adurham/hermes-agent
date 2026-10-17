@@ -2307,3 +2307,6 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
 - 2026-10-17 — A-048 `convert_auxiliary_to_provider_first`: CC 22 → 10 (per-task phase →
   `hermes_cli/config_aux_provider_first.py::accumulate_aux_task`, CC 13); config.py 4722 → 4674
   lines (branch `claude/ratchet-convert-auxiliary-provider-5xngey`). Next: next row of Next pick.
+- 2026-10-17 — A-128 `tests/hermes_cli/test_diff_replay_no_stale_cells.py::replay`: CC 26 → 20
+  (extracted `_skip_osc`, `_paint_run`; HX011 ladder left inline). Branch
+  `claude/reduce-replay-complexity-jcfmyt`. Next: next fork-only row of Next pick.

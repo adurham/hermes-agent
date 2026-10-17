@@ -82,6 +82,30 @@ def _is_emoji_base(ch: str) -> bool:
 _CSI_RE = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z@`])")
 
 
+def _skip_osc(data: str, i: int) -> int:
+    """Index just past the OSC sequence starting at data[i] (BEL or ST terminated)."""
+    j = i + 2
+    while j < len(data) and data[j] != "\x07" and not data.startswith("\x1b\\", j):
+        j += 1
+    return j + (2 if data.startswith("\x1b\\", j) else 1)
+
+
+def _paint_run(grid: list[list[str]], run: str, x: int, y: int, columns: int, rows: int) -> int:
+    """Paint a printable run at (x, y), clamping at the last column; return the new x."""
+    j = 0
+    while j < len(run):
+        w, consumed = _cluster_width(run, j)
+        if 0 <= y < rows:
+            if 0 <= x < columns:
+                grid[y][x] = run[j]
+            for k in range(1, max(w, 1)):
+                if x + k < columns:
+                    grid[y][x + k] = "\u0000W"
+        x = min(columns - 1, x + w)
+        j += consumed
+    return x
+
+
 def replay(data: str, columns: int, rows: int = 10) -> list[str]:
     """Apply pt's byte stream to a cell grid.
 
@@ -132,10 +156,7 @@ def replay(data: str, columns: int, rows: int = 10) -> list[str]:
                 i = m.end()
                 continue
             if data.startswith("\x1b]", i):
-                j = i + 2
-                while j < len(data) and data[j] != "\x07" and not data.startswith("\x1b\\", j):
-                    j += 1
-                i = j + (2 if data.startswith("\x1b\\", j) else 1)
+                i = _skip_osc(data, i)
                 continue
             i += 1
             continue
@@ -150,17 +171,7 @@ def replay(data: str, columns: int, rows: int = 10) -> list[str]:
             continue
         nxt = data.find("\x1b", i)
         run = data[i:nxt] if nxt != -1 else data[i:]
-        j = 0
-        while j < len(run):
-            w, consumed = _cluster_width(run, j)
-            if 0 <= y < rows:
-                if 0 <= x < columns:
-                    grid[y][x] = run[j]
-                for k in range(1, max(w, 1)):
-                    if x + k < columns:
-                        grid[y][x + k] = "\u0000W"
-            x = min(columns - 1, x + w)
-            j += consumed
+        x = _paint_run(grid, run, x, y, columns, rows)
         i = nxt if nxt != -1 else len(data)
     return ["".join("\u25a1" if c == "\u0000W" else c for c in row).rstrip() for row in grid]
 
