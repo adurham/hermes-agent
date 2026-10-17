@@ -2326,3 +2326,10 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   Both turn red on every one of 14 hand mutations of the units. The holographic round-trip in
   `tests/agent/test_memory_tool_warm_dispatch.py` now skips when the provider is not installed.
   Branch `claude/add-regression-tests-slice-1-9ypeqj`. Next: next row of Next pick.
+- 2026-10-17 — A-070 `cron/scheduler_delivery.py::_deliver_to_bot_chat`: CC 28 → 20 (FUNC_LINES
+  222 → 175; file 2131 → 2085 lines); delivery-key, pending-admission/outcome, live-receipt outcome
+  and CLI-target pinning phases → new sibling `cron/scheduler_delivery_bot_chat.py` (5 functions, max
+  CC 3 / nesting 1; late-imports `logger` from the facade). All four BLE001 hits stay inline, in
+  order. 62 test files: 1245 passed, 0 failed, 6 skipped (4 gateway files need `aiohttp`, absent
+  here); differential old-vs-new over 20,000 randomized fault-injected scenarios: 0 mismatches,
+  sibling 100% line+branch (branch `claude/code-health-deliver-to-bot-chat-l1idyz`). Next: A-059.
