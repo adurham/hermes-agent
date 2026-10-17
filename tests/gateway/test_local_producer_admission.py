@@ -302,6 +302,21 @@ async def test_a_refused_replacement_leaves_the_earlier_tick_queued_and_the_fold
 
 
 @pytest.mark.asyncio
+async def test_a_tick_drained_during_a_restart_drain_leaves_the_committed_tick_queued(messaging):
+    """A restart's drain refuses the replacement (``runtime_draining``): the committed tick the
+    next owner runs stays queued, never cancelled for a replacement held only in memory."""
+    tick = lambda seq: messaging.event('heartbeat', **_tick_fields('proc_job', seq))
+    assert await _drain_one(messaging.runner, tick(1)) == 0
+    messaging.runner._draining = True
+    try:
+        assert await _drain_one(messaging.runner, tick(2)) == 1, 'a refused tick is requeued'
+    finally:
+        messaging.runner._draining = False
+    assert {key: (row['status'], row['outcome']) for key, row in _automation_rows(messaging).items()} == {
+        '["heartbeat","proc_job","proc_job-tick-1"]': ('queued', None)}
+
+
+@pytest.mark.asyncio
 async def test_a_tick_whose_replaced_tick_starts_first_is_admitted_with_only_its_own_output(messaging, monkeypatch):
     authority = messaging.authority
     tick = lambda seq: messaging.event('heartbeat', **_tick_fields('proc_job', seq))
