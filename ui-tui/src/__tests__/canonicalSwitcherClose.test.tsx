@@ -112,6 +112,20 @@ it('closeLiveView sends nothing for a canonical row this view holds no subscript
   }
 })
 
+it('a close shares the detach flight tracking: a second close in flight sends nothing (#140183 Greptile)', async () => {
+  const f = detachFixture()
+
+  try {
+    await f.attach('x')
+    const [first, second] = await Promise.all([f.lifecycle().closeLiveView('x'), f.lifecycle().closeLiveView('x')])
+
+    expect([first, second]).toEqual([{ closed: true }, null])
+    expect(detaches(f.request)).toEqual([{ session_id: 'x', subscription_id: 'sub-1', end_reason: 'tui_close' }])
+  } finally {
+    f.cleanup()
+  }
+})
+
 function mountSwitcher(onClose: (id: string) => Promise<null | { closed?: boolean; ok?: boolean }>) {
   const request = vi.fn(async (method: string, params: Record<string, unknown>) => {
     if (method === 'session.list') {

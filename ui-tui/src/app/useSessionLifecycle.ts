@@ -195,27 +195,47 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   // `endReason`: main's `session.close` stamp for a view this TUI closes for good (`tui_close` on /new or
   // a resume switch, `tui_shutdown` on exit); the owner applies it once no other viewer remains.
+  // The one path that sends `session.detach`: it serializes detaches per session (flight tracking) and
+  // forgets the subscription only while it is still the one this view holds. Resolves the owner's
+  // reply, or null when nothing was sent; a failed RPC resolves null unless `surfaceErrors` asks for
+  // the rejection (the switcher's close reports it; background detaches never do). `onlyIfHeld`: when
+  // its turn in the flight comes, send only if this view still holds that subscription (a close that
+  // queued behind another close of the same row has nothing left to end).
   const detachCanonical = useCallback(
-    (sessionId?: null | string, subscriptionId?: null | string, endReason?: CanonicalEndReason) => {
+    (
+      sessionId?: null | string,
+      subscriptionId?: null | string,
+      endReason?: CanonicalEndReason,
+      { onlyIfHeld = false, surfaceErrors = false }: { onlyIfHeld?: boolean; surfaceErrors?: boolean } = {}
+    ): Promise<null | SessionDetachResponse> => {
       if (!gw.isCanonical || !sessionId || !subscriptionId) {
-        return
+        return Promise.resolve(null)
       }
 
-      const detach = () =>
-        rpc<SessionDetachResponse>('session.detach', {
-          session_id: sessionId,
-          subscription_id: subscriptionId,
-          ...(endReason ? { end_reason: endReason } : {})
-        })
-          .then(result => {
-            if (result?.detached && canonicalSubscriptions.current.get(sessionId) === subscriptionId) {
-              canonicalSubscriptions.current.delete(sessionId)
-            }
-          })
-          .catch(() => undefined)
+      const detach = (): Promise<null | SessionDetachResponse> =>
+        onlyIfHeld && canonicalSubscriptions.current.get(sessionId) !== subscriptionId
+          ? Promise.resolve(null)
+          : rpc<SessionDetachResponse>('session.detach', {
+              session_id: sessionId,
+              subscription_id: subscriptionId,
+              ...(endReason ? { end_reason: endReason } : {})
+            }).then(raw => {
+              const result = asRpcResult<SessionDetachResponse>(raw)
+
+              if (result?.detached && canonicalSubscriptions.current.get(sessionId) === subscriptionId) {
+                canonicalSubscriptions.current.delete(sessionId)
+              }
+
+              return result
+            })
 
       const previous = canonicalDetachFlights.current.get(sessionId)
-      const pending = previous ? previous.then(detach) : detach()
+      const run = previous ? previous.then(detach) : detach()
+
+      const pending: Promise<void> = run.then(
+        () => undefined,
+        () => undefined
+      )
 
       canonicalDetachFlights.current.set(sessionId, pending)
       void pending.then(() => {
@@ -224,7 +244,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         }
       })
 
-      return pending
+      return surfaceErrors ? run : run.catch(() => null)
     },
     [gw.isCanonical, rpc]
   )
@@ -261,24 +281,19 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return null
       }
 
-      const result = asRpcResult<SessionDetachResponse>(
-        await rpc<SessionDetachResponse>('session.detach', {
-          end_reason: 'tui_close',
-          session_id: targetSid,
-          subscription_id: subscriptionId
-        })
-      )
+      const result = await detachCanonical(targetSid, subscriptionId, 'tui_close', {
+        onlyIfHeld: true,
+        surfaceErrors: true
+      })
 
       if (!result?.detached) {
         // The subscription was already stale: main had dropped this view's hold, so nothing was closed.
         return null
       }
 
-      canonicalSubscriptions.current.delete(targetSid)
-
       return { closed: true }
     },
-    [gw.isCanonical, rpc, sys]
+    [detachCanonical, gw.isCanonical, rpc, sys]
   )
 
   const disposeStaleAttachments = useCallback(() => {
