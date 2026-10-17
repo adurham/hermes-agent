@@ -16,93 +16,10 @@ from acp.schema import (
 
 from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 from hermes_constants import get_hermes_home
+from acp_adapter.gateway_reply import GatewayReplyMixin, _text
 from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
 
 logger = logging.getLogger(__name__)
-
-
-def _fetch_remote_image(url):
-    """Bytes of an editor's remote image URL, or None when it cannot be fetched.
-
-    The in-process server passed such a URL to the model as an image part; admission carries only
-    staged bytes, so the adapter downloads it through the gateway's SSRF-guarded image fetcher
-    (pre-flight and per-redirect address checks, the inbound media size cap) and stages the bytes
-    like any other image (#134889 ACP-16). Runs off the event loop (``prompt`` stages in a thread)."""
-    from gateway.platforms.base import cache_image_from_url
-    try:
-        path = asyncio.run(cache_image_from_url(url, ".img", retries=0))
-    except Exception:
-        # Boundary: an unsafe address, an HTTP error, a non-image body or a transport failure
-        # degrades to the URL as text, never a failed prompt.
-        logger.info("ACP remote image not fetched; sent as text", exc_info=True)
-        return None
-    try:
-        with open(path, "rb") as fetched:
-            return fetched.read()
-    finally:
-        with suppress(OSError):
-            os.unlink(path)
-
-
-def _has_remote_image(content):
-    return not isinstance(content, str) and any(
-        part.get('type') == 'image_url' and part['image_url']['url'].startswith(('http://', 'https://'))
-        for part in content)
-
-
-def _stage_user_content(content):
-    """Shared-converter output -> ``(text, attachments)`` for ``prompt.submit``.
-
-    Text-only prompts stay a plain string. Media parts (image ``data:`` URLs from
-    image blocks, image resource links and embedded blobs, and remote image URLs once
-    fetched) are staged as bytes in the profile image cache; the authority commits them
-    at admission. A remote image URL that cannot be fetched is kept as text so the model
-    still sees it. Blocking network I/O when ``_has_remote_image``: then call it off the loop."""
-    if isinstance(content, str):
-        return content, []
-    import base64
-    import binascii
-    from gateway.platforms.base import cache_image_from_bytes
-    from gateway.session_ingress_media import _ATTACHMENT_LIMIT, _IMAGE_EXT, sniff_image_mime
-    texts, attachments = [], []
-    for part in content:
-        if part.get('type') == 'text':
-            texts.append(part['text'])
-            continue
-        url = part['image_url']['url']
-        if len(attachments) >= _ATTACHMENT_LIMIT:
-            raise GatewayClientError('acp_content_invalid')
-        if url.startswith('data:'):
-            try:
-                raw = base64.b64decode(url.partition(',')[2], validate=True)
-            except (binascii.Error, ValueError) as exc:
-                raise GatewayClientError('acp_content_invalid') from exc
-        else:
-            raw = _fetch_remote_image(url) if url.startswith(('http://', 'https://')) else None
-            if raw is None:
-                texts.append(f"[Image attached: {url}]")
-                continue
-        # The sniffed bytes are authoritative for the staged extension and admitted type; the
-        # client's declared type (a file suffix, or image/png by default) is never trusted. A
-        # part admission cannot carry (bmp/svg, over the media cap) degrades to a text note so
-        # the user's text still runs, as main's in-process server did for oversize images.
-        mime = sniff_image_mime(raw)
-        if mime is None:
-            texts.append("[Image omitted: unsupported image format]")
-            continue
-        try:
-            path = cache_image_from_bytes(raw, _IMAGE_EXT[mime])
-        except ValueError as exc:
-            texts.append(f"[Image omitted: {exc}]")
-            continue
-        attachments.append({'path': path, 'mime': mime})
-    return "\n".join(texts), attachments
-
-
-def _text(payload):
-    """Reply text of a message frame; ``text`` may be present and null (a suppressed delivery)."""
-    text = payload.get("text")
-    return text if isinstance(text, str) else ""
 
 
 def _slash_command(text):
@@ -121,19 +38,6 @@ def _slash_command(text):
     from hermes_cli.commands import resolve_command
     command = resolve_command(name)
     return command.name if command is not None else None
-
-
-def _submit_fingerprint(session_id, content):
-    """Identity of one logical prompt as the editor sent it (text, image ``data:`` bytes, remote image
-    URLs), taken before staging: a retry of the same prompt matches without re-fetching a remote image,
-    whose second download could fail or return other bytes and so change what is submitted."""
-    import hashlib
-    digest = hashlib.sha256()
-    for part in [content] if isinstance(content, str) else content:
-        kind, value = ('text', part) if isinstance(part, str) else \
-            ('text', part['text']) if part.get('type') == 'text' else ('image', part['image_url']['url'])
-        digest.update(kind.encode() + len(value).to_bytes(8, 'big') + value.encode())
-    return session_id, digest.hexdigest()
 
 
 def _bypass_route():
@@ -157,7 +61,7 @@ def _tools_changed_notice(payload):
     return f"Editor MCP tools changed (servers: {servers}); the new tool list applies from the next turn.\n"
 
 
-class GatewayACPAgent(acp.Agent):
+class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     def __init__(self):
         self._conn = None
         self._gateway = None
@@ -181,8 +85,8 @@ class GatewayACPAgent(acp.Agent):
         self._permissions = {}
         self._admissions = {}
         self._submitting = set()
-        # Session -> (content fingerprint, input_id) of a submit whose ack never arrived. The
-        # editor's retry (that session's next prompt, same content) reuses it, so the authority
+        # Session -> (content fingerprint, input_id, staged (text, attachments)) of a submit whose ack
+        # never arrived. The editor's retry (that session's next prompt, same content) reuses it, so the authority
         # returns the same admission.
         self._unacked = {}
         # Admissions whose terminal reply one path (the pump's message.complete or a retry's
@@ -616,30 +520,10 @@ class GatewayACPAgent(acp.Agent):
             raise GatewayClientError("not_found")
         if self._has_unknown(session_id):
             raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
-        from acp_adapter.content import _content_blocks_to_openai_user_content
-        content = _content_blocks_to_openai_user_content(prompt)
-        retry_key = _submit_fingerprint(session_id, content)
-        # The editor's retry of an un-acked submit resends what the owner may already hold: the staged
-        # content and input_id are reused, never prepared (a remote image fetched) a second time.
-        # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
-        # prompt (slash work included) retires the retained identity, so a later repeat is new work.
-        retained = self._unacked.pop(session_id, None)
-        reused = retained if retained is not None and retained[0] == retry_key else None
-        if reused is not None:
-            staged = reused[2]
-        elif _has_remote_image(content):
-            # Only a remote image fetch leaves the loop. The editor's Stop during that network wait is
-            # held like one during the submit itself, and the prompt then ends without being sent.
-            self._submitting.add(session_id)
-            try:
-                staged = await asyncio.to_thread(_stage_user_content, content)
-            finally:
-                self._submitting.discard(session_id)
-            if session_id in self._pending_cancels:
-                self._pending_cancels.discard(session_id)
-                return PromptResponse(stop_reason='cancelled')
-        else:
-            staged = _stage_user_content(content)
+        prepared = await self._prepare_submit(session_id, prompt)
+        if prepared is None:
+            return PromptResponse(stop_reason='cancelled')
+        retry_key, input_id, staged = prepared
         text, attachments = staged
         command = _slash_command(text) if not attachments else None
         if command is not None:
@@ -655,7 +539,6 @@ class GatewayACPAgent(acp.Agent):
         submit = {'text': text}
         if attachments:
             submit['attachments'] = attachments
-        input_id = reused[1] if reused is not None else uuid.uuid4().hex
         self._submitting.add(session_id)
         try:
             # Inside the try: a failed reconnect is as ambiguous for a retained identity as a lost ack.
@@ -716,6 +599,32 @@ class GatewayACPAgent(acp.Agent):
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
                               usage=turn_usage(self._usage.get(session_id)))
+
+    async def _prepare_submit(self, session_id, prompt):
+        """``(retry_key, input_id, (text, attachments))`` for one ACP prompt, or None when the editor's Stop
+        arrived while it was staged."""
+        from acp_adapter.content import _content_blocks_to_openai_user_content
+        from acp_adapter.gateway_media import stage_user_content, submit_fingerprint
+        content = _content_blocks_to_openai_user_content(prompt)
+        retry_key = submit_fingerprint(session_id, content)
+        # Only this session's very next prompt may be the editor's retry of an un-acked submit; any
+        # prompt (slash work included) retires the retained identity, so a later repeat is new work.
+        retained = self._unacked.pop(session_id, None)
+        if retained is not None and retained[0] == retry_key:
+            # The retry resends what the owner may already hold: the staged content and input_id are
+            # reused, never prepared (a remote image fetched) a second time.
+            return retained
+        # The editor's Stop during staging (a remote image download) is held like one during the
+        # submit itself, and the prompt then ends without being sent.
+        self._submitting.add(session_id)
+        try:
+            staged = await stage_user_content(content)
+        finally:
+            self._submitting.discard(session_id)
+        if session_id in self._pending_cancels:
+            self._pending_cancels.discard(session_id)
+            return None
+        return retry_key, uuid.uuid4().hex, staged
 
     async def _settled_receipt(self, client, held_id, session_id, receipt):
         admission_id = receipt["admission_id"]
@@ -846,81 +755,6 @@ class GatewayACPAgent(acp.Agent):
             finally:
                 self._settling.discard(aid)
 
-    async def _project_tool(self, kind, sid, editor_id, aid, payload):
-        """``tool.start`` / ``tool.complete`` as the in-process callbacks projected them (#134889 ACP-15)."""
-        from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
-        # In-process turns publish ``tool_name``; managed workers publish ``name``.
-        tool_name = payload.get("tool_name") or payload.get("name") or "tool"
-        call_id = payload["tool_call_id"]
-        if kind == "tool.start":
-            # Deltas before a tool call are commentary the final reply does not repeat: close
-            # that segment so ``message.complete`` measures only the final's own stream, and end
-            # that assistant message so the text after the tool opens a new one (a new ``messageId``).
-            self._close_segment(aid)
-            self._end_message(sid)
-            args = coerce_tool_args(payload.get("args"))
-            self._tool_args[(sid, call_id)] = (tool_name, args, aid)
-            if self._conn:
-                await self._conn.session_update(session_id=editor_id, update=build_tool_start(call_id, tool_name, args))
-            return
-        name, args, _ = self._tool_args.pop((sid, call_id), (tool_name, {}, aid))
-        result = payload.get("result")
-        if self._conn:
-            # ``is_error`` is the executor's verdict: a cancelled or failed tool may return plain text the
-            # result heuristic reads as success.
-            await self._conn.session_update(session_id=editor_id, update=build_tool_complete(
-                call_id, name, result=result if isinstance(result, str) else None, function_args=args,
-                is_error=payload.get("is_error") is True))
-
-    async def _finish_reply(self, sid, editor_id, aid, payload):
-        """Show the settled reply's unseen remainder, then end the turn: its reply's id closes, and a tool
-        call it left open (blocked by a guard, an approval denied) ends ``failed``, as the in-process agent
-        flushed them at turn end. Shared by ``message.complete`` and a retry's terminal receipt."""
-        remainder = self._final_remainder(aid, payload)
-        if remainder and self._conn:
-            await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, remainder))
-        self._end_message(sid)
-        await self._flush_open_tools(sid, editor_id, aid)
-
-    async def _flush_open_tools(self, sid, editor_id, aid):
-        """Close every call admission *aid* started and never completed (``failed``: it produced no result)."""
-        from acp_adapter.tools import build_tool_abandoned
-        for key in [key for key, held in self._tool_args.items() if key[0] == sid and held[2] == aid]:
-            name, _, _ = self._tool_args.pop(key)
-            if self._conn:
-                await self._conn.session_update(session_id=editor_id, update=build_tool_abandoned(key[1], name))
-
-    def _chunk(self, sid, text, *, thought=False):
-        """An assistant (or thought) chunk carrying the session's current ``messageId``: ACP clients group
-        chunks into one reply by it and start a new bubble when it changes."""
-        from acp_adapter.events import AssistantMessageIdAllocator
-        update = (acp.update_agent_thought_text if thought else acp.update_agent_message_text)(text)
-        update.message_id = self._message_ids.setdefault(sid, AssistantMessageIdAllocator()).current()
-        return update
-
-    def _end_message(self, sid):
-        if (ids := self._message_ids.get(sid)) is not None:
-            ids.close()
-
-    async def _project_side_update(self, kind, sid, editor_id, payload):
-        """Turn events outside the reply text, as the in-process server projected them.
-
-        ``reasoning.delta``: the model's reasoning as thought chunks. It never enters the reply's segments,
-        so ``message.complete``'s final remainder is unchanged.
-        ``todo.updated``: the owner's full todo snapshot (published for a LOCAL session's turn, which an ACP
-        session is) as the native ``plan`` update Zed renders as its task panel (#134889 ACP-5)."""
-        if kind == "reasoning.delta":
-            text = _text(payload)
-            update = self._chunk(sid, text, thought=True) if text else None
-        else:
-            import json
-            from acp_adapter.events import _build_plan_update_from_todo_result
-            todos = payload.get("todos")
-            update = _build_plan_update_from_todo_result(json.dumps({"todos": todos})) \
-                if isinstance(todos, list) else None
-        if update is not None and self._conn:
-            await self._conn.session_update(session_id=editor_id, update=update)
-
     async def _project_session_state(self, kind, sid, editor_id, payload):
         if kind == "session.usage":
             await self._project_usage(sid, editor_id, payload)
@@ -953,33 +787,6 @@ class GatewayACPAgent(acp.Agent):
             from acp_adapter.gateway_session_meta import title_update
             await self._conn.session_update(session_id=editor_id, update=title_update(title))
 
-    def _close_segment(self, aid):
-        streamed = self._streamed.pop(aid, "")
-        if streamed.strip():
-            self._segments.setdefault(aid, []).append(streamed)
-
-    def _final_remainder(self, aid, payload):
-        """The part of the settled reply the editor has not been shown yet (exactly-once text)."""
-        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
-
-        text = _text(payload)
-        streamed = self._streamed.pop(aid, "")
-        shown = self._segments.pop(aid, [])
-        # Local interrupt status is metadata; ACP carries it in stop_reason.
-        if not text or (payload.get("outcome") == "cancelled"
-                        and text.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)):
-            return ""
-        if payload.get("response_reused") is True and (streamed or shown):
-            # The owner names the final as the reply already painted (never inferred from text).
-            return ""
-        if text.startswith(streamed):
-            remainder = text[len(streamed):]
-            # An unstreamed final the owner already published as an interim segment.
-            return "" if not streamed and text.strip() in {s.strip() for s in shown} else remainder
-        if text.strip() == streamed.strip():
-            return ""
-        return "\n\n" + text
-
     def _permission(self, session_id, prompt):
         answer = {"approval": self._answer_permission, "clarify": self._answer_clarify}.get(prompt.get("kind"))
         if answer is None or self._conn is None:
@@ -998,21 +805,6 @@ class GatewayACPAgent(acp.Agent):
         if self._permissions.get(key) is task and (task.cancelled() or task.exception() is not None
                                                    or task.result() is not True):
             del self._permissions[key]
-
-    async def _close_card(self, editor_id, tool_call, options, response):
-        """The editor shows a permission request's ``tool_call`` as a pending bubble; once it is answered,
-        close it as the in-process agent did (``permissions.await_permission``): ``completed`` for an allow,
-        ``failed`` for a reject or a dismissal (#134889 ACP-15)."""
-        outcome = getattr(response, "outcome", None)
-        allowed = getattr(outcome, "outcome", None) == "selected" and any(
-            option.option_id == getattr(outcome, "option_id", None) and option.kind.startswith("allow")
-            for option in options)
-        try:
-            await self._conn.session_update(session_id=editor_id, update=acp.update_tool_call(
-                tool_call.tool_call_id, status="completed" if allowed else "failed"))
-        except Exception:
-            # Boundary: display only; a failed close must never cost the user's answer its delivery.
-            logger.debug("ACP permission card %s not closed", tool_call.tool_call_id, exc_info=True)
 
     async def _answer_clarify(self, session_id, prompt):
         from acp.schema import AllowedOutcome
