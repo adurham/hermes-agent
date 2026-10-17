@@ -28,10 +28,13 @@ class FakeClient:
         self.steered = []
         self.steer_status = "queued"
         self.tail_error = None
+        self.list_error = None
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
         if method == "subagent.list":
+            if self.list_error:
+                raise self.list_error
             return {"subagents": self.children, "delegations": []}
         if method == "subagent.tail":
             if self.tail_error:
@@ -98,6 +101,26 @@ def test_idle_session_without_children_does_not_poll_the_roster(gateway):
     monitor = SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=False))
     monitor.refresh()
     assert not any(method == "subagent.list" for method, _ in client.calls)
+
+
+def test_failing_roster_reads_age_out_the_cached_children(gateway):
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_cli.gateway_client import GatewayRPCError
+    agent, client = gateway
+    monitor = SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=False))
+    view = gateway_tools.process_view()
+    view.subagents = list(client.children)  # children were listed before the gateway stopped answering
+    view._subagents_seen = time.time()
+    client.list_error = GatewayRPCError("unavailable")
+    monitor.refresh()
+    assert [r["subagent_id"] for r in monitor.entries] == ["sa-0-1"]  # one failed read keeps the roster
+    view._subagents_polled, view._subagents_seen = 0.0, time.time() - 61
+    monitor.refresh()
+    assert monitor.entries == []  # no answer for a minute: the ghost rows go
+    view._subagents_polled = 0.0
+    calls = len(client.calls)
+    monitor.refresh()
+    assert len(client.calls) == calls  # and an idle session stops polling
 
 
 def test_detail_view_paints_the_cached_tail_and_only_the_tick_asks_the_gateway(gateway):
