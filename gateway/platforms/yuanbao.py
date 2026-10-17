@@ -1770,12 +1770,12 @@ class ConnectionManager:
         self._adapter = adapter
         self._ws = None  # websockets connection
         self._connect_id: Optional[str] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
-        self._recv_task: Optional[asyncio.Task] = None
+        self._heartbeat_task = self._recv_task = None  # type: Optional[asyncio.Task]
         self._pending_acks: dict[str, asyncio.Future] = {}
         self._pending_pong: Optional[asyncio.Future] = None
         self._consecutive_hb_timeouts = self._reconnect_attempts = 0
         self._reconnecting: bool = False
+        self._reconnect_tasks: set[asyncio.Task] = set()  # strong refs: the loop only holds tasks weakly
         # Debounce buffer aggregating multi-part inbound messages: sender key -> frames / timer
         self._inbound_buffer: dict[str, list] = {}
         self._inbound_timers: dict[str, asyncio.TimerHandle] = {}
@@ -1832,25 +1832,20 @@ class ConnectionManager:
         return False
 
     async def _dial(self, token_data: dict) -> bool:
-        """Adopt the sign-token bot_id, open the WS (built-in ping/pong disabled) and run AUTH_BIND;
-        cleans up on auth failure."""
+        """Adopt the sign-token bot_id, open the WS (built-in ping/pong disabled) and run AUTH_BIND; cleans up on auth failure."""
         if token_data.get("bot_id"):
             self._adapter._bot_id = str(token_data["bot_id"])
-        self._ws = await asyncio.wait_for(
-            websockets.connect(  # type: ignore[attr-defined]
-                self._adapter._ws_url, ping_interval=None, ping_timeout=None, close_timeout=5,
-                happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
-            ),
-            timeout=CONNECT_TIMEOUT_SECONDS,
-        )
+        self._ws = await asyncio.wait_for(websockets.connect(  # type: ignore[attr-defined]
+            self._adapter._ws_url, ping_interval=None, ping_timeout=None, close_timeout=5,
+            happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
+        ), timeout=CONNECT_TIMEOUT_SECONDS)
         if not await self._authenticate(token_data):
             await self._cleanup_ws()
             return False
         return True
 
     def _connected(self, *, cancel_existing: bool) -> None:
-        """Post-AUTH bookkeeping shared by open() and reconnect: mark connected, (re)start loops,
-        register as the active adapter."""
+        """Post-AUTH bookkeeping shared by open() and reconnect: mark connected, (re)start loops, register as the active adapter."""
         self._reconnect_attempts = 0
         self._adapter._mark_connected()
         self._start_loops(cancel_existing=cancel_existing)
@@ -2099,7 +2094,13 @@ class ConnectionManager:
     def schedule_reconnect(self) -> None:
         """Schedule a reconnect only if running and not already reconnecting."""
         if self._adapter._running and not self._reconnecting:
-            asyncio.create_task(self._reconnect_with_backoff())
+            self._reconnect_tasks.add(task := asyncio.create_task(self._reconnect_with_backoff()))
+            task.add_done_callback(self._reap_reconnect)
+
+    def _reap_reconnect(self, task: asyncio.Task) -> None:
+        self._reconnect_tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            logger.error("[%s] Reconnect task failed: %s", self._adapter.name, exc, exc_info=exc)
 
     async def _reconnect_with_backoff(self) -> bool:
         if self._reconnecting:
@@ -2121,9 +2122,7 @@ class ConnectionManager:
             await asyncio.sleep(wait)
             await self._cleanup_ws()
             try:
-                token_data = await SignManager.force_refresh(
-                    adapter._app_key, adapter._app_secret, adapter._api_domain, route_env=adapter._route_env,
-                )
+                token_data = await SignManager.force_refresh(adapter._app_key, adapter._app_secret, adapter._api_domain, route_env=adapter._route_env)
                 if not await self._dial(token_data):
                     logger.warning("[%s] Re-auth failed on attempt %d", adapter.name, attempt + 1)
                     continue
