@@ -396,7 +396,9 @@ def control_snapshot(authority, ref):
         _safe_goal_snapshot, _safe_loop_snapshot, _safe_heartbeat_snapshot,
         _snapshot_revision, _snapshot_updated_at,
     )
+    # Compression carries goal/loop/heartbeat to the continuation: read the current segment.
     target = physical_target(authority, ref)
+    target = authority.db.get_compression_tip(target) or target
     states = []
     for kind, cls in [('goal', GoalState), ('loop', LoopState), ('heartbeat', HeartbeatState)]:
         raw = authority.db.get_meta(kind + ':' + target)
