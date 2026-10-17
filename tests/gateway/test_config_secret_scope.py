@@ -383,6 +383,24 @@ def test_an_unrelated_route_edit_keeps_an_auxiliary_and_fallback_key(tmp_path, m
     assert recovered['fallback_providers']['api_key'] == 'K-fb'
 
 
+@pytest.mark.parametrize('spelling', ['http://GOOD.invalid/v1', 'http://good.invalid/v1/', 'HTTP://good.invalid:80/v1'])
+def test_a_cosmetic_url_respelling_keeps_the_key(tmp_path, monkeypatch, spelling):
+    """@unsupportedpastels minor: host case, a trailing slash or the scheme's default port is the same
+    endpoint (normalize_route_base_url), so re-spelling it is not a moved endpoint."""
+    cfg = {**_BASE, 'model': {**_BASE['model'], 'api_key': 'K-model'},
+           'providers': {'team': {'base_url': _A, 'api_key': 'K-team'}},
+           'auxiliary': {'compression': {'provider': 'team', 'model': 'm', 'api_key': 'K-aux'}}}
+    owner, policy = _bind(tmp_path, monkeypatch, cfg)
+
+    def respell(c):
+        c['model']['base_url'] = spelling
+        c['providers']['team']['base_url'] = spelling
+    recovered = _repointed(policy, respell).config(owner())
+    assert recovered['model']['api_key'] == 'K-model'
+    assert recovered['providers']['team']['api_key'] == 'K-team'
+    assert recovered['auxiliary']['compression']['api_key'] == 'K-aux'
+
+
 def _loopback():
     """Two real loopback HTTP servers recording the Authorization each request carries."""
     import threading

@@ -158,6 +158,16 @@ def _resolved(owner, block, config):
     return list(resolved_route(block, config))
 
 
+# Endpoint fields holding a URL: digested in normalize_route_base_url's form, so a re-spelling of the same
+# endpoint (host case, a trailing slash, the scheme's default port) is not a moved endpoint.
+_URL_KEYS = ('base_url', 'api', 'url')
+
+
+def _url(value):
+    from hermes_cli.route_identity import normalize_route_base_url
+    return normalize_route_base_url(str(value or '').strip())
+
+
 def _binding(config, path):
     """Digest of the endpoint the secret at *path* authenticates in the frozen *config* (a terminal-scope
     secret, ``path[0] is None``, authenticates no endpoint)."""
@@ -167,9 +177,13 @@ def _binding(config, path):
     if isinstance(block, dict) and _route_owner(config, path) is not None:
         # A route's key authenticates what it resolves to: a named ``providers:`` entry's URL included.
         endpoint['resolved'] = _resolved(owner, block, config)
+        endpoint['resolved'][-1] = _url(endpoint['resolved'][-1])
     elif isinstance(block, dict) and path[0] in _ENTRY_SECTIONS:
         from hermes_cli.runtime_provider_custom import _entry_url
-        endpoint['resolved'] = str(_entry_url(block) or '')
+        endpoint['resolved'] = _url(_entry_url(block))
+    for key in _URL_KEYS:
+        if isinstance(endpoint.get(key), str):
+            endpoint[key] = _url(endpoint[key])
     return hashlib.sha256(json.dumps([list(path), endpoint], sort_keys=True).encode()).hexdigest()
 
 
