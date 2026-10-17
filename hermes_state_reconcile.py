@@ -176,7 +176,7 @@ def _lockless_gateway_holder(path: Path) -> str | None:
             try:
                 import psutil
                 argv = psutil.Process(pid).cmdline() or None
-            except Exception:
+            except (ImportError, OSError, psutil.Error):  # gone, denied, or no psutil: not provably ours
                 argv = None
         if argv and _looks_like_hermes(argv) and 'gateway' in argv[1:]:
             return describe_holder_pid(pid)
@@ -365,6 +365,32 @@ def _reserve_for_ddl(home: Path, path: Path, owned):
         yield schema_drift_reason(path) is None
 
 
+def _verify_clean_before_lock(path: Path, too_slow):
+    """The pre-lock phase of the browse catch-up: a full read-only integrity scan OUTSIDE gateway.lock
+    (it may be slow on a large store and must never block a gateway boot). Returns the file signature
+    the scan vouches for. Raises :class:`CorruptStoreError` for a damaged store (latched, so polls do
+    not rescan it) and ``too_slow()`` when the scan cannot finish in its budget (remembered for the
+    same signature, so a polling sidebar does not rescan a multi-GB file every few seconds)."""
+    from hermes_state_health import STORAGE_CORRUPT, mark_storage_corrupt, storage_corrupt_reason, storage_state
+    if storage_state(path) == STORAGE_CORRUPT:
+        raise CorruptStoreError(storage_corrupt_reason(path) or 'latched corrupt')
+    key = str(path.resolve())
+    signature = _store_signature(path)
+    if _scan_too_slow.get(key) == signature:
+        raise too_slow()
+    try:
+        problem = _integrity_problem(path, _Budget(BROWSE_INTEGRITY_BUDGET_S))
+    except BrowseBudgetExceeded as exc:
+        _scan_too_slow[key] = signature
+        raise too_slow() from exc
+    if problem:
+        # A failing column probe hides damage elsewhere in the file: additive DDL is not
+        # corruption recovery, so never write into a store that is not verified clean.
+        mark_storage_corrupt(path, problem)
+        raise CorruptStoreError(problem)
+    return signature
+
+
 def reconcile_drift_for_browse(path: Path) -> bool:
     """Catch a lagging store up for a read-only browse; True when DDL ran, False when already current.
 
@@ -373,7 +399,6 @@ def reconcile_drift_for_browse(path: Path) -> bool:
     when the lagging store is also damaged. Never touches a store missing its history tables:
     recreating them empty would hide lost sessions."""
     from gateway.runtime_ownership import OwnershipConflict, live_runtime_owner
-    from hermes_state_health import STORAGE_CORRUPT, mark_storage_corrupt, storage_corrupt_reason, storage_state
 
     reason = schema_drift_reason(path)
     if reason is None:
@@ -419,27 +444,10 @@ def reconcile_drift_for_browse(path: Path) -> bool:
             raise owned(reason) from exc
     if holder := _lockless_gateway_holder(path):
         raise owned(reason, holder)
-    # Already latched corrupt in this process: do not rescan a damaged file on every poll.
-    if storage_state(path) == STORAGE_CORRUPT:
-        raise CorruptStoreError(storage_corrupt_reason(path) or 'latched corrupt')
-    key = str(path.resolve())
     with _path_scan_lock(path):  # one scan per store per process; concurrent polls wait for it
         if schema_drift_reason(path) is None:
             return False
-        signature = _store_signature(path)
-        if _scan_too_slow.get(key) == signature:
-            raise too_slow()
-        # Outside gateway.lock: read-only, may be slow on a large store, never blocks a gateway boot.
-        try:
-            problem = _integrity_problem(path, _Budget(BROWSE_INTEGRITY_BUDGET_S))
-        except BrowseBudgetExceeded as exc:
-            _scan_too_slow[key] = signature
-            raise too_slow() from exc
-        if problem:
-            # A failing column probe hides damage elsewhere in the file: additive DDL is not
-            # corruption recovery, so never write into a store that is not verified clean.
-            mark_storage_corrupt(path, problem)
-            raise CorruptStoreError(problem)
+        signature = _verify_clean_before_lock(path, too_slow)
         try:
             with _reserve_for_ddl(home, path, owned) as current:
                 if current:

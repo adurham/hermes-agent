@@ -740,7 +740,7 @@ def test_gateway_boot_never_waits_on_a_slow_integrity_scan(tmp_path):
     browse = subprocess.Popen([sys.executable, "-c", _SLOW_SCAN_BROWSE, str(path), "4"], env=os.environ,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert browse.stdout.readline().strip() == "started"
-    time.sleep(1.5)  # inside the 4 s scan
+    time.sleep(1.5)  # health: allow HX013 -- the child scan is a fixed 4 s stand-in; boot must land mid-scan
     booting = ProfileOwnership()
     try:
         started = time.monotonic()
@@ -770,7 +770,7 @@ class _SlowProgress:
         import time
 
         def slow():
-            time.sleep(0.01)
+            time.sleep(0.01)  # health: allow HX013 -- the slowed VM IS the behaviour under test (cold disk)
             return handler() if handler is not None else 0
         return self._conn.set_progress_handler(slow, 5)
 
