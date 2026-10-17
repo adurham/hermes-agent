@@ -2444,3 +2444,17 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   Lines kept flat by packing the placeholders and two table lines. 26 Feishu/adapter test files: 420
   passed, 2 failed — the same 2 on base (`test_feishu.py` webhook tests, no `aiohttp` in the test env).
   `python scripts/check` green. Branch `claude/fix-feishu-adapter-f821-vfjpql`.
+- 2026-10-17 — C-0014 `gateway/platforms/whatsapp_cloud.py` async: ASYNC230×1 + ASYNC240×4 → 0
+  (file hits 13 → 8; the 8 BLE001 hits untouched, in place and in order). `_upload_media`'s
+  exists/getsize and the upload `open()` now hop through `asyncio.to_thread` (the handle still
+  streams into the multipart upload; stale `# noqa: ASYNC230` removed), `send_voice`'s `.mp3`
+  exists check likewise. Sibling instances of the same class, not flagged by ruff, fixed too: the
+  inbound cache `write_bytes`, the transient `.ogg` `os.unlink`, and the ≤100KB document read
+  `_inject_document_text` (now run via `to_thread` from `_build_message_event_from_cloud`). Exception
+  paths unchanged (mkdir still raises, write still caught as `OSError`, open errors still logged
+  and returned). 11 test files referencing the adapter: 226 passed, 0 failed; old-vs-new
+  differential over 150 upload cases (no client / missing / directory / oversized / unreadable ×
+  post ok / raise / 500 / no id), 4 download and 5 injection cases: 0 behavioural mismatches.
+  Left: `rich_sent_store.lookup` (sync, called from the async event builder) is another module's
+  API, not this unit. `python scripts/check` green. Branch
+  `claude/fix-whatsapp-cloud-async-rules-4zw8mf`. Next: C-0017 (`gateway/platforms/signal.py`, fork-only).

@@ -528,14 +528,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Upload a local file to Graph /media. Returns ``(media_id, None)`` or ``(None, error)``."""
         if self._http_client is None:
             return None, "Not connected"
-        if not os.path.exists(file_path):
+        if not await asyncio.to_thread(os.path.exists, file_path):
             return None, f"File not found: {file_path}"
-        size, cap = os.path.getsize(file_path), _MEDIA_SIZE_LIMITS.get(media_kind, _MEDIA_SIZE_LIMITS["document"])
+        size, cap = await asyncio.to_thread(os.path.getsize, file_path), _MEDIA_SIZE_LIMITS.get(media_kind, _MEDIA_SIZE_LIMITS["document"])
         if size > cap:
             return None, f"File {os.path.basename(file_path)} is {size} bytes; Cloud API {media_kind} cap is {cap} bytes"
         mime_type = mime_type or mimetypes.guess_type(file_path)[0] or _DEFAULT_MIME.get(media_kind, "application/octet-stream")
         try:
-            with open(file_path, "rb") as fh:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+            with await asyncio.to_thread(open, file_path, "rb") as fh:  # the handle is streamed to the upload
                 files = {"file": (os.path.basename(file_path), fh, mime_type), "messaging_product": (None, "whatsapp"), "type": (None, mime_type)}
                 resp = await self._http_client.post(self._graph_url("media"), headers=self._auth_headers(json_body=False), files=files)
         except Exception as exc:
@@ -615,7 +615,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Voice message: ``audio/ogg; codecs=opus`` renders as a voice bubble, so a
         local MP3 (Hermes TTS output) is converted via ffmpeg first; other audio is sent as-is."""
         mime_type: Optional[str] = None
-        if not audio_path.startswith(_HTTP_PREFIXES) and audio_path.lower().endswith(".mp3") and os.path.exists(audio_path):
+        if not audio_path.startswith(_HTTP_PREFIXES) and audio_path.lower().endswith(".mp3") and await asyncio.to_thread(os.path.exists, audio_path):
             opus_path = await self._convert_to_opus(audio_path)
             if opus_path:
                 try:
@@ -624,7 +624,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     )
                 finally:
                     with contextlib.suppress(OSError):  # the .ogg is a transient artifact next to the source MP3
-                        os.unlink(opus_path)
+                        await asyncio.to_thread(os.unlink, opus_path)
             # No ffmpeg (warn-once logged in _convert_to_opus) → MP3 attachment.
             mime_type = "audio/mpeg"
         return await self._send_media_from_path_or_link(chat_id, audio_path, "audio", caption=caption, reply_to=reply_to, mime_type=mime_type)
@@ -682,10 +682,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         blob_resp = await self._graph_get(temp_url, headers, "bytes", media_id)
         if blob_resp is None:
             return None, None
-        _INBOUND_MEDIA_CACHE.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(_INBOUND_MEDIA_CACHE.mkdir, parents=True, exist_ok=True)
         out_path = _INBOUND_MEDIA_CACHE / f"{media_id}{ext_hint or _ext_for_mime(mime) or '.bin'}"
         try:
-            out_path.write_bytes(blob_resp.content)
+            await asyncio.to_thread(out_path.write_bytes, blob_resp.content)
         except OSError:
             logger.exception("[whatsapp_cloud] failed to write cached media (id=%s)", media_id)
             return None, None
@@ -1028,7 +1028,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if msg_type_str in _INBOUND_MEDIA_KINDS:
             media_urls, media_types, body = await self._collect_inbound_media(msg_type_str, raw_message, body)
             if msg_type_str == "document" and media_urls:
-                body, media_text_inlined = self._inject_document_text(media_urls, body)
+                body, media_text_inlined = await asyncio.to_thread(self._inject_document_text, media_urls, body)
         # Meta's ``context`` gives only the quoted message's id (+ author), never its text or
         # bytes; resolve both from rich_sent_store so run.py can build "[Replying to: ...]" and
         # the quoted attachment reaches the vision/audio pipeline like a direct one.
