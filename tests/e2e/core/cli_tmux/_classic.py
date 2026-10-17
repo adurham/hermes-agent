@@ -30,6 +30,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -39,7 +40,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import pytest
+
 from tests.fakes.fake_llm_provider import MODEL_ID, OFFER_VERSION
+
+
+def require_tmux() -> None:
+    """Skip without tmux, except in the CI E2E lane, where a skip is green over zero coverage.
+
+    The release/dispatch ``e2e`` job (``.github/workflows/tests.yml``) sets
+    ``HERMES_E2E_REQUIRE_TUI=1`` and GitHub sets ``CI``; under both, a missing tmux fails.
+    """
+    if shutil.which("tmux") is not None:
+        return
+    if os.environ.get("CI") and os.environ.get("HERMES_E2E_REQUIRE_TUI") == "1":
+        pytest.fail("tmux missing in the CI e2e lane (HERMES_E2E_REQUIRE_TUI=1): install it in the e2e job")
+    pytest.skip("needs tmux")
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 COLS, ROWS = 160, 50

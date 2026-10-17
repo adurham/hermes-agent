@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 import pytest
 
-from tests.e2e.core.cli_tmux._classic import ClassicHome, Pane, last_user, new_needle, text_of
+from tests.e2e.core.cli_tmux._classic import ClassicHome, Pane, last_user, new_needle, require_tmux, text_of
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 # Process discovery, cleanup and the witness's pid accounting read /proc.
@@ -174,8 +174,8 @@ def test_witness_coverage_rejects_an_uninstrumented_cli() -> None:
         check_witness_coverage([gateway], [])
 
 
-@pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux")
 def test_classic_cli_live_session_runs_every_turn_in_the_gateway(tmp_path: Path) -> None:
+    require_tmux()
     llm = FakeLLMServer(_main, aux=_aux)
     witness = tmp_path / "witness.jsonl"
     ch = ClassicHome(tmp_path / "run")

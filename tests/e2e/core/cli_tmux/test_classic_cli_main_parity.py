@@ -25,12 +25,11 @@ from typing import Any
 
 import pytest
 
-from tests.e2e.core.cli_tmux._classic import PROMPT, ClassicHome, Pane, assert_no_traceback, last_user
+from tests.e2e.core.cli_tmux._classic import PROMPT, ClassicHome, Pane, assert_no_traceback, last_user, require_tmux
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 pytestmark = [
     pytest.mark.platforms("linux"),  # the harness finds and reaps processes through /proc
-    pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux"),
 ]
 
 MARKDOWN_REPLY = ("# Heading Two\n\nSome intro text for the markdown check.\n\n- alpha item\n- beta item\n"
@@ -107,6 +106,7 @@ class Steps:
 
 
 def test_classic_cli_matches_main_baseline_across_fifteen_steps(tmp_path: Path) -> None:
+    require_tmux()
     llm = FakeLLMServer(_main, aux=_aux)
     ch = ClassicHome(tmp_path / "run")
     pane = Pane(ch)

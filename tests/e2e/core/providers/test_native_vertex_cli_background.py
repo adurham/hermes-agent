@@ -28,13 +28,12 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
-from tests.e2e.core.cli_tmux._classic import kill_home_processes
+from tests.e2e.core.cli_tmux._classic import kill_home_processes, require_tmux
 from tests.e2e.core.providers._native_helpers import make_home, messages
 from tests.fakes.providers.vertex import PROJECT, REGION, SA_EMBEDDED_PROJECT, FakeVertex, Say, hermes_setup
 
 pytestmark = [
     pytest.mark.platforms("linux"),  # cleanup finds this home's processes through /proc
-    pytest.mark.skipif(shutil.which("tmux") is None, reason="needs tmux"),
 ]
 
 BG_MARK = "VERTEXBG"
@@ -115,6 +114,7 @@ def _drive(fake: FakeVertex, tmp_path: Path):
 
 
 def test_vertex_config_label_and_background_task_through_the_gateway(tmp_path: Path) -> None:
+    require_tmux()
     fake = FakeVertex(tmp_path / "fake", project=PROJECT, region=REGION, sa_project=SA_EMBEDDED_PROJECT,
                       script=_respond, aux=lambda _r: Say("Vertex title"))
     fake.start()
