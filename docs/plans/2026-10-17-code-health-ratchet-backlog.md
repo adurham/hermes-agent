@@ -4,7 +4,7 @@ Series plan for burning down `scripts/code_health` (the ratchet). Session 1 meas
 exactly, landed the first slice (three work units), and left this queue. **Each later session takes
 ONE work unit from the queue below, cold, using only this document.**
 
-- **Measured on:** `main` @ `6bb436671e67` (2026-10-17 09:33 CDT) — clean checkout.
+- **Measured on:** `main` @ `6bb436671e67` (2026-10-17 09:33 CDT) — clean checkout. This document is a **point-in-time snapshot**: line numbers drift with main; re-measure each unit before starting it.
 - **Slice 1 branch:** `quality/ratchet-backlog-slice1` (3 refactor commits + this doc).
 - **Upstream reference for merge risk:** `NousResearch/hermes-agent` main @ `18c525b669b6`
   (fetched read-only; nothing was pushed or opened there).
@@ -341,7 +341,7 @@ away (that needs the owner).
   `tests.waiting.wait_until(predicate, timeout=...)`; a delay that IS the behavior keeps a reviewed
   allow — that is an owner call.
 
-## Owner decisions (left deliberately)
+## Owner decisions (proposed — awaiting owner sign-off)
 
 1. **Upstream-identical units.** 89 of 131 Queue A units, 13 of 91 Queue B files and 1,360 of 2,037
    Queue C units sit in code identical to upstream's, and upstream runs the same ratchet. Options:
@@ -389,6 +389,8 @@ away (that needs the owner).
   catalog; the test env does not install it).
 
 ## Next pick (Queue A, lowest upstream-sync cost first)
+
+Owner policy: prefer fork-only or already-diverged units; leave the ~60–90%-similar band to upstream's own ratchet (refactoring them here creates permanent port cost).
 
 Take the first row whose unit is still over cap on current main. Rows tagged `upstream-identical`
 wait on Owner decision 1. Full entries follow in Queue A (same IDs).
