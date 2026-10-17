@@ -1017,3 +1017,73 @@ class TestBackgroundReviewDeleteGate:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert "rewritten by refine" in store._entries_for("memory")
+
+
+class TestAutoApplyBypassesDeleteGate:
+    """``memory.auto_apply`` (fork): full automatic memory management. The unattended
+    review's patch/remove applies directly instead of staging; with the flag off (the
+    default) the staging contract in the class above stands."""
+
+    def test_auto_apply_lets_remove_through(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools import write_approval as wa
+        monkeypatch.setattr(wa, "auto_apply_enabled", lambda: True)
+        store.add("memory", "entry the review may remove now")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="remove", old_text="may remove now", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "staged" not in result
+        assert "entry the review may remove now" not in store._entries_for("memory")
+        assert wa.pending_count(wa.MEMORY) == 0
+
+    def test_auto_apply_lets_patch_through(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools import write_approval as wa
+        monkeypatch.setattr(wa, "auto_apply_enabled", lambda: True)
+        store.add("memory", "rule one; rule two")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="patch", old_text="rule one",
+                                            content="RULE ONE", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        assert "RULE ONE; rule two" in store._entries_for("memory")
+
+    def test_auto_apply_lets_batch_through(self, store, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools import write_approval as wa
+        monkeypatch.setattr(wa, "auto_apply_enabled", lambda: True)
+        store.add("memory", "rule one")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(operations=[
+                {"action": "remove", "old_text": "rule one"},
+                {"action": "add", "content": "fork consolidation"},
+            ], store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["success"] is True
+        entries = store._entries_for("memory")
+        assert "fork consolidation" in entries and "rule one" not in entries
+        assert wa.pending_count(wa.MEMORY) == 0
+
+    def test_write_approval_on_still_stages_with_auto_apply_configured(self, store, tmp_path, monkeypatch):
+        """Precedence end-to-end: with BOTH knobs on, write_approval owns the write —
+        an explicit approval request must not be silently bypassed."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import hermes_cli.config as cfg
+        c = cfg.load_config()
+        c.setdefault("memory", {}).update({"auto_apply": True, "write_approval": True})
+        cfg.save_config(c)
+        store.add("memory", "entry that must wait for approval")
+        token = set_current_write_origin("background_review")
+        try:
+            result = json.loads(memory_tool(action="remove", old_text="must wait for approval", store=store))
+        finally:
+            reset_current_write_origin(token)
+        assert result["staged"] is True
+        assert "entry that must wait for approval" in store._entries_for("memory")

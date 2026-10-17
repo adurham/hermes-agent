@@ -290,6 +290,7 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  auto_apply: false         # fork: true = apply review/extraction writes directly (no staging)
   prefetch_spill_enabled: false  # external recall stays intact unless explicitly enabled
 ```
 
@@ -340,6 +341,16 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
 
+**Fork: full automatic memory management (`memory.auto_apply`).** Even with
+`write_approval: false`, two paths in this fork stage their writes for review: the
+session-exit extraction pass (the LLM "memory proposals" printed on exit) and the
+unattended background review's consolidations (`patch` / `remove` on
+`MEMORY.md` / `USER.md`). Set `memory.auto_apply: true` to apply them directly
+instead: extraction proposals go through the same conflict resolution (dedupe /
+merge / supersede) that `/memory approve` runs, and review consolidations write
+straight through. `write_approval: true` still wins over it, and a write that
+fails inline is staged rather than lost.
+
 Review staged writes from the CLI or any messaging platform:
 
 ```
@@ -354,7 +365,8 @@ This is the answer to "the agent saved a wrong assumption about me": set
 ones — waits for your yes/no before it ever enters your profile.
 
 A staged `patch` or `remove` (the background review stages these even with the
-gate off) records the full entry it targets, and `/memory pending` shows it.
+gate off, unless `memory.auto_apply` is on) records the full entry it targets, and
+`/memory pending` shows it.
 Approval applies to exactly that entry: if it changed after the write was staged,
 the write is refused and stays pending for you to reject. A `replace`/`patch`/`remove`
 staged before this pinning existed has no verifiable target and is refused too:

@@ -582,10 +582,17 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     single or inside a batch — are never applied unattended. The op is staged in the pending
     store instead of merely denied: the fork's own review summary is never published back, so
     a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    staging failure fails closed to a plain denial.
+
+    ``memory.auto_apply`` (fork) disables the gate: the owner has opted the unattended
+    review into full automatic memory management, so the op proceeds to the normal write
+    path — where ``memory.write_approval`` still applies and, when on, still stages."""
     from tools.skill_provenance import is_unattended_review
+    from tools import write_approval as wa
 
     if not is_unattended_review():
+        return None
+    if wa.auto_apply_enabled():
         return None
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
@@ -597,7 +604,6 @@ def _background_delete_gate(store, action, operations, target="memory", content=
     try:
         if (unmatched := _pin_matched_entries(store, payload)) is not None:
             return unmatched
-        from tools import write_approval as wa
         FAILURE_CLASS.set("staged")
         record = wa.stage_write(
             wa.MEMORY, payload,
@@ -850,7 +856,7 @@ def _memory_target_error(
     return {"success": False, "error": f"Built-in {label} writes are disabled in memory config.", "target": target}
 
 
-def _apply_extraction_proposal(payload: dict[str, Any], store: "MemoryStore") -> dict[str, Any]:
+def _apply_extraction_proposal(payload: dict[str, Any], store: Optional["MemoryStore"]) -> dict[str, Any]:
     """Replay a staged LLM-extraction proposal (``/memory approve`` on a session-exit review).
 
     Unlike the hot-tier actions around it, a warm proposal is applied through the
@@ -861,6 +867,10 @@ def _apply_extraction_proposal(payload: dict[str, Any], store: "MemoryStore") ->
     The verdict is rehydrated from the record, never recomputed: the user approved
     the verdict they were SHOWN at stage time, and the classifier is an LLM whose
     second roll can disagree with its first (see ``conflict.verdict_to_dict``).
+
+    ``store`` may be None when only warm-tier proposals are replayed (the session-exit
+    auto-apply path, ``memory.auto_apply``); a tier=hot payload then fails cleanly
+    instead of dereferencing it.
     """
     content = (payload.get("content") or "").strip()
     if not content:
@@ -868,6 +878,9 @@ def _apply_extraction_proposal(payload: dict[str, Any], store: "MemoryStore") ->
 
     # tier=hot proposals are ordinary MEMORY.md/USER.md adds — no warm store involved.
     if (payload.get("tier") or "warm").lower() == "hot":
+        if store is None:
+            return {"success": False,
+                    "error": "Hot-tier proposal replayed without a memory store; left un-applied."}
         return _STORE_ACTIONS["add"][0](store, payload.get("target") or "memory", content, "")
 
     try:
@@ -892,11 +905,15 @@ def _apply_extraction_proposal(payload: dict[str, Any], store: "MemoryStore") ->
             "outcome": outcome.get("action"), "fact_id": outcome.get("fact_id")}
 
 
-def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[str, Any]:
+def apply_memory_pending(payload: dict[str, Any], store: Optional[MemoryStore]) -> dict[str, Any]:
     """Replay a staged write against the store, bypassing the gate (/memory approve). A
     replace/remove applies to exactly its pinned ``matched_entry`` or is refused; a record
     staged before pinning has no verifiable target, so it is refused rather than replayed by
-    old_text (which could hit a newer entry the approver never saw)."""
+    old_text (which could hit a newer entry the approver never saw).
+
+    ``store`` may be None when only warm-tier payloads are replayed (the session-exit
+    auto-apply path, ``memory.auto_apply``); a payload that needs the hot store is refused
+    instead of dereferencing it."""
     action, target = payload.get("action"), payload.get("target")
     # Warm-tier extraction proposals don't write through MemoryStore at all, so the
     # hot-tier target check below doesn't apply to them (their 'target' is unset, and the
@@ -905,6 +922,9 @@ def apply_memory_pending(payload: dict[str, Any], store: MemoryStore) -> dict[st
     # target; they fall through to the second extraction branch below, after the check.
     if action == "extraction_proposal" and (payload.get("tier") or "warm").lower() != "hot":
         return _apply_extraction_proposal(payload, store)
+    if store is None:
+        return {"success": False,
+                "error": "This pending write needs the hot-tier store; none was available."}
     target_error = _memory_target_error(store, target, payload.get("operations"))
     if target_error is not None:
         return target_error

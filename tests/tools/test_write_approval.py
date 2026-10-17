@@ -58,6 +58,33 @@ def test_normalize_enabled_coerces_values():
     assert wa._normalize_enabled("garbage") is False
     assert wa._normalize_enabled(None) is False
 
+
+def _set_memory_config(**values):
+    import hermes_cli.config as cfg
+    c = cfg.load_config()
+    c.setdefault("memory", {}).update(values)
+    cfg.save_config(c)
+
+
+def test_auto_apply_defaults_off(hermes_home):
+    from tools import write_approval as wa
+    assert wa.auto_apply_enabled() is False
+
+
+def test_auto_apply_reads_memory_auto_apply(hermes_home):
+    from tools import write_approval as wa
+    _set_memory_config(auto_apply=True)
+    assert wa.auto_apply_enabled() is True
+
+
+def test_auto_apply_loses_to_explicit_write_approval(hermes_home):
+    """memory.write_approval: true means approval is required everywhere it gates —
+    asking for approval must not be silently overridden by the auto-apply shortcut."""
+    from tools import write_approval as wa
+    _set_memory_config(auto_apply=True, write_approval=True)
+    assert wa.auto_apply_enabled() is False
+
+
 # ---------------------------------------------------------------------------
 # Memory gate
 # ---------------------------------------------------------------------------
