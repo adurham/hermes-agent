@@ -109,14 +109,15 @@ def _cmd_repair(args):
     # A missing canonical sessions table is not additive upgrade drift: creating
     # an empty one could hide lost history. Preserve corruption/recovery routing.
     reason = _db_opens_cleanly(db_path)
-    repair = repair_state_db_schema
-    if reason is None:
+    # Opens cleanly but lags SCHEMA_SQL: additive drift (snapshot reconcile), not corruption surgery.
+    drift_only = reason is None
+    if drift_only:
         try:
             reason = schema_drift_reason(db_path)
         except (sqlite3.Error, OSError) as exc:
             print(f"✗ Could not check session schema: {exc}")
             return 1
-        repair = repair_declarative_schema
+    repair = repair_declarative_schema if drift_only else repair_state_db_schema
     if reason is None:
         print(f"✓ {db_path} opens cleanly — no repair needed.")
         return
@@ -130,14 +131,14 @@ def _cmd_repair(args):
             print(f"  backup: {report['backup_path']}")
         print(f"  strategy: {report.get('strategy')}")
         try:
-            with SessionDB(db_path=db_path, read_only=repair is repair_declarative_schema) as _repair_db:
+            with SessionDB(db_path=db_path, read_only=drift_only) as _repair_db:
                 n = _repair_db._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             print(f"✓ Repaired — {n} sessions recovered.")
         except Exception:
             print("✓ Repaired.")
         return
     print(f"✗ Repair failed: {report.get('error')}")
-    if repair is repair_declarative_schema:
+    if drift_only:
         if report.get('backup_path'):
             print(f"  A backup is preserved at: {report['backup_path']}")
         return 1

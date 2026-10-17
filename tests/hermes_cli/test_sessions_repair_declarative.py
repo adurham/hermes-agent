@@ -16,6 +16,9 @@ def _volume_headroom(monkeypatch):
     """The backup/snapshot guards reserve 2% of the volume: hermetic on a nearly full dev disk."""
     import hermes_state_repair as repair
     monkeypatch.setattr(repair, '_REPAIR_BACKUP_FREE_FRACTION', 0.0)
+    # The holder scan sees every process on the host: a developer's running Hermes would hold a
+    # real state.db and refuse these tmp_path repairs. Same stub as test_state_db_repair_non_destructive.
+    monkeypatch.setattr(repair, '_live_writer_holds_db', lambda _path: False)
 
 
 def _legacy_store(tmp_path, monkeypatch):

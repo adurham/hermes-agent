@@ -7,6 +7,7 @@ surgery (:func:`repair_declarative_schema`). Neither runs while a gateway owns t
 """
 import contextlib
 import logging
+import os
 import sqlite3
 import threading
 from contextlib import closing
@@ -59,7 +60,6 @@ def _reconcile_snapshot(path, guard):
         _copy_database_snapshot(scratch, path, destination_connection=guard)
     finally:
         if error := _unlink_db_triple(scratch):
-            import logging
             logging.getLogger(__name__).warning('Could not remove reconciliation snapshot: %s', error)
 
 
@@ -461,8 +461,22 @@ def reconcile_drift_for_browse(path: Path) -> bool:
                     raise DeclarativeDriftError(
                         f"Session store for profile '{label}' changed while browsing verified it "
                         f'({reason}); nothing was changed. Retry in a moment; the list was not cleared.')
+                def not_writable(why):
+                    return DeclarativeDriftError(
+                        f"Session store for profile '{label}' is behind this Hermes version ({reason}), "
+                        f'but {why} is not writable by this user, so browsing cannot add the missing '
+                        f'tables/columns; nothing was changed. Fix the permissions, then reload.')
+                # The shared column reconciler logs a readonly ALTER failure and continues, so check
+                # first: the file plus its directory (SQLite creates its journal/WAL beside it).
+                for target in (path, path.parent):
+                    if not os.access(target, os.W_OK):
+                        raise not_writable(str(target))
                 try:
                     _apply_additive_schema(path, budget)
+                except sqlite3.OperationalError as exc:
+                    if 'readonly' in str(exc).lower():
+                        raise not_writable(str(path)) from exc
+                    raise
                 except DeclarativeDriftError as exc:
                     raise DeclarativeDriftError(
                         f"Session store for profile '{label}' is behind this Hermes version and could not "

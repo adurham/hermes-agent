@@ -282,10 +282,10 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 
 
 # v32 (#140315): no data migration. #106742 added runtime_epoch, session_admissions, worker_executions,
-# worker_receipts and three columns to SCHEMA_SQL while v31 stayed, so a store missing them read as
-# current. The bump makes that store detectably behind; its catch-up is the declarative
+# worker_receipts and three columns to SCHEMA_SQL under v31. Drift is detected by the schema read probe
+# (schema_read_probe_statements), never by this number, and its catch-up is the declarative
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
-# idempotent). Bump again whenever SCHEMA_SQL gains a table or column.
+# idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
 SCHEMA_VERSION = 32
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.

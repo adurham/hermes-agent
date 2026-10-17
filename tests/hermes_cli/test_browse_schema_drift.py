@@ -970,3 +970,27 @@ def test_owned_refusal_names_the_owning_multiplexers_restart(tmp_path):
     assert caught.value.status_code == 503 and "running gateway owns it" in detail
     assert "`hermes gateway restart`" in detail
     assert "-p scribe gateway restart" not in detail
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_read_only_lagging_store_gets_a_permissions_message(tmp_path):
+    """alt-glitch S5: a read-only state.db got the generic "restart the gateway" text. A `readonly
+    database` error from the catch-up names the permission problem and the path; history untouched."""
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root writes read-only files")
+    path = _lagging_store_with_history(_profile_home(tmp_path), rows=10)
+    before = _file_state(path)
+    path.chmod(0o444)
+    try:
+        with pytest.raises(HTTPException) as caught:
+            _open_session_db_at_path(path, read_only=True)
+    finally:
+        path.chmod(0o600)
+    detail = str(caught.value.detail)
+    assert caught.value.status_code == 503
+    assert "not writable" in detail and str(path) in detail
+    assert "nothing was changed" in detail
+    assert "restart" not in detail.lower()
+    assert _file_state(path) == before
