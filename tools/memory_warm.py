@@ -36,7 +36,7 @@ use HRR similarity"). Both now delegate to upstream's ``FactRetriever``:
 
 ``search_facts`` is gone from the shared plugin tree; the one behavior it
 had that upstream's retriever lacks — bumping ``retrieval_count`` — is now
-an explicit ``bump_retrieval_counts`` call made HERE, by the warm tier, on
+an explicit ``record_retrievals`` call made HERE, by the warm tier, on
 the rows actually handed to a caller. That keeps retrieval accounting tied
 to a deliberate recall (which ``tools/memory_extraction/conflict.py`` relies
 on to break duplicate ties) rather than to every ranking pass.
@@ -183,23 +183,25 @@ class WarmStore:
 
         Returns a dict with ``fact_id`` and a status (``"created"`` or
         ``"existing"`` if the content already existed).
+
+        Duplicate detection rides on the store's UNIQUE ``content`` via
+        ``add_fact_status`` -> ``(fact_id, created)``. The old in-tree era's
+        ``find_fact_id_by_content`` pre-probe does not exist on the catalog plugin
+        and calling it made every warm write raise AttributeError (found
+        2026-10-17; latent since the v0.21.7 plugin move because review staging
+        was the only writer on this path).
         """
         content = (content or "").strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
-        # Detect whether this content already exists before insert (the
-        # underlying ``add_fact`` returns the existing id silently on
-        # duplicate, which we want to surface to the caller).
-        existing = self._inner.find_fact_id_by_content(content)
-
         try:
-            fact_id = self._inner.add_fact(content=content, category=category, tags=tags)
+            fact_id, created = self._inner.add_fact_status(content=content, category=category, tags=tags)
         except sqlite3.OperationalError as e:
             return {"success": False, "error": f"warm-tier write failed: {e}"}
 
-        status = "existing" if existing is not None else "created"
-        return {"success": True, "fact_id": int(fact_id), "status": status}
+        return {"success": True, "fact_id": int(fact_id),
+                "status": "created" if created else "existing"}
 
     def update(
         self,
@@ -310,7 +312,7 @@ class WarmStore:
             return
         try:
             ids = [int(r["fact_id"]) for r in rows if r.get("fact_id") is not None]
-            self._inner.bump_retrieval_counts(ids)
+            self._inner.record_retrievals(ids)
             for row in rows:  # keep returned dicts consistent with the persisted count
                 if row.get("retrieval_count") is not None:
                     row["retrieval_count"] = int(row["retrieval_count"]) + 1
@@ -327,8 +329,16 @@ class WarmStore:
         return self._inner.list_facts(category=category, limit=max(1, min(int(limit), 200)))
 
     def get(self, fact_id: int) -> Optional[dict[str, Any]]:
-        """Fetch a single fact by id, or None."""
-        return self._inner.get_fact(int(fact_id))
+        """Fetch a single fact by id, or None.
+
+        The catalog plugin exposes no ``get_fact``; read under the store lock with
+        the same column set as ``list_facts`` so every caller sees one row shape.
+        """
+        rows = self._inner.read(
+            "SELECT fact_id, content, category, tags, trust_score, retrieval_count, "
+            "helpful_count, created_at, updated_at FROM facts WHERE fact_id = ?",
+            (int(fact_id),))
+        return dict(rows[0]) if rows else None
 
     def count(self) -> int:
         """Return the total number of facts indexed."""
