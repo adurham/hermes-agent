@@ -113,6 +113,11 @@ def _route_owner(config, path):
     fallback sections in dictionary (one route) and list form, and each ``auxiliary.<task>`` route with
     its ``fallback_chain`` entries. A secret nested deeper in a route (headers, extra_body) rides with it."""
     head, rest = path[0], tuple(path[1:])
+    model = config.get('model') if isinstance(config.get('model'), dict) else {}
+    if isinstance(model.get('api_key_from'), list) and tuple(model['api_key_from']) == tuple(path):
+        # ``/model <alias>`` with a literal key: config() projects the alias entry's key into ``model.api_key``,
+        # so it authenticates the session's ``model:`` route, not the alias entry it is stored under.
+        return ('model',)
     if head == 'model':
         if rest[:1] == ('aliases',) and len(rest) > 2:
             return ('model', 'aliases', rest[1])

@@ -336,6 +336,18 @@ _SHAPES = {
                                                                                         'api_key': 'K-chain'}]}}},
                                      lambda c: c['providers']['team'].__setitem__('base_url', _B),
                                      'auxiliary.compression.fallback_chain.0.api_key'),
+    # alt-glitch critical: after ``/model <alias>`` with a literal key, the key lives at the alias entry and
+    # ``model.api_key_from`` points at it; config() projects it into ``model.api_key``, so it authenticates
+    # the session's ``model:`` route, and moving that route must refuse it.
+    'alias_key_via_api_key_from': ({'model': {**_BASE['model'], 'api_key_from': ['model_aliases', 'alt', 'api_key']},
+                                    'model_aliases': {'alt': {'provider': 'custom', 'model': 'x', 'api_key': 'K-alias'}}},
+                                   lambda c: c['model'].__setitem__('base_url', _B),
+                                   'model_aliases.alt.api_key'),
+    'nested_alias_key_via_api_key_from': ({'model': {**_BASE['model'], 'api_key_from': ['model', 'aliases', 'alt', 'api_key'],
+                                                     'aliases': {'alt': {'provider': 'custom', 'model': 'x',
+                                                                         'api_key': 'K-alias'}}}},
+                                          lambda c: c['model'].__setitem__('base_url', _B),
+                                          'model.aliases.alt.api_key'),
     'model_alias_own_url': ({'model': {**_BASE['model'], 'aliases': {'alt': {'provider': 'custom', 'model': 'x',
                                                                              'base_url': _A, 'api_key': 'K-alias'}}}},
                             lambda c: c['model']['aliases']['alt'].__setitem__('base_url', _B),
