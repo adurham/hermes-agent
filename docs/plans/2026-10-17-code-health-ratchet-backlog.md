@@ -2317,3 +2317,12 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `tests/plugins/model_providers/test_router_disk_mirror.py` (4 tests, all red on base). Branch
   `claude/fix-disk-ttl-seconds-undefined-npwxbi`. Note: upstream-identical unit, upstream carries
   the same bug. Next: next row of Next pick.
+- 2026-10-17 — review follow-up (slice 1 safety nets → committed tests): behavior locks
+  `tests/agent/test_anthropic_kwargs_behavior_lock.py` (seeded 910-case grid over models ×
+  endpoints × OAuth × tools × tool_choice × reasoning × caps × fast × cache, checked against the
+  adapter's own predicates + 3 pinned requests; 6 tests, ~1.4s) and
+  `tests/tools/test_memory_tool_warm_actions.py` (every `_WARM_ACTIONS` entry, session-pin trio and
+  store gate through `_handle_warm_action` with recording fakes; exact JSON + call log; 75 tests).
+  Both turn red on every one of 14 hand mutations of the units. The holographic round-trip in
+  `tests/agent/test_memory_tool_warm_dispatch.py` now skips when the provider is not installed.
+  Branch `claude/add-regression-tests-slice-1-9ypeqj`. Next: next row of Next pick.
