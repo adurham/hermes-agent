@@ -43,12 +43,13 @@ def stored_picker_sessions(authority, actor, *, limit, include_hidden=False):
             if tip is None:
                 continue
             if row['source'] not in _LOCAL_SOURCES:
-                # A messaging conversation: listed when the cold mount would open it (this profile's,
-                # its lineage root); a row its lane moved past opens read-only.
-                if (row.get('profile_name') in (None, '', own_profile) and mountable(authority, row['id'])
-                        and row['id'] not in seen):
-                    seen.add(row['id'])
-                    sessions.append(_picker_row(row, tip, row['id']))
+                # A messaging conversation, under its lineage root (the cold mount; the listing
+                # projects a compressed lineage onto its tip): this profile's rows the mount opens.
+                root = row.get('_lineage_root_id') or row['id']
+                if (row.get('profile_name') in (None, '', own_profile) and mountable(authority, root)
+                        and root not in seen):
+                    seen.add(root)
+                    sessions.append(_picker_row({**row, 'id': root}, tip, root))
                 if len(sessions) == limit:
                     break
                 continue
