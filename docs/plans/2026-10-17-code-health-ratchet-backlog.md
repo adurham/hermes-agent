@@ -2375,3 +2375,8 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   expected). No sibling instances (the file's other except-name, `exc` at ~177, is not captured).
   `python scripts/check` green, 12 checks. Branch `claude/fix-cli-init-mixin-f821-e6yqll`.
   Next: C-0003 (`agent/fork/rate_limit_tracker.py` F821, fork-only; still open), then C-0007.
+- 2026-10-17 — C-0006 `hermes_cli/gateway_launchd.py` F811×1 → 0: removed the unused module-level
+  `from xml.sax.saxutils import escape`; its only caller (`generate_launchd_plist`) already bound the
+  function-local `html.escape`, so the plist output is unchanged. No other F811 in the file; the 3
+  BLE001 hits untouched. Tests 125 passed, 1 failed (`test_remaps_default_home`, identical on main).
+  Branch `claude/fix-gateway-launchd-f811-ctvz3j`. Next: C-0007.
