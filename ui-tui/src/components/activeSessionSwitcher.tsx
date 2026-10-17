@@ -332,6 +332,10 @@ export function ActiveSessionSwitcher({
   // different session. Any other key cancels the prompt.
   const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
   const [deleting, setDeleting] = useState(false)
+  // Set synchronously (one stdin chunk can carry the confirming key and a click before a re-render);
+  // the state guard covers a settle until the updated list renders.
+  const deletingRef = useRef(false)
+  const deletePending = () => deleting || deletingRef.current
   const T = useT()
   const S = T.pickers.session
   const C = T.pickers.common
@@ -551,10 +555,11 @@ export function ActiveSessionSwitcher({
     (id: string) => {
       const target = history.find(h => h.id === id)
 
-      if (!target || deleting) {
+      if (!target || deletingRef.current) {
         return
       }
 
+      deletingRef.current = true
       setDeleting(true)
       setActionErr('')
       // The shared gateway has no `session.delete`: its delete is the revision-fenced
@@ -575,6 +580,7 @@ export function ActiveSessionSwitcher({
             setActionErr(
               messages().pickers.common.invalidResponse(gw.isCanonical ? 'session.mutate' : 'session.delete')
             )
+            deletingRef.current = false
             setDeleting(false)
 
             return
@@ -583,6 +589,7 @@ export function ActiveSessionSwitcher({
           rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== target.id)
           setHistory(prev => prev.filter(h => h.id !== target.id))
           setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
+          deletingRef.current = false
           setDeleting(false)
         })
         .catch((e: unknown) => {
@@ -599,10 +606,11 @@ export function ActiveSessionSwitcher({
           }
 
           setActionErr(rpcErrorMessage(e))
+          deletingRef.current = false
           setDeleting(false)
         })
     },
-    [deleting, gw, history, items.length]
+    [gw, history, items.length]
   )
 
   const handleRowClick = useCallback(
@@ -610,7 +618,7 @@ export function ActiveSessionSwitcher({
       event.stopImmediatePropagation?.()
 
       // Keys are held while a delete is pending; a click must not open the row mid-delete either.
-      if (deleting) {
+      if (deleting || deletingRef.current) {
         return
       }
 
@@ -641,7 +649,7 @@ export function ActiveSessionSwitcher({
   const draftHasText = Boolean(draft.trim())
 
   useInput((ch, key) => {
-    if (pickingModel || deleting) {
+    if (pickingModel || deletePending()) {
       return
     }
 
