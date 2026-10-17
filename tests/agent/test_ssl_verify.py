@@ -488,6 +488,18 @@ def test_requests_verify_hands_over_the_platform_store_without_openssl_files(tmp
     monkeypatch.setattr(ssl_verify, "certifi_bundle_path", lambda: None)
     monkeypatch.setattr("requests.utils.DEFAULT_CA_BUNDLE_PATH", str(tmp_path / "gone" / "cacert.pem"))
     monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: SimpleNamespace(cafile=None, capath=None))
+    # Windows enumerates its system store into the context; a Linux CA directory loads lazily and
+    # lists nothing. Stand in a store holding one real root so the test means the same everywhere.
+    import certifi
+
+    pem = Path(certifi.where()).read_text().split("-----END CERTIFICATE-----")[0] + "-----END CERTIFICATE-----\n"
+    root_der = ssl.PEM_cert_to_DER_cert(pem[pem.index("-----BEGIN CERTIFICATE-----"):])
+
+    class _WindowsLikeStore(ssl.SSLContext):
+        def get_ca_certs(self, binary_form=False):
+            return [root_der]
+
+    monkeypatch.setattr(ssl_verify, "_stdlib_ssl_context_class", lambda: _WindowsLikeStore)
 
     verify = ssl_verify.requests_verify()
     assert isinstance(verify, str) and Path(verify).is_relative_to(tmp_path / "home")
