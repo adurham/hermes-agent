@@ -205,6 +205,120 @@ def _is_tracked_user_modification(origin_hash: str, user_hash: str) -> bool:
     return bool(origin_hash) and user_hash != origin_hash
 
 
+def _sync_new_persona(persona_name: str, persona_src: Path, dest: Path,
+                      bundled_hash: str, manifest: dict, copied: list, quiet: bool) -> int:
+    """Offer a persona that is not in the manifest yet; return the skipped count (0 or 1)."""
+    skipped = 0
+    try:
+        if dest.exists():
+            # User already has a persona with the same name — don't overwrite.
+            # Only baseline in the manifest when the on-disk copy is
+            # byte-identical to bundled; otherwise skip the manifest write
+            # so user_hash != origin_hash doesn't read as "user-modified"
+            # forever, permanently blocking bundled updates.
+            skipped += 1
+            if _file_hash(dest) == bundled_hash:
+                manifest[persona_name] = bundled_hash
+            elif not quiet:
+                print(
+                    f"  ⚠ {persona_name}: bundled version shipped but you "
+                    f"already have a local persona by this name — yours "
+                    f"was kept. Run `hermes personas reset {persona_name}` "
+                    f"to replace it with the bundled version."
+                )
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(persona_src, dest)
+            copied.append(persona_name)
+            manifest[persona_name] = bundled_hash
+            if not quiet:
+                print(f"  + {persona_name}")
+    except OSError as e:
+        if not quiet:
+            print(f"  ! Failed to copy {persona_name}: {e}")
+        # Do NOT add to manifest — next sync should retry
+    return skipped
+
+
+def _restore_from_backup(dest: Path, backup: Path) -> None:
+    """Put the user's copy back after a failed update.
+
+    A partially-written dest must not shadow the user's copy or block the restore.
+    """
+    if not backup.exists():
+        return
+    if dest.exists():
+        try:
+            dest.unlink()
+        except OSError:
+            logger.warning(
+                "Could not clear partial copy %s during restore",
+                dest, exc_info=True,
+            )
+    if not dest.exists():
+        shutil.move(str(backup), str(dest))
+
+
+def _update_from_bundled(persona_name: str, persona_src: Path, dest: Path,
+                         bundled_hash: str, manifest: dict, updated: list, quiet: bool) -> None:
+    """Replace an unmodified user copy with the newer bundled version."""
+    try:
+        # Move old copy to a backup so we can restore on failure
+        backup = dest.with_suffix(".bak")
+        if backup.exists():
+            backup.unlink()
+        shutil.move(str(dest), str(backup))
+        try:
+            shutil.copy2(persona_src, dest)
+            manifest[persona_name] = bundled_hash
+            updated.append(persona_name)
+            if not quiet:
+                print(f"  ↑ {persona_name} (updated)")
+            # Remove backup after successful copy
+            try:
+                backup.unlink()
+            except OSError:
+                logger.debug("Could not remove backup %s", backup, exc_info=True)
+        except OSError:
+            _restore_from_backup(dest, backup)
+            raise
+    except OSError as e:
+        if not quiet:
+            print(f"  ! Failed to update {persona_name}: {e}")
+
+
+def _sync_existing_persona(persona_name: str, persona_src: Path, dest: Path, bundled_hash: str,
+                           manifest: dict, updated: list, user_modified: list, quiet: bool) -> int:
+    """Sync a persona that is in the manifest AND on disk; return the skipped count (0 or 1)."""
+    origin_hash = manifest.get(persona_name, "")
+
+    # If the bundled source still matches the version recorded when it
+    # was installed, there is no update to apply.
+    if origin_hash and bundled_hash == origin_hash:
+        return 1
+
+    user_hash = _file_hash(dest)
+
+    if not origin_hash:
+        # No origin hash recorded. Set baseline from user's current
+        # copy so future syncs can detect modifications.
+        manifest[persona_name] = user_hash
+        return 1
+
+    if _is_tracked_user_modification(origin_hash, user_hash):
+        # User modified this persona — don't overwrite their changes
+        user_modified.append(persona_name)
+        if not quiet:
+            print(f"  ~ {persona_name} (user-modified, skipping)")
+        return 0
+
+    # User copy matches origin — check if bundled has a newer version
+    if bundled_hash != origin_hash:
+        _update_from_bundled(persona_name, persona_src, dest, bundled_hash, manifest, updated, quiet)
+        return 0
+    return 1  # bundled unchanged, user unchanged
+
+
 def sync_personas(quiet: bool = False) -> dict:
     """
     Sync bundled personas into ~/.hermes/personas/ using the manifest.
@@ -247,101 +361,15 @@ def sync_personas(quiet: bool = False) -> dict:
 
         if persona_name not in manifest:
             # ── New persona — never offered before ──
-            try:
-                if dest.exists():
-                    # User already has a persona with the same name — don't overwrite.
-                    # Only baseline in the manifest when the on-disk copy is
-                    # byte-identical to bundled; otherwise skip the manifest write
-                    # so user_hash != origin_hash doesn't read as "user-modified"
-                    # forever, permanently blocking bundled updates.
-                    skipped += 1
-                    if _file_hash(dest) == bundled_hash:
-                        manifest[persona_name] = bundled_hash
-                    elif not quiet:
-                        print(
-                            f"  ⚠ {persona_name}: bundled version shipped but you "
-                            f"already have a local persona by this name — yours "
-                            f"was kept. Run `hermes personas reset {persona_name}` "
-                            f"to replace it with the bundled version."
-                        )
-                else:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(persona_src, dest)
-                    copied.append(persona_name)
-                    manifest[persona_name] = bundled_hash
-                    if not quiet:
-                        print(f"  + {persona_name}")
-            except OSError as e:
-                if not quiet:
-                    print(f"  ! Failed to copy {persona_name}: {e}")
-                # Do NOT add to manifest — next sync should retry
-
+            skipped += _sync_new_persona(
+                persona_name, persona_src, dest, bundled_hash, manifest, copied, quiet,
+            )
         elif dest.exists():
             # ── Existing persona — in manifest AND on disk ──
-            origin_hash = manifest.get(persona_name, "")
-
-            # If the bundled source still matches the version recorded when it
-            # was installed, there is no update to apply.
-            if origin_hash and bundled_hash == origin_hash:
-                skipped += 1
-                continue
-
-            user_hash = _file_hash(dest)
-
-            if not origin_hash:
-                # No origin hash recorded. Set baseline from user's current
-                # copy so future syncs can detect modifications.
-                manifest[persona_name] = user_hash
-                skipped += 1
-                continue
-
-            if _is_tracked_user_modification(origin_hash, user_hash):
-                # User modified this persona — don't overwrite their changes
-                user_modified.append(persona_name)
-                if not quiet:
-                    print(f"  ~ {persona_name} (user-modified, skipping)")
-                continue
-
-            # User copy matches origin — check if bundled has a newer version
-            if bundled_hash != origin_hash:
-                try:
-                    # Move old copy to a backup so we can restore on failure
-                    backup = dest.with_suffix(".bak")
-                    if backup.exists():
-                        backup.unlink()
-                    shutil.move(str(dest), str(backup))
-                    try:
-                        shutil.copy2(persona_src, dest)
-                        manifest[persona_name] = bundled_hash
-                        updated.append(persona_name)
-                        if not quiet:
-                            print(f"  ↑ {persona_name} (updated)")
-                        # Remove backup after successful copy
-                        try:
-                            backup.unlink()
-                        except OSError:
-                            logger.debug("Could not remove backup %s", backup, exc_info=True)
-                    except OSError:
-                        # Restore from backup. A partially-written dest must
-                        # not shadow the user's copy or block the restore.
-                        if backup.exists():
-                            if dest.exists():
-                                try:
-                                    dest.unlink()
-                                except OSError:
-                                    logger.warning(
-                                        "Could not clear partial copy %s during restore",
-                                        dest, exc_info=True,
-                                    )
-                            if not dest.exists():
-                                shutil.move(str(backup), str(dest))
-                        raise
-                except OSError as e:
-                    if not quiet:
-                        print(f"  ! Failed to update {persona_name}: {e}")
-            else:
-                skipped += 1  # bundled unchanged, user unchanged
-
+            skipped += _sync_existing_persona(
+                persona_name, persona_src, dest, bundled_hash, manifest,
+                updated, user_modified, quiet,
+            )
         else:
             # ── In manifest but not on disk — user deleted it ──
             skipped += 1

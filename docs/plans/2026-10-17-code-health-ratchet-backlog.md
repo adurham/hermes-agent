@@ -2289,3 +2289,7 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   records compared): 0 mismatches, sibling 100% line+branch coverage under the grid.
   `python scripts/check` (full) green, 12 checks ok; health gate 0 blocking/0 advisory.
   Next: next row of Next pick (A-011).
+- 2026-10-17 — A-011 `tools/personas_sync.py::sync_personas`: CC 29 → 8, NESTING 8 → 2 (same-file
+  helpers `_sync_new_persona`, `_sync_existing_persona`, `_update_from_bundled`,
+  `_restore_from_backup`; max CC 7 / nesting 3). Tests 9/9; differential old-vs-new identical over
+  366 fault-injected cases (branch `claude/sync-personas-code-health-8u1cn7`). Next: A-020.
