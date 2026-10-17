@@ -29,6 +29,7 @@ class FakeClient:
         self.steer_status = "queued"
         self.tail_error = None
         self.list_error = None
+        self.tail_text = "step 1\nstep 2\n"
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
@@ -39,7 +40,7 @@ class FakeClient:
         if method == "subagent.tail":
             if self.tail_error:
                 raise self.tail_error
-            return {"subagent_id": params["subagent_id"], "available": True, "text": "step 1\nstep 2\n",
+            return {"subagent_id": params["subagent_id"], "available": True, "text": self.tail_text,
                     "truncated": False}
         if method == "subagent.steer":
             self.steered.append(params["text"])
@@ -81,8 +82,9 @@ def test_monitor_lists_tails_and_controls_the_gateway_sessions_children(gateway)
     assert monitor.entries[0]["last_tool"] == "read_file" and monitor.entries[0]["elapsed"] >= 6
     assert ("subagent.list", {"session_id": SID}) in client.calls
     monitor.detail = True  # the open detail view: the spinner thread's tick fetches its tail
+    client.tail_text = "step 1\r\n\x1b[2Jstep 2\n"  # a child's terminal control codes
     monitor.tick()
-    assert cli_subagent_monitor.subagent_tail(monitor.selected) == "step 1\nstep 2\n"
+    assert cli_subagent_monitor.subagent_tail(monitor.selected) == "step 1\n[2Jstep 2\n"  # stripped
 
     assert "note" in monitor.control("steer", "Focus on the tokenizer")
     assert client.steered == ["Focus on the tokenizer"]
