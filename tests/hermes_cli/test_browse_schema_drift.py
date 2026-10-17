@@ -825,3 +825,33 @@ def test_unopenable_lock_on_lagging_store_is_a_named_503(tmp_path):
     detail = str(caught.value.detail)
     assert "foreign_stale_lock" in detail and "nothing was changed" in detail
     assert _file_state(path) == before
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_boot_refuses_at_once_when_another_home_has_a_real_owner(tmp_path):
+    """pastels m2: a multiplexer boot reserving profile A (owned by a standalone gateway) and profile B
+    (mid-browse) must refuse at once on A, not wait out B's browse first. Homes the boot did take
+    while deciding are released again (all-or-nothing)."""
+    import time
+
+    from gateway.run_bootstrap import _reserve_waiting_out_browse_reconcile
+    from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
+    from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+
+    owned_home = _profile_home(tmp_path, "alpha")
+    browsed_home = _profile_home(tmp_path, "beta")
+    free_home = _profile_home(tmp_path, "gamma")
+    gateway = _hold(owned_home, 30)
+    browse = _hold(browsed_home, 30, BROWSE_RECONCILE_PURPOSE)
+    booting = ProfileOwnership()
+    try:
+        started = time.monotonic()
+        with pytest.raises(OwnershipConflict):
+            _reserve_waiting_out_browse_reconcile(booting, [free_home, owned_home, browsed_home], wait_s=10)
+        assert time.monotonic() - started < 2, "refusal waited for an unrelated browse holder"
+        assert booting.homes == [] or not any(booting.owns(h) for h in (free_home, owned_home, browsed_home))
+    finally:
+        booting.close()
+        for proc in (gateway, browse):
+            proc.kill()
+            proc.wait()
