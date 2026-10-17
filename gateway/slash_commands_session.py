@@ -392,9 +392,16 @@ class GatewaySessionCommandsMixin:
 
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
+        # Under a session authority the rewrite commits in the re-send's own admission, fenced on
+        # the active rows read here (before the transcript, so any later write fails the fence).
+        owned = self._retry_owned_store(session_entry.session_id)
         try:
+            pinned = owned and await asyncio.to_thread(owned.get_active_message_ids, session_entry.session_id)
             history = await self.async_session_store.load_transcript(session_entry.session_id)
         except TranscriptReadError:
+            return history_unreadable()
+        except Exception:
+            logger.debug("/retry could not read the active rows of %s", session_entry.session_id, exc_info=True)
             return history_unreadable()
         last_user_idx = next((i for i in range(len(history) - 1, -1, -1)
                               if user_originated_turn_view(history[i]) is not None), None)
@@ -415,6 +422,9 @@ class GatewaySessionCommandsMixin:
         if readmission_reply is not None:
             return readmission_reply
 
+        if owned:
+            return await self._retry_in_admission(
+                event, session_entry, owned, pinned, truncated, last_user_msg, handoff is not None)
         if handoff is not None:
             # Composite carrier (one row = retained summary + live ask): the carrier-aware rewind
             # archives it and inserts the pure scaffold atomically, reselecting the latest carrier
@@ -443,6 +453,77 @@ class GatewaySessionCommandsMixin:
             raw_message=event.raw_message, channel_prompt=event.channel_prompt)
         carry_callback(event, turn)
         return await self._handle_message(turn)
+
+    def _retry_owned_store(self, session_id: str):
+        """The SessionDB that holds both *session_id*'s transcript and its authority's admission
+        ledger, or None (no authority: the rewrite-then-send path). One handle means one write
+        transaction can carry the rewrite and the admission (#139257 step 2)."""
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        if authority is None:
+            return None
+        db = self.session_store._db_for_session_id(session_id)
+        return db if db is not None and db is authority.db else None
+
+    async def _retry_in_admission(self, event, session_entry, db, pinned, truncated, resend_text,
+                                  composite: bool) -> Optional[str]:
+        """Plan the rewrite, bind it to the re-send and let ``admit_native`` commit both in one write
+        (``gateway.session_retry_admission``). A refusal leaves the transcript as it was; a
+        transcript changed since the read refuses both."""
+        from gateway import session_retry_admission as retry_admission
+        from gateway.session_ingress_context import carry_callback
+        from hermes_state_rewind import RewindTargetUnavailableError
+        from hermes_state_runtime import RuntimeStoreError
+        session_id = session_entry.session_id
+        if composite:
+            # The carrier-aware rewind, planned on the same snapshot: archive the carrier, keep its scaffold.
+            try:
+                plan = await asyncio.to_thread(db.plan_user_turn_rewind, session_id, -1,
+                                               require_retryable=True, require_composite=True)
+            except ValueError as exc:
+                if isinstance(exc, RewindTargetUnavailableError):
+                    return t("gateway.retry.failed_unchanged")
+                return t("gateway.retry.unsafe", error=exc)
+            except RuntimeError:  # the history changed under the plan, or the target has no row id
+                logger.debug("/retry carrier plan refused for %s", session_id, exc_info=True)
+                return t("gateway.retry.failed_unchanged")
+            if plan.expected_active_ids != pinned:
+                return t("gateway.retry.failed_unchanged")
+            resend_text = plan.live_text
+
+            def write(conn):
+                from hermes_state_mutation_transcript import rewind_in_transaction
+                rewind_in_transaction(db, conn, session_id, plan.target_row_id, preserve_compaction_handoff=True,
+                                      expected_active_ids=plan.expected_active_ids,
+                                      expected_target_content=plan.expected_target_content)
+        else:
+            def write(conn):
+                db.replace_messages_in_transaction(conn, session_id, [dict(m) for m in truncated], active_only=True,
+                                                   reject_active_turn_lease=True, expected_active_ids=pinned)
+
+        def committed():
+            self.session_store._clear_dirty_transcript(session_id)
+            session_entry.last_prompt_tokens = 0  # transcript was truncated
+            self._record_model_friction("retry", event.source, session_id)
+        rewrite = retry_admission.RetryRewrite(db=db, session_id=session_id, source=event.source,
+                                               write=write, on_commit=committed)
+        turn = MessageEvent(
+            text=resend_text, message_type=MessageType.TEXT, source=event.source,
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt)
+        carry_callback(event, turn)
+        token = retry_admission.bind(rewrite)
+        try:
+            return await self._handle_message(turn)
+        except retry_admission.RetryRewriteRefused as exc:
+            logger.info("/retry refused with the transcript unchanged for %s: %s", session_id, exc)
+            return t("gateway.retry.failed_unchanged")
+        except RuntimeStoreError as exc:
+            if not rewrite.applied and exc.reason == 'runtime_draining':
+                # The drain began after the pre-check: the re-send was refused, nothing rewritten.
+                return t("gateway.busy.drain_rejected", action=self._status_action_gerund())
+            raise
+        finally:
+            retry_admission.unbind(token)
 
     def _retry_readmission_reply(self, source: SessionSource, resend_text: str) -> Optional[str]:
         """Refusal the /retry re-send would meet in ``_handle_message``, if any — checked before the
