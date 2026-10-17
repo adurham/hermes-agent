@@ -2363,3 +2363,15 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `capture_rate_limits_from_headers` raised `NameError` on base and resolves now. No other F821 in
   the file; the other 9 hits (swallow family) left in place. 5 rate-limit test files: 76 passed, 0
   failed. Branch `claude/fix-rate-limit-tracker-f821-ijyuhu`. Next: C-0004.
+- 2026-10-17 — C-0004 `hermes_cli/cli_init_mixin.py` correctness F821×1 → 0: the
+  `_present_store_warning` closure now reads a closure-safe `store_error` local instead of the
+  `except … as e` name (details call stays inside the rich `try`, so a raising `__str__` still
+  falls back to the plain warning). **Correction to Notable findings:** the claimed bug does not
+  occur — `render_notification` calls the renderer synchronously inside the `except` block, while
+  `e` is still bound, so the rich warning with details was already shown; the hit was a latent
+  hazard (any deferral would NameError), not a live bug. New behaviour lock
+  `test_store_failure_warning_carries_the_raw_details` in
+  `tests/hermes_cli/test_cli_session_store_shared_registry.py` (2/2 pass; green on base too, as
+  expected). No sibling instances (the file's other except-name, `exc` at ~177, is not captured).
+  `python scripts/check` green, 12 checks. Branch `claude/fix-cli-init-mixin-f821-e6yqll`.
+  Next: C-0003 (`agent/fork/rate_limit_tracker.py` F821, fork-only; still open), then C-0007.
