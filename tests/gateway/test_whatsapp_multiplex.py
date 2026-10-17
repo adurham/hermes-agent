@@ -91,35 +91,6 @@ def _hold_port():
     return sock, sock.getsockname()[1]
 
 
-@pytest.mark.platforms("posix")  # SO_REUSEADDR shares live listeners on Windows; the probe skips it there
-def test_port_probe_reuses_time_wait_addresses(monkeypatch):
-    """A secondary restart must not mistake the prior bridge's TCP TIME-WAIT for a listener (#139425)."""
-    import plugins.platforms.whatsapp.bridge_ownership as ownership
-
-    calls = []
-
-    class ProbeSocket:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def setsockopt(self, level, option, value):
-            calls.append(("setsockopt", level, option, value))
-
-        def bind(self, address):
-            calls.append(("bind", address))
-
-    monkeypatch.setattr(ownership.socket, "socket", ProbeSocket)
-
-    assert ownership.port_is_free(3001)
-    assert calls == [
-        ("setsockopt", socket.SOL_SOCKET, socket.SO_REUSEADDR, 1),
-        ("bind", ("127.0.0.1", 3001)),
-    ]
-
-
 @pytest.mark.platforms("posix")  # POSIX TIME-WAIT bind semantics
 def test_time_wait_leftovers_are_not_a_foreign_listener(tmp_path):
     """Real kernel TIME-WAIT, no mocks: the stopped bridge closed its accepted connection first, so
