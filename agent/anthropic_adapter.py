@@ -1726,6 +1726,72 @@ def _coerce_positive_seconds(raw: Any) -> Optional[float]:
     return value if value > 0 else None
 
 
+def _drain_stream_with_deadlines(
+    stream: Any,
+    *,
+    log_prefix: str,
+    on_stream_event,
+    is_progress_event,
+    ceiling: Optional[float],
+    idle_window: Optional[float],
+    stream_started: float,
+) -> None:
+    """Consume ``stream`` event by event for ``create_anthropic_message``: tick ``on_stream_event``
+    and enforce its two-phase ``ceiling`` / ``idle_window`` deadlines (rationale in its docstring)."""
+    bounded = ceiling is not None or idle_window is not None
+    # Armed lazily: stays None until the first substantive payload, so
+    # pre-content thinking silence is bounded only by ceiling.
+    progress_deadline = None
+    for event in stream:
+        if callable(on_stream_event):
+            try:
+                on_stream_event(event)
+            except TimeoutError:
+                # Upstream: the callback is the caller's deadline seam (#99692) —
+                # abandon the stream instead of finishing an answer nobody reads.
+                raise
+            except Exception:
+                logger.debug(
+                    "%son_stream_event callback failed",
+                    log_prefix, exc_info=True,
+                )
+        if not bounded:
+            continue
+        now = time.monotonic()
+        if ceiling is not None and now - stream_started >= ceiling:
+            raise TimeoutError(
+                f"{log_prefix}Anthropic stream timed out after "
+                f"{now - stream_started:.1f}s without completing "
+                f"(total ceiling {ceiling:.1f}s)"
+            )
+        if idle_window is None:
+            continue
+        # Only substantive payloads arm/re-arm the window;
+        # keepalive and lifecycle frames deliberately do not.
+        is_progress = True
+        if callable(is_progress_event):
+            try:
+                is_progress = bool(is_progress_event(event))
+            except Exception:
+                logger.debug(
+                    "%sis_progress_event callback failed; "
+                    "treating event as progress",
+                    log_prefix, exc_info=True,
+                )
+                is_progress = True
+        if is_progress:
+            # First content also ARMS the window; before this
+            # point silence is extended thinking, not a stall.
+            progress_deadline = now + idle_window
+        elif progress_deadline is not None and now >= progress_deadline:
+            raise TimeoutError(
+                f"{log_prefix}Anthropic stream timed out: "
+                f"content stopped for {idle_window:.1f}s after "
+                f"starting (no-progress timeout, "
+                f"{now - stream_started:.1f}s elapsed)"
+            )
+
+
 def create_anthropic_message(
     client: Any,
     api_kwargs: dict,
@@ -1790,10 +1856,6 @@ def create_anthropic_message(
             _idle_window = _coerce_positive_seconds(no_progress_timeout)
             _bounded = _ceiling is not None or _idle_window is not None
             _stream_started = time.monotonic()
-            # Armed lazily: stays None until the first substantive payload, so
-            # pre-content thinking silence is bounded only by _ceiling. See the
-            # two-phase rationale in the docstring.
-            _progress_deadline = None
             stream_kwargs = {k: v for k, v in api_kwargs.items() if k != "stream"}
             with stream_fn(**stream_kwargs) as stream:
                 # MiniMax usage:null (#60683): patch raw events before the SDK accumulates them,
@@ -1830,54 +1892,15 @@ def create_anthropic_message(
                             log_prefix,
                         )
                         return stream.get_final_message()
-                    for _event in stream:
-                        if callable(on_stream_event):
-                            try:
-                                on_stream_event(_event)
-                            except TimeoutError:
-                                # Upstream: the callback is the caller's deadline seam (#99692) —
-                                # abandon the stream instead of finishing an answer nobody reads.
-                                raise
-                            except Exception:
-                                logger.debug(
-                                    "%son_stream_event callback failed",
-                                    log_prefix, exc_info=True,
-                                )
-                        if not _bounded:
-                            continue
-                        _now = time.monotonic()
-                        if _ceiling is not None and _now - _stream_started >= _ceiling:
-                            raise TimeoutError(
-                                f"{log_prefix}Anthropic stream timed out after "
-                                f"{_now - _stream_started:.1f}s without completing "
-                                f"(total ceiling {_ceiling:.1f}s)"
-                            )
-                        if _idle_window is None:
-                            continue
-                        # Only substantive payloads arm/re-arm the window;
-                        # keepalive and lifecycle frames deliberately do not.
-                        _is_progress = True
-                        if callable(is_progress_event):
-                            try:
-                                _is_progress = bool(is_progress_event(_event))
-                            except Exception:
-                                logger.debug(
-                                    "%sis_progress_event callback failed; "
-                                    "treating event as progress",
-                                    log_prefix, exc_info=True,
-                                )
-                                _is_progress = True
-                        if _is_progress:
-                            # First content also ARMS the window; before this
-                            # point silence is extended thinking, not a stall.
-                            _progress_deadline = _now + _idle_window
-                        elif _progress_deadline is not None and _now >= _progress_deadline:
-                            raise TimeoutError(
-                                f"{log_prefix}Anthropic stream timed out: "
-                                f"content stopped for {_idle_window:.1f}s after "
-                                f"starting (no-progress timeout, "
-                                f"{_now - _stream_started:.1f}s elapsed)"
-                            )
+                    _drain_stream_with_deadlines(
+                        stream,
+                        log_prefix=log_prefix,
+                        on_stream_event=on_stream_event,
+                        is_progress_event=is_progress_event,
+                        ceiling=_ceiling,
+                        idle_window=_idle_window,
+                        stream_started=_stream_started,
+                    )
                 return stream.get_final_message()
         except TimeoutError:
             raise

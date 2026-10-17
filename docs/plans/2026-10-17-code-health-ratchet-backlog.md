@@ -2333,3 +2333,11 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   order. 62 test files: 1245 passed, 0 failed, 6 skipped (4 gateway files need `aiohttp`, absent
   here); differential old-vs-new over 20,000 randomized fault-injected scenarios: 0 mismatches,
   sibling 100% line+branch (branch `claude/code-health-deliver-to-bot-chat-l1idyz`). Next: A-059.
+- 2026-10-17 — A-032 `agent/anthropic_adapter.py::create_anthropic_message`: CC 22 → 11, NESTING 7 → 5
+  (per-event callback + two-phase deadline loop → same-file `_drain_stream_with_deadlines`, CC 12 /
+  NESTING 3; file 1890 → 1913 lines). 53 adapter-referencing test files: 1231 passed, 0 failed,
+  17 skipped; differential old-vs-new over 20,000 randomized stream cases (fake clock, iterable /
+  non-iterable streams, beta / plain clients, stream-unavailable / other errors, raising callbacks,
+  ceiling / idle values incl. invalid; return, exceptions, call order, logs, kwargs mutation and
+  clock reads compared): 0 mismatches, unit + helper 100% line+branch. `python scripts/check` green
+  (branch `claude/reduce-create-anthropic-message-complexity-tj88w7`). Next: A-070 (pick 9).
