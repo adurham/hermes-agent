@@ -429,12 +429,11 @@ def mkdir_under_hermes_home(path: str | Path) -> Path:
     """Create *path*, but never materialize a deleted/missing named profile."""
     target = Path(path)
     assert_named_profile_home_live(target)
-    try:  # lazy: this module is in the launcher's bootstrap closure and must import alone
-        from hermes_dir_acl import make_user_dir
-    except ImportError:
-        target.mkdir(parents=True, exist_ok=True)
-    else:
-        make_user_dir(target, parents=True, exist_ok=True)
+    # Lazy so this module still imports alone; hermes_dir_acl (stdlib only) ships beside it in every
+    # closure that creates home dirs, and a missing copy fails loudly instead of silently skipping the
+    # elevated grant (tests/pm/test_bootstrap_import_closure.py).
+    from hermes_dir_acl import make_user_dir
+    make_user_dir(target, parents=True, exist_ok=True)
     return target
 
 
