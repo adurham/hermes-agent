@@ -13,6 +13,7 @@ import shutil
 import textwrap
 import time
 
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from rich.markup import escape as _escape
@@ -566,6 +567,11 @@ class CLIStreamMixin:
             except Exception:
                 pass
 
+        self._flush_stream_sentence_early(_emit_one)
+
+    def _flush_stream_sentence_early(self, emit_one: Callable[[str], None]) -> None:
+        """Emit a complete leading sentence of the partial stream line via ``emit_one``."""
+        from cli import _strip_markdown_syntax, _terminal_width_for_streaming
         # FORK — sentence-boundary early flush (2026-07-15). Between tool
         # calls the model can generate a short sentence/paragraph and then
         # go silent on this content block for a while (streaming tool-call
@@ -602,7 +608,7 @@ class CLIStreamMixin:
                     )
                     if self.final_response_markdown == "strip":
                         chunk = _strip_markdown_syntax(chunk)
-                    _emit_one(chunk)
+                    emit_one(chunk)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
