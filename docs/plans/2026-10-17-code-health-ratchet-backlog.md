@@ -2427,3 +2427,11 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   (ASYNC109 is not a ratchet rule). File held at 2,022 lines (its cap). Buzz + adapter-parity tests:
   16 files, 521 passed, 0 failed. `python scripts/check` green, 12 checks.
   Branch `claude/buzz-adapter-async-fixes-fn9jmb`.
+- 2026-10-17 — C-0020 `agent/context_references.py` async ASYNC240×2 → 0: the `cwd` / `allowed_root`
+  `expanduser().resolve()` in `preprocess_context_references_async` now run via
+  `await asyncio.to_thread(_expand_and_resolve, ...)` (new same-file sync helper; same values and
+  exceptions, `to_thread` carries the caller's contextvars). No other ASYNC hits in the file. Left: the
+  sync `_expand_path_reference` / `_expand_git_reference` still do filesystem/git work on the loop
+  from `_expand_reference` (not flagged by the rule; a larger off-loop change, own unit if wanted).
+  15 referencing test files: 880 passed, 0 failed, 1 skipped; `python scripts/check` green, 12 checks.
+  Branch `claude/fix-context-references-async-e59xwr`. Next: C-0021.
