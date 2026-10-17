@@ -291,17 +291,15 @@ def read_tail(path):
 
 
 def subagent_tail(row):
-    """The child's transcript tail: the gateway's ``subagent.tail`` when it runs the child (as cached
-    by the monitor's tick, never fetched here: the detail view calls this every frame), else the
+    """The child's transcript tail: the gateway's ``subagent.tail`` when it runs the child (fetched and
+    filtered by the monitor's tick, never here: the detail view calls this every frame), else the
     transcript file this process wrote."""
     from hermes_cli.gateway_tools import process_view
     view = process_view()
     if view is None:
         return read_tail(row.get('live_transcript'))
     text = view.subagent_tail(row['subagent_id'])
-    if text is None:
-        return t('cli.subagents.transcript_unavailable')
-    return ''.join(c for c in text if c.isprintable() or c in '\n\t')
+    return t('cli.subagents.transcript_unavailable') if text is None else text
 
 
 def modal_prompt_active(cli):

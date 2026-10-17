@@ -165,6 +165,8 @@ class GatewayProcessView:
             result = self.connection.call("subagent.tail", session_id=self.session_id,
                                           subagent_id=subagent_id, timeout=5) or {}
             text = result.get("text") if result.get("available") else None
+            if text is not None:  # filter once here, not on every repaint of the detail view
+                text = "".join(c for c in text if c.isprintable() or c in "\n\t")
         except (GatewayClientError, RuntimeError) as exc:
             logger.debug("subagent.tail failed: %s", exc)
             text = None
