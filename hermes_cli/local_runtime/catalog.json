@@ -105,7 +105,7 @@
       "id": "nemotron-3.5-bolt-74b-a9b",
       "display_name": "Nemotron 3.5 Bolt",
       "description": "NVIDIA's 74B mixture-of-experts in a 2-bit build; sees images",
-      "repo": "nvidia/Nemotron-3.5-Bolt-74B-A9B-IQ2-GGUF",
+      "repo": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF",
       "variants": [
         {
           "quant": "IQ2",
@@ -136,7 +136,7 @@
       "draft": {
         "path": "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr.gguf",
         "size_bytes": 998242560,
-        "repo": "nvidia/Nemotron-3.5-Bolt-74B-A9B-IQ2-LiLiCorr-GGUF",
+        "repo": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr-GGUF",
         "revision": "182d2987939e12f458298b5d5f6ef98912f4ad6c"
       },
       "draft_spec_type": "draft-dflash",
