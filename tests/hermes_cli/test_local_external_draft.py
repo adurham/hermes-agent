@@ -275,6 +275,31 @@ def test_the_update_job_downloads_missing_drafts_then_restarts_the_server(client
     assert events == ["restart"]
 
 
+def test_a_draft_that_fails_to_download_leaves_the_model_downloaded(client, monkeypatch, tmp_path):
+    """The draft only speeds generation up: a 404 on it costs the user the draft, never the model
+    it was meant to speed up."""
+    lm = _staged(monkeypatch, ENTRY)
+    models, assets = tmp_path / "models", tmp_path / "assets"
+    monkeypatch.setattr(lm.bootstrap, "models_dir", lambda: models)
+    monkeypatch.setattr(lm.bootstrap, "assets_dir", lambda: assets)
+    monkeypatch.setattr(lm, "_refresh_runtime", lambda *args: None)
+
+    def download(job, plan):
+        if any(dest.name == ENTRY.draft.local_name for _, dest, _ in plan):
+            raise RuntimeError("download failed from https://huggingface.co/lab/Hybrid-DFlash-GGUF: HTTP Error 404")
+        for _, dest, _ in plan:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.touch()
+
+    monkeypatch.setattr(lm, "_download_job", download)
+
+    job_id = client.post("/api/local-models/download", json={"model_id": BUILD.model_id}).json()["job_id"]
+
+    assert poll(client, job_id, until=("done", "error"))["status"] == "done"
+    assert (models / BUILD.files[0].local_name).is_file()
+    assert not (assets / ENTRY.draft.local_name).exists()
+
+
 def _update_job(monkeypatch, *, serving: str, on_download=None):
     """The engine update over a running server on ``serving``, with b11671 already installed."""
     lm = _staged(monkeypatch, ENTRY)

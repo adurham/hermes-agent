@@ -445,10 +445,19 @@ def _missing_drafts(engine_tag: str) -> list:
     return plan
 
 
-def _run_download_plan(job: dict[str, Any], plan: list, label: str) -> None:
-    """The downloader counts completed files and every part of this plan."""
+def _run_download_plan(job: dict[str, Any], plan: list, label: str, entry=None) -> None:
+    """The downloader counts completed files and every part of this plan. A catalog entry's draft
+    downloads last and only speeds generation up, so a draft that fails costs the model nothing."""
+    draft = bootstrap.assets_dir() / entry.draft.local_name if entry is not None and entry.draft else None
+    required = [row for row in plan if row[1] != draft]
     _step(job, "downloading", f"Downloading {label}")
-    _download_job(job, plan)
+    _download_job(job, required)
+    optional = [row for row in plan if row[1] == draft]
+    if optional:
+        with _JOBS_LOCK:
+            job.update(done_bytes=0, total_bytes=None, ranges={})
+        _step(job, "downloading", "Downloading the draft model that speeds up generation")
+        _download_optional(job, optional)
 
 
 def _download_progress_hook(job: dict[str, Any]):
@@ -753,7 +762,7 @@ def local_models_download(body: ModelDownloadBody):
         return {"job_id": None, "already_downloaded": True, "model_id": variant.model_id}
     job = _job("model-download", f"{entry.display_name} ({variant.quant})", model_id=entry.id)
     def _run():
-        _run_download_plan(job, plan, entry.display_name)
+        _run_download_plan(job, plan, entry.display_name, entry)
         _finish(job, f"{entry.display_name} ready")
         _refresh_runtime("post-download runtime refresh skipped")
 
@@ -865,7 +874,7 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
             if job["phase"] != "downloading":
                 with _JOBS_LOCK:
                     job.update(done_bytes=0, total_bytes=None, ranges={})
-            _run_download_plan(job, download_plan, entry.display_name)
+            _run_download_plan(job, download_plan, entry.display_name, entry)
         _step(job, "starting-server", "Starting the local server")
         with _config_profile_scope(profile):
             _ensure_server(job, _set_runtime_enabled(True), variant.model_id,
