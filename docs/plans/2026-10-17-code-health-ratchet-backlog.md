@@ -2341,3 +2341,9 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   ceiling / idle values incl. invalid; return, exceptions, call order, logs, kwargs mutation and
   clock reads compared): 0 mismatches, unit + helper 100% line+branch. `python scripts/check` green
   (branch `claude/reduce-create-anthropic-message-complexity-tj88w7`). Next: A-070 (pick 9).
+- 2026-10-17 — A-059 `hermes_cli/cli_stream_mixin.py::CLIStreamMixin._emit_stream_text`: CC 21 → 15
+  (FUNC_LINES 140 → 104); sentence-boundary early flush → same-file
+  `_flush_stream_sentence_early(emit_one)` (CC 7, NESTING 4). BLE001 (466) and BLE001+S110 (566)
+  hits kept inline, in order. 14 stream test files 82/82; differential old-vs-new over 20,000
+  randomized chunk sequences: 0 mismatches, new method at 100% line+branch coverage (branch
+  `claude/health-emit-stream-text-x9jjrs`). Next: A-004 (pick 11).
