@@ -377,6 +377,169 @@ def _role_rank(
     )
 
 
+def _gate_providers(ar: dict) -> tuple[str, ...]:
+    """Providers whose sessions want auto-routing (``auto_route.providers``)."""
+    providers_raw = ar.get("providers")
+    return (
+        tuple(str(p).strip().lower() for p in providers_raw if str(p).strip())
+        if isinstance(providers_raw, (list, tuple)) and providers_raw
+        else DEFAULT_PROVIDERS
+    )
+
+
+def _partition_tasks(
+    task_list: list[dict[str, Any]], escalate_only: bool
+) -> tuple[list[int], dict[int, str]]:
+    """Split tasks into the two populations one classifier call serves.
+
+      pending  — no model AND (no agent_type, or the explicit opt-in
+                 agent_type="auto"). Fully routed: tier→role→model.
+      escalate — no model AND an explicit agent_type. Classified only
+                 to compare tiers and produce an advisory; the result
+                 can never change the task's route.
+
+    An explicit per-task model is in NEITHER population — a stated
+    model is intent and always wins, so it is never even classified.
+    """
+    pending: list[int] = []
+    escalate: dict[int, str] = {}
+    for i, t in enumerate(task_list):
+        if str(t.get("model") or "").strip():
+            continue
+        stated = str(t.get("agent_type") or "").strip()
+        if not stated or stated.lower() == AUTO_AGENT_TYPE:
+            pending.append(i)
+        elif escalate_only:
+            escalate[i] = stated
+    return pending, escalate
+
+
+def _tier_roles(ar: dict) -> dict[str, str]:
+    """``DEFAULT_TIER_ROLES`` overlaid with valid ``auto_route.tier_roles`` entries."""
+    tier_roles_raw = ar.get("tier_roles")
+    tier_roles = dict(DEFAULT_TIER_ROLES)
+    if isinstance(tier_roles_raw, dict):
+        for k, v in tier_roles_raw.items():
+            if isinstance(k, str) and k in TIERS and isinstance(v, str) and v.strip():
+                tier_roles[k] = v.strip()
+    return tier_roles
+
+
+def _classify_limits(ar: dict) -> tuple[Any, Any]:
+    """(max_chars, timeout) from ``auto_route``, defaulting non-positive/invalid values."""
+    max_chars = ar.get("max_chars")
+    max_chars = (
+        max_chars
+        if isinstance(max_chars, int) and max_chars > 0
+        else _MAX_TASK_CHARS_DEFAULT
+    )
+    timeout = ar.get("timeout")
+    timeout = (
+        timeout if isinstance(timeout, (int, float)) and timeout > 0 else _TIMEOUT_DEFAULT
+    )
+    return max_chars, timeout
+
+
+def _unpack_verdict(result: tuple) -> tuple[Any, Any, Any]:
+    """(tier, reason, agent_type) from one classifier verdict.
+
+    Tolerates legacy 2-tuple (tier, reason) results — e.g. tests or
+    callers that monkeypatch _classify pre-persona-support — as well as
+    the current 3-tuple (tier, reason, agent_type).
+    """
+    if len(result) == 3:
+        tier, reason, agent_type = result
+    else:
+        tier, reason = result
+        agent_type = ""
+    return tier, reason, agent_type
+
+
+def _advisory_entry(
+    idx: int,
+    stated_role: str,
+    tier: str,
+    reason: str,
+    role: str,
+    model: str,
+    role_model_map: dict[str, Any],
+    anthropic_ranks: dict[str, int],
+    local_ranks: dict[str, int],
+) -> Optional[dict[str, Any]]:
+    """Escalate-check path: ADVISORY-ONLY entry, or None when there is nothing to report.
+
+    A stated agent_type is BINDING. We still compare tiers so a
+    clearly-too-shallow choice can be reported, but the entry we
+    return carries NO model/agent_type — the caller must not
+    apply it, only surface the advisory.
+    """
+    if not model:
+        # The recommended tier's role has no model — nothing to
+        # advise TO. Fail open, no advisory.
+        return None
+    stated_rank = _role_rank(stated_role, role_model_map, anthropic_ranks, local_ranks)
+    rec_rank = _role_rank(role, role_model_map, anthropic_ranks, local_ranks)
+    if stated_rank is None or rec_rank is None:
+        # Rank unresolvable on EITHER ladder for one side — fail
+        # open for this task (no advisory, no error).
+        logger.debug(
+            "delegation escalate-check: task %s rank unresolved "
+            "(stated %r -> %r, recommended %r -> %r); no advisory",
+            idx, stated_role, stated_rank, role, rec_rank,
+        )
+        return None
+    if rec_rank <= stated_rank:
+        # Equal or lower — never a mismatch worth reporting.
+        return None
+    return {
+        "advisory": True,
+        "recommended_agent_type": role,
+        "recommended_tier": tier,
+        "recommended_rank": rec_rank,
+        "stated_agent_type": stated_role,
+        "stated_rank": stated_rank,
+        "reason": reason,
+    }
+
+
+def _full_route(
+    idx: int,
+    tier: str,
+    reason: str,
+    agent_type: str,
+    role: str,
+    model: str,
+    persona_names: set[str],
+) -> Optional[dict[str, Any]]:
+    """Full tier→role→model route for a pending task, or None when its role is unmapped."""
+    if not model:
+        # Unmapped role — fail open for this task, but say so.
+        logger.debug(
+            "delegation auto-route: task %s classified %r but role %r has "
+            "no model_by_role entry; inheriting default",
+            idx, tier, role,
+        )
+        return None
+    route: dict[str, Any] = {
+        "model": model,
+        "tier": tier,
+        "role": role,
+        "reason": reason,
+    }
+    # Validate the persona pick against the actual catalog offered —
+    # a hallucinated/unrecognized name is dropped, never passed
+    # through blindly (falls back to tier/model-only routing).
+    if agent_type and agent_type in persona_names:
+        route["agent_type"] = agent_type
+    elif agent_type:
+        logger.debug(
+            "delegation auto-route: task %s classifier picked unknown "
+            "persona %r; dropping (tier/model routing still applies)",
+            idx, agent_type,
+        )
+    return route
+
+
 def route_task_models(
     task_list: list[dict[str, Any]],
     role_model_map: dict[str, Any],
@@ -444,12 +607,7 @@ def route_task_models(
         if not ar.get("enabled", True):
             return _skip("auto_route disabled")
 
-        providers_raw = ar.get("providers")
-        providers = (
-            tuple(str(p).strip().lower() for p in providers_raw if str(p).strip())
-            if isinstance(providers_raw, (list, tuple)) and providers_raw
-            else DEFAULT_PROVIDERS
-        )
+        providers = _gate_providers(ar)
         if (active_provider or "").strip().lower() not in providers:
             return _skip(
                 "provider gate closed",
@@ -464,35 +622,11 @@ def route_task_models(
         # advisory entry the caller reports, never applies. See route_task_models.
         escalate_only = bool(ar.get("escalate_only", True))
 
-        # Two eligible populations, ONE classifier call:
-        #
-        #   pending  — no model AND (no agent_type, or the explicit opt-in
-        #              agent_type="auto"). Fully routed: tier→role→model.
-        #   escalate — no model AND an explicit agent_type. Classified only
-        #              to compare tiers and produce an advisory; the result
-        #              can never change the task's route.
-        #
-        # An explicit per-task model is in NEITHER population — a stated
-        # model is intent and always wins, so it is never even classified.
-        pending: list[int] = []
-        escalate: dict[int, str] = {}
-        for i, t in enumerate(task_list):
-            if str(t.get("model") or "").strip():
-                continue
-            stated = str(t.get("agent_type") or "").strip()
-            if not stated or stated.lower() == AUTO_AGENT_TYPE:
-                pending.append(i)
-            elif escalate_only:
-                escalate[i] = stated
+        pending, escalate = _partition_tasks(task_list, escalate_only)
         if not pending and not escalate:
             return _skip("no routable task")
 
-        tier_roles_raw = ar.get("tier_roles")
-        tier_roles = dict(DEFAULT_TIER_ROLES)
-        if isinstance(tier_roles_raw, dict):
-            for k, v in tier_roles_raw.items():
-                if isinstance(k, str) and k in TIERS and isinstance(v, str) and v.strip():
-                    tier_roles[k] = v.strip()
+        tier_roles = _tier_roles(ar)
 
         # If no tier's role resolves to a model, classification is pointless.
         if not any(_entry_model(role_model_map.get(r)) for r in tier_roles.values()):
@@ -501,16 +635,7 @@ def route_task_models(
             )
             return _skip("no tier role has a model")
 
-        max_chars = ar.get("max_chars")
-        max_chars = (
-            max_chars
-            if isinstance(max_chars, int) and max_chars > 0
-            else _MAX_TASK_CHARS_DEFAULT
-        )
-        timeout = ar.get("timeout")
-        timeout = (
-            timeout if isinstance(timeout, (int, float)) and timeout > 0 else _TIMEOUT_DEFAULT
-        )
+        max_chars, timeout = _classify_limits(ar)
 
         classify_persona = bool(ar.get("classify_persona", True))
         persona_catalog = _persona_catalog(role_model_map) if classify_persona else []
@@ -542,85 +667,21 @@ def route_task_models(
 
         routes: dict[int, dict[str, Any]] = {}
         for idx, result in results.items():
-            # Tolerate legacy 2-tuple (tier, reason) results — e.g. tests or
-            # callers that monkeypatch _classify pre-persona-support — as
-            # well as the current 3-tuple (tier, reason, agent_type).
-            if len(result) == 3:
-                tier, reason, agent_type = result
-            else:
-                tier, reason = result
-                agent_type = ""
+            tier, reason, agent_type = _unpack_verdict(result)
             role = tier_roles.get(tier, "")
             model = _entry_model(role_model_map.get(role)) if role else ""
 
             if idx in escalate:
-                # ── Escalate-check path: ADVISORY-ONLY ─────────────────────
-                # A stated agent_type is BINDING. We still compare tiers so a
-                # clearly-too-shallow choice can be reported, but the entry we
-                # return carries NO model/agent_type — the caller must not
-                # apply it, only surface the advisory.
-                stated_role = escalate[idx]
-                if not model:
-                    # The recommended tier's role has no model — nothing to
-                    # advise TO. Fail open, no advisory.
-                    continue
-                stated_rank = _role_rank(
-                    stated_role, role_model_map, _anthropic_ranks, _local_ranks
+                entry = _advisory_entry(
+                    idx, escalate[idx], tier, reason, role, model,
+                    role_model_map, _anthropic_ranks, _local_ranks,
                 )
-                rec_rank = _role_rank(
-                    role, role_model_map, _anthropic_ranks, _local_ranks
-                )
-                if stated_rank is None or rec_rank is None:
-                    # Rank unresolvable on EITHER ladder for one side — fail
-                    # open for this task (no advisory, no error).
-                    logger.debug(
-                        "delegation escalate-check: task %s rank unresolved "
-                        "(stated %r -> %r, recommended %r -> %r); no advisory",
-                        idx, stated_role, stated_rank, role, rec_rank,
-                    )
-                    continue
-                if rec_rank <= stated_rank:
-                    # Equal or lower — never a mismatch worth reporting.
-                    continue
-                routes[idx] = {
-                    "advisory": True,
-                    "recommended_agent_type": role,
-                    "recommended_tier": tier,
-                    "recommended_rank": rec_rank,
-                    "stated_agent_type": stated_role,
-                    "stated_rank": stated_rank,
-                    "reason": reason,
-                }
-                continue
-
-            if idx not in pending:  # classifier hallucinated an index
-                continue
-            if not model:
-                # Unmapped role — fail open for this task, but say so.
-                logger.debug(
-                    "delegation auto-route: task %s classified %r but role %r has "
-                    "no model_by_role entry; inheriting default",
-                    idx, tier, role,
-                )
-                continue
-            route: dict[str, str] = {
-                "model": model,
-                "tier": tier,
-                "role": role,
-                "reason": reason,
-            }
-            # Validate the persona pick against the actual catalog offered —
-            # a hallucinated/unrecognized name is dropped, never passed
-            # through blindly (falls back to tier/model-only routing).
-            if agent_type and agent_type in persona_names:
-                route["agent_type"] = agent_type
-            elif agent_type:
-                logger.debug(
-                    "delegation auto-route: task %s classifier picked unknown "
-                    "persona %r; dropping (tier/model routing still applies)",
-                    idx, agent_type,
-                )
-            routes[idx] = route
+            elif idx in pending:  # else: classifier hallucinated an index
+                entry = _full_route(idx, tier, reason, agent_type, role, model, persona_names)
+            else:
+                entry = None
+            if entry is not None:
+                routes[idx] = entry
         if not routes:
             # Classified, but no task got a usable route (unmapped role, unknown
             # indices, ...) — say so rather than reporting "classifier ran".
