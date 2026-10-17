@@ -127,3 +127,43 @@ def test_ctrl_c_force_exit_mid_turn_still_interrupts_the_gateway_turn(_hook, cli
     _shutdown_mid_turn(cli_mod, cli)
     calls = [c.args[0] for c in cli.agent.connection.call.call_args_list]
     assert "session.interrupt" in calls
+
+
+def _ctrl_d_event(text=""):
+    buf = SimpleNamespace(text=text, delete=MagicMock())
+    return SimpleNamespace(app=SimpleNamespace(current_buffer=buf, exit=MagicMock()))
+
+
+def test_ctrl_d_at_an_idle_prompt_exits_without_detaching(cli_mod):
+    cli = cli_mod.HermesCLI()
+    cli._agent_running, cli._attached_images = False, []
+    event = _ctrl_d_event()
+    cli._tui_handle_ctrl_d(event)
+    event.app.exit.assert_called_once()
+    assert cli._should_exit is True and cli._detach_on_exit is False
+
+
+def test_ctrl_d_with_text_deletes_and_pending_images_block_exit(cli_mod):
+    cli = cli_mod.HermesCLI()
+    cli._agent_running, cli._attached_images = True, []
+    typed = _ctrl_d_event("draft")
+    cli._tui_handle_ctrl_d(typed)
+    typed.app.current_buffer.delete.assert_called_once()
+    typed.app.exit.assert_not_called()
+    cli._attached_images = ["/tmp/pasted.png"]
+    pending = _ctrl_d_event()
+    cli._tui_handle_ctrl_d(pending)
+    pending.app.exit.assert_not_called()
+    assert cli._should_exit is False and cli._detach_on_exit is False
+
+
+@patch("hermes_cli.lifecycle.invoke_hook")
+def test_ctrl_d_mid_turn_in_cli_local_mode_still_interrupts(_hook, cli_mod):
+    """Only a gateway agent's turn survives Ctrl+D: a CLI-local agent has nobody else to finish it."""
+    cli = cli_mod.HermesCLI()
+    cli.agent = MagicMock(session_id="local-session")
+    cli._agent_running, cli._attached_images = True, []
+    _ctrl_d(cli)
+    with patch("hermes_cli.cli_tui_runtime_mixin.request_hard_interrupt") as interrupt:
+        _shutdown_mid_turn(cli_mod, cli)
+    interrupt.assert_called_once_with(cli.agent)

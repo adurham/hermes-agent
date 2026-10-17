@@ -494,7 +494,7 @@ class CLITuiRuntimeMixin:
             print(f"{_DIM}{t('cli.tui.shutting_down')}{_RST}", flush=True)
         from hermes_cli.cli_shutdown import _gateway_owns_session_end
         if self.agent and self._agent_running and not (
-                getattr(self, "_detach_on_exit", False) and _gateway_owns_session_end(self.agent)):
+                self._detach_on_exit and _gateway_owns_session_end(self.agent)):
             # A gateway turn left by Ctrl+D is not interrupted: ``end_session`` below detaches this
             # viewer and the owner closes the row once the turn settles (gateway/session_viewer_close).
             with suppress(Exception):
