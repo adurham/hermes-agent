@@ -127,13 +127,15 @@ def _runs_dflash(entry) -> Path | None:
 
 def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | None, *,
                  fixed_overhead: int, requested_window: int | None, engine_tag: str | None,
-                 window_without: int):
+                 window_without: int, residents: int = 1):
     """The launch plan with the entry's DFlash draft in place of MTP, or None.
 
     The draft runs on one slot: each slot keeps a recurrent-state copy per draft position, and
     the router's default four slots hold enough copies to push weights off the GPU. It may
     shrink the window to half native, never below what the model gets without it when that is
-    smaller; a requested (grown) window it can't hold keeps the model as it was.
+    smaller; a requested (grown) window it can't hold keeps the model as it was. On one slot a
+    side request takes the chat's slot and the prompt cache brings the chat back, so where free
+    commit sizes that cache the draft keeps its smallest useful size.
     """
     if _runs_dflash(entry) is None:
         return None
@@ -143,6 +145,10 @@ def _dflash_plan(entry, profile, budget: HardwareBudget, live: HardwareBudget | 
     lean = replace(profile, kv_scale=1.0)
     overhead = fixed_overhead + _dflash_extra_bytes(entry, lean)
     plan = plan_launch(lean, budget, fixed_overhead=overhead, requested_window=requested_window)
+    if live is not None and live.commit_room_bytes is not None:
+        from hermes_cli.local_runtime.hardware import usable_beside_prompt_cache
+
+        live = replace(live, usable_vram_bytes=usable_beside_prompt_cache(live, residents))
     if live is not None:
         # fit_to_free_memory holds a too-busy card at the floor rather than move weights off it on a
         # live reading. The draft never rides on that hold: it runs only where it fits now.
@@ -200,7 +206,7 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
 
     dflash = None if decision.spilled else _dflash_plan(
         entry, profile, budget, live, fixed_overhead=fixed_overhead, requested_window=requested,
-        engine_tag=engine_tag, window_without=decision.window)
+        engine_tag=engine_tag, window_without=decision.window, residents=residents)
     if dflash is not None:
         plan, decision = dflash, dflash.decision
     # Router discovery is preset-only: refused files must never autoload with stock fit.

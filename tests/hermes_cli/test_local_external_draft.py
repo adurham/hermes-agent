@@ -126,6 +126,27 @@ def test_the_draft_runs_only_where_it_fits_beside_other_programs(model):
     assert busy and drafted
 
 
+def test_on_windows_unified_memory_the_draft_keeps_the_smallest_prompt_cache(model):
+    """On one slot a title or other side request takes the chat's slot, and llama-server's prompt
+    cache is what brings the chat back. Where free commit sizes that cache, the draft runs only
+    with the smallest useful cache beside it."""
+    from hermes_cli.local_runtime import hardware
+
+    gguf, _, _ = model
+    capacity = HardwareBudget(usable_vram_bytes=48 * GIB, total_device_bytes=48 * GIB,
+                              ram_available_bytes=64 * GIB, uma=True)
+    drafted = 0
+    for quarters in range(64, 160):
+        room = int(quarters / 4 * GIB)
+        live = replace(capacity, usable_vram_bytes=min(capacity.usable_vram_bytes, int(room * 0.8)),
+                       commit_room_bytes=room)
+        preset = presets.preset_for_model(gguf, capacity, set(), live=live, engine_tag="b11671")
+        if _drafts(preset):
+            drafted += 1
+            assert int(preset.keys["cache-ram"]) << 20 >= hardware._PROMPT_CACHE_MIN, quarters / 4
+    assert drafted
+
+
 def test_a_grown_window_wins_over_the_draft(model):
     """Growth restored the native window on a roomy card, and other programs now hold part of it:
     whatever window still fits goes to the model as it was, not to the draft."""
