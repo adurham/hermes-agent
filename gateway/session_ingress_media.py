@@ -61,34 +61,21 @@ def drop_capture_lease(paths=None):
                 del _leases[path]
 
 
-def _native_inputs_dir():
-    """The store's path as the profile names it, before ``resolve()`` (links still visible)."""
+def native_inputs_store():
+    """The store's path as the profile names it, unresolved. The one value ``make_user_dir`` gets:
+    ``resolve()`` erases a link planted below the Hermes home (``cache/documents`` -> elsewhere),
+    and an elevated grant on the resolved path would land outside the home with no home fence."""
     from gateway.platforms.base import get_document_cache_dir
     return get_document_cache_dir() / 'native-inputs'
 
 
 def native_inputs_root():
-    """This profile's content-addressed store of retained native inputs (``<root>/<sha256>/<name>``)."""
-    return _native_inputs_dir().resolve()
+    """This profile's content-addressed store of retained native inputs (``<root>/<sha256>/<name>``),
+    resolved: what the identity checks compare against."""
+    return native_inputs_store().resolve()
 
 
 _media_root = native_inputs_root
-
-
-def _grant_path(path):
-    """*path* (under the resolved store root) re-rooted on the unresolved root for ``make_user_dir``.
-
-    ``resolve()`` erases a link planted below the Hermes home (``cache/documents`` -> elsewhere), and
-    an elevated grant on the resolved path would then land outside the home with no home fence. The
-    unresolved form keeps that provenance, so the grant refuses the link. A test-pinned root has no
-    unresolved form and is used as is."""
-    if _media_root is not native_inputs_root:
-        return path
-    lexical = _native_inputs_dir()
-    try:
-        return lexical / path.relative_to(lexical.resolve())
-    except ValueError:
-        return path
 
 
 # Public ``prompt.submit`` attachments: a local client stages image bytes in the
@@ -266,7 +253,7 @@ def capture_native_media(paths):
             root = target.parent.parent
             if target.parent.resolve() != target.parent:
                 raise RuntimeStoreError('invalid_params')
-            make_user_dir(_grant_path(target.parent), mode=0o700, exist_ok=True)
+            make_user_dir(native_inputs_store() / target.parent.name, mode=0o700, exist_ok=True)
             with _lease_lock:
                 scope = _lease_scope.get()
                 if scope is not None:
@@ -295,7 +282,7 @@ def _capture_file(path, limit, total, references, staged):
         root = _media_root()
         if root.resolve() != root:
             raise RuntimeStoreError('invalid_params')
-        make_user_dir(_grant_path(root), mode=0o700, parents=True, exist_ok=True)
+        make_user_dir(native_inputs_store(), mode=0o700, parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix='.capture-', dir=root)
         temporary = Path(name)
         staged.append(temporary)
