@@ -2347,3 +2347,13 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   hits kept inline, in order. 14 stream test files 82/82; differential old-vs-new over 20,000
   randomized chunk sequences: 0 mismatches, new method at 100% line+branch coverage (branch
   `claude/health-emit-stream-text-x9jjrs`). Next: A-004 (pick 11).
+- 2026-10-17 — A-004 `gateway/platforms/api_server_openai_routes.py::OpenAICompatRoutesMixin._handle_responses`:
+  CC 33 → 17 (FUNC_LINES 164 → 86, NESTING 4 → 2) via same-file helpers `_responses_input_messages`,
+  `_responses_explicit_history` (module level, CC 8/7) and the `_stream_responses` / `_complete_responses`
+  branches (CC 1/6); BLE001 hit kept inline; file 1336 → 1376 lines. 73 api_server test files: 1430
+  passed, 1 failed, 27 skipped — identical on clean main (the failure is `test_model_validation.py::
+  …test_non_nous_provider_does_not_consult_portal_feed`). Note: the api_server tests need aiohttp, so
+  build the venv with `--extra messaging` too, or they fail to collect. Differential old-vs-new
+  over 20,000 randomized requests (fake store/route/agent/SSE, response + call log + queued events
+  compared): 0 mismatches, 100% line+branch coverage of the unit. Branch
+  `claude/refactor-openai-handle-responses-yggrzc`. Next: A-051 (pick 12).
