@@ -83,6 +83,11 @@ async def test_clarify_lock_answers_the_owner_batch_request(tmp_path, monkeypatc
         assert last.get('result') == {'status': 'ok', 'remaining': []}, last
         await asyncio.to_thread(worker.join, 5)
         assert out == {'answers': {'q0': 'red', 'q1': None}, 'outcome': 'submitted'}
+        # Settled: every other viewer's card (and a classic CLI parked in its panel) is withdrawn.
+        await _wait_for(lambda: any(f.get('params', {}).get('type') == 'request.cancel' for f in peer.frames))
+        cancel = next(f['params'] for f in peer.frames if f.get('params', {}).get('type') == 'request.cancel')
+        assert cancel['payload'] == {'id': rid, 'method': 'clarify', 'reason': 'resolved'}
+        assert 'red' not in repr(cancel)  # no answer rides the withdrawal
         late = await _lock(connection, rid, 'q1', 'late', 6)
         assert late.get('result') == {'status': 'expired'}, late
     finally:
