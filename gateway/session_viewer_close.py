@@ -20,11 +20,12 @@ import uuid
 from functools import partial
 
 from hermes_state_local import local_receipt
+from hermes_state_mutation_retirement import VIEWER_CLOSE_PREFIX
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
 
-CLOSE_PREFIX = 'gateway.viewer_close.v1:'
+CLOSE_PREFIX = VIEWER_CLOSE_PREFIX  # route retirement drops it too
 
 _BUSY_SQL = ("SELECT 1 FROM session_admissions WHERE target_session_id=? AND status IN ('queued','started','unknown') "
              "UNION ALL SELECT 1 FROM worker_executions WHERE session_id IN (?,?) "

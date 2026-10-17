@@ -543,3 +543,23 @@ async def test_a_viewer_back_before_the_unknown_is_resolved_keeps_the_turn_for_i
     await asyncio.wait_for(restarted.sessions['chat'].task, 10)  # the drain pauses on the unknown turn
     assert get_session_admission(db2, admission_id=row['admission_id'])['status'] == 'unknown'
     assert db2.get_session('chat')['ended_at'] is None and calls2 == [] and _stored(db2) is None
+
+
+@pytest.mark.asyncio
+async def test_attaching_a_session_restored_on_demand_cancels_its_stored_close(tmp_path, monkeypatch):
+    """Why attach reads the store instead of trusting ``pending_closes.pop``: a stored close is only
+    re-armed by the scheduled boot recovery, for sessions it could restore. One mounted any other
+    way (here the authority's own unscheduled mount; in production a session paused at boot and
+    restored by ``authorize`` on first use) has a stored close that never reached memory. Left in
+    place, the next boot would close a session its viewer came back to."""
+    import json
+    from gateway.session_viewer_close import CLOSE_PREFIX
+
+    db, authority, _calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    await _call(viewer, 'session.detach', session_id='chat', subscription_id=subscription)
+    db.set_meta(CLOSE_PREFIX + 'chat', json.dumps({'op': 'x', 'reason': 'cli_close'}))
+    db2, restarted, calls2 = await _restarted_owner(tmp_path, monkeypatch, db)
+    assert restarted.pending_closes == {} and db2.get_meta(CLOSE_PREFIX + 'chat') is not None
+    await _call(_viewer(restarted, tmp_path), 'session.resume', session_id='chat')
+    assert db2.get_meta(CLOSE_PREFIX + 'chat') is None and calls2 == []
