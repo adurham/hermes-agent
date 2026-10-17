@@ -20,7 +20,17 @@ function mount(mutate: (params: any) => Promise<unknown>) {
     }
 
     if (method === 'session.resume') {
-      return { session_id: params.session_id, revision: 4, execution_generation: 2, messages: [] }
+      return {
+        session_id: params.session_id,
+        revision: 4,
+        execution_generation: 2,
+        messages: [],
+        subscription_id: 'cas-read'
+      }
+    }
+
+    if (method === 'session.detach') {
+      return { session_id: params.session_id, subscription_id: params.subscription_id, detached: true }
     }
 
     if (method === 'session.mutate') {
@@ -116,6 +126,27 @@ it('keeps a refused delete on screen past the live-status poll', async () => {
     instance.rerender(React.cloneElement(element))
     await vi.waitFor(() => expect(out.text).toContain('error: session_busy'))
     expect(out.text).toContain('1 resumable')
+  } finally {
+    instance.unmount()
+  }
+})
+
+it('hands back the attachment its revision read made when the delete is refused', async () => {
+  // The CAS read is a `session.resume`, which attaches this view to the closed session; left
+  // attached, a refusal puts the closed session back in the live list until Ink exits.
+  const { deleteStored, instance, request } = mount(async () => {
+    throw Object.assign(new Error('session_busy'), { data: { reason: 'session_busy' } })
+  })
+
+  try {
+    await deleteStored()
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledWith('session.detach', {
+        session_id: 'old',
+        subscription_id: 'cas-read',
+        end_reason: 'tui_close'
+      })
+    )
   } finally {
     instance.unmount()
   }

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import GatewayConnection
 from hermes_cli.gateway_session_store import GatewaySessionStore
 
@@ -111,6 +111,45 @@ def test_title_rename_delete_and_detach_are_gateway_verbs(store):
     delete = [p for m, p in client.calls if m == "session.mutate"][-1]
     # The owner refuses a delete without the generation it was read at (invalid_params).
     assert delete["operation"] == "delete" and delete["expected_generation"] == 0
+
+
+def test_a_refused_delete_of_a_closed_session_leaves_it_closed(store):
+    """The delete reads its revision through ``session.resume``, which attaches this viewer again;
+    a refusal must hand that attachment back, or the closed session stays in the live list with
+    this CLI as its viewer."""
+    db, client = store
+    db.open_session(cli("local-old", resumed=True))
+    db.end_session("local-old", "new_session")
+    real_rpc = client.rpc
+
+    async def refusing(method, *, _timeout=None, **params):
+        if method == "session.mutate":
+            client.calls.append((method, params))
+            raise GatewayRPCError("session_busy")
+        return await real_rpc(method, _timeout=_timeout, **params)
+
+    client.rpc = refusing
+    with pytest.raises(GatewayClientError):
+        db.delete_session("local-old")
+    # cli_close: the stamp main's classic CLI ends a session with; a row already ended keeps its own reason.
+    assert client.calls[-1] == ("session.detach", {"session_id": "local-old", "subscription_id": "sub-local-old",
+                                                   "end_reason": "cli_close"})
+
+
+def test_a_refused_delete_keeps_a_session_this_cli_is_viewing(store):
+    db, client = store
+    db.open_session(cli("local-old", resumed=True))
+    real_rpc = client.rpc
+
+    async def refusing(method, *, _timeout=None, **params):
+        if method == "session.mutate":
+            raise GatewayRPCError("session_busy")
+        return await real_rpc(method, _timeout=_timeout, **params)
+
+    client.rpc = refusing
+    with pytest.raises(GatewayClientError):
+        db.delete_session("local-old")
+    assert "session.detach" not in [method for method, _ in client.calls]
 
 
 def test_gateway_owned_writes_are_noops_and_unknown_writes_refuse(store):
