@@ -2278,3 +2278,14 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
 
 - 2026-10-17 — session 1: measured; landed `build_anthropic_kwargs`, `run_import`,
   `_handle_warm_action` (branch `quality/ratchet-backlog-slice1`). Next: first row of Next pick.
+- 2026-10-17 — session 3 (A-008): landed `agent/anthropic_adapter.py::_strip_unknown_tool_blocks`
+  (branch `claude/strip-unknown-tool-blocks-health-i0uhc5`). CC 29 → 19, NESTING 7 → 4
+  (FUNC_LINES 210 → 113; file 1987 → 1890 lines); new sibling `agent/anthropic_adapter_tool_blocks.py`
+  (breadcrumb builders, result-text join, per-message reorder; max CC 4, NESTING 3; late-imports
+  `logger` from the facade). Baselined BLE001 hits stay inline in the unit, in order. 55 test files
+  referencing the adapter: 1307 passed, 0 failed, 17 skipped; differential old-vs-new over 20,002
+  randomized message histories (every role/block type, unknown/known/unnamed/id-less tool_use,
+  str-raising input and result text, thinking blocks; output, in-place mutation, exceptions and log
+  records compared): 0 mismatches, sibling 100% line+branch coverage under the grid.
+  `python scripts/check` (full) green, 12 checks ok; health gate 0 blocking/0 advisory.
+  Next: next row of Next pick (A-011).
