@@ -875,6 +875,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
         self._reaction_redaction_delay_seconds = 5.0
         self._reaction_redaction_tasks: set[asyncio.Task] = set()
+        self._read_receipt_tasks: set[asyncio.Task] = set()
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
         if self._proxy_url:
             logger.info("Matrix: proxy configured — %s", self._proxy_url)
@@ -1192,11 +1193,11 @@ class MatrixAdapter(BasePlatformAdapter):
             from mautrix.crypto import OlmMachine
             from mautrix.crypto.store.asyncpg import PgCryptoStore
             from mautrix.util.async_db import Database
-            self._store_dir.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(self._store_dir.mkdir, parents=True, exist_ok=True)
             phase = "create"
-            if (self._store_dir / "crypto_store.pickle").exists():  # pre-SQLite era
+            if await asyncio.to_thread((self._store_dir / "crypto_store.pickle").exists):  # pre-SQLite era
                 logger.info("Matrix: removing legacy crypto_store.pickle (migrated to SQLite)")
-                (self._store_dir / "crypto_store.pickle").unlink()
+                await asyncio.to_thread((self._store_dir / "crypto_store.pickle").unlink)
             crypto_db = Database.create(
                 f"sqlite:///{self._crypto_db_path}", upgrade_table=PgCryptoStore.upgrade_table)
             await crypto_db.start()
@@ -1319,7 +1320,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error("Matrix: homeserver URL not configured")
             return False
         # Resolved here, inside the profile scope, so multiplexed profiles never share it.
-        self._resolve_store_dir().mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self._resolve_store_dir().mkdir, parents=True, exist_ok=True)
         client_session = _create_matrix_session(self._proxy_url)
         api = HTTPAPI(base_url=self._homeserver, token=self._access_token or "", client_session=client_session)
         state_store = MemoryStateStore()
@@ -1630,7 +1631,7 @@ class MatrixAdapter(BasePlatformAdapter):
         finally:
             if converted_path:
                 with suppress(OSError):
-                    os.unlink(converted_path)
+                    await asyncio.to_thread(os.unlink, converted_path)
 
     async def send_video(
         self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -1829,17 +1830,16 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def _send_local_file(
-        self, room_id: str, file_path: str, msgtype: str, caption: Optional[str] = None,
-        reply_to: Optional[str] = None, file_name: Optional[str] = None, metadata: Optional[dict[str, Any]] = None,
-        is_voice: bool = False) -> SendResult:
-        p = Path(file_path).expanduser()
-        if not p.exists():
+        self, room_id: str, file_path: str, msgtype: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
+        file_name: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, is_voice: bool = False) -> SendResult:
+        p = await asyncio.to_thread(Path(file_path).expanduser)
+        if not await asyncio.to_thread(p.exists):
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
             text = t("platform.shared.media.attachment_failed")
             return await self.emit_media_warning(room_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
         try:
-            file_size = p.stat().st_size
+            file_size = (await asyncio.to_thread(p.stat)).st_size
         except OSError:
             file_size = 0
         if file_size > self._max_media_bytes:
@@ -1849,7 +1849,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # run it off the event loop so voice uploads never stall the adapter.
         voice_metadata = await asyncio.to_thread(_matrix_voice_metadata_for_file, p) if is_voice else None
         return await self._upload_and_send(
-            room_id, p.read_bytes(), fname, mimetypes.guess_type(fname)[0] or "application/octet-stream", msgtype,
+            room_id, await asyncio.to_thread(p.read_bytes), fname, mimetypes.guess_type(fname)[0] or "application/octet-stream", msgtype,
             caption, reply_to, metadata, is_voice, voice_metadata)
 
     async def _sync_loop(self) -> None:
@@ -1937,7 +1937,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # return_exceptions=True: one failing handler must not drop its SIBLING events.
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     logger.warning("Matrix: event handler failed during sync dispatch: %s", result)
 
     def _is_self_sender(self, sender: str) -> bool:
@@ -2660,13 +2660,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.debug("Matrix: failed to redact model picker reaction %s: %s", emoji, exc)
 
     def _background_read_receipt(self, room_id: str, event_id: str) -> None:
-
         async def _send() -> None:
             try:
                 await self.send_read_receipt(room_id, event_id)
             except Exception as exc:  # pragma: no cover — defensive
                 logger.debug("Matrix: background read receipt failed: %s", exc)
-        asyncio.ensure_future(_send())
+        self._read_receipt_tasks.add(task := asyncio.create_task(_send()))
+        task.add_done_callback(self._read_receipt_tasks.discard)
 
     async def send_read_receipt(self, room_id: str, event_id: str) -> bool:
         if not self._client:

@@ -2529,3 +2529,18 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   files 430/430; differential old-vs-new over 720 audio-conversion cases (fake pilk/ffmpeg modes):
   0 mismatches. `scripts/check` green. Branch `claude/fix-qqbot-adapter-async-rules-l5wfo4`.
   Next: C-0012.
+- 2026-10-17 — C-1056 `plugins/platforms/matrix/adapter.py` (async): ASYNC240×1 + HX009×1 + RUF006×1 → 0
+  (file hits 55 → 52; the 51 BLE001 + 1 S110 untouched, in place and in order). `_send_local_file`'s
+  expanduser/exists/stat and the upload `read_bytes` hop through `asyncio.to_thread` (same not-found
+  warning, same OSError→0 size, read errors still propagate); `_dispatch_sync` checks `BaseException`
+  so a cancelled handler is logged too; `_background_read_receipt` keeps its task in
+  `_read_receipt_tasks` (discarded on done; `_send` already catches and logs). Sibling blocking path
+  calls in async defs, not flagged by ruff, moved off-loop too: connect's store-dir `mkdir`, the
+  legacy `crypto_store.pickle` exists/unlink, and `send_voice`'s temp-file `os.unlink`. Left: the
+  sync recovery-key file helpers (`_write_matrix_recovery_key_output_file` etc.), called from a sync
+  helper inside cross-signing bootstrap — one-shot and profile-scoped, own change. FILE_LINES held at
+  3,267 (cap) by repacking `_send_local_file`'s signature. New invariant test
+  `tests/gateway/test_matrix_sync_dispatch_cancel.py` (red on main). 35 matrix-referencing test files:
+  same failure set as main in both the test env (17, all missing `aiohttp`) and a `--extra matrix`
+  env (2, `test_matrix_deps_rebind.py` expects mautrix absent). Branch
+  `claude/matrix-adapter-code-health-ratchet-e3vm4o`.
