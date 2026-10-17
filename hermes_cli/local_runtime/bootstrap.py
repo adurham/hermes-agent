@@ -208,7 +208,7 @@ def refresh_local_runtime() -> bool:
         return False
 
 
-def _admitted_models_max(mdir: Path, configured: int) -> int:
+def _admitted_models_max(mdir: Path, configured: int, engine_tag: str | None = None) -> int:
     """Residency cap to hand the router: derived from the hardware budget, ``models_max`` as a ceiling.
 
     A cap of "four" on a card that holds one model is how a second child ends up paged (WDDM) and
@@ -222,7 +222,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
 
         capacity = probe_budget(planning=True)
         live = _launch_budget(capacity) if capacity.uma else None
-        cap = admitted_residency_count(mdir, capacity, configured, live=live)
+        cap = admitted_residency_count(mdir, capacity, configured, live=live, engine_tag=engine_tag)
     except Exception as exc:
         logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
         return configured
@@ -460,7 +460,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
-            models_max = _admitted_models_max(mdir, int(section.get("models_max", 4)))
+            models_max = _admitted_models_max(mdir, int(section.get("models_max", 4)), engine.tag)
             preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini", models_max,
                                             engine_tag=engine.tag)
 

@@ -285,7 +285,7 @@ def resident_footprint(gguf: Path, budget: HardwareBudget, window: int, *, draft
     return footprint_bytes(plan.profile, window, overhead_bytes=plan.overhead_bytes)
 
 
-def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
+def _launch_footprint(gguf: Path, budget: HardwareBudget, engine_tag: str | None = None) -> int | None:
     """Estimated resident bytes for one staged model at the window this policy grants it, or None
     when it cannot be priced: an unreadable header, or a model the physics check refuses outright
     (it never loads, so it must not shrink the residency cap)."""
@@ -300,20 +300,28 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
         return None
     entry = entry_for_model(model_id)
     companions = _companions(entry)
+    fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
+    requested = load_window_overrides().get(model_id)
     plan = plan_launch(profile, budget, mtp_capable=_runs_mtp(entry, companions),
-                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + companions.nbytes,
-                       requested_window=load_window_overrides().get(model_id))
+                       fixed_overhead=fixed_overhead, requested_window=requested)
     if isinstance(plan.decision, PhysicsRefusal):
         return None
     # Priced whole even when the plan spills: a spilled model still holds part of its weights on
-    # the device, and over-counting errs toward the side that cannot thrash. A DFlash draft on
-    # disk counts whether or not this machine runs it, for the same reason.
-    draft = _dflash_extra_bytes(entry, profile) if _runs_dflash(entry) is not None else 0
-    return footprint_bytes(plan.profile, plan.decision.window, overhead_bytes=plan.overhead_bytes) + draft
+    # the device, and over-counting errs toward the side that cannot thrash.
+    price = footprint_bytes(plan.profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
+    # Where the engine loads the draft, the preset runs it in place of MTP: the model holds the
+    # larger of the two launches, never both.
+    dflash = None if plan.decision.spilled else _dflash_plan(
+        entry, profile, budget, None, fixed_overhead=fixed_overhead, requested_window=requested,
+        engine_tag=engine_tag, window_without=plan.decision.window)
+    if dflash is not None:
+        price = max(price, footprint_bytes(dflash.profile, dflash.decision.window,
+                                           overhead_bytes=dflash.overhead_bytes))
+    return price
 
 
 def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int,
-                             live: HardwareBudget | None = None) -> int:
+                             live: HardwareBudget | None = None, engine_tag: str | None = None) -> int:
     """How many models the card may hold resident at once: priced against the budget, not a count.
 
     Residency used to be bounded by a count alone, so a second model was admitted against an
@@ -335,7 +343,7 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
         return configured
     largest = 0
     for gguf in staged_in(models_dir):
-        need = _launch_footprint(gguf, budget)
+        need = _launch_footprint(gguf, budget, engine_tag)
         if need:
             largest = max(largest, need)
     if largest <= 0:

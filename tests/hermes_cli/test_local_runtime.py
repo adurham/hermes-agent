@@ -1010,7 +1010,9 @@ def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
         return path
 
     monkeypatch.setattr(bootstrap, "_generate_presets", _priced)
-    monkeypatch.setattr(bootstrap, "_admitted_models_max", lambda mdir, configured: configured)
+    capped: list = []
+    monkeypatch.setattr(bootstrap, "_admitted_models_max",
+                        lambda mdir, configured, engine_tag=None: capped.append(engine_tag) or configured)
 
     class _NoStart:
         def __init__(self, *a, **k):
@@ -1027,4 +1029,5 @@ def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
     assert bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True, "backend": "vulkan"}}) is None
     # The release reaches the presets too: drafts gate on the engine that will load them.
     assert priced == [(vulkan, "b1")]
+    assert capped == ["b1"]  # the residency cap prices the draft only where this engine loads it
     assert bootstrap.serving_engine() is None  # a failed boot serves nothing

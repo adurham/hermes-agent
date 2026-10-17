@@ -221,12 +221,31 @@ def test_a_model_without_mtp_drafts_without_backend_sampling(model):
     assert "backend-sampling" not in preset.keys
 
 
-def test_the_residency_price_includes_the_draft_once_it_is_on_disk(model):
-    gguf, draft, _ = model
-    with_draft = presets._launch_footprint(gguf, ROOMY)
-    draft.unlink()
+def test_the_residency_price_is_the_launch_the_model_runs(model):
+    """The preset runs the draft in place of MTP, so the model holds the larger of the two launches,
+    never both added together. An engine that can't load the draft prices MTP alone."""
+    gguf, _, use = model
+    larger = set()
+    for state in (150 * MIB, 600 * MIB):  # MTP's own layers outweigh the draft, then the reverse
+        use(state=state)
+        mtp = presets.resident_footprint(gguf, ROOMY, NATIVE)
+        drafting = presets.resident_footprint(gguf, ROOMY, NATIVE, drafting=True)
+        larger.add("draft" if drafting > mtp else "mtp")
 
-    assert with_draft >= presets._launch_footprint(gguf, ROOMY) + ENTRY.draft.size_bytes
+        assert presets._launch_footprint(gguf, ROOMY, engine_tag="b11671") == max(mtp, drafting)
+        assert presets._launch_footprint(gguf, ROOMY, engine_tag="b11000") == mtp
+        assert presets._launch_footprint(gguf, ROOMY) == mtp
+    assert larger == {"draft", "mtp"}
+
+
+def test_two_models_stay_resident_where_two_drafted_launches_fit(model):
+    gguf, _, _ = model
+    gguf.touch()
+    held = max(presets.resident_footprint(gguf, ROOMY, NATIVE),
+               presets.resident_footprint(gguf, ROOMY, NATIVE, drafting=True))
+    card = replace(ROOMY, usable_vram_bytes=2 * held + GIB)
+
+    assert presets.admitted_residency_count(gguf.parent, card, 4, engine_tag="b11671") == 2
 
 
 def _staged(monkeypatch, *entries):
