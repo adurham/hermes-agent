@@ -8,7 +8,13 @@ import {
   $sessions,
   $unreadFinishedSessionIds
 } from '@/store/session'
-import { $sessionStates, $sessionTiles, closeSessionTile, publishSessionState } from '@/store/session-states'
+import {
+  $sessionStates,
+  $sessionTiles,
+  closeSessionTile,
+  publishSessionState,
+  recordSessionEventScope
+} from '@/store/session-states'
 import { makeSessionInfo } from '@/test/session-info'
 
 /**
@@ -55,6 +61,16 @@ describe('publish-time eviction', () => {
     publishSessionState('rt-wechat', state('wechat-1', { busy: false }))
 
     expect($unreadFinishedSessionIds.get()).not.toContain('wechat-1')
+  })
+
+  it('marks a background profile local completion unread when another profile holds a messaging row of that id', () => {
+    $messagingSessions.set([makeSessionInfo({ id: 'shared', source: 'telegram', profile: 'default' })])
+    recordSessionEventScope({ connectionId: 'conn-work', profile: 'work', session_id: 'rt-work' })
+
+    publishSessionState('rt-work', state('shared', { busy: true }))
+    publishSessionState('rt-work', state('shared', { busy: false }))
+
+    expect($unreadFinishedSessionIds.get()).toContain('shared')
   })
 
   it('keeps a busy session with no surface — its background turn feeds the sidebar dot', () => {
