@@ -143,6 +143,49 @@ def test_desktop_group_of_served_bots_is_created_and_runs(tmp_path, monkeypatch)
             e['payload'] for e in hosted_rooms.read_events(db_path, room_id='crew')['events']]
 
 
+def test_unserving_one_bot_keeps_the_rest_of_its_group_talking(tmp_path, monkeypatch):
+    """Greptile on #140187: unserving alpha must not stop a saved default/alpha/beta group; a turn
+    for beta still runs, a turn for alpha fails as that member's own turn, and no new group seats it."""
+    from gateway import hosted_rooms, session_finite
+    from gateway.run_runtime import unserve_profile_runtime
+
+    ran = []
+
+    async def execute(authority, ref, row):
+        ran.append(authority.profile_id)
+        return 'member reply'
+    monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
+    with _gateway(tmp_path, monkeypatch, served=('alpha', 'beta')) as (runner, homes, call):
+        desktop = _desktop(runner, call)
+        assert 'result' in desktop('default', 'groups.create', room_id='crew', name='Crew',
+                                   members=_members('default', 'alpha', 'beta'))
+        assert call(unserve_profile_runtime(runner, homes['alpha']))
+        assert runner.session_authorities.for_home(homes['alpha']) is None
+        db_path = runner.session_authority.db.db_path
+
+        def settled(count):
+            return sum(e['kind'] == 'room.activity' and e['payload'].get('status') == 'settled'
+                       for e in hosted_rooms.read_events(db_path, room_id='crew')['events']) >= count
+        sent = desktop('default', 'groups.send', room_id='crew', event_id='hello',
+                       payload={'text': '@beta hello', 'thread_id': 'thread'})
+        assert 'result' in sent, sent
+        wait_until(lambda: settled(1), what='the room settled after beta answered')
+        assert ran == [str(homes['beta'])], [
+            e['payload'] for e in hosted_rooms.read_events(db_path, room_id='crew')['events']]
+        # A turn for alpha fails as alpha's own turn, without wedging the room for beta.
+        assert 'result' in desktop('default', 'groups.send', room_id='crew', event_id='to-alpha',
+                                   payload={'text': '@alpha hello', 'thread_id': 'thread'})
+        wait_until(lambda: settled(2), what="the room settled after alpha's turn failed")
+        assert 'result' in desktop('default', 'groups.send', room_id='crew', event_id='again',
+                                   payload={'text': '@beta again', 'thread_id': 'thread'})
+        wait_until(lambda: settled(3), what='the room settled after beta answered again')
+        assert ran == [str(homes['beta'])] * 2, ran
+        # A new group cannot seat the unserved bot.
+        refused = desktop('default', 'groups.create', room_id='again', name='Crew',
+                          members=_members('default', 'alpha'))
+        assert "profile 'alpha' is not local to this gateway" in refused['error']['data']['detail'], refused
+
+
 def test_a_bot_this_gateway_does_not_serve_is_refused_by_name(tmp_path, monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger='gateway.session_controls')
     # gamma is a real profile on disk, but this gateway does not serve it; ghost does not exist.

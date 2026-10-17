@@ -30,6 +30,15 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def local_profiles(self):
         return tuple(self.profile_homes())
 
+    def room_profiles(self, room):
+        """A saved room keeps every local member it seated: unserving one bot must not stop the
+        others. That member's own turns still fail (``_resolve_member_transport`` and ``attest``
+        need a live home), and a new group cannot seat it (``local_profiles``)."""
+        seated = {m.get('profile') for m in room.get('members') or ()
+                  if isinstance(m, dict) and isinstance(m.get('profile'), str)
+                  and (m.get('target') or {}).get('kind', 'local') == 'local'}
+        return tuple(sorted(set(self.local_profiles()) | seated))
+
     def attest(self, selector, operation, params):
         from dataclasses import asdict
         from gateway.hosted_room_driver import list_tasks
