@@ -2473,3 +2473,14 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   image/voice/video × connected/public-URL × 8 paths, preview write failure): only difference is the
   tracked loading task. `python scripts/check` green, 12 checks. Branch
   `claude/async-adapter-ratchet-k716n8`.
+- 2026-10-17 — C-1050 `plugins/platforms/mattermost/adapter.py` async: ASYNC240×5 → 0 (no other
+  ASYNC hits in the file). `_send_local_file` and `_load_batch_image` run `Path.exists`/`read_bytes`
+  via `asyncio.to_thread`; `_standalone_send` runs its media `os.path.exists` probe the same way.
+  Evaluation order and exception paths unchanged (a directory path still raises
+  `IsADirectoryError` to the caller). 17 test files referencing mattermost (test env built with
+  `--extra messaging`; without it aiohttp is missing and 23 tests fail on main too): 327 passed,
+  3 failed — the Slack-only `TestSlackDownloadSlackFileBytes` cases in
+  `test_media_download_retry.py`, identical on main (DNS blocked for files.slack.com). Old-vs-new
+  differential over 23 cases (local send / batch `file://` / standalone media grid × existing,
+  missing, directory, empty, %-encoded): 0 mismatches. `python scripts/check` green. Branch
+  `claude/code-health-c-1050-async-9qggr3`.
