@@ -486,3 +486,60 @@ async def test_a_stale_owner_cannot_delete_a_stored_close(tmp_path, monkeypatch)
     assert db.get_meta(CLOSE_PREFIX + 'chat') == record
     assert forget_persisted_close(authority, 'chat', record) is True
     assert db.get_meta(CLOSE_PREFIX + 'chat') is None
+
+
+async def _hard_killed_mid_turn(tmp_path, monkeypatch):
+    """Ctrl+D mid-turn, then the owner dies with no shutdown code (SIGKILL): the started admission
+    and the stored close are all that is left; the next owner recovers the admission ``unknown``."""
+    from hermes_state_runtime import admit_session_input, claim_session_input
+
+    db, authority, _calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    admit_session_input(db, epoch=authority.epoch, principal_id='native', session_id='chat',
+                        request_id='r1', payload={'text': 'mid-turn'})
+    row = claim_session_input(db, epoch=authority.epoch, session_id='chat')
+    assert row['status'] == 'started'
+    await _call(viewer, 'session.detach', session_id='chat', subscription_id=subscription, end_reason='cli_close')
+    assert _stored(db)['reason'] == 'cli_close' and db.get_session('chat')['ended_at'] is None
+    db2, restarted, calls2 = await _restarted_owner(tmp_path, monkeypatch, db)
+    from hermes_state_runtime import get_session_admission
+    assert get_session_admission(db2, admission_id=row['admission_id'])['status'] == 'unknown'
+    return db2, restarted, calls2, row
+
+
+@pytest.mark.asyncio
+async def test_a_close_stored_before_a_hard_kill_ends_the_row_past_the_unknown_turn(tmp_path, monkeypatch):
+    """#134889 LC-6b, @alt-glitch warning 1 on #140489: after SIGKILL the in-flight turn recovers
+    ``unknown``, the drain pauses on ``unknown_execution`` before the idle point, and the stored close
+    never applied: the row stayed open forever. Nobody is left to Discard the turn (the viewer closed
+    the session), so the owner resolves it as interrupted (never replayed) and the close completes."""
+    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_state_runtime import get_session_admission
+
+    db2, restarted, calls2, row = await _hard_killed_mid_turn(tmp_path, monkeypatch)
+    recover_local_sessions(restarted, schedule=True)
+    await async_wait_until(lambda: len(calls2) == 2, timeout=10)
+    assert db2.get_session('chat')['end_reason'] == 'cli_close'
+    assert db2.get_session('chat')['ended_at'] is not None
+    settled = get_session_admission(db2, admission_id=row['admission_id'])
+    assert (settled['status'], settled['outcome']) == ('terminal', 'interrupted')
+    assert [name for name, _ in calls2] == ['commit', 'finalize'] and _stored(db2) is None
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_back_before_the_unknown_is_resolved_keeps_the_turn_for_its_own_discard(tmp_path, monkeypatch):
+    """The owner only resolves an unknown turn for a close nobody cancelled: a viewer that attached
+    after the restart cancels the close and decides about the turn itself (Discard)."""
+    from hermes_state_runtime import get_session_admission
+    from gateway.session_viewer_close import rearm_persisted_closes
+
+    db2, restarted, calls2, row = await _hard_killed_mid_turn(tmp_path, monkeypatch)
+    from gateway.session_local_recovery import restore_local_session
+    restore_local_session(restarted, 'chat')
+    await _call(_viewer(restarted, tmp_path), 'session.resume', session_id='chat')
+    assert rearm_persisted_closes(restarted) == [] and restarted.pending_closes == {}
+    from gateway.session_contract import SessionRef
+    restarted._schedule(SessionRef(restarted.profile_id, 'chat'))
+    await asyncio.wait_for(restarted.sessions['chat'].task, 10)  # the drain pauses on the unknown turn
+    assert get_session_admission(db2, admission_id=row['admission_id'])['status'] == 'unknown'
+    assert db2.get_session('chat')['ended_at'] is None and calls2 == [] and _stored(db2) is None

@@ -160,6 +160,8 @@ async def settle_viewer_close(authority, session_id):
     if close is None or live is None or live.subscribers:
         authority.pending_closes.pop(session_id, None)
         return
+    if not await _resolve_abandoned_unknown(authority, session_id, live, close):
+        return  # left paused (a viewer came back, or the resolution was refused)
     target = _physical_target(authority, session_id)
     # Every await below can let a viewer reattach (attach drops the pending close) or another
     # settler run, so the close is re-checked after each one.
@@ -183,6 +185,36 @@ async def settle_viewer_close(authority, session_id):
         return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
     platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
+
+
+async def _resolve_abandoned_unknown(authority, session_id, live, close):
+    """A turn the previous owner lost (hard kill) recovers ``unknown`` and pauses the FIFO until
+    someone Discards it, but the last viewer closed the session: nobody is left to. The viewer's
+    close is that decision, so the owner resolves it as Discard does (interrupted, never replayed,
+    transcript boundary written) and the drain moves on; a queued successor still runs before the
+    close. A viewer back first cancels the close and keeps the decision. Returns whether the
+    close may go on to its idle check (no ``unknown`` turn is left)."""
+    from hermes_state_runtime import list_session_admissions
+    rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=session_id)
+    unknown = [row for row in rows if row['status'] == 'unknown']
+    if not unknown:
+        return True
+    from gateway.session_contract import SessionRef
+    ref = SessionRef(authority.profile_id, session_id)
+    for row in unknown:
+        if not _still_pending(authority, session_id, live, close):
+            return False
+        try:
+            await authority.resolve_unknown_as_owner(ref, row['admission_id'], row['generation'])
+        except RuntimeStoreError as exc:
+            logger.warning('Unknown turn %s on closed session %s left paused: %s',
+                           row['admission_id'], session_id, exc.reason)
+            return False
+        logger.info('Unknown turn %s resolved interrupted: its session %s was closed by its last viewer',
+                    row['admission_id'], session_id)
+    # The resolution also rescheduled the drain; the idle check below and its next idle point
+    # are both safe (the close is claimed exactly once).
+    return _still_pending(authority, session_id, live, close)
 
 
 def _still_pending(authority, session_id, live, close):
