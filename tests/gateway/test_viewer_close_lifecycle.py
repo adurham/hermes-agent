@@ -302,6 +302,18 @@ async def test_concurrent_settlers_run_the_close_lifecycle_once(tmp_path, monkey
     assert db.get_session('chat')['end_reason'] == 'cli_close'
 
 
+def _stored(db):
+    import json
+    from gateway.session_viewer_close import CLOSE_PREFIX
+    record = db.get_meta(CLOSE_PREFIX + 'chat')
+    if record is None:
+        return None
+    try:
+        return json.loads(record)
+    except ValueError:
+        return {'reason': record}  # a bare-reason record (before operation ids)
+
+
 async def _restarted_owner(tmp_path, monkeypatch, db):
     """The next gateway process on the same state.db: a new authority whose memory starts empty."""
     db2, authority, calls = await _owner(tmp_path, monkeypatch)
@@ -344,7 +356,7 @@ async def test_a_viewer_reattaching_cancels_the_persisted_close(tmp_path, monkey
     row = admit_session_input(db, epoch=authority.epoch, principal_id='native', session_id='chat',
                               request_id='r1', payload={'text': 'mid-turn'})
     await _call(viewer, 'session.detach', session_id='chat', subscription_id=subscription, end_reason='cli_close')
-    assert db.get_meta(CLOSE_PREFIX + 'chat') == 'cli_close'
+    assert _stored(db)['reason'] == 'cli_close'
 
     # Re-attach before settlement (same process): the stored close goes with the in-memory one.
     await _call(_viewer(authority, tmp_path), 'session.resume', session_id='chat')
@@ -357,3 +369,120 @@ async def test_a_viewer_reattaching_cancels_the_persisted_close(tmp_path, monkey
     assert restarted.sessions['chat'].task is None  # no queued turn and no close: no drain at all
     assert restarted.pending_closes == {} and calls2 == []
     assert db2.get_session('chat')['ended_at'] is None
+
+
+def _gate_persist(monkeypatch, reason):
+    """Hold *reason*'s close after its real SQLite commit, before its off-loop write returns."""
+    import gateway.session_viewer_close as close
+    original = close._persist_close
+    entered, release = threading.Event(), threading.Event()
+
+    def gated(authority, session_id, record):
+        original(authority, session_id, record)
+        if reason in record:
+            entered.set()
+            assert release.wait(10)
+    monkeypatch.setattr(close, '_persist_close', gated)
+    return entered, release
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_older_close_keeps_the_newer_close_durable(tmp_path, monkeypatch):
+    """#134889 LC-6b, independent review round 2: close A commits, a viewer reattaches (cancelling A)
+    and closes again as B; A's late continuation deleted B's stored close by key, so a restart
+    before the idle point left the row open for good."""
+    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_state_runtime import admit_session_input, cancel_session_input
+
+    db, authority, _calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    row = admit_session_input(db, epoch=authority.epoch, principal_id='native', session_id='chat',
+                              request_id='r1', payload={'text': 'mid-turn'})
+    entered, release = _gate_persist(monkeypatch, 'close_a')
+    old = asyncio.create_task(_call(viewer, 'session.detach', session_id='chat',
+                                    subscription_id=subscription, end_reason='close_a'))
+    await async_wait_until(entered.is_set)
+    newcomer = _viewer(authority, tmp_path)
+    resumed = await _call(newcomer, 'session.resume', session_id='chat')
+    await _call(newcomer, 'session.detach', session_id='chat', subscription_id=resumed['subscription_id'],
+                end_reason='close_b')
+    stored_b = _stored(db)
+    assert stored_b['reason'] == 'close_b'
+    release.set()
+    await old
+
+    # A's continuation sees it lost and removes only its own record: B's stays, op id and all.
+    assert _stored(db) == stored_b
+    assert authority.pending_closes['chat'].reason == 'close_b'
+
+    # The old owner's memory is gone; the next authority recovers B and ends the row.
+    cancel_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'])
+    db2, restarted, calls2 = await _restarted_owner(tmp_path, monkeypatch, db)
+    recover_local_sessions(restarted, schedule=True)
+    await async_wait_until(lambda: len(calls2) == 2, timeout=10)
+    assert db2.get_session('chat')['end_reason'] == 'close_b'
+    assert db2.get_session('chat')['ended_at'] is not None
+    assert [name for name, _ in calls2] == ['commit', 'finalize'] and _stored(db2) is None
+
+
+@pytest.mark.asyncio
+async def test_the_newer_close_settles_and_the_older_one_leaves_no_trace(tmp_path, monkeypatch):
+    db, authority, calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    entered, release = _gate_persist(monkeypatch, 'close_a')
+    old = asyncio.create_task(_call(viewer, 'session.detach', session_id='chat',
+                                    subscription_id=subscription, end_reason='close_a'))
+    await async_wait_until(entered.is_set)
+    newcomer = _viewer(authority, tmp_path)
+    resumed = await _call(newcomer, 'session.resume', session_id='chat')
+    # Idle FIFO: B settles immediately, while A is still parked after its commit.
+    await _call(newcomer, 'session.detach', session_id='chat', subscription_id=resumed['subscription_id'],
+                end_reason='close_b')
+    assert db.get_session('chat')['end_reason'] == 'close_b' and _stored(db) is None
+    release.set()
+    await old
+    assert [name for name, _ in calls] == ['commit', 'finalize']  # once, for B only
+    assert db.get_session('chat')['end_reason'] == 'close_b'
+    assert authority.pending_closes == {} and _stored(db) is None
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_during_the_close_write_cancels_it_durably(tmp_path, monkeypatch):
+    from gateway.session_local_recovery import recover_local_sessions
+    from hermes_state_runtime import admit_session_input, cancel_session_input
+
+    db, authority, calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    row = admit_session_input(db, epoch=authority.epoch, principal_id='native', session_id='chat',
+                              request_id='r1', payload={'text': 'mid-turn'})
+    entered, release = _gate_persist(monkeypatch, 'close_a')
+    old = asyncio.create_task(_call(viewer, 'session.detach', session_id='chat',
+                                    subscription_id=subscription, end_reason='close_a'))
+    await async_wait_until(entered.is_set)
+    await _call(_viewer(authority, tmp_path), 'session.resume', session_id='chat')
+    release.set()
+    await old
+    assert authority.pending_closes == {} and _stored(db) is None and calls == []
+
+    cancel_session_input(db, epoch=authority.epoch, admission_id=row['admission_id'])
+    db2, restarted, calls2 = await _restarted_owner(tmp_path, monkeypatch, db)
+    recover_local_sessions(restarted, schedule=True)
+    assert restarted.pending_closes == {} and calls2 == []
+    assert db2.get_session('chat')['ended_at'] is None
+
+
+@pytest.mark.asyncio
+async def test_a_stale_owner_cannot_delete_a_stored_close(tmp_path, monkeypatch):
+    """Compare-and-delete is epoch-fenced: an owner that lost the store leaves its successor's close."""
+    import json
+    from gateway.session_viewer_close import CLOSE_PREFIX, forget_persisted_close
+
+    db, authority, _calls = await _owner(tmp_path, monkeypatch)
+    record = json.dumps({'op': 'x', 'reason': 'cli_close'})
+    db.set_meta(CLOSE_PREFIX + 'chat', record)
+    stale = SimpleNamespace(db=db, epoch=authority.epoch - 1)
+    assert forget_persisted_close(stale, 'chat', record) is False
+    assert forget_persisted_close(authority, 'chat', 'another close') is False
+    assert db.get_meta(CLOSE_PREFIX + 'chat') == record
+    assert forget_persisted_close(authority, 'chat', record) is True
+    assert db.get_meta(CLOSE_PREFIX + 'chat') is None

@@ -9,9 +9,14 @@ is remembered and completed when the FIFO goes idle, so exiting mid-turn still e
 The pending close is also kept in ``state_meta`` (``CLOSE_PREFIX + session_id``): a gateway stop or
 restart before the FIFO goes idle would otherwise drop it, and nothing else ends a local row. Boot
 recovery re-arms it (``rearm_persisted_closes``), so the restarted owner's first idle point ends it.
+Each stored close carries its own operation id, and every delete is compare-and-delete on that exact
+record under the owner-epoch fence: a cancelled older close, a reattach or a stale owner can only
+remove the record it saw, never a newer close stored since.
 """
 import asyncio
+import json
 import logging
+import uuid
 from functools import partial
 
 from hermes_state_local import local_receipt
@@ -44,11 +49,21 @@ _RESET_REASONS = frozenset({'new_session', 'tui_close'})
 
 
 class _PendingClose:
-    """One viewer close; identity, not the reason, tells a settler its close is still the pending one."""
-    __slots__ = ('reason',)
+    """One viewer close; identity, not the reason, tells a settler its close is still the pending one.
+    ``record`` is its ``state_meta`` value: a unique operation id plus the reason."""
+    __slots__ = ('reason', 'record')
 
-    def __init__(self, reason):
+    def __init__(self, reason, record=None):
         self.reason = reason
+        self.record = record or json.dumps({'op': uuid.uuid4().hex, 'reason': reason}, sort_keys=True)
+
+    @classmethod
+    def from_record(cls, record):
+        try:
+            reason = json.loads(record)['reason']
+        except (ValueError, TypeError, KeyError):
+            reason = record  # a bare-reason record from before operation ids
+        return cls(reason, record)
 
 
 async def close_viewer_session(authority, session_id, reason):
@@ -68,28 +83,52 @@ async def close_viewer_session(authority, session_id, reason):
     for parent in parents:
         interrupt_for_session(session_key=route, parent_session_id=parent, reason=f'viewer_close:{reason}')
     authority.pending_closes[session_id] = close = _PendingClose(reason)
-    await asyncio.to_thread(_persist_close, authority, session_id, reason)
+    await asyncio.to_thread(_persist_close, authority, session_id, close.record)
     if not _still_pending(authority, session_id, live, close):
-        # A viewer attached during the write: its own clear may have run before this commit.
-        await asyncio.to_thread(forget_persisted_close, authority, session_id)
+        # A viewer attached during the write: its own clear may have run before this commit. Only
+        # this close's record goes; a newer close stored since keeps its own.
+        await asyncio.to_thread(forget_persisted_close, authority, session_id, close.record)
         return
     await settle_viewer_close(authority, session_id)
 
 
-def _persist_close(authority, session_id, reason):
+def _persist_close(authority, session_id, record):
     from hermes_state_runtime import _epoch
 
     def write(conn):
         _epoch(conn, authority.epoch)
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                     (CLOSE_PREFIX + session_id, reason))
+                     (CLOSE_PREFIX + session_id, record))
     authority.db._execute_write(write)
 
 
-def forget_persisted_close(authority, session_id):
-    """Blocking: drop *session_id*'s stored close (a viewer re-attached, or the close completed)."""
-    authority.db._execute_write(lambda conn: conn.execute('DELETE FROM state_meta WHERE key=?',
-                                                          (CLOSE_PREFIX + session_id,)))
+def forget_persisted_close(authority, session_id, record):
+    """Blocking: drop *session_id*'s stored close only if it is still exactly *record* (that close
+    completed or was cancelled), and only while this authority owns the store. Returns whether a
+    row went."""
+    from hermes_state_runtime import _epoch
+
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        return conn.execute('DELETE FROM state_meta WHERE key=? AND value=?',
+                            (CLOSE_PREFIX + session_id, record)).rowcount
+    try:
+        return bool(authority.db._execute_write(write))
+    except RuntimeStoreError as exc:
+        logger.info('Stored close for %s left in place: %s', session_id, exc)
+        return False
+
+
+def cancel_persisted_close(authority, session_id):
+    """Blocking, for a viewer attach: drop the stored close unless it is the one now pending in
+    memory (a detach that ran after the attach stored it; it is that close's own to settle)."""
+    record = authority.db.get_meta(CLOSE_PREFIX + session_id)
+    if record is None:
+        return
+    pending = authority.pending_closes.get(session_id)
+    if pending is not None and pending.record == record:
+        return
+    forget_persisted_close(authority, session_id, record)
 
 
 def rearm_persisted_closes(authority):
@@ -99,15 +138,15 @@ def rearm_persisted_closes(authority):
     with authority.db._read_ctx() as conn:
         stored = conn.execute('SELECT key, value FROM state_meta WHERE key LIKE ?', (CLOSE_PREFIX + '%',)).fetchall()
     armed = []
-    for key, reason in stored:
+    for key, record in stored:
         session_id = key[len(CLOSE_PREFIX):]
         live = authority.sessions.get(session_id)
         if live is None or live.superseded:
             continue  # not restored (paused, retired): left stored for a later recovery
         if live.subscribers:
-            forget_persisted_close(authority, session_id)
+            forget_persisted_close(authority, session_id, record)
             continue
-        authority.pending_closes.setdefault(session_id, _PendingClose(reason))
+        authority.pending_closes.setdefault(session_id, _PendingClose.from_record(record))
         armed.append(session_id)
     return armed
 
@@ -139,7 +178,7 @@ async def settle_viewer_close(authority, session_id):
     if not ended:
         await _requeue_if_busy(authority, session_id, live, target, close)
         return
-    await asyncio.to_thread(forget_persisted_close, authority, session_id)
+    await asyncio.to_thread(forget_persisted_close, authority, session_id, close.record)
     if live.subscribers:
         return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
     platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
@@ -155,7 +194,7 @@ async def _requeue_if_busy(authority, session_id, live, target, close):
     drain's next idle point; any other refusal (row already ended) leaves nothing to finish."""
     if not await asyncio.to_thread(_busy, authority, session_id, target):
         if session_id not in authority.pending_closes:
-            await asyncio.to_thread(forget_persisted_close, authority, session_id)  # already ended
+            await asyncio.to_thread(forget_persisted_close, authority, session_id, close.record)  # already ended
         return
     if live.subscribers or session_id in authority.pending_closes:
         return  # a reattach cancelled it, or a newer close replaced it
