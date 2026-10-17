@@ -631,7 +631,11 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
     def _send_failure(self, error: str, subscription_lost: bool) -> SendResult:
         """Failed SendResult; on 846609 schedule the stale-req_id purge so later sends recover."""
         if subscription_lost:
-            asyncio.ensure_future(self._force_reconnect_on_stale_subscription(STREAM_NOT_SUBSCRIBED_ERRCODE))
+            # Held until done: the loop keeps only a weak reference, so an untracked task can be
+            # collected before it runs; the body only clears dicts and logs, so it cannot raise.
+            task = asyncio.ensure_future(self._force_reconnect_on_stale_subscription(STREAM_NOT_SUBSCRIBED_ERRCODE))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         return SendResult(success=False, error=error)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
