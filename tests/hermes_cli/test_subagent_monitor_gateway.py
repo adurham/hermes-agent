@@ -26,6 +26,7 @@ class FakeClient:
         self.children = [{"subagent_id": "sa-0-1", "goal": "Audit the parser", "status": "running",
                           "started_at": time.time() - 7, "last_tool": "read_file", "accepting_steer": True}]
         self.steered = []
+        self.steer_status = "queued"
         self.tail_error = None
 
     async def rpc(self, method, *, _timeout=None, **params):
@@ -39,7 +40,7 @@ class FakeClient:
                     "truncated": False}
         if method == "subagent.steer":
             self.steered.append(params["text"])
-            return {"status": "queued", "subagent_id": params["subagent_id"], "text": params["text"]}
+            return {"status": self.steer_status, "subagent_id": params["subagent_id"], "text": params["text"]}
         if method == "subagent.interrupt":
             found = any(c["subagent_id"] == params["subagent_id"] for c in self.children)
             self.children = [c for c in self.children if c["subagent_id"] != params["subagent_id"]]
@@ -82,6 +83,8 @@ def test_monitor_lists_tails_and_controls_the_gateway_sessions_children(gateway)
 
     assert "note" in monitor.control("steer", "Focus on the tokenizer")
     assert client.steered == ["Focus on the tokenizer"]
+    client.steer_status = "rejected"  # the child no longer accepts steering
+    assert "error" in monitor.control("steer", "Too late")
     assert "note" in monitor.control("stop")
     assert "error" in monitor.control("stop")  # already gone: the gateway found nothing
     assert monitor.refresh()
