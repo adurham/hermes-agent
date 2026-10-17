@@ -380,6 +380,43 @@ async def test_resume_of_a_compression_child_attaches_to_its_logical_owner(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_resume_by_a_messaging_segment_shares_the_lanes_next_inbound_mount(tmp_path):
+    """@unsupportedpastels on #140183: a viewer resuming a compressed Telegram lane by its segment id
+    (what history pickers hand out after compression) must attach to the session the lane's next
+    inbound registers, never a second LiveSession on the same route. Real authority, real SQLite
+    store, real compression publish, routing peer re-stamped as the turn path does."""
+    import json as _json
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    warm_runner = _Runner(tmp_path)
+    warm = await initialize_session_authority(warm_runner, profile_id='fixture', instance_id='warm')
+    source = _source()
+    root = warm.register(source).session_id
+    route = warm_runner.session_store._generate_session_key(source)
+    db = warm.db
+    db.append_message(root, 'user', 'first')
+    db.append_message(root, 'assistant', 'ok')
+    db.publish_compression_child(parent_session_id=root, child_session_id='seg-1', source='telegram',
+                                 messages=[{'role': 'user', 'content': 'summary'}],
+                                 require_compression_lease=False)
+    assert warm_runner.session_store.advance_compression_session(route, root, 'seg-1') is not None
+    db.record_gateway_session_peer('seg-1', source='telegram', user_id=source.user_id, session_key=route,
+                                   chat_id=source.chat_id, chat_type=source.chat_type,
+                                   origin_json=_json.dumps(source.to_dict()))
+    cold = await _cold(tmp_path)
+    connection = AuthorityConnection(cold.authority, object(), {
+        'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
+        'capabilities': ['session:read']})
+    resumed = await connection.dispatch({'id': 1, 'method': 'session.resume',
+                                         'params': {'session_id': 'seg-1'}})
+    inbound = cold.authority.register(_source()).session_id
+    mounted = sorted(sid for sid, live in cold.authority.sessions.items() if live.route == route)
+    assert resumed.get('result', {}).get('session_id') == inbound == root, (resumed, inbound, mounted)
+    assert mounted == [root]
+    assert cold.authority.sessions[root].superseded is False
+
+
+@pytest.mark.asyncio
 async def test_a_live_mount_goes_read_only_when_its_lane_publishes_another_conversation(tmp_path):
     """Mounted while nothing named another conversation, then the lane's next inbound starts a fresh
     session on the same route: from then on the old mount's route is the newer session's."""
