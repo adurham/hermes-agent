@@ -798,3 +798,30 @@ def test_slow_integrity_scan_is_bounded_and_not_repeated_on_every_poll(tmp_path,
         assert "nothing was changed" in caught.value.detail and "Retry" in caught.value.detail
     assert scans == [1]
     assert _file_state(path) == before
+
+
+@pytest.mark.platforms("linux", "macos")
+def test_unopenable_lock_on_lagging_store_is_a_named_503(tmp_path):
+    """pastels m1: a gateway.lock this user cannot open (left by a root-run gateway, #42685) raised
+    PermissionError(foreign_stale_lock) straight out of the browse open: an unhandled 500 on
+    /api/sessions and /messages?profile= where main answered 503. It must be a named 503 carrying
+    the recovery text, with nothing written."""
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root opens any file")
+    home = _profile_home(tmp_path)
+    path = _lagging_store_with_history(home, rows=10)
+    lock = home / "gateway.lock"
+    lock.write_text("")
+    lock.chmod(0)
+    before = _file_state(path)
+    try:
+        with pytest.raises(HTTPException) as caught:
+            _open_session_db_at_path(path, read_only=True)
+    finally:
+        lock.chmod(0o600)
+    assert caught.value.status_code == 503
+    detail = str(caught.value.detail)
+    assert "foreign_stale_lock" in detail and "nothing was changed" in detail
+    assert _file_state(path) == before

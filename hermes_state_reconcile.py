@@ -253,20 +253,6 @@ def _integrity_problem(path: Path, budget: _Budget):
     return '; '.join(problems[:3]) or None
 
 
-def _wait_for_sibling_reconcile(path: Path, home: Path):
-    """A sibling browse (another thread or process) holds the lock for its own reconcile: wait at
-    at most the sibling's own execution budget. None once the store is current, else the remaining drift."""
-    import time
-    from gateway.runtime_ownership import live_runtime_owner
-    deadline = time.monotonic() + BROWSE_RECONCILE_BUDGET_S + 0.5
-    while True:
-        if (reason := schema_drift_reason(path)) is None:
-            return None
-        if time.monotonic() >= deadline or live_runtime_owner(home) is not None:
-            return reason
-        time.sleep(_BROWSE_SIBLING_POLL_S)
-
-
 def _store_signature(path: Path):
     """(size, mtime_ns) of the main file and its WAL: any committed write changes one of them."""
     out = []
@@ -292,6 +278,54 @@ def _path_scan_lock(path: Path) -> threading.Lock:
         return _scan_locks.setdefault(key, threading.Lock())
 
 
+class _SiblingStillBusy(RuntimeError):
+    """Another browse/maintenance holder kept gateway.lock past its own budget; carries the drift."""
+
+
+@contextlib.contextmanager
+def _reserving(home: Path):
+    """``exclusive_maintenance`` for a browse. A lock this user cannot open at all (a root-run
+    gateway's, #42685) is not drift and not a crash: refuse by name with its recovery text."""
+    from gateway.runtime_ownership import exclusive_maintenance
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(exclusive_maintenance([home], purpose=BROWSE_RECONCILE_PURPOSE))
+        except OSError as exc:
+            raise DeclarativeDriftError(
+                f'Session store is behind this Hermes version, but its gateway.lock cannot be used '
+                f'({exc}); nothing was changed.') from exc
+        yield
+
+
+@contextlib.contextmanager
+def _reserve_for_ddl(home: Path, path: Path, owned):
+    """Hold gateway.lock for the DDL. A sibling holder (another browse's flock probe or DDL, never a
+    gateway) is retried, bounded by its own budget, rather than waited on passively: a probe holds
+    the lock for no work and a sibling's DDL finishes inside BROWSE_RECONCILE_BUDGET_S. Yields True
+    when the store is already current (nothing to do). Raises ``owned(drift)`` when a gateway turns
+    out to own it, and :class:`_SiblingStillBusy` past the bound."""
+    import time
+    from gateway.runtime_ownership import OwnershipConflict, live_runtime_owner
+    deadline = time.monotonic() + BROWSE_RECONCILE_BUDGET_S + 0.5
+    with contextlib.ExitStack() as stack:
+        while True:
+            try:
+                stack.enter_context(_reserving(home))
+                break
+            except OwnershipConflict as exc:
+                pending = schema_drift_reason(path)
+                if pending is None:
+                    break  # a sibling caught it up; the re-check below yields True without the lock
+                if live_runtime_owner(home) is not None:
+                    raise owned(pending) from exc
+                if time.monotonic() >= deadline:
+                    raise _SiblingStillBusy(pending) from exc
+                time.sleep(_BROWSE_SIBLING_POLL_S)
+        # Re-check (under the lock when held): a gateway that started and released between probes,
+        # or a sibling browse, may already have caught the store up.
+        yield schema_drift_reason(path) is None
+
+
 def reconcile_drift_for_browse(path: Path) -> bool:
     """Catch a lagging store up for a read-only browse; True when DDL ran, False when already current.
 
@@ -299,7 +333,7 @@ def reconcile_drift_for_browse(path: Path) -> bool:
     with a user-facing detail naming the drift and the remedy, and :class:`CorruptStoreError`
     when the lagging store is also damaged. Never touches a store missing its history tables:
     recreating them empty would hide lost sessions."""
-    from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance, live_runtime_owner
+    from gateway.runtime_ownership import OwnershipConflict, live_runtime_owner
     from hermes_state_health import STORAGE_CORRUPT, mark_storage_corrupt, storage_corrupt_reason, storage_state
 
     reason = schema_drift_reason(path)
@@ -332,7 +366,7 @@ def reconcile_drift_for_browse(path: Path) -> bool:
     # A gateway already owns it: never scan or write, refuse by name at once. Probe the flock itself
     # (a record left by a released holder still names a live PID), holding it for no work at all.
     try:
-        with exclusive_maintenance([home], purpose=BROWSE_RECONCILE_PURPOSE):
+        with _reserving(home):
             pass
     except OwnershipConflict as exc:
         if live_runtime_owner(home) is not None:
@@ -359,12 +393,10 @@ def reconcile_drift_for_browse(path: Path) -> bool:
             mark_storage_corrupt(path, problem)
             raise CorruptStoreError(problem)
         try:
-            with exclusive_maintenance([home], purpose=BROWSE_RECONCILE_PURPOSE):
-                budget = _Budget(BROWSE_RECONCILE_BUDGET_S)
-                # Re-check under the lock: a gateway that started and released between probes
-                # (or a sibling browse) may already have caught the store up.
-                if schema_drift_reason(path) is None:
+            with _reserve_for_ddl(home, path, owned) as current:
+                if current:
                     return False
+                budget = _Budget(BROWSE_RECONCILE_BUDGET_S)
                 if _store_signature(path) != signature:
                     # Written since the scan (a gateway that came and went): the scan no longer
                     # vouches for these bytes. Refuse; the next browse scans the new state.
@@ -380,17 +412,10 @@ def reconcile_drift_for_browse(path: Path) -> bool:
                         'profile.') from exc
         except BrowseBudgetExceeded as exc:
             raise too_slow(f'caught up within {BROWSE_RECONCILE_BUDGET_S:.0f}s') from exc
-        except OwnershipConflict as exc:
-            if live_runtime_owner(home) is not None:
-                raise owned(reason) from exc
-            # No gateway: the holder is a sibling browse's own reconcile (or other short maintenance).
-            if (pending := _wait_for_sibling_reconcile(path, home)) is None:
-                return False
-            if live_runtime_owner(home) is not None:
-                raise owned(pending) from exc
+        except _SiblingStillBusy as exc:
             raise DeclarativeDriftError(
                 f"Session store for profile '{label}' is being brought up to date by another Hermes "
-                f'process ({pending}). Retry in a moment; the list was not cleared.') from exc
+                f'process ({exc}). Retry in a moment; the list was not cleared.') from exc
     if after := schema_drift_reason(path):
         raise DeclarativeDriftError(
             f"Session store for profile '{label}' is behind this Hermes version and could not be "
