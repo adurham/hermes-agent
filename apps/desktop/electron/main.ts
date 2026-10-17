@@ -468,8 +468,8 @@ import {
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
   isRemoteSessionRequestPath,
-  pathWithRemoteOwnerScope,
   type RegistrySessionSource,
+  remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
@@ -16084,7 +16084,6 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
     // against paginating remote backends).
     const passthroughParams = new URLSearchParams(searchParams)
     passthroughParams.delete('profile')
-    const passthroughQuery = passthroughParams.toString()
 
     if (profileHasRemoteOverride(profile)) {
       // #64999: the override's remote can be a multi-profile backend — an
@@ -16096,11 +16095,10 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         remoteProfileQueryScope(profile, profileSshOverride(readDesktopConnectionConfig(), profile)?.remoteProfile) ||
         profile
 
+      const ownerPath = remoteOwnerRoutePath(pathname, searchParams, ownerScope)
+
       if (method === 'GET') {
-        return fetchJsonForProfile(
-          profile,
-          pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
-        )
+        return fetchJsonForProfile(profile, ownerPath)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
@@ -16109,7 +16107,8 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
         ;(body as Record<string, unknown>).profile = ownerScope
       }
 
-      return requestJsonForProfile(profile, pathname, method, body)
+      // A DELETE's mutation identity is query-only; a bare pathname 409s on the remote.
+      return requestJsonForProfile(profile, ownerPath, method, body)
     }
 
     if (globalRemoteActive()) {

@@ -17,6 +17,7 @@ import {
   isRemoteSessionRequestPath,
   mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
+  remoteOwnerRoutePath,
   remoteProfileQueryScope,
   settleRemoteProfileSessions,
   shouldIncludeLocalRegistrySessionSource,
@@ -34,6 +35,20 @@ test('remote session routing includes the mutation snapshot and session reads, n
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/export'), false)
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages/extra'), false)
   assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/mutation-snapshot/extra'), false)
+})
+
+test('legacy remote owner route keeps the mutation identity query for the paired DELETE', () => {
+  const deletePath = '/api/sessions/s1?profile=alpha&request_id=r1&expected_revision=4&expected_generation=2'
+  const { pathname, searchParams } = new URL(deletePath, 'http://x')
+  const routed = new URL(remoteOwnerRoutePath(pathname, searchParams, 'alpha'), 'http://x')
+  assert.equal(routed.pathname, '/api/sessions/s1')
+  assert.equal(routed.searchParams.get('request_id'), 'r1')
+  assert.equal(routed.searchParams.get('expected_revision'), '4')
+  assert.equal(routed.searchParams.get('expected_generation'), '2')
+  assert.equal(routed.searchParams.get('profile'), 'alpha')
+  const snapshot = new URL('/api/sessions/s1/mutation-snapshot?profile=alpha', 'http://x')
+  assert.equal(remoteOwnerRoutePath(snapshot.pathname, snapshot.searchParams, 'alpha'), '/api/sessions/s1/mutation-snapshot?profile=alpha')
+  assert.equal(remoteOwnerRoutePath(snapshot.pathname, snapshot.searchParams, ''), '/api/sessions/s1/mutation-snapshot')
 })
 
 test('all-profiles session routing is limited to read-only list endpoints', () => {

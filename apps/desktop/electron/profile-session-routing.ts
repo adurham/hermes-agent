@@ -642,6 +642,17 @@ export function pathWithRemoteOwnerScope(path: string, scope: string): string {
   return `${url.pathname}${url.search}${url.hash}`
 }
 
+/** The legacy per-profile remote route for one session request: every non-profile query
+ *  param survives (pagination on reads; a DELETE's request_id/expected_revision/
+ *  expected_generation live only in the query) and the owner scope replaces ?profile=. */
+export function remoteOwnerRoutePath(pathname: string, searchParams: URLSearchParams, ownerScope: string): string {
+  const params = new URLSearchParams(searchParams)
+  params.delete('profile')
+  const query = params.toString()
+
+  return pathWithRemoteOwnerScope(query ? `${pathname}?${query}` : pathname, ownerScope)
+}
+
 export async function fetchRemoteProfileSessions(
   profile: string,
   searchParams: URLSearchParams,
