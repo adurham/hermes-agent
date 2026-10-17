@@ -35,3 +35,21 @@ def test_cli_session_store_is_the_registry_handle_goals_reuse(monkeypatch):
         assert len(constructed) == 1
     finally:
         hermes_state_registry.close_all()
+
+
+def test_store_failure_warning_carries_the_raw_details(monkeypatch, capsys):
+    import hermes_state_registry
+
+    def failing_acquire(*_a, **_kw):
+        raise OSError("database disk image is malformed: zz-sentinel")
+
+    monkeypatch.setattr(hermes_state_registry, "acquire", failing_acquire)
+
+    cli = SimpleNamespace()
+    HermesCLI._init_session_store(cli)
+
+    assert cli._session_db is None and cli._session_db_unavailable
+    err = capsys.readouterr().err
+    # The rich variant (not the plain fallback) rendered, with the exception text as details.
+    assert "zz-sentinel" in err
+    assert "WARNING: Session store unavailable" not in err
