@@ -95,24 +95,13 @@ def classic_cell(cmd):
     return f"HermesCLI.{entry[0]}"
 
 
-# Commands ACP answers with its own canonical verb (``acp_adapter/gateway_commands.py``); every
-# other registry command goes to the owner's ``slash.exec`` and shows its refusal as the reply.
-ACP_ROUTES = {"branch": "ACP fork_session", "title": "session.mutate rename (bare: slash.exec)",
-              "undo": "session.mutate rewind", "retry": "session.mutate rewind + resubmit",
-              "new": "session.mutate reset", "clear": "session.mutate reset", "help": "local",
-              "tools": "session.info", "steer": "session.steer", "queue": "prompt.submit"}
-
-
 def acp_cell(name, gateway):
-    from hermes_cli.gateway_client import GatewayClientError
-    from hermes_cli.gateway_mutations import slash_mutation
-    if name in ACP_ROUTES:
-        return ACP_ROUTES[name]
-    try:
-        operation, _ = slash_mutation("/" + name, "x" if name == "model" else "")
-    except GatewayClientError:
-        return "slash.exec" if gateway != "refused" else "slash.exec: refused"
-    return f"session.mutate {operation}"
+    """ACP's own route (``acp_adapter.gateway_commands.ROUTES``, the table its dispatch reads), else
+    the owner's ``slash.exec`` answer, its refusal shown as the reply."""
+    from acp_adapter.gateway_commands import ROUTES
+    if name in ROUTES:
+        return ROUTES[name][0]
+    return "slash.exec" if gateway != "refused" else "slash.exec: refused"
 
 
 def _ink_commands():

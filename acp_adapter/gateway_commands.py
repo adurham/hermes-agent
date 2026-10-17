@@ -13,14 +13,6 @@ from __future__ import annotations
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 
-# Reports the owner answers for a local session (``gateway/session_commands.py::_READ_COMMANDS``).
-_READS = frozenset({'context', 'usage', 'status', 'version'})
-# ``/clear`` is main's "new session + clear screen"; here it is ``/new``'s reset of this session.
-_MUTATIONS = frozenset({'model', 'compress', 'new', 'clear', 'branch'})
-_PROMPTS = frozenset({'steer', 'queue'})
-_REWINDS = frozenset({'undo', 'retry'})
-COMMANDS = _READS | _MUTATIONS | _PROMPTS | _REWINDS | {'help', 'tools', 'title'}
-
 
 class CommandRefused(GatewayClientError):
     """A refusal the editor shows as the command's reply (the prompt itself ends normally)."""
@@ -28,28 +20,53 @@ class CommandRefused(GatewayClientError):
 
 async def run_command(agent, session_id, command, arg):
     """``(reply, None)`` for a command answered here, or ``(None, text)`` when ``text`` is to be
-    submitted as the prompt. A refusal raises ``CommandRefused`` (or the owner's RPC error)."""
+    submitted as the prompt. A refusal raises ``CommandRefused`` (or the owner's RPC error).
+
+    ``ROUTES`` (below) is the one table of what ACP answers itself; every other registry command,
+    the reads included, is the owner's ``slash.exec`` answer (``_forward``)."""
+    route = ROUTES.get(command)
+    if route is None:
+        return await _forward(agent, await agent._client(), session_id, command, arg)
+    return await route[1](agent, session_id, command, arg)
+
+
+async def _branch(agent, session_id, command, arg):
+    raise CommandRefused("/branch: use your editor's fork session action (ACP session/fork)")
+
+
+async def _help(agent, session_id, command, arg):
     from acp_adapter.gateway_session_meta import help_text
-    if command == 'branch':
-        raise CommandRefused("/branch: use your editor's fork session action (ACP session/fork)")
-    if command == 'help':
-        return help_text(), None
-    if command in _PROMPTS:
-        if not arg:
-            return f"Usage: /{command} <{'guidance' if command == 'steer' else 'prompt'}>", None
-        steered = await _steer(agent, session_id, arg) if command == 'steer' else None
-        return (steered, None) if steered else (None, arg)
+    return help_text(), None
+
+
+async def _prompt(agent, session_id, command, arg):
+    if not arg:
+        return f"Usage: /{command} <{'guidance' if command == 'steer' else 'prompt'}>", None
+    steered = await _steer(agent, session_id, arg) if command == 'steer' else None
+    return (steered, None) if steered else (None, arg)
+
+
+async def _title(agent, session_id, command, arg):
     client = await agent._client()
-    if command not in COMMANDS or command in _READS or (command == 'title' and not arg):
+    if not arg:
         return await _forward(agent, client, session_id, command, arg)
-    if command == 'title':
-        return await _rename(agent, client, session_id, arg), None
-    if command in _REWINDS:
-        return await _rewind(agent, client, session_id, command, arg)
-    if command == 'tools' or (command == 'model' and not arg):
-        info = await client.rpc('session.info', session_id=session_id)
-        return (_tools_text(info) if command == 'tools' else _model_text('Current model', info)), None
-    return await _mutate(agent, client, session_id, command, arg), None
+    return await _rename(agent, client, session_id, arg), None
+
+
+async def _info(agent, session_id, command, arg):
+    client = await agent._client()
+    if command == 'model' and arg:
+        return await _mutate(agent, client, session_id, command, arg), None
+    info = await client.rpc('session.info', session_id=session_id)
+    return (_tools_text(info) if command == 'tools' else _model_text('Current model', info)), None
+
+
+async def _mutation(agent, session_id, command, arg):
+    return await _mutate(agent, await agent._client(), session_id, command, arg), None
+
+
+async def _rewind_command(agent, session_id, command, arg):
+    return await _rewind(agent, await agent._client(), session_id, command, arg)
 
 
 async def _forward(agent, client, session_id, command, arg):
@@ -232,3 +249,23 @@ def _tools_text(info):
     lines = [f"Available tools ({len(names)}):"]
     lines.extend(f"  {toolset}: {', '.join(sorted(tools))}" for toolset, tools in sorted(groups.items()) if tools)
     return '\n'.join(lines)
+
+
+# What ACP answers itself: command -> (the parity table's ACP cell, handler). Dispatch reads this and
+# ``scripts/gen_gateway_command_parity.py`` documents it, so a route cannot change without the table.
+# Any command not here goes to the owner's ``slash.exec`` (``_forward``). ``/clear`` is main's
+# "new session + clear screen"; here it is ``/new``'s reset of this session.
+ROUTES = {
+    'branch': ('ACP fork_session', _branch),
+    'help': ('local', _help),
+    'steer': ('session.steer', _prompt),
+    'queue': ('prompt.submit', _prompt),
+    'title': ('session.mutate rename (bare: slash.exec)', _title),
+    'undo': ('session.mutate rewind', _rewind_command),
+    'retry': ('session.mutate rewind + resubmit', _rewind_command),
+    'tools': ('session.info', _info),
+    'model': ('session.mutate model', _info),
+    'compress': ('session.mutate compress', _mutation),
+    'new': ('session.mutate reset', _mutation),
+    'clear': ('session.mutate reset', _mutation),
+}
