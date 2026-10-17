@@ -2380,3 +2380,8 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   function-local `html.escape`, so the plist output is unchanged. No other F811 in the file; the 3
   BLE001 hits untouched. Tests 125 passed, 1 failed (`test_remaps_default_home`, identical on main).
   Branch `claude/fix-gateway-launchd-f811-ctvz3j`. Next: C-0007.
+- 2026-10-17 — C-0007 `hermes_cli/web_routers/display.py` (correctness): F821×1 → 0. `_open_rfb`'s
+  `profile_home: Path` annotation named a `Path` only imported locally inside `_bridge` (latent:
+  `typing.get_type_hints(_open_rfb)` raised `NameError` on main); `Path` is now a module-level import
+  and `_bridge`'s redundant local import is gone. No other F-rule hits in the file. Display ws tests
+  8/8; `scripts/check` ok. Branch `claude/fix-display-py-f821-0ikhxl`.
