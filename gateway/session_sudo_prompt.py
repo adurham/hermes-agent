@@ -48,6 +48,23 @@ def owned_by(authority, session_id, events) -> bool:
     return live is not None and events is not None and live.event_stream is events
 
 
+def may_settle(authority, actor, session_id, events) -> bool:
+    """The one rule for who may settle an owner request (a response frame or ``clarify.lock``): the
+    request went out on *authority*'s own live stream for that session (session ids repeat across
+    profiles and ``_open`` is process-wide), *actor* holds ``session:respond`` there, and *actor* is
+    attached to that session, the same set of connections the request frame was written to."""
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import RuntimeStoreError
+    if not owned_by(authority, session_id, events):
+        return False
+    try:
+        authority.authorize(actor, SessionRef(authority.profile_id, session_id), "session:respond")
+    except RuntimeStoreError:
+        return False
+    live = authority.sessions.get(session_id)
+    return live is not None and actor in live.subscribers.values()
+
+
 def is_response_frame(frame) -> bool:
     """A viewer's answer to one of the owner's requests: a string ``srq-`` id, a result/error, no method."""
     return (isinstance(frame, dict) and "method" not in frame and isinstance(frame.get("id"), str)

@@ -195,3 +195,32 @@ async def test_clarify_lock_params_are_checked_by_the_declared_canonical_contrac
         assert late['result'] == {'status': 'expired'}, late
     finally:
         await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unattached_connection_cannot_settle_the_batch_with_a_raw_response_frame(tmp_path, monkeypatch):
+    """``clarify.lock`` and the closing response frame are two ways to settle the same request id: both go
+    through one entitlement rule (``session_sudo_prompt.may_settle``), so a same-profile connection that
+    never attached the session can no more close the batch with a frame than lock one of its answers."""
+    from gateway.session_controls import AuthorityConnection
+
+    async def answer(event):
+        return 'ok'
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    owner = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    outsider = AuthorityConnection(authority, object(), {'user_id': 'owner'})  # same actor, never attached
+    try:
+        await owner.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        peer, worker, out = _start_batch(authority)
+        await _wait_for(lambda: any(f.get('method') == 'clarify' for f in peer.frames))
+        rid = next(f['id'] for f in peer.frames if f.get('method') == 'clarify')
+        from gateway.session_sudo_prompt import _open
+        # ``dispatch`` settles a response frame synchronously: still open afterwards means refused.
+        await outsider.dispatch({'jsonrpc': '2.0', 'id': rid, 'result': {'answers': {'q0': 'X', 'q1': 'X'}}})
+        assert rid in _open and not _open[rid].event.is_set() and out == {}, out
+        await owner.dispatch({'jsonrpc': '2.0', 'id': rid, 'result': {'answers': {'q0': 'red', 'q1': 'big'}}})
+        await asyncio.to_thread(worker.join, 5)
+        assert out == {'answers': {'q0': 'red', 'q1': 'big'}, 'outcome': 'submitted'}, out
+    finally:
+        await outsider.close()
+        await owner.close()

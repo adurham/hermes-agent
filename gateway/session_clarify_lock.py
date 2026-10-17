@@ -9,12 +9,11 @@ attached to the request's session with ``session:respond`` may lock its answers.
 """
 import json
 
-from gateway.session_contract import SessionRef
 from hermes_state_runtime import RuntimeStoreError
 
 
 async def clarify_lock(connection, ref, params):
-    from gateway.session_sudo_prompt import lock_answer, owned_by
+    from gateway.session_sudo_prompt import lock_answer, may_settle
     # The dispatcher already refused unknown keys and mistyped fields against the declared
     # ``ClarifyLockParams`` (``tui_gateway/contracts/canonical.py``); a missing or empty id is ours to refuse.
     # ``profile`` naming another served profile was routed to its owner by ``dispatch``.
@@ -27,16 +26,8 @@ async def clarify_lock(connection, ref, params):
     authority, actor = connection.authority, connection.actor
 
     def entitled(session_id, events):
-        # The request must have been sent on THIS authority's live session (session ids repeat across
-        # profiles; the pending table is process-wide), then the caller needs respond + a subscription.
-        if not owned_by(authority, session_id, events):
-            return False
-        try:
-            authority.authorize(actor, SessionRef(authority.profile_id, session_id), 'session:respond')
-        except RuntimeStoreError:
-            return False
-        live = authority.sessions.get(session_id)
-        return live is not None and actor in live.subscribers.values()
+        # The same rule the closing response frame for this request id goes through.
+        return may_settle(authority, actor, session_id, events)
     try:
         remaining = lock_answer(request_id, question_id, answer, session_ok=entitled)
     except ValueError:

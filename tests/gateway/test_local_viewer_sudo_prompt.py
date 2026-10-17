@@ -100,6 +100,8 @@ async def test_the_viewer_response_frame_is_routed_by_the_authority_connection(t
         return 'ok'
     authority = await _authority(tmp_path, monkeypatch, answer)
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    # Only a viewer attached to the session gets the request frame, and only it may answer.
+    await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
     pending = session_sudo_prompt._Pending('s', events=authority.sessions['s'].event_stream)
     session_sudo_prompt._open['srq-abc'] = pending
     try:
