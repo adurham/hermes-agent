@@ -571,6 +571,12 @@ def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     atomic_json_write(_account_dir(hermes_home) / f"{account_id}.sync.json", {"get_updates_buf": sync_buf})
 
 
+def _remove_file_quietly(path: str) -> None:
+    if os.path.exists(path):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
 async def _fetch_qr(session: aiohttp.ClientSession, bot_type: str) -> tuple[str, str]:
     qr_resp = await _api_get(session, base_url=ILINK_BASE_URL, endpoint=f"{EP_GET_BOT_QR}?bot_type={bot_type}", timeout_ms=QR_TIMEOUT_MS)
     return str(qr_resp.get("qrcode") or ""), str(qr_resp.get("qrcode_img_content") or "")
@@ -705,6 +711,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._typing_cache = TypingTicketCache()
         self._poll_session = self._send_session = None  # type: Optional[aiohttp.ClientSession]
         self._poll_task: Optional[asyncio.Task] = None
+        self._inflight_tasks: set[asyncio.Task] = set()  # strong refs: the loop only holds tasks weakly
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
         self._account_id = _extra_or_secret(extra, "account_id")
         self._token = str(config.token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
@@ -828,7 +835,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 # Dispatch before persisting: the off-loop write is an await, and a disconnect that
                 # cancels it must not leave the advanced cursor on disk with this batch undelivered.
                 for message in response.get("msgs") or []:
-                    asyncio.create_task(self._process_message_safe(message))
+                    self._spawn(self._process_message_safe(message))
                 # atomic_json_write fsyncs + renames: persist off the loop, and only when the cursor
                 # moved (an empty long-poll echoes the same buffer back every cycle).
                 if response.get("get_updates_buf") and str(response["get_updates_buf"]) != sync_buf:
@@ -862,6 +869,18 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             except Exception as exc:
                 logger.debug("[%s] old poll session close failed: %s", self.name, exc)
 
+    def _spawn(self, coro: Awaitable[Any]) -> None:
+        """Fire-and-forget ``coro``, referenced until it finishes; anything it lets escape is logged, not dropped."""
+        task = asyncio.create_task(coro)
+        self._inflight_tasks.add(task)
+        task.add_done_callback(self._reap_task)
+
+    def _reap_task(self, task: asyncio.Task) -> None:
+        self._inflight_tasks.discard(task)
+        exc = None if task.cancelled() else task.exception()
+        if exc is not None:
+            logger.error("[%s] background task failed: %s", self.name, exc, exc_info=exc)
+
     async def _process_message_safe(self, message: dict[str, Any]) -> None:
         try:
             await self._process_message(message)
@@ -890,7 +909,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if context_token:
             await self._token_store.set(self._account_id, sender_id, context_token)
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
-            asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
+            self._spawn(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
         media_paths, media_types = [], []  # type: List[str], List[str]
         for item in item_list:
             ref_item = (item.get("ref_msg") or {}).get("message_item")
@@ -1088,13 +1107,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         cleanup = image_url.startswith(("http://", "https://"))
         file_path = await self._download_remote_media(image_url) if cleanup else image_url.replace("file://", "")
         if not cleanup and not os.path.isabs(file_path):
-            file_path = os.path.abspath(file_path)
+            file_path = await asyncio.to_thread(os.path.abspath, file_path)
         try:
             return await self.send_document(chat_id, file_path, caption=caption, metadata=metadata)
         finally:
-            if cleanup and file_path and os.path.exists(file_path):
-                with contextlib.suppress(OSError):
-                    os.unlink(file_path)
+            if cleanup and file_path:
+                await asyncio.to_thread(_remove_file_quietly, file_path)
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
         return await self.send_document(chat_id=chat_id, file_path=image_path, caption=caption, metadata=metadata)
@@ -1133,7 +1151,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _send_file(self, chat_id: str, path: str, caption: str, force_file_attachment: bool = False) -> str:
         assert self._send_session is not None and self._token is not None
-        plaintext = Path(path).read_bytes()
+        plaintext = await asyncio.to_thread(Path(path).read_bytes)
         media_type, item_builder = self._outbound_media_builder(path, force_file_attachment=force_file_attachment)
         filekey, aes_key = secrets.token_hex(16), secrets.token_bytes(16)
         rawsize, rawfilemd5 = len(plaintext), hashlib.md5(plaintext).hexdigest()
