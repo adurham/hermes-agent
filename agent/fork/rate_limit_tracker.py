@@ -13,6 +13,7 @@ Hot tier state lives on the :class:`AIAgent` instance:
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from agent.rate_limit_tracker import RateLimitState
 

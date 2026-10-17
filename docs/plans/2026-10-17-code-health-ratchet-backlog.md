@@ -2357,3 +2357,9 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   over 20,000 randomized requests (fake store/route/agent/SSE, response + call log + queued events
   compared): 0 mismatches, 100% line+branch coverage of the unit. Branch
   `claude/refactor-openai-handle-responses-yggrzc`. Next: A-051 (pick 12).
+- 2026-10-17 — C-0003 `agent/fork/rate_limit_tracker.py` F821×1 → 0 (file hits 10 → 9): added the
+  missing `from typing import Any` for the `headers: Any` annotation. No runtime change (the module
+  has `from __future__ import annotations`), but `typing.get_type_hints()` on
+  `capture_rate_limits_from_headers` raised `NameError` on base and resolves now. No other F821 in
+  the file; the other 9 hits (swallow family) left in place. 5 rate-limit test files: 76 passed, 0
+  failed. Branch `claude/fix-rate-limit-tracker-f821-ijyuhu`. Next: C-0004.
