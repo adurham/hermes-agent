@@ -2198,16 +2198,18 @@ class BasePlatformAdapter(ABC):
         try:
             acquired, existing = acquire_scoped_lock(scope, identity, metadata=lock_meta)
         except ScopedLockDirUnusable as exc:
-            # An ACL no retry can change (an elevated install created the lock dir, #134889 W2):
-            # stay down with the repair named instead of a reconnect loop that fails identically.
-            # The status module already logged the WARNING (once per dir).
+            # An ACL an elevated install left on the lock dir (#134889 W2): name the repair. Stay
+            # RETRYABLE: the dir is shared by every token-locked adapter, so a non-retryable park
+            # on a gateway that runs only those exits 78 and takes cron and the Desktop attach
+            # endpoint down with it. The status module logs the WARNING once per dir (DEBUG after),
+            # so the watcher's backoff retries quietly and picks the repair up without a restart.
             self._platform_lock_identity = None
             self._set_fatal_error(
                 "lock_dir_unusable",
                 f"{resource_desc} lock cannot be taken: the gateway lock directory {exc.filename} is not "
                 f"usable by this user (likely created by an elevated Hermes). To repair, "
-                f"{unusable_dir_remedy(exc.filename)}, then restart the gateway.",
-                retryable=False)
+                f"{unusable_dir_remedy(exc.filename)}; the gateway retries on its own.",
+                retryable=True)
             return False
         if acquired:
             return True

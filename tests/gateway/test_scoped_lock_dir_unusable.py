@@ -5,6 +5,7 @@ leading cause is a ``gateway-locks`` dir created by an elevated install. The POS
 here is real, not patched: a lock dir without write permission for this uid. The Windows ACL shape
 itself is proved by ``test_scoped_lock_dir_windows_acl.py`` on Windows CI.
 """
+import asyncio
 import logging
 import os
 import stat
@@ -16,6 +17,7 @@ import pytest
 from gateway import status
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import is_global_startup_conflict
+from gateway.run_startup import GatewayStartupMixin
 
 pytestmark = pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,  # windows-footgun: ok — skipped on nt
                                 reason="POSIX mode bits; root ignores them")
@@ -68,7 +70,9 @@ def test_unusable_lock_dir_parks_the_adapter_with_the_repair(locked_out_dir, cap
         assert _adapter()._acquire_platform_lock("telegram-bot-token", "tok", "Telegram bot token") is False
 
     assert adapter._fatal_error_code == "lock_dir_unusable"
-    assert adapter._fatal_error_retryable is False
+    # Retryable: the shared lock dir parks EVERY token-locked adapter at once, and a non-retryable
+    # park on a Telegram-only gateway exits 78 (taking cron and the Desktop attach endpoint down).
+    assert adapter._fatal_error_retryable is True
     assert not is_global_startup_conflict(adapter._fatal_error_code)
     assert str(locked_out_dir) in adapter._fatal_error_message
     assert "chown" in adapter._fatal_error_message
@@ -101,3 +105,46 @@ def test_unreadable_stale_token_lock_is_named_not_reported_as_a_holderless_confl
     finally:
         lock_dir.chmod(stat.S_IRWXU)
         stale.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+class _StartupProbe:
+    """Only the state the two real startup decisions read; their bodies run unchanged."""
+
+    _startup_queue_transient_failure = GatewayStartupMixin._startup_queue_transient_failure
+    _start_aggregate_connect_results = GatewayStartupMixin._start_aggregate_connect_results
+    _start_handle_no_connections = GatewayStartupMixin._start_handle_no_connections
+    _startup_retry_entry = GatewayStartupMixin._startup_retry_entry
+
+    def __init__(self):
+        self._failed_platforms, self.status_updates, self.fatal = {}, [], []
+        self._startup_parked_platforms = False
+
+    async def _safe_adapter_disconnect(self, adapter, platform):
+        pass
+
+    def _update_platform_runtime_status(self, name, **kw):
+        self.status_updates.append((name, kw))
+
+    def _reconnect_queue_entry(self, platform, adapter, platform_config, **kw):
+        return {"adapter": adapter, **kw}
+
+    def _startup_fail_fatal_config(self, reason):
+        self.fatal.append(reason)
+
+
+def test_a_sole_token_locked_platform_on_an_unusable_lock_dir_keeps_the_gateway_up(locked_out_dir, monkeypatch):
+    """Review 2.1 on #140490: a Telegram-only gateway must not exit 78 over the lock dir."""
+    import gateway.run as run_mod
+    monkeypatch.setattr(run_mod, "_write_runtime_status_quiet", lambda **k: None, raising=False)
+    adapter = _adapter()
+    assert adapter._acquire_platform_lock("telegram-bot-token", "tok", "Telegram bot token") is False
+    platform = MagicMock(value="telegram")
+    runner = _StartupProbe()
+    retryable, nonretryable = [], []
+    connected = asyncio.run(runner._start_aggregate_connect_results(
+        [(platform, adapter, MagicMock(), "failed", None)], retryable, nonretryable))
+    must_exit = runner._start_handle_no_connections(connected, 1, retryable, nonretryable)
+
+    assert (connected, must_exit, nonretryable, runner.fatal) == (0, False, [], [])
+    assert platform in runner._failed_platforms  # the reconnect watcher picks the repair up
+    assert retryable and "not usable" in retryable[0]

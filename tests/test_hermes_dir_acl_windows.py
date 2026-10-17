@@ -234,7 +234,7 @@ def _w2(lock_dir):
                                                       if lvl == "WARNING" and "not usable" in m]}))
     """, str(lock_dir), prelude=_DROP_PRIVILEGES)
     for ok, code, retryable, message in result["codes"]:
-        assert (ok, code, retryable) == (False, "lock_dir_unusable", False)
+        assert (ok, code, retryable) == (False, "lock_dir_unusable", True)
         assert "icacls" in message and "/reset" in message and str(lock_dir) in message
     assert len(result["warnings"]) == 1, result
 
