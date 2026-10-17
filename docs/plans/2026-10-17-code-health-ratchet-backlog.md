@@ -2413,3 +2413,10 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   (5 `test_send_cmd` WhatsApp errors = missing `aiohttp`, identical on main); old-vs-new
   differential over existing/missing/empty paths + `_send_command` timeout identical;
   `scripts/check` ok. Branch `claude/c1053-async-adapter-ratchet-5o50p4`. Next: C-1054.
+- 2026-10-17 — C-0017 `gateway/platforms/signal.py` async: ASYNC240 3 → 0. `_resolve_image_path`'s
+  exists-then-stat moved off the loop into one `asyncio.to_thread(_existing_file_size, …)` (new
+  module helper, same missing/oversize semantics); `_send_attachment` awaits
+  `asyncio.to_thread(Path(file_path).stat)` (FileNotFoundError still caught). 8 signal/send test
+  files: 137 passed, 1 skipped; old-vs-new differential over 9 inputs (empty, bare `file://`, small,
+  oversize, directory, broken symlink, missing, URL download): 0 mismatches. `python scripts/check`
+  green. Branch `claude/code-health-ratchet-c0017-uea4i3`. Next: C-0018.
