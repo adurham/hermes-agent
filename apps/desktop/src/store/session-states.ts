@@ -34,7 +34,6 @@ import {
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
 import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
-import { isMessagingSource } from '@/lib/session-source'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
@@ -94,7 +93,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
-import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -764,19 +763,9 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 
 /** Mark a completed turn unread unless the user is already looking at it. */
 function lightUnreadCompletion(storedId: string, runtimeId?: string) {
-  const messagingRow = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
-    sessionMatchesStoredId(session, storedId)
-  )
-
-  // Messaging conversations deliver their own completion to their originating
-  // platform. A Desktop observer is not an unread recipient of that delivery.
-  if (isMessagingSource(messagingRow?.source)) {
-    return
-  }
-
   // FOCUSED, not selected: a session finishing in the tile the user is
   // watching is already seen, and a tile is never the primary selection.
-  if (storedId === $focusedStoredSessionId.get()) {
+  if (storedId === $focusedStoredSessionId.get() || isMessagingCompletion(storedId)) {
     return
   }
 

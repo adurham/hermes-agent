@@ -1,4 +1,5 @@
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { isMessagingSource } from '@/lib/session-source'
 import { stableArray } from '@/lib/stable-array'
 import { readKey } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -203,6 +204,12 @@ function setMarkerBucket(profile: string, ids: readonly string[]): void {
   }
 
   $unreadFinishedMarkers.set(next)
+}
+
+/** A messaging conversation delivers its completion to its own platform; a
+ *  Desktop observer is not an unread recipient of it. */
+export function isMessagingCompletion(storedSessionId: string): boolean {
+  return isMessagingSource(resolveLoadedRow(storedSessionId)?.source)
 }
 
 /** UNREAD WRITER — the live busy→idle edge (session-states.ts) and any surface
