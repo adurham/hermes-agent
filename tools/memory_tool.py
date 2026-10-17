@@ -8,8 +8,10 @@ import copy
 import json
 import logging
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from collections.abc import Callable
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import is_truthy_value
@@ -127,6 +129,290 @@ def _get_warm_store_or_error():
         )
 
 
+@dataclass(frozen=True)
+class _WarmArgs:
+    """The model's arguments for one warm-tier action, as ``_handle_warm_action`` got them."""
+
+    query: Optional[str]
+    content: Optional[str]
+    old_text: Optional[str]
+    top_k: Optional[int]
+    category: Optional[str]
+    tags: Optional[str]
+    fact_id: Optional[int]
+    helpful: Optional[bool]
+    target: Optional[str]
+    hot_store: Optional[MemoryStore]
+
+
+# Each warm action handler returns its result dict, or a finished error JSON string.
+_WarmResult = dict[str, Any] | str
+
+
+def _warm_add(warm, a: _WarmArgs) -> _WarmResult:
+    if not a.content:
+        return tool_error("content is required for warm add.", success=False)
+    # Warm-tier content is also injected as recall results, so the same
+    # injection-safety scan applies.
+    scan_error = _scan_memory_content(a.content)
+    if scan_error:
+        return tool_error(scan_error, success=False)
+    return warm.add(
+        content=a.content,
+        category=a.category or "general",
+        tags=a.tags or "",
+    )
+
+
+def _warm_recall(warm, a: _WarmArgs) -> _WarmResult:
+    if not a.query:
+        return tool_error("query is required for recall.", success=False)
+    rows = warm.recall(
+        query=a.query,
+        top_k=int(a.top_k) if a.top_k else 5,
+        category=a.category,
+    )
+    if not rows:
+        return {
+            "success": True,
+            "results": [],
+            "count": 0,
+            "message": (
+                "No matches in warm tier. Try different keywords, or "
+                "memory(action=\"read\", tier=\"warm\") to browse."
+            ),
+        }
+    return {
+        "success": True,
+        "results": rows,
+        "count": len(rows),
+    }
+
+
+def _warm_recall_related(warm, a: _WarmArgs) -> _WarmResult:
+    seed = a.query or a.content or ""
+    if not seed and a.fact_id:
+        row = warm.get(int(a.fact_id))
+        if row is None:
+            return tool_error(
+                f"No warm fact with id {a.fact_id}.", success=False,
+            )
+        seed = row["content"]
+    if not seed:
+        return tool_error(
+            "recall_related requires query, content, or fact_id.",
+            success=False,
+        )
+    rows = warm.recall_related(
+        seed=seed, top_k=int(a.top_k) if a.top_k else 5,
+    )
+    return {"success": True, "results": rows, "count": len(rows)}
+
+
+def _warm_read(warm, a: _WarmArgs) -> _WarmResult:
+    rows = warm.list_facts(
+        category=a.category,
+        limit=int(a.top_k) if a.top_k else 50,
+    )
+    return {
+        "success": True,
+        "results": rows,
+        "count": len(rows),
+        "total_indexed": warm.count(),
+    }
+
+
+def _warm_remove(warm, a: _WarmArgs) -> _WarmResult:
+    if a.fact_id is None:
+        return tool_error(
+            "fact_id is required for warm remove.", success=False,
+        )
+    return warm.remove(int(a.fact_id))
+
+
+def _warm_replace(warm, a: _WarmArgs) -> _WarmResult:
+    if a.fact_id is None:
+        return tool_error(
+            "fact_id is required for warm replace.", success=False,
+        )
+    if not a.content:
+        return tool_error(
+            "content is required for warm replace.", success=False,
+        )
+    scan_error = _scan_memory_content(a.content)
+    if scan_error:
+        return tool_error(scan_error, success=False)
+    return warm.update(
+        fact_id=int(a.fact_id),
+        content=a.content,
+        tags=a.tags,
+        category=a.category,
+    )
+
+
+def _warm_feedback(warm, a: _WarmArgs) -> _WarmResult:
+    if a.fact_id is None:
+        return tool_error(
+            "fact_id is required for feedback.", success=False,
+        )
+    if a.helpful is None:
+        return tool_error(
+            "helpful (true/false) is required for feedback.", success=False,
+        )
+    return warm.record_feedback(
+        fact_id=int(a.fact_id), helpful=bool(a.helpful),
+    )
+
+
+def _warm_promote(warm, a: _WarmArgs) -> _WarmResult:
+    # Move a warm fact to the hot tier. Fetch the row, write it to hot,
+    # delete from warm only if hot write succeeded.
+    #
+    # Destination hot target is taken from ``target`` ('memory' or
+    # 'user'), defaulting to 'memory'. Earlier versions overloaded
+    # ``old_text`` for this — callers passing old_text='user' will
+    # still get user-target promotion via the back-compat shim
+    # below, but new code should use target=.
+    hot_store = a.hot_store
+    if hot_store is None:
+        return tool_error(
+            "Hot tier is not available; cannot promote.", success=False,
+        )
+    if a.fact_id is None:
+        return tool_error(
+            "fact_id is required for promote.", success=False,
+        )
+    row = warm.get(int(a.fact_id))
+    if row is None:
+        return tool_error(
+            f"No warm fact with id {a.fact_id}.", success=False,
+        )
+    # Resolve destination target. Prefer the new explicit ``target``
+    # arg; fall back to the legacy ``old_text`` overload only when
+    # target wasn't explicitly set to a valid value.
+    if a.target in ("memory", "user"):
+        hot_target = a.target
+    elif a.old_text in ("memory", "user"):
+        hot_target = a.old_text  # legacy behavior — preserved
+    else:
+        hot_target = "memory"
+    hot_result = hot_store.add(hot_target, row["content"])
+    if not hot_result.get("success"):
+        return json.dumps(hot_result, ensure_ascii=False)
+    # Hot write succeeded — drop from warm.
+    warm.remove(int(a.fact_id))
+    return {
+        "success": True,
+        "message": f"Promoted warm fact {a.fact_id} to hot tier.",
+        "hot_target": hot_target,
+        "hot_state": hot_result,
+    }
+
+
+def _demote_targets(a: _WarmArgs) -> tuple[str, str]:
+    """``(hot source target, warm category)`` for demote, honouring the legacy overload."""
+    if a.target in ("memory", "user"):
+        return a.target, a.category or "general"
+    if a.category in ("memory", "user"):
+        # Legacy overload — category was the source target. Preserved
+        # for back-compat; new code should use target=.
+        return a.category, "general"
+    return "memory", a.category or "general"
+
+
+def _warm_demote(warm, a: _WarmArgs) -> _WarmResult:
+    # Move a hot entry to warm. Identified by old_text substring (same
+    # rules as hot remove).
+    #
+    # Source hot target is taken from ``target`` ('memory' or 'user'),
+    # defaulting to 'memory'. Earlier versions overloaded ``category``
+    # for this, which clashed with category's documented meaning
+    # ("warm-tier category for the new fact"). New code should use
+    # target= for the source and category= for the new warm fact's
+    # category. The legacy category-as-target overload is preserved
+    # only when ``target`` wasn't explicitly set to a valid value
+    # AND ``category`` happens to be 'memory'/'user'.
+    hot_store = a.hot_store
+    if hot_store is None:
+        return tool_error(
+            "Hot tier is not available; cannot demote.", success=False,
+        )
+    if not a.old_text:
+        return tool_error(
+            "old_text is required for demote.", success=False,
+        )
+    hot_target, warm_category = _demote_targets(a)
+    # Find the hot entry first (without removing it), so we don't
+    # delete-without-write if warm add fails.
+    # v2026.9.14 extracted MemoryStore into tools/memory_tool_store.py and
+    # dropped ``_reload_target`` (its reload is inlined in ``_mutate``), so the
+    # old call raised AttributeError and demote was dead. Re-read from disk the
+    # way ``_mutate`` does — same lock, same raw snapshot, same de-dup — so a
+    # concurrently-edited MEMORY.md can't hand us a stale in-memory entry list.
+    _hot_path = hot_store._path_for(hot_target)  # type: ignore[attr-defined]
+    with hot_store._file_lock(_hot_path):  # type: ignore[attr-defined]
+        _raw, _read_ok = hot_store._read_raw_checked(_hot_path)  # type: ignore[attr-defined]
+        if not _read_ok:
+            return tool_error(
+                f"Could not read {_hot_path.name}; refusing to demote.", success=False,
+            )
+        entries = list(dict.fromkeys(hot_store._parse_entries(_raw)))  # type: ignore[attr-defined]
+        hot_store._set_entries(hot_target, entries)  # type: ignore[attr-defined]
+        matches = [e for e in entries if a.old_text in e]
+    if not matches:
+        return tool_error(
+            f"No hot entry matched '{a.old_text}'.", success=False,
+        )
+    if len(set(matches)) > 1:
+        return tool_error(
+            f"Multiple hot entries matched '{a.old_text}'. Be more specific.",
+            success=False,
+        )
+    content = matches[0]
+    warm_result = warm.add(
+        content=content,
+        category=warm_category,
+        tags=a.tags or "demoted-from-hot",
+    )
+    if not warm_result.get("success"):
+        return json.dumps(warm_result, ensure_ascii=False)
+    # Warm write OK — drop from hot.
+    hot_store.remove(hot_target, a.old_text)
+    return {
+        "success": True,
+        "message": f"Demoted hot entry to warm fact {warm_result.get('fact_id')}.",
+        "warm_state": warm_result,
+        "hot_target": hot_target,
+        "warm_category": warm_category,
+    }
+
+
+_WARM_ACTIONS: dict[str, Callable[[Any, _WarmArgs], _WarmResult]] = {
+    "add": _warm_add,
+    "recall": _warm_recall,
+    "recall_related": _warm_recall_related,
+    "read": _warm_read,
+    "remove": _warm_remove,
+    "replace": _warm_replace,
+    "feedback": _warm_feedback,
+    "promote": _warm_promote,
+    "demote": _warm_demote,
+}
+
+
+def _session_pin_action(memory_session_pin, action: str, agent: Any,
+                        fact_id: Optional[int]) -> _WarmResult:
+    if action == "pinned":
+        return memory_session_pin.list_pinned(agent)
+    if fact_id is None:
+        return tool_error(
+            f"fact_id is required for {action}.", success=False,
+        )
+    if action == "pin":
+        return memory_session_pin.pin_fact(agent, int(fact_id))
+    return memory_session_pin.unpin_fact(agent, int(fact_id))
+
+
 def _handle_warm_action(
     action: str,
     args_query: Optional[str],
@@ -152,243 +438,33 @@ def _handle_warm_action(
     if err is not None:
         return err
 
-    if action == "add":
-        if not args_content:
-            return tool_error("content is required for warm add.", success=False)
-        # Warm-tier content is also injected as recall results, so the same
-        # injection-safety scan applies.
-        scan_error = _scan_memory_content(args_content)
-        if scan_error:
-            return tool_error(scan_error, success=False)
-        result = warm.add(
-            content=args_content,
-            category=args_category or "general",
-            tags=args_tags or "",
-        )
-
-    elif action == "recall":
-        if not args_query:
-            return tool_error("query is required for recall.", success=False)
-        rows = warm.recall(
-            query=args_query,
-            top_k=int(args_top_k) if args_top_k else 5,
-            category=args_category,
-        )
+    if action not in ("pin", "unpin", "pinned"):
+        handler = _WARM_ACTIONS.get(action)
+        if handler is None:
+            return tool_error(
+                f"Unknown warm action '{action}'. Use: add, recall, recall_related, "
+                f"read, replace, remove, feedback, promote, demote, "
+                f"pin, unpin, pinned",
+                success=False,
+            )
+        result = handler(warm, _WarmArgs(
+            query=args_query, content=args_content, old_text=args_old_text, top_k=args_top_k,
+            category=args_category, tags=args_tags, fact_id=args_fact_id, helpful=args_helpful,
+            target=args_target, hot_store=hot_store,
+        ))
+        if isinstance(result, str):
+            return result
         # Voluntary recall — reset the recall-reminder counter so the
         # agent doesn't get a nudge on the very next tool result.
         # Best-effort: skip silently when agent ref is unavailable.
-        if agent is not None:
+        if action == "recall" and agent is not None:
             try:
                 from agent.fork.memory_recall import record_voluntary_recall
                 record_voluntary_recall(agent)
             except Exception:
                 pass
-        if not rows:
-            result = {
-                "success": True,
-                "results": [],
-                "count": 0,
-                "message": (
-                    "No matches in warm tier. Try different keywords, or "
-                    "memory(action=\"read\", tier=\"warm\") to browse."
-                ),
-            }
-        else:
-            result = {
-                "success": True,
-                "results": rows,
-                "count": len(rows),
-            }
 
-    elif action == "recall_related":
-        seed = args_query or args_content or ""
-        if not seed and args_fact_id:
-            row = warm.get(int(args_fact_id))
-            if row is None:
-                return tool_error(
-                    f"No warm fact with id {args_fact_id}.", success=False,
-                )
-            seed = row["content"]
-        if not seed:
-            return tool_error(
-                "recall_related requires query, content, or fact_id.",
-                success=False,
-            )
-        rows = warm.recall_related(
-            seed=seed, top_k=int(args_top_k) if args_top_k else 5,
-        )
-        result = {"success": True, "results": rows, "count": len(rows)}
-
-    elif action == "read":
-        rows = warm.list_facts(
-            category=args_category,
-            limit=int(args_top_k) if args_top_k else 50,
-        )
-        result = {
-            "success": True,
-            "results": rows,
-            "count": len(rows),
-            "total_indexed": warm.count(),
-        }
-
-    elif action == "remove":
-        if args_fact_id is None:
-            return tool_error(
-                "fact_id is required for warm remove.", success=False,
-            )
-        result = warm.remove(int(args_fact_id))
-
-    elif action == "replace":
-        if args_fact_id is None:
-            return tool_error(
-                "fact_id is required for warm replace.", success=False,
-            )
-        if not args_content:
-            return tool_error(
-                "content is required for warm replace.", success=False,
-            )
-        scan_error = _scan_memory_content(args_content)
-        if scan_error:
-            return tool_error(scan_error, success=False)
-        result = warm.update(
-            fact_id=int(args_fact_id),
-            content=args_content,
-            tags=args_tags,
-            category=args_category,
-        )
-
-    elif action == "feedback":
-        if args_fact_id is None:
-            return tool_error(
-                "fact_id is required for feedback.", success=False,
-            )
-        if args_helpful is None:
-            return tool_error(
-                "helpful (true/false) is required for feedback.", success=False,
-            )
-        result = warm.record_feedback(
-            fact_id=int(args_fact_id), helpful=bool(args_helpful),
-        )
-
-    elif action == "promote":
-        # Move a warm fact to the hot tier. Fetch the row, write it to hot,
-        # delete from warm only if hot write succeeded.
-        #
-        # Destination hot target is taken from ``target`` ('memory' or
-        # 'user'), defaulting to 'memory'. Earlier versions overloaded
-        # ``old_text`` for this — callers passing old_text='user' will
-        # still get user-target promotion via the back-compat shim
-        # below, but new code should use target=.
-        if hot_store is None:
-            return tool_error(
-                "Hot tier is not available; cannot promote.", success=False,
-            )
-        if args_fact_id is None:
-            return tool_error(
-                "fact_id is required for promote.", success=False,
-            )
-        row = warm.get(int(args_fact_id))
-        if row is None:
-            return tool_error(
-                f"No warm fact with id {args_fact_id}.", success=False,
-            )
-        # Resolve destination target. Prefer the new explicit ``target``
-        # arg; fall back to the legacy ``old_text`` overload only when
-        # target wasn't explicitly set to a valid value.
-        if args_target in ("memory", "user"):
-            hot_target = args_target
-        elif args_old_text in ("memory", "user"):
-            hot_target = args_old_text  # legacy behavior — preserved
-        else:
-            hot_target = "memory"
-        hot_result = hot_store.add(hot_target, row["content"])
-        if not hot_result.get("success"):
-            return json.dumps(hot_result, ensure_ascii=False)
-        # Hot write succeeded — drop from warm.
-        warm.remove(int(args_fact_id))
-        result = {
-            "success": True,
-            "message": f"Promoted warm fact {args_fact_id} to hot tier.",
-            "hot_target": hot_target,
-            "hot_state": hot_result,
-        }
-
-    elif action == "demote":
-        # Move a hot entry to warm. Identified by old_text substring (same
-        # rules as hot remove).
-        #
-        # Source hot target is taken from ``target`` ('memory' or 'user'),
-        # defaulting to 'memory'. Earlier versions overloaded ``category``
-        # for this, which clashed with category's documented meaning
-        # ("warm-tier category for the new fact"). New code should use
-        # target= for the source and category= for the new warm fact's
-        # category. The legacy category-as-target overload is preserved
-        # only when ``target`` wasn't explicitly set to a valid value
-        # AND ``category`` happens to be 'memory'/'user'.
-        if hot_store is None:
-            return tool_error(
-                "Hot tier is not available; cannot demote.", success=False,
-            )
-        if not args_old_text:
-            return tool_error(
-                "old_text is required for demote.", success=False,
-            )
-        if args_target in ("memory", "user"):
-            hot_target = args_target
-            warm_category = args_category or "general"
-        elif args_category in ("memory", "user"):
-            # Legacy overload — category was the source target. Preserved
-            # for back-compat; new code should use target=.
-            hot_target = args_category
-            warm_category = "general"
-        else:
-            hot_target = "memory"
-            warm_category = args_category or "general"
-        # Find the hot entry first (without removing it), so we don't
-        # delete-without-write if warm add fails.
-        # v2026.9.14 extracted MemoryStore into tools/memory_tool_store.py and
-        # dropped ``_reload_target`` (its reload is inlined in ``_mutate``), so the
-        # old call raised AttributeError and demote was dead. Re-read from disk the
-        # way ``_mutate`` does — same lock, same raw snapshot, same de-dup — so a
-        # concurrently-edited MEMORY.md can't hand us a stale in-memory entry list.
-        _hot_path = hot_store._path_for(hot_target)  # type: ignore[attr-defined]
-        with hot_store._file_lock(_hot_path):  # type: ignore[attr-defined]
-            _raw, _read_ok = hot_store._read_raw_checked(_hot_path)  # type: ignore[attr-defined]
-            if not _read_ok:
-                return tool_error(
-                    f"Could not read {_hot_path.name}; refusing to demote.", success=False,
-                )
-            entries = list(dict.fromkeys(hot_store._parse_entries(_raw)))  # type: ignore[attr-defined]
-            hot_store._set_entries(hot_target, entries)  # type: ignore[attr-defined]
-            matches = [e for e in entries if args_old_text in e]
-        if not matches:
-            return tool_error(
-                f"No hot entry matched '{args_old_text}'.", success=False,
-            )
-        if len(set(matches)) > 1:
-            return tool_error(
-                f"Multiple hot entries matched '{args_old_text}'. Be more specific.",
-                success=False,
-            )
-        content = matches[0]
-        warm_result = warm.add(
-            content=content,
-            category=warm_category,
-            tags=args_tags or "demoted-from-hot",
-        )
-        if not warm_result.get("success"):
-            return json.dumps(warm_result, ensure_ascii=False)
-        # Warm write OK — drop from hot.
-        hot_store.remove(hot_target, args_old_text)
-        result = {
-            "success": True,
-            "message": f"Demoted hot entry to warm fact {warm_result.get('fact_id')}.",
-            "warm_state": warm_result,
-            "hot_target": hot_target,
-            "warm_category": warm_category,
-        }
-
-    elif action in ("pin", "unpin", "pinned"):
+    else:
         # Session-pin actions — keep a warm fact visible in the system
         # prompt for the rest of this session. See
         # ``agent.fork.memory_session_pin`` for semantics.
@@ -406,20 +482,9 @@ def _handle_warm_action(
                 f"Session-pin module unavailable: {e}.", success=False,
             )
 
-        if action == "pinned":
-            result = memory_session_pin.list_pinned(agent)
-        elif action == "pin":
-            if args_fact_id is None:
-                return tool_error(
-                    "fact_id is required for pin.", success=False,
-                )
-            result = memory_session_pin.pin_fact(agent, int(args_fact_id))
-        else:  # unpin
-            if args_fact_id is None:
-                return tool_error(
-                    "fact_id is required for unpin.", success=False,
-                )
-            result = memory_session_pin.unpin_fact(agent, int(args_fact_id))
+        result = _session_pin_action(memory_session_pin, action, agent, args_fact_id)
+        if isinstance(result, str):
+            return result
 
         # Pin/unpin mutate the system prompt — invalidate the cached
         # version so the next turn includes the change. Best-effort:
@@ -431,14 +496,6 @@ def _handle_warm_action(
                 invalidate_system_prompt(agent)
             except Exception:
                 pass
-
-    else:
-        return tool_error(
-            f"Unknown warm action '{action}'. Use: add, recall, recall_related, "
-            f"read, replace, remove, feedback, promote, demote, "
-            f"pin, unpin, pinned",
-            success=False,
-        )
 
     return json.dumps(result, ensure_ascii=False, default=str)
 
