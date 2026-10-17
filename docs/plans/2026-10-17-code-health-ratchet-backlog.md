@@ -2301,3 +2301,6 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   via same-file helpers `_route_advisory`, `_resolve_role_route_creds`, `_warn_unrouted_task`,
   `_route_info` (CC 2/7/6/3); BLE001 hit kept inline (branch
   `claude/reduce-delegate-tool-complexity-pl169p`). Next: first still-over-cap row of Next pick.
+- 2026-10-17 — A-046 done: `GatewayTurnMixin._resolve_session_agent_runtime` CC 22 → 12 (channel-override
+  and empty-model safety-net phases → `gateway/run_turn_model_resolution.py`, CC 6/6; BLE001 hit kept
+  inline). Next: A-048 `hermes_cli/config.py::convert_auxiliary_to_provider_first`.

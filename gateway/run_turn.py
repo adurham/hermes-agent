@@ -177,9 +177,10 @@ class GatewayTurnMixin:
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
         (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
         from gateway.run import (
-            _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
-            _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
+            _credential_pool_for_provider, _resolve_gateway_model, _resolve_runtime_agent_kwargs,
+            _resolve_runtime_agent_kwargs_for_provider,
         )
+        from gateway.run_turn_model_resolution import apply_channel_override, finalize_resolved_model
         skey = self._resolve_session_key_or_none(source, session_key)
         # Every exit path starts clean: the /model-override fast path returns before the pop below,
         # and hygiene/inbound callers resolve without a turn runner consuming the stash — a stale
@@ -250,59 +251,12 @@ class GatewayTurnMixin:
             self._pre_agent_fallback_notice = pre_agent_fallback_notice(
                 unavailable_override["provider"], unavailable_override.get("model"), runtime_kwargs.get("provider"), model)
 
-        cfg = getattr(self, "config", None)  # getattr: bare object.__new__ test runners
-        if cfg and source is not None:
-            ch = _get_channel_override(
-                cfg, source.platform, str(source.chat_id) if source.chat_id else "",
-                thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
-                parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
-            )
-            if ch:
-                if ch.model:
-                    model = ch.model
-                if ch.provider:
-                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider(ch.provider, target_model=model or None)
-                    ch_runtime_model = runtime_kwargs.pop("model", None)
-                    # Adopt the provider's bundled model only when the override named none.
-                    if ch_runtime_model and not ch.model:
-                        model = ch_runtime_model
+        model, runtime_kwargs = apply_channel_override(self, source, model, runtime_kwargs)
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
 
-        # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the
-        # provider's first catalog model.
-        if not model and runtime_kwargs.get("provider"):
-            with suppress(Exception):
-                from hermes_cli.models import get_default_model_for_provider
-                model = get_default_model_for_provider(runtime_kwargs["provider"])
-                if model:
-                    logger.info(
-                        "No model configured — defaulting to %s for provider %s", model, runtime_kwargs["provider"],
-                    )
-
-        # Final safety net: an empty model (transient config-cache miss) makes every API call 400 and
-        # the session goes silent — reuse the last model resolved for this session, else process-wide.
-        if not model:
-            _lr_state = self._peek_session_state(skey) if skey else None
-            _lr_star = self._peek_session_state("*")
-            _recovered = (
-                (_lr_state.conversation.last_resolved_model if _lr_state else "")
-                or (_lr_star.conversation.last_resolved_model if _lr_star else "")
-            )
-            if _recovered:
-                logger.warning(
-                    "Empty model resolved for session=%s — recovering "
-                    "last-known-good model %s (config read likely returned "
-                    "empty; see #35314)", skey or "", _recovered,
-                )
-                model = _recovered
-        else:
-            # Cache the good resolution for future recovery turns.
-            if skey:
-                self._session_state(skey).conversation.last_resolved_model = model
-            self._session_state("*").conversation.last_resolved_model = model
-
+        model = finalize_resolved_model(self, skey, model, runtime_kwargs)
         return model, runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
