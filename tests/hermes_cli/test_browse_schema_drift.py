@@ -994,3 +994,18 @@ def test_read_only_lagging_store_gets_a_permissions_message(tmp_path):
     assert "nothing was changed" in detail
     assert "restart" not in detail.lower()
     assert _file_state(path) == before
+
+
+def test_every_raw_schema_catch_up_handles_an_old_indexed_column(tmp_path):
+    """alt-glitch S1: three hand-ordered catch-ups (reconcile_state_schema, the repair snapshot and the
+    browse DDL) each encoded the columns -> SCHEMA_SQL -> columns order. One apply_declared_schema
+    now owns it; every raw caller catches an old store (indexed column missing) up the same way."""
+    import hermes_state_schema
+    from hermes_state_schema import reconcile_state_schema
+
+    path = _lagging_store_with_history(_profile_home(tmp_path), rows=5)
+    with closing(sqlite3.connect(path)) as conn:
+        reconcile_state_schema(conn)
+        assert not conn.in_transaction
+    assert "last_read_at" in _session_columns(path)
+    assert hasattr(hermes_state_schema, "apply_declared_schema")

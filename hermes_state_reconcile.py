@@ -36,7 +36,7 @@ def _reconcile_snapshot(path, guard):
         _copy_database_snapshot, _db_opens_cleanly, _repair_conn,
         _repair_scratch_space_error, _unlink_db_triple,
     )
-    from hermes_state_schema import SessionSchemaMixin, reconcile_state_schema
+    from hermes_state_schema import apply_declared_schema
 
     scratch = path.with_name(path.name + '.reconcile-scratch')
     if error := _repair_scratch_space_error(path):
@@ -47,11 +47,8 @@ def _reconcile_snapshot(path, guard):
         _copy_database_snapshot(path, scratch, source_connection=guard)
         with _repair_conn(scratch) as conn:
             _require_history_tables(conn)
-            # Old indexed columns must exist before the canonical DDL can create
-            # their indexes. Reuse the column owner; the final probe fails closed
-            # if an additive change is not possible. Missing tables are created below.
-            object.__new__(SessionSchemaMixin)._reconcile_columns(conn.cursor())
-            reconcile_state_schema(conn)
+            # The final probe fails closed if an additive change is not possible.
+            apply_declared_schema(conn.cursor())
             conn.commit()
         if reason := schema_drift_reason(scratch):
             raise RuntimeError(f'schema reconciliation incomplete: {reason}')
@@ -228,9 +225,8 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
     the shared reconciler could not add (it logs and continues) or an expired budget rolls the
     store back to exactly what it was, never a partial upgrade."""
     from hermes_cli.sqlite_safe_read import connect_tracked
-    from hermes_state_common import SCHEMA_SQL
     from hermes_state_repair import _reapply_durability_barriers, _schema_not_built
-    from hermes_state_schema import SessionSchemaMixin, schema_read_probe_statements
+    from hermes_state_schema import apply_declared_schema, schema_read_probe_statements
 
     budget = budget or _Budget(BROWSE_RECONCILE_BUDGET_S)
     budget.check()
@@ -241,11 +237,7 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
         conn.execute('BEGIN IMMEDIATE')
         try:
             cursor = conn.cursor()
-            shim = object.__new__(SessionSchemaMixin)
-            # Columns first: SCHEMA_SQL indexes may name columns an old table lacks.
-            shim._reconcile_columns(cursor)
-            SessionSchemaMixin._execute_ddl_script_transactional(cursor, SCHEMA_SQL)
-            shim._reconcile_columns(cursor)  # tables the script just created are complete; no-op
+            apply_declared_schema(cursor)
             # Postcondition, still inside the transaction: every declared table/column resolves.
             for statement in schema_read_probe_statements():
                 try:

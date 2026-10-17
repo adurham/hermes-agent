@@ -59,12 +59,12 @@ def test_refused_reconciliation_preserves_original(tmp_path, monkeypatch, blocke
     if blocker == 'owner':
         owner.reserve([tmp_path])
     elif blocker == 'ddl':
-        def fail(conn):
-            conn.execute('CREATE TABLE only_in_scratch (id INTEGER)')
+        def fail(cursor):
+            cursor.execute('CREATE TABLE only_in_scratch (id INTEGER)')
             raise sqlite3.OperationalError('injected DDL refusal')
-        monkeypatch.setattr(schema, 'reconcile_state_schema', fail)
+        monkeypatch.setattr(schema, 'apply_declared_schema', fail)
     elif blocker == 'incomplete':
-        monkeypatch.setattr(schema, 'reconcile_state_schema', lambda conn: None)
+        monkeypatch.setattr(schema, 'apply_declared_schema', lambda cursor: None)
     else:
         monkeypatch.setattr(repair, '_backup_db_file', lambda path: (None, 'injected backup refusal'))
     try:
