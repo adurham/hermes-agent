@@ -79,8 +79,11 @@ def policy_identity(policy, unhashed=()):
 # Policy fields a release added after frozen config secrets shipped, hashed unconditionally by the
 # gateway that added them. A reference an older gateway stamped never hashed them; at their defaults
 # they carry nothing that gateway could have seen, so the same policy without them is its policy.
-_LATER_POLICY_FIELDS = (('skills_prompt', None), ('kanban_json', None), ('safe_mode', False),
-                        ('ignore_user_config', False))
+# The commit that added each, to audit this list against the stamping releases:
+_LATER_POLICY_FIELDS = (('skills_prompt', None),          # 2ee1cd1ebb02
+                        ('kanban_json', None),            # c8f8d9ae6384
+                        ('safe_mode', False),             # 53d362e18741
+                        ('ignore_user_config', False))    # 53d362e18741
 
 
 def _legacy_identities(policy):
