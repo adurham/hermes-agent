@@ -22,11 +22,14 @@ _POLL_S = 0.25
 
 
 class _Pending:
-    __slots__ = ("event", "locked", "qids", "result", "session_id", "value")
+    __slots__ = ("event", "events", "locked", "qids", "result", "session_id", "value")
 
-    def __init__(self, session_id, qids=None):
+    def __init__(self, session_id, qids=None, events=None):
         self.event = threading.Event()
         self.session_id = session_id
+        # The live session's own event stream the request went out on: one per authority (profile) and
+        # session mount, so a viewer of another profile's same-named session can never settle it.
+        self.events = events
         self.value = ""
         self.result = None
         # A batch clarify: its question ids and the answers ``clarify.lock`` has locked so far.
@@ -37,6 +40,12 @@ class _Pending:
 _lock = threading.Lock()
 _open: dict[str, _Pending] = {}
 _OUTCOMES = ("submitted", "timed_out", "cancelled")
+
+
+def owned_by(authority, session_id, events) -> bool:
+    """True when *authority*'s live *session_id* is the very stream a request was sent on."""
+    live = authority.sessions.get(session_id)
+    return live is not None and events is not None and live.event_stream is events
 
 
 def is_response_frame(frame) -> bool:
@@ -59,12 +68,14 @@ def _settle_batch(locked, result):
     return {"answers": locked, "outcome": outcome if outcome in ("timed_out", "cancelled") else "cancelled"}
 
 
-def resolve(frame, *, session_ok=lambda session_id: True) -> bool:
+def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
     """Settle the open request *frame* answers; False when nothing (here) waits for that id.
-    ``session_ok`` lets the caller refuse an answer from a connection not entitled to that session."""
+    ``session_ok(session_id, events)`` lets the caller refuse an answer from a connection not entitled
+    to that session: the caller's own authority must own ``events``, the stream the request was sent on
+    (session ids are only unique per profile, and ``_open`` is process-wide)."""
     with _lock:
         pending = _open.get(frame["id"])
-        if pending is None or not session_ok(pending.session_id):
+        if pending is None or not session_ok(pending.session_id, pending.events):
             return False
         _open.pop(frame["id"], None)
         locked = dict(pending.locked) if pending.qids is not None else None
@@ -101,14 +112,15 @@ def ask_viewer_result(events, session_id, method, params, *, cancelled=lambda: F
     return pending.result if pending is not None else None
 
 
-def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id: False):
+def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id, events: False):
     """Lock one answer of an open batch request (``clarify.lock``; editable until the last lock;
     ``None`` = skipped). Returns the question ids still unanswered; the lock that empties it settles
     the request with ``{answers, outcome: submitted}``. ``None`` when no open batch has that id or the
-    caller may not answer its session (expired or foreign); ``ValueError`` for an unknown question id."""
+    caller may not answer its session (expired, or another profile's / session's request: see
+    :func:`resolve`); ``ValueError`` for an unknown question id."""
     with _lock:
         pending = _open.get(request_id)
-        if pending is None or pending.qids is None or not session_ok(pending.session_id):
+        if pending is None or pending.qids is None or not session_ok(pending.session_id, pending.events):
             return None
         if question_id not in pending.qids:
             raise ValueError(question_id)
@@ -126,7 +138,7 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
     if not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
-    pending = _Pending(session_id, qids)
+    pending = _Pending(session_id, qids, events)
     with _lock:
         _open[request_id] = pending
     events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method,

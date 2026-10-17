@@ -694,9 +694,11 @@ class AuthorityConnection:
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
     def _resolve_response(self, frame):
-        from gateway.session_sudo_prompt import resolve
+        from gateway.session_sudo_prompt import owned_by, resolve
 
-        def entitled(session_id):
+        def entitled(session_id, events):
+            if not owned_by(self.authority, session_id, events):
+                return False  # another profile's (or another mount's) request with the same session id
             try:
                 self.authority.authorize(self.actor, SessionRef(self.actor.profile_id, session_id), 'session:respond')
             except RuntimeStoreError:

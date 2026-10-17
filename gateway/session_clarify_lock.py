@@ -16,7 +16,7 @@ _FIELDS = frozenset({'request_id', 'question_id', 'answer', 'profile'})
 
 
 async def clarify_lock(connection, ref, params):
-    from gateway.session_sudo_prompt import lock_answer
+    from gateway.session_sudo_prompt import lock_answer, owned_by
     request_id, question_id = params.get('request_id'), params.get('question_id')
     # ``profile`` naming another served profile was routed to its owner by ``dispatch``.
     if (set(params) - _FIELDS or not isinstance(request_id, str) or not request_id
@@ -28,7 +28,11 @@ async def clarify_lock(connection, ref, params):
         answer = json.dumps(answer, ensure_ascii=False)
     authority, actor = connection.authority, connection.actor
 
-    def entitled(session_id):
+    def entitled(session_id, events):
+        # The request must have been sent on THIS authority's live session (session ids repeat across
+        # profiles; the pending table is process-wide), then the caller needs respond + a subscription.
+        if not owned_by(authority, session_id, events):
+            return False
         try:
             authority.authorize(actor, SessionRef(authority.profile_id, session_id), 'session:respond')
         except RuntimeStoreError:

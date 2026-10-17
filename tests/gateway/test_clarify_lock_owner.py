@@ -124,3 +124,39 @@ def test_cli_turn_batch_answered_by_clarify_lock_from_a_second_viewer_end_to_end
         cwd=tmp_path, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (state / 'lock-passed').read_text() == 'both locked answers reached the real model'
+
+
+@pytest.mark.asyncio
+async def test_another_profiles_viewer_of_the_same_session_id_cannot_answer(tmp_path, monkeypatch):
+    """The pending-request table is process-wide and session ids are only unique per profile. Two real
+    authorities (separate homes and SQLite stores) both mount ``s``: profile B's own, attached viewer
+    with ``session:respond`` must not lock or answer profile A's request, through ``clarify.lock`` or a
+    raw response frame."""
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_sudo_prompt import _open
+
+    async def answer(event):
+        return 'ok'
+    a = await _authority(tmp_path / 'a', monkeypatch, answer)
+    b = await _authority(tmp_path / 'b', monkeypatch, answer)
+    b.profile_id = str(tmp_path / 'b')
+    own = AuthorityConnection(a, object(), {'user_id': 'owner'})
+    foreign = AuthorityConnection(b, object(), {'user_id': 'owner'})
+    try:
+        for connection in (own, foreign):
+            resumed = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+            assert 'result' in resumed, resumed
+        peer, worker, out = _start_batch(a)
+        await _wait_for(lambda: any(f.get('method') == 'clarify' for f in peer.frames))
+        rid = next(f['id'] for f in peer.frames if f.get('method') == 'clarify')
+        refused = await _lock(foreign, rid, 'q0', 'FROM_PROFILE_B', 2)
+        assert refused.get('result') == {'status': 'expired'}, refused
+        foreign._resolve_response({'jsonrpc': '2.0', 'id': rid, 'result': {'answers': {'q0': 'B', 'q1': 'B'}}})
+        assert rid in _open and not _open[rid].locked
+        assert (await _lock(own, rid, 'q0', 'red', 3))['result'] == {'status': 'ok', 'remaining': ['q1']}
+        assert (await _lock(own, rid, 'q1', 'big', 4))['result'] == {'status': 'ok', 'remaining': []}
+        await asyncio.to_thread(worker.join, 5)
+        assert out == {'answers': {'q0': 'red', 'q1': 'big'}, 'outcome': 'submitted'}
+    finally:
+        await own.close()
+        await foreign.close()
