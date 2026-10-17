@@ -19,6 +19,9 @@ import { DEFAULT_THEME } from '../theme.js'
 
 // vi.waitFor's 1 s default is shorter than a first Ink frame on a loaded CI host.
 const WAIT = { timeout: 10_000 }
+// A mounted switcher chains three WAIT-bounded frame waits; the test's own budget must cover them,
+// or vitest's 5 s default fires first on a loaded runner (the waits never get their 10 s).
+const MOUNTED_TEST_TIMEOUT = 3 * WAIT.timeout
 
 const liveRow = { id: 'live', session_id: 'live', title: 'Current conversation', started_at: 2, message_count: 1, running: false }
 
@@ -185,7 +188,7 @@ it('reports no close instead of blaming main when the canonical row is not held'
   } finally {
     m.instance.unmount()
   }
-})
+}, MOUNTED_TEST_TIMEOUT)
 
 it('keeps main\'s "already closed" for a receipt that refuses the close', async () => {
   const onClose = vi.fn(async () => ({ closed: false }))
@@ -197,4 +200,4 @@ it('keeps main\'s "already closed" for a receipt that refuses the close', async 
   } finally {
     m.instance.unmount()
   }
-})
+}, MOUNTED_TEST_TIMEOUT)
