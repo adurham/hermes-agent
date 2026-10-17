@@ -152,7 +152,7 @@ class TestRetrievalAccounting:
         assert warm.get(fact_id)["retrieval_count"] == before
 
     def test_bump_is_idempotent_on_an_empty_id_list(self, warm):
-        assert warm._inner.bump_retrieval_counts([]) == 0
+        assert warm._inner.record_retrievals([]) == 0
 
 
 class TestHyphenTokenization:
@@ -272,17 +272,13 @@ class TestMutualExclusionGuard:
 
 
 class TestStorePrimitives:
-    """The warm tier now asks the store for these instead of hand-rolling SQL
-    against ``_inner._conn``."""
+    """The warm tier reaches the plugin store through its PUBLIC primitives (no
+    hand-rolled SQL against ``_inner._conn``); these pin the surfaces it relies on."""
 
-    def test_get_fact_round_trips_and_misses_cleanly(self, tmp_path):
-        store = HoloStore(db_path=str(tmp_path / "p.db"))
-        try:
-            fact_id = store.add_fact(_FACT, category="project")
-            assert store.get_fact(fact_id)["content"] == _FACT
-            assert store.get_fact(999999) is None
-        finally:
-            store.close()
+    def test_get_round_trips_and_misses_cleanly(self, warm):
+        fact_id = warm.add(_FACT, category="project")["fact_id"]
+        assert warm.get(fact_id)["content"] == _FACT
+        assert warm.get(999999) is None
 
     def test_count_facts_tracks_writes_and_removals(self, tmp_path):
         store = HoloStore(db_path=str(tmp_path / "c.db"))
@@ -296,15 +292,16 @@ class TestStorePrimitives:
         finally:
             store.close()
 
-    def test_find_fact_id_by_content_distinguishes_insert_from_duplicate(self, tmp_path):
-        """``content`` is UNIQUE and ``add_fact`` silently returns the existing id;
-        this is how the warm tier reports created-vs-existing."""
+    def test_add_fact_status_distinguishes_insert_from_duplicate(self, tmp_path):
+        """``content`` is UNIQUE; ``add_fact_status`` reports created-vs-existing — the
+        primitive the warm tier's ``add()`` now uses for its status (the old in-tree
+        ``find_fact_id_by_content`` probe never existed on the catalog plugin)."""
         store = HoloStore(db_path=str(tmp_path / "d.db"))
         try:
-            assert store.find_fact_id_by_content(_FACT) is None
-            fact_id = store.add_fact(_FACT)
-            assert store.find_fact_id_by_content(_FACT) == fact_id
-            assert store.add_fact(_FACT) == fact_id
+            fact_id, created = store.add_fact_status(_FACT)
+            assert created is True
+            again, created_again = store.add_fact_status(_FACT)
+            assert again == fact_id and created_again is False
         finally:
             store.close()
 
