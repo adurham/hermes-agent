@@ -394,37 +394,10 @@ def _session_of(pid: int) -> int | None:
     return session.value if to_session(pid, ctypes.byref(session)) else None
 
 
-def _elevation_of(pid: int) -> bool | None:
-    k = ctypes.WinDLL('kernel32', use_last_error=True)
-    a = ctypes.WinDLL('advapi32', use_last_error=True)
-    open_process = _api(k, 'OpenProcess', wintypes.HANDLE, [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD])
-    close = _api(k, 'CloseHandle', wintypes.BOOL, [wintypes.HANDLE])
-    process = open_process(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not process:
-        return None
-    token = wintypes.HANDLE()
-    try:
-        open_token = _api(a, 'OpenProcessToken', wintypes.BOOL,
-                          [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)])
-        if not open_token(process, 8, ctypes.byref(token)):  # TOKEN_QUERY
-            return None
-        token_info = _api(a, 'GetTokenInformation', wintypes.BOOL,
-                          [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
-                           ctypes.POINTER(wintypes.DWORD)])
-        elevated, size = wintypes.DWORD(), wintypes.DWORD()
-        if not token_info(token, 20, ctypes.byref(elevated), ctypes.sizeof(elevated), ctypes.byref(size)):
-            return None
-        return bool(elevated.value)
-    finally:
-        if token:
-            close(token)
-        close(process)
-
-
 def probe_refused_owner(pid: int) -> tuple[str, str] | None:
     """``(reason_code, remedy)`` naming why *pid*'s gateway refused this client, or None."""
-    from hermes_dir_acl import process_is_elevated
+    from hermes_dir_acl import process_elevation, process_is_elevated
     own_session, owner_session = _session_of(os.getpid()), _session_of(pid)
     reason = classify_refused_owner(own_session=own_session, owner_session=owner_session,
-                                    own_elevated=process_is_elevated(), owner_elevated=_elevation_of(pid))
+                                    own_elevated=process_is_elevated(), owner_elevated=process_elevation(pid))
     return (reason, refused_owner_remedy(reason, pid, owner_session)) if reason else None

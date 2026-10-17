@@ -69,32 +69,53 @@ def is_reparse_point(path: str | Path) -> bool:
     return bool(isjunction and isjunction(path))
 
 
-@functools.lru_cache(maxsize=1)
-def process_is_elevated() -> bool:
-    """True for an elevated (UAC full-token) Windows process; False elsewhere or on any error."""
-    if sys.platform != "win32":
-        return False
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def process_elevation(pid: int | None = None) -> bool | None:
+    """``TokenElevation`` of *pid*'s token (default: this process). The ONE elevation probe: the
+    grants below, the refused-owner naming in ``gateway.runtime_bootstrap_windows`` and the
+    Windows service installer all read it. None when the process or its token cannot be opened
+    (across an elevation boundary that refusal is itself an answer the caller interprets)."""
     import ctypes
     from ctypes import wintypes
 
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
     advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
                                            ctypes.POINTER(wintypes.DWORD)]
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    own = pid is None
+    process = kernel.GetCurrentProcess() if own else kernel.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION,
+                                                                         False, pid)
+    if not process:
+        return None
     token = wintypes.HANDLE()
-    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(token)):
-        return False
     try:
+        if not advapi.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+            return None
         elevated, size = wintypes.DWORD(), wintypes.DWORD()
         if not advapi.GetTokenInformation(token, _TOKEN_ELEVATION, ctypes.byref(elevated),
                                           ctypes.sizeof(elevated), ctypes.byref(size)):
-            return False
+            return None
         return bool(elevated.value)
     finally:
-        kernel.CloseHandle(token)
+        if token:
+            kernel.CloseHandle(token)
+        if not own:  # the pseudo-handle of GetCurrentProcess is never closed
+            kernel.CloseHandle(process)
+
+
+@functools.lru_cache(maxsize=1)
+def process_is_elevated() -> bool:
+    """True for an elevated (UAC full-token) Windows process; False elsewhere or on any error."""
+    if sys.platform != "win32":
+        return False
+    return bool(process_elevation())
 
 
 def _strip_win32_prefix(path: str) -> str:

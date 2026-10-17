@@ -18,11 +18,13 @@ pytestmark = pytest.mark.platforms("windows")
 
 def test_own_session_and_elevation_are_read_from_the_real_token():
     from gateway import runtime_bootstrap_windows as native
-    from hermes_dir_acl import process_is_elevated
+    from hermes_dir_acl import process_elevation, process_is_elevated
     import os
 
     assert isinstance(native._session_of(os.getpid()), int)
-    assert native._elevation_of(os.getpid()) is process_is_elevated()
+    assert process_elevation(os.getpid()) is process_elevation() is process_is_elevated()
+    from hermes_cli.gateway_windows import _is_running_as_admin
+    assert _is_running_as_admin() is process_is_elevated()
 
 
 def test_a_same_token_owner_is_not_misnamed():
