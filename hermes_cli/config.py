@@ -1619,65 +1619,17 @@ def convert_auxiliary_to_provider_first(aux: dict) -> dict:
     if not any(_task_is_convertible(aux[t]) for t in task_keys_present):
         return aux
 
+    from hermes_cli.config_aux_provider_first import accumulate_aux_task
+
     # provider id → {task → model}; plus per-block routing (base_url/api_key/…).
     provider_models: dict = {}
     provider_routing: dict = {}
     defaults_block: dict = {}
 
-    def _block(prov: str) -> dict:
-        return provider_models.setdefault(prov, {})
-
     for task in task_keys_present:
-        tcfg = aux[task]
-        prov = str(tcfg.get("provider", "")).strip()
-        model = str(tcfg.get("model", "")).strip()
-        base_url = str(tcfg.get("base_url", "")).strip()
-        api_key = str(tcfg.get("api_key", "")).strip()
-        api_mode = str(tcfg.get("api_mode", "")).strip()
-
-        # Primary pin → provider block (skip 'auto'/empty: resolver default).
-        if prov and prov != "auto":
-            # Normalise custom:exo → exo block name for readability.
-            block_name = prov.split(":", 1)[1] if prov.startswith("custom:") else prov
-            if model:
-                _block(block_name)[task] = model
-            routing = provider_routing.setdefault(block_name, {})
-            # Record block-level routing once (consistent across tasks by design).
-            if prov.startswith("custom:") or base_url:
-                routing.setdefault("provider", prov)
-            if base_url:
-                routing.setdefault("base_url", base_url)
-            if api_key:
-                routing.setdefault("api_key", api_key)
-            if api_mode:
-                routing.setdefault("api_mode", api_mode)
-        elif model:
-            # Explicit model on an auto/empty provider: provider-first has no
-            # "auto" block, so carry the pin through the shared ``defaults``
-            # block (the resolver merges defaults first, then block/task
-            # overrides) instead of silently dropping it.
-            defaults_block.setdefault(task, {})["model"] = model
-
-        # Provider-scoped fallbacks → each provider's block.
-        fbm = tcfg.get("fallback_models")
-        if isinstance(fbm, dict):
-            for fb_prov, fb_model in fbm.items():
-                fb_prov = str(fb_prov).strip().lower()
-                fb_model = str(fb_model).strip()
-                if fb_prov and fb_model:
-                    _block(fb_prov)[task] = fb_model
-        # Legacy scalar fallback_model → anthropic (old resolver assumption).
-        fb_scalar = str(tcfg.get("fallback_model", "")).strip()
-        if fb_scalar:
-            _block("anthropic").setdefault(task, fb_scalar)
-
-        # Per-task settings → defaults block.
-        settings = {
-            k: v for k, v in tcfg.items()
-            if k in _AUX_SETTING_KEYS and k not in _AUX_ROUTING_KEYS
-        }
-        if settings:
-            defaults_block.setdefault(task, {}).update(settings)
+        accumulate_aux_task(
+            task, aux[task], provider_models, provider_routing, defaults_block
+        )
 
     # Collapse each provider block to a per-block ``default`` (most common
     # model) + explicit overrides for the minority.
