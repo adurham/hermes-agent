@@ -103,7 +103,14 @@ def _reconcile_locked(path, backup, report):
 # Catch it up ONCE, additive DDL only, in one short transaction, and only while holding that
 # profile's gateway runtime lock. When a gateway owns the store it is the only writer: refuse
 # by name with the remedy instead of becoming a second one.
-_BROWSE_RECONCILE_BUSY_S = 2.0
+#
+# The lock is held for at most BROWSE_RECONCILE_BUDGET_S: one monotonic deadline, starting once the
+# lock is held, covers the integrity check and the DDL transaction. A sqlite progress handler
+# interrupts either one past the deadline (the DDL rolls back) and browse answers a retryable 503.
+# Busy waiting does not run the progress handler, so each connection's busy timeout is capped at
+# the remaining budget. Gateway boot waits this budget out (gateway.run_bootstrap).
+BROWSE_RECONCILE_BUDGET_S = 3.0
+_BUDGET_PROGRESS_OPS = 1000
 
 
 class DeclarativeDriftError(RuntimeError):
@@ -128,20 +135,56 @@ def _owner_remedy(home: Path) -> tuple[str, str]:
     return label or str(home), 'hermes gateway restart'
 
 
-def _apply_additive_schema(path: Path) -> None:
+class BrowseBudgetExceeded(RuntimeError):
+    """The browse reconcile could not finish inside BROWSE_RECONCILE_BUDGET_S; nothing was written."""
+
+
+class _Budget:
+    """One monotonic deadline for everything a browse does while holding ``gateway.lock``."""
+
+    def __init__(self, seconds: float):
+        import time
+        self._clock = time.monotonic
+        self.deadline = self._clock() + seconds
+        self.expired = False
+
+    def remaining(self) -> float:
+        return max(self.deadline - self._clock(), 0.0)
+
+    def busy_timeout(self) -> float:
+        return max(self.remaining(), 0.05)
+
+    def arm(self, conn) -> None:
+        def progress():
+            if self._clock() >= self.deadline:
+                self.expired = True
+                return 1  # sqlite raises OperationalError('interrupted'); the caller rolls back
+            return 0
+        conn.set_progress_handler(progress, _BUDGET_PROGRESS_OPS)
+
+    def check(self) -> None:
+        if self.expired or self.remaining() <= 0:
+            self.expired = True
+            raise BrowseBudgetExceeded('browse schema catch-up exceeded its time budget')
+
+
+def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
     """Missing SCHEMA_SQL tables and columns, in ONE ``BEGIN IMMEDIATE`` transaction.
 
     No data migration, no FTS work, no schema_version stamp (that stays the owner's: the
     version gates data migrations this path does not run). Every statement is additive and
-    idempotent, so a failure rolls the store back to exactly what it was."""
+    idempotent, so a failure (or an expired budget) rolls the store back to exactly what it was."""
     from hermes_cli.sqlite_safe_read import connect_tracked
     from hermes_state_common import SCHEMA_SQL
     from hermes_state_repair import _reapply_durability_barriers
     from hermes_state_schema import SessionSchemaMixin
 
-    with closing(connect_tracked(path, tracking_path=path, timeout=_BROWSE_RECONCILE_BUSY_S,
+    budget = budget or _Budget(BROWSE_RECONCILE_BUDGET_S)
+    budget.check()
+    with closing(connect_tracked(path, tracking_path=path, timeout=budget.busy_timeout(),
                                  isolation_level=None)) as conn:
         _reapply_durability_barriers(conn)
+        budget.arm(conn)
         conn.execute('BEGIN IMMEDIATE')
         try:
             cursor = conn.cursor()
@@ -150,10 +193,13 @@ def _apply_additive_schema(path: Path) -> None:
             shim._reconcile_columns(cursor)
             SessionSchemaMixin._execute_ddl_script_transactional(cursor, SCHEMA_SQL)
             shim._reconcile_columns(cursor)  # tables the script just created are complete; no-op
+            budget.check()
             conn.execute('COMMIT')
-        except BaseException:
+        except BaseException as exc:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute('ROLLBACK')
+            if budget.expired and isinstance(exc, sqlite3.OperationalError):
+                raise BrowseBudgetExceeded('browse schema catch-up exceeded its time budget') from exc
             raise
 
 
@@ -166,30 +212,39 @@ class CorruptStoreError(sqlite3.DatabaseError):
     own malformed-image error so every caller maps it to the corrupt-store status (``hermes doctor``)."""
 
     def __init__(self, detail: str):
-        super().__init__(f'database disk image is malformed (quick_check: {detail})')
+        super().__init__(f'database disk image is malformed (integrity_check: {detail})')
 
 
-def _quick_check_problem(path: Path):
-    """``PRAGMA quick_check`` on a read-only connection: None when ``ok``, else the first problems."""
+def _integrity_problem(path: Path, budget: _Budget):
+    """``PRAGMA integrity_check`` on a read-only connection under *budget*: None when ``ok``, else the
+    first problems. Full integrity_check, not quick_check: quick_check skips index-vs-table content,
+    so an index with the right entry count but the wrong keys passes it. Raises
+    :class:`BrowseBudgetExceeded` when the scan cannot finish in time (fail closed: no write)."""
     from hermes_cli.sqlite_safe_read import connect_tracked
+    budget.check()
     try:
-        with closing(connect_tracked(path.resolve().as_uri() + '?mode=ro', uri=True, tracking_path=path)) as conn:
-            rows = conn.execute('PRAGMA quick_check').fetchall()
+        with closing(connect_tracked(path.resolve().as_uri() + '?mode=ro', uri=True, tracking_path=path,
+                                     timeout=budget.busy_timeout())) as conn:
+            budget.arm(conn)
+            rows = conn.execute('PRAGMA integrity_check(3)').fetchall()
     except sqlite3.DatabaseError as exc:
+        if budget.expired:
+            raise BrowseBudgetExceeded('integrity check exceeded the browse time budget') from exc
         from hermes_state_errors import is_malformed_db_error
         if is_malformed_db_error(exc):
             return str(exc)
         raise
+    budget.check()
     problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != 'ok']
     return '; '.join(problems[:3]) or None
 
 
 def _wait_for_sibling_reconcile(path: Path, home: Path):
     """A sibling browse (another thread or process) holds the lock for its own reconcile: wait at
-    most the busy budget for it. None once the store is current, else the remaining drift."""
+    at most the sibling's own execution budget. None once the store is current, else the remaining drift."""
     import time
     from gateway.runtime_ownership import live_runtime_owner
-    deadline = time.monotonic() + _BROWSE_RECONCILE_BUSY_S
+    deadline = time.monotonic() + BROWSE_RECONCILE_BUDGET_S + 0.5
     while True:
         if (reason := schema_drift_reason(path)) is None:
             return None
@@ -228,15 +283,22 @@ def reconcile_drift_for_browse(path: Path) -> bool:
             f'(`{remedy}`) to bring the store up to date.', owned=True)
     try:
         with exclusive_maintenance([home], purpose=BROWSE_RECONCILE_PURPOSE):
+            budget = _Budget(BROWSE_RECONCILE_BUDGET_S)
             # Re-check under the lock: a gateway that started and released between probes
             # (or a sibling browse) may already have caught the store up.
             if schema_drift_reason(path) is None:
                 return False
             # A failing column probe hides damage elsewhere in the file: additive DDL is not
-            # corruption recovery, so never write into a store that is not clean.
-            if problem := _quick_check_problem(path):
+            # corruption recovery, so never write into a store that is not verified clean.
+            if problem := _integrity_problem(path, budget):
                 raise CorruptStoreError(problem)
-            _apply_additive_schema(path)
+            _apply_additive_schema(path, budget)
+    except BrowseBudgetExceeded as exc:
+        raise DeclarativeDriftError(
+            f"Session store for profile '{label}' is behind this Hermes version ({reason}) and could "
+            f'not be verified and caught up within {BROWSE_RECONCILE_BUDGET_S:.0f}s while browsing; '
+            f'nothing was changed and the list was not cleared. Retry, or start this profile\'s '
+            f'gateway (`{remedy}`) or run `hermes sessions repair` to bring it up to date.') from exc
     except OwnershipConflict as exc:
         if live_runtime_owner(home) is not None:
             raise owned(reason) from exc

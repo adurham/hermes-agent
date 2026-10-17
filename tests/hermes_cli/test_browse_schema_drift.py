@@ -506,3 +506,130 @@ def test_gateway_boot_waits_while_the_holder_has_not_published_its_record(tmp_pa
         holder.kill()
         holder.wait()
 
+
+_SLOW_BROWSE = r'''
+import json, os, sqlite3, sys, time
+from pathlib import Path
+import hermes_cli.sqlite_safe_read as ssr
+from fastapi import HTTPException
+from hermes_cli.web_server_sessions import _open_session_db_at_path
+
+phase = sys.argv[2]
+original = ssr.connect_tracked
+
+class SlowConnection:
+    """A real sqlite connection whose VM runs slowly (stand-in for a cold multi-GB disk). The
+    slowdown is installed here, whether or not the code under test sets its own progress handler,
+    and chains to that handler when it does."""
+    def __init__(self, conn):
+        self._conn = conn
+        self.set_progress_handler(None, 0)
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+    def set_progress_handler(self, handler, n):
+        def slow():
+            time.sleep(0.01)
+            return handler() if handler is not None else 0
+        return self._conn.set_progress_handler(slow, 5)
+    def close(self):
+        return self._conn.close()
+
+def holding_lock():
+    """Only connections opened while THIS process holds gateway.lock are slowed."""
+    lock = Path(sys.argv[1]).with_name("gateway.lock")
+    try:
+        return json.loads(lock.read_text()).get("pid") == os.getpid()
+    except (OSError, ValueError):
+        return False
+
+def slowed(path, *a, **kw):
+    conn = original(path, *a, **kw)
+    read_only = "mode=ro" in str(path)
+    if holding_lock() and (phase == "integrity") == read_only:
+        return SlowConnection(conn)
+    return conn
+
+ssr.connect_tracked = slowed
+started = time.monotonic()
+print("started", flush=True)
+try:
+    _open_session_db_at_path(Path(sys.argv[1]), read_only=True).close()
+    print("RESULT 200", time.monotonic() - started, flush=True)
+except HTTPException as exc:
+    print("RESULT", exc.status_code, time.monotonic() - started, exc.detail, flush=True)
+'''
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.parametrize("phase", ["integrity", "ddl"])
+def test_slow_browse_reconcile_gives_up_inside_its_budget_and_boot_waits_it_out(tmp_path, phase):
+    """R2-2: the busy timeout bounds lock contention, not SQL execution. A slow integrity scan or
+    DDL must be interrupted at the browse budget (rolled back, retryable 503), and gateway boot's
+    wait must outlast that budget, so a slow browse never turns into a startup refusal."""
+    import os
+    import subprocess
+    import sys
+    import time
+
+    import gateway.run_bootstrap as bootstrap
+    import hermes_state_reconcile as reconcile
+    from gateway.runtime_ownership import ProfileOwnership
+
+    budget_s = getattr(reconcile, "BROWSE_RECONCILE_BUDGET_S", 2.0)
+    wait_s = getattr(bootstrap, "_browse_reconcile_reserve_wait_s", lambda: 5.0)()
+    assert wait_s > budget_s + 1
+    home = _profile_home(tmp_path)
+    path = _lagging_store_with_history(home, rows=400)
+    before = _file_state(path)
+    browse = subprocess.Popen([sys.executable, "-c", _SLOW_BROWSE, str(path), phase], env=os.environ,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert browse.stdout.readline().strip() == "started"
+    deadline = time.monotonic() + 20
+    while not (home / "gateway.lock").exists() or not (home / "gateway.lock").read_text():
+        assert time.monotonic() < deadline and browse.poll() is None
+        time.sleep(0.01)
+    booting = ProfileOwnership()
+    try:
+        bootstrap._reserve_waiting_out_browse_reconcile(booting, [home])  # default wait: must not raise
+        assert booting.owns(home)
+    finally:
+        booting.close()
+    out = browse.communicate(timeout=60)[0]
+    result = next(line for line in out.splitlines() if line.startswith("RESULT"))
+    _, status, elapsed, *detail = result.split(" ", 3)
+    assert status == "503", out
+    assert float(elapsed) < budget_s + 2, out
+    assert "nothing was changed" in " ".join(detail)
+    assert _file_state(path) == before
+    assert "last_read_at" not in _session_columns(path)
+
+
+def test_equal_cardinality_corrupt_index_plus_drift_is_not_written(tmp_path):
+    """R2-3: quick_check does not compare index keys with the table, so two equal-size indexes
+    with swapped root pages pass it. Browse must still refuse as corrupt and write nothing."""
+    path = _lagging_store_with_history(_profile_home(tmp_path), rows=10)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("CREATE TABLE probe_other (v TEXT)")
+        conn.execute("CREATE INDEX probe_other_index ON probe_other(v)")
+        conn.execute("INSERT INTO probe_other(v) VALUES ('wrong-source')")
+        conn.commit()
+        target = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='idx_sessions_source'").fetchone()[0]
+        other = conn.execute("SELECT rootpage FROM sqlite_master WHERE name='probe_other_index'").fetchone()[0]
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute("UPDATE sqlite_master SET rootpage=? WHERE name='idx_sessions_source'", (other,))
+        conn.execute("UPDATE sqlite_master SET rootpage=? WHERE name='probe_other_index'", (target,))
+        conn.execute("PRAGMA writable_schema=OFF")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+        assert conn.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok"
+    before = _file_state(path)
+
+    with pytest.raises(HTTPException) as caught:
+        _open_session_db_at_path(path, read_only=True).close()
+    assert caught.value.status_code == 503
+    assert caught.value.detail["error"] == "state_db_corrupt"
+    assert _file_state(path) == before
+    assert "last_read_at" not in _session_columns(path)
+

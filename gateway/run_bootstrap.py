@@ -546,17 +546,22 @@ def _start_gateway_resolve_terminal_cwd() -> None:
 
 
 # A browse that catches a lagging state.db up holds the profile's gateway.lock for at most its
-# sqlite busy budget (hermes_state_reconcile._BROWSE_RECONCILE_BUSY_S, 2 s). A gateway booting in
-# that window waits it out instead of exiting as if another gateway owned the profile.
-_BROWSE_RECONCILE_RESERVE_WAIT_S = 5.0
+# execution budget (hermes_state_reconcile.BROWSE_RECONCILE_BUDGET_S: integrity check + DDL, cut off
+# by a sqlite progress handler). A gateway booting in that window waits it out, with margin for
+# lock publication and the drift probes, instead of exiting as if another gateway owned the profile.
+def _browse_reconcile_reserve_wait_s() -> float:
+    from hermes_state_reconcile import BROWSE_RECONCILE_BUDGET_S
+    return BROWSE_RECONCILE_BUDGET_S + 2.0
 
 
-def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float = _BROWSE_RECONCILE_RESERVE_WAIT_S):
+def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | None = None):
     """Reserve *homes*, waiting (bounded) while a contender is a browse reconcile or has not yet
     published its lock record (flock taken, record unwritten). Only a positively identified holder
     that is not browse maintenance refuses at once; the flock exclusion itself is never weakened."""
     from gateway.runtime_ownership import OwnershipConflict, lock_record_unpublished, maintenance_holder
     from hermes_state_reconcile import BROWSE_RECONCILE_PURPOSE
+    if wait_s is None:
+        wait_s = _browse_reconcile_reserve_wait_s()
     deadline = time.monotonic() + wait_s
     logged = False
     while True:
