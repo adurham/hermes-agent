@@ -2392,3 +2392,15 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   (FileNotFoundError on every clean checkout). It now reads the committed lockfile's resolution(s) and
   requires exactly the fixture's version; a lockfile bump to 0.10.0 still fails with the regenerate
   message. File 4/4 passed. Branch `claude/fix-xterm-version-fixture-j4vcmn`.
+- 2026-10-17 — pre-existing red `test_commandcode_profile.py::…::test_resolve_provider_full` (env-dependent:
+  red only when models.dev is reachable). Root cause: models.dev added a `commandcode` entry
+  (2026-10-14, `env = ["CMD_API_KEY"]`), and `hermes_cli/providers.py::get_provider` let a bare
+  models.dev hit shadow the plugin profile (key `COMMANDCODE_API_KEY`, `COMMANDCODE_BASE_URL` both
+  dropped) — code bug, not a stale test: the runtime registry and the picker still use Hermes's names.
+  Fix: an overlay-less models.dev hit now takes its overlay from the plugin profile
+  (`_profile_overlay`: transport, auth_type, key vars, endpoint, base-URL var); explicit
+  `HERMES_OVERLAYS` entries keep precedence. Same exposure closed for gemini/meta-ai/deepinfra/alibaba-cn.
+  Test now pins both catalog states (absent / listed under `CMD_API_KEY`); `[True]` red on base with
+  the reported assertion. 196 provider/model-switch test files: 4180 passed, 12 failed — the same 12
+  on base (no `acp` module, exo needs egress, meta-ai id, firecrawl). `python scripts/check` green.
+  Branch `claude/fix-commandcode-api-key-test-uot9md`. Next: next row of Next pick.
