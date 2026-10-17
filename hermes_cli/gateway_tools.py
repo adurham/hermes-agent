@@ -53,6 +53,7 @@ class GatewayProcessView:
         self._lock = threading.Lock()
         self.subagents: list = []
         self._subagents_polled = 0.0
+        self._subagents_seen = 0.0
         self._subagents_lock = threading.Lock()
         self._tail = None
 
@@ -143,8 +144,11 @@ class GatewayProcessView:
                 self._subagents_polled = now
                 result = self.connection.call("subagent.list", session_id=self.session_id, timeout=5)
                 self.subagents = list((result or {}).get("subagents") or [])
+                self._subagents_seen = now
             except (GatewayClientError, RuntimeError) as exc:
                 logger.debug("subagent.list failed: %s", exc)
+                if now - self._subagents_seen > _RETAIN_SECONDS:
+                    self.subagents = []  # no answer for a minute: drop the rows and stop polling
             finally:
                 self._subagents_lock.release()
         return [dict(row) for row in self.subagents]
