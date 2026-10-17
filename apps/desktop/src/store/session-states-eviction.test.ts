@@ -8,8 +8,8 @@ import {
   $sessions,
   $unreadFinishedSessionIds
 } from '@/store/session'
-import { makeSessionInfo } from '@/test/session-info'
 import { $sessionStates, $sessionTiles, closeSessionTile, publishSessionState } from '@/store/session-states'
+import { makeSessionInfo } from '@/test/session-info'
 
 /**
  * The closed-tile leak: gateway events keep publishing for sessions whose
