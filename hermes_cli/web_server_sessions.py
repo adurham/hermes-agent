@@ -212,13 +212,17 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     from hermes_state import _default_db_path
 
     home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
-    # Discovery is read-only and never starts a gateway; the ticket mint in
-    # connect_gateway(endpoint=...) dials the endpoint's own control socket,
-    # so a served profile reaches its owner, not the launch home's.
+    # Discovery is read-only and never starts a gateway.
     discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=1.5)
     endpoint = getattr(discovery, 'endpoint', None)
     if endpoint is None:
         return None
+    if not getattr(endpoint, 'control_home', True):
+        # The selected home answered on its own socket (a multiplexer-served profile already
+        # names the multiplexer root). Pin it, so the ticket is minted on the socket that just
+        # identified as this profile's owner, never on the dashboard launch home's.
+        from dataclasses import replace
+        endpoint = replace(endpoint, control_home=str(home.expanduser().resolve()))
     call = {key: params[key] for key in
             ('session_id', 'request_id', 'expected_revision', 'operation', 'payload') if key in params}
     if params.get('expected_generation') is not None:

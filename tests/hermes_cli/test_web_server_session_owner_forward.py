@@ -149,3 +149,70 @@ async def test_owner_refusal_maps_to_the_matching_http_status(tmp_path, monkeypa
             operation='delete', payload={}, expected_generation=0)
     assert exc.value.status_code == 403
     assert exc.value.detail == 'permission_denied'
+
+
+@pytest.mark.asyncio
+async def test_selected_profile_ticket_is_minted_on_that_profiles_own_socket(tmp_path, monkeypatch):
+    """``?profile=work`` where ``work`` runs its own gateway: discovery finds work's endpoint
+    (``control_home`` unset, it answers on its own socket), so the ticket must be minted on
+    work's control socket — not the dashboard launch home's, which has no owner (503) or is
+    another profile's owner (never mint one profile's ticket from another's socket)."""
+    from hermes_cli import web_server_sessions
+    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_cli.gateway_runtime import GatewayEndpoint
+
+    launch = tmp_path / 'launch'
+    work = tmp_path / 'launch' / 'profiles' / 'work'
+    work.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(launch))
+    monkeypatch.setattr('hermes_cli.web_server_cron._cron_profile_home', lambda name: (name, work))
+    endpoint = GatewayEndpoint(profile_id=str(work), instance_id='i-work', authority_epoch=1,
+                               runtime_protocol=1, api_origin='http://127.0.0.1:1', supervisor='none',
+                               capabilities=frozenset({'session-authority-v1'}))
+    seen = {}
+    _discover(monkeypatch, endpoint, seen)
+    minted = {}
+
+    def fake_ticket(home, ep, *, purpose='interactive', scope=None, subject=None):
+        from hermes_cli.gateway_runtime import control_home_for
+        minted['socket_home'] = control_home_for(home, ep)
+        minted['profile_id'] = ep.profile_id
+        raise GatewayClientError('stop_after_mint')
+
+    monkeypatch.setattr('hermes_cli.gateway_client._session_ticket', fake_ticket)
+    actor = SimpleNamespace(subject='auth:v1:["basic","","alice"]')
+    with pytest.raises(GatewayClientError):
+        await web_server_sessions._mutate_via_gateway_owner('work', actor, dict(
+            session_id='s', request_id='r', expected_revision=0, operation='sidebar', payload={}))
+    assert seen['home'] == work
+    assert minted == {'socket_home': work, 'profile_id': str(work)}
+
+
+@pytest.mark.asyncio
+async def test_a_multiplexed_profile_keeps_the_multiplexers_socket(tmp_path, monkeypatch):
+    """A secondary served by the default multiplexer has no socket of its own: its discovered
+    ``control_home`` (the multiplexer root) stays the ticket socket."""
+    from hermes_cli import web_server_sessions
+    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_cli.gateway_runtime import GatewayEndpoint
+
+    root = tmp_path / 'root'
+    work = root / 'profiles' / 'work'
+    work.mkdir(parents=True)
+    monkeypatch.setattr('hermes_cli.web_server_cron._cron_profile_home', lambda name: (name, work))
+    endpoint = GatewayEndpoint(profile_id=str(work), instance_id='i-root', authority_epoch=1,
+                               runtime_protocol=1, api_origin='http://127.0.0.1:1', supervisor='none',
+                               capabilities=frozenset({'session-authority-v1'}), control_home=str(root))
+    _discover(monkeypatch, endpoint)
+    minted = {}
+
+    def fake_ticket(home, ep, *, purpose='interactive', scope=None, subject=None):
+        from hermes_cli.gateway_runtime import control_home_for
+        minted['socket_home'] = control_home_for(home, ep)
+        raise GatewayClientError('stop_after_mint')
+
+    monkeypatch.setattr('hermes_cli.gateway_client._session_ticket', fake_ticket)
+    with pytest.raises(GatewayClientError):
+        await web_server_sessions._mutate_via_gateway_owner('work', SimpleNamespace(subject='x'), dict(
+            session_id='s', request_id='r', expected_revision=0, operation='sidebar', payload={}))
+    assert minted['socket_home'] == root
