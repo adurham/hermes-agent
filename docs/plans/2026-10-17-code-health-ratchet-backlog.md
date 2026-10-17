@@ -2458,3 +2458,18 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   Left: `rich_sent_store.lookup` (sync, called from the async event builder) is another module's
   API, not this unit. `python scripts/check` green. Branch
   `claude/fix-whatsapp-cloud-async-rules-4zw8mf`. Next: C-0017 (`gateway/platforms/signal.py`, fork-only).
+- 2026-10-17 — C-1046 `plugins/platforms/line/adapter.py` (async): ASYNC240×6 + RUF006×1 → 0 (BLE001
+  15 → 15, in place and in order; file 996 → 1014 lines). `_handle_media`'s `is_file` and both
+  HERMES_HOME `resolve()`s now run via `await asyncio.to_thread(...)` (the `except Exception` fallback
+  stays inline), and the request-path resolve + allowed-roots check moved to the sync helper
+  `_resolve_in_media_roots` (one hop). `send_video`'s preview `is_file` is off-loop too. The DM
+  typing-indicator task is now held in `_background_tasks` with a discard callback (`loading()`
+  already swallows its errors). Unflagged siblings fixed: the three `_check_media_file` preflights
+  (`is_file` + `stat`) run via `to_thread`, and the fallback-PNG temp write is `_write_fallback_preview`
+  run via `to_thread` (unlink-on-failure kept on both sides). Left: `_register_media` / `_serve_file`
+  still `resolve()` on the loop — they mutate the token table and evict temp files, so moving them to
+  a worker thread would race the loop. 7 LINE-touching test files: 148 passed, 2 skipped; old-vs-new
+  differential (184 cases: serve 200/403/404/410 incl. symlink-out and HERMES_HOME failure, send
+  image/voice/video × connected/public-URL × 8 paths, preview write failure): only difference is the
+  tracked loading task. `python scripts/check` green, 12 checks. Branch
+  `claude/async-adapter-ratchet-k716n8`.
