@@ -179,11 +179,11 @@ class GatewayProcessView:
         try:
             if action == "steer":
                 result = self.connection.call("subagent.steer", session_id=self.session_id,
-                                              subagent_id=subagent_id, text=message) or {}
+                                              subagent_id=subagent_id, text=message, timeout=5) or {}
                 ok = result.get("status") == "queued"
             else:
                 result = self.connection.call("subagent.interrupt", session_id=self.session_id,
-                                              subagent_id=subagent_id) or {}
+                                              subagent_id=subagent_id, timeout=5) or {}
                 ok = bool(result.get("found"))
         except GatewayClientError as exc:
             return {"error": str(exc)}

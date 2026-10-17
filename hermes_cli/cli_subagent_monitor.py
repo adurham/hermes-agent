@@ -469,7 +469,9 @@ def open_monitor(cli):
     async def run():
         try:
             async with in_terminal():
-                monitor.refresh()
+                # Paint the roster the dock's tick already holds; refreshing here would block the UI
+                # loop on the gateway's subagent.list. The spinner thread's next tick re-reads it.
+                monitor._last_poll = 0
                 monitor.app = build_monitor_application(monitor)
                 await monitor.app.run_async()
         finally:
