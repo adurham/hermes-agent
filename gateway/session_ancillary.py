@@ -202,9 +202,11 @@ async def read(connection, ref, params, *, kind):
     authorize(connection, ref, params, 'session:read')
     live = authority.sessions[ref.session_id]
     with live.event_stream.lock:
-        _require_current_route(authority, ref)
         if kind == 'control':
+            # Persisted per session id, never the route's live objects: readable after a messaging
+            # route moved on to another conversation.
             return {'control': control_snapshot(authority, ref)}
+        _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
         if kind == 'subagents':
             return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
