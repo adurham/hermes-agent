@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # Browser and CDP results can be a page-controlled JSON tree. The walkers stop
 # at this depth and replace the remainder, so a nested payload cannot raise
 # RecursionError on the way to the model.
-REDACT_WALK_MAX_DEPTH = 100
+REDACT_WALK_MAX_DEPTH = 320
 REDACT_WALK_DEPTH_MARKER = "[redacted: nesting limit]"
 
 # ---------------------------------------------------------------------------

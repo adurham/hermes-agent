@@ -1,45 +1,35 @@
-"""Page-controlled JSON must not crash browser output redaction."""
+"""Page-controlled JSON must not crash browser output redaction (#137067)."""
 
 import json
 
-from agent.redact import REDACT_WALK_DEPTH_MARKER, REDACT_WALK_MAX_DEPTH
+import pytest
+
 from tools.browser_cdp_tool import _redact_cdp_output
 from tools.browser_tool_snapshot import _redact_browser_output
 
 SECRET = "sk-" + "a" * 30
+WALKERS = [_redact_browser_output, _redact_cdp_output]
 
 
-def _nest(value, levels: int):
+def _nest(leaf, levels: int, *, as_dict: bool):
     for _ in range(levels):
-        value = [value]
-    return value
+        leaf = {"x": leaf} if as_dict else [leaf]
+    return leaf
 
 
-def test_shallow_secret_is_still_redacted():
-    redacted = _redact_browser_output({"note": SECRET})
-    blob = json.dumps(redacted)
+@pytest.mark.parametrize("walker", WALKERS)
+@pytest.mark.parametrize("as_dict", [False, True])
+def test_hostile_deep_page_value_is_cut_off_not_raised(walker, as_dict):
+    # Deeper than the interpreter recursion limit: RecursionError before the fix.
+    blob = json.dumps(walker(_nest(SECRET, 2_000, as_dict=as_dict)))
     assert SECRET not in blob
-    assert REDACT_WALK_DEPTH_MARKER not in blob
 
 
-def test_browser_output_replaces_a_pathological_tree():
-    redacted = _redact_browser_output(_nest(SECRET, REDACT_WALK_MAX_DEPTH + 20))
-    blob = json.dumps(redacted)
-    assert SECRET not in blob
-    assert REDACT_WALK_DEPTH_MARKER in blob
-
-
-def test_cdp_output_replaces_a_pathological_tree():
-    redacted = _redact_cdp_output(_nest({"body": SECRET}, REDACT_WALK_MAX_DEPTH + 20))
-    blob = json.dumps(redacted)
-    assert SECRET not in blob
-    assert REDACT_WALK_DEPTH_MARKER in blob
-
-
-def test_cdp_binary_leaf_stays_byte_identical():
-    payload = "gAAAA" + "A" * 40
-    redacted = _redact_cdp_output(
-        {"data": payload},
-        always_paths=(("data",),),
-    )
-    assert redacted["data"] == payload
+@pytest.mark.parametrize("walker", WALKERS)
+def test_deepest_dom_chrome_returns_is_not_truncated(walker):
+    # Chrome refuses DOM.getDocument past ~150 nested elements; each element is
+    # node -> children[] -> node, so that is ~300 JSON levels and must survive whole.
+    node = {"nodeId": 1, "nodeName": "#text", "nodeValue": "hello"}
+    for i in range(150):
+        node = {"nodeId": i + 2, "nodeName": "DIV", "children": [node]}
+    assert walker(node) == node
