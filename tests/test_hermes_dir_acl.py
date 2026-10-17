@@ -277,3 +277,71 @@ def test_media_release_then_recapture_grants_the_recreated_digest_dir(tmp_path, 
     finally:
         db.close()
     assert grants.count(directory) == 2
+
+
+def test_repairing_an_existing_dir_also_grants_what_is_already_inside_it(tmp_path, monkeypatch):
+    """Review #140490 (pastels minor 1): the pywin32 write (SetKernelObjectSecurity) does not
+    propagate, so an old token lock already inside a dir an earlier elevated run left stayed
+    Administrators-only after make_user_dir repaired the dir. A write on the dir now walks its
+    existing children (never through a link); an already-granted dir (no write) walks nothing."""
+    home = tmp_path / "home"
+    locks = home / "gateway-locks"
+    (locks / "old").mkdir(parents=True)
+    (locks / "telegram-bot-token-x.lock").write_text("{}")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (locks / "jn").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(hermes_dir_acl, "_granted", set())
+    writes = []
+
+    def native(path, is_dir, expected=None):
+        writes.append((Path(path), expected))
+        return True  # the DACL lacked the ACE: written, not propagated
+
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", native)
+    hermes_dir_acl.make_user_dir(locks, parents=True, exist_ok=True, elevated=True)
+    touched = sorted(p.relative_to(home).as_posix() for p, _ in writes)
+    assert touched == ["gateway-locks", "gateway-locks/old", "gateway-locks/telegram-bot-token-x.lock"]
+    assert all(expected == os.path.join(os.path.realpath(home), *p.relative_to(home).parts) for p, expected in writes)
+
+    writes.clear()
+    monkeypatch.setattr(hermes_dir_acl, "_granted", set())
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", lambda p, *_a, **_k: writes.append(p) and False)
+    hermes_dir_acl.make_user_dir(locks, exist_ok=True, elevated=True)
+    assert writes == [locks]  # already granted: no write, so no child walk
+
+
+def test_icacls_tree_fallback_walks_the_tree_once(tmp_path, monkeypatch):
+    """Review #140490 (pastels minor 2): without pywin32 the tree repair re-walked the whole subtree
+    of every directory it granted (quadratic). One walk now decides which directories hold a link;
+    those are skipped as before, and every other entry gets its own icacls call (propagation alone
+    misses children whose DACL is protected, which is exactly what mkdir(0o700) makes on 3.13+)."""
+    home = tmp_path / "home"
+    for d in ("a/b/c", "dirty/sub"):
+        (home / d).mkdir(parents=True)
+    for f in ("a/f1", "a/b/f2", "a/b/c/f3", "dirty/f4", "dirty/sub/f5"):
+        (home / f).write_text("x")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "dirty" / "jn").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", _no_pywin32)
+    monkeypatch.setattr(hermes_dir_acl, "_whoami_sid", lambda: "S-1-5-21-1-2-3-1001")
+    calls = []
+    monkeypatch.setattr(hermes_dir_acl.subprocess, "run", lambda argv, **_k: calls.append(Path(argv[1])))
+    walks = []
+    real_iter = hermes_dir_acl.iter_tree_without_reparse_points
+    monkeypatch.setattr(hermes_dir_acl, "iter_tree_without_reparse_points",
+                        lambda root, skipped: walks.append(root) or real_iter(root, skipped))
+
+    granted, skipped, failed = hermes_dir_acl.grant_tree_user_access(home, elevated=True)
+
+    assert walks == [home], "one walk, not one per directory"
+    clean = ["a", "a/b", "a/b/c", "a/b/c/f3", "a/b/f2", "a/f1", "dirty/f4", "dirty/sub", "dirty/sub/f5"]
+    assert sorted(p.relative_to(home).as_posix() for p in calls) == clean
+    assert sorted(p.relative_to(tmp_path).as_posix() for p in skipped) == ["home", "home/dirty", "home/dirty/jn"]
+    assert failed == [] and granted == len(clean)
+
+
+def _no_pywin32(*_a, **_k):
+    raise ImportError("pywin32 missing")

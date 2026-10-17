@@ -13,7 +13,8 @@ or in a non-elevated process, it is exactly ``Path.mkdir``. In an elevated Windo
 an explicit, inheriting full-control ACE for the token's user SID to the directory, so the directory
 and every child created later stay usable by that user after elevation ends. An elevated call on an
 existing directory re-grants the same ACE, which repairs a directory an earlier elevated run left
-behind. A non-elevated process cannot change such a DACL; callers that hit one report it once with
+behind; the pywin32 write does not propagate, so when it had to write, the entries already inside
+(an old token lock) are granted too, once, never through a link. A non-elevated process cannot change such a DACL; callers that hit one report it once with
 :func:`unusable_dir_remedy`.
 
 An elevated grant never goes through a junction, symlink or other reparse point (nor a hard-linked
@@ -102,7 +103,9 @@ def _strip_win32_prefix(path: str) -> str:
     return path.removeprefix("\\\\?\\")
 
 
-def _grant_with_pywin32(path: Path, is_dir: bool, expected: str | None = None) -> None:
+def _grant_with_pywin32(path: Path, is_dir: bool, expected: str | None = None) -> bool:
+    """Write the ACE on the handle; True when it was written (False: already present). The write
+    does NOT propagate (``SetKernelObjectSecurity``), so a written dir's existing children are owed."""
     import ntsecuritycon
     import win32api
     import win32file
@@ -136,13 +139,14 @@ def _grant_with_pywin32(path: Path, is_dir: bool, expected: str | None = None) -
                 if (ace_type == win32security.ACCESS_ALLOWED_ACE_TYPE and sid == user_sid
                         and mask & ntsecuritycon.FILE_ALL_ACCESS == ntsecuritycon.FILE_ALL_ACCESS
                         and flags & inherit == inherit and not flags & win32security.INHERIT_ONLY_ACE):
-                    return  # already granted: never grow the DACL on repeat calls
+                    return False  # already granted: never grow the DACL on repeat calls
         else:
             dacl = win32security.ACL()
         dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION_DS, inherit, ntsecuritycon.FILE_ALL_ACCESS, user_sid)
         descriptor.SetSecurityDescriptorDacl(True, dacl, False)
         # The handle form of SetFileSecurity: same semantics (no propagation walk), no name resolution.
         win32security.SetKernelObjectSecurity(handle, win32security.DACL_SECURITY_INFORMATION, descriptor)
+        return True
     finally:
         handle.Close()
 
@@ -157,13 +161,17 @@ def _whoami_sid() -> str:
     return sid
 
 
-def _grant_with_icacls(path: Path, is_dir: bool, expected: str | None = None) -> None:
+def _grant_with_icacls(path: Path, is_dir: bool, expected: str | None = None,
+                       subtree_has_link: bool | None = None) -> None:
+    """*subtree_has_link*: the caller's own walk already answered it (None: walk here)."""
     if expected is None:
         # icacls opens by name, so nothing pins the object between the checks and the write. Inside
         # the home the components were lstat-checked against a known root; with no expected root
         # (off-home, or a path whose home provenance was lost) there is nothing to check: refuse.
         raise ReparsePointRefused(f"{path} has no trusted root to check (icacls fallback, no pywin32)")
-    if is_dir:
+    if is_dir and subtree_has_link:
+        raise ReparsePointRefused(f"{path} holds a junction, symlink or hard link (icacls fallback)")
+    if is_dir and subtree_has_link is None:
         # icacls applies an inheritable ACE through SetNamedSecurityInfo, which also propagates it
         # down the existing subtree; refuse when that subtree holds a link it could descend into.
         # Walk the WHOLE subtree before judging: the generator appends a link it meets after its
@@ -191,16 +199,21 @@ def _hard_linked_file(path: Path) -> bool:
     return not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1
 
 
-def _grant(path: Path, is_dir: bool = True, expected: str | None = None) -> None:
+def _grant(path: Path, is_dir: bool = True, expected: str | None = None,
+           subtree_has_link: bool | None = None) -> bool:
     """Grant the token's user full control on *path* itself; raise :class:`ReparsePointRefused`
     for a reparse point or hard-linked file (or, with *expected*, a handle that resolves anywhere
-    else) and anything else on failure."""
+    else) and anything else on failure.
+
+    Returns True when the existing children are still owed: the pywin32 write does not propagate,
+    while the icacls fallback (``SetNamedSecurityInfo``) does, and refuses a dir holding a link."""
     if is_reparse_point(path) or _hard_linked_file(path):
         raise ReparsePointRefused(f"{path} is a junction, symlink, other reparse point or hard link")
     try:
-        _grant_with_pywin32(path, is_dir, expected)
+        return _grant_with_pywin32(path, is_dir, expected) and is_dir
     except ImportError:
-        _grant_with_icacls(path, is_dir, expected)
+        _grant_with_icacls(path, is_dir, expected, subtree_has_link)
+        return False
 
 
 def _components_below_home(path: Path) -> list[Path]:
@@ -238,12 +251,16 @@ def _elevated(elevated: bool | None) -> bool:
     return process_is_elevated() if elevated is None else elevated
 
 
-def grant_user_access(path: str | Path, *, elevated: bool | None = None) -> bool:
+def grant_user_access(path: str | Path, *, elevated: bool | None = None, repair_children: bool = False) -> bool:
     """Give the token's user an inheriting full-control ACE on *path* when this process is elevated.
 
     True when a grant was attempted and did not fail; False off Windows, when not elevated, when
     *path* is a junction/symlink/reparse point (refused, one warning), or when the grant failed
-    (logged; the directory itself still exists). *elevated* defaults to the probed host fact."""
+    (logged; the directory itself still exists). *elevated* defaults to the probed host fact.
+
+    With *repair_children* (an existing dir an earlier elevated run may have filled), a write that
+    does not propagate is followed by the same grant on everything already below *path*, never
+    through a link; children are best-effort and never change the result."""
     if not _elevated(elevated):
         return False
     target = Path(path)
@@ -251,7 +268,8 @@ def grant_user_access(path: str | Path, *, elevated: bool | None = None) -> bool
         for component in _components_below_home(target):
             if is_reparse_point(component):
                 raise ReparsePointRefused(f"{component} is a junction, symlink or other reparse point")
-        _grant(target, expected=_expected_final(target))
+        expected = _expected_final(target)
+        children_owed = _grant(target, expected=expected)
     except ReparsePointRefused as exc:
         _warn_refused(target, exc)
         return False
@@ -260,6 +278,14 @@ def grant_user_access(path: str | Path, *, elevated: bool | None = None) -> bool
                     "non-elevated Hermes may not be able to use it. To repair, from an elevated prompt run: "
                     'icacls "%s" /reset /t', target, exc, target)
         return False
+    if repair_children and children_owed:
+        real = expected or os.path.realpath(target)
+        skipped: list[Path] = []
+        entries = [(p, d) for p, d in iter_tree_without_reparse_points(target, skipped) if p != target]
+        _, _, failed = _grant_entries(target, real, entries, skipped)
+        if failed:
+            log.debug("Granting the existing entries under %s failed for %d, e.g. %s: %s",
+                      target, len(failed), *failed[0])
     return True
 
 
@@ -306,21 +332,39 @@ def grant_tree_user_access(root: str | Path, *, pin_root: bool = False,
     if not _elevated(elevated):
         return 0, [], []
     root = Path(os.path.realpath(root) if pin_root else os.path.abspath(root))
-    real_root = os.path.realpath(root)
-    granted, skipped, failed = 0, [], []
-    for path, is_dir in iter_tree_without_reparse_points(root, skipped):
+    skipped: list[Path] = []
+    entries = list(iter_tree_without_reparse_points(root, skipped))
+    granted, skipped, failed = _grant_entries(root, os.path.realpath(root), entries, skipped)
+    if skipped:
+        log.warning("Elevated ACL repair skipped %d junction/symlink/hard-link entr%s under %s (never "
+                    "granted through): %s", len(skipped), "y" if len(skipped) == 1 else "ies", root,
+                    ", ".join(str(p) for p in skipped[:5]) + (" ..." if len(skipped) > 5 else ""))
+    return granted, skipped, failed
+
+
+def _grant_entries(root: Path, real_root: str, entries: list[tuple[Path, bool]],
+                   skipped: list[Path]) -> tuple[int, list[Path], list[tuple[Path, str]]]:
+    """Grant each walked entry on its own (the pywin32 write does not propagate). The ONE walk
+    that produced *entries* and *skipped* also decides which dirs hold a link, so the icacls
+    fallback never re-walks a subtree per directory (it refuses exactly those dirs, as before)."""
+    linked = {root, *skipped}  # a skipped link, or the root itself when it was skipped
+    linked.update(p for p, is_dir in entries if not is_dir and _hard_linked_file(p))
+    holds_link: set[Path] = set()
+    for bad in linked - {root}:
+        holds_link.update(parent for parent in bad.parents if parent == root or root in parent.parents)
+    if root in skipped:
+        holds_link.add(root)
+    granted, failed = 0, []
+    for path, is_dir in entries:
         try:
-            _grant(path, is_dir, os.path.join(real_root, *path.relative_to(root).parts))
+            _grant(path, is_dir, os.path.join(real_root, *path.relative_to(root).parts),
+                   subtree_has_link=is_dir and path in holds_link)
         except ReparsePointRefused:
             skipped.append(path)
         except Exception as exc:  # health: allow BLE001 -- pywintypes.error is not an OSError; keep going like /C
             failed.append((path, str(exc) or type(exc).__name__))
         else:
             granted += 1
-    if skipped:
-        log.warning("Elevated ACL repair skipped %d junction/symlink/hard-link entr%s under %s (never "
-                    "granted through): %s", len(skipped), "y" if len(skipped) == 1 else "ies", root,
-                    ", ".join(str(p) for p in skipped[:5]) + (" ..." if len(skipped) > 5 else ""))
     return granted, skipped, failed
 
 
@@ -385,7 +429,7 @@ def _grant_dirs(target: Path, to_grant: list[Path], fresh: set[Path] = frozenset
         key = _identity(directory)
         if key is None or (directory not in fresh and key in _granted):
             continue
-        if grant_user_access(directory, elevated=True):
+        if grant_user_access(directory, elevated=True, repair_children=directory not in fresh):
             _granted.add(key)
 
 

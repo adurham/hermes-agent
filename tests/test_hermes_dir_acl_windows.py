@@ -185,6 +185,30 @@ def test_elevated_rerun_repairs_a_dir_an_earlier_elevated_run_left(reporters_par
     assert after["usable"] is True, acl
 
 
+def test_elevated_repair_also_reaches_an_old_lock_already_inside_the_dir(reporters_parent):
+    """Review #140490: the pywin32 write does not propagate, so a token lock an earlier elevated run
+    left INSIDE the dir kept the reporters' DACL after the dir itself was repaired."""
+    from hermes_dir_acl import make_user_dir
+
+    left = reporters_parent / "gateway-locks"
+    left.mkdir()
+    old = left / "telegram-bot-token-x.lock"
+    old.write_text("{}")  # inherits SYSTEM + Administrators only
+    _require_faithful_probe(reporters_parent, left)
+    make_user_dir(left, parents=True, exist_ok=True)
+    after = _child("""
+        try:
+            with open(sys.argv[1], "r+", encoding="utf-8") as handle:
+                handle.write("{}")
+            ok = True
+        except PermissionError:
+            ok = False
+        print(json.dumps({"old_lock_writable": ok}))
+    """, str(old))
+    acl = subprocess.run(["icacls", str(old)], capture_output=True, text=True, check=True).stdout
+    assert after["old_lock_writable"] is True, acl
+
+
 def test_token_lock_on_an_unusable_lock_dir_parks_with_one_named_warning(tmp_path):
     """W2: the gateway meets a ``gateway-locks`` it may not create in.
 
