@@ -377,9 +377,9 @@ class SessionAuthority:
             if waiter is not None and not waiter.done():
                 waiter.set_exception(RuntimeStoreError(reason))
 
-    async def admit_automation(self, adapter, event, identity):
+    async def admit_automation(self, adapter, event, identity, replaces=None):
         from gateway.session_automation import admit_automation
-        return await admit_automation(self, adapter, event, identity)
+        return await admit_automation(self, adapter, event, identity, replaces)
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
@@ -402,14 +402,20 @@ class SessionAuthority:
                                source.thread_id, source.user_id], separators=(',', ':'))
         request_id = str(payload['native_text_v1']['event']['message_id'] or uuid.uuid4().hex)
         committed = [ref]  # the row's target: the write may retarget a rotated-away reservation
+        # A /retry re-send carries its transcript rewrite: it commits in this admission's own write.
+        from gateway import session_retry_admission
+        rewrite = session_retry_admission.take(event, self.db)
 
         def admitted(row):
             committed[0] = SessionRef(self.profile_id, row.get('target_session_id') or ref.session_id)
+            if rewrite is not None and rewrite.applied:
+                rewrite.on_commit()
             return self._admitted(committed[0], event, row)
         native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
-            request_id=request_id, payload=payload, authorize=self._admission_gate(),
+            request_id=request_id, payload=payload,
+            authorize=session_retry_admission.compose(rewrite, self._admission_gate()),
             raw=getattr(event, 'raw_message', None)),
             then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]))
 
