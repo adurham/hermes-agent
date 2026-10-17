@@ -320,9 +320,12 @@ class GatewayACPAgent(acp.Agent):
                 await task
         if connection is not None:
             await connection.__aexit__(None, None, None)
-        # Partial reply segments belonged to admissions whose waiters already failed.
+        # Partial reply segments belonged to admissions whose waiters already failed. A reply cut off here
+        # never gets its ``message.complete`` (re-attach starts at the owner's current sequence), so its
+        # ``messageId`` closes too: the next reply must not reuse it.
         self._streamed.clear()
         self._segments.clear()
+        self._message_ids.clear()
         async with self._changed:
             # Every waiter on the old transport wakes to its ambiguous failure, even one that had
             # not yet observed ``_failure`` before it is cleared here.
@@ -727,9 +730,7 @@ class GatewayACPAgent(acp.Agent):
         try:
             outcome = {"interrupted": "cancelled"}.get(receipt.get("outcome"), receipt.get("outcome"))
             text = (saved.get("result") or {}).get("final_response") or ""
-            remainder = self._final_remainder(admission_id, {"text": text, "outcome": outcome})
-            if remainder and self._conn:
-                await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(remainder))
+            await self._finish_reply(session_id, held_id, admission_id, {"text": text, "outcome": outcome})
             async with self._changed:
                 self._terminals[admission_id] = {"outcome": outcome}
                 self._changed.notify_all()
@@ -836,13 +837,7 @@ class GatewayACPAgent(acp.Agent):
                 return
             self._settling.add(aid)
             try:
-                remainder = self._final_remainder(aid, payload)
-                if remainder and self._conn:
-                    await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, remainder))
-                # The turn is over: its reply's id closes, and a tool call it left open (blocked by a guard,
-                # an approval denied) ends ``failed``, as the in-process agent flushed them at turn end.
-                self._end_message(sid)
-                await self._flush_open_tools(sid, editor_id, aid)
+                await self._finish_reply(sid, editor_id, aid, payload)
                 async with self._changed:
                     self._terminals[aid] = payload
                     if len(self._terminals) > 256:
@@ -876,6 +871,16 @@ class GatewayACPAgent(acp.Agent):
             await self._conn.session_update(session_id=editor_id, update=build_tool_complete(
                 call_id, name, result=result if isinstance(result, str) else None, function_args=args,
                 is_error=payload.get("is_error") is True))
+
+    async def _finish_reply(self, sid, editor_id, aid, payload):
+        """Show the settled reply's unseen remainder, then end the turn: its reply's id closes, and a tool
+        call it left open (blocked by a guard, an approval denied) ends ``failed``, as the in-process agent
+        flushed them at turn end. Shared by ``message.complete`` and a retry's terminal receipt."""
+        remainder = self._final_remainder(aid, payload)
+        if remainder and self._conn:
+            await self._conn.session_update(session_id=editor_id, update=self._chunk(sid, remainder))
+        self._end_message(sid)
+        await self._flush_open_tools(sid, editor_id, aid)
 
     async def _flush_open_tools(self, sid, editor_id, aid):
         """Close every call admission *aid* started and never completed (``failed``: it produced no result)."""

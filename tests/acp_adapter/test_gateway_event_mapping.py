@@ -135,3 +135,33 @@ async def test_assistant_chunks_carry_a_message_id_that_changes_at_each_new_mess
     assert all(uuid.UUID(i) for i in ids)
     # think + 'Let me look.' | 'It says ' + remainder 'x.' | next turn
     assert ids[0] == ids[1] != ids[2] == ids[3] != ids[4], ids
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_never_reuses_the_open_reply_id():
+    """A reply cut off by a lost connection never receives its ``message.complete`` (the re-attach starts at
+    the owner's current sequence), so the next reply must still open a new ``messageId``."""
+    editor = agent()
+    await project(editor, 'message.delta', {'text': 'half a reply'})
+    await editor._teardown()
+    await project(editor, 'message.delta', {'text': 'the next reply'}, aid='b')
+    first, second = (u.message_id for u in updates(editor))
+    assert first != second
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_receipt_finishes_the_reply_like_message_complete():
+    """A retry whose turn already settled is reported from its receipt: that remainder carries the
+    ``messageId``, closes it, and fails the turn's still-open tool calls, as ``message.complete`` does."""
+    editor = agent()
+    await project(editor, 'message.delta', {'text': 'Look'})
+    await project(editor, 'tool.start', {'tool_call_id': 'c1', 'tool_name': 'terminal', 'args': {}})
+    editor._gateway.rpc.return_value = {'result': {'final_response': 'Done.'}}
+    await editor._settled_receipt(editor._gateway, 's', 's', {'admission_id': 'a', 'outcome': 'completed'})
+    await project(editor, 'message.delta', {'text': 'next'}, aid='b')
+    sent = updates(editor)
+    chunks = [u for u in sent if u.session_update == 'agent_message_chunk']
+    assert [c.content.text for c in chunks] == ['Look', 'Done.', 'next']
+    assert chunks[1].message_id and chunks[1].message_id != chunks[2].message_id
+    closed = [u for u in sent if u.session_update == 'tool_call_update']
+    assert [(u.tool_call_id, u.status) for u in closed] == [('c1', 'failed')]
