@@ -58,6 +58,11 @@ class TurnRetryState:
     auto_recovery_failure_fingerprint: Optional[tuple] = None
     auto_recovery_identical_failures: int = 0
     auto_recovery_identical_failure_at: float = 0.0
+    # Streamed-progress (chars) of the most recent failed attempt. The breaker counts a failure as
+    # "identical" unless the attempt streamed STRICTLY FURTHER than the one before it -- a
+    # deterministic mid-stream kill reproduces the same partial output every retry, so "any token
+    # received" alone would let that crash loop ride the whole ladder (review finding 2026-10-17).
+    auto_recovery_last_attempt_progress_chars: int = 0
 
     # Restart signals (read by the outer loop after the attempt)
     restart_with_compressed_messages: bool = False

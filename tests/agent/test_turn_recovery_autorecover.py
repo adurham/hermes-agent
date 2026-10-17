@@ -174,14 +174,13 @@ def _classified(reason):
     return SimpleNamespace(reason=reason)
 
 
-def test_failure_fingerprint_names_provider_endpoint_model_class_and_progress():
-    """The fingerprint is (provider, base_url, model, normalized error class, received_token)."""
+def test_failure_fingerprint_names_provider_endpoint_model_and_class():
+    """The fingerprint is (provider, base_url, model, normalized error class); progress is compared
+    separately between attempts, not encoded here."""
     from agent.error_classifier import FailoverReason
     agent = _Agent()
-    quiet = failure_fingerprint(agent, _classified(FailoverReason.server_error), received_token=False)
-    assert quiet == ("custom", "http://x", "m", "server_error", False)
-    progressed = failure_fingerprint(agent, _classified(FailoverReason.server_error), received_token=True)
-    assert progressed[-1] is True and progressed[:4] == quiet[:4]
+    fp = failure_fingerprint(agent, _classified(FailoverReason.server_error))
+    assert fp == ("custom", "http://x", "m", "server_error")
 
 
 def test_note_recovery_failure_counts_consecutive_identical_and_resets_on_class_or_window():
@@ -201,19 +200,21 @@ def test_note_recovery_failure_counts_consecutive_identical_and_resets_on_class_
     assert note_recovery_failure(agent, server, retry2, now=5001.0 + 1801.0) == 2
 
 
-def test_note_recovery_failure_ignores_attempts_that_received_tokens():
+def test_note_recovery_failure_counts_stalled_midstream_kills_and_resets_on_real_progress():
+    """Progress means STRICTLY MORE streamed than the previous attempt. A mid-stream kill that
+    reproduces the same partial output every time (the 2026-10-17 crash loop) still counts."""
     from agent.error_classifier import FailoverReason
     agent = _Agent()
     server = _classified(FailoverReason.server_error)
     retry = TurnRetryState()
-    agent._last_api_first_chunk_at = 42.0  # any chunk arrived this attempt
-    assert note_recovery_failure(agent, server, retry, now=10.0) == 0
-    assert note_recovery_failure(agent, server, retry, now=11.0) == 0
-    assert retry.auto_recovery_failure_fingerprint is None
-    # Visible streamed text is progress too.
-    agent._last_api_first_chunk_at = None
+    agent._last_api_first_chunk_at = 42.0  # some data arrived, first attempt
+    assert note_recovery_failure(agent, server, retry, now=10.0) == 0  # 1 > 0 = progress
+    assert note_recovery_failure(agent, server, retry, now=11.0) == 1  # 1 == 1 = stalled
+    assert note_recovery_failure(agent, server, retry, now=12.0) == 2  # still stalled
+    # Strictly more visible text than the previous attempt is real progress -> full reset.
     agent._current_streamed_assistant_text = "half an answer"
-    assert note_recovery_failure(agent, server, retry, now=12.0) == 0
+    assert note_recovery_failure(agent, server, retry, now=13.0) == 0
+    assert retry.auto_recovery_failure_fingerprint is None
 
 
 def test_identical_failure_limit_reached_respects_config_and_zero_disables():
@@ -255,14 +256,31 @@ def test_breaker_stops_ladder_and_surfaces_crash_loop_after_identical_failures()
     assert any("crash-looping" in s for s in agent.statuses)
 
 
-def test_breaker_never_trips_when_an_attempt_received_tokens():
+def test_breaker_never_trips_while_attempts_keep_making_strict_progress():
     agent = _Agent()
-    agent._last_api_first_chunk_at = 1.0  # every attempt streamed a chunk then died
+    agent._last_api_first_chunk_at = 1.0
     retry = TurnRetryState(primary_recovery_attempted=True)
-    for _ in range(6):
+    for n in (50, 120, 300, 640, 1200, 2200):  # each attempt streams FURTHER than the last
+        agent._current_streamed_assistant_text = "x" * n
         _settle(agent, _Err(502, "down"), retry=retry)
     assert all("crash-looping" not in s for s in agent.statuses)
     assert retry.auto_recovery_identical_failures == 0
+
+
+def test_breaker_trips_on_identical_midstream_kills():
+    """Same provider/class, each attempt dying at the SAME streamed point -> crash loop, not
+    progress (the incident shape: deterministic degeneration killed mid-generation every time)."""
+    agent = _Agent()
+    retry = TurnRetryState(primary_recovery_attempted=True)
+    actions = []
+    for _ in range(3):
+        agent._last_api_first_chunk_at = 1.0
+        agent._current_streamed_assistant_text = ""  # same (near-zero) partial every attempt
+        settled, retry = _settle(agent, _Err(502, "Runner shutdown before completing command"), retry=retry)
+        actions.append(settled.action)
+    assert actions[0] == "continue"
+    assert actions[-1] == "return"
+    assert retry.auto_recovery_identical_failures >= 2
 
 
 def test_breaker_never_trips_when_error_classes_differ():
