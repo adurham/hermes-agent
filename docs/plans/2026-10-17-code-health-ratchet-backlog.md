@@ -2484,3 +2484,16 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   differential over 23 cases (local send / batch `file://` / standalone media grid × existing,
   missing, directory, empty, %-encoded): 0 mismatches. `python scripts/check` green. Branch
   `claude/code-health-c-1050-async-9qggr3`.
+- 2026-10-17 — C-1052 `plugins/platforms/photon/adapter.py` async: HX008×3 → 0, RUF006×1 → 0.
+  `connect`, `_start_sidecar` and `_supervise_sidecar` (all coroutines) use
+  `asyncio.get_running_loop()`; `_dispatch_fatal_notification` now holds the detached notifier in
+  the base adapter's `_detached_fatal_tasks` set (discarded on completion) — not
+  `_background_tasks`, which `cancel_background_tasks()` would cancel mid-handoff. Its exception was
+  already handled by `_notify_fatal_error_logged`. Real latent bug: a notifier parked on an
+  otherwise-unreferenced future was garbage-collected mid-handoff ("Task was destroyed but it is
+  pending"); new `test_inflight_notification_is_strongly_referenced` in
+  `tests/plugins/platforms/photon/test_fatal_notify_self_cancel.py` is red on base, green now.
+  The 15 swallow hits (C-1104) untouched, in place. 41 test files (all photon tests + every test
+  naming photon + the queue row's files): 949 passed, 0 failed, 32 skipped. `python scripts/check`
+  green, 12 checks. Branch `claude/code-health-c1052-adapter-1fv0ye`. Next: next open fork-only or
+  diverged Queue C unit.
