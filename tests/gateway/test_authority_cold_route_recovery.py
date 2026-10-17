@@ -257,3 +257,140 @@ async def test_a_draining_gateway_mounts_nothing(tmp_path):
     with pytest.raises(RuntimeStoreError, match='runtime_draining'):
         cold.authority.authorize(cold.actor, _ref('lane-drain'), 'session:read')
     assert 'lane-drain' not in cold.authority.sessions
+
+
+async def _superseded(tmp_path):
+    """``old`` was the lane's conversation; ``/new`` moved the lane on to a successor."""
+    _seed(tmp_path, 'old', _source(chat_name='from-row'))
+    cold = await _cold(tmp_path)
+    successor = cold.store.get_or_create_session(_source(), force_new=True)
+    assert successor.session_id != 'old'
+    return cold, successor
+
+
+@pytest.mark.asyncio
+async def test_a_row_its_route_moved_past_is_read_only(tmp_path):
+    """#140183 review F2: the old row's only route is the lane's CURRENT key, so a Stop, an agent
+    lookup or a turn on it reached the successor conversation. One gateway owns every session and
+    never crosses them: the historic row reads (its own transcript) and refuses every write by name."""
+    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_contract import Principal, Submission
+    cold, _successor = await _superseded(tmp_path)
+    cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
+    caps = frozenset({'session:read', 'session:submit', 'session:control', 'session:approve',
+                      'session:respond'})
+    writer = Principal('viewer', 'fixture', caps, 'socket')
+    for capability in sorted(caps - {'session:read'}):
+        with pytest.raises(RuntimeStoreError, match='session_superseded'):
+            cold.authority.authorize(writer, _ref('old'), capability)
+    # The successor's running agent sits under the shared route; the old row never resolves it.
+    route = cold.authority.sessions['old'].route
+    cold.authority.runner._running_agents = {route: object()}
+    cold.authority.runner._cached_agent_for = lambda key: cold.authority.runner._running_agents.get(key)
+    assert cold.authority.agent(_ref('old')) is None
+    assert cold.authority._runs_own_agent(_ref('old')) is False
+    with pytest.raises(RuntimeStoreError, match='session_superseded'):
+        await cold.authority.interrupt(writer, _ref('old'), 0)
+    with pytest.raises(RuntimeStoreError, match='session_superseded'):
+        await cold.authority.submit(writer, Submission('r1', _ref('old'), {'text': 'hi'}, 'queue'))
+    assert cold.authority.db.get_session('old')['message_count'] == 0
+
+
+@pytest.mark.asyncio
+async def test_closing_or_deleting_a_superseded_row_leaves_the_successor_route_alone(tmp_path, monkeypatch):
+    """Viewer close interrupts/refuses delegations and evicts by route; delete evicts by route. On a
+    superseded mount that route is the successor's, so neither touches it."""
+    import tools.async_delegation as delegation
+    from gateway.session_mutations import retire_live_sessions
+    from gateway.session_viewer_close import close_viewer_session
+    cold, _successor = await _superseded(tmp_path)
+    cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
+    touched = []
+    monkeypatch.setattr(delegation, 'interrupt_for_session', lambda **kw: touched.append(('interrupt', kw)))
+    monkeypatch.setattr(delegation, 'refuse_for_session', lambda *a, **kw: touched.append(('refuse', kw)))
+    cold.authority.runner._evict_cached_agent = lambda key, **kw: touched.append(('evict', key))
+    await close_viewer_session(cold.authority, 'old', 'tui_close')
+    retire_live_sessions(cold.authority, ['old'])
+    assert touched == []
+    assert 'old' not in cold.authority.sessions
+
+
+@pytest.mark.asyncio
+async def test_the_lane_reopening_the_row_makes_it_live_again(tmp_path):
+    """A read-only mount is only about the lane naming another conversation: once the lane's own
+    inbound publishes this row again (recovery reopened it), it is the live conversation."""
+    cold, _successor = await _superseded(tmp_path)
+    cold.authority.authorize(cold.actor, _ref('old'), 'session:read')
+    live = cold.authority.sessions['old']
+    cold.authority._publish_route(live.source, 'old', live.route)
+    assert cold.authority.sessions['old'] is live and live.superseded is False
+
+
+@pytest.mark.asyncio
+async def test_a_row_whose_lane_has_no_entry_mounts_live(tmp_path):
+    """Nothing names another conversation: the row is what the lane's next inbound publishes."""
+    from gateway.session_contract import Principal
+    _seed(tmp_path, 'unrouted', _source(), routed=False)
+    cold = await _cold(tmp_path)
+    writer = Principal('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
+    cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
+    assert cold.authority.sessions['unrouted'].superseded is False
+
+
+def _compressed_lane(tmp_path):
+    """A messaging conversation compressed once: root ``lane-root`` ended ``compression``, its
+    continuation ``lane-tip`` copies the route columns; the lane's entry names the tip."""
+    route = _seed(tmp_path, 'lane-root', _source(), routed=False)
+    runner = _Runner(tmp_path)
+    db = runner._session_db
+    source = _source()
+    db.create_session('lane-tip', source='telegram', session_key=route, chat_id=source.chat_id,
+                      user_id=source.user_id, chat_type='dm', origin_json=json.dumps(source.to_dict()),
+                      parent_session_id='lane-root')
+    db.end_session('lane-root', 'compression')
+    from gateway.session import SessionEntry
+    now = datetime.now()
+    entry = SessionEntry(route, 'lane-tip', now, now, origin=source, platform=source.platform)
+    runner.session_store._routing_db.save_gateway_routing_entry(
+        route, json.dumps(entry.to_dict()), scope=runner.session_store._routing_scope())
+    return route
+
+
+@pytest.mark.asyncio
+async def test_a_compression_child_is_never_mounted_under_its_physical_id(tmp_path):
+    """Greptile on #140183: the lane's turns publish to the lineage root (``logical_owner``), so a
+    viewer mounted on the child missed every event. The physical id is not a mount of its own."""
+    _compressed_lane(tmp_path)
+    await _refused(tmp_path, 'lane-tip')
+
+
+@pytest.mark.asyncio
+async def test_resume_of_a_compression_child_attaches_to_its_logical_owner(tmp_path):
+    from gateway.session_controls import AuthorityConnection
+    _compressed_lane(tmp_path)
+    cold = await _cold(tmp_path)
+    connection = AuthorityConnection(cold.authority, object(), {
+        'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
+        'capabilities': ['session:read']})
+    resumed = await connection.dispatch({'id': 1, 'method': 'session.resume',
+                                         'params': {'session_id': 'lane-tip'}})
+    assert resumed.get('result', {}).get('session_id') == 'lane-root', resumed
+    assert 'lane-tip' not in cold.authority.sessions
+    assert cold.authority.sessions['lane-root'].superseded is False
+
+
+@pytest.mark.asyncio
+async def test_a_live_mount_goes_read_only_when_its_lane_publishes_another_conversation(tmp_path):
+    """Mounted while nothing named another conversation, then the lane's next inbound starts a fresh
+    session on the same route: from then on the old mount's route is the newer session's."""
+    from hermes_state_runtime import RuntimeStoreError
+    from gateway.session_contract import Principal
+    _seed(tmp_path, 'unrouted', _source(), routed=False)
+    cold = await _cold(tmp_path)
+    writer = Principal('viewer', 'fixture', frozenset({'session:read', 'session:submit'}), 'socket')
+    cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
+    fresh = cold.store.get_or_create_session(_source(), force_new=True)
+    cold.authority._publish_route(_source(), fresh.session_id, fresh.session_key)
+    with pytest.raises(RuntimeStoreError, match='session_superseded'):
+        cold.authority.authorize(writer, _ref('unrouted'), 'session:submit')
+    cold.authority.authorize(writer, _ref(fresh.session_id), 'session:submit')

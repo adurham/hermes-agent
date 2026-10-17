@@ -514,6 +514,11 @@ class AuthorityConnection:
             if row and row['source'] in LEGACY_LOCAL_SOURCES | {Platform.LOCAL.value}:
                 ref = resolve_local_target(self.authority, self.actor,
                     self.authority.db.get_compression_tip(ref.session_id) or ref.session_id)
+            elif row:
+                # A messaging compression continuation attaches to its lineage root, the session
+                # its lane's turns stream to; the reply names that root.
+                from gateway.session_route_recovery import messaging_owner_ref
+                ref = messaging_owner_ref(self.authority, ref)
         if params.get('editor') is not None:
             self.authority.authorize(self.actor, ref, 'session:control')
             from gateway.session_local_mcp import resume_editor_mcp

@@ -12,7 +12,13 @@ every cold row of this profile that carries a ``session_key`` and a messaging-pl
   else its columns, rebuild the source.
 
 Either way the source is revived through ``_restored_source``, so delivery stays pinned to the
-persisted receiving bot. Rows without a ``session_key`` (subagents) have nothing to rebuild a lane
+persisted receiving bot. A row the lane moved past mounts READ-ONLY (``LiveSession.superseded``): its
+only route is the lane's current key, which names the newer conversation, so a Stop, an agent lookup
+or a turn through it would act on that conversation. One gateway owns every session and never
+crosses them, so writes are refused by name (``session_superseded``) rather than given a private
+route that no adapter would deliver to (#140183 review F2). A compression continuation is never
+mounted under its physical id: the lane's turns publish to the lineage root (``logical_owner``), so
+``session.resume`` maps it to that root, as normal admission does. Rows without a ``session_key`` (subagents) have nothing to rebuild a lane
 from. LOCAL rows (cron, CLI, TUI) restore from their private receipt and API rows from their binding
 (``restore_api_session``); neither is ever mounted here. The mount semantics are the first inbound's
 ``_publish_route``: a row that ended for a recoverable reason (``agent_close``, ``ws_orphan_reap``,
@@ -63,6 +69,14 @@ def _row_source(row, platform, profile):
     return source
 
 
+def _names_another_conversation(authority, sid, route):
+    """The lane's current routing entry names a conversation other than *sid* (``/new``, reset)."""
+    store = authority.runner.session_store
+    with store._lock:
+        entry = store._entry_locked(route)
+    return entry is not None and authority.logical_owner(entry.session_id) != sid
+
+
 def _row_entry(row, platform, route, profile):
     """A routing entry rebuilt from the row alone (the route no longer vouches for it)."""
     from gateway.session import SessionEntry
@@ -83,19 +97,32 @@ def restore_routed_session(authority, sid):
     row = authority.db.get_session(sid)
     route = row.get('session_key') if row is not None else None
     platform = _messaging_platform(row['source']) if route else None
-    if platform is None:
-        return None
+    if platform is None or authority.logical_owner(sid) != sid:
+        return None  # a compression continuation: its lineage root is the mount (session.resume maps it)
     store = authority.runner.session_store
     registry = getattr(authority.runner, 'session_authorities', None)
     profile = store._named_profile_for_key(route)
     if profile != (registry.profile_name(authority) if registry is not None else None):
         return None
-    entry = _routed_entry(authority, sid, route) or _row_entry(row, platform, route, profile)
+    routed = _routed_entry(authority, sid, route)
+    entry = routed or _row_entry(row, platform, route, profile)
     if entry is None:
         return None
+    superseded = routed is None and _names_another_conversation(authority, sid, route)
     authority._require_admission_open()
     # Re-pin the persisted receiving bot so delivery after a restart goes through it or nowhere,
     # never the default bot by heuristic (gateway/AGENTS.md § Identity survives the process).
     source = authority.runner._restored_source(entry)
-    authority.sessions.setdefault(sid, LiveSession(source, route))
+    authority.sessions.setdefault(sid, LiveSession(source, route, superseded=superseded, history_mount=True))
     return SessionRef(authority.profile_id, sid)
+
+
+def messaging_owner_ref(authority, ref):
+    """The mount a messaging row resumes on: its compression lineage root, where the lane's turns
+    publish their events (``logical_owner``). Any other row keeps *ref*."""
+    row = authority.db.get_session(ref.session_id)
+    if row is None or not row.get('session_key') or _messaging_platform(row['source']) is None:
+        return ref
+    from gateway.session_contract import SessionRef
+    owner = authority.logical_owner(ref.session_id)
+    return ref if owner == ref.session_id else SessionRef(ref.profile_id, owner)
