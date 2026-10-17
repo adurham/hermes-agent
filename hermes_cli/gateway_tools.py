@@ -153,20 +153,21 @@ class GatewayProcessView:
                 self._subagents_lock.release()
         return [dict(row) for row in self.subagents]
 
-    def subagent_tail(self, subagent_id):
+    def subagent_tail(self, subagent_id, *, fetch=False):
         """The child's live transcript tail (``subagent.tail``); None when the gateway has none.
-        The monitor repaints the detail view every frame, so the answer is reused for a second."""
+        The detail view repaints every frame and reads only the cache; ``fetch`` (the monitor's
+        tick, on the spinner thread) asks the gateway at most once a second, failures included."""
         now = time.time()
-        cached = self._tail
-        if cached and cached[0] == subagent_id and now - cached[1] < _POLL_SECONDS:
-            return cached[2]
+        cached = self._tail if self._tail and self._tail[0] == subagent_id else None
+        if not fetch or (cached and now - cached[1] < _POLL_SECONDS):
+            return cached[2] if cached else None
         try:
             result = self.connection.call("subagent.tail", session_id=self.session_id,
                                           subagent_id=subagent_id, timeout=5) or {}
+            text = result.get("text") if result.get("available") else None
         except (GatewayClientError, RuntimeError) as exc:
             logger.debug("subagent.tail failed: %s", exc)
-            return None
-        text = result.get("text") if result.get("available") else None
+            text = None
         self._tail = (subagent_id, now, text)
         return text
 

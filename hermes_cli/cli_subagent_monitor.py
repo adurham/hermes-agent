@@ -42,6 +42,7 @@ class SubagentMonitor:
         self.app = None
         self.opening = False
         self.collapsed = False
+        self.detail = False  # the monitor's detail view is open (its tick fetches the gateway tail)
 
     @property
     def has_rows(self):
@@ -122,11 +123,22 @@ class SubagentMonitor:
         if now - self._last_poll < 1:
             return
         self._last_poll = now
-        if self.refresh():
+        changed = self.refresh()
+        if self._poll_tail() or changed:
             if self.app is not None:
                 self.invalidate()
             else:
                 self.cli._invalidate()
+
+    def _poll_tail(self):
+        """Off the render path (the spinner thread's tick): refresh the gateway tail the open detail
+        view paints from the cache. True when the text changed."""
+        from hermes_cli.gateway_tools import process_view
+        row, view = self.selected, process_view()
+        if not self.detail or view is None or row is None or row.get('kind') == 'process':
+            return False
+        before = view.subagent_tail(row['subagent_id'])
+        return view.subagent_tail(row['subagent_id'], fetch=True) != before
 
     def select(self, delta):
         roster = self.roster
@@ -274,7 +286,8 @@ def read_tail(path):
 
 
 def subagent_tail(row):
-    """The child's transcript tail: the gateway's ``subagent.tail`` when it runs the child, else the
+    """The child's transcript tail: the gateway's ``subagent.tail`` when it runs the child (as cached
+    by the monitor's tick, never fetched here: the detail view calls this every frame), else the
     transcript file this process wrote."""
     from hermes_cli.gateway_tools import process_view
     view = process_view()
@@ -383,7 +396,8 @@ def build_monitor_application(monitor, **kwargs):
     @kb.add('enter', filter=listing)
     def detail(event):
         if monitor.selected:
-            state['detail'] = True
+            state['detail'] = monitor.detail = True
+            monitor._last_poll = 0  # the spinner thread's next tick fetches the tail
             update_tail()
             app.layout.focus(tail)
 
@@ -422,7 +436,7 @@ def build_monitor_application(monitor, **kwargs):
             state['steering'] = state['confirm'] = False
             app.layout.focus(tail if state['detail'] else roster)
         elif state['detail']:
-            state['detail'] = False
+            state['detail'] = monitor.detail = False
             app.layout.focus(roster)
         else:
             app.exit()
@@ -476,7 +490,7 @@ def open_monitor(cli):
                 await monitor.app.run_async()
         finally:
             monitor.app = None
-            monitor.opening = False
+            monitor.detail = monitor.opening = False
             cli._invalidate()
 
     asyncio.get_running_loop().create_task(run())

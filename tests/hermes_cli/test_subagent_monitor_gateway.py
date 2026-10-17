@@ -26,12 +26,15 @@ class FakeClient:
         self.children = [{"subagent_id": "sa-0-1", "goal": "Audit the parser", "status": "running",
                           "started_at": time.time() - 7, "last_tool": "read_file", "accepting_steer": True}]
         self.steered = []
+        self.tail_error = None
 
     async def rpc(self, method, *, _timeout=None, **params):
         self.calls.append((method, params))
         if method == "subagent.list":
             return {"subagents": self.children, "delegations": []}
         if method == "subagent.tail":
+            if self.tail_error:
+                raise self.tail_error
             return {"subagent_id": params["subagent_id"], "available": True, "text": "step 1\nstep 2\n",
                     "truncated": False}
         if method == "subagent.steer":
@@ -66,12 +69,15 @@ def gateway(monkeypatch):
 def test_monitor_lists_tails_and_controls_the_gateway_sessions_children(gateway):
     from hermes_cli import cli_subagent_monitor
     agent, client = gateway
-    monitor = cli_subagent_monitor.SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=True))
+    monitor = cli_subagent_monitor.SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=True,
+                                                                   _invalidate=lambda: None))
 
     monitor.refresh()
     assert [r["subagent_id"] for r in monitor.entries] == ["sa-0-1"]
     assert monitor.entries[0]["last_tool"] == "read_file" and monitor.entries[0]["elapsed"] >= 6
     assert ("subagent.list", {"session_id": SID}) in client.calls
+    monitor.detail = True  # the open detail view: the spinner thread's tick fetches its tail
+    monitor.tick()
     assert cli_subagent_monitor.subagent_tail(monitor.selected) == "step 1\nstep 2\n"
 
     assert "note" in monitor.control("steer", "Focus on the tokenizer")
@@ -89,3 +95,52 @@ def test_idle_session_without_children_does_not_poll_the_roster(gateway):
     monitor = SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=False))
     monitor.refresh()
     assert not any(method == "subagent.list" for method, _ in client.calls)
+
+
+def test_detail_view_paints_the_cached_tail_and_only_the_tick_asks_the_gateway(gateway):
+    """The detail view repaints every frame on the UI loop: it must never block on subagent.tail.
+    The spinner thread's tick fetches the tail; a failing gateway is asked once per poll."""
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from hermes_cli import cli_subagent_monitor
+    from hermes_cli.gateway_client import GatewayRPCError
+    agent, client = gateway
+    monitor = cli_subagent_monitor.SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=True,
+                                                                   _invalidate=lambda: None))
+    monitor.refresh()
+    tails = lambda: sum(method == "subagent.tail" for method, _ in client.calls)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            output = DummyOutput()
+            output.get_size = lambda: Size(rows=14, columns=80)
+            monitor.app = app = cli_subagent_monitor.build_monitor_application(monitor, input=pipe, output=output)
+            rendered = asyncio.Event()
+            app.after_render += lambda app: rendered.set()
+            task = asyncio.create_task(app.run_async())
+            await asyncio.wait_for(rendered.wait(), 3)
+            rendered.clear()
+            pipe.send_text("\r")  # open the detail view: several frames, none of them asks the gateway
+            await asyncio.wait_for(rendered.wait(), 3)
+            for _ in range(3):
+                rendered.clear()
+                app.invalidate()
+                await asyncio.wait_for(rendered.wait(), 3)
+            assert tails() == 0 and app.current_buffer.text != "step 1\nstep 2\n"
+            rendered.clear()
+            monitor.tick()  # the spinner thread's tick fetches the tail and repaints from the cache
+            await asyncio.wait_for(rendered.wait(), 3)
+            assert tails() == 1 and app.current_buffer.text == "step 1\nstep 2\n"
+            pipe.send_text("\x1b")
+            pipe.send_text("q")
+            await asyncio.wait_for(task, 3)
+    asyncio.run(run())
+
+    view = gateway_tools.process_view()
+    client.tail_error = GatewayRPCError("unavailable")
+    view._tail = None
+    assert view.subagent_tail("sa-0-1", fetch=True) is None
+    assert view.subagent_tail("sa-0-1", fetch=True) is None  # the failure is cached for the poll interval
+    assert tails() == 2
