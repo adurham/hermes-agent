@@ -101,20 +101,56 @@ def _fingerprint(value):
 # block. A secret is bound to these, never to the rest of the policy. ``api`` is an entry's URL field
 # (runtime_provider_custom._entry_url reads it before ``url``/``base_url``).
 _ENDPOINT_KEYS = ('provider', 'base_url', 'api', 'url', 'command', 'args', 'api_mode')
-_ROUTE_SECTIONS = ('model', 'fallback_model', 'fallback_providers')
 _ENTRY_SECTIONS = ('providers', 'custom_providers')
+# An auxiliary route naming no provider of its own (or ``main``/``auto``) goes where the session's
+# ``model:`` route goes, so its key authenticates that endpoint too.
+_AUX_FOLLOWS_MAIN = ('', 'auto', 'main')
+
+
+def _route_owner(config, path):
+    """The config path of the ROUTE block a secret at *path* rides with, else None. Every route shape a
+    consumer reads: ``model:`` and its aliases (``model.aliases.<n>``, ``model_aliases.<n>``), both
+    fallback sections in dictionary (one route) and list form, and each ``auxiliary.<task>`` route with
+    its ``fallback_chain`` entries. A secret nested deeper in a route (headers, extra_body) rides with it."""
+    head, rest = path[0], tuple(path[1:])
+    if head == 'model':
+        if rest[:1] == ('aliases',) and len(rest) > 2:
+            return ('model', 'aliases', rest[1])
+        return ('model',)
+    if head == 'model_aliases' and len(rest) > 1:
+        return ('model_aliases', rest[0])
+    if head in ('fallback_model', 'fallback_providers'):
+        if isinstance(config.get(head), list) and rest and type(rest[0]) is int:
+            return (head, rest[0])
+        return (head,)
+    if head == 'auxiliary' and len(rest) > 1:
+        task = rest[0]
+        if rest[1] == 'fallback_chain' and len(rest) > 3 and type(rest[2]) is int:
+            return ('auxiliary', task, 'fallback_chain', rest[2])
+        return ('auxiliary', task)
+    return None
 
 
 def _owner_block(config, path):
     """The config path of the block whose endpoint the secret at *path* authenticates: a route block
-    (``model``, a fallback entry) or a provider entry as a whole, else the secret's own parent block."""
-    if path[0] in _ENTRY_SECTIONS or path[0] == 'fallback_providers':
+    (_route_owner) or a provider entry as a whole, else the secret's own parent block."""
+    route = _route_owner(config, path)
+    if route is not None:
+        return route
+    if path[0] in _ENTRY_SECTIONS:
         return tuple(path[:2])
-    if path[0] == 'fallback_model' and isinstance(config.get('fallback_model'), list):
-        return tuple(path[:2])
-    if path[0] in _ROUTE_SECTIONS:
-        return tuple(path[:1])
     return tuple(path[:-1])
+
+
+def _resolved(owner, block, config):
+    """``(provider_identity, url)`` the route *block* at *owner* is actually sent to."""
+    from gateway.session_route_identity import resolved_route
+    if owner[0] == 'auxiliary':
+        provider = str(block.get('provider') or '').strip().lower()
+        if provider in _AUX_FOLLOWS_MAIN and not str(block.get('base_url') or '').strip():
+            main = config.get('model') if isinstance(config.get('model'), dict) else {}
+            return ['main', *resolved_route(main, config)]
+    return list(resolved_route(block, config))
 
 
 def _binding(config, path):
@@ -123,10 +159,9 @@ def _binding(config, path):
     owner = _owner_block(config, path) if path and path[0] is not None else None
     block = _defined(config, owner) if owner else _ABSENT
     endpoint = {k: block[k] for k in _ENDPOINT_KEYS if k in block} if isinstance(block, dict) else {}
-    if isinstance(block, dict) and path[0] in _ROUTE_SECTIONS:
+    if isinstance(block, dict) and _route_owner(config, path) is not None:
         # A route's key authenticates what it resolves to: a named ``providers:`` entry's URL included.
-        from gateway.session_route_identity import resolved_route
-        endpoint['resolved'] = list(resolved_route(block, config))
+        endpoint['resolved'] = _resolved(owner, block, config)
     elif isinstance(block, dict) and path[0] in _ENTRY_SECTIONS:
         from hermes_cli.runtime_provider_custom import _entry_url
         endpoint['resolved'] = str(_entry_url(block) or '')

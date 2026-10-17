@@ -298,3 +298,161 @@ def test_a_legacy_reference_keeps_the_endpoint_guard(tmp_path, monkeypatch):
         with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
             moved.config(owner())
         assert refused.value.field == 'config_secret_ref' and refused.value.detail
+
+
+# Independent review round 2: every route shape a consumer reads binds its secret to the route that owns
+# it. A dictionary-form fallback is ONE route (its key's owner is the whole dictionary, not the key), and
+# an ``auxiliary.<task>`` route or one of its ``fallback_chain`` entries authenticates the endpoint it
+# resolves to, a named ``providers:`` entry's URL or, for ``provider: main``, the session's own route.
+_A, _B = 'http://good.invalid/v1', 'http://evil.invalid/v1'
+_BASE = {'model': {'provider': 'custom', 'default': 'm', 'base_url': _A}}
+_SHAPES = {
+    'fallback_providers_dict': ({**_BASE, 'fallback_providers': {'provider': 'custom', 'model': 'x',
+                                                                 'base_url': _A, 'api_key': 'K-fb'}},
+                                lambda c: c['fallback_providers'].__setitem__('base_url', _B),
+                                'fallback_providers.api_key'),
+    'fallback_providers_dict_via_entry': ({**_BASE, 'providers': {'fb': {'base_url': _A}},
+                                           'fallback_providers': {'provider': 'fb', 'model': 'x', 'api_key': 'K-fb'}},
+                                          lambda c: c['providers']['fb'].__setitem__('base_url', _B),
+                                          'fallback_providers.api_key'),
+    'fallback_model_dict_via_entry': ({**_BASE, 'providers': {'fb': {'base_url': _A}},
+                                       'fallback_model': {'provider': 'fb', 'model': 'x', 'api_key': 'K-fb'}},
+                                      lambda c: c['providers']['fb'].__setitem__('base_url', _B),
+                                      'fallback_model.api_key'),
+    'aux_task_via_entry': ({**_BASE, 'providers': {'team': {'base_url': _A}},
+                            'auxiliary': {'compression': {'provider': 'team', 'model': 'm', 'api_key': 'K-aux'}}},
+                           lambda c: c['providers']['team'].__setitem__('base_url', _B),
+                           'auxiliary.compression.api_key'),
+    'aux_task_own_url': ({**_BASE, 'auxiliary': {'vision': {'provider': 'custom', 'model': 'm',
+                                                            'base_url': _A, 'api_key': 'K-aux'}}},
+                         lambda c: c['auxiliary']['vision'].__setitem__('base_url', _B),
+                         'auxiliary.vision.api_key'),
+    'aux_task_on_main': ({**_BASE, 'auxiliary': {'compression': {'provider': 'main', 'api_key': 'K-aux'}}},
+                         lambda c: c['model'].__setitem__('base_url', _B),
+                         'auxiliary.compression.api_key'),
+    'aux_fallback_chain_via_entry': ({**_BASE, 'providers': {'team': {'base_url': _A}},
+                                      'auxiliary': {'compression': {'provider': 'custom', 'model': 'm', 'base_url': _A,
+                                                                    'fallback_chain': [{'provider': 'team', 'model': 'm',
+                                                                                        'api_key': 'K-chain'}]}}},
+                                     lambda c: c['providers']['team'].__setitem__('base_url', _B),
+                                     'auxiliary.compression.fallback_chain.0.api_key'),
+    'model_alias_own_url': ({'model': {**_BASE['model'], 'aliases': {'alt': {'provider': 'custom', 'model': 'x',
+                                                                             'base_url': _A, 'api_key': 'K-alias'}}}},
+                            lambda c: c['model']['aliases']['alt'].__setitem__('base_url', _B),
+                            'model.aliases.alt.api_key'),
+}
+
+
+@pytest.mark.parametrize('case', sorted(_SHAPES))
+def test_every_route_shape_binds_its_secret_to_the_owning_route(tmp_path, monkeypatch, case):
+    from hermes_state_runtime import RuntimeStoreError
+    cfg, mutate, field = _SHAPES[case]
+    owner, policy = _bind(tmp_path, monkeypatch, json.loads(json.dumps(cfg)))
+    assert policy.config(owner())  # the unmoved policy recovers
+    with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable') as refused:
+        _repointed(policy, mutate).config(owner())
+    assert refused.value.field == field and 'endpoint' in refused.value.detail
+
+
+def test_an_unrelated_route_edit_keeps_an_auxiliary_and_fallback_key(tmp_path, monkeypatch):
+    """Binding the owning route is not binding the policy: another task's or entry's move is no change."""
+    cfg = {**_BASE, 'providers': {'team': {'base_url': _A}, 'other': {'base_url': _A}},
+           'fallback_providers': {'provider': 'team', 'model': 'x', 'api_key': 'K-fb'},
+           'auxiliary': {'compression': {'provider': 'team', 'model': 'm', 'api_key': 'K-aux'},
+                         'vision': {'provider': 'other', 'model': 'm'}}}
+    owner, policy = _bind(tmp_path, monkeypatch, cfg)
+
+    def unrelated(c):
+        c['providers']['other']['base_url'] = _B
+        c['auxiliary']['compression']['timeout'] = 30
+        c['fallback_providers']['model'] = 'y'
+    recovered = _repointed(policy, unrelated).config(owner())
+    assert recovered['auxiliary']['compression']['api_key'] == 'K-aux'
+    assert recovered['fallback_providers']['api_key'] == 'K-fb'
+
+
+def _loopback():
+    """Two real loopback HTTP servers recording the Authorization each request carries."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    seen = {'A': [], 'B': []}
+    servers, urls = [], {}
+    for name in ('A', 'B'):
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self, name=name):
+                self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                seen[name].append(self.headers.get('Authorization'))
+                body = json.dumps({'id': 'x', 'object': 'chat.completion', 'created': 1, 'model': 'm', 'choices': [
+                    {'index': 0, 'message': {'role': 'assistant', 'content': 'ok'}, 'finish_reason': 'stop'}]}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        urls[name] = f'http://127.0.0.1:{server.server_port}/v1'
+    return seen, urls, servers
+
+
+def _send(client, model):
+    try:
+        client.with_options(timeout=3, max_retries=0).chat.completions.create(
+            model=model, messages=[{'role': 'user', 'content': 'probe'}], max_tokens=1)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize('route', ['fallback_providers_dict', 'auxiliary_named_entry'])
+def test_a_moved_route_never_sends_its_frozen_key_to_the_new_endpoint(tmp_path, monkeypatch, route):
+    """The review's wire repro: bind at loopback A, move the frozen route to loopback B without a re-bind,
+    and drive the real consumer (the main runtime's fallback walker / the auxiliary client). A's key must
+    reach A while the route is unmoved and never reach B."""
+    from hermes_state_runtime import RuntimeStoreError
+    seen, urls, servers = _loopback()
+    try:
+        if route == 'fallback_providers_dict':
+            cfg = {'model': {'provider': 'anthropic', 'default': 'm'},
+                   'fallback_providers': {'provider': 'custom', 'model': 'backup', 'base_url': urls['A'],
+                                          'api_key': 'SENTINEL-FB-A'}}
+            move = lambda c: c['fallback_providers'].__setitem__('base_url', urls['B'])
+        else:
+            cfg = {'model': {'provider': 'custom', 'default': 'm', 'base_url': urls['A']},
+                   'providers': {'team': {'base_url': urls['A']}},
+                   'auxiliary': {'compression': {'provider': 'team', 'model': 'm', 'api_key': 'SENTINEL-AUX-A'}}}
+            move = lambda c: c['providers']['team'].__setitem__('base_url', urls['B'])
+        for name in ('ANTHROPIC_API_KEY', 'ANTHROPIC_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY'):
+            monkeypatch.delenv(name, raising=False)
+        owner, policy = _bind(tmp_path, monkeypatch, cfg)
+
+        def drive(frozen):
+            authority = owner()
+            if route == 'fallback_providers_dict':
+                from openai import OpenAI
+                from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+                from gateway.session_policy import policy_scope
+                with policy_scope(frozen, authority=authority):
+                    model, runtime = _resolve_policy_agent_runtime(SimpleNamespace(session_authority=authority), frozen)
+                    _send(OpenAI(api_key=runtime['api_key'], base_url=runtime['base_url']), model)
+            else:
+                from agent import auxiliary_client
+                from agent.auxiliary_task_config import session_auxiliary_scope
+                from hermes_cli import runtime_provider
+                config = frozen.config(authority)
+                with runtime_provider.frozen_runtime_config(config), session_auxiliary_scope(config['auxiliary']):
+                    client, model = auxiliary_client.get_text_auxiliary_client('compression')
+                    _send(client, model)
+
+        drive(policy)  # control: the unmoved route sends A's key to A
+        assert seen['A'] and seen['A'][-1].endswith('-A')
+        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+            drive(_repointed(policy, move))
+        assert seen['B'] == []
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
