@@ -275,14 +275,8 @@ def test_a_secret_is_bound_to_the_endpoint_its_route_resolves_to(tmp_path, monke
 
 
 def _legacy(policy):
-    """*policy*'s reference as an older gateway wrote it: no ``bound``, the policy hash over the fields it had."""
-    from gateway.session_policy_credentials import PREFIX
-    source = json.loads(policy.config_secret_ref[len(PREFIX):])
-    data = {k: v for k, v in asdict(policy).items()
-            if k not in ('credential_ref', 'config_secret_ref', *_LATER_FIELDS)}
-    source['policy'] = hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
-    source.pop('bound', None)
-    return replace(policy, config_secret_ref=PREFIX + json.dumps(source, sort_keys=True))
+    """*policy* carrying the reference an older gateway wrote for it."""
+    return replace(policy, config_secret_ref=_older_gateway_reference(policy))
 
 
 def test_a_legacy_reference_keeps_the_endpoint_guard(tmp_path, monkeypatch):
