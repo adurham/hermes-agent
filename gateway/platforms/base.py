@@ -19,7 +19,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import safe_url_for_log  # re-exported: adapters import it from here
+from gateway.platforms.base_log_safety import safe_url_for_log
 
 from utils import normalize_proxy_url
 from agent.i18n import t
@@ -2191,8 +2191,8 @@ class BasePlatformAdapter(ABC):
         """Acquire a scoped lock for this adapter; True on success. A live cross-HERMES_HOME
         holder is replaced only when the runner armed this adapter for its initial
         ``--replace`` connect (the status module validates ownership and terminates)."""
-        from gateway.status import (
-            ScopedLockDirUnusable, acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder)
+        from gateway.status import acquire_scoped_lock, scoped_lock_owner_label, take_over_scoped_lock_holder
+        from gateway.status_lock_dir import ScopedLockDirUnusable
         self._platform_lock_scope, self._platform_lock_identity = scope, identity
         lock_meta = {"platform": self.platform.value}
         try:
@@ -2245,7 +2245,7 @@ class BasePlatformAdapter(ABC):
         identity = getattr(self, '_platform_lock_identity', None)
         if not identity:
             return
-        from gateway.status import release_scoped_lock
+        from gateway.status_scoped_locks import release_scoped_lock
         release_scoped_lock(self._platform_lock_scope, identity)
         self._platform_lock_identity = None
 

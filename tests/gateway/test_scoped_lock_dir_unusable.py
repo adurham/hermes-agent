@@ -15,6 +15,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway import status
+from gateway import status_lock_dir as scoped_locks
+from gateway.status_scoped_locks import release_scoped_lock
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import is_global_startup_conflict
 from gateway.run_startup import GatewayStartupMixin
@@ -57,7 +59,7 @@ def locked_out_dir(tmp_path, monkeypatch):
     lock_dir.mkdir()
     lock_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # r-x: lists, cannot create the token lock
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
-    getattr(status, "_warned_unusable_lock_dirs", set()).clear()
+    scoped_locks.reset_unusable_lock_dir_reports()
     yield lock_dir
     lock_dir.chmod(stat.S_IRWXU)
 
@@ -83,12 +85,12 @@ def test_unusable_lock_dir_parks_the_adapter_with_the_repair(locked_out_dir, cap
 
 
 def test_lock_dir_repair_is_picked_up_without_restart(locked_out_dir):
-    with pytest.raises(status.ScopedLockDirUnusable):
+    with pytest.raises(scoped_locks.ScopedLockDirUnusable):
         status.acquire_scoped_lock("telegram-bot-token", "tok")
     locked_out_dir.chmod(stat.S_IRWXU)
     assert status.acquire_scoped_lock("telegram-bot-token", "tok") == (True, None)
-    assert locked_out_dir not in status._warned_unusable_lock_dirs
-    status.release_scoped_lock("telegram-bot-token", "tok")
+    assert not scoped_locks.unusable_lock_dir_reported(locked_out_dir)
+    release_scoped_lock("telegram-bot-token", "tok")
 
 
 def test_unreadable_stale_token_lock_is_named_not_reported_as_a_holderless_conflict(tmp_path, monkeypatch):
@@ -100,7 +102,7 @@ def test_unreadable_stale_token_lock_is_named_not_reported_as_a_holderless_confl
     stale.chmod(0)
     lock_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)  # the stale file cannot be read or unlinked either
     try:
-        with pytest.raises(status.ScopedLockDirUnusable):
+        with pytest.raises(scoped_locks.ScopedLockDirUnusable):
             status.acquire_scoped_lock("telegram-bot-token", "tok")
     finally:
         lock_dir.chmod(stat.S_IRWXU)

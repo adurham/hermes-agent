@@ -29,9 +29,7 @@ from gateway.status_inline_source import (
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
-from gateway.status_scoped_locks import (  # re-exported: the public scoped-lock API lives on gateway.status
-    ScopedLockDirUnusable, _unusable_lock_dir, _warned_unusable_lock_dirs, release_all_scoped_locks,
-    release_scoped_lock)
+from gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -1550,14 +1548,14 @@ def acquire_scoped_lock(
 ) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity (one Telegram token across homes).
 
-    Raises :class:`ScopedLockDirUnusable` (logged once per dir with the repair) when this token may
+    Raises :class:`gateway.status_lock_dir.ScopedLockDirUnusable` (logged once per dir with the repair) when this token may
     not use the lock dir at all."""
     lock_path = _get_scope_lock_path(scope, identity)
     try:
         acquired = _acquire_scoped_lock_at(lock_path, scope, identity, metadata)
     except PermissionError as exc:
-        raise _unusable_lock_dir(lock_path.parent, exc) from exc
-    _warned_unusable_lock_dirs.discard(lock_path.parent)
+        raise unusable_lock_dir(lock_path.parent, exc) from exc
+    unusable_lock_dir_recovered(lock_path.parent)
     return acquired
 
 
