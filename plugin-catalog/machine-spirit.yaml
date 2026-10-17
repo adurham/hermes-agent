@@ -2,10 +2,7 @@ name: machine-spirit
 repo: https://github.com/KuboKubis25/hermes-machine-spirit
 sha: fcba6cbcdfd29ecf6fe4dcd652884aa9972ae0b2
 title: Machine Spirit
-description: 'A Warhammer 40k shrine pane docked under the sessions list: the cogitators recite original
-  Adeptus Mechanicus-style litanies, and the cog-skull, candle and binary stream animate while Hermes
-  works. Just for fun. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools,
-  hooks, middleware, env vars, network or file access.'
+description: 'A Warhammer 40k shrine pane docked under the sessions list: the cogitators recite original Adeptus Mechanicus-style litanies, and the cog-skull, candle and binary stream animate while Hermes works. Just for fun. Desktop-only (desktop/plugin.js inside the plugin SDK surface); no agent tools, hooks, middleware, env vars, network or file access.'
 maintainer: KuboKubis25
 tier: community
 category: desktop
@@ -19,3 +16,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.20.6"
