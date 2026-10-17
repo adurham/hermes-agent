@@ -3,6 +3,55 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Feature — 2026-10-17 (full automatic memory management: `memory.auto_apply`; 3-week staged-write backlog drained)
+
+**Owner-directed** ("we need to allow for full automatic memory management in our setup/fork").
+Two fork paths staged memory writes for a review that never happened: session-exit LLM
+extraction proposals and the unattended background review's hot-tier consolidations (#105921
+delete gate). 1,214 records had accumulated since 2026-09-25 with none reviewed — a dead-end
+pipeline where the "staged for approval" notices outnumbered actual memory writes.
+
+**Mechanism (commit 492b3924449).** New fork-only key `memory.auto_apply` (default `false`;
+in DEFAULT_CONFIG + memory docs). When on, both paths apply directly through the same replay
+path `/memory approve` runs — verdicts are rehydrated, never recomputed, so
+dedupe/merge/supersede semantics are identical to a reviewed approval. An explicit
+`memory.write_approval: true` still wins, and a failed inline apply stages instead of
+dropping the write. Touched: `tools/write_approval.auto_apply_enabled()`;
+`tools/memory_tool._background_delete_gate` (plus `apply_memory_pending` /
+`_apply_extraction_proposal` take `Optional[MemoryStore]` — a hot payload with no store is
+refused, not dereferenced); `hermes_cli/memory_confirm` (inline apply via
+`apply_proposal_now`, staging fallback, `applied N proposals automatically` exit notice);
+docs; 10 new tests. Enabled in the MacBook default profile and the local exo profile.
+
+**Latent bug found by exercising the real path (commit a558f40476c).**
+`tools/memory_warm.py`'s `WarmStore.add()` called `find_fact_id_by_content` — a method that
+exists on NO revision of the catalog holographic plugin (0.6.x; also
+`_after_recall`→`bump_retrieval_counts`, `get`→`get_fact`). Every warm write raised
+AttributeError; masked because review staging was the only writer on that path and the warm
+tests self-skip under the harness's HERMES_HOME redirect. Fixed to the plugin's real API
+(`add_fact_status` → `(fact_id, created)`; `record_retrievals`; `read` under the store lock).
+Verify warm paths against the live plugin with a temp DB (`WarmStore(db_path=...)`) — the
+in-harness warm tests cannot see this class of rot.
+
+**Backlog drained (one-time catch-up; run log + script + backups under
+`~/.hermes/backups/drain-2026-10-17/`).**
+- WARM: 1,105 extraction proposals → 908 stored (intra-backlog paraphrase check found ~zero
+  ≥0.7-similar pairs; FTS+fuzzy store check at apply time skipped nothing — the knowledge was
+  genuinely un-landed), 151 refinements merged, 13 supersessions (10 old facts carry the
+  `[superseded by fact N]` marker; 3 marker updates failed best-effort inside the resolver),
+  33 duplicate bumps; 0 failures. Store 2695 → 3,616 rows (+34%); count reconciles exactly.
+- NEW/DUPLICATE replayed verbatim; REFINEMENT/CONTRADICTION replayed ONLY when the matched
+  fact was byte-identical to its stage-time text ("poor-man's pin": 164 valid, 9 downgraded
+  to append-only adds) — a stale verdict can never clobber a changed fact.
+- HOT: 109 consolidations → rehearsal on temp copies + diff review; 7 applied (live files
+  byte-match the rehearsal), 93 stale/unpinned moved to
+  `~/.hermes/pending/memory-attic-2026-10-17/`, 9 budget-blocked (would exceed the
+  4,500-char MEMORY.md cap) left pending.
+- Traps hit on the way: the store's per-turn consolidation-failure cap masks the real
+  refusal reason when many ops run in one process (reset `reset_consolidation_failures()`
+  per independent record); `apply_verdict` writes through the `get_warm_store()` singleton
+  regardless of any temp store a harness holds.
+
 ### Live updates executed — 2026-10-15 (MacBook + hermes-gw-01 to v0.22.2 @ 0988db4a)
 
 Owner-authorized ("go for it on the gateway and local macbook"). Both boxes now run
