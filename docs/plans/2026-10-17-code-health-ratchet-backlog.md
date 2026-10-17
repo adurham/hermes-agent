@@ -2304,3 +2304,6 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
 - 2026-10-17 — A-046 done: `GatewayTurnMixin._resolve_session_agent_runtime` CC 22 → 12 (channel-override
   and empty-model safety-net phases → `gateway/run_turn_model_resolution.py`, CC 6/6; BLE001 hit kept
   inline). Next: A-048 `hermes_cli/config.py::convert_auxiliary_to_provider_first`.
+- 2026-10-17 — A-048 `convert_auxiliary_to_provider_first`: CC 22 → 10 (per-task phase →
+  `hermes_cli/config_aux_provider_first.py::accumulate_aux_task`, CC 13); config.py 4722 → 4674
+  lines (branch `claude/ratchet-convert-auxiliary-provider-5xngey`). Next: next row of Next pick.
