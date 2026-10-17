@@ -17,7 +17,7 @@ Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
 **Files:** `hermes_cli/cli_tui_mixin.py`, `tests/hermes_cli/test_todo_board_widget.py`.
 
-**Upstream PR:** the live todo board is upstream PR **#136664** (DRAFT, `upstream-pr/live-todo-board`) and still carries the Ctrl+E binding; folding this move into that branch needs explicit approval before touching upstream.
+**Upstream PR:** the live todo board is upstream PR **#136664** (DRAFT, `upstream-pr/live-todo-board`) — updated 2026-10-17 at owner approval: branch rebased-free force-push with the same Ctrl+O move folded in (`66dad64983` → `6d6d0f03b6`, title/body now say Ctrl+O and carry the shadow-rule rationale); re-verified 38 passed on the two-file run at that head. The branch lives in a worktree at `~/repos/hermes-agent-pr-live-todo-board` (its venv imports need `~/.hermes/cache/scratch/run_pr_tests.py`, which defeats the editable-install finder that otherwise hard-maps `hermes_cli` back to `~/repos/hermes-agent`).
 
 ### Fix — 2026-10-17 (false "Unknown toolsets: rea" warning on every CLI launch)
 
