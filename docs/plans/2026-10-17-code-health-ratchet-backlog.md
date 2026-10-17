@@ -2576,3 +2576,12 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   not ratchet hits, separate change. Tests: unit's 5 files + content-filter scrub 266 passed / 31
   skipped; ops callers (credential pool, destructive scope, admin endpoints) 82 passed.
   `scripts/check` ok. FILE_LINES 992 → 997. Branch `claude/fix-c0024-files-async-30hdxi`. Next: C-0025.
+- 2026-10-17 — C-1062 `plugins/platforms/wecom/adapter.py` (async): RUF006×1 → 0 (file hits 14 → 13;
+  the 13 BLE001 untouched, in place and in order). `_send_failure`'s 846609 stale-req_id purge task
+  is now held in the base adapter's `_background_tasks` (discarded on done, so
+  `cancel_background_tasks` reaps it on shutdown); same `ensure_future` scheduling, same purge. No
+  exception callback: the coroutine only clears two dicts and logs. No sibling instances in the file
+  (`connect`'s listen/heartbeat tasks are already stored). New invariant test
+  `tests/gateway/test_wecom_stale_subscription.py` (red on main). 14 wecom-referencing test files +
+  the 4 listed gateway files: 308 passed, 1 failed (`test_wecom_callback.py` 413 test, missing
+  `aiohttp`, same on main). Branch `claude/fix-wecom-adapter-async-fsrs4i`.
