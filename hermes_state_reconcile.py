@@ -152,6 +152,40 @@ def _owner_remedy(home: Path) -> tuple[str, str]:
     return label or str(home), 'hermes gateway restart'
 
 
+def _owning_gateway_restart(home: Path) -> str:
+    """Restart command for the gateway that holds *home*'s lock. A multiplexer launched from another
+    home (usually the default) records that home in ``hermes_home``; `hermes -p <named> gateway
+    restart` is refused there ("Manage the host gateway instead"), so name the owner's own command."""
+    from gateway.runtime_ownership import canonical_home
+    from gateway.status import _read_gateway_lock_record
+    record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock') or {}
+    owner_home = record.get('hermes_home')
+    if isinstance(owner_home, str) and owner_home and canonical_home(Path(owner_home)) != canonical_home(home):
+        return _owner_remedy(Path(owner_home))[1]
+    return _owner_remedy(home)[1]
+
+
+def _lockless_gateway_holder(path: Path) -> str | None:
+    """A Hermes gateway process holding *path* open without this profile's gateway.lock: a pre-v0.22.1
+    multiplexer serves named profiles without reserving their per-profile lock, so the lock alone
+    misses it. Only holders whose command line is a Hermes ``gateway`` run count; plain readers
+    (Desktop, sibling browses, CLI reads) are not owners. Returns a description, else None."""
+    from hermes_state_holders import _looks_like_hermes, _read_proc_argv, describe_holder_pid, foreign_state_db_holders
+    for pid, _target in foreign_state_db_holders(path):
+        if pid <= 0:
+            continue
+        argv = _read_proc_argv(pid)
+        if argv is None:
+            try:
+                import psutil
+                argv = psutil.Process(pid).cmdline() or None
+            except Exception:
+                argv = None
+        if argv and _looks_like_hermes(argv) and 'gateway' in argv[1:]:
+            return describe_holder_pid(pid)
+    return None
+
+
 class BrowseBudgetExceeded(RuntimeError):
     """The browse reconcile could not finish inside BROWSE_RECONCILE_BUDGET_S; nothing was written."""
 
@@ -361,13 +395,15 @@ def reconcile_drift_for_browse(path: Path) -> bool:
                 f'Session store is missing its history tables ({reason}); this is not upgrade drift. '
                 'Run `hermes sessions recover`.') from exc
     home = path.parent
-    label, remedy = _owner_remedy(home)
+    label, _ = _owner_remedy(home)
 
-    def owned(drift):
+    def owned(drift, holder=None):
+        restart = 'hermes gateway restart' if holder else _owning_gateway_restart(home)
+        who = f' ({holder})' if holder else ''
         return DeclarativeDriftError(
             f"Session store for profile '{label}' is behind this Hermes version ({drift}), and a "
-            f'running gateway owns it, so browsing will not write to it. Restart that gateway '
-            f'(`{remedy}`) to bring the store up to date.', owned=True)
+            f'running gateway owns it{who}, so browsing will not write to it. Restart that gateway '
+            f'(`{restart}`) to bring the store up to date.', owned=True)
 
     def too_slow():
         # A gateway that booted while browse was verifying the store is the real answer: name it.
@@ -389,6 +425,8 @@ def reconcile_drift_for_browse(path: Path) -> bool:
     except OwnershipConflict as exc:
         if live_runtime_owner(home) is not None:
             raise owned(reason) from exc
+    if holder := _lockless_gateway_holder(path):
+        raise owned(reason, holder)
     # Already latched corrupt in this process: do not rescan a damaged file on every poll.
     if storage_state(path) == STORAGE_CORRUPT:
         raise CorruptStoreError(storage_corrupt_reason(path) or 'latched corrupt')
@@ -415,6 +453,8 @@ def reconcile_drift_for_browse(path: Path) -> bool:
                 if current:
                     return False
                 budget = _Budget(BROWSE_RECONCILE_BUDGET_S)
+                if holder := _lockless_gateway_holder(path):  # a legacy gateway started during the scan
+                    raise owned(reason, holder)
                 if _store_signature(path) != signature:
                     # Written since the scan (a gateway that came and went): the scan no longer
                     # vouches for these bytes. Refuse; the next browse scans the new state.

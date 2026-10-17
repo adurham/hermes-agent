@@ -893,3 +893,80 @@ def test_budget_refusal_on_unowned_store_names_repair_not_a_gateway(tmp_path, mo
     reconcile._scan_too_slow.clear()
     _open_session_db_at_path(path, read_only=True).close()
     assert "last_read_at" in _session_columns(path)
+
+
+_LEGACY_GATEWAY = r'''
+import sqlite3, sys, time
+conn = sqlite3.connect(sys.argv[1])  # what a pre-v0.22.1 multiplexer does: no per-profile gateway.lock
+conn.execute("SELECT count(*) FROM sessions").fetchone()
+print("holding", flush=True)
+time.sleep(60)
+'''
+
+
+@pytest.mark.platforms("linux")
+def test_legacy_gateway_holding_the_store_without_a_lock_is_not_written(tmp_path):
+    """alt-glitch W1: a v0.22.0 multiplex gateway keeps a named profile's state.db open without writing
+    that profile's gateway.lock/gateway.pid. Browse must still treat it as the owner: no DDL, a named
+    503. Plain readers (sibling browses, Desktop) are not owners, so only a holder identified as a
+    Hermes gateway process refuses."""
+    import os
+    import subprocess
+    import sys
+
+    home = _profile_home(tmp_path)
+    path = _lagging_store_with_history(home, rows=10)
+    before = _file_state(path)
+    legacy = subprocess.Popen(["hermes", "-c", _LEGACY_GATEWAY, str(path), "gateway", "run"],
+                              executable=sys.executable, env=os.environ, stdout=subprocess.PIPE, text=True)
+    try:
+        assert legacy.stdout.readline().strip() == "holding"
+        assert not (home / "gateway.lock").exists() or not (home / "gateway.lock").read_text()
+        with pytest.raises(HTTPException) as caught:
+            _open_session_db_at_path(path, read_only=True)
+    finally:
+        legacy.kill()
+        legacy.wait()
+    assert caught.value.status_code == 503
+    assert "running gateway owns it" in caught.value.detail
+    assert f"PID {legacy.pid}" in caught.value.detail
+    assert _file_state(path) == before
+    assert "last_read_at" not in _session_columns(path)
+
+
+_MULTIPLEXER_LOCK = r'''
+import fcntl, json, os, sys, time
+fh = open(sys.argv[1], "a+")
+fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+fh.seek(0); fh.truncate()
+json.dump({"pid": os.getpid(), "kind": "hermes-gateway", "hermes_home": sys.argv[2]}, fh); fh.flush()
+print("held", flush=True)
+time.sleep(60)
+'''
+
+
+@pytest.mark.platforms("linux", "macos")
+@pytest.mark.spawns_gateway_lookalike
+def test_owned_refusal_names_the_owning_multiplexers_restart(tmp_path):
+    """alt-glitch W2: when the default multiplexer owns a named profile's lock, `hermes -p NAME gateway
+    restart` is refused ("Manage the host gateway instead"). Name the owner's own restart command,
+    from the lock record's hermes_home."""
+    import os
+    import subprocess
+    import sys
+
+    home = _profile_home(tmp_path)
+    path = _lagging_store_with_history(home, rows=10)
+    host = subprocess.Popen([sys.executable, "-c", _MULTIPLEXER_LOCK, str(home / "gateway.lock"), str(tmp_path)],
+                            env=os.environ, stdout=subprocess.PIPE, text=True)
+    try:
+        assert host.stdout.readline().strip() == "held"
+        with pytest.raises(HTTPException) as caught:
+            _open_session_db_at_path(path, read_only=True)
+    finally:
+        host.kill()
+        host.wait()
+    detail = caught.value.detail
+    assert caught.value.status_code == 503 and "running gateway owns it" in detail
+    assert "`hermes gateway restart`" in detail
+    assert "-p scribe gateway restart" not in detail
