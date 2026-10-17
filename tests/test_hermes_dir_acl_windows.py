@@ -209,6 +209,28 @@ def test_elevated_repair_also_reaches_an_old_lock_already_inside_the_dir(reporte
     assert after["old_lock_writable"] is True, acl
 
 
+def test_elevated_update_step_makes_a_stranded_home_usable(reporters_parent, monkeypatch):
+    """alt-glitch on #140490: the owed ``windows_home_acl`` step had unit tests only. Here the real
+    step runs from this elevated runner over a home whose nested dirs and files carry the reporters'
+    Administrators-only DACL, with real grants; the filtered token must use every one afterwards.
+    (The full elevated ``hermes update`` run stays a workflow_dispatch / live retest.)"""
+    from hermes_cli import update_windows_acl
+
+    nested = reporters_parent / "sessions" / "2026"
+    nested.mkdir(parents=True)
+    old = reporters_parent / "gateway-locks"
+    old.mkdir()
+    (old / "telegram-bot-token-x.lock").write_text("{}")
+    _require_faithful_probe(reporters_parent, nested)
+    monkeypatch.setenv("HERMES_HOME", str(reporters_parent))
+    update_windows_acl.repair_windows_home_acl()
+    after = _child("""
+        print(json.dumps({"nested": usable(sys.argv[1]), "locks": usable(sys.argv[2]),
+                          "home": usable(sys.argv[3])}))
+    """, str(nested), str(old), str(reporters_parent))
+    assert after == {"nested": True, "locks": True, "home": True}, after
+
+
 def test_token_lock_on_an_unusable_lock_dir_parks_with_one_named_warning(tmp_path):
     """W2: the gateway meets a ``gateway-locks`` it may not create in.
 
