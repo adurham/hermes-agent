@@ -19,8 +19,8 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import is_global_startup_conflict
 from gateway.run_startup import GatewayStartupMixin
 
-pytestmark = pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,  # windows-footgun: ok — skipped on nt
-                                reason="POSIX mode bits; root ignores them")
+pytestmark = [pytest.mark.platforms("posix"),
+              pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores mode bits")]
 
 
 class _StubAdapter(BasePlatformAdapter):

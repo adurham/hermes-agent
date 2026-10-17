@@ -232,13 +232,19 @@ def _warn_refused(path: Path, exc: BaseException) -> None:
                 "point HERMES_HOME (or the link) at the real directory.", path, exc)
 
 
-def grant_user_access(path: str | Path) -> bool:
+def _elevated(elevated: bool | None) -> bool:
+    """The host fact every grant decision takes: *elevated* as passed, else probed (an elevated
+    Windows process; :func:`process_is_elevated` is False on every other host)."""
+    return process_is_elevated() if elevated is None else elevated
+
+
+def grant_user_access(path: str | Path, *, elevated: bool | None = None) -> bool:
     """Give the token's user an inheriting full-control ACE on *path* when this process is elevated.
 
     True when a grant was attempted and did not fail; False off Windows, when not elevated, when
     *path* is a junction/symlink/reparse point (refused, one warning), or when the grant failed
-    (logged; the directory itself still exists)."""
-    if sys.platform != "win32" or not process_is_elevated():
+    (logged; the directory itself still exists). *elevated* defaults to the probed host fact."""
+    if not _elevated(elevated):
         return False
     target = Path(path)
     try:
@@ -285,7 +291,8 @@ def iter_tree_without_reparse_points(root: str | Path, skipped: list[Path]) -> I
                 yield child, False
 
 
-def grant_tree_user_access(root: str | Path, *, pin_root: bool = False) -> tuple[int, list[Path], list[tuple[Path, str]]]:
+def grant_tree_user_access(root: str | Path, *, pin_root: bool = False,
+                           elevated: bool | None = None) -> tuple[int, list[Path], list[tuple[Path, str]]]:
     """Recursive :func:`grant_user_access` (the elevated post-update repair): grant the token's user
     full control on *root* and every directory and file under it, inheriting on directories.
 
@@ -295,8 +302,8 @@ def grant_tree_user_access(root: str | Path, *, pin_root: bool = False) -> tuple
 
     Returns ``(granted, skipped, failed)``: *skipped* are the reparse points (and hard-linked files)
     that were neither granted nor entered, *failed* the ``(path, reason)`` grants that raised. A
-    no-op ``(0, [], [])`` off Windows or when not elevated."""
-    if sys.platform != "win32" or not process_is_elevated():
+    no-op ``(0, [], [])`` off Windows or when not elevated (*elevated* defaults to the probe)."""
+    if not _elevated(elevated):
         return 0, [], []
     root = Path(os.path.realpath(root) if pin_root else os.path.abspath(root))
     real_root = os.path.realpath(root)
@@ -332,7 +339,8 @@ def _identity(path: Path) -> tuple[Path, int, int] | None:
     return path, st.st_dev, st.st_ino
 
 
-def make_user_dir(path: str | Path, mode: int = 0o777, *, parents: bool = False, exist_ok: bool = False) -> Path:
+def make_user_dir(path: str | Path, mode: int = 0o777, *, parents: bool = False, exist_ok: bool = False,
+                  elevated: bool | None = None) -> Path:
     """``Path.mkdir`` (same arguments and defaults) that keeps an elevated Windows creation usable
     by the same user unelevated.
 
@@ -340,9 +348,10 @@ def make_user_dir(path: str | Path, mode: int = 0o777, *, parents: bool = False,
     this call created (missing parents included) is granted the user's inheriting full-control ACE,
     and an existing leaf (the repair case) once per directory object per process, except that a
     component that is a junction/symlink/reparse point stops the grants with one warning. An
-    existing leaf without ``exist_ok`` is still granted before the ``FileExistsError``."""
+    existing leaf without ``exist_ok`` is still granted before the ``FileExistsError``. *elevated*
+    is the host fact (default: probed); production passes nothing."""
     target = Path(path)
-    if sys.platform != "win32" or not process_is_elevated():
+    if not _elevated(elevated):
         target.mkdir(mode=mode, parents=parents, exist_ok=exist_ok)
         return target
     created = []
@@ -376,12 +385,13 @@ def _grant_dirs(target: Path, to_grant: list[Path], fresh: set[Path] = frozenset
         key = _identity(directory)
         if key is None or (directory not in fresh and key in _granted):
             continue
-        if grant_user_access(directory):
+        if grant_user_access(directory, elevated=True):
             _granted.add(key)
 
 
-def unusable_dir_remedy(path: str | Path) -> str:
-    """The one-line repair for a directory this process may not use (owner from an elevated run)."""
-    if os.name == "nt":
+def unusable_dir_remedy(path: str | Path, *, windows: bool | None = None) -> str:
+    """The one-line repair for a directory this process may not use (owner from an elevated run).
+    *windows* is the host fact (default: this host)."""
+    if (os.name == "nt") if windows is None else windows:
         return f'from an elevated prompt run: icacls "{path}" /reset /t'
     return f'run: sudo chown -R "$(id -un)" "{path}"'

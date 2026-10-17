@@ -21,7 +21,7 @@ from datetime import UTC
 logger = logging.getLogger("hermes_cli.update_cmd")
 
 
-def _repair_windows_home_acl() -> None:
+def _repair_windows_home_acl(*, elevated: bool | None = None) -> None:
     """Restore access for the filtered UAC token after an elevated update.
 
     An elevated process can create home-tree entries whose DACL only grants
@@ -32,11 +32,11 @@ def _repair_windows_home_acl() -> None:
     (``hermes_dir_acl.grant_tree_user_access``): ``icacls /T`` follows junctions, so a
     same-user junction inside the home would have turned the elevated grant into full
     control of e.g. ``C:\\Program Files\\X``.
+
+    *elevated* is the host fact (default: probed; False on every host but an elevated Windows one).
     """
-    if sys.platform != "win32":
-        return
     from hermes_dir_acl import grant_tree_user_access, process_is_elevated
-    if not process_is_elevated():
+    if not (process_is_elevated() if elevated is None else elevated):
         # Only an elevated update leaves Administrators-only entries, and only an elevated token
         # can rewrite them; a recursive grant over the whole home on every update costs minutes.
         return
@@ -45,7 +45,7 @@ def _repair_windows_home_acl() -> None:
     home = get_hermes_home()
     # The home itself is the operator's choice and may be a link: pin its real directory and walk
     # below it (links beneath are still never followed).
-    granted, skipped, failed = grant_tree_user_access(home, pin_root=True)
+    granted, skipped, failed = grant_tree_user_access(home, pin_root=True, elevated=True)
     if failed and not granted:
         path, reason = failed[0]
         raise RuntimeError(f"could not restore user access to {home}: {path}: {reason}")

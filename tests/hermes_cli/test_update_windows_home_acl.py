@@ -2,15 +2,15 @@
 
 import os
 import subprocess
-import sys
+
+import pytest
 
 import hermes_dir_acl
 from hermes_cli import update_cmd_maint as maint
 
 
-def _fake_elevated_windows(monkeypatch, tmp_path, elevated=True):
+def _fake_elevated(monkeypatch, tmp_path, elevated=True):
     granted, runs = [], []
-    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     sid_row = '"host\\\\user","S-1-5-21-1-2-3-1001"\n'  # whoami /user /fo csv /nh
 
@@ -29,11 +29,11 @@ def test_repair_runs_only_from_an_elevated_update(monkeypatch, tmp_path):
     """A non-elevated update created nothing Administrators-only and could not rewrite it anyway;
     the recursive grant over the whole home is skipped there."""
     (tmp_path / "home").mkdir()
-    granted, runs = _fake_elevated_windows(monkeypatch, tmp_path, elevated=False)
-    maint._repair_windows_home_acl()
+    granted, runs = _fake_elevated(monkeypatch, tmp_path, elevated=False)
+    maint._repair_windows_home_acl()  # the production call: probed, unelevated
+    maint._repair_windows_home_acl(elevated=False)
     assert granted == [] and runs == []
-    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
-    maint._repair_windows_home_acl()
+    maint._repair_windows_home_acl(elevated=True)
     assert granted == [str(tmp_path / "home")]
 
 
@@ -45,17 +45,15 @@ def test_repair_never_recurses_through_a_link_inside_the_home(monkeypatch, tmp_p
     outside = tmp_path / "Program Files" / "X"
     (outside / "bin").mkdir(parents=True)
     (home / "cache" / "images").symlink_to(outside, target_is_directory=True)
-    granted, runs = _fake_elevated_windows(monkeypatch, tmp_path)
+    granted, runs = _fake_elevated(monkeypatch, tmp_path)
     maint._repair_windows_home_acl()
     assert not any(argv and argv[0] == "icacls" and "/T" in argv for argv in runs), runs
     assert granted == [str(home), str(home / "cache")]
 
 
 def test_repair_stays_owed_when_nothing_could_be_granted(monkeypatch, tmp_path):
-    import pytest
-
     (tmp_path / "home").mkdir()
-    _fake_elevated_windows(monkeypatch, tmp_path)
+    _fake_elevated(monkeypatch, tmp_path)
 
     def denied(path, *_a, **_k):
         raise OSError("access denied")
@@ -75,16 +73,14 @@ def test_repair_walks_below_an_operator_linked_home(monkeypatch, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (real / "jn").symlink_to(outside, target_is_directory=True)
-    granted, _runs = _fake_elevated_windows(monkeypatch, tmp_path)
+    granted, _runs = _fake_elevated(monkeypatch, tmp_path)
     (tmp_path / "home").symlink_to(real, target_is_directory=True)
     maint._repair_windows_home_acl()
     assert sorted(granted) == sorted([str(real), str(real / "state"), str(real / "state" / "s.json")])
 
 
 def test_repair_that_repaired_nothing_stays_owed(monkeypatch, tmp_path):
-    import pytest
-
-    _fake_elevated_windows(monkeypatch, tmp_path)
+    _fake_elevated(monkeypatch, tmp_path)
     (tmp_path / "home").symlink_to(tmp_path / "gone", target_is_directory=True)  # dangling
     with pytest.raises(RuntimeError, match="nothing was repaired"):
         maint._repair_windows_home_acl()

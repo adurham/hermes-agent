@@ -1,5 +1,9 @@
 """``make_user_dir`` contract off Windows and its grant selection (the Windows ACL effect itself is
-proved by ``test_hermes_dir_acl_windows.py`` on Windows CI)."""
+proved by ``test_hermes_dir_acl_windows.py`` on Windows CI).
+
+No test pretends to be on Windows: elevation is a host fact the functions take as data (or the
+process_is_elevated probe stands in for it on a production path), and only the native writer
+(``_grant_with_pywin32``) is replaced, to record what an elevated grant would have touched."""
 import os
 from pathlib import Path
 
@@ -8,13 +12,13 @@ import pytest
 import hermes_dir_acl
 
 
+@pytest.mark.platforms("posix")
 def test_off_windows_it_is_plain_mkdir(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p: calls.append(p))
+    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p, **_k: calls.append(p))
     target = hermes_dir_acl.make_user_dir(tmp_path / "a" / "b", 0o700, parents=True)
     assert target.is_dir() and calls == []
-    if os.name != "nt":
-        assert (target.stat().st_mode & 0o777) == 0o700
+    assert (target.stat().st_mode & 0o777) == 0o700
     with pytest.raises(FileExistsError):
         hermes_dir_acl.make_user_dir(target)
     with pytest.raises(FileNotFoundError):
@@ -23,9 +27,8 @@ def test_off_windows_it_is_plain_mkdir(tmp_path, monkeypatch):
 
 def test_elevated_grants_every_created_dir_and_an_existing_leaf_once(tmp_path, monkeypatch):
     granted = []
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
-    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p: granted.append(p) or True)
+    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p, **_k: granted.append(p) or True)
     monkeypatch.setattr(hermes_dir_acl, "_granted", set())
 
     leaf = hermes_dir_acl.make_user_dir(tmp_path / "state" / "gateway-locks", parents=True, exist_ok=True)
@@ -42,9 +45,8 @@ def test_elevated_grants_every_created_dir_and_an_existing_leaf_once(tmp_path, m
 def test_elevated_existing_leaf_without_exist_ok_is_repaired_then_raises(tmp_path, monkeypatch):
     """Path.mkdir contract stays (FileExistsError), but the left-behind dir is granted first."""
     granted = []
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
-    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p: granted.append(p) or True)
+    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p, **_k: granted.append(p) or True)
     monkeypatch.setattr(hermes_dir_acl, "_granted", set())
     left = tmp_path / "state"
     left.mkdir()
@@ -56,7 +58,6 @@ def test_elevated_existing_leaf_without_exist_ok_is_repaired_then_raises(tmp_pat
 
 
 def test_a_failed_grant_never_fails_the_mkdir_and_is_retried(tmp_path, monkeypatch):
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
     monkeypatch.setattr(hermes_dir_acl, "_granted", set())
     attempts = []
@@ -71,11 +72,10 @@ def test_a_failed_grant_never_fails_the_mkdir_and_is_retried(tmp_path, monkeypat
     assert target.is_dir() and attempts == [target, target]
 
 
-def test_remedy_names_the_platform_repair(monkeypatch):
-    monkeypatch.setattr(hermes_dir_acl.os, "name", "nt")
-    assert hermes_dir_acl.unusable_dir_remedy("C:\\x") == 'from an elevated prompt run: icacls "C:\\x" /reset /t'
-    monkeypatch.setattr(hermes_dir_acl.os, "name", "posix")
-    assert "chown" in hermes_dir_acl.unusable_dir_remedy("/x")
+def test_remedy_names_the_platform_repair():
+    remedy = hermes_dir_acl.unusable_dir_remedy
+    assert remedy("C:\\x", windows=True) == 'from an elevated prompt run: icacls "C:\\x" /reset /t'
+    assert "chown" in remedy("/x", windows=False)
 
 
 # ── P2-5: an elevated grant never follows a junction/symlink out of the Hermes home ──────────────
@@ -90,7 +90,6 @@ def elevated_windows(tmp_path, monkeypatch):
     outside.mkdir(parents=True)
     (outside / "app.exe").write_text("x")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
     monkeypatch.setattr(hermes_dir_acl, "_granted", set())
     touched = []
@@ -139,7 +138,6 @@ def test_make_user_dir_still_grants_real_dirs_under_a_linked_home(tmp_path, monk
     linked = tmp_path / "linked-home"
     linked.symlink_to(real, target_is_directory=True)
     monkeypatch.setenv("HERMES_HOME", str(linked))
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
     monkeypatch.setattr(hermes_dir_acl, "_granted", set())
     calls = []
@@ -197,9 +195,9 @@ def test_tree_grant_never_touches_a_target_outside_the_home(elevated_windows):
 
 
 def test_tree_grant_is_a_noop_unelevated(tmp_path, monkeypatch):
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
-    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: False)
-    assert hermes_dir_acl.grant_tree_user_access(tmp_path) == (0, [], [])
+    monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", lambda *_a, **_k: pytest.fail("granted"))
+    assert hermes_dir_acl.grant_tree_user_access(tmp_path, elevated=False) == (0, [], [])
+    assert hermes_dir_acl.grant_tree_user_access(tmp_path) == (0, [], [])  # the probe off an elevated Windows host
 
 
 @pytest.mark.parametrize("shape", ["symlink-only", "symlink-before-a-file", "hardlink-only", "nested-hardlink"])
@@ -243,9 +241,8 @@ def test_a_recreated_dir_is_granted_again(tmp_path, monkeypatch):
     """Review-9 (c): the grant memo was keyed by pathname, so media release deleting a digest dir
     and the next capture recreating it at the same path left the new dir without the grant."""
     granted = []
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
-    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p: granted.append(p) or True)
+    monkeypatch.setattr(hermes_dir_acl, "grant_user_access", lambda p, **_k: granted.append(p) or True)
     monkeypatch.setattr(hermes_dir_acl, "_granted", set())
     target = tmp_path / "native-inputs" / ("0" * 64)
     hermes_dir_acl.make_user_dir(target, 0o700, parents=True, exist_ok=True)
@@ -264,7 +261,6 @@ def test_media_release_then_recapture_grants_the_recreated_digest_dir(tmp_path, 
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
     monkeypatch.setattr(hermes_dir_acl, "_granted", set())
     grants = []

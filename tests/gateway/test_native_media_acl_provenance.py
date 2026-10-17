@@ -2,8 +2,8 @@
 
 ``native_inputs_root()`` resolves the store, which erases a link planted below the home
 (``cache/documents`` -> elsewhere). An elevated grant on that resolved path landed outside the home
-with no home fence (``expected=None``). Only the elevated-Windows branch selection and the native
-writer are faked; capture, mkdir and the links are real disk operations.
+with no home fence (``expected=None``). Only the elevation fact and the native writer are
+replaced (no host faking); capture, mkdir and the links are real disk operations.
 """
 import os
 from pathlib import Path
@@ -16,7 +16,6 @@ from gateway import session_ingress_media as media
 
 def _elevated(monkeypatch, home):
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(hermes_dir_acl.sys, "platform", "win32")
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: True)
     monkeypatch.setattr(hermes_dir_acl, "_granted", set())
     grants = []

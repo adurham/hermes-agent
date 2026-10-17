@@ -251,11 +251,11 @@ def _owner_pid(home: Path) -> int | None:
     return None
 
 
-def _refused(home: Path) -> GatewayDiscovery:
-    """The owner's control channel refused this same-user client. On Windows name the boundary
-    (an elevated owner, or one in another logon session) with its remedy instead of the generic
-    ``authorization`` that reads as a credential failure (#139845, #140252)."""
-    if _NATIVE_WINDOWS and (pid := _owner_pid(home)) is not None:
+def _refused(home: Path, *, windows: bool = _NATIVE_WINDOWS) -> GatewayDiscovery:
+    """The owner's control channel refused this same-user client. On Windows (*windows*, the host
+    fact) name the boundary (an elevated owner, or one in another logon session) with its remedy
+    instead of the generic ``authorization`` that reads as a credential failure (#139845, #140252)."""
+    if windows and (pid := _owner_pid(home)) is not None:
         from gateway.runtime_bootstrap_windows import probe_refused_owner
         try:
             named = probe_refused_owner(pid)
