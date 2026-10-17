@@ -2404,3 +2404,10 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   the reported assertion. 196 provider/model-switch test files: 4180 passed, 12 failed — the same 12
   on base (no `acp` module, exo needs egress, meta-ai id, firecrawl). `python scripts/check` green.
   Branch `claude/fix-commandcode-api-key-test-uot9md`. Next: next row of Next pick.
+- 2026-10-17 — C-0017 `gateway/platforms/signal.py` async: ASYNC240 3 → 0. `_resolve_image_path`'s
+  exists-then-stat moved off the loop into one `asyncio.to_thread(_existing_file_size, …)` (new
+  module helper, same missing/oversize semantics); `_send_attachment` awaits
+  `asyncio.to_thread(Path(file_path).stat)` (FileNotFoundError still caught). 8 signal/send test
+  files: 137 passed, 1 skipped; old-vs-new differential over 9 inputs (empty, bare `file://`, small,
+  oversize, directory, broken symlink, missing, URL download): 0 mismatches. `python scripts/check`
+  green. Branch `claude/code-health-ratchet-c0017-uea4i3`. Next: C-0018.

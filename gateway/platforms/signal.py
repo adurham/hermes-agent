@@ -83,6 +83,12 @@ def _guess_extension(data: bytes) -> str:
     return ".zip" if data[:2] == b"PK" else ".bin"
 
 
+def _existing_file_size(file_path: str) -> Optional[int]:
+    """Size of ``file_path`` in bytes, or None when it does not exist (blocking; run via to_thread)."""
+    path = Path(file_path)
+    return path.stat().st_size if path.exists() else None
+
+
 def _is_image_ext(ext: str) -> bool:
     return ext.lower() in {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
@@ -769,9 +775,10 @@ class SignalAdapter(BasePlatformAdapter):
                 file_path = await cache_image_from_url(image_url)
             except Exception as e:
                 return None, "download", e
-        if not file_path or not Path(file_path).exists():
+        file_size = await asyncio.to_thread(_existing_file_size, file_path) if file_path else None
+        if file_size is None:
             return None, "missing", None
-        if (file_size := Path(file_path).stat().st_size) > SIGNAL_MAX_ATTACHMENT_SIZE:
+        if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return None, "oversize", file_size
         return file_path, None, None
 
@@ -887,7 +894,7 @@ class SignalAdapter(BasePlatformAdapter):
         """Send any local file as a Signal attachment (shared by send_document/image_file/voice/video)."""
         await self._stop_typing_indicator(chat_id)
         try:
-            file_size = Path(file_path).stat().st_size
+            file_size = (await asyncio.to_thread(Path(file_path).stat)).st_size
         except FileNotFoundError:
             return SendResult(success=False, error=f"{media_label} file not found: {file_path}")
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
