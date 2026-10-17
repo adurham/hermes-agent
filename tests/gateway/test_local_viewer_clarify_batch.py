@@ -42,7 +42,7 @@ QUESTIONS = [{'qid': 'q0', 'question': 'colour?', 'choices': ['red', 'blue'], 'm
 
 def test_batch_is_one_request_and_the_panels_answers_return(monkeypatch):
     from gateway.session_clarify_batch import ask_clarify_batch
-    from gateway.session_sudo_prompt import resolve
+    from gateway.session_server_requests import resolve
     turn, peer = _turn()
     out = {}
     worker = threading.Thread(target=lambda: out.update(ask_clarify_batch(turn, QUESTIONS)))

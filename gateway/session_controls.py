@@ -195,7 +195,7 @@ class AuthorityConnection:
         return handlers
 
     async def dispatch(self, request):
-        from gateway.session_sudo_prompt import is_response_frame
+        from gateway.session_server_requests import is_response_frame
         if is_response_frame(request):
             # A viewer answering one of the owner's server→client requests (the sudo prompt): a
             # response gets no reply (JSON-RPC), and only a viewer entitled to respond on that
@@ -694,7 +694,7 @@ class AuthorityConnection:
         return asdict(await self.authority.interrupt(self.actor, ref, params.get('execution_generation')))
 
     def _resolve_response(self, frame):
-        from gateway.session_sudo_prompt import may_settle, resolve
+        from gateway.session_server_requests import may_settle, resolve
 
         def entitled(session_id, events):
             # The same rule ``clarify.lock`` applies to the same request id (attached + respond).

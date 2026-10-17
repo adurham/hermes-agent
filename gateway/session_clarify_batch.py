@@ -14,7 +14,7 @@ _QUESTION_KEYS = ("qid", "question", "choices", "multi_select")
 
 
 def ask_clarify_batch(turn, questions) -> dict:
-    from gateway.session_sudo_prompt import ask_viewer_result
+    from gateway.session_server_requests import ask_viewer_result
     from tools.clarify_gateway import get_clarify_timeout
     authority, session_id, _generation = turn._approval_owner
     live = authority.sessions.get(session_id)
@@ -36,7 +36,7 @@ def ask_clarify_batch(turn, questions) -> dict:
         return {"answers": {}, "outcome": "cancelled"}
     known = {entry["qid"] for entry in questions}
     clean = {qid: (value if isinstance(value, str) else None) for qid, value in answers.items() if qid in known}
-    # ``session_sudo_prompt`` settles a batch with its terminal outcome (an absent outcome on a frame
+    # ``session_server_requests`` settles a batch with its terminal outcome (an absent outcome on a frame
     # that carried answers is ``submitted``; a cancel-all or error is ``cancelled``).
     outcome = result.get("outcome") if result.get("outcome") in ("submitted", "timed_out", "cancelled") else "cancelled"
     return {"answers": clean, "outcome": outcome}

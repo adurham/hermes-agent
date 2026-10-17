@@ -97,7 +97,7 @@ async def test_clarify_lock_answers_the_owner_batch_request(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_a_viewer_without_the_session_cannot_lock_its_answers(tmp_path, monkeypatch):
     from gateway.session_controls import AuthorityConnection
-    from gateway.session_sudo_prompt import resolve
+    from gateway.session_server_requests import resolve
 
     async def answer(event):
         return 'ok'
@@ -138,7 +138,7 @@ async def test_another_profiles_viewer_of_the_same_session_id_cannot_answer(tmp_
     with ``session:respond`` must not lock or answer profile A's request, through ``clarify.lock`` or a
     raw response frame."""
     from gateway.session_controls import AuthorityConnection
-    from gateway.session_sudo_prompt import _open
+    from gateway.session_server_requests import _open
 
     async def answer(event):
         return 'ok'
@@ -200,7 +200,7 @@ async def test_clarify_lock_params_are_checked_by_the_declared_canonical_contrac
 @pytest.mark.asyncio
 async def test_an_unattached_connection_cannot_settle_the_batch_with_a_raw_response_frame(tmp_path, monkeypatch):
     """``clarify.lock`` and the closing response frame are two ways to settle the same request id: both go
-    through one entitlement rule (``session_sudo_prompt.may_settle``), so a same-profile connection that
+    through one entitlement rule (``session_server_requests.may_settle``), so a same-profile connection that
     never attached the session can no more close the batch with a frame than lock one of its answers."""
     from gateway.session_controls import AuthorityConnection
 
@@ -214,7 +214,7 @@ async def test_an_unattached_connection_cannot_settle_the_batch_with_a_raw_respo
         peer, worker, out = _start_batch(authority)
         await _wait_for(lambda: any(f.get('method') == 'clarify' for f in peer.frames))
         rid = next(f['id'] for f in peer.frames if f.get('method') == 'clarify')
-        from gateway.session_sudo_prompt import _open
+        from gateway.session_server_requests import _open
         # ``dispatch`` settles a response frame synchronously: still open afterwards means refused.
         await outsider.dispatch({'jsonrpc': '2.0', 'id': rid, 'result': {'answers': {'q0': 'X', 'q1': 'X'}}})
         assert rid in _open and not _open[rid].event.is_set() and out == {}, out
