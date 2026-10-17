@@ -7,6 +7,11 @@ origin (**foreground** turn or **background_review** fork). ``false`` (default)
 writes freely; ``true`` never commits directly: it prompts inline (memory,
 interactive CLI only) or **stages** the write under
 ``<HERMES_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review.
+
+Memory has one extra fork-only switch, ``memory.auto_apply`` (default off): it
+turns the two paths that stage even with ``write_approval`` off — session-exit
+extraction proposals and unattended background-review consolidations — into
+direct applies. See :func:`auto_apply_enabled`.
 """
 
 from __future__ import annotations
@@ -58,6 +63,24 @@ def _normalize_enabled(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     return isinstance(value, str) and value.strip().lower() in _TRUTHY_STRINGS
+
+
+def auto_apply_enabled() -> bool:
+    """``memory.auto_apply`` (fork-only, default false) — full automatic memory management.
+
+    True = memory writes that would otherwise be STAGED for review are applied directly
+    instead: the session-exit extraction proposals (``hermes_cli.memory_confirm``) and the
+    unattended background-review consolidations (the delete gate in ``tools.memory_tool``).
+    An explicit ``memory.write_approval: true`` wins over it — asking for approval means
+    approval is required wherever this would skip staging. Any unset/invalid value →
+    False (staging; upstream behaviour)."""
+    try:
+        if write_approval_enabled(MEMORY):
+            return False
+        from hermes_cli.config import cfg_get, load_config
+        return _normalize_enabled(cfg_get(load_config(), MEMORY, "auto_apply", default=False))
+    except Exception:
+        return False
 
 
 # --- Pending store (file-backed) ---

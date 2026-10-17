@@ -350,3 +350,54 @@ class TestSessionExit:
         monkeypatch.setattr(_ex, "is_enabled", lambda: False)
         assert memory_confirm.confirm_and_commit("sid", [{"role": "user"}])["staged"] == 0
         assert wa.pending_count(wa.MEMORY) == 0
+
+
+# ---------------------------------------------------------------------------
+# memory.auto_apply — full automatic memory management (fork)
+# ---------------------------------------------------------------------------
+
+class TestAutoApplySessionExit:
+    """With memory.auto_apply on, the exit pass applies each classified proposal through
+    the same replay path /memory approve runs, and stages nothing."""
+
+    def test_applies_inline_and_stages_nothing(self, hermes_home, monkeypatch, capsys):
+        monkeypatch.setattr(wa, "auto_apply_enabled", lambda: True)
+        seen: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "tools.memory_extraction.conflict.apply_verdict",
+            lambda verdict, proposal, **kw: (seen.append((verdict.verdict, proposal["content"]))
+                                             or {"action": "stored", "fact_id": 3}))
+        TestSessionExit._wire(monkeypatch, [{"content": "fact one"}, {"content": "fact two"}])
+        summary = memory_confirm.confirm_and_commit("sid", [{"role": "user", "content": "hi"}])
+        assert summary["applied"] == 2
+        assert summary["committed"] == 2
+        assert summary["staged"] == 0
+        assert wa.pending_count(wa.MEMORY) == 0
+        assert seen == [("NEW", "fact one"), ("NEW", "fact two")]
+        out = capsys.readouterr().out
+        assert "applied 2 proposals automatically" in out
+        assert "staged" not in out
+
+    def test_failed_inline_apply_stages_instead_of_losing(self, hermes_home, monkeypatch):
+        monkeypatch.setattr(wa, "auto_apply_enabled", lambda: True)
+
+        def _boom(verdict, proposal, **kw):
+            raise RuntimeError("warm store down")
+
+        monkeypatch.setattr("tools.memory_extraction.conflict.apply_verdict", _boom)
+        TestSessionExit._wire(monkeypatch, [{"content": "fact one"}])
+        summary = memory_confirm.confirm_and_commit("sid", [{"role": "user", "content": "hi"}])
+        assert summary["applied"] == 0
+        assert summary["staged"] == 1
+        assert wa.pending_count(wa.MEMORY) == 1
+        # The fallback record is a normal staged proposal (verdict metadata included).
+        (rec,) = wa.list_pending(wa.MEMORY)
+        assert rec["payload"]["conflict"]["verdict"] == "NEW"
+
+    def test_default_off_stages_without_applying(self, hermes_home, monkeypatch):
+        """No helper monkeypatch: config absent in the temp home → default off, staging."""
+        assert wa.auto_apply_enabled() is False
+        TestSessionExit._wire(monkeypatch, [{"content": "fact one"}])
+        summary = memory_confirm.confirm_and_commit("sid", [{"role": "user", "content": "hi"}])
+        assert summary["applied"] == 0 and summary["staged"] == 1
+        assert wa.pending_count(wa.MEMORY) == 1

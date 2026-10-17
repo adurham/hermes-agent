@@ -20,6 +20,13 @@ enrichments of the pending record rather than a separate UI. See
 What is left here is the staging adapter and a non-blocking exit notice:
 exiting a session must never wait on a human, which is the whole point of
 moving the review off the exit path.
+
+``memory.auto_apply`` (fork, default off) skips the staging step: each
+classified proposal is applied immediately through the same replay path
+``/memory approve`` runs, so verdict semantics (dedupe / merge / supersede)
+are identical to a reviewed approval — full automatic memory management.
+``memory.write_approval: true`` still wins over it, and a proposal an inline
+apply cannot handle is staged rather than dropped.
 """
 
 from __future__ import annotations
@@ -72,15 +79,10 @@ def _classify_proposals(proposals: list[dict[str, Any]]) -> list[dict[str, Any]]
     return annotated
 
 
-def stage_proposal(proposal: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Stage one classified proposal into the write-approval pending store.
-
-    The payload is exactly what ``apply_memory_pending`` needs to replay the
-    write, plus the conflict metadata the reviewer needs to judge it. Returns the
-    pending record, or None if staging failed (logged, never raised — a lost
-    proposal must not take session exit down with it).
-    """
-    from tools import write_approval as wa
+def _proposal_payload(proposal: dict[str, Any]) -> dict[str, Any]:
+    """The replay payload for one classified proposal — exactly what
+    ``apply_memory_pending`` needs, plus the conflict metadata (staging keeps it
+    for the reviewer; auto-apply rehydrates the same verdict at apply time)."""
     from tools.memory_extraction import conflict
 
     attached = proposal.get("verdict")
@@ -99,14 +101,43 @@ def stage_proposal(proposal: dict[str, Any]) -> Optional[dict[str, Any]]:
     }
     if tier == "hot":
         payload["target"] = proposal.get("target") or "memory"
+    return payload
+
+
+def stage_proposal(proposal: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Stage one classified proposal into the write-approval pending store.
+
+    The payload is exactly what ``apply_memory_pending`` needs to replay the
+    write, plus the conflict metadata the reviewer needs to judge it. Returns the
+    pending record, or None if staging failed (logged, never raised — a lost
+    proposal must not take session exit down with it).
+    """
+    from tools import write_approval as wa
+
+    payload = _proposal_payload(proposal)
     try:
         return wa.stage_write(
             wa.MEMORY, payload,
-            summary=f"[{verdict.verdict}] {_shorten(payload['content'], 120)}",
+            summary=f"[{payload['conflict'].get('verdict', 'NEW')}] {_shorten(payload['content'], 120)}",
             origin=wa.current_origin())
     except Exception as e:
         logger.warning("memory confirm: failed to stage proposal: %s", e, exc_info=True)
         return None
+
+
+def apply_proposal_now(proposal: dict[str, Any]) -> dict[str, Any]:
+    """Apply one classified proposal immediately (``memory.auto_apply``).
+
+    Runs the same replay path ``/memory approve`` runs — the verdict attached by
+    ``_classify_proposals`` is rehydrated, never recomputed, so a
+    DUPLICATE/REFINEMENT/CONTRADICTION resolves exactly as a reviewed approval
+    would (dedupe / merge / supersede). No hot-tier store is passed: the extractor
+    only ever produces warm-tier proposals; anything the applier cannot handle
+    reports failure (or raises), and the caller stages that proposal instead of
+    losing it.
+    """
+    from tools.memory_tool import apply_memory_pending
+    return apply_memory_pending(_proposal_payload(proposal), None)
 
 
 def confirm_and_commit(
@@ -115,13 +146,14 @@ def confirm_and_commit(
 ) -> dict[str, Any]:
     """Run the session-end extraction pass and stage its proposals for review.
 
-    Returns the ``on_session_end`` summary dict. Safe to call with no pending
-    proposals — returns all-zero counts. Never blocks on user input.
+    With ``memory.auto_apply`` on (fork), proposals are applied inline instead of
+    staged. Returns the ``on_session_end`` summary dict. Safe to call with no
+    pending proposals — returns all-zero counts. Never blocks on user input.
     """
     summary: dict[str, Any] = {
         "session_id": session_id, "buffered": 0, "final_proposed": 0, "committed": 0,
         "skipped": 0, "cleanup_proposed": 0, "cleanup_applied": 0, "cleanup_skipped": 0,
-        "actions": [], "cleanup_actions": [], "staged": 0,
+        "actions": [], "cleanup_actions": [], "staged": 0, "applied": 0,
     }
     if not session_id:
         return summary
@@ -139,6 +171,7 @@ def confirm_and_commit(
         return summary
 
     staged: list[dict[str, Any]] = []
+    applied: list[dict[str, Any]] = []
 
     # The session-end extraction pass makes a real LLM call that can take several
     # seconds; without a spinner the process reads as frozen.
@@ -161,12 +194,26 @@ def confirm_and_commit(
                 _spinner.stop("")
             except Exception:
                 pass
+        from tools import write_approval as wa
+        auto = wa.auto_apply_enabled()  # memory.auto_apply: full automatic memory management
         for p in _classify_proposals(proposals):
+            if auto:
+                try:
+                    result = apply_proposal_now(p)
+                except Exception as e:
+                    result = {"success": False, "error": str(e)}
+                if result.get("success"):
+                    applied.append(result)
+                    continue
+                # Never lose a proposal to a failed inline apply — the pending store
+                # owns it instead (logged; the exit notice counts it as staged).
+                logger.warning("memory confirm: auto-apply failed, staging instead: %s",
+                               result.get("error"))
             record = stage_proposal(p)
             if record is not None:
                 staged.append(record)
-        # Approve nothing inline: every proposal is now owned by the pending
-        # store, and returning it here would commit it a second time.
+        # Approve nothing inline: every proposal is now either applied already or
+        # owned by the pending store, and returning it here would commit it twice.
         return {"entries": [], "cleanup": []}
 
     try:
@@ -182,21 +229,30 @@ def confirm_and_commit(
                 pass
 
     summary["staged"] = len(staged)
+    summary["applied"] = len(applied)
+    # Auto-applied proposals WERE committed to the warm tier; reflect that in the
+    # extractor's own committed count (its inline commit path is bypassed here).
+    if applied:
+        summary["committed"] = len(applied)
     # ``skipped`` counts proposals the extractor did not commit; staged ones are
     # deferred rather than dropped, so don't report them as lost.
     if staged:
         summary["skipped"] = max(0, summary.get("skipped", 0) - len(staged))
-    _print_staged_notice(staged, summary)
+    _print_staged_notice(applied, staged, summary)
     return summary
 
 
-def _print_staged_notice(staged: list[dict[str, Any]], summary: dict[str, Any]) -> None:
-    """Non-blocking exit notice: what was staged, and how to review it.
+def _print_staged_notice(applied: list[dict[str, Any]], staged: list[dict[str, Any]],
+                         summary: dict[str, Any]) -> None:
+    """Non-blocking exit notice: what was applied or staged, and how to review the rest.
 
     Deliberately a notice and not a prompt — session exit never waits on a human.
     """
     if summary.get("cleanup_applied"):
         print(f"Memory: applied {summary['cleanup_applied']} cleanup action(s).")
+    if applied:
+        noun = "proposal" if len(applied) == 1 else "proposals"
+        print(f"Memory: applied {len(applied)} {noun} automatically (memory.auto_apply).")
     if not staged:
         return
     noun = "proposal" if len(staged) == 1 else "proposals"
