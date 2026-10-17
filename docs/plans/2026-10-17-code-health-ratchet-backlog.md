@@ -2597,3 +2597,12 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   400/404). FILE_LINES 887 → 895. New `tests/hermes_cli/test_audio_router_off_loop.py` (4 tests,
   all red on main). 12 audio-route test files 312/312 (main: 308/308 + 25 skipped both sides).
   `scripts/check` green, 12 checks. Branch `claude/c-0022-audio-health-ratchet-cctmag`. Next: C-0023.
+- 2026-10-17 — C-0031 `gateway/platforms/yuanbao.py` async: RUF006 1 → 0 (file hits 38 → 37; the
+  35 BLE001 + 2 S110 hits untouched, in place and in order). `ConnectionManager.schedule_reconnect`
+  keeps its task in `_reconnect_tasks` until done; `_reap_reconnect` logs anything escaping the
+  reconnect loop with its traceback. Kept out of the adapter's `_background_tasks` on purpose, so
+  shutdown cancellation is unchanged. No sibling instances (every other `create_task` in the file
+  is already tracked). Left: `close()` does not cancel an in-flight reconnect (pre-existing; own
+  change). FILE_LINES 2,820 → 2,819 (two docstring and two call repacks in `ConnectionManager`).
+  New `tests/gateway/test_yuanbao_reconnect_task.py` (logging test red on main); 25
+  yuanbao-referencing test files 362 passed. Branch `claude/yuanbao-async-ratchet-tcjium`.
