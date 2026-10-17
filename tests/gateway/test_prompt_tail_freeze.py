@@ -18,6 +18,7 @@ is guarded by the parity test below.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -355,8 +356,9 @@ class TestVoiceAckFollowsTheAnsweringBot:
         )
         GatewayTurnProgressMixin.voice_ack_callback(progress, "call1", "web_search", {})
         assert len(scheduled) == 1
-        assert scheduled[0].cr_frame.f_locals["self"] is secondary
-        scheduled[0].close()
+        asyncio.run(scheduled[0])
+        assert secondary.acks == [77]
+        assert _primary.acks == []
 
 
 # ---------------------------------------------------------------------------
