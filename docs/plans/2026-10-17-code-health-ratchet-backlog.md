@@ -2420,3 +2420,10 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   files: 137 passed, 1 skipped; old-vs-new differential over 9 inputs (empty, bare `file://`, small,
   oversize, directory, broken symlink, missing, URL download): 0 mismatches. `python scripts/check`
   green. Branch `claude/code-health-ratchet-c0017-uea4i3`. Next: C-0018.
+- 2026-10-17 — C-1055 `plugins/platforms/buzz/adapter.py` (async): ASYNC240×3 → 0. The three local-media
+  probes (`send_image`, `_send_file_attachment`, `send_image_file`) now run `Path(...).expanduser` and
+  the sibling `is_file()` stat via `await asyncio.to_thread(...)`; `_send_file_attachment(probe=False)`
+  uses the caller's already-expanded path as-is. No other ASYNC/HX007-9/RUF006 hits in the file
+  (ASYNC109 is not a ratchet rule). File held at 2,022 lines (its cap). Buzz + adapter-parity tests:
+  16 files, 521 passed, 0 failed. `python scripts/check` green, 12 checks.
+  Branch `claude/buzz-adapter-async-fixes-fn9jmb`.
