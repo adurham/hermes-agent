@@ -39,9 +39,13 @@ def test_config_labels_vertex_callable_as_google_oauth_without_minting(capsys, m
     assert mints == [], "/config minted a Vertex token just to display it"
 
 
-def test_config_keeps_entra_label_for_other_token_providers(capsys):
+def test_config_keeps_entra_label_for_entra_token_providers(capsys):
+    from agent.credential_source import ENTRA_ID, tag_credential_source
+
     def entra_bearer_provider() -> str:
         raise AssertionError("never invoked")
 
-    out = _config_text(capsys, entra_bearer_provider)
+    # Only a provider tagged as Entra gets the Entra label; an untagged callable gets the neutral
+    # label (tests/agent/test_credential_source_labels.py).
+    out = _config_text(capsys, tag_credential_source(entra_bearer_provider, ENTRA_ID))
     assert t("cli.config.microsoft_entra_id") in out, out
