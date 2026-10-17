@@ -2385,3 +2385,10 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `typing.get_type_hints(_open_rfb)` raised `NameError` on main); `Path` is now a module-level import
   and `_bridge`'s redundant local import is gone. No other F-rule hits in the file. Display ws tests
   8/8; `scripts/check` ok. Branch `claude/fix-display-py-f821-0ikhxl`.
+- 2026-10-17 — pre-existing red `tests/hermes_cli/test_width_engine_matrix.py::test_fixture_is_pinned_to_shipped_xterm_version`:
+  not a version drift (fixture, `web/` + `apps/desktop/` pins and `package-lock.json` all say
+  `@xterm/addon-unicode11` 0.9.0) — the test read the shipped version from an installed
+  `node_modules/@xterm/addon-unicode11/package.json`, which the Python test env never has
+  (FileNotFoundError on every clean checkout). It now reads the committed lockfile's resolution(s) and
+  requires exactly the fixture's version; a lockfile bump to 0.10.0 still fails with the regenerate
+  message. File 4/4 passed. Branch `claude/fix-xterm-version-fixture-j4vcmn`.
