@@ -1004,8 +1004,12 @@ def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.config.load_config_readonly",
                         lambda: {"local_runtime": {"backend": "cpu"}})  # another profile's config
     priced: list = []
-    monkeypatch.setattr(bootstrap, "_generate_presets", lambda mdir, path, engine_tag=None: priced.append(
-        (hardware._configured_engine(), engine_tag)) or path)
+
+    def _priced(mdir, path, residents=1, engine_tag=None):
+        priced.append((hardware._configured_engine(), engine_tag))
+        return path
+
+    monkeypatch.setattr(bootstrap, "_generate_presets", _priced)
     monkeypatch.setattr(bootstrap, "_admitted_models_max", lambda mdir, configured: configured)
 
     class _NoStart:

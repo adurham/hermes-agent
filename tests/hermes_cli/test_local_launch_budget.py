@@ -99,6 +99,7 @@ def test_launch_budget_counts_own_server_as_free(monkeypatch):
 def test_launch_budget_skips_unified_memory_and_failed_probes(monkeypatch):
     uma = replace(CARD_CAPACITY, uma=True)
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: pytest.fail("UMA must not probe"))
+    monkeypatch.setattr(hardware, "_windows_memory_status", lambda: None)  # Windows narrows by commit
     assert hardware.launch_budget(uma) is None
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
     assert hardware.launch_budget(CARD_CAPACITY) is None
@@ -224,6 +225,7 @@ class _Router:
         self.preset_path = preset_path
         self.statuses = statuses
         self.reloads = 0
+        self.models_max = 1
         self.proc = SimpleNamespace(poll=lambda: None)
         self._refit_usable = None
         import threading
@@ -273,7 +275,7 @@ def test_a_replan_keeps_the_draft_the_serving_engine_loads(hermes_home, monkeypa
     monkeypatch.setattr(bootstrap, "_SERVING_ENGINE", engine)
     _card(monkeypatch, 2.0)
     path = hermes_home / "presets.ini"
-    bootstrap._generate_presets(mdir, path, engine.tag)
+    bootstrap._generate_presets(mdir, path, engine_tag=engine.tag)
     assert "spec-type = draft-dflash" in path.read_text(encoding="utf-8")
 
     _card(monkeypatch, 0.0)  # the user closed the heavy apps
