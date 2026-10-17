@@ -279,6 +279,32 @@ def _automation_rows(messaging):
 
 
 @pytest.mark.asyncio
+async def test_a_tick_admitted_while_its_completion_lands_never_queues_behind_it(messaging, monkeypatch):
+    """The tick's check-and-admit and the completion's admit-and-withdraw are one critical section: a
+    completion that lands while a checked tick is still on its way in withdraws it once it is in."""
+    authority, gate, entered = messaging.authority, asyncio.Event(), asyncio.Event()
+    admit = authority.admit_automation
+
+    async def held(adapter, event, identity, **kwargs):
+        if identity.startswith('["heartbeat"'):
+            entered.set()
+            await gate.wait()
+        return await admit(adapter, event, identity, **kwargs)
+    monkeypatch.setattr(authority, 'admit_automation', held)
+
+    tick = asyncio.ensure_future(_drain_one(messaging.runner, messaging.event('heartbeat', **_tick_fields('proc_job', 1))))
+    await asyncio.wait_for(entered.wait(), 10)
+    exited = messaging.event('completion', exit_code=0, output='done')
+    completion = asyncio.ensure_future(messaging.runner._inject_watch_notification('[proc_job finished]', exited))
+    # Unserialized, the completion admits and withdraws (nothing yet) while the tick is held.
+    await asyncio.wait({completion}, timeout=1)
+    gate.set()
+    assert (await tick, await completion) == (0, True)
+    assert {key: row['outcome'] for key, row in _automation_rows(messaging).items()} == {
+        '["heartbeat","proc_job","proc_job-tick-1"]': 'cancelled', '["completion","proc_job",1.0]': None}
+
+
+@pytest.mark.asyncio
 async def test_job_output_that_looks_like_a_cut_marker_keeps_the_earlier_output(messaging):
     """The omitted count rides the tick as its own field; text the job printed is never read as one."""
     literal = '...(10 earlier characters omitted)\nprinted by the job\n'

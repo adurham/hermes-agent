@@ -717,25 +717,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 if self._load_background_notifications_mode() == "off":
                     continue
                 if evt.get("type") == "heartbeat":
-                    from gateway.session_automation import prepare_heartbeat
+                    from gateway.session_automation import deliver_heartbeat
+                    delivered = await deliver_heartbeat(self, evt)
+                else:
+                    synth_text = _format_gateway_process_notification(evt)
+                    if not synth_text:
+                        continue
                     try:
-                        prepared = await prepare_heartbeat(self, evt)
+                        delivered = await self._inject_watch_notification(synth_text, evt)
                     except Exception:
-                        # One tick's failure must not drop the rest of the drained events.
-                        logger.exception("Heartbeat preparation error; the tick is requeued")
-                        completion_queue.put(evt)
-                        continue
-                    if prepared is None:
-                        continue
-                    evt = prepared
-                synth_text = _format_gateway_process_notification(evt)
-                if not synth_text:
-                    continue
-                try:
-                    delivered = await self._inject_watch_notification(synth_text, evt)
-                except Exception:
-                    logger.exception("Watch notification injection error")
-                    delivered = False
+                        logger.exception("Watch notification injection error")
+                        delivered = False
+            # The original event: a requeued tick folds again from what is still queued.
             if delivered is False:
                 completion_queue.put(evt)
 
@@ -904,15 +897,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             from gateway.session_authorities import active_authority
             authority = active_authority(self)
             if authority is not None:
-                from gateway.session_automation import producer_identity, remember_heartbeat, withdraw_process_ticks
+                from gateway.session_automation import admit_process_notice
                 from hermes_state_runtime import RuntimeStoreError
                 try:
-                    identity = producer_identity(self, evt)
-                    await authority.admit_automation(adapter, synth_event, identity)
-                    if evt.get("type") == "heartbeat":
-                        remember_heartbeat(self, identity, evt)
-                    elif evt.get("type") == "completion":
-                        await withdraw_process_ticks(self, evt)
+                    await admit_process_notice(self, authority, adapter, synth_event, evt)
                 except RuntimeStoreError as exc:
                     raise WakeNotAccepted(str(exc)) from exc
             else:

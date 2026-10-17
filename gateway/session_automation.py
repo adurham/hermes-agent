@@ -53,9 +53,48 @@ def remember_heartbeat(runner, identity, event):
         ticks.popitem(last=False)
 
 
+async def deliver_heartbeat(runner, event):
+    """Prepare, format and admit one liveness tick as one critical section with a completion's
+    admit-and-withdraw (``admit_process_notice``): a completion that lands while this tick is on its
+    way in withdraws it once it is in, and a tick checked after it sees it. True when admitted, None
+    to drop it, False to requeue the original event."""
+    from gateway.run import _format_gateway_process_notification
+    async with _heartbeat_lock(runner):
+        try:
+            prepared = await prepare_heartbeat(runner, event)
+        except Exception:
+            # One tick's failure must not drop the rest of the drained events.
+            logger.exception("Heartbeat preparation error; the tick is requeued")
+            return False
+        text = prepared and _format_gateway_process_notification(prepared)
+        if not text:
+            return None
+        try:
+            return await runner._inject_watch_notification(text, prepared)
+        except Exception:
+            logger.exception("Watch notification injection error")
+            return False
+
+
+async def admit_process_notice(runner, authority, adapter, event, evt):
+    """Admit a process notice. A completion and the withdrawal of its process's waiting ticks hold
+    the heartbeat lock together; a tick already holds it (``deliver_heartbeat``)."""
+    identity = producer_identity(runner, evt)
+    if evt.get('type') != 'completion':
+        receipt = await authority.admit_automation(adapter, event, identity)
+        if evt.get('type') == 'heartbeat':
+            remember_heartbeat(runner, identity, evt)
+        return receipt
+    async with _heartbeat_lock(runner):
+        receipt = await authority.admit_automation(adapter, event, identity)
+        await withdraw_process_ticks(runner, evt)
+        return receipt
+
+
 async def prepare_heartbeat(runner, event):
     """The liveness tick to admit for ``event``, or None to drop it because its process's completion
-    is already in the session: a later tick would be a stale "still running" turn.
+    is already in the session: a later tick would be a stale "still running" turn. The caller holds
+    the heartbeat lock.
 
     Otherwise a tick of the same process still queued is cancelled and its output carried into this
     one, since a tick's output is never sent again: a busy session gets one waiting turn holding
@@ -69,16 +108,15 @@ async def prepare_heartbeat(runner, event):
     if entry is None:
         return event
     owner, process = _route_owner(authority, entry), str(event.get('session_id') or '')
-    async with _heartbeat_lock(runner):
-        if await asyncio.to_thread(_process_completed, runner, authority, owner, event):
-            logger.debug("Dropped heartbeat %s of process %s: its completion is already admitted",
-                         event.get('event_id'), process)
-            return None
-        pending = await asyncio.to_thread(list_session_admissions, authority.db, session_id=owner)
-        waiting = next((row for row in pending if _queued_tick(row, process, entry.session_key)), None)
-        earlier = waiting and getattr(runner, '_admitted_heartbeat_ticks', {}).get(waiting['request_id'])
-        if earlier is None or not await _withdraw(authority, waiting):
-            return event
+    if await asyncio.to_thread(_process_completed, runner, authority, owner, event):
+        logger.debug("Dropped heartbeat %s of process %s: its completion is already admitted",
+                     event.get('event_id'), process)
+        return None
+    pending = await asyncio.to_thread(list_session_admissions, authority.db, session_id=owner)
+    waiting = next((row for row in pending if _queued_tick(row, process, entry.session_key)), None)
+    earlier = waiting and getattr(runner, '_admitted_heartbeat_ticks', {}).get(waiting['request_id'])
+    if earlier is None or not await _withdraw(authority, waiting):
+        return event
     from tools.process_registry_notifications import join_heartbeat_outputs
     return {**event, **join_heartbeat_outputs(earlier, event)}
 
@@ -87,7 +125,8 @@ async def withdraw_process_ticks(runner, event):
     """A process's completion is in the session: its ticks still queued there would run after it as
     stale "still running" turns, and the completion carries the final output, so they are cancelled.
     A tick that already started is left alone. Never raises: the completion is already admitted, and
-    a retry of it takes the lost-acknowledgement path, not this one."""
+    a retry of it takes the lost-acknowledgement path, not this one. The caller holds the heartbeat
+    lock (``admit_process_notice``)."""
     import asyncio
     from gateway.session_authorities import active_authority
     try:
@@ -98,19 +137,19 @@ async def withdraw_process_ticks(runner, event):
         finished = {identity[1] for identity in _identities(
             [producer_identity(runner, event), *(event.get('_automation_identities') or ())])
             if identity[0] == 'completion' and len(identity) > 1}
-        async with _heartbeat_lock(runner):
-            pending = await asyncio.to_thread(
-                list_session_admissions, authority.db, session_id=_route_owner(authority, entry))
-            for row in pending:
-                if any(_queued_tick(row, process, entry.session_key) for process in finished):
-                    await _withdraw(authority, row)
+        pending = await asyncio.to_thread(
+            list_session_admissions, authority.db, session_id=_route_owner(authority, entry))
+        for row in pending:
+            if any(_queued_tick(row, process, entry.session_key) for process in finished):
+                await _withdraw(authority, row)
     except Exception:
         logger.warning("Could not withdraw the waiting heartbeats of finished process %s",
                        event.get('session_id'), exc_info=True)
 
 
 def _heartbeat_lock(runner):
-    # Two drains withdrawing the same queued tick would both carry its output.
+    # A tick's check-and-admit and a completion's admit-and-withdraw: interleaved, a tick checked
+    # before the completion landed is admitted after its withdrawal and runs as a stale turn.
     import asyncio
     lock = runner.__dict__.get('_heartbeat_lock')
     if lock is None:
