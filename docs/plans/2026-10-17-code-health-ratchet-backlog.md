@@ -2293,3 +2293,7 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   helpers `_sync_new_persona`, `_sync_existing_persona`, `_update_from_bundled`,
   `_restore_from_backup`; max CC 7 / nesting 3). Tests 9/9; differential old-vs-new identical over
   366 fault-injected cases (branch `claude/sync-personas-code-health-8u1cn7`). Next: A-020.
+- 2026-10-17 — A-020 `tools/delegation_router.py::route_task_models` CC 26 → 13 (same-file helpers
+  `_gate_providers`, `_partition_tasks`, `_tier_roles`, `_classify_limits`, `_unpack_verdict`,
+  `_advisory_entry`, `_full_route`, each CC ≤ 5); 128 tests + 24,192-case old-vs-new differential
+  green (branch `claude/reduce-route-task-models-cc-8w5epf`). Next: A-025 (pick 4).
