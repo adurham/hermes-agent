@@ -2497,3 +2497,22 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   naming photon + the queue row's files): 949 passed, 0 failed, 32 skipped. `python scripts/check`
   green, 12 checks. Branch `claude/code-health-c1052-adapter-1fv0ye`. Next: next open fork-only or
   diverged Queue C unit.
+- 2026-10-17 — C-0013 `gateway/platforms/weixin.py` async: ASYNC240×3 + RUF006×2 → 0 (file hits
+  22 → 17; the 17 BLE001 hits untouched, in place and in order; FILE_LINES 1243 → 1261). RUF006: the
+  inbound `_process_message_safe` dispatch in `_poll_loop` and the `_fetch_typing_ticket` prefetch in
+  `_process_message` now go through `WeixinAdapter._spawn`, which keeps a strong ref in
+  `_inflight_tasks` until done and has a done-callback (`_reap_task`) that logs anything that escapes
+  (both coroutines already catch `Exception`, so in practice nothing does). Same scheduling as before:
+  no new await, not cancelled at `disconnect()` (deliberately not put in base `_background_tasks`,
+  which shutdown cancels). ASYNC240: `send_image`'s `os.path.abspath` and its temp-file
+  exists/unlink cleanup (new module helper `_remove_file_quietly`, same `suppress(OSError)`) and
+  `_send_file`'s `Path.read_bytes` now hop through `asyncio.to_thread`. 17 test files referencing
+  weixin: 486 passed, 25 skipped, 1 failed — the same 1 on base
+  (`test_poller_fd_lifecycle.py::test_recycle_closes_old_and_installs_fresh_session`, no `aiohttp`
+  in the test env). Old-vs-new differential (send_image remote ok / raise / temp already gone, local
+  relative / absolute / `file://`; poll-loop dispatch of 5 messages + refs released): 0 mismatches.
+  Left (sync I/O in async paths that the rules don't flag, each adds an await point that would change
+  cancellation shape — own unit if wanted): `_load_sync_buf` at `_poll_loop` start,
+  `ContextTokenStore.restore` in `connect`/`send_weixin_direct`, `save_weixin_account` in `qr_login`,
+  the temp-file write in `_download_remote_media`. `python scripts/check` green, 12 checks. Branch
+  `claude/weixin-async-health-ratchet-cnbqya`.
