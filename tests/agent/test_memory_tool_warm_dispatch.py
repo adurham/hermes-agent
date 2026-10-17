@@ -144,6 +144,22 @@ class TestMemoryRecallForwardsQuery:
 # End-to-end: recall actually returns query results from a real warm store
 # ---------------------------------------------------------------------------
 
+def _holographic_provider_available() -> bool:
+    """True when the catalog holographic plugin resolves (it left core in v0.21.7)."""
+    try:
+        from plugins.memory import import_provider_module
+        import_provider_module("holographic", "store")
+    except Exception:
+        return False
+    return True
+
+
+# The real WarmStore is backed by the holographic provider's store; without the catalog
+# plugin the round-trip cannot run, so skip instead of failing red on a clean env.
+@pytest.mark.skipif(
+    not _holographic_provider_available(),
+    reason="holographic provider (catalog plugin) not installed in this environment",
+)
 class TestMemoryRecallEndToEnd:
     def test_recall_returns_results_from_real_warm_store(
         self, tmp_path, monkeypatch,
