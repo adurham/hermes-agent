@@ -314,7 +314,7 @@ def build_monitor_application(monitor, **kwargs):
     from prompt_toolkit.layout.controls import FormattedTextControl
     from prompt_toolkit.widgets import TextArea
 
-    state = {'detail': False, 'steering': False, 'confirm': False, 'notice': ''}
+    state = {'steering': False, 'confirm': False, 'notice': ''}
     steer = TextArea(height=1, prompt=t('cli.subagents.steer_prompt'), multiline=False)
     tail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
 
@@ -361,7 +361,7 @@ def build_monitor_application(monitor, **kwargs):
     def header():
         row = monitor.selected
         title = f"{monitor._title()} · {monitor._counts(session=False)}"
-        if state['detail'] and row:
+        if monitor.detail and row:
             title += f" · {monitor._key(row)} · {row.get('goal') or row.get('command') or ''}"
         return [('class:subagent-dock.heading', _clip(title, app.output.get_size().columns))]
 
@@ -376,14 +376,14 @@ def build_monitor_application(monitor, **kwargs):
             return t('cli.subagents.footer_steering_compact' if narrow else 'cli.subagents.footer_steering')
         steer = '' if process else t('cli.subagents.footer_steer_key')
         if narrow:
-            return (t('cli.subagents.footer_detail_compact', steer=steer) if state['detail']
+            return (t('cli.subagents.footer_detail_compact', steer=steer) if monitor.detail
                     else t('cli.subagents.footer_roster_compact'))
         steer = '' if process else t('cli.subagents.footer_steer_key_long')
-        return t('cli.subagents.footer_detail' if state['detail'] else 'cli.subagents.footer_roster', steer=steer)
+        return t('cli.subagents.footer_detail' if monitor.detail else 'cli.subagents.footer_roster', steer=steer)
 
     kb = KeyBindings()
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
-    listing = normal & Condition(lambda: not state['detail'])
+    listing = normal & Condition(lambda: not monitor.detail)
 
     @kb.add('up', filter=listing)
     def up(event):
@@ -396,7 +396,7 @@ def build_monitor_application(monitor, **kwargs):
     @kb.add('enter', filter=listing)
     def detail(event):
         if monitor.selected:
-            state['detail'] = monitor.detail = True
+            monitor.detail = True
             monitor._last_poll = 0  # the spinner thread's next tick fetches the tail
             update_tail()
             app.layout.focus(tail)
@@ -416,7 +416,7 @@ def build_monitor_application(monitor, **kwargs):
         state['notice'] = result.get('error') or result.get('note') or str(result)
         steer.text = ''
         state['steering'] = False
-        app.layout.focus(tail if state['detail'] else roster)
+        app.layout.focus(tail if monitor.detail else roster)
 
     @kb.add('x', filter=normal)
     def stop(event):
@@ -434,9 +434,9 @@ def build_monitor_application(monitor, **kwargs):
     def back(event):
         if state['steering'] or state['confirm']:
             state['steering'] = state['confirm'] = False
-            app.layout.focus(tail if state['detail'] else roster)
-        elif state['detail']:
-            state['detail'] = monitor.detail = False
+            app.layout.focus(tail if monitor.detail else roster)
+        elif monitor.detail:
+            monitor.detail = False
             app.layout.focus(roster)
         else:
             app.exit()
@@ -450,8 +450,8 @@ def build_monitor_application(monitor, **kwargs):
 
     layout = Layout(HSplit([
         Window(FormattedTextControl(header), height=1),
-        ConditionalContainer(roster, filter=Condition(lambda: not state['detail'])),
-        ConditionalContainer(tail, filter=Condition(lambda: state['detail'])),
+        ConditionalContainer(roster, filter=Condition(lambda: not monitor.detail)),
+        ConditionalContainer(tail, filter=Condition(lambda: monitor.detail)),
         ConditionalContainer(steer, filter=Condition(lambda: state['steering'])),
         Window(FormattedTextControl(lambda: _clip(state['notice'], app.output.get_size().columns)), height=1),
         Window(FormattedTextControl(footer), height=1),
@@ -461,7 +461,7 @@ def build_monitor_application(monitor, **kwargs):
         # first frame if a prompt won the race with in_terminal() acquisition.
         if modal_prompt_active(monitor.cli) and not app.is_done:
             app.exit()
-        elif state['detail']:
+        elif monitor.detail:
             update_tail()
 
     from prompt_toolkit.styles import Style
