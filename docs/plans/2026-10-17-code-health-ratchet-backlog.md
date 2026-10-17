@@ -2553,3 +2553,16 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   already tracked). New invariant test `tests/gateway/test_bluebubbles_read_receipt_task.py` (red on
   main). Unit's 3 test files + new one: 100/100 in a `--extra sms` env (the plain test env lacks
   `aiohttp`, which the webhook handler imports). Branch `claude/async-bluebubbles-ratchet-6urbee`.
+- 2026-10-17 — C-0023 `hermes_cli/web_routers/dashboard_ui.py` (async): ASYNC240×2 → 0 (file hits 5 → 3;
+  the 3 BLE001 untouched, in place and in order). `post_agent_plugin_activate`'s `expanduser` plus
+  the sibling `profile_name_for_home` (it resolves the path) move into `_served_profile_for_home`,
+  run via `asyncio.to_thread` (same 400 for a non-profile home). `serve_plugin_asset`'s
+  `resolve`/`is_relative_to(base.resolve())` plus the sibling `exists`/`is_file` stats move into
+  `_resolve_plugin_asset`, run via `asyncio.to_thread` (same 403/404). Helpers sit before their
+  callers. Left: `serve_plugin_asset`/`rescan_dashboard_plugins` still call `_get_dashboard_plugins()`
+  and `_plugin_enable_sets()` on the loop (discovery cache + config read, not this rule; own change).
+  New `tests/hermes_cli/test_dashboard_ui_offloop_paths.py` (2 tests, both red on main);
+  `test_plugins_hub_perf_guard.py`, `test_web_server.py`, `test_dashboard_auth_middleware.py`,
+  `test_plugin_runtime_disable_gate.py` 235 passed / 25 skipped; differential old-vs-new over 182
+  activate/asset cases (bodies, homes, traversal, symlinks, missing, dirs): 0 mismatches.
+  `scripts/check` green. Branch `claude/c-0023-dashboard-ui-async-6cb3zu`.

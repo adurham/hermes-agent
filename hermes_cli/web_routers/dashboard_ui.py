@@ -283,6 +283,17 @@ async def post_agent_plugin_update(request: Request, name: str):
         rescan=True)
 
 
+def _served_profile_for_home(raw_home: str) -> tuple[Path, str]:
+    """``(home, profile id)`` for a posted ``home``; 400 when it is not a profile home. Blocking: it
+    expands and resolves the path."""
+    from hermes_constants import profile_name_for_home
+    home = Path(raw_home).expanduser()
+    profile = profile_name_for_home(home) if str(home) not in ("", ".") else None
+    if profile is None:
+        raise HTTPException(status_code=400, detail="Not a Hermes profile home.")
+    return home, profile
+
+
 @router.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
@@ -300,11 +311,8 @@ async def post_agent_plugin_activate(request: Request):
     except Exception:
         body = {}
     name = _validate_plugin_name(str((body or {}).get("name") or ""))
-    from hermes_constants import get_hermes_home, hermes_home_key, profile_name_for_home
-    home = Path(str((body or {}).get("home") or "")).expanduser()
-    profile = profile_name_for_home(home) if str(home) not in ("", ".") else None
-    if profile is None:
-        raise HTTPException(status_code=400, detail="Not a Hermes profile home.")
+    from hermes_constants import get_hermes_home, hermes_home_key
+    home, profile = await asyncio.to_thread(_served_profile_for_home, str((body or {}).get("home") or ""))
     from hermes_cli.plugins_activation import load_and_go_live
 
     def _run():
@@ -382,6 +390,19 @@ _PLUGIN_ASSET_CONTENT_TYPES = {
 }
 
 
+def _resolve_plugin_asset(plugin_dir: str, file_path: str) -> Path:
+    """The existing file *file_path* names under *plugin_dir*; 403 on traversal, 404 when missing.
+    Blocking: it resolves and stats the path."""
+    base = Path(plugin_dir)
+    target = (base / file_path).resolve()
+
+    if not target.is_relative_to(base.resolve()):
+        raise HTTPException(status_code=403, detail="Path traversal blocked")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return target
+
+
 @router.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
 async def serve_plugin_asset(plugin_name: str, file_path: str):
     """Serve static assets from a dashboard plugin's ``dashboard/`` directory.
@@ -400,13 +421,7 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     if not plugin or not _plugin_activated(plugin, *_plugin_enable_sets()):
         raise HTTPException(status_code=404, detail="Plugin not found")
 
-    base = Path(plugin["_dir"])
-    target = (base / file_path).resolve()
-
-    if not target.is_relative_to(base.resolve()):
-        raise HTTPException(status_code=403, detail="Path traversal blocked")
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+    target = await asyncio.to_thread(_resolve_plugin_asset, plugin["_dir"], file_path)
 
     media_type = _PLUGIN_ASSET_CONTENT_TYPES.get(target.suffix.lower())
     if media_type is None:
