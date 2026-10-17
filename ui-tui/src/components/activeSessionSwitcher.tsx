@@ -559,8 +559,12 @@ export function ActiveSessionSwitcher({
       setActionErr('')
       // The shared gateway has no `session.delete`: its delete is the revision-fenced
       // `session.mutate operation=delete` (the whole lineage), as the classic CLI sends it.
+      let readSubscription: string | undefined
+
       const deleted = gw.isCanonical
-        ? mutateCanonical(gw, target.id, 'delete', {}).then(mutation => Boolean(mutation?.result))
+        ? mutateCanonical(gw, target.id, 'delete', {}, undefined, snapshot => {
+            readSubscription = snapshot.subscription_id
+          }).then(mutation => Boolean(mutation?.result))
         : gw
             .request<SessionDeleteResponse>('session.delete', { session_id: target.id })
             .then(raw => asRpcResult<SessionDeleteResponse>(raw)?.deleted === target.id)
@@ -582,6 +586,18 @@ export function ActiveSessionSwitcher({
           setDeleting(false)
         })
         .catch((e: unknown) => {
+          // The revision read attached this view to a session it was not showing; a refused
+          // delete hands it back closed so it does not reappear in the live section.
+          if (readSubscription) {
+            void gw
+              .request('session.detach', {
+                session_id: target.id,
+                subscription_id: readSubscription,
+                end_reason: 'tui_close'
+              })
+              .catch(() => undefined)
+          }
+
           setActionErr(rpcErrorMessage(e))
           setDeleting(false)
         })

@@ -198,8 +198,8 @@ class GatewaySessionStore:
         self._adopt(self.attach(child))
         return child
 
-    def _mutate(self, session_id, operation, payload):
-        snapshot = self.call("session.resume", session_id=session_id)
+    def _mutate(self, session_id, operation, payload, snapshot=None):
+        snapshot = snapshot or self.call("session.resume", session_id=session_id)
         fence = {}
         if operation in _GENERATION_FENCED:
             fence["expected_generation"] = snapshot["execution_generation"]
@@ -283,7 +283,17 @@ class GatewaySessionStore:
 
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
-        self._mutate(session_id, "delete", {})
+        state = self.connection.states.get(session_id)
+        viewing = state is not None and state.subscription_id is not None
+        snapshot = self.call("session.resume", session_id=session_id)
+        try:
+            self._mutate(session_id, "delete", {}, snapshot)
+        except GatewayClientError:
+            # The revision read attached this viewer; a session it was not viewing goes back closed.
+            if not viewing and snapshot.get("subscription_id"):
+                self.call("session.detach", session_id=session_id, subscription_id=snapshot["subscription_id"],
+                          end_reason="cli_close")
+            raise
         self._leave(session_id)
         return True
 
