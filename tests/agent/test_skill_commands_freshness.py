@@ -45,3 +45,26 @@ def test_unchanged_skills_dirs_reuse_the_published_map(tmp_path):
         first = get_skill_commands()
         with patch.object(sc_mod, "scan_skill_commands", side_effect=AssertionError("rescanned")):
             assert get_skill_commands() is first
+
+
+def test_a_skill_installed_under_an_existing_category_subdir_is_served(tmp_path):
+    """``skills/mlops/training/<new>/SKILL.md``: the install moves only ``training``'s mtime, two
+    levels below the root, and the published map must still be rescanned (the catalog walks it)."""
+    import agent.skill_commands as sc_mod
+    import tools.skills_tool as st
+    from agent.skill_commands import get_skill_commands
+
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(sc_mod, "_skill_commands_by_key", {}):
+        st.clear_skills_cache()
+        training = tmp_path / "mlops" / "training"
+        _make_skill(training, "existing")
+        assert set(get_skill_commands()) == {"/existing"}
+        _make_skill(training, "new-nested")
+        assert set(get_skill_commands()) == {"/existing", "/new-nested"}
+        # A skill's own support dirs are not walked: editing references/ is not an install.
+        before = sc_mod._skill_dirs_signature()
+        (training / "existing" / "references").mkdir()
+        (training / "existing" / "references" / "deep").mkdir()
+        after = sc_mod._skill_dirs_signature()
+        assert [row for row in after[0] if "references" in row[0]] == []
+        assert before != after  # the skill dir itself gained a child name

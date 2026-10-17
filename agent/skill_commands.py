@@ -559,9 +559,9 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
 
 
 def _skill_dirs_signature() -> Optional[tuple]:
-    """Stat-cheap change signature of every skill root (the catalog's own: each root's mtime and its
-    immediate child dirs', the disabled set and the platform). None when it cannot be computed, which
-    keeps the published map rather than rescanning on every lookup."""
+    """Stat-cheap change signature of every skill root (the catalog's own: the mtime and child names of
+    every directory the catalog walks, depth-bounded, plus the disabled set and the platform). None when
+    it cannot be computed, which keeps the published map rather than rescanning on every lookup."""
     try:
         from tools.skills_tool import _get_disabled_skill_names, _skill_search_dirs, _skills_scan_signature
         roots, _active = _skill_search_dirs()
