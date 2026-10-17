@@ -266,6 +266,38 @@ async def test_a_messaging_chat_gets_its_ticks_folded_and_none_after_the_complet
     assert _tick_output(folded) == 'proc_job/1\nproc_job/2\n'
 
 
+async def _drain_one(runner, event):
+    waiting = queue.Queue()
+    waiting.put(event)
+    await runner._drain_watch_notifications(waiting)
+    return waiting.qsize()
+
+
+def _automation_rows(messaging):
+    rows = list_session_admissions(messaging.authority.db, session_id=messaging.owner, pending_only=False)
+    return {row['request_id']: row for row in rows if row['principal_id'] == 'automation:' + messaging.route}
+
+
+@pytest.mark.asyncio
+async def test_a_late_tick_of_a_settled_batch_member_is_dropped(messaging):
+    """A completion batch names only its primary in ``request_id``; the siblings live in the payload.
+    Once the batch turn has finished, a late tick of a sibling process is still stale."""
+    from gateway.session_automation import producer_identity
+    batch = [messaging.event('completion', session_id=process, exit_code=0, output='done')
+             for process in ('proc_a', 'proc_b')]
+    primary = dict(batch[0], _automation_identities=[producer_identity(messaging.runner, e) for e in batch])
+    assert await messaging.runner._inject_watch_notification('[2 finished]', primary) is True
+    with messaging.authority.db._lock:
+        messaging.authority.db._conn.execute(
+            "UPDATE session_admissions SET status='terminal',outcome='completed' WHERE request_id=?",
+            ('["completion","proc_a",1.0]',))
+        messaging.authority.db._conn.commit()
+
+    assert await _drain_one(messaging.runner, messaging.event(
+        'heartbeat', session_id='proc_b', **_tick_fields('proc_b', 1))) == 0
+    assert list(_automation_rows(messaging)) == ['["completion","proc_a",1.0]'], 'the late tick was admitted'
+
+
 @pytest.mark.asyncio
 async def test_a_served_profiles_bot_chat_takes_every_dm_with_no_client_attached(gateway):
     sender = gateway.connect(gateway.secondary)

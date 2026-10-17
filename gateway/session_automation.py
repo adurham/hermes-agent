@@ -120,8 +120,8 @@ def _heartbeat_lock(runner):
 
 def _process_completed(runner, authority, owner, event):
     """Whether the completion of tick ``event``'s process is admitted into the session ``owner``: by
-    its exact identity (``started_at`` names the process incarnation), or as a sibling in a pending
-    batch."""
+    its exact identity (``started_at`` names the process incarnation), or as a sibling in a batch,
+    pending or settled: only the batch's primary is its ``request_id``."""
     completion = runner._completion_delivery_identity(
         {'type': 'completion', 'session_id': event.get('session_id'), 'started_at': event.get('started_at')})
     if completion is None:
@@ -131,7 +131,7 @@ def _process_completed(runner, authority, owner, event):
         if conn.execute('SELECT 1 FROM session_admissions WHERE target_session_id=? AND request_id=?',
                         (owner, identity)).fetchone():
             return True
-    for row in list_session_admissions(authority.db, session_id=owner):
+    for row in list_session_admissions(authority.db, session_id=owner, pending_only=False):
         descriptor = row['payload'].get('local_automation_v1') or row['payload'].get('native_text_v1', {}).get('automation', {})
         if identity in (descriptor.get('identities') or ()):
             return True
