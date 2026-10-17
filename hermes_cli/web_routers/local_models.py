@@ -466,6 +466,19 @@ def _download_job(job: dict[str, Any], plan) -> None:
     dl.run(progress=_download_progress_hook(job))
 
 
+def _download_optional(job: dict[str, Any], plan) -> bool:
+    """Download files that only speed generation up, such as a DFlash draft. A failure leaves the
+    model running without them, so it is logged instead of failing the job; a pause still pauses."""
+    try:
+        _download_job(job, plan)
+    except DownloadPaused:
+        raise
+    except (RuntimeError, OSError) as exc:  # the downloader's transfer, hash and rename failures, and disk errors
+        logger.warning("optional download failed; continuing without it: %s", exc)
+        return False
+    return True
+
+
 def _loaded_models(running: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
     """Resident models right now, plus how each is placed (granted window from the child, spill facts from
     the preset decision) — the difference between 'fast' and 'why is my CPU busy', so it must be inspectable.
@@ -697,9 +710,10 @@ def local_models_runtime_install(body: RuntimeInstallBody, profile: Optional[str
             engine = _install_engine_job(job, backend)
             drafts = _missing_drafts(engine.tag)
             if drafts:
-                owed["restart"] = True  # the restart is what loads them
+                before, owed["restart"] = owed["restart"], True  # the restart is what loads them
                 _step(job, "downloading", "Downloading draft models that speed up generation")
-                _download_job(job, drafts)
+                if not _download_optional(job, drafts) and len(_missing_drafts(engine.tag)) == len(drafts):
+                    owed["restart"] = before  # nothing new landed for a restart to load
             running = bootstrap.get_supervisor()
             serving = bootstrap.serving_engine()
             stale = previous != engine or (serving is not None and serving.tag != engine.tag)

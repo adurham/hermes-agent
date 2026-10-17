@@ -310,6 +310,46 @@ def test_a_pause_between_the_drafts_and_the_restart_still_restarts_on_resume(cli
     assert events == ["restart"]
 
 
+def _failing_download(job, plan):
+    raise RuntimeError("download failed from https://huggingface.co/lab/Hybrid-DFlash-GGUF: HTTP Error 404")
+
+
+def test_a_failed_draft_download_still_switches_the_server_to_the_new_build(client, monkeypatch):
+    """The draft only speeds generation up. A draft that fails to download leaves the model on MTP,
+    and the server still moves to the build the update installed."""
+    _, events = _update_job(monkeypatch, serving="b11370", on_download=_failing_download)
+
+    job_id = client.post("/api/local-models/runtime/install", json={"backend": "cpu"}).json()["job_id"]
+
+    assert poll(client, job_id, until=("done", "error"))["status"] == "done"
+    assert events == ["restart"]
+
+
+def test_a_failed_draft_download_alone_leaves_the_server_running(client, monkeypatch):
+    """Nothing new landed for a restart to load, so a server already on the installed build keeps
+    serving."""
+    _, events = _update_job(monkeypatch, serving="b11671", on_download=_failing_download)
+
+    job_id = client.post("/api/local-models/runtime/install", json={"backend": "cpu"}).json()["job_id"]
+
+    assert poll(client, job_id, until=("done", "error"))["status"] == "done"
+    assert events == []
+
+
+def test_a_pause_during_the_draft_download_pauses_the_update(client, monkeypatch):
+    from pm.downloader import DownloadPaused
+
+    def paused(job, plan):
+        raise DownloadPaused("download paused")
+
+    _, events = _update_job(monkeypatch, serving="b11370", on_download=paused)
+
+    job_id = client.post("/api/local-models/runtime/install", json={"backend": "cpu"}).json()["job_id"]
+
+    assert poll(client, job_id, until=("paused", "done", "error"))["status"] == "paused"
+    assert events == []
+
+
 def test_the_update_restarts_a_server_still_on_an_older_build(client, monkeypatch):
     """An earlier update installed b11671 and stopped before its restart: the server still runs
     the old build, and the next update switches it over."""
