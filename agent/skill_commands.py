@@ -558,6 +558,37 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     return commands
 
 
+# The most scopes the change watcher signs per pass (each is one ~1 ms stat walk).
+_MAX_WATCHED_SCOPES = 32
+
+
+def published_scopes_signature() -> tuple:
+    """Signature of every skill scope a session has resolved commands for, plus the ambient one.
+
+    One gateway serves sessions in several profiles and repos; each published ``(platform, home,
+    project)`` key names a scope whose roots (that profile's skills/external dirs, that repo's trusted
+    project skills) a viewer is looking at. The change watcher (``skills.changed``) compares this, so
+    an install in a session's repo B notifies viewers even when the gateway was launched in repo A.
+    Only command maps/catalogs refetch; a conversation's stored system prompt is never rebuilt.
+    """
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    with _publish_lock:
+        keys = list(_skill_commands_by_key)
+    scopes = sorted({(home, project) for _platform, home, project in keys if home})[:_MAX_WATCHED_SCOPES]
+    rows = [("", None, _skill_dirs_signature())]
+    for home, project in scopes:
+        home_token = set_hermes_home_override(home)
+        # No project: an empty session cwd would fall back to the process cwd; "/" resolves no repo.
+        cwd_token = set_session_cwd(project or os.path.sep)
+        try:
+            rows.append((home, project, _skill_dirs_signature()))
+        finally:
+            reset_session_cwd(cwd_token)
+            reset_hermes_home_override(home_token)
+    return tuple(rows)
+
+
 def _skill_dirs_signature() -> Optional[tuple]:
     """Stat-cheap change signature of every skill root (the catalog's own: the mtime and child names of
     every directory the catalog walks, depth-bounded, plus the disabled set and the platform). None when
