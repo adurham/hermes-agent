@@ -118,6 +118,11 @@ class SubagentMonitor:
             # invalidate call, which reads the loop more than once.
             _run_on_app_loop(app, app.invalidate)
 
+    def poll_soon(self):
+        """Let the spinner thread's next tick poll the gateway, instead of the caller blocking the
+        UI loop on it."""
+        self._last_poll = 0
+
     def tick(self):
         now = time.monotonic()
         if now - self._last_poll < 1:
@@ -397,7 +402,7 @@ def build_monitor_application(monitor, **kwargs):
     def detail(event):
         if monitor.selected:
             monitor.detail = True
-            monitor._last_poll = 0  # the spinner thread's next tick fetches the tail
+            monitor.poll_soon()  # the spinner thread's next tick fetches the tail
             update_tail()
             app.layout.focus(tail)
 
@@ -485,7 +490,7 @@ def open_monitor(cli):
             async with in_terminal():
                 # Paint the roster the dock's tick already holds; refreshing here would block the UI
                 # loop on the gateway's subagent.list. The spinner thread's next tick re-reads it.
-                monitor._last_poll = 0
+                monitor.poll_soon()
                 monitor.app = build_monitor_application(monitor)
                 await monitor.app.run_async()
         finally:
