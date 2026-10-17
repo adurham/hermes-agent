@@ -598,7 +598,9 @@ def test_slow_browse_reconcile_gives_up_inside_its_budget_and_boot_waits_it_out(
     _, status, elapsed, *detail = result.split(" ", 3)
     assert status == "503", out
     assert float(elapsed) < budget_s + 2, out
-    assert "nothing was changed" in " ".join(detail)
+    detail = " ".join(detail)
+    assert "nothing was changed" in detail
+    assert "`hermes -p scribe sessions repair`" in detail and "gateway" not in detail.lower()
     assert _file_state(path) == before
     assert "last_read_at" not in _session_columns(path)
 
@@ -795,7 +797,7 @@ def test_slow_integrity_scan_is_bounded_and_not_repeated_on_every_poll(tmp_path,
         with pytest.raises(HTTPException) as caught:
             _open_session_db_at_path(path, read_only=True)
         assert caught.value.status_code == 503
-        assert "nothing was changed" in caught.value.detail and "Retry" in caught.value.detail
+        assert "nothing was changed" in caught.value.detail
     assert scans == [1]
     assert _file_state(path) == before
 
@@ -855,3 +857,39 @@ def test_boot_refuses_at_once_when_another_home_has_a_real_owner(tmp_path):
         for proc in (gateway, browse):
             proc.kill()
             proc.wait()
+
+
+def test_budget_refusal_on_unowned_store_names_repair_not_a_gateway(tmp_path, monkeypatch):
+    """Round-2 decision: the 3 s browse budget stays. When it runs out on a store no gateway owns,
+    the 503 must be actionable: name `hermes -p NAME sessions repair` (no time limit), say the
+    history is untouched, and never tell a user with no gateway to restart one."""
+    import hermes_cli.sqlite_safe_read as ssr
+    import hermes_state_reconcile as reconcile
+
+    assert reconcile.BROWSE_INTEGRITY_BUDGET_S == reconcile.BROWSE_RECONCILE_BUDGET_S == 3.0
+    path = _lagging_store_with_history(_profile_home(tmp_path), rows=400)
+    before = _file_state(path)
+    original = ssr.connect_tracked
+    monkeypatch.setattr(ssr, "connect_tracked", lambda p, *a, **kw: (
+        _SlowProgress(original(p, *a, **kw)) if "mode=ro" in str(p) else original(p, *a, **kw)))
+    monkeypatch.setattr(reconcile, "BROWSE_INTEGRITY_BUDGET_S", 0.3)
+    with pytest.raises(HTTPException) as caught:
+        _open_session_db_at_path(path, read_only=True)
+    assert caught.value.status_code == 503
+    detail = caught.value.detail
+    assert "Run `hermes -p scribe sessions repair` to bring it up to date (it has no time limit)" in detail
+    assert "Your history is untouched" in detail
+    assert "gateway" not in detail.lower()
+    assert _file_state(path) == before
+    assert "last_read_at" not in _session_columns(path)
+
+    # The named command really closes it: repair has no budget and catches the store up.
+    monkeypatch.setattr(ssr, "connect_tracked", original)
+    from hermes_state_reconcile import repair_declarative_schema
+    import hermes_state_repair
+    monkeypatch.setattr(hermes_state_repair, "_live_writer_holds_db", lambda _p: False)
+    report = repair_declarative_schema(path, backup=False)
+    assert report["repaired"], report
+    reconcile._scan_too_slow.clear()
+    _open_session_db_at_path(path, read_only=True).close()
+    assert "last_read_at" in _session_columns(path)
