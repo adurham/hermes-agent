@@ -147,6 +147,12 @@ DEFAULT_CONFIG = {
         # visible "retrying automatically" countdown instead of ending the turn. Esc/interrupt stops
         # the wait; auth/format/billing/policy errors never enter. 0 disables.
         "auto_recovery_cycles": 5,
+        # Circuit breaker for the ladder above: a crash-looping provider reproduces the same failure
+        # every cycle, so once the SAME request fails this many times in a row (same provider,
+        # endpoint, model and error class, no tokens received) within 30 minutes, stop the ladder and
+        # report the crash-loop instead of replaying the identical request. A progress-making attempt
+        # (any token/chunk received) or a different error class never counts. 0 disables the breaker.
+        "auto_recovery_identical_failure_limit": 2,
         # Seconds the Codex/Responses stream may keep reading after its terminal frame so the relay
         # finalizer can run. Relays that never close the SSE socket after response.completed would
         # otherwise wedge the turn until the idle watchdog discards the already-billed response
