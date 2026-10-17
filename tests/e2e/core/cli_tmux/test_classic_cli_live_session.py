@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 import pytest
 
-from tests.e2e.core.cli_tmux._classic import ClassicHome, Pane, last_user, text_of
+from tests.e2e.core.cli_tmux._classic import ClassicHome, Pane, last_user, new_needle, text_of
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 # Process discovery, cleanup and the witness's pid accounting read /proc.
@@ -152,6 +152,13 @@ def check_witness_coverage(events: list[dict[str, Any]], spawned: list[tuple[int
     assert not missing, f"spawned CLI processes with no witness startup attestation: {missing}"
     assert any(e["kind"] == "startup" and e["role"] == "gateway" for e in events), \
         "no gateway daemon attested: its tool/agent/state.db events cannot be trusted"
+
+
+def test_a_step_needs_output_produced_after_its_input() -> None:
+    """A no-op /history (transcript unchanged) must not pass on "LIVE01" left from the markdown turn."""
+    before = "\u276f LIVE01 show markdown\n# LIVE01 heading\nLIVE01 end.\n\u276f /history\n"
+    assert new_needle(["LIVE01"], before, before) is None
+    assert new_needle(["LIVE01"], before, before + "  1. user: LIVE01 show markdown\n") == "LIVE01"
 
 
 def test_witness_coverage_rejects_an_uninstrumented_cli() -> None:

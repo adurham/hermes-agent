@@ -16,6 +16,12 @@ Stale output never counts: every ``submit``/``keys``/``launch`` snapshots the sc
 transcript (a no-op command) therefore fails the step instead of matching old output.
 
 Linux only: process discovery and cleanup read ``/proc/<pid>/environ``.
+
+Run environment: the CLI catches SIGTERM/SIGHUP and exits cleanly ("Shutting down…", "Goodbye!",
+status 0), so a signal from outside the test looks like the CLI quitting on its own. A container
+run with the host user's uid shares that uid with every host process, and a host-side same-uid
+process sweep can reach the container's CLIs (observed: SIGTERM with ``si_pid=0``, i.e. from
+outside the container's pid namespace). Run containers under a uid of their own.
 """
 
 from __future__ import annotations
