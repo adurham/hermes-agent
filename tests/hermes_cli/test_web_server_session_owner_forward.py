@@ -216,3 +216,30 @@ async def test_a_multiplexed_profile_keeps_the_multiplexers_socket(tmp_path, mon
         await web_server_sessions._mutate_via_gateway_owner('work', SimpleNamespace(subject='x'), dict(
             session_id='s', request_id='r', expected_revision=0, operation='sidebar', payload={}))
     assert minted['socket_home'] == root
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason, status', [('storage_unavailable', 503), ('runtime_draining', 503),
+                                            ('not_found', 404), ('stale_revision', 409)])
+async def test_a_forwarded_refusal_keeps_the_direct_paths_status(tmp_path, monkeypatch, reason, status):
+    """The owner sends ``storage_unavailable`` for a sqlite failure; forwarded, it must stay the
+    503 the direct path answers, not read as a 409 session conflict."""
+    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_cli import web_server_sessions
+
+    request = _standalone_request(monkeypatch, tmp_path)
+    _discover(monkeypatch, 'owner-endpoint')
+
+    @asynccontextmanager
+    async def refusing_connect(endpoint=None, subject=None):
+        class Refuser:
+            async def rpc(self, method, **params):
+                raise GatewayClientError(reason)
+        yield Refuser()
+
+    monkeypatch.setattr('hermes_cli.gateway_client.connect_gateway', refusing_connect)
+    with pytest.raises(HTTPException) as exc:
+        await web_server_sessions._mutate_session_request(
+            request, None, 'session-5', request_id='req-5', expected_revision=0,
+            operation='archive', payload={})
+    assert (exc.value.status_code, exc.value.detail) == (status, reason)

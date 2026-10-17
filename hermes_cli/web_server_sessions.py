@@ -236,6 +236,13 @@ async def _mutate_via_gateway_owner(profile, actor, params):
         raise HTTPException(status_code=503, detail='owner_unreachable') from exc
 
 
+# One reason -> HTTP status map for a session mutation refusal, shared by the direct path
+# (RuntimeStoreError) and the owner forward (GatewayClientError): a storage failure is a
+# server fault (503), never a session conflict.
+_MUTATION_REFUSAL_STATUS = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
+                            'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
+
+
 async def _mutate_session_request(request, profile, session_id, *, request_id,
                                   expected_revision, operation, payload, expected_generation=None):
     """Resolve the authenticated principal and owner; never open a second writer."""
@@ -275,15 +282,11 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
                 result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
         return {'ok': True, **result}
     except RuntimeStoreError as exc:
-        status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
-                  'invalid_params': 400, 'runtime_draining': 503}.get(exc.reason, 409)
-        raise HTTPException(status_code=status, detail=exc.reason) from exc
+        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(exc.reason, 409), detail=exc.reason) from exc
     except GatewayClientError as exc:
-        # The owner's own refusal verdicts, wire-shaped like RuntimeStoreError's
-        # reasons (plus dial-time failures that read as the default 409).
-        status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
-                  'invalid_params': 400, 'runtime_draining': 503}.get(str(exc), 409)
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        # The owner's own refusal verdicts, wire-shaped like RuntimeStoreError's reasons, so a
+        # forwarded write answers exactly as the direct path (dial-time failures read as 409).
+        raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(str(exc), 409), detail=str(exc)) from exc
     except MUTATION_GUARD_REFUSALS as exc:
         raise HTTPException(status_code=409, detail='session_busy') from exc
     except ValueError as exc:
