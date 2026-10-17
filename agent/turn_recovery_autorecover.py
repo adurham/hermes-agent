@@ -15,8 +15,9 @@ its own model runner reproduces the same failure every cycle. ``note_recovery_fa
 each failed attempt ``(provider, base_url, model, error class, received_token)`` on the turn's
 ``TurnRetryState``; when the same fingerprint fails ``agent.auto_recovery_identical_failure_limit``
 times in a row (default 2) within a 30-minute window, the ladder stops and ``crash_loop_result``
-surfaces a terminal error instead of parking the turn through more silent waits. A progress-making
-attempt (any token/chunk received) or a different error class never counts.
+surfaces a terminal error instead of parking the turn through more silent waits. An attempt that
+streamed STRICTLY MORE than the attempt before it, or a different error class, never counts -- a
+mid-stream kill that reproduces the same partial output every retry is a crash loop, not progress.
 """
 
 from __future__ import annotations
@@ -73,19 +74,29 @@ def auto_recovery_identical_failure_limit(agent: Any) -> int:
         return default
 
 
-def attempt_received_any_token(agent: Any) -> bool:
-    """True when the failed attempt received ANY token/chunk: a first stream chunk landed, or visible
-    text was emitted. Such an attempt is never part of an identical-failure streak."""
-    if getattr(agent, "_last_api_first_chunk_at", None) is not None:
-        return True
+def attempt_progress_chars(agent: Any) -> int:
+    """How much response progress the failed attempt produced, in streamed characters.
+
+    A first stream chunk of ANY kind counts as 1 char (a reasoning-only stream still means data
+    arrived); visible (think-stripped) streamed text adds its real length. The circuit breaker
+    compares this against the PREVIOUS attempt: progress means strictly MORE than the one before,
+    not merely nonzero. A deterministic mid-stream kill (the 2026-10-17 case: every retry died at
+    the same generation point with the same partial output) therefore still counts as an identical
+    failure -- "any token received" would have let that crash loop ride every ladder cycle.
+    """
     streamed = getattr(agent, "_current_streamed_assistant_text", "") or ""
-    return bool(streamed.strip())
+    chars = len(streamed.strip())
+    if chars == 0 and getattr(agent, "_last_api_first_chunk_at", None) is not None:
+        return 1
+    return chars
 
 
-def failure_fingerprint(agent: Any, classified: Any, *, received_token: bool) -> tuple:
-    """``(provider, base_url, model, error class, received_token)`` for one failed attempt. The error
-    class is the classifier's normalized ``reason`` value, so two failures only match when the
-    provider AND the failure mode are identical."""
+def failure_fingerprint(agent: Any, classified: Any) -> tuple:
+    """``(provider, base_url, model, error class)`` for one failed attempt. The error class is the
+    classifier's normalized ``reason`` value, so two failures only match when the provider AND the
+    failure mode are identical. Progress is NOT part of the fingerprint: the breaker compares each
+    attempt's streamed progress against the previous attempt's separately (see
+    ``attempt_progress_chars``)."""
     reason = getattr(classified, "reason", None)
     reason_value = getattr(reason, "value", None) or (str(reason) if reason is not None else "unknown")
     return (
@@ -93,7 +104,6 @@ def failure_fingerprint(agent: Any, classified: Any, *, received_token: bool) ->
         str(getattr(agent, "base_url", "") or ""),
         str(getattr(agent, "model", "") or ""),
         str(reason_value),
-        bool(received_token),
     )
 
 
@@ -105,14 +115,16 @@ def note_recovery_failure(agent: Any, classified: Any, _retry: Any, *, now: Opti
     if _retry is None:
         return 0
     _now = time.time() if now is None else float(now)
-    received_token = attempt_received_any_token(agent)
-    fingerprint = failure_fingerprint(agent, classified, received_token=received_token)
-    if received_token:
-        # A progress-making attempt is never an identical failure: reset outright.
+    progress = attempt_progress_chars(agent)
+    previous = int(getattr(_retry, "auto_recovery_last_attempt_progress_chars", 0) or 0)
+    _retry.auto_recovery_last_attempt_progress_chars = progress
+    if progress > previous:
+        # STRICT progress (further than the attempt before it): never an identical failure.
         _retry.auto_recovery_failure_fingerprint = None
         _retry.auto_recovery_identical_failures = 0
         _retry.auto_recovery_identical_failure_at = _now
         return 0
+    fingerprint = failure_fingerprint(agent, classified)
     last_at = float(getattr(_retry, "auto_recovery_identical_failure_at", 0.0) or 0.0)
     same = (
         getattr(_retry, "auto_recovery_failure_fingerprint", None) == fingerprint
@@ -142,7 +154,7 @@ def crash_loop_message(count: int, last_error: str) -> str:
     last error, and tells the user auto-recovery was stopped and they can retry manually."""
     return (
         "🛑 Auto-recovery stopped: the provider appears to be crash-looping.\n\n"
-        f"The same request failed {count} times in a row with no response progress "
+        f"The same request failed {count} times in a row with no additional progress "
         f"(provider, endpoint and model unchanged). Retrying an identical request will not help.\n\n"
         f"Last error: {last_error}\n\n"
         "Wait for the provider to become healthy, then retry manually."
