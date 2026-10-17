@@ -2544,3 +2544,12 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   same failure set as main in both the test env (17, all missing `aiohttp`) and a `--extra matrix`
   env (2, `test_matrix_deps_rebind.py` expects mautrix absent). Branch
   `claude/matrix-adapter-code-health-ratchet-e3vm4o`.
+- 2026-10-17 — C-0029 `gateway/platforms/bluebubbles.py` (async): RUF006×1 → 0 (the 9 BLE001 untouched,
+  in place and in order; FILE_LINES 610 → 612). `_handle_webhook`'s fire-and-forget read receipt now
+  lives in `_read_receipt_tasks` (discarded on done) so it cannot be garbage-collected mid-run; its
+  exceptions were already handled — `mark_read` → `_private_api_chat_call` suppresses and returns
+  False. A dedicated set, not `_background_tasks`, so shutdown's `cancel_background_tasks` behaves as
+  before. No other `create_task`/`ensure_future` in the file (the `handle_message` task beside it was
+  already tracked). New invariant test `tests/gateway/test_bluebubbles_read_receipt_task.py` (red on
+  main). Unit's 3 test files + new one: 100/100 in a `--extra sms` env (the plain test env lacks
+  `aiohttp`, which the webhook handler imports). Branch `claude/async-bluebubbles-ratchet-6urbee`.

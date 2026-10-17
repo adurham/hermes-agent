@@ -131,6 +131,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._read_receipt_tasks: set[asyncio.Task] = set()
 
     # --- API helpers ---
 
@@ -605,6 +606,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-        if self.send_read_receipts and session_chat_id:  # fire-and-forget read receipt
-            asyncio.create_task(self.mark_read(session_chat_id))
+        if self.send_read_receipts and session_chat_id:  # fire-and-forget; mark_read swallows its own errors
+            self._read_receipt_tasks.add(receipt := asyncio.create_task(self.mark_read(session_chat_id)))
+            receipt.add_done_callback(self._read_receipt_tasks.discard)
         return _ok()
