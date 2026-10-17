@@ -37,11 +37,27 @@ def session_pinned(config, field, launched):
     return pins[field] if isinstance(pins, dict) and isinstance(pins.get(field), bool) else launched
 
 
-def pin_reasoning_effort(config, effort):
+def pin_reasoning_effort(config, effort, *, session=False):
     """Write an explicit session reasoning level into *config*: it wins over a per-model default
-    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one."""
+    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one.
+    A *session* edit also records the pin."""
     config.setdefault('agent', {})['reasoning_effort'] = effort
     config['agent'].pop('reasoning_overrides', None)
+    if session:
+        config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': True}
+
+
+def unpin_reasoning(config, profile):
+    """``/reasoning reset``: the level is *profile*'s (its current config) again, re-read every turn by a
+    following session and on each resume by any other; a create-time ``reasoning`` included."""
+    followed = profile.get('agent') if isinstance(profile.get('agent'), dict) else {}
+    agent = config.setdefault('agent', {})
+    for key in ('reasoning_effort', 'reasoning_overrides'):
+        if key in followed:
+            agent[key] = followed[key]
+        else:
+            agent.pop(key, None)
+    config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': False}
 
 
 FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
@@ -117,8 +133,9 @@ class LocalSessionPolicy:
     def effective(self, authority=None, *, secrets=True):
         """``(config, model)`` the next turn runs, both from ONE read of the owning profile when following
         (the turn's policy scope holds that read): a route never pairs one profile's model with another's
-        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a pick that still holds) are
-        applied over the followed defaults; frozen secrets of followed sections are never recovered."""
+        endpoint. Explicit choices (create-time reasoning / tier / toolsets, a session ``/reasoning`` until
+        reset, a pick that still holds) are applied over the followed defaults; frozen secrets of followed
+        sections are never recovered."""
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
