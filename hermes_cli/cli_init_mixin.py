@@ -217,25 +217,29 @@ class CLIInitMixin:
         self.run_budget_seconds = run_budget if run_budget is not None else CLI_CONFIG["agent"].get("run_budget_seconds")
 
     def _init_toolsets(self, toolsets):
-        from cli import CLI_CONFIG, validate_toolset
+        from cli import CLI_CONFIG
         self.enabled_toolsets = toolsets
         from agent.skill_utils import parse_config_string_list
 
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
 
         if toolsets and "all" not in toolsets and "*" not in toolsets:
-            # MCP server names only resolve after discover_mcp_tools runs; skip them here.
-            mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            # Plugin toolsets register during plugin discovery, which startup runs on a background thread
-            # that has not necessarily landed yet; names it declared (or the previous launch persisted, which
-            # get_plugin_toolset_keys_nowait serves) are not typos (#71650).
+            # Judge the list the way the runtime resolves it, through the same resolver `hermes doctor` and
+            # `hermes config check` use: registered toolsets, configured MCP servers (bare or ``mcp-<server>``),
+            # plugin toolsets, and portable-plugin MCP servers -- the last two register only on the background
+            # discovery thread, so the live registry alone would flag them (#71650). This surface's own
+            # hand-rolled allowlist drifted behind the resolver once already and reported a portable-plugin
+            # server name (e.g. the rea plugin's `rea`) as an unknown toolset on every launch while its tools
+            # loaded fine; one resolver, no second list to keep in sync.
             try:
-                from hermes_cli.plugins import get_plugin_toolset_keys_nowait
-                plugin_ts_names = get_plugin_toolset_keys_nowait()
+                from hermes_cli.toolset_validation import saved_toolset_resolver
+                is_known_toolset = saved_toolset_resolver(CLI_CONFIG)
+                invalid = [t for t in toolsets if not is_known_toolset(t)]
             except Exception:
-                plugin_ts_names = set()
-            invalid = [t for t in toolsets
-                       if not validate_toolset(t) and t not in mcp_names and t not in plugin_ts_names]
+                # Diagnostics only: never let a discovery hiccup turn into a launch failure (and never a
+                # false "unknown toolset", which is what a narrower fallback list would produce).
+                logger.debug("toolset validation skipped", exc_info=True)
+                invalid = []
             if invalid:
                 from agent.i18n import t as _t
                 self._console_print(f"[bold red]{_t('cli.startup.unknown_toolsets', names=', '.join(invalid))}[/]")

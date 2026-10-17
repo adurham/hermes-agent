@@ -768,17 +768,24 @@ class TestPluginToolsetStartupValidation:
     """
 
     @staticmethod
-    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys):
+    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys, portable_keys=()):
         import cli as _cli_mod
+        import toolsets as _toolsets_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
         printed: list[str] = []
         stub._console_print = printed.append
-        monkeypatch.setattr(_cli_mod, "validate_toolset", lambda name: name in registry)
+        # _init_toolsets judges names through hermes_cli.toolset_validation.saved_toolset_resolver,
+        # which calls toolsets.validate_toolset and reads both plugin probes off hermes_cli.plugins.
+        monkeypatch.setattr(_toolsets_mod, "validate_toolset", lambda name: name in registry)
         monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
         monkeypatch.setattr(
             "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
             lambda: set(plugin_keys),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_portable_mcp_server_names_nowait",
+            lambda: set(portable_keys),
         )
         stub._init_toolsets(list(toolsets))
         return stub, printed
@@ -804,6 +811,31 @@ class TestPluginToolsetStartupValidation:
         assert len(printed) == 1
         assert "voice_stak" in printed[0]
         assert "voice_stack" not in printed[0]
+
+    def test_portable_mcp_server_name_is_not_flagged(self, monkeypatch):
+        """A portable-plugin MCP server (the rea plugin ships one named `rea`) rides the resolved CLI
+        toolset list; it is not registered as a *toolset* until its plugin's MCP server connects, so an
+        allowlist built from registered toolsets + plugin toolset keys alone flagged it on every launch
+        (#71650's gap). The shared resolver consults get_portable_mcp_server_names_nowait()."""
+        stub, printed = self._init_toolsets(
+            monkeypatch,
+            ["terminal", "rea"],
+            registry={"terminal"},
+            plugin_keys=set(),
+            portable_keys={"rea"},
+        )
+        assert printed == []
+        assert stub.enabled_toolsets == ["terminal", "rea"]
+
+    def test_portable_mcp_server_name_via_mcp_alias_is_not_flagged(self, monkeypatch):
+        _, printed = self._init_toolsets(
+            monkeypatch,
+            ["terminal", "mcp-rea"],
+            registry={"terminal"},
+            plugin_keys=set(),
+            portable_keys={"rea"},
+        )
+        assert printed == []
 
 
 

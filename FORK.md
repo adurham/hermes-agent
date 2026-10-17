@@ -3,6 +3,35 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fix — 2026-10-17 (false "Unknown toolsets: rea" warning on every CLI launch)
+
+**Symptom.** Every interactive launch printed `Warning: Unknown toolsets: rea` after
+installing the `rea` plugin (07:55) — while every rea tool loaded and worked.
+
+**Root cause.** `HermesCLI._init_toolsets` (hermes_cli/cli_init_mixin.py) validated the
+resolved toolset list against its own hand-rolled allowlist: built-in
+`validate_toolset()` names + `CLI_CONFIG["mcp_servers"]` keys + plugin *toolset* keys.
+The `rea` plugin contributes a **portable MCP server** (`plugins/rea/mcp.json`), and
+`tools_config._get_platform_tools` merges portable-plugin server names into the list the
+CLI starts with — but that name was in none of the three sets. The resolver that models
+exactly this ("what tools_config lets through") already existed:
+`toolset_validation.saved_toolset_resolver`, which `hermes doctor` / `hermes config check`
+use and which *does* consult `get_portable_mcp_server_names_nowait()`. This is the second
+drift of the same class (the earlier one was `a2a`, #71650) — a second allowlist that must
+be kept in sync with the runtime.
+
+**Fix.** `_init_toolsets` now judges the list through `saved_toolset_resolver(CLI_CONFIG)`
+itself (registered toolsets, configured MCP servers bare or as `mcp-<server>`, plugin
+toolsets, portable-plugin MCP servers + their `mcp-<server>` aliases, `hermes-<platform>`
+bundles, the `no_mcp` sentinel). One resolver, no second list. Wrapped in try/except that
+*skips* validation on failure — never a launch failure and never a false warning.
+Tests: `tests/hermes_cli/test_cli_init.py::TestPluginToolsetStartupValidation` re-pointed
+at `toolsets.validate_toolset` + both plugin probes; 2 new tests (portable name and its
+`mcp-` alias). Verified against the live config: `['…','rea','…']` → no output; `vooice`
+→ still warns. Upstream `main` (as of 2026-10-15, 145 commits ahead) carries the same gap,
+so expect this to be superseded by an upstream fix at a later sync the same way #71650
+superseded the fork's `a2a` fix.
+
 ### Feature — 2026-10-17 (full automatic memory management: `memory.auto_apply`; 3-week staged-write backlog drained)
 
 **Owner-directed** ("we need to allow for full automatic memory management in our setup/fork").
