@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 import hermes_dir_acl
-from hermes_cli import update_cmd_maint as maint
+from hermes_cli import update_windows_acl as maint
 
 
 def _fake_elevated(monkeypatch, tmp_path, elevated=True):
@@ -30,10 +30,10 @@ def test_repair_runs_only_from_an_elevated_update(monkeypatch, tmp_path):
     the recursive grant over the whole home is skipped there."""
     (tmp_path / "home").mkdir()
     granted, runs = _fake_elevated(monkeypatch, tmp_path, elevated=False)
-    maint._repair_windows_home_acl()  # the production call: probed, unelevated
-    maint._repair_windows_home_acl(elevated=False)
+    maint.repair_windows_home_acl()  # the production call: probed, unelevated
+    maint.repair_windows_home_acl(elevated=False)
     assert granted == [] and runs == []
-    maint._repair_windows_home_acl(elevated=True)
+    maint.repair_windows_home_acl(elevated=True)
     assert granted == [str(tmp_path / "home")]
 
 
@@ -46,7 +46,7 @@ def test_repair_never_recurses_through_a_link_inside_the_home(monkeypatch, tmp_p
     (outside / "bin").mkdir(parents=True)
     (home / "cache" / "images").symlink_to(outside, target_is_directory=True)
     granted, runs = _fake_elevated(monkeypatch, tmp_path)
-    maint._repair_windows_home_acl()
+    maint.repair_windows_home_acl()
     assert not any(argv and argv[0] == "icacls" and "/T" in argv for argv in runs), runs
     assert granted == [str(home), str(home / "cache")]
 
@@ -60,7 +60,7 @@ def test_repair_stays_owed_when_nothing_could_be_granted(monkeypatch, tmp_path):
 
     monkeypatch.setattr(hermes_dir_acl, "_grant_with_pywin32", denied)
     with pytest.raises(RuntimeError, match="could not restore user access"):
-        maint._repair_windows_home_acl()
+        maint.repair_windows_home_acl()
 
 
 def test_repair_walks_below_an_operator_linked_home(monkeypatch, tmp_path):
@@ -75,7 +75,7 @@ def test_repair_walks_below_an_operator_linked_home(monkeypatch, tmp_path):
     (real / "jn").symlink_to(outside, target_is_directory=True)
     granted, _runs = _fake_elevated(monkeypatch, tmp_path)
     (tmp_path / "home").symlink_to(real, target_is_directory=True)
-    maint._repair_windows_home_acl()
+    maint.repair_windows_home_acl()
     assert sorted(granted) == sorted([str(real), str(real / "state"), str(real / "state" / "s.json")])
 
 
@@ -83,4 +83,4 @@ def test_repair_that_repaired_nothing_stays_owed(monkeypatch, tmp_path):
     _fake_elevated(monkeypatch, tmp_path)
     (tmp_path / "home").symlink_to(tmp_path / "gone", target_is_directory=True)  # dangling
     with pytest.raises(RuntimeError, match="nothing was repaired"):
-        maint._repair_windows_home_acl()
+        maint.repair_windows_home_acl()

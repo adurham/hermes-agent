@@ -296,7 +296,7 @@ def _dacls(paths):
 
 def test_elevated_grants_never_reach_a_junction_target_outside_the_home(home_with_junction_out):
     import hermes_dir_acl
-    from hermes_cli import update_cmd_maint
+    from hermes_cli import update_windows_acl
 
     home, outside, junction = home_with_junction_out
     assert hermes_dir_acl.is_reparse_point(junction)
@@ -307,7 +307,7 @@ def test_elevated_grants_never_reach_a_junction_target_outside_the_home(home_wit
     hermes_dir_acl.make_user_dir(junction / "thumbs", parents=True, exist_ok=True)  # through the junction
     assert hermes_dir_acl.grant_user_access(junction) is False
     granted, skipped, failed = hermes_dir_acl.grant_tree_user_access(home)
-    update_cmd_maint._repair_windows_home_acl()  # the post-update repair that used icacls /T
+    update_windows_acl.repair_windows_home_acl()  # the post-update repair that used icacls /T
     assert junction in skipped and not failed and granted >= 2
     assert _dacls(watched) == before, "an elevated grant followed the junction out of the home"
     # The real entries in the home still got the grant.
