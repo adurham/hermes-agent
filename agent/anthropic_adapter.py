@@ -1125,6 +1125,14 @@ def _strip_unknown_tool_blocks(
     if not anthropic_messages:
         return anthropic_messages
 
+    from agent.anthropic_adapter_tool_blocks import (
+        _finalize_rewritten_blocks,
+        _tool_result_breadcrumb,
+        _tool_result_text,
+        _tool_use_breadcrumb,
+        _unknown_tool_use_meta,
+    )
+
     # First pass: identify unknown tool_use ids (we need them to also
     # rewrite the matching tool_result blocks in user messages).
     unknown_tool_use_ids: dict[str, dict] = {}  # id -> {name, input_summary}
@@ -1149,12 +1157,7 @@ def _strip_unknown_tool_blocks(
                 inp_str = str(block.get("input") or {})
             except Exception:
                 inp_str = "{}"
-            if len(inp_str) > 200:
-                inp_str = inp_str[:200] + "...(truncated)"
-            unknown_tool_use_ids[tool_id] = {
-                "name": name or "(unnamed)",
-                "input_summary": inp_str,
-            }
+            unknown_tool_use_ids[tool_id] = _unknown_tool_use_meta(name, inp_str)
 
     if not unknown_tool_use_ids:
         return anthropic_messages
@@ -1171,121 +1174,21 @@ def _strip_unknown_tool_blocks(
                 continue
             btype = block.get("type")
             if btype == "tool_use" and block.get("id") in unknown_tool_use_ids:
-                meta = unknown_tool_use_ids[block["id"]]
-                new_blocks.append({
-                    "type": "text",
-                    "text": (
-                        f"[Previous tool call: {meta['name']}("
-                        f"{meta['input_summary']}) — tool no longer available "
-                        f"in this turn.]"
-                    ),
-                })
+                new_blocks.append(_tool_use_breadcrumb(unknown_tool_use_ids[block["id"]]))
                 continue
             if btype == "tool_result" and block.get("tool_use_id") in unknown_tool_use_ids:
                 # Best-effort summary of the original result text so the
                 # model can still reason about what came back.
                 try:
-                    result_content = block.get("content")
-                    if isinstance(result_content, list):
-                        # Anthropic tool_result content is a list of text/image blocks
-                        text_pieces = []
-                        for rc in result_content:
-                            if isinstance(rc, dict) and rc.get("type") == "text":
-                                text_pieces.append(str(rc.get("text", "")))
-                        result_summary = "\n".join(text_pieces)
-                    else:
-                        result_summary = str(result_content or "")
+                    result_summary = _tool_result_text(block.get("content"))
                 except Exception:
                     result_summary = ""
-                if len(result_summary) > 400:
-                    result_summary = result_summary[:400] + "...(truncated)"
-                meta = unknown_tool_use_ids[block["tool_use_id"]]
-                new_blocks.append({
-                    "type": "text",
-                    "text": (
-                        f"[Previous tool result for {meta['name']}: "
-                        f"{result_summary}]"
-                    ),
-                })
+                new_blocks.append(_tool_result_breadcrumb(
+                    unknown_tool_use_ids[block["tool_use_id"]], result_summary,
+                ))
                 continue
             new_blocks.append(block)
-        # Empty content after rewrites — leave a placeholder so the
-        # message still validates (Anthropic rejects empty content).
-        if not new_blocks:
-            new_blocks = [{"type": "text", "text": "(content removed)"}]
-        # In a user message that's responding to an assistant tool_use,
-        # Anthropic requires tool_result blocks to come BEFORE any other
-        # content; otherwise the API 400s with
-        #   `tool_use` ids were found without `tool_result` blocks
-        #   immediately after: <id>
-        # The in-place rewrite above can leave leading text breadcrumbs
-        # ahead of a surviving real tool_result (when some — but not all
-        # — tool_results in the same user message were converted). Stable
-        # partition restores the required ordering while preserving the
-        # breadcrumbs after the live tool_results.
-        if msg.get("role") == "user" and any(
-            isinstance(b, dict) and b.get("type") == "tool_result"
-            for b in new_blocks
-        ):
-            tool_results = [
-                b for b in new_blocks
-                if isinstance(b, dict) and b.get("type") == "tool_result"
-            ]
-            other = [
-                b for b in new_blocks
-                if not (isinstance(b, dict) and b.get("type") == "tool_result")
-            ]
-            new_blocks = tool_results + other
-        # Symmetric fix on the assistant side: Anthropic rejects an
-        # assistant message whose ``tool_use`` is followed by any other
-        # block with the SAME 400 (``tool_use`` ids without
-        # ``tool_result`` blocks immediately after). This rewrite can
-        # produce that pattern when one tool_use survives (live tool) and
-        # a later sibling tool_use becomes a text breadcrumb — leaving
-        # ``[tool_use, text]`` in the same message. Move surviving
-        # tool_use blocks to the tail to restore the contract.
-        #
-        # Thinking-signature safety: thinking blocks are signed against
-        # their position in the response stream. If any thinking block
-        # is present, reordering risks invalidating the signature; skip
-        # and log instead so Anthropic surfaces the issue.
-        elif msg.get("role") == "assistant" and any(
-            isinstance(b, dict) and b.get("type") == "tool_use"
-            for b in new_blocks
-        ):
-            first_tu = next(
-                i for i, b in enumerate(new_blocks)
-                if isinstance(b, dict) and b.get("type") == "tool_use"
-            )
-            last_non_tu = max(
-                (i for i, b in enumerate(new_blocks)
-                 if not (isinstance(b, dict) and b.get("type") == "tool_use")),
-                default=-1,
-            )
-            if first_tu < last_non_tu:
-                has_thinking = any(
-                    isinstance(b, dict)
-                    and b.get("type") in ("thinking", "redacted_thinking")
-                    for b in new_blocks
-                )
-                if has_thinking:
-                    logger.warning(
-                        "anthropic_adapter: assistant message has tool_use "
-                        "followed by non-tool_use blocks AND contains a "
-                        "thinking block; cannot reorder without invalidating "
-                        "the thinking signature. Anthropic may reject with "
-                        "a 400 about tool_use without tool_result.",
-                    )
-                else:
-                    tool_uses = [
-                        b for b in new_blocks
-                        if isinstance(b, dict) and b.get("type") == "tool_use"
-                    ]
-                    other = [
-                        b for b in new_blocks
-                        if not (isinstance(b, dict) and b.get("type") == "tool_use")
-                    ]
-                    new_blocks = other + tool_uses
+        new_blocks = _finalize_rewritten_blocks(msg.get("role"), new_blocks)
         msg["content"] = new_blocks
 
     if unknown_tool_use_ids:
