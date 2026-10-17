@@ -36,5 +36,7 @@ def ask_clarify_batch(turn, questions) -> dict:
         return {"answers": {}, "outcome": "cancelled"}
     known = {entry["qid"] for entry in questions}
     clean = {qid: (value if isinstance(value, str) else None) for qid, value in answers.items() if qid in known}
-    outcome = result.get("outcome") if result.get("outcome") in ("submitted", "timed_out", "cancelled") else "submitted"
+    # ``session_sudo_prompt`` settles a batch with its terminal outcome (an absent outcome on a frame
+    # that carried answers is ``submitted``; a cancel-all or error is ``cancelled``).
+    outcome = result.get("outcome") if result.get("outcome") in ("submitted", "timed_out", "cancelled") else "cancelled"
     return {"answers": clean, "outcome": outcome}

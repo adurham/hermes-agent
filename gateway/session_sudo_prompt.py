@@ -36,12 +36,27 @@ class _Pending:
 
 _lock = threading.Lock()
 _open: dict[str, _Pending] = {}
+_OUTCOMES = ("submitted", "timed_out", "cancelled")
 
 
 def is_response_frame(frame) -> bool:
     """A viewer's answer to one of the owner's requests: a string ``srq-`` id, a result/error, no method."""
     return (isinstance(frame, dict) and "method" not in frame and isinstance(frame.get("id"), str)
             and frame["id"].startswith("srq-") and ("result" in frame or "error" in frame))
+
+
+def _settle_batch(locked, result):
+    """A batch clarify's terminal result: answers locked early belong to the final set whatever ends
+    the wait, as main's ``server_requests`` merged them. A closing frame with an ``answers`` dict lays
+    its answers over the locks (the frame wins per question) and keeps its own outcome (``submitted``
+    when it names none); a frame without one (Ink Esc, Desktop Skip) or an error is a cancel-all."""
+    if isinstance(result, dict) and isinstance(result.get("answers"), dict):
+        outcome = result.get("outcome")
+        if outcome not in _OUTCOMES:
+            outcome = "submitted"
+        return {**result, "answers": {**locked, **result["answers"]}, "outcome": outcome}
+    outcome = result.get("outcome") if isinstance(result, dict) else None
+    return {"answers": locked, "outcome": outcome if outcome in ("timed_out", "cancelled") else "cancelled"}
 
 
 def resolve(frame, *, session_ok=lambda session_id: True) -> bool:
@@ -52,12 +67,10 @@ def resolve(frame, *, session_ok=lambda session_id: True) -> bool:
         if pending is None or not session_ok(pending.session_id):
             return False
         _open.pop(frame["id"], None)
+        locked = dict(pending.locked) if pending.qids is not None else None
     result = frame.get("result") if "error" not in frame else None
-    if pending.qids is not None and pending.locked and isinstance(result, dict):
-        # Answers locked early belong to the final set even when the closing frame omits them
-        # (a cancel after two locks keeps those two), as main's ``server_requests`` merged them.
-        answers = result.get("answers") if isinstance(result.get("answers"), dict) else {}
-        result = {**result, "answers": {**pending.locked, **answers}}
+    if locked is not None:
+        result = _settle_batch(locked, result)
     value = result.get("value") if isinstance(result, dict) else ""
     pending.value = value if isinstance(value, str) else ""
     pending.result = result if isinstance(result, dict) else None
@@ -82,7 +95,8 @@ def ask_viewer_result(events, session_id, method, params, *, cancelled=lambda: F
                       qids=None):
     """The same round trip for a structured answer (``clarify``: ``ClarifyResult``): the viewer's
     ``result`` dict, or None on interrupt, timeout, an error response or no attached viewer.
-    ``qids`` makes it a batch: ``lock_answer`` (the ``clarify.lock`` verb) answers it per question."""
+    ``qids`` makes it a batch, which always ends with ``{answers: <locked so far>, outcome}`` once
+    asked: ``lock_answer`` (the ``clarify.lock`` verb) answers it per question."""
     pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout, qids=qids)
     return pending.result if pending is not None else None
 
@@ -128,13 +142,18 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
             break
     with _lock:
         still_open = _open.pop(request_id, None) is pending
+        if still_open and pending.qids is not None:
+            # A batch keeps every answer locked before the wait ended (main's sidecar: "locked
+            # answers survive a timeout"); sudo/secret have no question ids and stay unanswered.
+            pending.result = {"answers": dict(pending.locked),
+                              "outcome": "cancelled" if reason == "interrupted" else "timed_out"}
     if still_open:
         # The same teardown main's renderers key on (``request.cancel``): the card closes and a
         # timed-out password prompt says so.
         with contextlib.suppress(Exception):
             events.publish(session_id, {"id": request_id, "method": method, "reason": reason},
                            event_type="request.cancel")
-        return None
+        return pending if pending.qids is not None else None
     return pending
 
 
