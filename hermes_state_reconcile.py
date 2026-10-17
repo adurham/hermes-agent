@@ -173,11 +173,13 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
 
     No data migration, no FTS work, no schema_version stamp (that stays the owner's: the
     version gates data migrations this path does not run). Every statement is additive and
-    idempotent, so a failure (or an expired budget) rolls the store back to exactly what it was."""
+    idempotent. The declared shape is verified inside the transaction before COMMIT: a column
+    the shared reconciler could not add (it logs and continues) or an expired budget rolls the
+    store back to exactly what it was, never a partial upgrade."""
     from hermes_cli.sqlite_safe_read import connect_tracked
     from hermes_state_common import SCHEMA_SQL
-    from hermes_state_repair import _reapply_durability_barriers
-    from hermes_state_schema import SessionSchemaMixin
+    from hermes_state_repair import _reapply_durability_barriers, _schema_not_built
+    from hermes_state_schema import SessionSchemaMixin, schema_read_probe_statements
 
     budget = budget or _Budget(BROWSE_RECONCILE_BUDGET_S)
     budget.check()
@@ -193,6 +195,14 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
             shim._reconcile_columns(cursor)
             SessionSchemaMixin._execute_ddl_script_transactional(cursor, SCHEMA_SQL)
             shim._reconcile_columns(cursor)  # tables the script just created are complete; no-op
+            # Postcondition, still inside the transaction: every declared table/column resolves.
+            for statement in schema_read_probe_statements():
+                try:
+                    cursor.execute(statement).fetchone()
+                except sqlite3.OperationalError as exc:
+                    if _schema_not_built(exc):
+                        raise DeclarativeDriftError(str(exc)) from exc
+                    raise
             budget.check()
             conn.execute('COMMIT')
         except BaseException as exc:
@@ -292,7 +302,13 @@ def reconcile_drift_for_browse(path: Path) -> bool:
             # corruption recovery, so never write into a store that is not verified clean.
             if problem := _integrity_problem(path, budget):
                 raise CorruptStoreError(problem)
-            _apply_additive_schema(path, budget)
+            try:
+                _apply_additive_schema(path, budget)
+            except DeclarativeDriftError as exc:
+                raise DeclarativeDriftError(
+                    f"Session store for profile '{label}' is behind this Hermes version and could not "
+                    f'be caught up ({exc}); nothing was changed. Run `hermes sessions repair` for that '
+                    'profile.') from exc
     except BrowseBudgetExceeded as exc:
         raise DeclarativeDriftError(
             f"Session store for profile '{label}' is behind this Hermes version ({reason}) and could "

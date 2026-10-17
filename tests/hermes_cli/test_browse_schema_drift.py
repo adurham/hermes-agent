@@ -633,3 +633,23 @@ def test_equal_cardinality_corrupt_index_plus_drift_is_not_written(tmp_path):
     assert _file_state(path) == before
     assert "last_read_at" not in _session_columns(path)
 
+
+def test_failed_column_reconcile_rolls_back_every_addition(tmp_path):
+    """R2-4: the shared column reconciler logs and continues on a non-lock error. A populated
+    table missing a NOT NULL column cannot be caught up additively; browse must refuse without
+    committing the other columns it could add (no partial upgrade without a backup)."""
+    path = _lagging_store_with_history(_profile_home(tmp_path), rows=10)
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("INSERT INTO system_prompts(hash, prompt) VALUES ('abc', 'retained prompt')")
+        conn.execute("ALTER TABLE system_prompts DROP COLUMN prompt")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    before = _file_state(path)
+
+    with pytest.raises(HTTPException) as caught:
+        _open_session_db_at_path(path, read_only=True).close()
+    assert caught.value.status_code == 503
+    assert "system_prompts.prompt" in str(caught.value.detail)
+    assert "nothing was changed" in str(caught.value.detail)
+    assert _file_state(path) == before
+    assert "last_read_at" not in _session_columns(path)
