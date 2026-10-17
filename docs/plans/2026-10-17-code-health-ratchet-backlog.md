@@ -2297,3 +2297,7 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `_gate_providers`, `_partition_tasks`, `_tier_roles`, `_classify_limits`, `_unpack_verdict`,
   `_advisory_entry`, `_full_route`, each CC ≤ 5); 128 tests + 24,192-case old-vs-new differential
   green (branch `claude/reduce-route-task-models-cc-8w5epf`). Next: A-025 (pick 4).
+- 2026-10-17 — A-025 `tools/delegate_tool.py::_resolve_task_routes`: CC 25 → 12 (FUNC_LINES 292 → 174)
+  via same-file helpers `_route_advisory`, `_resolve_role_route_creds`, `_warn_unrouted_task`,
+  `_route_info` (CC 2/7/6/3); BLE001 hit kept inline (branch
+  `claude/reduce-delegate-tool-complexity-pl169p`). Next: first still-over-cap row of Next pick.
