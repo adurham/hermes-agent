@@ -632,7 +632,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # submit itself, and the prompt then ends without being sent.
         self._submitting.add(session_id)
         try:
-            staged = await stage_user_content(content)
+            staged = await stage_user_content(content, self._home)
         finally:
             self._submitting.discard(session_id)
         if session_id in self._pending_cancels:

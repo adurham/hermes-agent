@@ -39,3 +39,27 @@ async def test_overlay_home_attaches_to_the_owner_its_lock_names(daemon, tmp_pat
         saved = await ws.rpc('session.resume', session_id=sid)
         assert 'WS_SHARED overlay' in json.dumps(saved['messages'])
     assert not (overlay[0] / 'gateway.sock').exists() and not (overlay[0] / 'gateway.pid').exists()
+
+
+_ONE_PX_PNG = bytes.fromhex(
+    '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4'
+    '890000000a49444154789c6300010000000500010d0a2db40000000049454e44ae426082')
+
+
+@pytest.mark.platforms('linux')
+@pytest.mark.asyncio
+async def test_overlay_home_image_prompt_is_staged_where_the_owner_admits_it(daemon, tmp_path, model_peer):
+    """The overlay does not share ``cache/images``: an image is staged in the owner's cache, the only
+    place its admission accepts (#140190 review)."""
+    import base64
+    overlay = _overlay(daemon, tmp_path)
+    async with editor(overlay, tmp_path) as acp:
+        await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
+        sid = (await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[]))['result']['sessionId']
+        turn = await acp.rpc('session/prompt', sessionId=sid, prompt=[
+            {'type': 'text', 'text': 'WS_SHARED overlay image'},
+            {'type': 'image', 'data': base64.b64encode(_ONE_PX_PNG).decode(), 'mimeType': 'image/png'}])
+        assert 'result' in turn, (turn, (tmp_path / 'acp.log').read_text()[-2000:])
+        assert turn['result']['stopReason'] == 'end_turn', turn
+    assert any(daemon[0].glob('cache/images/img_*.png')), list(daemon[0].rglob('*.png'))
+    assert not any(overlay[0].glob('cache/images/*')), list(overlay[0].rglob('*.png'))
