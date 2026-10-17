@@ -22,6 +22,12 @@ dropping the write. Touched: `tools/write_approval.auto_apply_enabled()`;
 refused, not dereferenced); `hermes_cli/memory_confirm` (inline apply via
 `apply_proposal_now`, staging fallback, `applied N proposals automatically` exit notice);
 docs; 10 new tests. Enabled in the MacBook default profile and the local exo profile.
+Same-day owner-approved gateway rollout: hermes-gw-01 + its dashboard profile now run fork
+main 5bd568eb5b with `memory.auto_apply: true` in both ansible-rendered configs plus
+`auxiliary.memory_extraction.auto_commit_session_end: true` (the headless-surface lever:
+session-end extracted entries commit directly instead of cycling in the session buffer) —
+homelab repo commit 5cf96b0. Those surfaces' own 104-record backlog was drained the same
+way: 94 warm applied (0 failures), 1 hot applied, 7 attic'd, 2 budget-blocked left pending.
 
 **Latent bug found by exercising the real path (commit a558f40476c).**
 `tools/memory_warm.py`'s `WarmStore.add()` called `find_fact_id_by_content` — a method that
