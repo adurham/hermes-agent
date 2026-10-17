@@ -102,3 +102,65 @@ async def test_deferred_pick_that_no_longer_resolves_is_named_to_the_editor(daem
             shown = _shown(acp.frames, start)
             assert 'second-model was not applied' in shown and 'local-wire-stub' in shown, shown
             assert model_peer.requests[-1]['model'] == 'local-wire-stub', model_peer.requests[-1]
+
+
+_GUARDED = {**_SECOND, 'model': {'switch_context_confirm_tokens': 1}}
+
+
+def _measured(model_peer):
+    """Streamed replies report provider usage, so the owner measures the session's context."""
+    from tests.gateway.fixtures.shared_authority_peer import ModelPeer
+
+    class Measured(ModelPeer):
+        def send_header(self, key, value):
+            super().send_header(key, value)
+            self._stream = value == 'text/event-stream' or getattr(self, '_stream', False)
+
+        def end_headers(self):
+            super().end_headers()
+            if getattr(self, '_stream', False):
+                write = self.wfile.write
+
+                def with_usage(data):
+                    if data.startswith(b'data: {') and b'"finish_reason": "stop"' in data:
+                        chunk = json.loads(data[6:])
+                        chunk['usage'] = {'prompt_tokens': 250000, 'completion_tokens': 5, 'total_tokens': 250005}
+                        data = ('data: ' + json.dumps(chunk) + '\n\n').encode()
+                    return write(data)
+                self.wfile.write = with_usage
+    model_peer.RequestHandlerClass = Measured
+
+
+@pytest.mark.platforms('linux')
+@pytest.mark.asyncio
+@pytest.mark.parametrize('daemon', [_GUARDED], indirect=True)
+async def test_guarded_deferred_pick_asks_the_editor_at_the_boundary_and_lands_on_yes(daemon, tmp_path, model_peer):
+    """Any measured context trips the large-context guard: at the turn boundary the owner asks
+    (``confirmation_required``) instead of applying. ACP asks through its permission request and the
+    yes commits the pick; it never stays silently pending (#140190 review)."""
+    _second_on_peer(daemon, model_peer)
+    _measured(model_peer)
+    async with viewer(daemon) as ws:
+        sid = (await ws.rpc('session.create', request_id='acp-guard', source='cli', cwd=str(tmp_path)))['session_id']
+        async with editor(daemon, tmp_path) as acp:
+            await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
+            assert 'result' in await acp.rpc('session/load', cwd=str(tmp_path), sessionId=sid, mcpServers=[])
+            warm = await acp.rpc('session/prompt', sessionId=sid, prompt=[{'type': 'text', 'text': 'WS_SHARED warm'}])
+            assert warm['result']['stopReason'] == 'end_turn', warm
+            running, start = await _pick_during_a_turn(acp, sid, model_peer)
+            model_peer.release.set()
+            assert (await running)['result']['stopReason'] == 'end_turn'
+            await async_wait_until(lambda: any(f.get('method') == 'session/request_permission'
+                                               for f in acp.frames[start:]), timeout=20,
+                                   what='the guarded deferred pick asked through ACP')
+            ask = next(f for f in acp.frames[start:] if f.get('method') == 'session/request_permission')
+            assert 'second-model' in json.dumps(ask['params']), ask
+            assert model_peer.requests[-1]['model'] == 'local-wire-stub'  # nothing applied without consent
+            acp.process.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': ask['id'], 'result': {
+                'outcome': {'outcome': 'selected', 'optionId': 'allow_once'}}}).encode() + b'\n')
+            await acp.process.stdin.drain()
+            await async_wait_until(lambda: 'Model switched to: second-model' in _shown(acp.frames, start),
+                                   timeout=15, what='the confirmed pick reported')
+            after = await acp.rpc('session/prompt', sessionId=sid, prompt=[{'type': 'text', 'text': 'WS_SHARED after'}])
+            assert after['result']['stopReason'] == 'end_turn', after
+            assert model_peer.requests[-1]['model'] == 'second-model', model_peer.requests[-1]

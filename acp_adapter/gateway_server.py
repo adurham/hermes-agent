@@ -461,6 +461,44 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                                             update=acp.update_agent_message_text(deferred_pick_text(result) + "\n"))
         return SetSessionModelResponse()
 
+    async def _confirm_deferred_pick(self, session_id, editor_id, ask):
+        """The owner's boundary ask for a guarded deferred pick (``confirmation_required``; nothing
+        written, the pick stays pending): the same permission request as an idle pick. Yes re-sends
+        the same selection once with the owner's token (as Ink/Desktop); no, or no editor, keeps the
+        committed model, and the editor is told which outcome it got, never left on the promise."""
+        from acp_adapter.gateway_commands import _model_text, deferred_pick_text, refused_pick_text
+        from hermes_cli.gateway_mutations import model_refusal_text
+
+        async def say(text):
+            if self._conn:
+                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(text + "\n"))
+        target = ask.get("target_model") or (ask.get("payload") or {}).get("model")
+        committed = {"model": ask.get("committed_model"), "provider": ask.get("committed_provider"),
+                     "target_model": target}
+        confirm = self._model_confirmer(session_id)
+        try:
+            if confirm is None or not await confirm(ask):
+                await say(refused_pick_text({**committed, "reason": "not confirmed"}))
+                return
+            client = await self._client()
+            snapshot = await client.rpc("session.resume", session_id=session_id)
+            result = await client.rpc("session.mutate", session_id=session_id, operation="model",
+                                      request_id=uuid.uuid4().hex, expected_revision=snapshot["revision"],
+                                      expected_generation=snapshot["execution_generation"],
+                                      payload={**(ask.get("payload") or {}), "confirm": ask["confirm"]})
+            if result.get("status") == "confirmation_required":
+                # Another pick or a turn moved the session first: said once, never re-asked in a loop.
+                await say(model_refusal_text(result, confirmed=True))
+                return
+            if session_id in self._snapshots:
+                self._snapshots[session_id] = await client.rpc("session.resume", session_id=session_id)
+            # Confirmed while a turn runs: stored again for the next boundary, said as such.
+            await say(deferred_pick_text(result) if result.get("status") == "deferred"
+                      else _model_text("Model switched to", result))
+        except GatewayClientError as exc:
+            logger.info("Deferred model pick on %s not confirmed: %s", session_id, exc)
+            await say(refused_pick_text({**committed, "reason": str(exc)}))
+
     def _model_confirmer(self, session_id):
         """The owner's guarded-model confirmation as an ACP permission request (the mechanism
         approvals use): "Switch anyway" re-sends the mutation once with the owner's token; deny,
@@ -784,6 +822,14 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 from acp_adapter.gateway_commands import refused_pick_text
                 await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(
                     refused_pick_text(payload) + "\n"))
+            return
+        if (kind == "session.updated" and payload.get("operation") == "model"
+                and payload.get("status") == "confirmation_required" and isinstance(payload.get("confirm"), str)):
+            # A deferred pick whose target needs consent at the turn boundary: asked like an idle
+            # pick (off the event pump: the answer may take as long as the user does).
+            task = asyncio.create_task(self._confirm_deferred_pick(sid, editor_id, payload))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
             return
         if kind == "session.info" and sid in self._snapshots and "pending" in payload:
             async with self._changed:
