@@ -195,10 +195,12 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     verb over the control socket; with no discoverable owner return None so the
     caller falls back to the offline store.
 
-    A dial or RPC that dies on an endpoint discovery just identified is not
-    owner-less (a slow first dial, not a stale endpoint): the offline
-    reservation would only lose to that same owner and answer with the bare 409
-    this forward exists to remove, so it surfaces a retryable 503 instead.
+    A dial, mint or RPC that dies on an endpoint discovery just identified is
+    not owner-less (a slow first dial, or an owner restart between discovery
+    and mint): the offline reservation would only lose to that same owner and
+    answer with the bare 409 this forward exists to remove, so every transport
+    failure surfaces a retryable 503. Only the owner's refusal frame
+    (``GatewayRPCError``) is passed on as a verdict.
 
     The ticket is minted for the dashboard's authenticated principal, not the
     socket UID: ``authorize_history`` compares the actor subject against the
@@ -206,8 +208,9 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     the mutation when the forward acts as that account.
     """
     from fastapi import HTTPException
-    from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.gateway_runtime_discovery import DiscoveryError
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_state import _default_db_path
 
@@ -230,9 +233,13 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     try:
         async with connect_gateway(endpoint=endpoint, subject=actor.subject) as client:
             return await client.rpc('session.mutate', **call)
-    except GatewayClientError:
+    except GatewayRPCError:
+        # The owner's own refusal frame: a verdict the caller maps to the direct path's status.
         raise
-    except (OSError, TimeoutError) as exc:
+    except (GatewayClientError, DiscoveryError, OSError, TimeoutError) as exc:
+        # Transport, not a verdict: a refused WebSocket dial (wrapped as GatewayClientError), a
+        # control socket that refuses the mint after a restart (DiscoveryError), a raw socket error
+        # or a timeout. Retrying is safe because the request reuses its request_id.
         raise HTTPException(status_code=503, detail='owner_unreachable') from exc
 
 
@@ -284,8 +291,8 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     except RuntimeStoreError as exc:
         raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(exc.reason, 409), detail=exc.reason) from exc
     except GatewayClientError as exc:
-        # The owner's own refusal verdicts, wire-shaped like RuntimeStoreError's reasons, so a
-        # forwarded write answers exactly as the direct path (dial-time failures read as 409).
+        # The owner's own refusal verdicts (transport failures already became 503 above),
+        # wire-shaped like RuntimeStoreError's reasons, so a forwarded write answers as the direct path.
         raise HTTPException(status_code=_MUTATION_REFUSAL_STATUS.get(str(exc), 409), detail=str(exc)) from exc
     except MUTATION_GUARD_REFUSALS as exc:
         raise HTTPException(status_code=409, detail='session_busy') from exc
