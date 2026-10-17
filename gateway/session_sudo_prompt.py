@@ -15,6 +15,8 @@ import logging
 import threading
 import uuid
 
+from tools.clarify_batch import settle_batch
+
 logger = logging.getLogger(__name__)
 
 SUDO_TIMEOUT_S = 120  # main: ``_ask("sudo", ..., timeout=120)``
@@ -39,7 +41,6 @@ class _Pending:
 
 _lock = threading.Lock()
 _open: dict[str, _Pending] = {}
-_OUTCOMES = ("submitted", "timed_out", "cancelled")
 
 
 def owned_by(authority, session_id, events) -> bool:
@@ -71,20 +72,6 @@ def is_response_frame(frame) -> bool:
             and frame["id"].startswith("srq-") and ("result" in frame or "error" in frame))
 
 
-def _settle_batch(locked, result):
-    """A batch clarify's terminal result: answers locked early belong to the final set whatever ends
-    the wait, as main's ``server_requests`` merged them. A closing frame with an ``answers`` dict lays
-    its answers over the locks (the frame wins per question) and keeps its own outcome (``submitted``
-    when it names none); a frame without one (Ink Esc, Desktop Skip) or an error is a cancel-all."""
-    if isinstance(result, dict) and isinstance(result.get("answers"), dict):
-        outcome = result.get("outcome")
-        if outcome not in _OUTCOMES:
-            outcome = "submitted"
-        return {**result, "answers": {**locked, **result["answers"]}, "outcome": outcome}
-    outcome = result.get("outcome") if isinstance(result, dict) else None
-    return {"answers": locked, "outcome": outcome if outcome in ("timed_out", "cancelled") else "cancelled"}
-
-
 def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
     """Settle the open request *frame* answers; False when nothing (here) waits for that id.
     ``session_ok(session_id, events)`` lets the caller refuse an answer from a connection not entitled
@@ -98,7 +85,8 @@ def resolve(frame, *, session_ok=lambda session_id, events: True) -> bool:
         locked = dict(pending.locked) if pending.qids is not None else None
     result = frame.get("result") if "error" not in frame else None
     if locked is not None:
-        result = _settle_batch(locked, result)
+        # One rule with main's sidecar registry: the frame's answers over the locks, or a cancel-all.
+        result = settle_batch(locked, result)
     value = result.get("value") if isinstance(result, dict) else ""
     pending.value = value if isinstance(value, str) else ""
     pending.result = result if isinstance(result, dict) else None
@@ -145,7 +133,7 @@ def lock_answer(request_id, question_id, answer, *, session_ok=lambda session_id
         remaining = [qid for qid in pending.qids if qid not in pending.locked]
         if not remaining:
             _open.pop(request_id, None)
-            pending.result = {"answers": dict(pending.locked), "outcome": "submitted"}
+            pending.result = settle_batch(pending.locked, ended="submitted")
     if not remaining:
         pending.event.set()
     return remaining
@@ -174,8 +162,8 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None):
         if still_open and pending.qids is not None:
             # A batch keeps every answer locked before the wait ended (main's sidecar: "locked
             # answers survive a timeout"); sudo/secret have no question ids and stay unanswered.
-            pending.result = {"answers": dict(pending.locked),
-                              "outcome": "cancelled" if reason == "interrupted" else "timed_out"}
+            pending.result = settle_batch(pending.locked,
+                                          ended="cancelled" if reason == "interrupted" else "timed_out")
     if still_open:
         # The same teardown main's renderers key on (``request.cancel``): the card closes and a
         # timed-out password prompt says so.
