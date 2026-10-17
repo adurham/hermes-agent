@@ -164,6 +164,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
         self._pending_responses: dict[str, asyncio.Future] = {}  # request/response correlation
+        self._dispatch_tasks: set[asyncio.Task] = set()  # strong refs for _create_task's tasks
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE, ttl_seconds=DEDUP_WINDOW_SECONDS)
         self._last_msg_id: dict[str, str] = {}  # last inbound message ID per chat (send_typing)
         self._typing_sent_at: dict[str, float] = {}  # typing debounce: chat_id → last send_typing ts
@@ -493,14 +494,25 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._session_id = None
             self._last_seq = None
 
-    @staticmethod
-    def _create_task(coro):
-        """Schedule a coroutine; returns None (no error) when no loop is running
-        (tests call _dispatch_payload synchronously)."""
+    def _create_task(self, coro):
+        """Schedule a coroutine, holding a strong ref until it finishes (asyncio keeps only weak
+        refs, so an untracked task can be collected mid-run) and logging its failure; returns
+        None (no error) when no loop is running (tests call _dispatch_payload synchronously)."""
         try:
-            return asyncio.get_running_loop().create_task(coro)
+            task = asyncio.get_running_loop().create_task(coro)
         except RuntimeError:
             return None
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._on_dispatch_task_done)
+        return task
+
+    def _on_dispatch_task_done(self, task: asyncio.Task) -> None:
+        self._dispatch_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("[%s] Background task failed: %s", self._log_tag, exc, exc_info=exc)
 
     def _close_ws_soon(self) -> None:
         """Close the WS so _read_events raises and _listen_loop reconnects (with Resume)."""
@@ -529,7 +541,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             elif t == "RESUMED":
                 logger.info("[%s] Session resumed", self._log_tag)
             elif t in self._INBOUND_HANDLERS:
-                asyncio.create_task(self._on_message(t, d))
+                self._create_task(self._on_message(t, d))
             elif t == "INTERACTION_CREATE":
                 self._create_task(self._on_interaction(d))
             else:
@@ -957,7 +969,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             if not is_image:
                 label = "video" if ct.startswith("video/") else "file"
                 other_attachments.append(f"[{label}: {filename or ct} ({cached_path})]")
-            elif os.path.isfile(cached_path):
+            elif await asyncio.to_thread(os.path.isfile, cached_path):
                 image_urls.append(cached_path)
                 image_media_types.append(ct or "image/jpeg")
             else:
@@ -1054,12 +1066,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return None
 
             if is_pre_wav:
-                wav_path = self._write_temp(audio_data, ".wav")
+                wav_path = await asyncio.to_thread(self._write_temp, audio_data, ".wav")
                 logger.debug("[%s] STT: using pre-converted WAV directly (%d bytes)", self._log_tag, len(audio_data))
             else:
                 logger.debug("[%s] STT: converting to wav, filename=%r", self._log_tag, filename)
                 wav_path = await self._convert_audio_to_wav_file(audio_data, filename)
-                if not wav_path or not Path(wav_path).exists():
+                if not wav_path or not await asyncio.to_thread(os.path.exists, wav_path):
                     logger.warning("[%s] STT: ffmpeg conversion produced no output", self._log_tag)
                     return None
 
@@ -1067,7 +1079,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             try:
                 transcript = await self._call_stt(wav_path)
             finally:
-                self._unlink_quiet(wav_path)
+                await asyncio.to_thread(self._unlink_quiet, wav_path)
             if transcript:
                 logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])
             else:
@@ -1109,12 +1121,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         logger.info(
             "[%s] STT: audio_data size=%d, ext=%r, first_20_bytes=%r",
             self._log_tag, len(audio_data), ext, audio_data[:20])
-        src_path, wav_path = self._temp_pair(audio_data, ext)
+        src_path, wav_path = await asyncio.to_thread(self._temp_pair, audio_data, ext)
         result = (
             await self._convert_silk_to_wav(src_path, wav_path)
             or await self._convert_ffmpeg_to_wav(src_path, wav_path)
             or await self._convert_raw_to_wav(audio_data, wav_path))
-        self._unlink_quiet(src_path)
+        await asyncio.to_thread(self._unlink_quiet, src_path)
         return result
 
     _MAGIC_EXTS = (
@@ -1131,6 +1143,16 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     def _looks_like_silk(cls, data: bytes) -> bool:
         return cls._guess_ext_from_data(data) == ".silk"
 
+    @classmethod
+    def _pilk_to_wav(cls, pilk: Any, src_path: str, path: str, silk_path: str, wav_path: str) -> Optional[int]:
+        """One blocking pilk attempt (run in a thread): the wav's size, or None when it is missing/too small."""
+        if path == silk_path:
+            import shutil
+
+            shutil.copy2(src_path, silk_path)
+        pilk.silk_to_wav(path, wav_path, rate=16000)
+        return Path(wav_path).stat().st_size if cls._wav_ok(wav_path) else None
+
     async def _convert_silk_to_wav(self, src_path: str, wav_path: str) -> Optional[str]:
         """Convert to WAV with pilk: as-is first, then copied to .silk (pilk checks the extension)."""
         try:
@@ -1144,33 +1166,33 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         try:
             for path, label, how in ((src_path, "", "direct"), (silk_path, " (as .silk)", ".silk")):
                 try:
-                    if path == silk_path:
-                        import shutil
-
-                        shutil.copy2(src_path, silk_path)
-                    pilk.silk_to_wav(path, wav_path, rate=16000)
-                    if self._wav_ok(wav_path):
+                    size = await asyncio.to_thread(self._pilk_to_wav, pilk, src_path, path, silk_path, wav_path)
+                    if size is not None:
                         logger.debug(
                             "[%s] pilk converted %s%s to wav (%d bytes)",
-                            self._log_tag, Path(src_path).name, label, Path(wav_path).stat().st_size)
+                            self._log_tag, Path(src_path).name, label, size)
                         return wav_path
                 except Exception as exc:
                     logger.debug("[%s] pilk %s conversion failed: %s", self._log_tag, how, exc)
         finally:
-            self._unlink_quiet(silk_path)
+            await asyncio.to_thread(self._unlink_quiet, silk_path)
         return None
+
+    @staticmethod
+    def _write_raw_wav(audio_data: bytes, wav_path: str) -> None:
+        import wave
+
+        with wave.open(wav_path, "w") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio_data)
 
     async def _convert_raw_to_wav(self, audio_data: bytes, wav_path: str) -> Optional[str]:
         """Last resort: wrap bytes as raw PCM 16-bit mono 16kHz WAV (garbage if not
         PCM, but the ASR engine returns empty instead of crashing)."""
         try:
-            import wave
-
-            with wave.open(wav_path, "w") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(16000)
-                wf.writeframes(audio_data)
+            await asyncio.to_thread(self._write_raw_wav, audio_data, wav_path)
             return wav_path
         except Exception as exc:
             logger.debug("[%s] raw PCM fallback failed: %s", self._log_tag, exc)
@@ -1192,12 +1214,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.warning("[%s] ffmpeg conversion error: %s", self._log_tag, exc)
             return None
 
-        if not self._wav_ok(wav_path):
+        if not await asyncio.to_thread(self._wav_ok, wav_path):
             logger.warning("[%s] ffmpeg produced no/small output for %s", self._log_tag, Path(src_path).name)
             return None
+        size = (await asyncio.to_thread(Path(wav_path).stat)).st_size
         logger.debug(
             "[%s] ffmpeg converted %s to wav (%d bytes)",
-            self._log_tag, Path(src_path).name, Path(wav_path).stat().st_size)
+            self._log_tag, Path(src_path).name, size)
         return wav_path
 
     def _resolve_stt_config(self) -> Optional[dict[str, Any]]:
@@ -1240,13 +1263,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
         base_url, api_key, model = stt_cfg["base_url"], stt_cfg["api_key"], stt_cfg["model"]
         try:
-            with open(wav_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
-                resp = await self._http_client.post(
-                    f"{base_url}/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    files={"file": (Path(wav_path).name, f, "audio/wav")},
-                    data={"model": model},
-                    timeout=stt_cfg["timeout"])
+            wav_data = await asyncio.to_thread(Path(wav_path).read_bytes)
+            resp = await self._http_client.post(
+                f"{base_url}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": (Path(wav_path).name, wav_data, "audio/wav")},
+                data={"model": model},
+                timeout=stt_cfg["timeout"])
             resp.raise_for_status()
             result = resp.json()
             # Zhipu/GLM: {"choices": [{"message": {"content": ...}}]}; OpenAI/Whisper: {"text": ...}
@@ -1263,7 +1286,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         ext = Path(urlparse(source_url).path).suffix.lower()
         if ext not in _AUDIO_URL_EXTENSIONS:
             ext = self._guess_ext_from_data(audio_data)
-        src_path, wav_path = self._temp_pair(audio_data, ext)
+        src_path, wav_path = await asyncio.to_thread(self._temp_pair, audio_data, ext)
         is_silk = ext == ".silk" or self._looks_like_silk(audio_data)
         convert = self._convert_silk_to_wav if is_silk else self._convert_ffmpeg_to_wav
         try:
@@ -1273,15 +1296,20 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except Exception:
             return await cache_document_from_bytes_async(audio_data, f"qq_voice{ext}")
         finally:
-            self._unlink_quiet(src_path)
+            await asyncio.to_thread(self._unlink_quiet, src_path)
 
         try:
-            wav_data = Path(wav_path).read_bytes()
-            os.unlink(wav_path)
+            wav_data = await asyncio.to_thread(self._read_and_unlink, wav_path)
             return await cache_document_from_bytes_async(wav_data, "qq_voice.wav")
         except Exception as exc:
             logger.debug("[%s] Failed to read converted wav: %s", self._log_tag, exc)
             return None
+
+    @staticmethod
+    def _read_and_unlink(path: str) -> bytes:
+        data = Path(path).read_bytes()
+        os.unlink(path)
+        return data
 
     # ── Outbound messaging — REST API ──
 
@@ -1595,13 +1623,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.error("[%s] Media send failed: %s", self._log_tag, exc)
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
-    async def _upload_local_file(
-        self, chat_type: str, chat_id: str, media_source: str, file_type: int, file_name: Optional[str],
-    ) -> dict[str, Any]:
-        """Chunked-upload a local file; returns the complete response whose ``file_info`` goes
-        into the RichMedia body. Raises UploadDailyLimitExceededError / UploadFileTooLargeError
-        from the uploader, ValueError for placeholder paths like ``<path>``, FileNotFoundError."""
-        client = self._require_http_client()
+    @staticmethod
+    def _resolve_upload_path(media_source: str) -> Path:
+        """Absolute path of an existing local file (blocking: run in a thread)."""
         local_path = Path(media_source).expanduser()
         if not local_path.is_absolute():
             local_path = (Path.cwd() / local_path).resolve()
@@ -1609,7 +1633,16 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             if media_source.startswith("<") or len(media_source) < 3:
                 raise ValueError(f"Invalid media source (looks like a placeholder): {media_source!r}")
             raise FileNotFoundError(f"Media file not found: {local_path}")
+        return local_path
 
+    async def _upload_local_file(
+        self, chat_type: str, chat_id: str, media_source: str, file_type: int, file_name: Optional[str],
+    ) -> dict[str, Any]:
+        """Chunked-upload a local file; returns the complete response whose ``file_info`` goes
+        into the RichMedia body. Raises UploadDailyLimitExceededError / UploadFileTooLargeError
+        from the uploader, ValueError for placeholder paths like ``<path>``, FileNotFoundError."""
+        client = self._require_http_client()
+        local_path = await asyncio.to_thread(self._resolve_upload_path, media_source)
         uploader = ChunkedUploader(api_request=self._api_request, http_put=client.put, log_tag=self._log_tag)
         return await uploader.upload(
             chat_type=chat_type, target_id=chat_id, file_path=str(local_path), file_type=file_type,

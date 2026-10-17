@@ -2516,3 +2516,16 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `ContextTokenStore.restore` in `connect`/`send_weixin_direct`, `save_weixin_account` in `qr_login`,
   the temp-file write in `_download_remote_media`. `python scripts/check` green, 12 checks. Branch
   `claude/weixin-async-health-ratchet-cnbqya`.
+- 2026-10-17 — C-0011 `gateway/platforms/qqbot/adapter.py` (async): ASYNC230×1 + ASYNC240×6 + RUF006×1
+  → 0 (19 BLE001 untouched, in place and in order). `_create_task` now holds a strong ref to every
+  task it spawns (`_dispatch_tasks`) and logs a failed one with its traceback; the dangling
+  `asyncio.create_task(self._on_message(...))` goes through it (siblings: ws close, Identify/Resume,
+  interactions). Blocking file/path I/O in async defs → `asyncio.to_thread`: the flagged lines plus
+  the audio pipeline's temp write/unlink, pilk attempt (new `_pilk_to_wav`), raw-PCM write
+  (`_write_raw_wav`), STT upload now reads the wav bytes off-loop (old `# noqa: ASYNC230` gone),
+  upload path checks (`_resolve_upload_path`). Helpers sit *before* their callers so the
+  SequenceMatcher line survival keeps the BLE001 `except` lines old. New
+  `tests/gateway/test_qqbot_async_io.py` (3 tests; the task-ownership one red on base). 15 qqbot test
+  files 430/430; differential old-vs-new over 720 audio-conversion cases (fake pilk/ffmpeg modes):
+  0 mismatches. `scripts/check` green. Branch `claude/fix-qqbot-adapter-async-rules-l5wfo4`.
+  Next: C-0012.
