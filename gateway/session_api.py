@@ -103,8 +103,8 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
 
     ``caller_key`` is this request's validated ``X-Hermes-Session-Key`` even when an explicit
     session id selected the conversation (``declared_key`` is set only when the key selected it).
-    It is used solely to adopt a row an earlier release stamped with that same key; it is never
-    registered as the conversation's declared key."""
+    It is used only to adopt a row an earlier release stamped with that same key, and is then
+    registered as that session's declared key (and stamped into its binding receipt)."""
     authority._require_admission_open()
     if not isinstance(session_id, str) or not session_id or _is_path_unsafe(session_id):
         raise RuntimeStoreError('invalid_params')
