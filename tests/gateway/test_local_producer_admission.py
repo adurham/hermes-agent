@@ -187,9 +187,9 @@ async def test_waiting_ticks_fold_into_one_turn_and_none_outlives_its_process(ga
         submitted = await viewer.dispatch({'id': count, 'method': 'prompt.submit', 'params': {
             'session_id': sid, 'input_id': lookalike, 'text': 'typed'}})
         assert 'result' in submitted, submitted
-    first_cut = '...(300 earlier characters omitted)\n' + 'a' * 2000
-    for seq, output in ((2, first_cut), (3, 'b' * 1000)):
-        assert await gateway.drain(gateway.tick(primary, sid, seq, process='proc_1', output=output)) == []
+    for seq, output, omitted in ((2, 'a' * 2000, 300), (3, 'b' * 1000, 0)):
+        tick = dict(gateway.tick(primary, sid, seq, process='proc_1', output=output), omitted=omitted)
+        assert await gateway.drain(tick) == []
     # proc_12 exits: its waiting tick is withdrawn, and a late tick is dropped.
     exited = gateway.process_event(primary, sid, 'completion', process='proc_12', exit_code=0)
     assert await gateway.runner._deliver_completion_notification('[proc_12 finished]', exited) is True
@@ -276,6 +276,17 @@ async def _drain_one(runner, event):
 def _automation_rows(messaging):
     rows = list_session_admissions(messaging.authority.db, session_id=messaging.owner, pending_only=False)
     return {row['request_id']: row for row in rows if row['principal_id'] == 'automation:' + messaging.route}
+
+
+@pytest.mark.asyncio
+async def test_job_output_that_looks_like_a_cut_marker_keeps_the_earlier_output(messaging):
+    """The omitted count rides the tick as its own field; text the job printed is never read as one."""
+    literal = '...(10 earlier characters omitted)\nprinted by the job\n'
+    for seq, output in ((1, 'proc_job/1\n'), (2, literal)):
+        assert await _drain_one(messaging.runner, messaging.event(
+            'heartbeat', **_tick_fields('proc_job', seq, output))) == 0
+    folded = _automation_rows(messaging)['["heartbeat","proc_job","proc_job-tick-2"]']['payload']['text']
+    assert _tick_output(folded) == 'proc_job/1\n' + literal
 
 
 @pytest.mark.asyncio

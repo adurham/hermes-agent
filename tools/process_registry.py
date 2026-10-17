@@ -765,7 +765,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             session._heartbeat_total_at_last = session.total_output_chars
         if not output:
             return
-        output = heartbeat_output_tail(output)
+        output, omitted = heartbeat_output_tail(output)
         session._heartbeat_seq += 1
         notification = {
             **self._watch_event_base(session),
@@ -774,6 +774,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "interval": session.heartbeat_seconds,
             "elapsed": int(now - session.started_at) if session.started_at else 0,
             "output": output,
+            "omitted": omitted,
             "started_at": session.started_at,
         }
         _redact_process_result(notification)

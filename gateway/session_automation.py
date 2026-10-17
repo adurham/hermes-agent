@@ -80,7 +80,7 @@ async def prepare_heartbeat(runner, event):
         if earlier is None or not await _withdraw(authority, waiting):
             return event
     from tools.process_registry_notifications import join_heartbeat_outputs
-    return {**event, 'output': join_heartbeat_outputs(earlier.get('output', ''), event.get('output', ''))}
+    return {**event, **join_heartbeat_outputs(earlier, event)}
 
 
 async def withdraw_process_ticks(runner, event):
