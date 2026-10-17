@@ -68,3 +68,17 @@ def test_a_skill_installed_under_an_existing_category_subdir_is_served(tmp_path)
         after = sc_mod._skill_dirs_signature()
         assert [row for row in after[0] if "references" in row[0]] == []
         assert before != after  # the skill dir itself gained a child name
+
+
+def test_only_an_unreadable_skill_root_keeps_the_published_map():
+    """A stat failure (OSError) gives no signature and keeps the published map; a bug in the signature
+    code raises instead of pinning a stale map for the life of the gateway without a trace."""
+    import pytest
+
+    import agent.skill_commands as sc_mod
+
+    with patch("tools.skills_tool._skills_scan_signature", side_effect=PermissionError("denied")):
+        assert sc_mod._skill_dirs_signature() is None
+    with patch("tools.skills_tool._skills_scan_signature", side_effect=TypeError("bug")):
+        with pytest.raises(TypeError):
+            sc_mod._skill_dirs_signature()

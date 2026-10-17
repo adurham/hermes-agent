@@ -592,12 +592,14 @@ def published_scopes_signature() -> tuple:
 def _skill_dirs_signature() -> Optional[tuple]:
     """Stat-cheap change signature of every skill root (the catalog's own: the mtime and child names of
     every directory the catalog walks, depth-bounded, plus the disabled set and the platform). None when
-    it cannot be computed, which keeps the published map rather than rescanning on every lookup."""
+    it cannot be computed (a root that cannot be stat'ed), which keeps the published map rather than
+    rescanning on every lookup. Any other error raises: the catalog scan itself takes the same signature
+    unguarded (``tools.skills_tool._skill_catalog``), and a swallowed bug would pin a stale map silently."""
+    from tools.skills_tool import _get_disabled_skill_names, _skill_search_dirs, _skills_scan_signature
     try:
-        from tools.skills_tool import _get_disabled_skill_names, _skill_search_dirs, _skills_scan_signature
         roots, _active = _skill_search_dirs()
         return _skills_scan_signature([d for _tier, d in roots], _get_disabled_skill_names())
-    except Exception:
+    except OSError:
         logger.debug("Skill dir signature failed", exc_info=True)
         return None
 
