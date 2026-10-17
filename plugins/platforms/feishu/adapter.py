@@ -58,25 +58,25 @@ try:
 except ImportError:
     websockets = None  # type: ignore[assignment]
 
-# lark_oapi is slow to import; the SDK names below stay None until Feishu actually connects
-# (_load_lark_oapi binds every name in _LARK_SDK_IMPORTS plus ``lark`` and ``FeishuWSClient``).
+# lark_oapi is slow to import; the SDK names stay None until Feishu actually connects (_load_lark_oapi binds every
+# _LARK_SDK_IMPORTS name plus ``lark`` and ``FeishuWSClient``). Spelled out, not via globals(), so linters see each.
 _LARK_SDK_IMPORTS = (
     ("lark_oapi.api.application.v6", ("GetApplicationRequest",)),
     ("lark_oapi.api.im.v1", (
         "CreateFileRequest", "CreateFileRequestBody", "CreateImageRequest", "CreateImageRequestBody",
         "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
         "DeleteMessageRequest", "GetMessageResourceRequest", "P2ImMessageMessageReadV1",
-        "ReplyMessageRequest", "ReplyMessageRequestBody",
-        "UpdateMessageRequest", "UpdateMessageRequestBody",
-    )),
+        "ReplyMessageRequest", "ReplyMessageRequestBody", "UpdateMessageRequest", "UpdateMessageRequestBody")),
     ("lark_oapi.core", ("AccessTokenType", "HttpMethod")),
     ("lark_oapi.core.const", ("FEISHU_DOMAIN", "LARK_DOMAIN")),
     ("lark_oapi.core.model", ("BaseRequest",)),
     ("lark_oapi.event.callback.model.p2_card_action_trigger", ("CallBackCard", "P2CardActionTriggerResponse")),
     ("lark_oapi.event.dispatcher_handler", ("EventDispatcherHandler",)),
 )
-lark = FeishuWSClient = None  # type: ignore[assignment]
-globals().update({name: None for _, names in _LARK_SDK_IMPORTS for name in names})
+lark = FeishuWSClient = GetApplicationRequest = CreateFileRequest = CreateFileRequestBody = CreateImageRequest = CreateImageRequestBody = None  # type: ignore[assignment]
+CreateMessageRequest = CreateMessageRequestBody = GetChatRequest = GetMessageRequest = DeleteMessageRequest = GetMessageResourceRequest = None
+P2ImMessageMessageReadV1 = ReplyMessageRequest = ReplyMessageRequestBody = UpdateMessageRequest = UpdateMessageRequestBody = AccessTokenType = None
+HttpMethod = FEISHU_DOMAIN = LARK_DOMAIN = BaseRequest = CallBackCard = P2CardActionTriggerResponse = EventDispatcherHandler = None
 FEISHU_AVAILABLE = False
 _lark_import_lock = threading.Lock()
 

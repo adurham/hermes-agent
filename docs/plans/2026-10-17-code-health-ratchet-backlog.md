@@ -2435,3 +2435,12 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   from `_expand_reference` (not flagged by the rule; a larger off-loop change, own unit if wanted).
   15 referencing test files: 880 passed, 0 failed, 1 skipped; `python scripts/check` green, 12 checks.
   Branch `claude/fix-context-references-async-e59xwr`. Next: C-0021.
+- 2026-10-17 — C-1041 `plugins/platforms/feishu/adapter.py` correctness: F821 28 → 0 (other rules
+  unchanged: ASYNC230 1, ASYNC240 5, BLE001 21, S110 5; FILE_LINES 4493 → 4493). One cause behind all
+  28: the lazy-loaded lark_oapi SDK names were bound only by `globals().update(...)`, invisible to
+  static analysis. Not latent NameErrors — the names did exist at runtime. Fix: the None placeholders
+  are spelled out as plain module assignments; `_LARK_SDK_IMPORTS` and `_load_lark_oapi` are unchanged
+  (table checked identical by AST; every table name has a placeholder; all are None before load).
+  Lines kept flat by packing the placeholders and two table lines. 26 Feishu/adapter test files: 420
+  passed, 2 failed — the same 2 on base (`test_feishu.py` webhook tests, no `aiohttp` in the test env).
+  `python scripts/check` green. Branch `claude/fix-feishu-adapter-f821-vfjpql`.
