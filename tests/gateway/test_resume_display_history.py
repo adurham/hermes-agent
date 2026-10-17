@@ -225,3 +225,24 @@ async def test_a_delete_during_the_resume_prepare_answers_not_found(tmp_path, mo
     reply = await connection().dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': ref.session_id}})
     assert 'result' in deleted[0], deleted  # the delete really committed inside the window
     assert reply.get('error', {}).get('message') == 'not_found', reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['in_place', 'rotated'])
+async def test_rollback_turn_rewind_never_targets_an_archived_turn(tmp_path, monkeypatch, mode):
+    """/rollback's history rewind picks the newest live user turn; with none left (the last one undone after
+    a compression) it rewinds nothing instead of aiming the owner's rewind at an archived row it refuses."""
+    from gateway.session_mutations import mutate_session
+    from gateway.session_tui_ops import _rewind_last_turn
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    db = authority.db
+    _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
+    tip = _compact(db, physical, mode)
+    handle = authority._handle(ref)
+    await mutate_session(authority, actor, ref, {
+        'session_id': ref.session_id, 'request_id': 'undo', 'operation': 'rewind',
+        'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
+        'payload': {'target_message_id': next(m['id'] for m in db.get_messages(tip) if m['content'] == 'TAIL_Q')}})
+    live = [m['content'] for m in db.get_messages(tip)]
+    assert await _rewind_last_turn(SimpleNamespace(authority=authority, actor=actor), ref) == 0
+    assert [m['content'] for m in db.get_messages(tip)] == live == [SUMMARY]
