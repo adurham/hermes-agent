@@ -164,6 +164,54 @@ def _is_reasoning_input_item(item: Any) -> bool:
     return isinstance(item, dict) and item.get("type") == "reasoning"
 
 
+def _responses_input_messages(
+        raw_input: Any) -> tuple[list[dict[str, Any]], Optional["web.Response"]]:
+    """Responses ``input`` (a string or an item array) as chat messages, or a 400 response."""
+    from gateway.platforms.api_server import (
+        _error_response, _multimodal_validation_error, _normalize_multimodal_content)
+    if isinstance(raw_input, str):
+        return [{"role": "user", "content": raw_input}], None
+    if not isinstance(raw_input, list):
+        return [], _error_response("'input' must be a string or array", 400)
+    input_messages: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_input):
+        if isinstance(item, str):
+            input_messages.append({"role": "user", "content": item})
+        elif _is_reasoning_input_item(item):
+            continue
+        elif isinstance(item, dict):
+            try:
+                content = _normalize_multimodal_content(item.get("content", ""))
+            except ValueError as exc:
+                return [], _multimodal_validation_error(exc, param=f"input[{idx}].content")
+            input_messages.append({"role": item.get("role", "user"), "content": content})
+    return input_messages, None
+
+
+def _responses_explicit_history(
+        raw_history: Any, previous_response_id: Any,
+) -> tuple[list[dict[str, Any]], Optional["web.Response"]]:
+    """A stateless client's non-empty ``conversation_history`` as messages, or a 400 response."""
+    from gateway.platforms.api_server import (
+        _error_response, _multimodal_validation_error, _normalize_multimodal_content)
+    if not isinstance(raw_history, list):
+        return [], _error_response("'conversation_history' must be an array of message objects", 400)
+    conversation_history: list[dict[str, Any]] = []
+    for i, entry in enumerate(raw_history):
+        if _is_reasoning_input_item(entry):
+            continue
+        if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+            return [], _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
+        try:
+            entry_content = _normalize_multimodal_content(entry["content"])
+        except ValueError as exc:
+            return [], _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
+        conversation_history.append({"role": str(entry["role"]), "content": entry_content})
+    if previous_response_id:
+        logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+    return conversation_history, None
+
+
 def _turn_reasoning_text(
         conversation_history: list[dict[str, Any]], user_message: Any, result: dict[str, Any]) -> str:
     """Reasoning the model produced on this turn, joined for a non-streaming
@@ -1034,10 +1082,8 @@ class OpenAICompatRoutesMixin:
     async def _handle_responses(self, request: web.Request) -> web.Response:
         """POST /v1/responses — OpenAI Responses API format."""
         from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
-            _content_has_visible_payload, _error_response, _invalid_request,
-            _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
-            _resolve_media_to_data_urls, _responses_usage_payload)
+            _auto_truncate_response_history, _coerce_request_bool, _content_has_visible_payload,
+            _error_response, _invalid_request)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -1064,42 +1110,18 @@ class OpenAICompatRoutesMixin:
             # A conversation name resolves to its latest response_id (unknown = new conversation).
             previous_response_id = self._current_response_store().get_conversation(conversation)
 
-        input_messages: list[dict[str, Any]] = []
-        if isinstance(raw_input, str):
-            input_messages = [{"role": "user", "content": raw_input}]
-        elif isinstance(raw_input, list):
-            for idx, item in enumerate(raw_input):
-                if isinstance(item, str):
-                    input_messages.append({"role": "user", "content": item})
-                elif _is_reasoning_input_item(item):
-                    continue
-                elif isinstance(item, dict):
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
-                    input_messages.append({"role": item.get("role", "user"), "content": content})
-        else:
-            return _error_response("'input' must be a string or array", 400)
+        input_messages, input_err = _responses_input_messages(raw_input)
+        if input_err is not None:
+            return input_err
 
         # Explicit conversation_history (stateless clients) beats previous_response_id chaining.
         conversation_history: list[dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
-            if not isinstance(raw_history, list):
-                return _error_response("'conversation_history' must be an array of message objects", 400)
-            for i, entry in enumerate(raw_history):
-                if _is_reasoning_input_item(entry):
-                    continue
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
-                try:
-                    entry_content = _normalize_multimodal_content(entry["content"])
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
-                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
-            if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+            conversation_history, history_err = _responses_explicit_history(
+                raw_history, previous_response_id)
+            if history_err is not None:
+                return history_err
         stored_session_id = None
         if not conversation_history and previous_response_id:
             stored = self._current_response_store().get(previous_response_id)
@@ -1136,38 +1158,56 @@ class OpenAICompatRoutesMixin:
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
             **agent_overrides, route=route, relay_metadata=relay_metadata)
+        turn = dict(
+            conversation_history=conversation_history, user_message=user_message,
+            instructions=instructions, conversation=conversation, store=store,
+            session_id=session_id, gateway_session_key=gateway_session_key)
         if stream:
-            _stream_q = ThreadSafeAsyncQueue()
+            return await self._stream_responses(request, body, run_kwargs, **turn)
+        return await self._complete_responses(request, body, run_kwargs, **turn)
 
-            def _on_tool_progress(event_type, name, preview, args, **kwargs):
-                return  # structured start/complete callbacks carry the call id; progress ignored
+    async def _stream_responses(
+        self, request: web.Request, body: dict[str, Any], run_kwargs: dict[str, Any],
+        **turn: Any) -> web.StreamResponse:
+        """Streaming ``/v1/responses``: run the agent off-loop and relay its events as SSE."""
+        from gateway.platforms.api_server import ThreadSafeAsyncQueue
+        _stream_q = ThreadSafeAsyncQueue()
 
-            def _on_tool_start(tool_call_id, function_name, function_args):
-                _stream_q.put_threadsafe(("__tool_started__", {
-                    "tool_call_id": tool_call_id, "name": function_name,
-                    "arguments": function_args or {}}))
+        def _on_tool_progress(event_type, name, preview, args, **kwargs):
+            return  # structured start/complete callbacks carry the call id; progress ignored
 
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
-                _stream_q.put_threadsafe(("__tool_completed__", {
-                    "tool_call_id": tool_call_id, "name": function_name,
-                    "arguments": function_args or {}, "result": function_result}))
+        def _on_tool_start(tool_call_id, function_name, function_args):
+            _stream_q.put_threadsafe(("__tool_started__", {
+                "tool_call_id": tool_call_id, "name": function_name,
+                "arguments": function_args or {}}))
 
-            def _on_commentary(text, *, already_streamed: bool = False):
-                # Already-streamed text went out as output_text.delta of the final item; a second
-                # copy as a commentary item would duplicate it.
-                if not already_streamed and isinstance(text, str) and text.strip():
-                    _stream_q.put_threadsafe(("__commentary__", {"text": text}))
-            agent_task, agent_ref = self._spawn_stream_agent(
-                _stream_q, tool_progress_callback=_on_tool_progress,
-                tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
-                interim_assistant_callback=_on_commentary, **run_kwargs)
-            return await self._write_sse_responses(
-                request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}",
-                model=body.get("model", self._model_name), created_at=int(time.time()),
-                stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref,
-                conversation_history=conversation_history, user_message=user_message,
-                instructions=instructions, conversation=conversation, store=store,
-                session_id=session_id, gateway_session_key=gateway_session_key)
+        def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            _stream_q.put_threadsafe(("__tool_completed__", {
+                "tool_call_id": tool_call_id, "name": function_name,
+                "arguments": function_args or {}, "result": function_result}))
+
+        def _on_commentary(text, *, already_streamed: bool = False):
+            # Already-streamed text went out as output_text.delta of the final item; a second
+            # copy as a commentary item would duplicate it.
+            if not already_streamed and isinstance(text, str) and text.strip():
+                _stream_q.put_threadsafe(("__commentary__", {"text": text}))
+        agent_task, agent_ref = self._spawn_stream_agent(
+            _stream_q, tool_progress_callback=_on_tool_progress,
+            tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
+            interim_assistant_callback=_on_commentary, **run_kwargs)
+        return await self._write_sse_responses(
+            request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}",
+            model=body.get("model", self._model_name), created_at=int(time.time()),
+            stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref, **turn)
+
+    async def _complete_responses(
+        self, request: web.Request, body: dict[str, Any], run_kwargs: dict[str, Any], *,
+        conversation_history: list[dict[str, Any]], user_message: Any, instructions: Any,
+        conversation: Any, store: bool, session_id: str, gateway_session_key: Optional[str],
+    ) -> web.Response:
+        """Non-streaming ``/v1/responses``: run the agent idempotently, store and answer JSON."""
+        from gateway.platforms.api_server import (
+            _redact_api_error_text, _resolve_media_to_data_urls, _responses_usage_payload)
 
         async def _compute_response():
             return await self._run_agent(**run_kwargs)
