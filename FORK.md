@@ -3,6 +3,22 @@
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
 Code here is **not intended for upstream contribution.** See "Why a fork" below.
 
+### Fork-only UX fix — 2026-10-17 (todo board toggle moved Ctrl+E → Ctrl+O: the fork had killed emacs end-of-line in the composer)
+
+**Symptom (user):** "ctrl+a jumps to the start of a line, ctrl+e used to jump to the end of a line as well but no longer does."
+
+**Root cause (fork, not upstream):** the 2026-10-11 board commit (677ee25e227) bound `kb.add('c-e')` → `toggle_todo_board` in `_tui_build_key_bindings`. Nothing in `hermes_cli` had bound c-e before it, so the key fell through to prompt_toolkit's emacs map (`c-a` → beginning-of-line, `c-e` → end-of-line). App-level bindings are merged LAST in `Application._CombinedRegistry` (defaults appended, then the list reversed) and `KeyProcessor._process` fires `matches[-1]`, so the fork binding shadowed the emacs default outright — in every composer state, including when the plan fit the collapsed 5-row budget and the toggle was a visual no-op. Apple Terminal users lost Cmd+Right with it (that chord arrives as 0x05 = c-e).
+
+**Fix:** toggle moved to **Ctrl+O** (`_TODO_BOARD_TOGGLE_LABEL`, header hint "· Ctrl+O expand/collapse"). c-o's emacs default is `operate-and-get-next` — accept-and-clear the composer plus a history jump — so nothing usable is given up, and that accidental draft-wipe path is gone. Rejected: F8 (macOS media-key row, same problem as F7), c-b (voice default), c-n (history). Comments at both the constant and the binding site now name the merge/shadow rule so the next panel toggle can't re-hijack an emacs key.
+
+**Tests (`tests/hermes_cli/test_todo_board_widget.py`):** hint strings → Ctrl+O plus a new source gate — `kb.add('c-e'` must NOT appear in the TUI source — pinning end-of-line against a future panel key.
+
+**Verification:** 38 passed (todo-board file, Mac single-file run). Live PTY proof, real prompt_toolkit 3.0.52 `Application` over a pty, buffer "hello world" with the cursor at 3: fork shape (app binds c-e) → Ctrl+A moves 3→0 and Ctrl+E fires the toggle with the cursor stuck at 0 (end-of-line dead); shipped shape (app binds c-o) → Ctrl+A moves 3→0, Ctrl+E moves 0→11, Ctrl+O fires the toggle and leaves the draft intact.
+
+**Files:** `hermes_cli/cli_tui_mixin.py`, `tests/hermes_cli/test_todo_board_widget.py`.
+
+**Upstream PR:** the live todo board is upstream PR **#136664** (DRAFT, `upstream-pr/live-todo-board`) and still carries the Ctrl+E binding; folding this move into that branch needs explicit approval before touching upstream.
+
 ### Fix — 2026-10-17 (false "Unknown toolsets: rea" warning on every CLI launch)
 
 **Symptom.** Every interactive launch printed `Warning: Unknown toolsets: rea` after

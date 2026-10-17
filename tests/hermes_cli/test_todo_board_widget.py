@@ -241,7 +241,7 @@ def test_todo_border_style_registered():
     assert cli._tui_style_base["todo-border"] == "#CD7F32"
 
 
-# ── collapsed default (fork 2026-10-11): fewer rows + Ctrl+E expand/collapse ───────────────────
+# ── collapsed default (fork 2026-10-11): fewer rows + Ctrl+O expand/collapse ───────────────────
 
 
 def test_collapsed_default_caps_rows_and_shows_expand_hint():
@@ -249,7 +249,7 @@ def test_collapsed_default_caps_rows_and_shows_expand_hint():
     items = _items(*(["completed"] * 20 + ["pending"] * 6))
     lines = _text(m.get_todo_board_text(items, 100, 24)).splitlines()
     body = lines[1:-1]
-    assert "Ctrl+E expand" in body[0]
+    assert "Ctrl+O expand" in body[0]
     assert "… +1 pending / 20 completed hidden" in body[-1]
     assert sum("[ ]" in l for l in body) == 5
     assert m.get_todo_board_height(items, 24) == 1 + 5 + 1 + 2 == len(lines)
@@ -258,15 +258,15 @@ def test_collapsed_default_caps_rows_and_shows_expand_hint():
 def test_expanded_view_flips_hint_to_collapse():
     items = _items(*(["completed"] * 20 + ["pending"] * 6))
     lines = _text(m.get_todo_board_text(items, 100, 24, expanded=True)).splitlines()
-    assert "Ctrl+E collapse" in lines[1]
-    assert "Ctrl+E expand" not in lines[1]
+    assert "Ctrl+O collapse" in lines[1]
+    assert "Ctrl+O expand" not in lines[1]
     assert m.get_todo_board_height(items, 24, expanded=True) == 12 + 4 == len(lines)
 
 
 def test_no_toggle_hint_when_list_fits_collapsed_budget():
     items = _items("pending", "pending", "in_progress")
     text = _text(m.get_todo_board_text(items, 100, 24))
-    assert "Ctrl+E" not in text
+    assert "Ctrl+O" not in text
     assert len(text.splitlines()) == 3 + 1 + 2
 
 
@@ -281,6 +281,9 @@ def test_toggle_todo_board_flips_state_and_invalidates():
 
 
 def test_toggle_wiring_in_tui_source():
-    assert "kb.add('c-e'" in TUI_SRC
+    assert "kb.add('c-o'" in TUI_SRC
+    # Ctrl+E stays with prompt_toolkit's emacs map (end-of-line): app-level bindings merge last
+    # and KeyProcessor fires matches[-1], so a binding here would silently shadow it again.
+    assert "kb.add('c-e'" not in TUI_SRC
     assert "toggle_todo_board(self)" in TUI_SRC
     assert 'expanded=getattr(cli_ref, "_todo_board_expanded", False)' in TUI_SRC
