@@ -2585,3 +2585,15 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `tests/gateway/test_wecom_stale_subscription.py` (red on main). 14 wecom-referencing test files +
   the 4 listed gateway files: 308 passed, 1 failed (`test_wecom_callback.py` 413 test, missing
   `aiohttp`, same on main). Branch `claude/fix-wecom-adapter-async-fsrs4i`.
+- 2026-10-17 — C-0022 `hermes_cli/web_routers/audio.py` (async): ASYNC240×1 + HX007×1 → 0 (file
+  hits 16 → 14; the 10 BLE001, 2 S110, 1 HX004 and 1 HX012 untouched, same functions, same order).
+  `pet_dialogue`'s `load_config_readonly()` and `speak_text`'s `os.path.isfile` go through
+  `asyncio.to_thread`. Sibling blocking I/O in the file's `async def`s, not flagged by the rules,
+  moved off-loop too: `transcribe_audio_upload`'s up-to-25 MB temp-audio write (new
+  `_write_temp_audio`, same prefix/suffix/`delete=False`) and its `finally` unlink, and
+  `get_elevenlabs_voices`' `.env` read under `_config_profile_scope` (`to_thread`, not
+  `run_in_executor`, so the bound secret scope/home contextvars still reach the read). Error
+  mapping unchanged (`http_failure` still wraps the write; a bad `?profile=` still raises its
+  400/404). FILE_LINES 887 → 895. New `tests/hermes_cli/test_audio_router_off_loop.py` (4 tests,
+  all red on main). 12 audio-route test files 312/312 (main: 308/308 + 25 skipped both sides).
+  `scripts/check` green, 12 checks. Branch `claude/c-0022-audio-health-ratchet-cctmag`. Next: C-0023.

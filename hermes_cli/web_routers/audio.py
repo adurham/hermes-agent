@@ -81,6 +81,12 @@ def _audio_extension_for_mime(mime_type: str) -> str:
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
 
 
+def _write_temp_audio(audio_bytes: bytes, suffix: str) -> str:
+    with tempfile.NamedTemporaryFile(prefix="hermes-desktop-voice-", suffix=suffix, delete=False) as tmp:
+        tmp.write(audio_bytes)
+        return tmp.name
+
+
 @router.post("/api/audio/transcribe")
 async def transcribe_audio_upload(
     payload: AudioTranscriptionRequest, profile: Optional[str] = None
@@ -111,12 +117,10 @@ async def transcribe_audio_upload(
     temp_path = ""
     try:
         with http_failure("Desktop voice transcription failed", 500, "Transcription failed"):
-            with tempfile.NamedTemporaryFile(
-                prefix="hermes-desktop-voice-", suffix=_audio_extension_for_mime(mime_type),
-                delete=False,
-            ) as tmp:
-                tmp.write(audio_bytes)
-                temp_path = tmp.name
+            # Off-loop: the recording can be up to 25 MB.
+            temp_path = await asyncio.to_thread(
+                _write_temp_audio, audio_bytes, _audio_extension_for_mime(mime_type),
+            )
 
             # transcribe_recording (not raw transcribe_audio): filters Whisper
             # hallucinations and maps provider "empty transcript" errors to a
@@ -127,7 +131,7 @@ async def transcribe_audio_upload(
             result = await _run_config_scoped(profile, lambda: transcribe_recording(temp_path))
     finally:
         if temp_path:
-            _unlink_quietly(temp_path)
+            await asyncio.to_thread(_unlink_quietly, temp_path)
 
     if not result.get("success"):
         err = result.get("error") or "Transcription failed"
@@ -221,9 +225,13 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     Only non-secret voice metadata is returned; the API key stays server-side.
     """
     # Config-only scope (await-safe): the key lookup reads the requested
-    # profile's .env, matching the profile the settings UI writes to.
-    with _config_profile_scope(profile):
-        api_key = (load_env().get("ELEVENLABS_API_KEY") or "").strip()
+    # profile's .env, matching the profile the settings UI writes to. The .env
+    # read runs off-loop; to_thread carries the ambient context into the worker.
+    def _env_api_key() -> str:
+        with _config_profile_scope(profile):
+            return (load_env().get("ELEVENLABS_API_KEY") or "").strip()
+
+    api_key = await asyncio.to_thread(_env_api_key)
     if not api_key:
         # Fallback for env-only deployments — scope-aware: under multiplex
         # os.environ may hold another profile's key, so honor the installed
@@ -312,7 +320,7 @@ async def pet_dialogue(payload: PetDialogueRequest):
     from hermes_cli.config import load_config_readonly
     from utils import is_truthy_value
 
-    config = load_config_readonly()
+    config = await asyncio.to_thread(load_config_readonly)
     task_config = (config.get("auxiliary") or {}).get("pet_dialogue") or {}
 
     if not is_truthy_value(task_config.get("enabled"), default=False):
@@ -436,7 +444,7 @@ async def speak_text(payload: TTSSpeakRequest, profile: Optional[str] = None):
         )
 
     file_path = result.get("file_path")
-    if not file_path or not os.path.isfile(file_path):
+    if not file_path or not await asyncio.to_thread(os.path.isfile, file_path):
         raise HTTPException(status_code=500, detail="Audio file missing")
 
     mime_type = _SPEAK_MIME_BY_EXT.get(os.path.splitext(file_path)[1].lower(), "audio/mpeg")
