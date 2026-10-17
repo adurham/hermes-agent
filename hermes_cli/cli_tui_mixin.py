@@ -146,9 +146,11 @@ _TODO_BOARD_CONTENT_CHARS = 70
 # Collapsed (default) item budget (fork, 2026-10-11): a 20+ task plan must not own the screen, so
 # the board opens at this many item rows and only grows past it when the user expands it. Mirrors
 # the subagent dock's collapse affordance (Ctrl+T/Ctrl+R) with its own key so the two panels
-# expand independently — see ``toggle_todo_board``.
+# expand independently — see ``toggle_todo_board``. Deliberately NOT Ctrl+E: prompt_toolkit's
+# emacs map owns that for end-of-line and an app-level binding here shadows it silently —
+# see the binding site in ``_tui_build_key_bindings``.
 _TODO_BOARD_COLLAPSED_ROWS = 5
-_TODO_BOARD_TOGGLE_LABEL = "Ctrl+E"
+_TODO_BOARD_TOGGLE_LABEL = "Ctrl+O"
 
 
 def _todo_board_markers() -> dict:
@@ -2231,11 +2233,17 @@ class CLITuiMixin:
             lambda event: toggle_dock(self))
         kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
             lambda event: toggle_dock(self))
-        # Ctrl+E toggles the live todo board between its collapsed (default) and expanded
+        # Ctrl+O toggles the live todo board between its collapsed (default) and expanded
         # budgets — same affordance pattern as the dock's Ctrl+R, own key so the two panels
-        # expand independently. The hint text lives in the board header
+        # expand independently. It must NOT sit on a key prompt_toolkit's emacs map already
+        # owns: app-level bindings are merged LAST in ``Application._CombinedRegistry`` and
+        # ``KeyProcessor`` fires ``matches[-1]``, so a same-key binding here shadows the emacs
+        # default outright (Ctrl+E did — end-of-line died in the composer, and Apple Terminal
+        # lost Cmd+Right with it, since that chord arrives as 0x05). Ctrl+O's only emacs
+        # default is ``open-line``, already covered by Enter in the multiline composer, and
+        # no other hermes binding claims it. The hint text lives in the board header
         # (``_TODO_BOARD_TOGGLE_LABEL``).
-        kb.add('c-e', filter=Condition(lambda: not modal_prompt_active(self)))(
+        kb.add('c-o', filter=Condition(lambda: not modal_prompt_active(self)))(
             lambda event: toggle_todo_board(self))
         return kb
 
@@ -2458,7 +2466,7 @@ class CLITuiMixin:
             filter=Condition(lambda: cli_ref._prompt_stash.panel_open and bool(len(cli_ref._prompt_stash))),
         )
         # Live todo board — pending-first, bordered. Collapsed by default to
-        # _TODO_BOARD_COLLAPSED_ROWS item rows; Ctrl+E expands to the full row cap
+        # _TODO_BOARD_COLLAPSED_ROWS item rows; Ctrl+O expands to the full row cap
         # (terminal_rows // 2 clamped to [_TODO_BOARD_MIN_ROWS, _TODO_BOARD_MAX_ROWS]) and
         # collapses back. Hidden whenever the agent has no todos.
         todo_board_widget = ConditionalContainer(
