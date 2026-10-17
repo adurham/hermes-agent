@@ -573,19 +573,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return PromptResponse(stop_reason='cancelled')
         retry_key, input_id, staged = prepared
         text, attachments = staged
-        command = _slash_command(text) if not attachments else None
-        if command is not None:
-            from acp_adapter.gateway_commands import CommandRefused, run_command
-            parts = text.strip().split(None, 1)
-            try:
-                reply, text = await run_command(self, session_id, command, parts[1].strip() if len(parts) > 1 else '')
-            except CommandRefused as exc:
-                # A named refusal is the command's answer, shown to the user; never a failed prompt.
-                reply = str(exc)
-            if reply is not None:
-                if self._conn:
-                    await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(reply + '\n'))
-                return PromptResponse(stop_reason='end_turn')
+        answered, text = await self._run_slash(held_id, session_id, text) if not attachments else (False, text)
+        if answered:
+            return PromptResponse(stop_reason='end_turn')
         # ... and every prepared control's (a slash keeps its own key: apply retires the rest).
         self._mutations.retire(session_id)
         submit = {'text': text}
@@ -651,6 +641,24 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
                               usage=turn_usage(self._usage.get(session_id)))
+
+    async def _run_slash(self, held_id, session_id, text):
+        """Run a slash command's local half: ``(answered, text to submit)``; answered ends the prompt."""
+        command = _slash_command(text)
+        if command is None:
+            return False, text
+        from acp_adapter.gateway_commands import CommandRefused, run_command
+        parts = text.strip().split(None, 1)
+        try:
+            reply, text = await run_command(self, session_id, command, parts[1].strip() if len(parts) > 1 else '')
+        except CommandRefused as exc:
+            # A named refusal is the command's answer, shown to the user; never a failed prompt.
+            reply = str(exc)
+        if reply is None:
+            return False, text
+        if self._conn:
+            await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(reply + '\n'))
+        return True, None
 
     async def _prepare_submit(self, session_id, prompt):
         """``(retry_key, input_id, (text, attachments))`` for one ACP prompt, or None when the editor's Stop
