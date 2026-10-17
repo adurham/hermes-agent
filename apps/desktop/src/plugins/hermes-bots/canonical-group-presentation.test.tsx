@@ -7,7 +7,11 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
   const { relativeTime } = await import('@/lib/time')
 
-  return { Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
+  // The shell's shared message renderer; media marks whether MEDIA: paths would resolve locally.
+  const MessageTextContent = ({ media = true, text }: { media?: boolean; text: string }) =>
+    <div data-media={String(media)} data-testid="message-text"><Streamdown>{text}</Streamdown></div>
+
+  return { MessageTextContent, Streamdown, relativeTime, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })
@@ -54,6 +58,8 @@ it('renders the canonical log actors, timestamps and Markdown without transport 
   expect(screen.getByText('Done').getAttribute('data-streamdown')).toBe('strong')
   expect(screen.getByText('review').getAttribute('data-streamdown')).toBe('strong')
   expect(screen.queryByText('turn.settled')).toBeNull()
+  // Room text goes through the shared renderer, never resolving MEDIA: paths on this gateway.
+  expect(screen.getAllByTestId('message-text').map(node => node.dataset.media)).toEqual(['false', 'false', 'false', 'false'])
   expect([...container.querySelectorAll('time')].map(node => node.dateTime)).toEqual(
     events.slice(0, 4).map(event => new Date(event.created_at * 1000).toISOString())
   )

@@ -4,6 +4,7 @@ import { type CanonicalGroupAttachment, CanonicalGroupAttachments } from './cano
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
+const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 
 export interface CanonicalGroupEvent {
@@ -53,8 +54,14 @@ function EventBody({ event, notice }: { event: CanonicalGroupEvent; notice?: str
     </p>
   }
 
+  const text = event.payload.text || event.payload.content || ''
+
   return <div className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" data-selectable-text="true">
-    {Streamdown ? <Streamdown>{event.payload.text || event.payload.content || ''}</Streamdown> : event.payload.text || event.payload.content}
+    {/* The shared renderer (layout and large-message safeguards). media={false}: room text
+        may come from another machine, so its MEDIA: paths never resolve against this gateway;
+        room files keep their own download path below. */}
+    {MessageTextContent ? <MessageTextContent media={false} text={text} />
+      : Streamdown ? <Streamdown>{text}</Streamdown> : text}
   </div>
 }
 
