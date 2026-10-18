@@ -25,8 +25,11 @@ def uncounted_runtime_work(runner):
 
 def side_agents(authority):
     """``(thread, holder)`` for each detached side agent (/bg, /btw, preview restart) whose thread
-    has not unwound (``gateway/session_tui_side.py`` ``_spawn``)."""
-    return list(getattr(authority, '_side_agents', {}).items())
+    has not unwound (``gateway/session_tui_side.py`` ``_spawn``). A stopped ``/btw`` whose fork
+    is gone (``_SideQuestionStop.abandoned``) is no longer owner work."""
+    from gateway.session_tui_side import _abandoned
+    return [(thread, holder) for thread, holder in list(getattr(authority, '_side_agents', {}).items())
+            if not _abandoned(holder)]
 
 
 def persist_work_count(authority, _task=None):

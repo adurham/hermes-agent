@@ -239,3 +239,61 @@ async def test_side_agent_thread_killed_by_a_base_exception_releases_owner_work(
     assert not threads[0].is_alive() and failures == [exit_type]
     assert uncounted_runtime_work(runner) == 0 and (not persisted or persisted[-1] == 0)
     await join_authority_work(authority, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['fork', 'oneshot'])
+async def test_btw_side_question_does_not_hold_profile_retirement(monkeypatch, path):
+    """``/btw`` is counted owner work (``_spawn``), so retirement must be able to stop it too.
+
+    Its fork is interrupted through the holder; the one-shot fallback (``agent/side_question.py``,
+    ``timeout=180.0``) is an uncancellable aux call that never mutates anything, so retirement
+    abandons it instead of keeping the profile's reservation for the full settle window."""
+    import contextlib
+    from gateway import session_tui_side
+    from gateway.session_contract import SessionRef
+    from gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
+    from agent import side_question
+
+    started, release, interrupts, events = threading.Event(), threading.Event(), [], []
+
+    class Fork:
+        def hard_interrupt(self, message=None):
+            interrupts.append(message)
+            release.set()
+
+    def answer(question, history, *, parent_agent=None, main_runtime=None, on_fork=None, should_stop=None):
+        if path == 'fork':
+            on_fork(Fork())
+            started.set()
+            release.wait(30)  # interrupted through the holder
+            on_fork(None)  # _answer_via_fork's teardown
+            return 'interrupted'
+        started.set()
+        release.wait(30)  # the 180 s one-shot aux call, which nothing can interrupt
+        return 'late answer'
+
+    live = SimpleNamespace(task=None, event_stream=SimpleNamespace(execution={},
+        publish=lambda sid, payload, event_type: events.append((event_type, payload))))
+    authority = SimpleNamespace(sessions={'s': live}, pending_stops={}, adopted={},
+                                agent=lambda ref: SimpleNamespace(_session_messages=[{'role': 'user', 'content': 'hi'}]))
+    runner = SimpleNamespace(_running_agents={}, session_authority=authority, _persist_active_agents=lambda: None)
+    authority.runner = runner
+    monkeypatch.setattr(session_tui_side, '_admit', lambda *_: (None, None, 'why?', 'btw_x'))
+    monkeypatch.setattr(session_tui_side, '_side_scope', lambda *_: contextlib.nullcontext())
+    monkeypatch.setattr(session_tui_side, '_resolve_runtime', lambda *_: ('m', {}))
+    monkeypatch.setattr(side_question, 'answer_side_question', answer)
+    try:
+        await session_tui_side.btw(SimpleNamespace(authority=authority), SessionRef('p', 's'), {})
+        assert await asyncio.to_thread(started.wait, 5)
+        thread = next(t for t in threading.enumerate() if t.name == 'side-agent-btw_x')
+        assert uncounted_runtime_work(runner) == 1
+        await join_authority_work(authority, 5)
+        assert uncounted_runtime_work(runner) == 0
+        if path == 'fork':
+            assert interrupts and set(interrupts) == {'Profile runtime is stopping'}
+        release.set()
+        await asyncio.to_thread(thread.join, 5)
+        assert not thread.is_alive() and events == []  # a stopped /btw publishes no late answer
+    finally:
+        release.set()

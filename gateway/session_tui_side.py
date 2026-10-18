@@ -105,6 +105,11 @@ def _side_agent(authority, policy, live, task_id, **overrides):
     return AIAgent(**kwargs)
 
 
+def _abandoned(holder):
+    abandoned = getattr(holder[0], 'abandoned', None) if holder else None
+    return bool(abandoned and abandoned())
+
+
 def _spawn(authority, ref, task_id, event_type, body, extra=None, holder=None):
     """Run ``body()`` on a daemon thread; publish its text (or ``error: <exc>``) on the session.
 
@@ -132,7 +137,7 @@ def _spawn(authority, ref, task_id, event_type, body, extra=None, holder=None):
                 logger.warning('Side agent %s failed', task_id, exc_info=True)
                 text = f'error: {getattr(exc, "reason", None) or exc}'
             live = authority.sessions.get(ref.session_id)
-            if live is not None:
+            if live is not None and not _abandoned(holder):
                 live.event_stream.publish(ref.session_id, {'task_id': task_id, **extra, 'text': str(text or '')},
                                           event_type=event_type)
         finally:
@@ -186,6 +191,8 @@ async def btw(connection, ref, params):
     from gateway.session_local_recovery import transcript_target
     target = None if snapshot else transcript_target(authority, ref)
 
+    handle = _SideQuestionStop()
+
     def body():
         from agent.side_question import answer_side_question
         history = snapshot or authority.db.get_messages_as_conversation(target)
@@ -193,9 +200,40 @@ async def btw(connection, ref, params):
             model, runtime = _resolve_runtime(authority, policy)
             main_runtime = {'model': model, 'session_id': ref.session_id,
                             **{key: runtime.get(key) for key in ('provider', 'base_url', 'api_key', 'api_mode')}}
-            return answer_side_question(text, history, parent_agent=agent, main_runtime=main_runtime) or ''
+            return answer_side_question(text, history, parent_agent=agent, main_runtime=main_runtime,
+                                        on_fork=handle.set_fork, should_stop=handle.stopped.is_set) or ''
 
-    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': text})
+    return _spawn(authority, ref, task_id, 'btw.complete', body, extra={'question': text}, holder=[handle])
+
+
+class _SideQuestionStop:
+    """``/btw``'s holder: retirement and shutdown interrupt its cache-parity fork, and once stopped
+    the read-only one-shot fallback (an uncancellable aux call of up to 180 s that writes nothing)
+    no longer holds owner work, so it cannot keep a retiring profile's reservation."""
+
+    def __init__(self):
+        self.stopped = threading.Event()
+        self._lock = threading.Lock()
+        self._fork = None
+
+    def set_fork(self, fork):
+        with self._lock:
+            self._fork = fork
+        if fork is not None and self.stopped.is_set():
+            self.hard_interrupt('Profile runtime is stopping')
+
+    def hard_interrupt(self, message=None):
+        self.stopped.set()
+        with self._lock:
+            fork = self._fork
+        if fork is not None:
+            from agent.interrupt_compat import request_hard_interrupt
+            request_hard_interrupt(fork, message)
+
+    def abandoned(self):
+        """Stopped with no fork running: what is left publishes nothing and writes nothing."""
+        with self._lock:
+            return self.stopped.is_set() and self._fork is None
 
 
 async def preview_restart(connection, ref, params):
