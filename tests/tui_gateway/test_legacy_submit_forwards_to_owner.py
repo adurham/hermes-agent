@@ -158,6 +158,27 @@ def test_outcome_unknown_work_is_still_refused_and_never_forwarded(monkeypatch, 
         db.close()
 
 
+def test_a_closed_desktop_session_releases_its_relay_without_an_owner_frame(monkeypatch):
+    """The relay re-checked ``_finalized`` only when an owner frame arrived, so a closed Desktop session
+    held the relay thread and its owner socket until the owner's next frame (up to RELAY_TIMEOUT_S)."""
+    from tui_gateway import owner_forward
+    monkeypatch.setattr(owner_forward, "RELAY_FINALIZE_POLL_S", 0.05, raising=False)
+    session, emitted = {}, []
+    relay = owner_forward._Relay("ui", session, "key", None, None, "hi", lambda *a: emitted.append(a))
+
+    async def scenario():
+        client = SimpleNamespace(events=asyncio.Queue())  # the owner sends nothing more
+        task = asyncio.create_task(relay._relay(client, "a1"))
+        await asyncio.sleep(0)
+        session["_finalized"] = True
+        done, _ = await asyncio.wait({task}, timeout=2)
+        task.cancel()
+        return task in done
+
+    assert asyncio.run(scenario()), "the relay kept its owner socket after the Desktop session closed"
+    assert emitted == []  # a closed session gets no synthetic completion
+
+
 def test_an_unconfirmed_forward_is_never_reported_as_not_sent(monkeypatch, tmp_path):
     """The owner's receipt timed out but the relay keeps going, so the prompt may already sit in the
     owner's FIFO: the refusal says to check the chat, with a reason the client never offers Retry for

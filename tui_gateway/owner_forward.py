@@ -35,6 +35,9 @@ FORWARDABLE_LEDGER_STATES = frozenset({"started", "queued", "registered", "runni
 ADMIT_TIMEOUT_S = 30.0
 #: Ceiling on one relay; the owner keeps the work either way (it is durable).
 RELAY_TIMEOUT_S = 6 * 3600.0
+#: How often an idle relay re-checks that its Desktop session still exists: a closed session
+#: releases the thread and the owner socket without waiting for the owner's next frame.
+RELAY_FINALIZE_POLL_S = 1.0
 #: Owner turn frames relayed for the forwarded admission. Not its deltas: a Desktop turn that streamed
 #: nothing re-reads the stored transcript at ``message.complete``, which brings the user's own row
 #: (written by the owner, not by this backend) and the reply in their committed order.
@@ -153,7 +156,11 @@ class _Relay:
         try:
             async with asyncio.timeout(RELAY_TIMEOUT_S):
                 while not settled and not self.session.get("_finalized"):
-                    frame = await client.events.get()
+                    try:
+                        async with asyncio.timeout(RELAY_FINALIZE_POLL_S):
+                            frame = await client.events.get()
+                    except TimeoutError:
+                        continue
                     if isinstance(frame, BaseException):
                         return
                     params = frame.get("params") if isinstance(frame, dict) else None
