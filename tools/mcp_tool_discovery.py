@@ -838,7 +838,7 @@ def probe_mcp_server_tools() -> dict[str, list[tuple]]:
                  for name, cfg in enabled.items()]
         outcomes = await asyncio.gather(*coros, return_exceptions=True)
         for name, outcome in zip(enabled, outcomes):
-            if isinstance(outcome, Exception):
+            if isinstance(outcome, BaseException):
                 logger.debug("Probe: failed to connect to '%s': %s", name, outcome)
                 continue
             probed_servers.append(outcome)

@@ -2621,3 +2621,12 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `tools.web_tools` — 5 failures, identical on clean main (DNS-blocked `example.com` in the
   sandbox fails `async_is_safe_url`; keyless-routing cases). `scripts/check` green, 12 checks.
   Branch `claude/c-0009-web-tools-correctness-kmwlly`. Next: C-0010.
+- 2026-10-18 — C-0043 `tools/mcp_tool_discovery.py` HX009×1 → 0 (real bug): `probe_mcp_server_tools`
+  checked gather outcomes with `isinstance(outcome, Exception)`, so a server whose connect was
+  cancelled came back as `CancelledError`, was treated as a server, and `outcome._tools` raised
+  AttributeError: the whole probe returned `{}` and live connections were never shut down. Now
+  `BaseException`, matching the sibling gather at line 465 (the file's only other gather check).
+  The 7 BLE001 hits stay in place and in order. New
+  `test_cancelled_server_omitted_and_others_still_reported` (red on main); MCP probe/catalog/config
+  + 89 `tests/tools/test_mcp*.py` files 964 passed; acp_adapter 4 files 46 passed (needs `--extra
+  acp`). Branch `claude/fix-mcp-tool-discovery-timeout-95wueo`.
