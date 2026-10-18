@@ -2638,3 +2638,13 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   0 failed, 1 skipped (`tests/hermes_cli/test_send_cmd.py` 5 errors = missing `aiohttp`, same on main);
   old-vs-new differential over 14,364 descriptor/caption/voice/force_document/failure combos: 0
   mismatches. `scripts/check` green. Branch `claude/c-0046-send-message-tool-async-swsiba`.
+- C-1059 (async), `plugins/platforms/dingtalk/adapter.py`: RUF006 1 → 0 (file ratchet hits 17 → 16;
+  the 15 BLE001 and 1 S110 hits untouched, in place and in order). `_IncomingHandler.process` keeps
+  each dispatched `_safe_on_message` task in a new handler-level `_message_tasks` set until done
+  (`_safe_on_message` already logs what escapes with `logger.exception`). Kept out of the adapter's
+  `_bg_tasks` on purpose, so `disconnect()` still does not cancel in-flight turns. No sibling
+  instances (`_stream_task` is stored, `_spawn_bg` is tracked). FILE_LINES 858 → 860. New
+  `TestIncomingHandlerProcess::test_dispatched_task_is_referenced_until_done` (red on main); 15
+  dingtalk-referencing test files 394 passed, 5 failed — the same 5 Matrix/Mattermost failures in
+  `test_multiplex_endpoint_identity_scope.py` / `test_send_message_missing_platforms.py` on clean main.
+  Branch `claude/c-1059-dingtalk-adapter-async-kcm9zh`.
