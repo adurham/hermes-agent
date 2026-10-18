@@ -3081,8 +3081,7 @@ export const en: Translations = {
     // Replaces `next` when the stored next_run_at is already past the scheduler grace (#114309).
     overdueSince: 'Overdue since:',
     noRuns: 'No runs yet',
-    // Queued trigger feedback in Run History: the backend accepted the trigger
-    // but has not materialized the run session yet (#70826).
+    // Queued trigger feedback in Run History: the backend accepted the trigger but has not materialized the run session yet (#70826).
     queuedRun: 'Queued run',
     manage: 'Manage',
     showRuns: 'Show runs',
@@ -4694,10 +4693,7 @@ export const en: Translations = {
           title: 'Hermes got stuck in a loop',
           body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
         },
-        SESSION_OWNER_BUSY: {
-          title: 'Hermes is busy in this chat',
-          body: 'Another turn is running in this chat and your message could not wait in its queue. Nothing was sent. Retry once the current turn ends.'
-        },
+        SESSION_OWNER_BUSY: { title: 'Hermes is busy in this chat', body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.' },
         SESSION_NOT_OWNED: {
           title: 'This chat is open somewhere else',
           body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'

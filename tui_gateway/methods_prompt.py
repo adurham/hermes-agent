@@ -700,6 +700,14 @@ _TRUNCATION_PARAMS = (
 SESSION_OWNER_BUSY = "SESSION_OWNER_BUSY"
 
 
+def _slot_refusal(rid, sid, session, text, params, refusal, internal_hosted_submit) -> dict:
+    """The answer to a refused slot: a ledger refusal of a client submit goes to the owner's FIFO."""
+    if getattr(refusal, "ledger_status", None) is not None and not internal_hosted_submit:
+        return _submit_to_ledger_owner(rid, sid, session, text, params, refusal)
+    reason = getattr(refusal, "reason", None)
+    return _err(rid, 4090, str(refusal), {"reason": reason} if reason else None)
+
+
 def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
     """The gateway's durable ledger holds work for this session (#140385, RT-37): one owner, one FIFO.
     Work that ends on its own (a running or queued gateway turn) gets this prompt queued behind it in
@@ -811,10 +819,7 @@ def _(rid, params: dict) -> dict:
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
-        if getattr(limit_message, "ledger_status", None) is not None and not internal_hosted_submit:
-            return _submit_to_ledger_owner(rid, sid, session, text, params, limit_message)
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
+        return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
     session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted

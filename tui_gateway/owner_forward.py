@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import threading
 import uuid
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -91,9 +90,10 @@ def _payload_for(event_type: str, payload: Any) -> dict | None:
     if contract is None or contract.payload is None or not isinstance(payload, dict):
         return None
     shaped = {key: value for key, value in payload.items() if key in contract.payload.model_fields}
+    from pydantic import ValidationError
     try:
         contract.payload.model_validate(shaped)
-    except Exception:
+    except ValidationError:
         if event_type != "message.complete":
             return None
         shaped = {"text": payload.get("text") if isinstance(payload.get("text"), str) else ""}
@@ -110,11 +110,11 @@ class _Relay:
     def run(self) -> None:
         try:
             asyncio.run(self._run())
-        except BaseException as exc:  # thread boundary: hand the failure to the waiting submit
+        except BaseException as exc:  # health: allow BLE001 -- thread boundary: handed to the waiting submit or logged with traceback
             if not self.admitted.done():
                 self.admitted.set_exception(exc)
             else:
-                logger.warning("owner relay for %s ended: %s", self.key, exc)
+                logger.warning("owner relay for %s ended: %s", self.key, exc, exc_info=True)
 
     async def _run(self) -> None:
         async with connect_owner(self.home, self.endpoint) as client:
@@ -186,7 +186,8 @@ def forward_prompt(sid: str, session: dict, text: str, *, emit=None, home: Path 
         raise OwnerUnavailable("the chat has no stored session yet")
     home = Path(home or session.get("profile_home") or server._hermes_home).resolve()
     relay = _Relay(sid, session, key, home, discover_owner(home), text, emit or server._emit)
-    threading.Thread(target=relay.run, name=f"owner-forward-{key[:24]}", daemon=True).start()
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(relay.run, name=f"owner-forward-{key[:24]}").start()
     try:
         return relay.admitted.result(timeout=ADMIT_TIMEOUT_S)
     except FutureTimeout as exc:

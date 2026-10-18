@@ -61,11 +61,11 @@ import {
   acquireSubmitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
+  isForwardedReceipt,
   isProviderSetupError,
   isSessionBusyError,
-  isSessionNotOwnedError,
-  isSessionOwnerBusyError,
   isTargetSessionBusy,
+  ownershipErrorSurface,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
   type SubmitTextOptions,
@@ -1228,6 +1228,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               }
             }
 
+            // RT-37: forwarded to the gateway owner's FIFO; its queued-row card stands for the send.
+            if (isForwardedReceipt(legacyAccepted, result)) {
+              abortForSessionSwitch(sessionId)
+            }
+
             const rowId = result?.user_row_id
 
             if (typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0) {
@@ -1255,15 +1260,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
           if (!applySubmitReceipt(result, receiptSessionId)) {
             return false
-          }
-
-          // RT-37: a legacy backend handed this prompt to the gateway that owns the chat; it
-          // waits in that owner's FIFO behind the gateway's turn. The queued-row card (the
-          // backend's pending_submissions) stands for it until the owner starts it, so no
-          // optimistic bubble or spinner here; the owner's start and completion repaint it.
-          if (legacyAccepted && result?.forwarded === true && result.status === 'queued') {
-            dropOptimistic(sessionId)
-            releaseBusy()
           }
 
           acceptedRuntimeSessionId = receiptSessionId
@@ -1327,12 +1323,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const message = inlineErrorMessage(err, copy.promptFailed)
         const occurredAt = Date.now() / 1000
-        // Another surface owns the session (#106217): a deterministic gateway
-        // refusal, so the error card drops Retry and offers a new session.
-        const notOwned = isSessionNotOwnedError(err)
-        // The gateway owner is mid-turn and could not queue this send (#140385): transient, so the
-        // card offers to send it again once the turn ends instead of a new session.
-        const ownerBusy = !notOwned && isSessionOwnerBusyError(err)
 
         updateSessionState(
           sessionId,
@@ -1345,8 +1335,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 role: 'assistant',
                 parts: [],
                 error: message || copy.promptFailed,
-                ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
-                ...(ownerBusy && { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_BUSY', retryable: true } }),
+                ...ownershipErrorSurface(err),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,
                 timestamp: occurredAt
