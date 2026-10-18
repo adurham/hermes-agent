@@ -418,6 +418,32 @@ test('merged profile windows retain pinned rows outside the recency window', () 
   assert.deepEqual(mergeProfileSessionWindow(rows, 0, 3), [rows[0], rows[1], rows[2], rows[3], rows[4]])
 })
 
+test('a deep primary prefix keeps a later page scan error instead of reporting a complete read', async () => {
+  const rows = Array.from({ length: 650 }, (_, index) => ({ id: `s${index}`, profile: 'default', started_at: 650 - index }))
+
+  const base = await fetchPrimaryProfileSessions(
+    new URLSearchParams({ limit: '200', offset: '400', profile: 'all' }),
+    async (_profile, path) => {
+      const params = new URL(path, 'http://x').searchParams
+      const offset = Number(params.get('offset'))
+      const limit = Number(params.get('limit'))
+
+      return {
+        sessions: rows.slice(offset, offset + limit),
+        total: 650,
+        profile_totals: { default: 650, work: 10 },
+        errors: offset === 0 ? [] : [{ profile: 'work', error: 'database is locked' }],
+        storage: offset === 0 ? {} : { work: { corrupt: true } }
+      }
+    },
+    { prefixForMerge: true }
+  )
+
+  assert.deepEqual(base.errors, [{ profile: 'work', error: 'database is locked' }])
+  assert.deepEqual((base as any).storage, { work: { corrupt: true } })
+  assert.equal(base.sessions.length, 600)
+})
+
 test('registry paging uses the backend total instead of its fetched prefix or pinned backfill', async () => {
   const rows = Array.from({ length: 650 }, (_, index) => ({
     id: `s${index}`,

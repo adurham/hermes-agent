@@ -1126,11 +1126,15 @@ async function readEachProfile(
 
 /** One scope's rows from offset 0 through `want`, in backend-sized pages.
  *  Pinned backfill repeats across pages; keep one row per profile/session before
- *  the merged list is sorted and windowed. The first page carries totals. */
+ *  the merged list is sorted and windowed. The first page carries totals; scan
+ *  `errors` and `storage` accumulate across pages, so a profile that fails on a
+ *  later page is not reported as a complete read. */
 async function readProfileSessionRows(url: URL, profile: string, want: number, fetchPage: FetchProfilePage) {
   let first: any
   const rows: unknown[] = []
   const seen = new Set<string>()
+  const errors: SessionScanError[] = []
+  const storage: Record<string, unknown> = {}
 
   for (let offset = 0; ; ) {
     const params = new URLSearchParams(url.searchParams)
@@ -1142,6 +1146,16 @@ async function readProfileSessionRows(url: URL, profile: string, want: number, f
     const page = (await fetchPage(profile, `${url.pathname}?${params}`)) as any
     const pageRows = rowsOf(page)
     first ??= page
+
+    for (const error of errorsOf(page) ?? []) {
+      if (!errors.some(seenError => seenError.profile === error.profile && seenError.error === error.error)) {
+        errors.push(error)
+      }
+    }
+
+    if (page?.storage && typeof page.storage === 'object') {
+      Object.assign(storage, page.storage)
+    }
 
     for (const row of pageRows) {
       const id = profileSessionId(row)
@@ -1160,7 +1174,7 @@ async function readProfileSessionRows(url: URL, profile: string, want: number, f
     offset += limit
 
     if (offset >= want || pageRows.length < limit) {
-      return { ...first, sessions: rows }
+      return { ...first, sessions: rows, errors, ...(first?.storage || Object.keys(storage).length ? { storage } : {}) }
     }
   }
 }
