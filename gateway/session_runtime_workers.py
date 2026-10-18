@@ -32,6 +32,18 @@ def side_agents(authority):
             if not _abandoned(holder)]
 
 
+def interrupt_side_agents(runner, reason):
+    """Hard-interrupt every counted side agent's holder across served authorities (the stop
+    drain waits for them, so its timed-out interrupt must reach them). Returns how many."""
+    from agent.interrupt_compat import request_hard_interrupt
+    count = 0
+    for authority in all_authorities(runner):
+        for _, holder in side_agents(authority):
+            if holder and holder[0] is not None:
+                count += bool(request_hard_interrupt(holder[0], reason))
+    return count
+
+
 def persist_work_count(authority, _task=None):
     """Re-publish the runner's in-flight count when owner work it counts (a drain, a tracked
     mutation, a mailbox operation) ends: the agent-slot release that last wrote

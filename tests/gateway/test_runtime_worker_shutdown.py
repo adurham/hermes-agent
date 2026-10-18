@@ -297,3 +297,19 @@ async def test_btw_side_question_does_not_hold_profile_retirement(monkeypatch, p
         assert not thread.is_alive() and events == []  # a stopped /btw publishes no late answer
     finally:
         release.set()
+
+
+def test_shutdown_interrupt_reaches_counted_side_agents():
+    """The stop drain waits for counted side agents (/bg, /btw, preview restart), so the timed-out
+    drain's interrupt must reach them too, or a long /bg holds the whole drain and is then
+    abandoned mid-tool when the process exits."""
+    from gateway.run_shutdown import GatewayShutdownMixin
+    interrupts = []
+    agent = SimpleNamespace(hard_interrupt=lambda message=None, **_: interrupts.append(message))
+    authority = SimpleNamespace(sessions={}, pending_stops={}, adopted={},
+                                _side_agents={object(): [agent], object(): [None], object(): None})
+    runner = SimpleNamespace(_running_agents={}, session_authority=authority,
+                             _interrupt_api_server_runs=lambda reason: 0,
+                             _interrupt_deferred_agent_workers=lambda reason: 0)
+    GatewayShutdownMixin._interrupt_running_agents(runner, 'Gateway shutting down')
+    assert interrupts == ['Gateway shutting down']
