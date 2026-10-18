@@ -409,9 +409,9 @@ async def _exec_buzz(
         stdout, stderr = await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=timeout)
     except TimeoutError:
         proc.kill()
-        await proc.wait()
-        detail = {"error": "timeout", "message": f"buzz {args[0] if args else ''} timed out after {timeout}s"}
-        return 124, "", json.dumps(detail)
+        with contextlib.suppress(TimeoutError):  # SIGKILL ends the CLI; a grandchild it spawned may still hold its pipes
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        return 124, "", json.dumps({"error": "timeout", "message": f"buzz {args[0] if args else ''} timed out after {timeout}s"})
     rc = proc.returncode if proc.returncode is not None else 4
     return rc, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
 
