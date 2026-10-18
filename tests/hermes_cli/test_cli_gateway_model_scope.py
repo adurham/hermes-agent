@@ -236,43 +236,6 @@ def test_once_on_a_resumed_session_asks_before_it_switches(monkeypatch):
     assert stub._pending_one_turn_model_restore is None
 
 
-def test_one_turn_kwargs_reach_only_a_switch_that_names_them():
-    """``AIAgent.switch_model`` is a lazy ``**kwargs`` forwarder to a function without ``once`` /
-    ``restore``: it gets the plain in-process switch. Its own errors still surface."""
-    from hermes_cli.cli_model_switch_mixin import _call_agent_switch
-    from run_agent import AIAgent
-
-    seen = []
-
-    def _in_process(agent, new_model, new_provider, api_key="", base_url="", api_mode="", capabilities=None):
-        seen.append(new_model)
-        if new_model == "broken":
-            raise TypeError("provider client could not be built")
-        return True
-
-    class _Forwarder:
-        switch_model = AIAgent.switch_model
-
-    class _OneTurnAware:
-        def switch_model(self, new_model, new_provider="", *, once=False, restore=False):
-            seen.append((new_model, once, restore))
-            return True
-
-    import agent.agent_runtime_helpers as helpers
-    original = helpers.switch_model
-    helpers.switch_model = _in_process
-    try:
-        assert _call_agent_switch(_Forwarder(), new_model="next", new_provider="openrouter", once=True) is True
-        assert _call_agent_switch(_Forwarder(), new_model="prev", new_provider="openrouter",
-                                  once=True, restore=True) is True
-        with pytest.raises(TypeError, match="could not be built"):
-            _call_agent_switch(_Forwarder(), new_model="broken", new_provider="openrouter", once=True)
-    finally:
-        helpers.switch_model = original
-    assert _call_agent_switch(_OneTurnAware(), new_model="next", once=True, restore=True) is True
-    assert seen == ["next", "prev", "broken", ("next", True, True)]
-
-
 def test_switching_to_the_route_the_session_runs_commits_nothing(monkeypatch):
     conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
     cli_mod, stub, _printed = _cli(monkeypatch, conn)

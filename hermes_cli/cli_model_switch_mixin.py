@@ -11,7 +11,6 @@ module-level functions taking ``cli`` and siblings are called as ``HermesCLI.<na
 from __future__ import annotations
 
 import copy
-import inspect
 import logging
 import sys
 import threading
@@ -315,22 +314,6 @@ def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool, one
     if saved:
         CLI_CONFIG.setdefault("agent", {})["reasoning_effort"] = effort
     _cprint(f"    {t('cli.model.reasoning_effort_saved' if saved else 'cli.model.reasoning_effort', effort=effort)}")
-
-
-_ONE_TURN_SWITCH_KWARGS = ("once", "restore")
-
-
-def _call_agent_switch(agent, **fields):
-    """``agent.switch_model`` with ``once`` / ``restore`` only when its signature names them.
-
-    ``AIAgent.switch_model`` is a ``**kwargs`` forwarder to a function that rejects them; an
-    in-process agent swaps in place, so it gets the plain switch."""
-    try:
-        named = inspect.signature(agent.switch_model).parameters
-    except (TypeError, ValueError):
-        named = {}
-    return agent.switch_model(**{key: value for key, value in fields.items()
-                                 if key not in _ONE_TURN_SWITCH_KWARGS or key in named})
 
 
 def _commit_model_switch(
@@ -739,8 +722,10 @@ class CLIModelSwitchMixin:
                 logger.debug("CLI one-turn model restore via primary runtime failed", exc_info=True)
         if hasattr(agent, "switch_model"):
             try:
-                restored = _call_agent_switch(
-                    agent, new_model=snapshot.get("model", ""), new_provider=snapshot.get("provider", ""),
+                # The classic CLI only builds a GatewayAgent (``_init_agent``): its ``once`` / ``restore`` are
+                # named, so a rename fails loudly instead of turning the restore into a session mutate.
+                restored = agent.switch_model(
+                    new_model=snapshot.get("model", ""), new_provider=snapshot.get("provider", ""),
                     api_key=snapshot.get("api_key", ""), base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
                     capabilities=snapshot.get("capabilities"), once=True, restore=True)
@@ -829,7 +814,7 @@ class CLIModelSwitchMixin:
                     capabilities=getattr(result, "runtime_capabilities", None))
                 if getattr(self, "_model_switch_one_turn", False):
                     fields["once"] = True
-                if _call_agent_switch(self.agent, **fields) is False:
+                if self.agent.switch_model(**fields) is False:
                     # Declined at the gateway owner's guard prompt: nothing was committed.
                     for _k, _v in _cli_snapshot.items():
                         setattr(self, _k, _v)
