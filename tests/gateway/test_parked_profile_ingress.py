@@ -182,12 +182,12 @@ async def test_a_relay_frame_for_a_parked_profile_is_refused_to_its_sender_not_h
         _close(runner, homes)
 
 
-def _webhook_request(delivery_id, body, route='events'):
+def _webhook_request(delivery_id, body, route='events', profile='beta'):
     raw = json.dumps(body).encode()
     request = MagicMock()
     request.headers = {'X-GitHub-Delivery': delivery_id}
     request.content_length = len(raw)
-    request.match_info = {'route_name': route, 'profile': 'beta'}
+    request.match_info = {'route_name': route, 'profile': profile}
     request.method = 'POST'
 
     async def read():
@@ -229,6 +229,29 @@ async def test_a_coalesced_webhook_for_a_parked_profile_is_retried_not_lost(tmp_
         await async_wait_until(settled, what='the retried batch dispatched')
         assert json.loads(retry.text)['status'] == 'coalesced', retry.text
         assert _admissions(beta) == 1, 'delivery-1 was never admitted'
+    finally:
+        _cancel(adapter)
+        _close(runner, homes)
+
+
+@pytest.mark.asyncio
+async def test_a_coalesced_webhook_to_a_served_profile_prefix_ignores_a_parked_profile_route(tmp_path, monkeypatch):
+    """Admission keeps an explicit ``/p/<profile>/`` (``source.profile`` wins; ``profile_routes``
+    applies only when it is unset), so a ``profile_routes`` rule that sends the bare route's
+    ``webhook:<route>`` user to parked beta must not 503 the same route delivered to a served
+    ``/p/default/``. The bare delivery is still the one the rule routes to beta, so it is retried."""
+    from gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from gateway.profile_routing import ProfileRoute
+    homes = _homes(tmp_path, monkeypatch)
+    runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
+        ProfileRoute(name='events-to-beta', platform='webhook', profile='beta', user_id='webhook:events')])
+    adapter = _webhook(runner, {'events': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}',
+                                           'coalesce': {'key': 'id', 'window_seconds': 30}}})
+    try:
+        served = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}, profile='default'))
+        assert served.status == 202 and json.loads(served.text)['status'] == 'coalesced', (served.status, served.text)
+        bare = await adapter._handle_webhook(_webhook_request('delivery-2', {'id': 18}, profile=None))
+        assert bare.status == 503 and bare.headers.get('Retry-After'), (bare.status, bare.text)
     finally:
         _cancel(adapter)
         _close(runner, homes)

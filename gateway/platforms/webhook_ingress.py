@@ -64,7 +64,7 @@ def parked_profile_refusal(runner, profile, route_name, route_config):
     once the profile is served again."""
     if _prefix_not_served(runner, profile):
         error = f'Profile {profile} is not being served; retry this delivery'
-    elif _coalesced_to_parked(runner, route_name, route_config):
+    elif _coalesced_to_parked(runner, profile, route_name, route_config):
         error = 'The routed profile is not being served right now; retry this delivery'
     else:
         return None
@@ -87,16 +87,30 @@ def _prefix_not_served(runner, profile):
     return authority is None or getattr(authority, 'retiring', False) is True
 
 
-def _coalesced_to_parked(runner, route_name, route_config):
-    routes = getattr(getattr(runner, 'config', None), 'profile_routes', None)
-    if not isinstance(route_config.get('coalesce'), dict) or not routes:
+def _coalesced_to_parked(runner, profile, route_name, route_config):
+    """A coalesced bare-route delivery that ``profile_routes`` sends to a parked profile. Asks the
+    admission's own resolver (``GatewayRunner._profile_name_for_source``) so this edge and admission
+    give one answer: an explicit ``/p/<profile>/`` wins over ``profile_routes`` there (the source's
+    ``profile`` is set), and routes apply only under multiplexing."""
+    if profile or not isinstance(route_config.get('coalesce'), dict):
+        return False
+    resolve = getattr(runner, '_profile_name_for_source', None)
+    if not callable(resolve):
         return False
     from gateway.config import Platform
-    from gateway.profile_routing import match_profile_route
+    from gateway.profile_routing import ProfileRouteRejected
     from gateway.run_runtime import profile_parked
+    from gateway.session import SessionSource
     # The source the admission builds carries ``user_id=webhook:<route>`` (``_admit_agent_run``).
-    route = match_profile_route(routes, platform=Platform.WEBHOOK.value, user_id=f'webhook:{route_name}')
-    return route is not None and profile_parked(runner, route.profile)
+    source = SessionSource(platform=Platform.WEBHOOK, chat_id=f'webhook:{route_name}', chat_type='webhook',
+                           user_id=f'webhook:{route_name}')
+    try:
+        routed = resolve(source)
+    except ProfileRouteRejected as exc:
+        # A parked target leaves the served set, so the resolver rejects it; admission retries
+        # that one (``_rejected_route_profile``) and refuses any other rejection for good.
+        routed = exc.profile
+    return bool(routed) and profile_parked(runner, routed)
 
 
 async def admit_producer(adapter, event):
