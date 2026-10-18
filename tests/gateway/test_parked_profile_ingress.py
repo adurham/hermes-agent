@@ -151,7 +151,10 @@ async def test_a_relay_frame_for_a_parked_profile_is_refused_to_its_sender_not_h
                     sent.append(buffer_id)
                     await ws.send(frame(buffer_id, chat))
                     try:
-                        if await asyncio.wait_for(acks.get(), 1.0) == buffer_id:
+                        # The connector's redelivery wait. A loaded runner can take seconds to ack
+                        # (tests/AGENTS.md: >= 2 s), and a withheld ack never comes at all: then b2
+                        # is never sent and the wait below fails, so a long wait still proves it.
+                        if await asyncio.wait_for(acks.get(), 10.0) == buffer_id:
                             break
                     except TimeoutError:
                         continue  # redeliver the unacknowledged head
