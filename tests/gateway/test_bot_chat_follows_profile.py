@@ -575,3 +575,40 @@ async def test_opening_a_frozen_bot_chat_keeps_its_committed_reasoning_choice(ho
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('first', ['delivery', 'opened'])
+async def test_a_reasoning_choice_after_the_follow_beats_the_profile_level(home, first):
+    """``/reasoning high`` on a Bot Chat that already follows its profile is the session's choice:
+    the next turn runs ``high``, not the profile's ``low`` (a delivery-minted chat, and a frozen
+    chat that an open adopted)."""
+    from gateway.session_bot import _target
+    from gateway.session_policy import policy_for_source
+    _profile(home, 'old-model', 1, 'old-key', agent={'reasoning_effort': 'low'})
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    runner._set_session_reasoning_override = lambda route, value: None
+    try:
+        if first == 'delivery':
+            ref, live, _entry = await _target(authority, owner.actor)
+        else:
+            ref, _params = _frozen_bot_chat(authority, owner.actor, home)
+            live = authority.sessions[ref.session_id]
+            await _open(authority, ref)
+        assert _follows(runner, live)
+        snap = authority.db.get_session(ref.session_id)
+        response = await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': dict(
+            session_id=ref.session_id, request_id='high', operation='reasoning', payload={'effort': 'high'},
+            expected_revision=snap['runtime_revision'], expected_generation=snap['runtime_generation'])})
+        assert 'result' in response, response
+        policy = policy_for_source(runner, live.source)
+        assert policy.follows_profile
+        assert policy.current_reasoning_config(runner).get('effort') == 'high'
+        _profile(home, 'new-model', 2, 'new-key', agent={'reasoning_effort': 'minimal'})
+        policy = policy_for_source(runner, live.source)
+        assert _route(runner, live) == ('new-model', 'http://127.0.0.1:2/v1', 'new-key')
+        assert policy.current_reasoning_config(runner).get('effort') == 'high'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
