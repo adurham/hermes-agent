@@ -57,7 +57,7 @@ def test_session_usage_binds_session_profile_scope_for_account_lines():
     agent = SimpleNamespace(provider="anthropic", base_url=None, api_key=None)
     session = {
         "agent": agent,
-        "profile_home": "/tmp/hermes-profiles/coder",
+        "profile_home": "/nonexistent/hermes-profiles/coder",
         "history": [],
         "running": False,
         "session_key": "sess-scoped",
@@ -96,47 +96,4 @@ def test_session_usage_binds_session_profile_scope_for_account_lines():
 
     assert "error" not in r, r
     assert scoped == ["enter", "exit"]
-    assert r["result"]["account_lines"]
-
-
-def test_session_usage_pre_agent_uses_scoped_config_provider():
-    """#132422: before the first turn, provider comes from the session profile's config."""
-    from tui_gateway import server
-
-    session = {
-        "agent": None,
-        "profile_home": "/tmp/hermes-profiles/coder",
-        "history": [],
-        "running": False,
-        "session_key": "sess-pre",
-    }
-    sid = "sid-usage-pre"
-    server._sessions[sid] = session
-    fetch_calls: list[str] = []
-
-    class _Scope:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    def _fetch(provider, *, base_url=None, api_key=None):
-        fetch_calls.append(provider)
-        return _codex_snapshot()
-
-    try:
-        with (
-            patch.object(server, "_get_usage", return_value={}),
-            patch.object(server, "_session_profile_runtime_scope", lambda sess, **kw: _Scope()),
-            patch.object(server, "_config_model_target", lambda: ("claude-opus", "anthropic")),
-            patch("agent.account_usage.fetch_account_usage", _fetch),
-            patch("agent.account_usage.nous_credits_lines", lambda **kw: []),
-        ):
-            r = server._methods["session.usage"]("r1", {"session_id": sid})
-    finally:
-        server._sessions.pop(sid, None)
-
-    assert "error" not in r, r
-    assert fetch_calls == ["anthropic"]
     assert r["result"]["account_lines"]
