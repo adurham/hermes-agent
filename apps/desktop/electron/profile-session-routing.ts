@@ -354,13 +354,19 @@ export function shouldIncludeLocalRegistrySessionSource(
 
 type GetJsonForDescriptor = (descriptor: unknown, path: string) => Promise<unknown>
 
+/** One registry source's rows plus its first page (which carries the totals), or null
+ *  when any page failed: a partial read must not contribute rows or a stale total. */
+interface PagedSessionRows {
+  rows: unknown[]
+  first: unknown
+}
+
 /** Read one registry source without sending a page larger than the backend cap. */
 async function fetchSessionRowsInPages(
   basePath: string,
   searchParams: URLSearchParams,
-  getPage: (path: string) => Promise<unknown>,
-  onFirstPage?: (page: unknown) => void
-): Promise<unknown[] | null> {
+  getPage: (path: string) => Promise<unknown>
+): Promise<PagedSessionRows | null> {
   const requestedLimit = Number(searchParams.get('limit'))
   const requestedOffset = Number(searchParams.get('offset') || '0')
 
@@ -373,15 +379,15 @@ async function fetchSessionRowsInPages(
   try {
     if (!needsPaging) {
       const page = await getPage(`${basePath}?${searchParams}`)
-      onFirstPage?.(page)
 
-      return rowsOf(page)
+      return { rows: rowsOf(page), first: page }
     }
 
     const sessions: unknown[] = []
     const backfilled: unknown[] = []
     const seenIds = new Set<string>()
     const backfilledIds = new Set<string>()
+    let first: unknown
     let pageOffset = requestedOffset
     let targetOffset = requestedOffset + requestedLimit
 
@@ -392,8 +398,7 @@ async function fetchSessionRowsInPages(
       pageParams.set('offset', String(pageOffset))
 
       const page = await getPage(`${basePath}?${pageParams}`)
-      onFirstPage?.(page)
-      onFirstPage = undefined
+      first ??= page
       const pageRows = rowsOf(page)
 
       const total = nonNegativeNumber(page && typeof page === 'object' ? (page as { total?: unknown }).total : null)
@@ -451,7 +456,7 @@ async function fetchSessionRowsInPages(
       sessions.push(row)
     }
 
-    return sessions
+    return { rows: sessions, first }
   } catch {
     return null
   }
@@ -539,20 +544,11 @@ export async function fetchRegistrySessionRows(
           source.backends.map(async ({ descriptor, profileLabel }) => {
             const params = new URLSearchParams(searchParams)
             params.delete('profile')
-            let firstPage: unknown
+            const read = await fetchSessionRowsInPages('/api/sessions', params, path => getJson(descriptor, path))
 
-            const sourceRows = await fetchSessionRowsInPages(
-              '/api/sessions',
-              params,
-              path => getJson(descriptor, path),
-              page => {
-                firstPage = page
-              }
-            )
-
-            if (sourceRows) {
-              recordTotals(firstPage, source.connectionId, profileLabel || 'default')
-              tag(sourceRows, source.connectionId, profileLabel || 'default')
+            if (read) {
+              recordTotals(read.first, source.connectionId, profileLabel || 'default')
+              tag(read.rows, source.connectionId, profileLabel || 'default')
             }
           })
         )
@@ -570,37 +566,16 @@ export async function fetchRegistrySessionRows(
 
       const params = new URLSearchParams(searchParams)
       params.set('profile', 'all')
-      let firstPage: unknown
-      let aggregate = true
+      const getShared = (path: string) => getJson(shared.descriptor, path)
+      const aggregate = await fetchSessionRowsInPages('/api/profiles/sessions', params, getShared)
+      // Older remote without the aggregator: its own default-profile list.
+      const flat = new URLSearchParams(searchParams)
+      flat.delete('profile')
+      const read = aggregate ?? (await fetchSessionRowsInPages('/api/sessions', flat, getShared))
 
-      let sourceRows = await fetchSessionRowsInPages(
-        '/api/profiles/sessions',
-        params,
-        path => getJson(shared.descriptor, path),
-        page => {
-          firstPage = page
-        }
-      )
-
-      if (!sourceRows) {
-        // Older remote without the aggregator: its own default-profile list.
-        const flat = new URLSearchParams(searchParams)
-        flat.delete('profile')
-        firstPage = undefined
-        aggregate = false
-        sourceRows = await fetchSessionRowsInPages(
-          '/api/sessions',
-          flat,
-          path => getJson(shared.descriptor, path),
-          page => {
-            firstPage = page
-          }
-        )
-      }
-
-      if (sourceRows) {
-        recordTotals(firstPage, source.connectionId, aggregate ? null : 'default')
-        tag(sourceRows, source.connectionId, null)
+      if (read) {
+        recordTotals(read.first, source.connectionId, aggregate ? null : 'default')
+        tag(read.rows, source.connectionId, null)
       }
     })
   )
