@@ -168,3 +168,60 @@ async def test_a_long_archived_history_keeps_the_resume_reply_bounded(tmp_path, 
     assert [r['row_id'] for r in rows if not r.get('archived')] == [m['id'] for m in db.get_messages(tip)]
     archived = [r['content'][:4] for r in rows if r.get('archived') and r['role'] == 'user']
     assert archived and archived[-1] == 'Q39 ' and 'Q0 x' not in archived  # the newest are kept
+
+
+@pytest.mark.asyncio
+async def test_a_row_appended_during_prepare_counts_against_the_archive_budget(tmp_path, monkeypatch):
+    """A live row landing between the off-loop prepare and the locked read shrinks what the archive may
+    use, as a fresh read would: the raced reply is no larger than the fresh one (review of #140971)."""
+    import json
+    from gateway import session_local_recovery as recovery
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    db = authority.db
+    for n in range(28):  # ~2.8 MiB of history, then summarized away in place (all archived)
+        db.append_message(physical, 'user' if n % 2 == 0 else 'assistant', f'{n}:' + 'h' * 100 * 1024)
+    db.archive_and_compact(physical, [{'role': 'user', 'content': SUMMARY}])
+    real, raced = recovery.prepare_history, []
+
+    async def prepare_then_append(authority_, ref_):
+        prepared = await real(authority_, ref_)
+        if not raced:
+            raced.append(db.append_message(physical, 'assistant', 'n' * 2 * 1024 * 1024))
+        return prepared
+    monkeypatch.setattr(recovery, 'prepare_history', prepare_then_append)
+    reply = await _resume(authority, actor, ref, display_projection=True)
+    fresh = await _resume(authority, actor, ref, display_projection=True)
+    assert raced and reply['messages'][-1]['content'].startswith('nnn')
+    assert reply['messages'][0].get('archived_truncated')
+    assert len(json.dumps(reply['messages'])) <= len(json.dumps(fresh['messages']))
+    assert len(json.dumps(reply)) < 8 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_a_delete_during_the_resume_prepare_answers_not_found(tmp_path, monkeypatch):
+    """``attach`` awaits the lineage read between its authorize and the live-entry lookup: a delete committed
+    by another connection in that window answers ``not_found``, never an internal error (review of #140971)."""
+    from gateway import session_local_recovery as recovery
+    from gateway.session_controls import AuthorityConnection
+    authority, _actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    authority.runner.session_authority = authority  # one process owns both writes of a delete
+    authority.db.append_message(physical, 'user', 'hello')
+
+    def connection():
+        return AuthorityConnection(authority, object(), {
+            'provider': 'local', 'user_id': 'owner', 'profile_id': 'fixture', 'instance_id': authority.instance_id,
+            'capabilities': ['session:create', 'session:read', 'session:control']})
+    real, deleted = recovery.prepare_history, []
+
+    async def prepare_then_delete(authority_, ref_):
+        prepared = await real(authority_, ref_)
+        if not deleted:
+            row = authority.db.get_session(ref.session_id)
+            deleted.append(await connection().dispatch({'id': 9, 'method': 'session.mutate', 'params': {
+                'session_id': ref.session_id, 'request_id': 'delete-1', 'expected_revision': row['runtime_revision'],
+                'expected_generation': row['runtime_generation'], 'operation': 'delete', 'payload': {}}}))
+        return prepared
+    monkeypatch.setattr(recovery, 'prepare_history', prepare_then_delete)
+    reply = await connection().dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': ref.session_id}})
+    assert 'result' in deleted[0], deleted  # the delete really committed inside the window
+    assert reply.get('error', {}).get('message') == 'not_found', reply

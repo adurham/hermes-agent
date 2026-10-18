@@ -227,16 +227,24 @@ def display_rows(db, target):
         db.assert_resume_safe(target)
     except SessionResumeTooLargeError:
         return live, [], False
+    kept, truncated = _fit_archive(live_rows, db.get_messages_as_conversation(
+        target, include_ancestors=True, include_compacted=True, include_row_ids=True))
+    return live, kept, truncated
+
+
+def _fit_archive(live_rows, display):
+    """``(display rows kept, truncated)``: every live row of *display*, and its newest archived rows that fit
+    what *live_rows* leave of ``RESUME_HISTORY_BYTES``."""
+    live = {row['_row_id'] for row in live_rows}
     kept, used, truncated = [], sum(len(json.dumps(row, default=str)) for row in live_rows), False
-    for row in reversed(db.get_messages_as_conversation(target, include_ancestors=True, include_compacted=True,
-                                                        include_row_ids=True)):
+    for row in reversed(display):
         if row['_row_id'] not in live:
             used += len(json.dumps(row, default=str))
             truncated = truncated or used > RESUME_HISTORY_BYTES
             if truncated:
                 continue
         kept.append(row)
-    return live, kept[::-1], truncated
+    return kept[::-1], truncated
 
 
 async def prepare_history(authority, ref):
@@ -292,9 +300,14 @@ def local_history(authority, ref, prepared=None):
     read_live, display, truncated = (prepared[1] if prepared is not None and prepared[0] == target
                                      else display_rows(db, target))
     live = db.get_messages_as_conversation(target, include_row_ids=True)
-    if not read_live <= {row['_row_id'] for row in live}:
+    live_ids = {row['_row_id'] for row in live}
+    if not read_live <= live_ids:
         read_live, display, truncated = display_rows(db, target)
         live = db.get_messages_as_conversation(target, include_row_ids=True)
+    elif live_ids - read_live:
+        # Rows appended since the prepare count against the archive budget too (no lineage re-read).
+        display, cut = _fit_archive(live, display)
+        truncated = truncated or cut
     rows = [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']}
             for row in _merge_live_in_stored_order(display, live)]
     if truncated and rows:

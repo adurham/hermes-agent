@@ -198,6 +198,9 @@ class HostedRoomAuthorityRPC:
 
     async def _history(self, params):
         from gateway.session_local_recovery import local_history, prepare_history
+        # Authorize (restoring a cold room session) before the read names its live entry, and again after
+        # the await (``_rows``): a delete in between answers not_found, never a KeyError.
+        self.authority.authorize(self.principal, self.ref, 'session:read')
         prepared = await prepare_history(self.authority, self.ref)
         rows = self._rows()
         history = list(local_history(self.authority, self.ref, prepared))
