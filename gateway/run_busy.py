@@ -1232,12 +1232,11 @@ class GatewayBusySessionMixin:
         return not (state is not None and state.conversation.one_turn_restore)
 
     def _route_stop_epoch(self, session_key: str) -> int:
-        """How many messaging /stop and /new reached *session_key* (``_hm_stop_owner_turn``)."""
-        return (getattr(self, "_route_stop_epochs", None) or {}).get(session_key, 0)
-
-    def _bump_route_stop_epoch(self, session_key: str) -> None:
-        epochs = self.__dict__.setdefault("_route_stop_epochs", {})
-        epochs[session_key] = epochs.get(session_key, 0) + 1
+        """How many messaging /stop and /new fenced *session_key*: the authority's one per-route epoch
+        (``fence_route``, bumped by ``_hm_stop_owner_turn``), shared with inputs still capturing."""
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self)
+        return authority.route_epoch(session_key) if authority is not None else 0
 
     @staticmethod
     def _as_fifo_turn(event: MessageEvent, stop_epoch: int) -> MessageEvent:

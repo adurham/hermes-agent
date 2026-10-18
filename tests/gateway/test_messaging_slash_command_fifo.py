@@ -239,7 +239,7 @@ async def test_queued_turn_keeps_the_relay_callback(monkeypatch, command):
     accepted, transport, home = [], object(), Path.cwd()
 
     class Runner(GatewayBusySessionMixin):
-        session_authority = object()
+        session_authority = SimpleNamespace(route_epoch=lambda route: 0)
 
         def _peek_session_state(self, key):
             return None

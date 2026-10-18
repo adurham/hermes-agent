@@ -137,6 +137,10 @@ class SessionAuthority:
         self.rotated_owners = {}
         # Route key -> [lock, holder + waiters, stop fence] of the native admissions in flight (``_route_turn``).
         self._route_turns = {}
+        # Per route: how many messaging /stop and /new fenced it (``fence_route``). Kept for the
+        # owner's life (one int per chat that ever got one): an input or command turn holding an older
+        # value never commits, and a reset entry could read as an old epoch again.
+        self._route_epochs = {}
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -434,12 +438,12 @@ class SessionAuthority:
         if key is None:
             yield None
             return
-        entry = self._route_turns.setdefault(key, [asyncio.Lock(), 0, 0])
+        entry = self._route_turns.setdefault(key, [asyncio.Lock(), 0])
         entry[1] += 1
-        arrived = entry[2]
+        arrived = self.route_epoch(key)
 
         def fence(_conn=None):
-            if entry[2] != arrived:
+            if self.route_epoch(key) != arrived:
                 raise RuntimeStoreError('stale_generation', field='route',
                                         detail='a /stop or /new of this chat came after this message')
         if isinstance(ingress, asyncio.Future) and entry[1] > 1 and not ingress.done():
@@ -454,10 +458,14 @@ class SessionAuthority:
             if not entry[1]:
                 del self._route_turns[key]
 
+    def route_epoch(self, route):
+        """How many messaging /stop and /new fenced *route* (``fence_route``)."""
+        return self._route_epochs.get(route, 0)
+
     def fence_route(self, route):
-        """/stop and /new: the route's messaging input still capturing or waiting never commits."""
-        if (entry := self._route_turns.get(route)) is not None:
-            entry[2] += 1
+        """/stop and /new: the route's messaging input still capturing or waiting, and a slash command's
+        turn read before it (``_stop_epoch``), never commit."""
+        self._route_epochs[route] = self.route_epoch(route) + 1
 
     async def _admit_native(self, event, fence=None):
         import json

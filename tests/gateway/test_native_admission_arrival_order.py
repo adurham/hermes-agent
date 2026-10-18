@@ -193,3 +193,30 @@ async def test_stop_fences_inputs_still_capturing_or_waiting(tmp_path, monkeypat
             if task is not None:
                 task.cancel()
         authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('chat', ['existing', 'first-message', 'paused'])
+async def test_one_stop_epoch_per_route_fences_inputs_and_command_turns(tmp_path, monkeypatch, chat):
+    """/stop and /new bump ONE per-route epoch on the authority. A slash command's turn (``_stop_epoch``)
+    and an input still capturing read the same counter, so they are fenced under the same conditions:
+    both on a live or first-message chat, neither on a FIFO paused on a lost turn (it keeps its
+    followers). The counter outlives the route's FIFO entry, and the runner keeps no second one."""
+    authority, _entered, release, admit, route = await _held_owner(tmp_path, monkeypatch)
+    release.set()
+    runner = authority.runner
+    try:
+        if chat != 'first-message':
+            await admit(X, 'x0-text')
+        if chat == 'paused':
+            authority.db._execute_write(lambda conn: conn.execute(
+                "UPDATE session_admissions SET status='unknown' WHERE request_id='x0-text'"))
+        before = runner._route_stop_epoch(route(X))
+        assert before == authority.route_epoch(route(X))
+        await runner._hm_stop_owner_turn(route(X))
+        after = runner._route_stop_epoch(route(X))
+        assert after == authority.route_epoch(route(X)) == before + (chat != 'paused')
+        assert authority._route_turns == {} and runner._route_stop_epoch(route(Y)) == 0
+        assert not hasattr(runner, '_route_stop_epochs')
+    finally:
+        authority.db.close()

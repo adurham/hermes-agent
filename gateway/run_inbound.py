@@ -617,13 +617,13 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         ``messaging:*`` rows of this route's logical owner first (automation wakes, LOCAL/API input
         and ``unknown`` rows are untouched; settled silently, no pause notice), then interrupts the
         claimed generation: a turn still constructing its agent latches the Stop for adopt_agent."""
-        self._bump_route_stop_epoch(_quick_key)  # a command's turn not committed yet never commits
         from gateway.session_authorities import active_authority
         authority = active_authority(self)
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
         if not sid or sid not in authority.sessions:
             if authority is not None:
-                authority.fence_route(_quick_key)  # the chat's first input, not committed yet
+                # The chat's first input, and a command's turn, not committed yet never commit.
+                authority.fence_route(_quick_key)
             return
         from gateway.session_contract import Principal, SessionRef
         from hermes_state_runtime import RuntimeStoreError, list_session_admissions
@@ -635,8 +635,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # promised the queued followers stay saved, so a /new from the chat leaves them queued.
         paused = any(row['status'] == 'unknown' for row in rows)
         if not paused:
-            # Input that arrived before this and is not committed yet never commits after it; one
-            # that committed before the fence is in the second listing and cancelled below.
+            # Input (and a command's turn) that arrived before this and is not committed yet never
+            # commits after it; one that committed before the fence is in the second listing and
+            # cancelled below. A paused FIFO keeps both, like its queued followers.
             authority.fence_route(_quick_key)
             rows = await asyncio.to_thread(list_session_admissions, authority.db, session_id=sid)
         for row in [] if paused else rows:
