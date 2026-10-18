@@ -150,8 +150,8 @@ _WS_READ_IDLE_TIMEOUT = 300.0
 _WS_MAX_MESSAGE_BYTES = 2_000_000
 _WS_MEMBERSHIP_KIND = 44100  # Buzz channel-membership event — live DM discovery
 _WS_MEMBERSHIP_SUB_ID = "hermes-buzz-membership"
-# Credentials JSON fallback when BUZZ_PRIVATE_KEY is not set; module-level so tests can point it at a tmpdir.
-_DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz").expanduser()
+# Credentials JSON fallback when BUZZ_PRIVATE_KEY is not set; module-level so tests can point it at a tmpdir; ``~`` expands at call time.
+_DEFAULT_CREDENTIALS_DIR = Path("~/.config/buzz")
 # Buzz-hosted media is private to the community: same-relay URLs must be authenticated + localised for vision.
 _MEDIA_URL_PATTERN = r"https?://[^\s<>\[\]()]+/media/[0-9a-f]{64}(?:\.[a-z0-9]{1,10})?(?:\?[^\s<>\[\]()]*)?"
 _MARKDOWN_MEDIA_RE = re.compile(
@@ -340,7 +340,7 @@ def _credentials_candidates(extra: Optional[dict] = None) -> list[Path]:
     if _is_multiplex_active():
         return []
     try:
-        return sorted(_DEFAULT_CREDENTIALS_DIR.glob("*credentials*.json"))
+        return sorted(_DEFAULT_CREDENTIALS_DIR.expanduser().glob("*credentials*.json"))
     except OSError:
         return []
 

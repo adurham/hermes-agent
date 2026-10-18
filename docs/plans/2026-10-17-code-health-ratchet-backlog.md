@@ -2818,3 +2818,13 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   standalone send). `scripts/check`: health 0 blocking; ruff red only on main's own RUF100 at
   `agent/turn_truncation.py:572` (from `f21f8ad2`, untouched here). Branch
   `claude/fix-adapter-structure-hx011-26a03v`.
+- 2026-10-18 — C-1078 `plugins/platforms/buzz/adapter.py` (profile): HX005×1 → 0 (file HX005 1 → 0;
+  C-1055's ASYNC240s untouched). `_DEFAULT_CREDENTIALS_DIR` stays a module-level seam (tests still
+  point it at a tmpdir) but is no longer `expanduser()`ed at import: `_credentials_candidates`
+  expands it at call time, so the credentials fallback follows HOME as it is when keys resolve,
+  not the launch environment's. Absolute paths (the test seam) expand to themselves; same glob,
+  same ordering. No sibling HX005 instances in the file. New
+  `tests/gateway/test_buzz_credentials_home.py` (1 test, red on main); the unit's 4 test files +
+  the 3 other buzz suites 367/367. `scripts/check`: health green (FILE_LINES 2022 unchanged); ruff
+  red only on main's own RUF100 at `agent/turn_truncation.py:572` (unused `# noqa: BLE001` from
+  f21f8ad2, identical on clean main, not this unit's). Branch `claude/fix-buzz-adapter-profile-fhl54e`.
