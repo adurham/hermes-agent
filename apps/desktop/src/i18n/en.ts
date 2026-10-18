@@ -8,6 +8,7 @@ import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enFirstRun } from './en_first_run'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
@@ -2101,17 +2102,7 @@ export const en: Translations = {
     }
   },
 
-  skillDeepLink: {
-    installTitle: (name: string) => `Install “${name}”?`,
-    installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-    installTo: 'Install to',
-    thisComputer: 'This computer',
-    installing: 'Installing…',
-    installComplete: (name: string) => `“${name}” installed`,
-    destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-    installed: 'Installed',
-    source: 'Source'
-  },
+  skillDeepLink: enSkillDeepLink,
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
@@ -2349,11 +2340,7 @@ export const en: Translations = {
     importedBadge: 'imported map',
     resetToMine: 'Back to my map'
   },
-  gatewayGroupOpen: {
-    opening: 'Opening gateway group…',
-    lookupFailed: 'Could not look up this group on the gateway. Try again.',
-    missing: 'This gateway group no longer exists.'
-  },
+  gatewayGroupOpen: enGatewayGroupOpen,
   agents: {
     extendedTranscript: 'Extended transcript',
     transcriptTruncated: 'Showing the latest 16 KiB',

@@ -16255,21 +16255,16 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const registrySources = registrySourcesOverride || (await pooledRegistrySessionSources())
 
   if (registrySources.length) {
-    total += await mergeRegistrySessionRows(
-      registrySources,
-      remoteParams,
-      (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 }),
-      merged,
-      profileTotals
-    )
+    const getRegistryJson = (descriptor, path) => getJsonForBackend(descriptor, path, { timeoutMs: 10_000 })
+    total += await mergeRegistrySessionRows(registrySources, remoteParams, getRegistryJson, merged, profileTotals)
   }
 
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
-  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, {
-    archivedOnly: searchParams.get('archived') === 'only'
-  })
+  const archivedOnly = searchParams.get('archived') === 'only'
+
+  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, { archivedOnly })
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
