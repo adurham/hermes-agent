@@ -1141,6 +1141,14 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         first_id: dict[tuple[Any, ...], int] = {}
         removed: dict[Any, bool] = {}  # copy identity -> its newest copy is removed (rows come in id order)
         identities: dict[tuple[Any, ...], list[Any]] = {}
+        removed_ts: set[Any] = set()
+        if drop_removed:
+            rows = rows if isinstance(rows, list) else list(rows)
+            # Every display key carries the row's timestamp third, so a live row can share a removed row's identity
+            # only at one of the removed rows' timestamps; hash just those (a sha256 per live row cost a warm
+            # 30k-row resume ~0.17 s, RT-39). No removed row at all: nothing can hide a copy.
+            removed_ts = {row["timestamp"] for row in rows if not row["active"] and not row["compacted"]}
+            drop_removed = bool(removed_ts)
         for row in rows:
             copies, key = None, None
             if drop_removed:
@@ -1148,7 +1156,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 gone = not row["active"] and not row["compacted"]
                 stored = row["display_identity"] if gone else None
                 key = None if stored else self._display_dedupe_key(row)
-                copies = [stored or self._display_identity(key), *(
+                hashed = stored or (self._display_identity(key) if key is not None and (
+                    gone or row["timestamp"] in removed_ts) else None)
+                copies = [*((hashed,) if hashed else ()), *(
                     ("uid", uid) for uid in (row["message_uid"], *_uid_list(row["absorbed_message_uids"])) if uid)]
                 removed.update(dict.fromkeys(copies, gone))
                 if gone:
