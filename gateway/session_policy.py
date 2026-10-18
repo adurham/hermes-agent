@@ -43,16 +43,20 @@ def pin_reasoning_effort(config, effort, *, session=False):
         config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': True}
 
 
+def profile_config(authority):
+    """The owning profile's current ``config.yaml`` (its present sections), read fresh."""
+    from gateway.run import _load_gateway_config
+    return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+
+
 def unpin_reasoning(config, profile):
     """``/reasoning reset``: the level is *profile*'s (its current config) again, re-read every turn by a
     following session and on each resume by any other; a create-time ``reasoning`` included."""
+    from gateway.session_policy_refresh import _follow
     followed = profile.get('agent') if isinstance(profile.get('agent'), dict) else {}
     agent = config.setdefault('agent', {})
     for key in ('reasoning_effort', 'reasoning_overrides'):
-        if key in followed:
-            agent[key] = followed[key]
-        else:
-            agent.pop(key, None)
+        _follow(agent, followed, key)
     config[SESSION_PINS] = {**(config.get(SESSION_PINS) or {}), 'reasoning': False}
 
 
@@ -196,8 +200,7 @@ class LocalSessionPolicy:
         held = _TURN_PROFILE.get()
         if held is not None and held[0] == self:
             return held[1]
-        from gateway.run import _load_gateway_config
-        return present_sections(_load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml'))
+        return profile_config(authority)
 
     def current_toolsets(self, config):
         """The next turn's toolsets from its resolved *config*: a following session without an explicit
