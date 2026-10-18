@@ -69,7 +69,8 @@ def parked_profile_refusal(runner, profile, route_name, route_config):
     else:
         return None
     from aiohttp import web
-    return web.json_response({'error': error}, status=503, headers={'Retry-After': '30'})
+    from gateway.parked_route_refusal import ParkedRouteRefused
+    return web.json_response({'error': error}, status=ParkedRouteRefused.status, headers=ParkedRouteRefused.headers)
 
 
 def _prefix_not_served(runner, profile):

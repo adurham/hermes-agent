@@ -159,12 +159,8 @@ def admit_api_turn(adapter, **kwargs):
 async def admit_api_turn_async(adapter, steps=None, **kwargs):
     """``admit_api_turn`` (or *steps*, a generator ending in ``admit_api_steps``) with every SQLite
     write off the owner loop, in admission order."""
-    from gateway.run_runtime import refuse_parked_scope
-    from gateway.session_authorities import active_authority
-    authority = active_authority(adapter.gateway_runner)
-    if authority is None:
-        refuse_parked_scope(adapter.gateway_runner)  # retryable while its profile is parked
-        raise RuntimeStoreError('profile_mismatch')
+    from gateway.session_authorities import require_active_authority
+    authority = require_active_authority(adapter.gateway_runner)
     return await run_steps_off_loop(authority, steps or admit_api_steps(adapter, **kwargs), orphaned=schedule_orphan)
 
 
@@ -177,13 +173,8 @@ def schedule_orphan(admitted):
 
 def admit_api_steps(adapter, **kwargs):
     # ``/p/<profile>/`` middleware scoped this request; the routed home's authority admits it.
-    from gateway.run_runtime import refuse_parked_scope
-    from gateway.session_authorities import active_authority
-    authority = active_authority(adapter.gateway_runner)
-    if authority is None:
-        refuse_parked_scope(adapter.gateway_runner)  # retryable while its profile is parked
-    if authority is None or adapter._ensure_session_db() is not authority.db:
-        raise RuntimeStoreError('profile_mismatch')
+    from gateway.session_authorities import require_active_authority
+    authority = require_active_authority(adapter.gateway_runner, lambda: adapter._ensure_session_db())
     sid = kwargs.get('session_id') or uuid.uuid4().hex
     declared_key = kwargs.get('gateway_session_key') if kwargs.get('bind_declared_conversation') else None
     if declared_key:
