@@ -93,7 +93,7 @@ def test_sustained_wedge_pins_at_most_max_stuck_threads():
         assert fresh.flush_pending(timeout=5)  # returns: nothing blocked behind the hung calls
         fresh.shutdown_all()
 
-    key = (hung[0][0]._home_key, hung[0][1].name)
+    key = hung[0][0]._registry_key(hung[0][1])
     assert MemoryManager._BACKGROUND_SKIPS[key] == 10
     assert len(MemoryManager._BACKGROUND_CALLS[key]) == mm._MAX_STUCK_CALLS
     # Idle workers of shut-down executors exit asynchronously.

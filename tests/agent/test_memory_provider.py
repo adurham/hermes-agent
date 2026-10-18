@@ -560,6 +560,26 @@ class TestMemoryManager:
         finally:
             orphan.release.set()
 
+    def test_registry_is_keyed_by_the_home_providers_were_bound_to(self, tmp_path, monkeypatch):
+        """Two managers built in one ambient home but initialized for profiles A and B: A's stuck
+        prefetch must not gate B, whose providers belong to another profile."""
+        import agent.memory_manager as mm
+
+        monkeypatch.setattr(mm, "_MAX_STUCK_CALLS", 1)
+        stuck, other = BlockingPrefetchProvider("bound-home"), FakeMemoryProvider("bound-home")
+        other._prefetch_result = "profile b memory"
+        mgr_a = MemoryManager(external_prefetch_timeout=0.01)
+        mgr_b = MemoryManager(external_prefetch_timeout=5.0)
+        for mgr, provider, home in ((mgr_a, stuck, "a"), (mgr_b, other, "b")):
+            mgr.add_provider(provider)
+            mgr.initialize_all(session_id=home, hermes_home=str(tmp_path / home))
+        try:
+            mgr_a._prefetch_provider(stuck, "q", session_id="a")
+            assert stuck.started.wait(timeout=2.0)
+            assert mgr_b._prefetch_provider(other, "q", session_id="b") == "profile b memory"
+        finally:
+            stuck.release.set()
+
     def test_healthy_concurrent_prefetches_from_two_sessions_both_recall(self):
         """Only a TIMED-OUT call gates other managers: a slow-but-healthy prefetch in one session
         must not blank the recall of another session that prefetches meanwhile."""

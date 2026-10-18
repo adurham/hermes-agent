@@ -332,7 +332,7 @@ class MemoryManager:
 
         result_box: dict[str, Any] = {}
 
-        key = (self._home_key, provider.name)
+        key = self._registry_key(provider)
 
         def _run() -> None:
             try:
@@ -493,7 +493,7 @@ class MemoryManager:
         if provider.name == "builtin":
             call()
             return
-        key = (self._home_key, provider.name)
+        key = self._registry_key(provider)
         token = object()
         now = time.monotonic()
         with self._BACKGROUND_CALLS_LOCK:
@@ -514,6 +514,11 @@ class MemoryManager:
             with self._BACKGROUND_CALLS_LOCK:
                 if _forget_inflight(self._BACKGROUND_CALLS, key, token):
                     self._BACKGROUND_SKIPS.pop(key, None)
+
+    def _registry_key(self, provider: MemoryProvider) -> tuple[str, str]:
+        """Process-wide registry key: the home the providers were bound to (``initialize_all``, which may
+        name another profile than the one this manager was built in), else the build-time home."""
+        return ((self._bound_scope or {}).get("home_key") or self._home_key, provider.name)
 
     def _forget_background_future(self, future: Future) -> None:
         with self._sync_executor_lock:
