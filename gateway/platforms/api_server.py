@@ -1096,13 +1096,6 @@ def _run_route_delegate(name: str):
     return _handler
 
 
-
-def _delivered_session_id(admitted: tuple[Path, dict[str, Any]], requested: str) -> str:
-    """The session a live Bot Chat delivery actually landed in: the requested id, unless the owner moved
-    an API-held \"Bot Chat\" title aside and minted the local chat (MSG-21), whose id every answer names."""
-    return str(admitted[1].get("session_id") or requested)
-
-
 class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
@@ -3465,7 +3458,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         admitted = await self._admit_to_live_bot_chat(ctx["session_id"], ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
         if admitted is None:
             return None
-        session_id = _delivered_session_id(admitted, ctx["session_id"])
+        session_id = admitted[1].get("session_id") or ctx["session_id"]  # a moved-aside API row: the local chat (MSG-21)
         record = await self._await_live_bot_chat_receipt(*admitted)
         delivery_id = record["delivery_id"]
         headers = self._session_headers(session_id, ctx["gateway_session_key"])
@@ -3506,7 +3499,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         admitted = await self._admit_to_live_bot_chat(ctx["session_id"], ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
         if admitted is None:
             return None
-        session_id = _delivered_session_id(admitted, ctx["session_id"])
+        session_id = admitted[1].get("session_id") or ctx["session_id"]  # a moved-aside API row: the local chat (MSG-21)
         events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
         response = await self._prepare_sse_response(request, session_id, ctx["gateway_session_key"])
 
