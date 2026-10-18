@@ -7,6 +7,7 @@ names the pre-update snapshot that predates the cutover.
 import sqlite3
 import subprocess
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 
@@ -123,3 +124,15 @@ def test_check_holds_a_release_off_this_history_that_update_would_refuse(repo, t
     update_cmd_check.channel_compare_branch("stable", ["git"], repo)
     out = capsys.readouterr().out
     assert "Holding at this build" in out and "Selected release available" not in out
+
+
+def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
+    """target_predates_runtime greps a release tree for this literal, so it must match the DDL as written.
+
+    If the marker drifts from hermes_state*.py (a renamed file, reformatted DDL), every later
+    forward release would read as pre-runtime: refused on --branch, and silently held on a channel.
+    """
+    root = Path(__file__).resolve().parents[2]
+    schema = [p.read_text(encoding="utf-8") for p in root.glob("hermes_state*.py")]
+    assert schema, "no hermes_state*.py next to tests/"
+    assert any(guard._RUNTIME_SCHEMA_MARKER in text for text in schema)
