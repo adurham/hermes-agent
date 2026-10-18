@@ -2707,3 +2707,19 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `cron.scheduler_delivery` referrer + `tests/cron/`): 1598 passed, 0 failed, 8 skipped;
   old-vs-new differential on the narrowed/refactored helpers over 138 config shapes: identical.
   `python scripts/check` green, 12 checks. Branch `claude/fix-scheduler-delivery-exceptions-3cj0k7`.
+- 2026-10-18 — C-1106 `plugins/platforms/wecom/adapter.py` swallow: BLE001 13 → 0 (no other rule
+  hits in the file; FILE_LINES 856 → 872). Narrowed 6: `_parse_json` strict=False retry →
+  `(ValueError, RecursionError)`, outer → `(TypeError, ValueError, RecursionError)`; QR fetch + poll →
+  `(OSError, ValueError, http.client.HTTPException)`; QR render → `(ImportError, OSError, ValueError)`
+  (qrcode's `DataOverflowError` needs a >2.9 KB auth URL; it now reaches `interactive_setup`'s logged
+  boundary and falls back to manual entry); `_standalone_send`'s `_live_adapter` lookup →
+  `ImportError` (`_live_adapter` catches internally). Boundaries kept, traceback added:
+  `_listen_loop` read + reconnect and `_heartbeat_loop` keep their one-line warning/debug for
+  transport errors (new `_WS_TRANSPORT_ERRORS` = RuntimeError, OSError, aiohttp.ClientError) and
+  `logger.exception` anything else (a frame-handling bug used to read as "WebSocket error: 'x'");
+  `_send_inner` error log gains `exc_info`; `_send_via`, `_standalone_send`, `interactive_setup` QR
+  boundary log with `logger.exception` (file log only; console unchanged). Differential vs main:
+  `_parse_json` 17 inputs and `qr_scan_for_bot_info` 8 scenarios identical. New
+  `tests/gateway/test_wecom_listener_errors.py` (3 cases; traceback case red on main). 22
+  wecom-referencing test files 440 passed, 2 skipped (main 437/2, test env + `--extra messaging`).
+  `scripts/check` green. Branch `claude/fix-wecom-adapter-exceptions-mxnrbn`.
