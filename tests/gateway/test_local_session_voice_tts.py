@@ -18,6 +18,8 @@ import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
+
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
 
 
@@ -55,6 +57,7 @@ def test_local_voice_refusal_reads_the_argument_as_the_handler_does():
         assert command_verdict('voice', arg) == 'control', arg
 
 
+@pytest.mark.platforms("linux")  # the daemon is stopped with SIGINT, which raises on Windows
 def test_local_session_voice_tts_never_synthesizes_unplayable_audio(tmp_path):
     root = Path(__file__).resolve().parents[2]
     home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
