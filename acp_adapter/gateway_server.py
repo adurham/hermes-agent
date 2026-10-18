@@ -706,8 +706,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             await self._changed.wait_for(lambda: self._adopted.get(session_id, 0) > resumes
                                          or self._failure is not None or self._link != link)
         if self._adopted.get(session_id, 0) > resumes:
-            with suppress(asyncio.QueueFull):  # full: the reader's own overflow ends this link
-                self._gateway.events.put_nowait((session_id, admission_id))
+            # Held behind a full queue, never dropped: a full queue parks the reader, not the link.
+            from hermes_cli.gateway_client import put_behind
+            put_behind(self._gateway.events, (session_id, admission_id))
 
     async def _recover(self, session_id, admission_id):
         """Queued: it lost nothing. Running: cut until its live completion. Unknown: the waiter refuses it.
