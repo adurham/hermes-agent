@@ -143,6 +143,8 @@ def poll_until(predicate: Callable[[], _T], timeout: float, interval: float) -> 
 
     The first check runs at once and the last sleep is cut to the time left, so a condition that
     holds when the deadline arrives still counts. ``timeout <= 0`` means exactly one check.
+    Only the sleeps are bounded: time spent inside ``predicate`` is not, so a predicate that blocks
+    (socket probes, subprocess calls) can carry the final check past the deadline.
     """
     deadline = time.monotonic() + timeout
     while True:
