@@ -726,6 +726,8 @@ def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
     if not owner_forward.forwardable(refusal, session, text, params):
         why = ("a rewind or attachment cannot join its queue" if isinstance(text, str) and text.strip()
                else "this kind of message cannot join its queue")
+        if _unstage_refused_images(session):
+            why = "an image cannot join its queue, so it was removed from this message"
     else:
         try:
             receipt = owner_forward.forward_prompt(sid, session, text)
@@ -745,6 +747,20 @@ def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
     return _err(rid, 4090, "The gateway is running a turn in this chat and " + why
                 + ". Nothing was sent. Send it again when the current turn ends.",
                 {"reason": SESSION_OWNER_BUSY})
+
+
+def _unstage_refused_images(session) -> int:
+    """Drop the images staged for a submit the owner's FIFO cannot take (RT-37c live finding).
+
+    Every other refusal leaves ``attached_images`` staged because the turn that ends the refusal (the
+    legacy turn once the slot frees) consumes them. Here no legacy turn comes: while the gateway owns the
+    chat, a staged image makes every later text-only send unforwardable too, so the chat stays refused
+    behind an image the composer may no longer show. The refusal names the removal, so the user re-attaches
+    it knowingly instead of losing it silently."""
+    with session["history_lock"]:
+        dropped = len(session.get("attached_images") or ())
+        session["attached_images"] = []
+    return dropped
 
 
 def _lock_in_submit_turn(

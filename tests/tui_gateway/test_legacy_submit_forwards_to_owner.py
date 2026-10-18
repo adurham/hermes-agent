@@ -316,3 +316,41 @@ def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatc
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_a_refused_image_send_does_not_wedge_later_text_sends(monkeypatch, tmp_path):
+    """RT-37c live finding: an image send refused during a gateway turn left the image staged in the
+    legacy session, so every later text-only send was refused as "a rewind or attachment" too."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, turns, _emitted = _legacy(monkeypatch, db)
+    try:
+        db.create_session(key, "test")
+        epoch = begin_runtime_epoch(db, instance_id="gateway")
+        first = admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+                                    payload={"text": "a DM"})
+        claimed = claim_session_input(db, epoch=epoch, session_id=key)
+        _owner(monkeypatch, db, key, epoch)
+        image = tmp_path / "red.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        server._sessions[sid]["attached_images"] = [str(image)]  # what image.attach stages
+
+        refused = server.handle_request({"id": "i", "method": "prompt.submit",
+                                         "params": {"session_id": sid, "text": "look at this"}})
+        assert refused["error"]["data"] == {"reason": "SESSION_OWNER_BUSY"}
+        assert "image" in refused["error"]["message"] and "removed" in refused["error"]["message"]  # never silent
+        assert server._sessions[sid]["attached_images"] == []
+
+        # The bot turn ends and the next one starts; the user types a plain follow-up.
+        settle_session_input(db, epoch=epoch, admission_id=first["admission_id"], generation=claimed["generation"],
+                             outcome="completed")
+        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-2",
+                            payload={"text": "another DM"})
+        claim_session_input(db, epoch=epoch, session_id=key)
+        reply = server.handle_request({"id": "t", "method": "prompt.submit",
+                                       "params": {"session_id": sid, "text": "just text"}})
+
+        assert "error" not in reply, reply  # before: 4090 "a rewind or attachment cannot join its queue"
+        assert reply["result"]["forwarded"] is True and turns == []
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
