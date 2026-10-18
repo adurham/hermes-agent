@@ -116,7 +116,7 @@ def _sync_auth_registry() -> None:
         try:
             sync()
         except Exception as exc:  # pragma: no cover — never break discovery
-            logger.debug("%s sync skipped: %s", module, exc)
+            logger.debug("%s sync skipped: %s", module, exc, exc_info=True)
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -307,6 +307,7 @@ def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
         home = get_hermes_home()
         key = hermes_home_key(home)
     except Exception:
+        logger.debug("Hermes home unresolvable; using the unkeyed provider layer", exc_info=True)
         home, key = None, ""
     with _HOME_LAYERS_LOCK:
         layer = _HOME_LAYERS.get(key)
@@ -362,6 +363,7 @@ def _user_plugins_dir() -> Path | None:
         d = get_hermes_home() / "plugins" / "model-providers"
         return d if d.is_dir() else None
     except Exception:
+        logger.debug("Hermes home unresolvable; no user provider plugins dir", exc_info=True)
         return None
 
 
@@ -378,6 +380,7 @@ def _installed_plugins_dir() -> Path | None:
         d = get_hermes_home() / "plugins"
         return d if d.is_dir() else None
     except Exception:
+        logger.debug("Hermes home unresolvable; no installed plugins dir", exc_info=True)
         return None
 
 
@@ -395,7 +398,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
             continue
         try:
             text = manifest.read_text(encoding="utf-8", errors="replace")
-        except Exception:
+        except OSError:
             return False
         try:
             from utils import fast_safe_load
@@ -404,7 +407,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
             if isinstance(data, dict):
                 return str(data.get("kind", "")).strip() == "model-provider"
         except Exception:
-            pass
+            logger.debug("%s did not parse as YAML; falling back to a line scan", manifest, exc_info=True)
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or ":" not in stripped:
@@ -469,7 +472,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
                     register_provider(profile)
             except Exception as exc:
                 logger.warning("Failed to load user provider plugin %s in the plugin host: %s",
-                               plugin_dir.name, exc)
+                               plugin_dir.name, exc, exc_info=True)
             finally:
                 _current_source = None
             return
@@ -498,7 +501,8 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         spec.loader.exec_module(module)
     except Exception as exc:
         logger.warning(
-            "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
+            "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc,
+            exc_info=True,
         )
         sys.modules.pop(module_name, None)
     finally:
@@ -538,10 +542,7 @@ def _discover_entry_point_providers() -> None:
     ``register_provider()`` — a pip package cannot hijack a first-party
     provider name.
     """
-    try:
-        import importlib.metadata as _md
-    except Exception:  # pragma: no cover — importlib.metadata always present ≥3.8
-        return
+    import importlib.metadata as _md
 
     # Same opt-in gate as the general PluginManager: only entry points named
     # in ``plugins.enabled`` load, and ``plugins.disabled`` always wins.
@@ -551,6 +552,7 @@ def _discover_entry_point_providers() -> None:
         enabled = _get_enabled_plugins()  # None = nothing enabled yet (opt-in default)
         disabled = _get_disabled_plugins()
     except Exception:  # pragma: no cover — config layer unavailable
+        logger.debug("plugin enable/disable lists unreadable; skipping entry-point providers", exc_info=True)
         enabled, disabled = None, set()
     if not enabled:
         return
@@ -564,7 +566,7 @@ def _discover_entry_point_providers() -> None:
         else:  # pragma: no cover — legacy interpreters
             group_eps = list(eps.get(group, []))  # type: ignore[attr-defined]
     except Exception as exc:
-        logger.debug("entry-point provider scan skipped: %s", exc)
+        logger.debug("entry-point provider scan skipped: %s", exc, exc_info=True)
         return
 
     for ep in group_eps:
@@ -582,7 +584,8 @@ def _discover_entry_point_providers() -> None:
             loaded = ep.load()
         except Exception as exc:
             logger.warning(
-                "Failed to load entry-point provider plugin %r: %s", ep.name, exc
+                "Failed to load entry-point provider plugin %r: %s", ep.name, exc,
+                exc_info=True,
             )
             continue
         # ``module:func`` → callable we invoke; bare ``module`` → import side
@@ -605,6 +608,7 @@ def _discover_entry_point_providers() -> None:
                     "Entry-point provider plugin %r raised on invocation: %s",
                     ep.name,
                     exc,
+                    exc_info=True,
                 )
 
 
@@ -700,7 +704,7 @@ def _run_discovery_steps() -> None:
                     "Failed to import legacy provider module %s: %s", modname, exc
                 )
     except Exception:
-        pass
+        logger.warning("Legacy provider module discovery aborted", exc_info=True)
 
     # (Pip entry-point providers are discovered in step 0, before the
     # filesystem plugins, so first-party profiles always win on name

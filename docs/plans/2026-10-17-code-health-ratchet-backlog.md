@@ -2723,3 +2723,17 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `tests/gateway/test_wecom_listener_errors.py` (3 cases; traceback case red on main). 22
   wecom-referencing test files 440 passed, 2 skipped (main 437/2, test env + `--extra messaging`).
   `scripts/check` green. Branch `claude/fix-wecom-adapter-exceptions-mxnrbn`.
+- 2026-10-18 — C-1100 `providers/__init__.py` (swallow): BLE001×14 + S110×2 → 0 (file hits 16 → 0).
+  Narrowed: the manifest `read_text(errors="replace")` catch → `OSError`; removed the
+  `importlib.metadata` import guard (stdlib, cannot fail). Catch-alls kept as boundaries, now
+  logging the traceback: third-party plugin code (plugin-host load, `exec_module`, entry-point
+  `load()` and invocation) keeps its warning, now with `exc_info=True`; home resolution in
+  `_bound_home_layer` / `_user_plugins_dir` / `_installed_plugins_dir` (RuntimeError/OSError/
+  ValueError from `Path.home`/`resolve`), the auth-mirror sync, the manifest YAML parse (arbitrary
+  user text through ruamel), the `plugins.enabled` config read and the entry-point scan log at
+  debug with traceback (lookup hot path); the legacy `providers/*.py` loop's outer catch (a
+  non-ImportError from a legacy module silently aborted the rest) now warns with traceback.
+  Healthy-path behavior unchanged; return values identical. FILE_LINES 707 → 711. 144
+  `providers`-referencing test files: 2612 passed, 4 failed + 2 collection errors, identical on
+  clean main (e2e catalog/codex/model-validation env failures). `scripts/check` green, 12 checks.
+  Branch `claude/fix-swallowed-exceptions-providers-epykec`.
