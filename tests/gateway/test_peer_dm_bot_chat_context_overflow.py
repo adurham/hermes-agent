@@ -22,6 +22,7 @@ import urllib.request
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon
+from tests.waiting import wait_until
 
 KEY = 'lc23-peer-dm-overflow-key-0123456789'
 CAP = 30000  # request bytes the stub's "model" accepts
@@ -37,6 +38,10 @@ class WindowCappedModel(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers['Content-Length']))
         body = json.loads(raw)
         if len(raw) > CAP:
+            hold = getattr(self.server, 'hold', None)
+            if hold is not None and not hold.is_set():  # the race test: park the turn mid-flight
+                self.server.held.set()
+                hold.wait(60)
             self.server.rejected += 1
             payload = json.dumps({'error': {'message': "This model's maximum context length was exceeded. "
                                                        'Please reduce the length of the messages.',
@@ -176,6 +181,7 @@ def racing_run(tmp_path_factory):
     user.mkdir()
     model = ThreadingHTTPServer(('127.0.0.1', 0), WindowCappedModel)
     model.rejected = 0
+    model.hold, model.held = threading.Event(), threading.Event()
     threading.Thread(target=model.serve_forever, daemon=True).start()
     url = f'http://127.0.0.1:{model.server_port}/v1'
     api_port = _free_port()
@@ -200,19 +206,22 @@ def racing_run(tmp_path_factory):
             assert status == 201, created
             sid = created['session']['id']
 
-            def send(name, text, delay):
-                threading.Event().wait(delay)
+            def send(name, text):
                 try:
                     results[name] = _post(api_port, f'/api/sessions/{sid}/chat', {'message': text}, timeout=45)
                 except OSError as exc:  # a wedged FIFO never answers
                     results[name] = (repr(exc), {})
-            threads = [threading.Thread(target=send, args=('big', big, 0)),
-                       threading.Thread(target=send, args=('race', 'racing short DM MKRACE', 0.4))]
-            for thread in threads:
-                thread.start()
+            threads = [threading.Thread(target=send, args=('big', big)),
+                       threading.Thread(target=send, args=('race', 'racing short DM MKRACE'))]
+            # The oversized turn is parked at the model while the racing DM commits behind it.
+            threads[0].start()
+            wait_until(model.held.is_set, timeout=60, what='the oversized turn reaching the model')
+            threads[1].start()
+            wait_until(lambda: len(_admissions(home)) >= 2, timeout=30, what='the racing DM queued')
+            model.hold.set()
             for thread in threads:
                 thread.join()
-            send('third', 'third DM MKTHIRD', 0)
+            send('third', 'third DM MKTHIRD')
             admissions = _admissions(home)
     finally:
         model.shutdown()
