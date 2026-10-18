@@ -52,6 +52,9 @@ async def headless(tmp_path, monkeypatch):
     app = web.Application()
     app.router.add_post("/api/sessions", adapter._handle_create_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
+    app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
     try:
         async with TestClient(TestServer(app)) as cli:
             yield SimpleNamespace(cli=cli, authority=authority, executed=executed)
@@ -388,3 +391,37 @@ async def test_peer_minted_bot_chat_is_the_local_rosters_canonical_session(headl
     home = Path(headless.authority.db.db_path).parent
     roster = _profiles(headless.authority, _local_owner(headless.authority).actor, home, {})
     assert (roster['profiles'][0]['canonical_session'] or {}).get('id') == session_id, roster['profiles'][0]
+
+
+@pytest.mark.parametrize('door', ['chat', 'stream', 'run'])
+@pytest.mark.asyncio
+async def test_a_turn_after_the_move_aside_names_the_local_bot_chat(headless, door):
+    # The turn runs in the newly minted local Bot Chat, so every answer names that chat: a client
+    # that keeps the id it was given must not continue in the displaced API row.
+    import asyncio
+    import json
+    db = headless.authority.db
+    old = _api_bot_chat(db)
+    if door == 'chat':
+        resp = await headless.cli.post(f"/api/sessions/{old}/chat", json={"message": 'one', "author": AUTHOR})
+        body = await resp.json()
+        assert resp.status == 200, body
+        named = {body['session_id'], resp.headers['X-Hermes-Session-Id']}
+    elif door == 'stream':
+        resp = await headless.cli.post(f"/api/sessions/{old}/chat/stream", json={"message": 'one', "author": AUTHOR})
+        assert resp.status == 200, await resp.text()
+        frames = [json.loads(line[6:]) for line in (await resp.text()).splitlines() if line.startswith('data: ')]
+        named = {resp.headers['X-Hermes-Session-Id']} | {f['session_id'] for f in frames if 'session_id' in f}
+    else:
+        resp = await headless.cli.post("/v1/runs", json={"input": 'one', "session_id": old, "author": AUTHOR})
+        run_id = (await resp.json())['run_id']
+        for _ in range(100):
+            status = await (await headless.cli.get(f"/v1/runs/{run_id}")).json()
+            if status['status'] in ('completed', 'failed', 'cancelled'):
+                break
+            await asyncio.sleep(0.05)
+        assert status['status'] == 'completed', status
+        named = {status['session_id']}
+    new = db.get_session_by_title('Bot Chat')['id']
+    assert new != old and named == {new}, (named, old, new)
+    assert [sid for sid, _, _ in headless.executed] == [new]

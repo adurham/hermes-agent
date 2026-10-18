@@ -1096,6 +1096,13 @@ def _run_route_delegate(name: str):
     return _handler
 
 
+
+def _delivered_session_id(admitted: tuple[Path, dict[str, Any]], requested: str) -> str:
+    """The session a live Bot Chat delivery actually landed in: the requested id, unless the owner moved
+    an API-held \"Bot Chat\" title aside and minted the local chat (MSG-21), whose id every answer names."""
+    return str(admitted[1].get("session_id") or requested)
+
+
 class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
@@ -3455,10 +3462,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         (``tools/bot_mode_dm.py``, ``tui_gateway/methods_bot_relay.py``). This waits for the owner's
         receipt on the same budget as the local path, so the peer still gets the reply on this call.
         """
-        session_id = ctx["session_id"]
-        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
+        admitted = await self._admit_to_live_bot_chat(ctx["session_id"], ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
         if admitted is None:
             return None
+        session_id = _delivered_session_id(admitted, ctx["session_id"])
         record = await self._await_live_bot_chat_receipt(*admitted)
         delivery_id = record["delivery_id"]
         headers = self._session_headers(session_id, ctx["gateway_session_key"])
@@ -3496,10 +3503,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """``_answer_through_live_bot_chat`` for the SSE sibling route: the owner's settled receipt is
         the run's single ``assistant.completed`` event; a receipt still open at the budget is a
         ``run.queued`` event (the 202 shape), a failed one an ``error`` event carrying the reason."""
-        session_id = ctx["session_id"]
-        admitted = await self._admit_to_live_bot_chat(session_id, ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
+        admitted = await self._admit_to_live_bot_chat(ctx["session_id"], ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
         if admitted is None:
             return None
+        session_id = _delivered_session_id(admitted, ctx["session_id"])
         events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
         response = await self._prepare_sse_response(request, session_id, ctx["gateway_session_key"])
 
