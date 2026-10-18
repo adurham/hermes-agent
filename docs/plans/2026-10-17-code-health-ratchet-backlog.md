@@ -2784,3 +2784,18 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   `scripts/check` 11/12: health and the other checks green; ruff fails identically on clean main
   (RUF100 unused `# noqa: BLE001` at `agent/turn_truncation.py:572`, from main@f21f8ad2; not this
   unit). Branch `claude/c1073-host-supervisor-timeout-fylkc4`.
+- 2026-10-18 — C-1091 `tui_gateway/session_notifications.py` (swallow): BLE001×24 + S110×1 → 0
+  (file hits 25 → 0). Narrowed: the three in-tree lazy imports (`hermes_cli.heartbeat`,
+  `hermes_cli.loops`, `hermes_cli.kanban_db`) → `ImportError`; the poller's three
+  `queue.get`/`get_nowait` catches → `queue.Empty`. Catch-alls kept as poller boundaries, now
+  logging the traceback at debug (session-registry read, lineage lookup, slash /loop dispatch — the
+  S110 `pass`, gateway heartbeat-ownership check, kanban board-path/connect/sub-list/board-list
+  reads); the six `_notif_log_failure` sites keep their one-line stderr report and add a debug
+  traceback, as do the two `_notif_submit` re-raise catches. Unflagged siblings: five
+  `contextlib.suppress(Exception)` swallows (heartbeat/loop rewind, kanban probe + unsubscribe,
+  desktop-UI wiring) → try/except with debug traceback; the kanban-dispatch suppress around
+  `_notif_submit` left (it already reports to stderr). Return values and control flow unchanged.
+  FILE_LINES 907 → 935. 10 test files: 765 passed, 0 failed. `scripts/check`: health ok (0
+  blocking), all checks ok but ruff, which fails identically on clean main (RUF100 unused `# noqa`
+  at `agent/turn_truncation.py:572`, from f21f8ad2; not this unit). Branch
+  `claude/c1091-session-notifications-swallow-l44xen`. Next: next open Queue C tier-2 swallow row.

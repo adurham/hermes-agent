@@ -15,6 +15,7 @@ def _notif_locked_sessions(fn, default):
         with _sessions_lock:
             return fn(_sessions)
     except Exception:
+        logger.debug("notification poller: session registry read failed", exc_info=True)
         return default
 
 
@@ -43,6 +44,7 @@ def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
         with _session_db(session or {}) as db:
             return (db.resolve_resume_session_id(evt_key) if db is not None else evt_key) or evt_key
     except Exception:
+        logger.debug("notification lineage lookup failed for %s", evt_key, exc_info=True)
         return evt_key
 
 
@@ -198,7 +200,7 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
             _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
             return
     except Exception:
-        pass
+        logger.debug("slash /loop wakeup dispatch failed for %s", sid, exc_info=True)
     decision = mgr.complete_tick("")
     if decision.get("message"):
         _notif_loop_status(sid, decision["message"])
@@ -222,6 +224,7 @@ def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
                     return bool(entry.get("origin")) and not entry.get("suspended")
         return False
     except Exception:
+        logger.debug("gateway heartbeat-ownership check failed for %s", session_key, exc_info=True)
         return False
 
 
@@ -237,7 +240,7 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     """
     try:
         from hermes_cli.heartbeat import HeartbeatManager
-    except Exception:
+    except ImportError:
         return
     if not (sid_key := session.get("session_key") or ""):
         return
@@ -255,11 +258,14 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
         started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
+        logger.debug("heartbeat dispatch failed for %s", sid, exc_info=True)
     if not started:
         # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
         _notif_release_turn(session)
-        with contextlib.suppress(Exception):
+        try:
             mgr.abandon_fire()
+        except Exception:
+            logger.debug("heartbeat fire rewind failed for %s", sid_key, exc_info=True)
 
 
 def _loop_route_is_gateway_chat(state) -> bool:
@@ -297,7 +303,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
     try:
         from hermes_cli.loops import LoopManager, goal_blocks_loop_tick
-    except Exception:
+    except ImportError:
         return
     if not (sid_key := session.get("session_key") or ""):
         return
@@ -319,9 +325,12 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
             _run_prompt_submit(rid, sid, session, wakeup)
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
+        logger.debug("loop wakeup dispatch failed for %s", sid, exc_info=True)
         _notif_release_turn(session)
-        with contextlib.suppress(Exception):
+        try:
             mgr.abandon_tick()
+        except Exception:
+            logger.debug("loop tick rewind failed for %s", sid_key, exc_info=True)
 
 
 def _kb_first_line(value: Any, limit: int) -> str:
@@ -373,6 +382,7 @@ def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
     try:
         return slug, str(Path(db_path).expanduser().resolve() if db_path else _kb.kanban_db_path(slug).resolve())
     except Exception:
+        logger.debug("kanban board path resolve failed for %s", slug, exc_info=True)
         return slug, f"slug:{slug}"
 
 
@@ -382,18 +392,22 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
     falls through so delivery is preserved)."""
     from hermes_cli import kanban_db_connect as _kbc
     from hermes_cli import kanban_db_notify as _kbn
-    with contextlib.suppress(Exception):
+    try:
         if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key) == 0:
             return []
+    except Exception:
+        logger.debug("kanban read-only subscription probe failed for board %s", slug, exc_info=True)
     try:
         conn = _kbc.connect(board=slug)
     except Exception:
+        logger.debug("kanban board %s connect failed", slug, exc_info=True)
         return []
     texts: list = []
     with contextlib.closing(conn):
         try:
             subs = _kbn.list_notify_subs(conn)
         except Exception:
+            logger.debug("kanban board %s subscription list failed", slug, exc_info=True)
             return []
         for sub in subs:
             if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") != session_key:
@@ -413,8 +427,10 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":
-                with contextlib.suppress(Exception):
+                try:
                     _kbn.remove_notify_sub(conn, **sub_ident)
+                except Exception:
+                    logger.debug("kanban unsubscribe failed for %s", sub["task_id"], exc_info=True)
     return texts
 
 
@@ -430,14 +446,16 @@ def _collect_kanban_notifications(session: dict) -> list:
         return []
     try:
         from hermes_cli import kanban_db as _kb
-    except Exception:
+    except ImportError:
         return []
     try:
         boards = _kb.list_boards(include_archived=False)
     except Exception:
+        logger.debug("kanban board list failed; falling back to the default board", exc_info=True)
         try:
             boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
         except Exception:
+            logger.debug("kanban default board metadata read failed", exc_info=True)
             return []
     # dict keyed by resolved DB identity: first slug per DB wins (a pinned HERMES_KANBAN_DB aliases slugs).
     unique = {}
@@ -458,6 +476,7 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
         texts = _collect_kanban_notifications(session)
     except Exception as exc:
         _notif_log_failure("kanban notification poll failed", exc)
+        logger.debug("kanban notification poll failed for %s", sid, exc_info=True)
         texts = []
     for text in texts:
         from gateway.warning_notifications import DiagnosticText, render_notification
@@ -496,6 +515,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         claim = claim_event_delivery(evt, "tui-poller")
     except Exception as exc:  # shared ledger busy/unreadable: the durable row stays pending and replays
         _notif_log_failure("notification delivery claim failed", exc)
+        logger.debug("notification delivery claim failed for %s", sid, exc_info=True)
         claim = None
     if claim is None:
         # Another consumer holds the durable row — a gateway sharing this home claims before it verifies
@@ -518,7 +538,8 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         kwargs.setdefault("display_metadata", {})["notification_category"] = "diagnostic"
     try:
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
-    except Exception:
+    except Exception:  # _notif_submit already reported it and released the turn
+        logger.debug("notification poller dispatch failed for %s", sid, exc_info=True)
         release_event_delivery(evt, claim)
         return
     complete_event_delivery(evt, claim)
@@ -611,6 +632,7 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         text = batch.render(registry)
     except Exception as exc:
         _notif_log_failure("completion batch preparation failed", exc)
+        logger.debug("completion batch preparation failed for %s", sid, exc_info=True)
         _notif_release_turn(session)
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
@@ -622,7 +644,8 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
             _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
                           "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
                           display_metadata={"display_text": batch.display_text(registry)})
-    except Exception:
+    except Exception:  # _notif_submit already reported it and released the turn
+        logger.debug("completion batch dispatch failed for %s", sid, exc_info=True)
         for event, _text, claim in claimed:
             release_event_delivery(event, claim)
         return
@@ -743,6 +766,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     subscriptions and delivers terminal task events the same way (status.update + agent turn) — the delivery
     path tools/kanban_tools.py documents for platform="tui" rows (issue #59890).
     """
+    from queue import Empty
     from tools import async_delegation
     from tools.process_registry import process_registry
     from tools.process_registry_notifications import format_process_notification
@@ -768,18 +792,19 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
                     fire(sid, session)
                 except Exception as tick_exc:
                     _notif_log_failure(f"{what} poll failed", tick_exc)
+                    logger.debug("%s poll failed for %s", what, sid, exc_info=True)
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)
         try:
             evt = queue.get(timeout=0.5)
-        except Exception:
+        except Empty:
             continue
         ready = [evt]
         for _ in range(queue.qsize()):
             try:
                 ready.append(queue.get_nowait())
-            except Exception:
+            except Empty:
                 break
         # FORK liveness gate (mirrors drain_notifications): a completion whose owning subagent is STILL running
         # must not bubble into the top-level chat mid-task — its session_key is the parent's, so ownership routing
@@ -799,6 +824,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
             # This thread is the session's only path to notifications, /loop, /heartbeat and its
             # bot mailbox; one bad event must not end all four.
             _notif_log_failure("notification dispatch failed", exc)
+            logger.debug("notification dispatch failed for %s", sid, exc_info=True)
     # Drain remaining events after the stop signal so nothing is lost on shutdown; foreign and orphaned-delegation
     # events are handed back to the shared queue afterwards.
     deferred: list = []
@@ -806,7 +832,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     for _ in range(queue.qsize()):
         try:
             ready.append(queue.get_nowait())
-        except Exception:
+        except Empty:
             break
     handle(ready, deferred)
     for evt in deferred:
@@ -851,10 +877,12 @@ def _wire_desktop_sinks() -> None:
     if getattr(process_registry, "on_close", None) is None:
         process_registry.on_close = lambda session, pid: _emit("terminal.close", _owner_sid(session), {"process_id": pid})
     if not _desktop_ui_wired:
-        with contextlib.suppress(Exception):
+        try:
             from tools import desktop_ui
             desktop_ui.set_emitter(lambda sid, event, payload: _emit(event, sid, payload))
             _desktop_ui_wired = True
+        except Exception:
+            logger.debug("desktop UI emitter wiring failed", exc_info=True)
 
 
 # (stop_event, thread) for every poller started in this process, pruned of dead threads on each spawn. Test teardowns
