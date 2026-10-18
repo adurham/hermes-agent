@@ -26,6 +26,9 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 AIOHTTP_AVAILABLE = aiohttp is not None
 HTTPX_AVAILABLE = httpx is not None
+# Expected websocket failures (socket closed, network, handshake/auth) stay one-line warnings;
+# anything else escaping the listen/heartbeat loops is a bug and is logged with its traceback.
+_WS_TRANSPORT_ERRORS: tuple[type[Exception], ...] = (RuntimeError, OSError) + ((aiohttp.ClientError,) if aiohttp else ())
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, send_chunks
@@ -271,7 +274,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             except Exception as exc:
                 if not self._running:
                     return
-                logger.warning("[%s] WebSocket error: %s", self.name, exc)
+                if isinstance(exc, _WS_TRANSPORT_ERRORS):
+                    logger.warning("[%s] WebSocket error: %s", self.name, exc)
+                else:
+                    logger.exception("[%s] WebSocket listener error", self.name)
                 self._fail_all(RuntimeError("WeCom connection interrupted"))
                 await asyncio.sleep(RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)])
                 backoff_idx += 1
@@ -281,7 +287,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                     self._mark_connected()
                     logger.info("[%s] Reconnected", self.name)
                 except Exception as reconnect_exc:
-                    logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+                    if isinstance(reconnect_exc, _WS_TRANSPORT_ERRORS):
+                        logger.warning("[%s] Reconnect failed: %s", self.name, reconnect_exc)
+                    else:
+                        logger.exception("[%s] Reconnect failed", self.name)
 
     async def _read_events(self) -> None:
         if not self._ws:
@@ -317,7 +326,10 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                     if self._ws and not self._ws.closed:
                         await self._send_json({"cmd": APP_CMD_PING, "headers": {"req_id": self._new_req_id("ping")}, "body": {}})
                 except Exception as exc:
-                    logger.debug("[%s] Heartbeat send failed: %s", self.name, exc)
+                    if isinstance(exc, _WS_TRANSPORT_ERRORS):
+                        logger.debug("[%s] Heartbeat send failed: %s", self.name, exc)
+                    else:
+                        logger.exception("[%s] Heartbeat send failed", self.name)
         except asyncio.CancelledError:
             pass
 
@@ -409,11 +421,11 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
                 text = raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
                 payload = json.JSONDecoder(strict=False).decode(text)
                 logger.info("WeCom payload required strict=False fallback (len=%d)", raw_len)
-            except Exception as exc2:
+            except (ValueError, RecursionError) as exc2:
                 tail = raw[-100:] if isinstance(raw, (str, bytes)) and len(raw) > 100 else raw
                 logger.warning("Failed to parse WeCom payload (strict=False also failed): error=%s len=%d tail=%r", exc2, raw_len, tail)
                 return None
-        except Exception as exc:
+        except (TypeError, ValueError, RecursionError) as exc:
             logger.warning("Failed to parse WeCom payload: error=%s len=%d", exc, raw_len)
             return None
         return payload if isinstance(payload, dict) else None
@@ -622,7 +634,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         except TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
-            logger.error("[%s] Send failed: %s", self.name, exc)
+            logger.error("[%s] Send failed: %s", self.name, exc, exc_info=True)
             return self._send_failure(str(exc), str(STREAM_NOT_SUBSCRIBED_ERRCODE) in str(exc))
         if error := self._response_error(response):
             return self._send_failure(error, response.get("errcode", 0) == STREAM_NOT_SUBSCRIBED_ERRCODE)
@@ -651,6 +663,7 @@ _QR_POLL_INTERVAL, _QR_POLL_TIMEOUT = 3, 300  # seconds (poll every 3s, give up 
 def qr_scan_for_bot_info(*, timeout_seconds: int = _QR_POLL_TIMEOUT) -> Optional[dict[str, str]]:
     """Fetch a WeCom QR code, render it, poll until scanned or timeout; ``{"bot_id", "secret"}`` or None.
     The ``ai/qc/*`` endpoints back the admin console, not the public API, and may change."""
+    import http.client
     import urllib.request
     import urllib.parse
 
@@ -666,7 +679,7 @@ def qr_scan_for_bot_info(*, timeout_seconds: int = _QR_POLL_TIMEOUT) -> Optional
     print("  Connecting to WeCom...", end="", flush=True)
     try:
         raw = _get_json(f"{_QR_GENERATE_URL}?source=hermes", 15)
-    except Exception as exc:
+    except (OSError, ValueError, http.client.HTTPException) as exc:  # URLError/timeouts, bad JSON, broken HTTP
         return _fail("WeCom QR: failed to fetch QR code: %s", exc, exc)
     scode, auth_url = (str((raw.get("data") or {}).get(k) or "").strip() for k in ("scode", "auth_url"))
     if not scode or not auth_url:
@@ -680,7 +693,7 @@ def qr_scan_for_bot_info(*, timeout_seconds: int = _QR_POLL_TIMEOUT) -> Optional
         qr.make(fit=True)
         qr.print_ascii(invert=True)
         print(f"\n  Scan the QR code above, or open this URL directly:\n  {page_url}")
-    except Exception:
+    except (ImportError, OSError, ValueError):  # qrcode not installed, or the terminal can't print the blocks
         print(f"  Open this URL in WeCom on your phone:\n\n  {page_url}\n")
         print("  Tip: from the Hermes environment, run: "
               f"{install_hint('messaging')} "
@@ -692,7 +705,7 @@ def qr_scan_for_bot_info(*, timeout_seconds: int = _QR_POLL_TIMEOUT) -> Optional
         try:
             result = _get_json(query_url, 10)
             print(".", end="", flush=True)  # progress dot on every poll
-        except Exception as exc:
+        except (OSError, ValueError, http.client.HTTPException) as exc:
             logger.debug("WeCom QR poll error: %s", exc)
             result = {}
         result_data = result.get("data") or {}
@@ -715,6 +728,7 @@ async def _send_via(adapter, chat_id, message, *, live: bool):
     try:
         result = await adapter.send(chat_id, message)
     except Exception as e:
+        logger.exception("WeCom %s send failed", "live adapter" if live else "standalone")
         return send_error(f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}")
     if result.success:
         return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
@@ -729,7 +743,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         from tools.send_message_senders import _live_adapter
         _, adapter = _live_adapter(Platform.WECOM)
-    except Exception:
+    except ImportError:  # _live_adapter itself never raises: it logs and returns (runner, None)
         adapter = None
     if adapter is not None:
         return await _send_via(adapter, chat_id, message, live=True)
@@ -744,6 +758,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         finally:
             await adapter.disconnect()
     except Exception as e:
+        logger.exception("WeCom standalone send failed")
         return send_error(f"WeCom send failed: {e}")
 
 
@@ -781,6 +796,7 @@ def interactive_setup() -> None:
             print_warning("WeCom setup cancelled.")
             return
         except Exception as exc:
+            logger.exception("WeCom QR scan failed")
             print_warning(f"QR scan failed: {exc}")
             credentials = {}
         if credentials:
