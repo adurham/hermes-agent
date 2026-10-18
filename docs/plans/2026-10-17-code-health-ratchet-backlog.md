@@ -2905,3 +2905,18 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   these RPCs 920/920. `scripts/check`: health ok; ruff fails on main's own
   `agent/turn_truncation.py:572` unused `# noqa` (RUF100, from f21f8ad2; identical on clean main,
   outside this unit). Branch `claude/fix-methods-tools-ble001-fcw81u`.
+- 2026-10-18 — C-1048 `plugins/platforms/telegram/adapter.py` async: ASYNC230 3 → 0, ASYNC240 3 → 0
+  (BLE001 60, S110 5, PS-P06 1 untouched and in order). The three `os.path.exists` checks and three
+  media `open()`s in `send_voice`, `send_multiple_images` and `_send_local_file` move to
+  `asyncio.to_thread` (the handles still stream into the upload; the old `# noqa: ASYNC230`
+  comments go, so no waiver remains). Sibling blocking file/path calls in coroutines moved the same
+  way: temp-file cleanup `os.unlink`/`os.remove` (`send_voice`, `send_multiple_images`,
+  `send_image_file`, `send_video`), `_compress_image_to_jpeg` (PIL read/write; `send_multiple_images`,
+  `send_image_file`), the update-prompt `write_text`/`replace` (path still resolved on the loop) and
+  the gmail-triage `script_path.exists()`. Same calls, same order, same error handling.
+  FILE_LINES 7319 → 7319. Unit tests + all `tests/gateway/test_telegram*.py`,
+  `test_send_multiple_images.py`, `test_tts_media_routing.py`: 776 passed, 2 skipped, 1 failed
+  (Mattermost multi-image, `No module named 'aiohttp'`, identical on clean main); a wider 134-file
+  media/send sweep fails the same 22 non-Telegram tests on main and on the branch.
+  `scripts/check` (full): 12 checks ok, health 0 blocking/0 advisory. Branch
+  `claude/fix-telegram-adapter-async-hkofei`.
