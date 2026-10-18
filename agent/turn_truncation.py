@@ -569,7 +569,7 @@ def _engine_loop_cause(agent: Any, response: Any) -> Optional[dict[str, Any]]:
     """
     try:
         normalized = agent._get_transport().normalize_response(response)
-    except Exception:  # noqa: BLE001 - a probe must never break truncation recovery
+    except Exception:  # a probe must never break truncation recovery
         return None
     cause = getattr(normalized, "loop_cause", None)
     if isinstance(cause, dict) and str(cause.get("finish_cause")) == "repetition_loop":
