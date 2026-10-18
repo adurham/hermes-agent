@@ -68,6 +68,9 @@ def local_authority_live(runner, source):
     return None, None
 
 
+_FENCE_ATTEMPTS = 3
+
+
 async def commit_reasoning_command(authority, actor, ref, value, persist_global):
     """``/reasoning <level>`` in either scope, or ``reset``, on a LOCAL session (``config.set`` and
     ``slash.exec``): the owner's fenced ``reasoning`` mutation, before the handler replies or writes
@@ -91,18 +94,27 @@ async def commit_reasoning_command(authority, actor, ref, value, persist_global)
     live = authority.sessions[ref.session_id]
     if live.source.platform != Platform.LOCAL:
         return
-    row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
-    if row is None:
-        raise RuntimeStoreError('not_found')
-    try:
-        await mutate_session(authority, actor, ref, {
-            'session_id': ref.session_id, 'request_id': 'reasoning-command:' + uuid.uuid4().hex,
-            'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
-            'operation': 'reasoning', 'payload': {'effort': effort}})
-    except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
-        if getattr(exc, 'reason', 'session_busy') not in ('session_busy', 'unknown_execution'):
-            raise
-        live.pending_reasoning = (actor.subject, effort)
+    # The fences are read here, not sent by a client: another viewer's mutation landing in between
+    # (``revision_conflict``) is no verdict on this command, so it re-reads them. A fence that keeps
+    # moving defers to the turn boundary like a busy session, as main always applied the command.
+    for _attempt in range(_FENCE_ATTEMPTS):
+        row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
+        if row is None:
+            raise RuntimeStoreError('not_found')
+        try:
+            await mutate_session(authority, actor, ref, {
+                'session_id': ref.session_id, 'request_id': 'reasoning-command:' + uuid.uuid4().hex,
+                'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
+                'operation': 'reasoning', 'payload': {'effort': effort}})
+            return
+        except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
+            reason = getattr(exc, 'reason', 'session_busy')
+            if reason == 'revision_conflict':
+                continue
+            if reason not in ('session_busy', 'unknown_execution'):
+                raise
+            break
+    live.pending_reasoning = (actor.subject, effort)
 
 
 async def apply_pending_reasoning(authority, ref, live):
