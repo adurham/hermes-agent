@@ -3037,7 +3037,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 rows = [s for s in rows if (s.get("title") or "").strip() == title_filter]
             return rows
 
-        sessions = await _list() or (await reset_local_title_owner(db, title_filter, include_hidden))
+        sessions = await _list() or (await reset_local_title_owner(db, title_filter, include_hidden, source))
         if title_filter and not sessions:
             # A canonical Bot Chat auto-archived by the orphan reaper would make `hermes peer dm`
             # mint transient sessions: resurrect and re-list; deliberate archives stay put.
