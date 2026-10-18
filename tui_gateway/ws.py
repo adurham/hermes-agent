@@ -484,6 +484,23 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 continue
             await _dispatch_one(req)
 
+    async def _queue_request(req: Any) -> None:
+        if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
+            # A read past the waiting cap parks the reader, as the serial lane did; released
+            # when its task ends (a read cancelled before it ran releases it too).
+            await _unless_dispatch_failed(read_admission.acquire())
+        await _unless_dispatch_failed(pending.put(req))
+
+    async def _end_reads() -> None:
+        """Reads that never started are dropped (their client is gone); started ones finish before the
+        authority closes, unless the connection itself was cancelled (server shutdown)."""
+        task = asyncio.current_task()
+        shutting_down = task is not None and task.cancelling()
+        for read in concurrent_reads:
+            if shutting_down or read not in started_reads:
+                read.cancel()
+        await asyncio.gather(*concurrent_reads, return_exceptions=True)
+
     async def _unless_dispatch_failed(aw: Any) -> Any:
         """Await *aw*, or raise _SendFailed once a reply could not be sent (the dispatcher ended on one,
         or the read lane failed one)."""
@@ -568,11 +585,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
                              "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
                 continue
-            if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
-                # A read past the waiting cap parks the reader, as the serial lane did; released
-                # when its task ends (a read cancelled before it ran releases it too).
-                await _unless_dispatch_failed(read_admission.acquire())
-            await _unless_dispatch_failed(pending.put(req))
+            await _queue_request(req)
     except _SendFailed:
         pass
     finally:
@@ -590,14 +603,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
-        # Reads that never started are dropped (their client is gone); started ones finish before the
-        # authority closes, unless the connection itself was cancelled (server shutdown).
-        task = asyncio.current_task()
-        shutting_down = task is not None and task.cancelling()
-        for read in concurrent_reads:
-            if shutting_down or read not in started_reads:
-                read.cancel()
-        await asyncio.gather(*concurrent_reads, return_exceptions=True)
+        await _end_reads()
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
             await authority_connection.close()
