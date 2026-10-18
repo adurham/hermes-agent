@@ -53,8 +53,10 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
+    from .adapter_rich_text import walk_rich_text_elements
     from .block_kit import render_blocks, sanitize_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_rich_text import walk_rich_text_elements  # type: ignore
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
 
@@ -501,43 +503,10 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
     if not blocks:
         return ""
     parts: list[str] = []
-
-    def _append_line(text: str, quote_depth: int = 0, bullet: str = "") -> None:
-        if not text or not text.strip():
-            return
-        prefix = ((">" * quote_depth) + " ") if quote_depth else ""
-        parts.append(f"{prefix}{bullet}{text}".rstrip())
-
-    def _walk_elements(elements: list, quote_depth: int = 0, bullet: str = "") -> None:
-        for elem in elements:
-            elem_type = elem.get("type", "")
-            if elem_type == "rich_text_section":
-                _append_line(_render_inline_elements(elem.get("elements", [])), quote_depth, bullet)
-            elif elem_type == "rich_text_quote":
-                _walk_elements(elem.get("elements", []), quote_depth=quote_depth + 1)
-            elif elem_type == "rich_text_list":
-                list_style = elem.get("style")
-                for idx, item in enumerate(elem.get("elements", [])):
-                    item_bullet = "• " if list_style == "bullet" else f"{idx + 1}. "
-                    _walk_elements([item], quote_depth=quote_depth, bullet=item_bullet)
-            elif elem_type == "rich_text_preformatted":
-                code_lines = [
-                    _render_inline_elements(
-                        child.get("elements", [])
-                        if child.get("type", "") == "rich_text_section"
-                        else [child])
-                    for child in elem.get("elements", [])]
-                code_text = "\n".join(line for line in code_lines if line)
-                if code_text:
-                    lang = elem.get("language", "")
-                    _append_line(f"```{lang}\n{code_text}\n```", quote_depth, bullet)
-            else:
-                _append_line(_render_inline_elements([elem]), quote_depth, bullet)
-
     for block in blocks:
         block_type = (block or {}).get("type")
         if block_type == "rich_text":
-            _walk_elements(block.get("elements", []))
+            walk_rich_text_elements(block.get("elements", []), parts, _render_inline_elements)
         elif block_type == "table":
             table_text = _render_slack_table_block(block)
             if table_text:
