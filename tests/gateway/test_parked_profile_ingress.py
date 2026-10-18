@@ -261,6 +261,62 @@ async def test_a_coalesced_webhook_to_a_served_profile_prefix_ignores_a_parked_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('beta_parked', [True, False])
+@pytest.mark.parametrize('coalesced', [True, False])
+async def test_an_explicit_profile_prefix_wins_over_a_profile_route(tmp_path, monkeypatch, beta_parked, coalesced):
+    """``/p/default/`` names the profile: a ``profile_routes`` rule sending the route's
+    ``webhook:<route>`` user to beta must not re-home it. The delivery is admitted on default, never
+    acknowledged and then dropped at flush as ``profile_mismatch``."""
+    from gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from gateway.profile_routing import ProfileRoute
+    homes = _homes(tmp_path, monkeypatch)
+    root, beta = homes[0][1].resolve(), homes[1][1].resolve()
+    runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
+        ProfileRoute(name='events-to-beta', platform='webhook', profile='beta', user_id='webhook:events')])
+    if not beta_parked:
+        await _serve_beta_again(runner, beta)
+    route = {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}'}
+    if coalesced:
+        route['coalesce'] = {'key': 'id', 'window_seconds': 0.1}
+    adapter = _webhook(runner, {'events': route})
+    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    try:
+        response = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}, profile='default'))
+        assert response.status == 202, (response.status, response.text)
+        await async_wait_until(lambda: _admissions(root) == 1, what='the /p/default/ delivery admitted on default')
+        await async_wait_until(settled, what='the delivery dispatched')
+        assert _admissions(beta) == 0
+    finally:
+        _cancel(adapter)
+        _close(runner, homes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('coalesced', [True, False])
+async def test_an_explicit_parked_profile_prefix_is_retried_even_when_a_route_points_elsewhere(
+        tmp_path, monkeypatch, coalesced):
+    """``/p/beta/`` with beta parked is a retryable 503, never a 202, even when a ``profile_routes``
+    rule would send the route's user to the served default."""
+    from gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from gateway.profile_routing import ProfileRoute
+    homes = _homes(tmp_path, monkeypatch)
+    root = homes[0][1].resolve()
+    runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
+        ProfileRoute(name='events-to-default', platform='webhook', profile='default', user_id='webhook:events')])
+    route = {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}', 'profile': 'beta'}
+    if coalesced:
+        route['coalesce'] = {'key': 'id', 'window_seconds': 0.1}
+    adapter = _webhook(runner, {'events': route})
+    try:
+        response = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}, profile='beta'))
+        assert response.status == 503 and response.headers.get('Retry-After'), (response.status, response.text)
+        assert _admissions(root) == 0
+    finally:
+        _cancel(adapter)
+        _close(runner, homes)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['deliver_only', 'cron_job'])
 async def test_a_non_durable_webhook_for_a_parked_profile_is_refused_before_its_id_is_recorded(
         tmp_path, monkeypatch, mode):

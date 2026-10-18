@@ -775,7 +775,11 @@ class WebhookAdapter(BasePlatformAdapter):
         source = self.build_source(chat_id=session_chat_id, chat_name=f"webhook/{route_name}", chat_type="webhook",
                                    user_id=f"webhook:{route_name}", user_name=route_name)
         if profile and isinstance(profile, str):
+            # The ``/p/<profile>/`` prefix names the profile and wins over ``profile_routes``; the
+            # edge already refused it (retryable 503) when that profile is not served. Drop what
+            # ``build_source`` resolved from the routes, or a rejected route would refuse it here.
             source.profile = profile
+            source.profile_route_rejected, source._rejected_route_profile = False, None
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id, timestamp=datetime.fromtimestamp(0, UTC))
         from gateway.platforms.webhook_ingress import admit_producer
