@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { refreshSupportedSessionControlAfterTurn } = vi.hoisted(() => ({
   refreshSupportedSessionControlAfterTurn: vi.fn(async () => undefined)
@@ -7,6 +7,12 @@ const { refreshSupportedSessionControlAfterTurn } = vi.hoisted(() => ({
 vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterTurn }))
 
 import type { GatewayEventName } from '@hermes/shared'
+
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $messagingSessions, $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds } from '@/store/session'
+import { $sessionStates, publishSessionState } from '@/store/session-states'
+import { $unreadFinishedMarkers, noteDesktopAdmission } from '@/store/session-unread'
+import { makeSessionInfo } from '@/test/session-info'
 
 import { handleMessageStreamEvent } from './message-stream'
 import type { GatewayEventContext } from './types'
@@ -54,5 +60,60 @@ describe('handleMessageStreamEvent session-control integration', () => {
     expect(handleMessageStreamEvent(context('message.complete'))).toBe(true)
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledTimes(1)
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledWith('s1')
+  })
+})
+
+describe('unread dot for a messaging turn Desktop sent', () => {
+  beforeEach(() => {
+    $sessionStates.set({})
+    $sessions.set([])
+    $messagingSessions.set([makeSessionInfo({ id: 'tg-1', source: 'telegram' })])
+    $selectedStoredSessionId.set(null)
+    $unreadFinishedSessionIds.set([])
+    $unreadFinishedMarkers.set({})
+  })
+
+  const complete = (admission?: string) => {
+    const ctx = context('message.complete')
+    ctx.sessionId = 'tg-1'
+    ctx.event = { type: 'message.complete', admission_id: admission }
+    handleMessageStreamEvent(ctx)
+  }
+
+  it('lights on the stamped completion of a turn Desktop submitted, once', () => {
+    noteDesktopAdmission('desktop-turn')
+    complete('desktop-turn')
+    expect($unreadFinishedSessionIds.get()).toContain('tg-1')
+
+    $unreadFinishedSessionIds.set([])
+    complete('desktop-turn')
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+  })
+
+  it('stays dark for a turn from the chat itself, and keeps a queued Desktop turn eligible', () => {
+    noteDesktopAdmission('first')
+    noteDesktopAdmission('queued-second')
+    complete('chat-turn')
+    complete('first')
+    $unreadFinishedSessionIds.set([])
+
+    complete('chat-turn-2')
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+    complete('queued-second')
+    expect($unreadFinishedSessionIds.get()).toContain('tg-1')
+  })
+
+  it('stays dark while the conversation is on screen', () => {
+    noteDesktopAdmission('desktop-turn')
+    $selectedStoredSessionId.set('tg-1')
+    complete('desktop-turn')
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+  })
+
+  it('never lights a messaging session from a busy-to-idle settle, whatever turn it follows', () => {
+    noteDesktopAdmission('desktop-turn')
+    publishSessionState('rt-tg', { ...createClientSessionState('tg-1'), busy: true })
+    publishSessionState('rt-tg', { ...createClientSessionState('tg-1'), busy: false })
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
   })
 })
