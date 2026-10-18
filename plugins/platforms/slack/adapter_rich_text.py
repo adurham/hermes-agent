@@ -4,7 +4,7 @@ Sibling of ``adapter._extract_text_from_slack_blocks``. The inline renderer is p
 than imported because the adapter loads both as a package and as a flat plugin dir.
 """
 
-from typing import Callable
+from typing import Any, Callable
 
 InlineRenderer = Callable[[list], str]
 
@@ -67,3 +67,29 @@ def walk_rich_text_elements(elements: list, parts: list[str], render: InlineRend
     for elem in elements:
         walker = _RICH_TEXT_WALKERS.get(elem.get("type", ""), _walk_inline)
         walker(elem, parts, render, quote_depth, bullet)
+
+
+def _collect_slack_table_cell_text(value: Any) -> str:
+    """Collect the text leaves in a Slack table cell's raw/rich-text subtree.
+
+    Cells arrive as ``raw_text`` objects or nested rich-text trees depending
+    on formatting; walking every ``text`` leaf keeps formatted cells intact
+    without enumerating Slack's cell schema.
+    """
+    parts: list[str] = []
+
+    def _visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        text = node.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        for child in node.values():
+            _visit(child)
+
+    _visit(value)
+    return " ".join(p for p in parts if p).strip()
