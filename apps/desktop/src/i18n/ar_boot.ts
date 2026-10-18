@@ -81,6 +81,7 @@ export const arBoot = {
       'هذه المحادثة مشغولة: يُطبَّق تغيير MCP بعد انتهاء دورها وإعادة تحميل MCP مجددًا، أو عند إعادة فتح المحادثة',
     mcpReloadNotInChat: server => `${server} غير مفعّل في هذه المحادثة`,
     mcpReloadUnavailable: servers => `تعذّر الاتصال: ${servers}`,
+    compactedTurnUnavailable: 'تم تلخيص هذه الرسالة عند ضغط المحادثة، لذا لم يعد بالإمكان استعادتها أو تحريرها.',
     sessionCommands: arSessionCommands
   },
   updates: {

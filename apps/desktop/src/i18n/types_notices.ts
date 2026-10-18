@@ -19,6 +19,8 @@ export interface NoticeTranslations {
     mcpReloadNotInChat: (server: string) => string
     /** Configured MCP servers that did not connect on reload. */
     mcpReloadUnavailable: (servers: string) => string
+    /** An edit/restore/regenerate whose target compaction archived: the owner refused the rewind. */
+    compactedTurnUnavailable: string
     /** Typed /undo /retry /steer /queue lines (the Ink TUI's wording on the same gateway). */
     sessionCommands: SessionCommandNotices
   }

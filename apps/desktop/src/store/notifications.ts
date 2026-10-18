@@ -228,12 +228,31 @@ function summarizeErrorMessage(message: string, fallback: string) {
   }
 }
 
+// The owner's rewind refusal for a row compaction archived (hermes_state_mutations._rewind): an
+// edit, restore or regenerate aimed above the compaction boundary. Matched on the structured
+// reason + field, so every other invalid_params keeps the generic toast.
+function isCompactedRewindRefusal(error: unknown): boolean {
+  const data = error && typeof error === 'object' ? (error as { data?: unknown }).data : undefined
+
+  if (!data || typeof data !== 'object') {
+    return false
+  }
+
+  const { field, reason } = data as { field?: unknown; reason?: unknown }
+
+  return reason === 'invalid_params' && field === 'target_message_id'
+}
+
 // Exported so flows that surface errors inline (e.g. ConfirmDialog's onConfirm
 // rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
 export function readableError(
   error: unknown,
   fallback: string
 ): { message: string; detail?: string; action?: NotificationAction; category: ErrorToastCategory } {
+  if (isCompactedRewindRefusal(error)) {
+    return { message: translateNow('promptNotices.compactedTurnUnavailable'), category: 'other' }
+  }
+
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
   const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
   const cleaned = cleanErrorText(unwrapped)
