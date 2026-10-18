@@ -2673,3 +2673,13 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   Fatal codes, return values and messages unchanged. FILE_LINES 1,007 → 1,015. 10 email test files:
   135 passed, 2 failed (Weixin session recycle, Mattermost multi-image: missing `aiohttp`; identical
   on main). `scripts/check` green, 12 checks. Branch `claude/fix-email-adapter-exceptions-r4r94f`.
+- 2026-10-18 — C-1108 `tui_gateway/methods_prompt.py` swallow: BLE001 12 → 0 (file hits 13 → 1;
+  the HX012 hit untouched). Narrowed 2: `clipboard.paste` import guard → `ImportError` (stdlib +
+  `hermes_constants` only), `preview.restart` cwd validation → `(OSError, ValueError)` (getcwd /
+  embedded-NUL `~user`). Kept 10 catch-all boundaries, now logging the traceback: debug for the
+  silent fallbacks and the RPC handlers that already reply `str(e)` (reactions config read,
+  typed stop-phrase check, `image.attach`, `image.attach_bytes`, `file.attach`,
+  `input.detect_drop`, `pdf.attach` path resolution, `_approval_reply`); warning for the
+  unexpected hosted-room probe failure and a crashed side agent (`_spawn_side_agent.run`).
+  Replies unchanged. FILE_LINES 1,455 → 1,465. 16 tui_gateway test files 850/850. Branch
+  `claude/fix-swallowed-exceptions-c1108-hdl1u0`. Next: C-1109.

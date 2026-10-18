@@ -212,6 +212,7 @@ def _pending_reaction_notes(session: dict) -> str:
         if not (isinstance(display, dict) and bool(display.get("message_reactions", False))):
             return ""
     except Exception:
+        logger.debug("Failed to read display.message_reactions", exc_info=True)
         return ""
     try:
         with _session_db(session) as db:
@@ -250,6 +251,7 @@ def _typed_stop_phrase_response(rid, text):
         if not is_voice_stop_phrase(text):
             return None
     except Exception:
+        logger.debug("prompt.submit: stop-phrase check failed", exc_info=True)
         return None
     _end_voice_chat(stop_loop=True, stop_tts=True)
     _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
@@ -300,6 +302,7 @@ def _legacy_group_fence_error(rid, session, params):
         # Legacy Desktop sessions used the display name after "Group: " — not a room id.
         return None
     except Exception:
+        logger.warning("prompt.submit: hosted-room probe failed for %s", room_id, exc_info=True)
         return _err(rid, 5122, _GROUP_PROBE_FAILED_MSG)
     if hosted or peer:
         owner = "its gateway" if hosted else "its home host"
@@ -893,7 +896,7 @@ def _(rid, params: dict) -> dict:
         return err
     try:
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
-    except Exception as e:
+    except ImportError as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
     session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
@@ -935,6 +938,7 @@ def _(rid, params: dict) -> dict:
             session, image_path,
             remainder=remainder, text=remainder or f"[User attached image: {image_path.name}]"))
     except Exception as e:
+        logger.debug("image.attach failed", exc_info=True)
         return _err(rid, 5027, str(e))
 
 
@@ -963,6 +967,7 @@ def _(rid, params: dict) -> dict:
     try:
         img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
     except Exception as e:
+        logger.debug("image.attach_bytes write failed", exc_info=True)
         return _err(rid, 5027, f"write failed: {e}")
     return _ok(rid, _attached_image_result(
         session, img_path,
@@ -1047,6 +1052,7 @@ def _(rid, params: dict) -> dict:
             "ref_path": ref_path, "ref_text": f"@file:{_format_ref_value(ref_path)}",
             "uploaded": uploaded})
     except Exception as e:
+        logger.debug("file.attach failed", exc_info=True)
         return _err(rid, 5028, str(e))
 
 
@@ -1088,6 +1094,7 @@ def _(rid, params: dict) -> dict:
             "matched": True, "is_image": False, "path": str(drop_path), "name": drop_path.name,
             "text": text})
     except Exception as e:
+        logger.debug("input.detect_drop failed", exc_info=True)
         return _err(rid, 5027, str(e))
 
 
@@ -1163,7 +1170,7 @@ def _(rid, params: dict) -> dict:
         preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""
         if preview_cwd and not os.path.isdir(preview_cwd):
             preview_cwd = ""
-    except Exception:
+    except (OSError, ValueError):
         preview_cwd = ""
 
     def body():
@@ -1298,6 +1305,7 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
         from cli import _resolve_attachment_path
         resolved = _resolve_attachment_path(raw_path)
     except Exception:
+        logger.debug("pdf.attach: path resolution failed for %r", raw_path, exc_info=True)
         resolved = None
     if resolved is None or not (pdf := Path(resolved)).is_file():
         return None, None, _err(rid, 4016, f"PDF not found: {raw_path}")
@@ -1359,6 +1367,7 @@ def _spawn_side_agent(
                 text = body()
             _emit(event, parent, {"task_id": task_id, **extra, "text": text})
         except Exception as e:
+            logger.warning("side agent %s failed", task_id, exc_info=True)
             _emit(event, parent, {"task_id": task_id, **extra, "text": f"error: {e}"})
         finally:
             if cleanup is not None:
@@ -1417,6 +1426,7 @@ def _approval_reply(rid, result_key, call):
         from tools import approval
         return _ok(rid, {result_key: call(approval)})
     except Exception as e:
+        logger.debug("approval call %s failed", result_key, exc_info=True)
         return _err(rid, 5004, str(e))
 
 
