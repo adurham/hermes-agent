@@ -2611,3 +2611,13 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   both bound the same `typing.Optional`, so nothing changes at runtime. No other F811 (or F821/F841)
   in the file; the swallow-family hits untouched. 12 test files: 338 passed, 0 failed, 25 skipped.
   `python scripts/check` green, 12 checks. Branch `claude/fix-web-server-chat-f811-xzn9nf`. Next: C-0009.
+- 2026-10-18 — C-0009 `tools/web_tools.py` correctness: F811 1 → 0 (file hits 15 → 14; the 14
+  BLE001 untouched, same functions, same order). `_run_search_single`'s function-local
+  `from tools.tool_backend_helpers import selection_exists` re-bound the module-level import of
+  the same name; deleted the local one. Same function object either way: nothing patches
+  `selection_exists` on either module (grep of tests/), so callers see no change. No sibling
+  instances (every other function-local import in the file is a lazy import of a name the module
+  does not import at top level). FILE_LINES 1 shorter. Tests: the 32 test files referencing
+  `tools.web_tools` — 5 failures, identical on clean main (DNS-blocked `example.com` in the
+  sandbox fails `async_is_safe_url`; keyless-routing cases). `scripts/check` green, 12 checks.
+  Branch `claude/c-0009-web-tools-correctness-kmwlly`. Next: C-0010.

@@ -354,7 +354,6 @@ def _run_search_single(query: str, limit: int) -> dict:
     Anthropic-native swap firing. Do not inline this back into web_search_tool.
     """
     from agent.web_search_registry import get_active_search_provider
-    from tools.tool_backend_helpers import selection_exists
 
     backend = _get_search_backend()
     provider = _resolve_search_provider(backend) if backend else None
