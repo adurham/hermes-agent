@@ -297,6 +297,9 @@ export interface RegistrySessionSource {
    *  a shared host serving every profile via ?profile=. */
   kind: string
   backends: Array<{ descriptor: unknown; profileLabel: null | string }>
+  /** The connection's gateway install_id, when known. Sources sharing one are the same backend
+   *  and count their session totals once; a source without one is never summed with another. */
+  backendId?: string
 }
 
 type PinnedRegistrySessionSource = Pick<RegistrySessionSource, 'connectionId'> &
@@ -621,101 +624,159 @@ export function spliceRegistrySessionRows(
   return { added }
 }
 
-/** Report registry totals for scopes the primary/override path did not already count.
- *  The fetched prefix can be shorter than the backend's total and can include pins outside
- *  the ordinary cursor, so counting only its rows undercounts deep pages or overcounts pins.
+/** Which backend each side of a unified session list read, for counting each backend once.
+ *  Identities are the gateway `install_id` (`hermes_cli/install_identity.py`), never a row tag:
+ *  production primary rows carry no `connection_id`, so a row can't say which backend served it. */
+export interface RegistryBackendIdentity {
+  /** install_id of the backend the primary aggregate read; absent when unknown. */
+  primaryBackendId?: null | string
+  /** Profiles whose primary-side rows came from somewhere other than the primary backend
+   *  (per-profile remote overrides), so their backend is unknown. */
+  unknownPrimaryProfiles?: Iterable<string>
+  /** install_id per registry connection id; a connection without one is unknown. */
+  backendIds?: ReadonlyMap<string, string>
+}
+
+/** Recompute each profile's total once a registry scan is spliced in, counting each backend once.
  *
- *  Overlap with the primary is never extrapolated from the fetched prefix: duplicates in
- *  one page say nothing about how much of the deeper scope the primary also holds. A scope
- *  is disjoint (its full backend total is owed) only when no fetched row was a duplicate
- *  AND the primary served no row from the same connection. Otherwise both sides counted
- *  the same backend scope, and the only exact-or-safe figure is max(primary, registry):
- *  exact when they are the same backend (their totals agree), a lower bound otherwise.
- *  `primaryRows` are the merged rows BEFORE the registry splice. */
+ *  The fetched prefix can be shorter than the backend's total and can include pins outside the
+ *  ordinary cursor, so each registry scope contributes its backend-reported total, not its rows.
+ *  Per profile, every contributor (the primary side and each registry scope) is grouped by the
+ *  backend it read:
+ *  - contributors with the same known install_id are one backend: the larger total counts once;
+ *  - distinct known backends are summed, since they are known to differ;
+ *  - a contributor whose backend is unknown can't be compared with anything, so it only raises
+ *    the profile to its own total (max), never adds to it. An undercount is possible there; a
+ *    double count is not.
+ *  The result never drops below the rows the merged list visibly holds for that profile.
+ *  `primaryRows` are the merged rows BEFORE the registry splice. Returns the change to the
+ *  grand total. */
 export function applyRegistrySessionTotals(
   fetchedRows: unknown[],
   addedRows: unknown[],
   reportedTotals: Map<string, number>,
   profileTotals: Record<string, number>,
-  primaryRows: unknown[] = []
+  primaryRows: unknown[] = [],
+  identity: RegistryBackendIdentity = {}
 ): number {
   const connectionOf = (row: unknown) =>
     row && typeof row === 'object' && typeof (row as { connection_id?: unknown }).connection_id === 'string'
       ? (row as { connection_id: string }).connection_id
       : ''
 
-  const counts = (rows: unknown[]) => {
-    const perScope = new Map<string, number>()
+  const profileOf = (row: unknown) => {
+    const profile = row && typeof row === 'object' ? (row as { profile?: unknown }).profile : undefined
+
+    return typeof profile === 'string' && profile ? profile : 'default'
+  }
+
+  const counts = (rows: unknown[], keyOf: (row: unknown) => string) => {
+    const tally = new Map<string, number>()
 
     for (const row of rows) {
       if (!row || typeof row !== 'object') {
         continue
       }
 
-      const session = row as Record<string, unknown>
-      const profile = typeof session.profile === 'string' && session.profile ? session.profile : 'default'
-      const key = `${connectionOf(row)}\0${profile}`
-      perScope.set(key, (perScope.get(key) || 0) + 1)
+      const key = keyOf(row)
+      tally.set(key, (tally.get(key) || 0) + 1)
     }
 
-    return perScope
+    return tally
   }
 
-  const primaryConnections = new Set(primaryRows.map(connectionOf).filter(Boolean))
-  const fetched = counts(fetchedRows)
-  const added = counts(addedRows)
+  const scopeOf = (row: unknown) => `${connectionOf(row)}\0${profileOf(row)}`
+  const fetched = counts(fetchedRows, scopeOf)
+  const addedPerProfile = counts(addedRows, profileOf)
+  const primaryVisible = counts(primaryRows, profileOf)
   // Per-profile totals as the primary/override side left them, before this scan's splice.
   const primaryTotals: Record<string, number> = { ...profileTotals }
 
-  for (const [key, n] of added) {
-    const profile = key.slice(key.indexOf('\0') + 1)
+  for (const [profile, n] of addedPerProfile) {
     primaryTotals[profile] = (primaryTotals[profile] || 0) - n
   }
 
-  let contribution = 0
+  const scopes = new Map<string, Array<{ backend: null | string; total: number }>>()
 
   for (const key of new Set([...fetched.keys(), ...reportedTotals.keys()])) {
-    const addedCount = added.get(key) || 0
-    const duplicates = (fetched.get(key) || 0) - addedCount
     const connection = key.slice(0, key.indexOf('\0'))
     const profile = key.slice(key.indexOf('\0') + 1)
-    const primaryCount = Math.max(0, primaryTotals[profile] || 0)
-    const overlaps = duplicates > 0 || primaryConnections.has(connection)
-    let count = addedCount
+    // An older aggregate without profile_totals: its fetched rows are all it vouches for.
+    const total = reportedTotals.get(key) ?? fetched.get(key) ?? 0
+    const list = scopes.get(profile) ?? []
+    list.push({ backend: identity.backendIds?.get(connection) || null, total })
+    scopes.set(profile, list)
+  }
 
-    if (reportedTotals.has(key)) {
-      const reported = reportedTotals.get(key)!
-      // Never below the rows this scope visibly added.
-      count = Math.max(addedCount, overlaps ? reported - primaryCount : reported)
+  const unknownPrimary = new Set(identity.unknownPrimaryProfiles ?? [])
+  const primaryBackend = identity.primaryBackendId || null
+  let contribution = 0
+
+  for (const [profile, list] of scopes) {
+    const primaryCount = Math.max(0, primaryTotals[profile] || 0)
+    const known = new Map<string, number>()
+    let unknownMax = 0
+
+    const add = (backend: null | string, total: number) => {
+      if (backend) {
+        known.set(backend, Math.max(known.get(backend) || 0, total))
+      } else {
+        unknownMax = Math.max(unknownMax, total)
+      }
     }
 
-    profileTotals[profile] = (profileTotals[profile] || 0) + count - addedCount
-    contribution += count
+    if (primaryCount > 0) {
+      add(unknownPrimary.has(profile) ? null : primaryBackend, primaryCount)
+    }
+
+    for (const { backend, total } of list) {
+      add(backend, total)
+    }
+
+    let knownSum = 0
+
+    for (const total of known.values()) {
+      knownSum += total
+    }
+
+    const visible = (primaryVisible.get(profile) || 0) + (addedPerProfile.get(profile) || 0)
+    const union = Math.max(primaryCount, knownSum, unknownMax, visible)
+    profileTotals[profile] = union
+    contribution += union - primaryCount
   }
 
   return contribution
 }
 
-/** Fetch and merge one registry scan, retaining its backend totals for deep pages. */
+/** Fetch and merge one registry scan, retaining its backend totals for deep pages. Each source's
+ *  `backendId` and `identity.primaryBackendId` decide which totals are the same backend. */
 export async function mergeRegistrySessionRows(
   sources: RegistrySessionSource[],
   searchParams: URLSearchParams,
   getJson: GetJsonForDescriptor,
   merged: unknown[],
-  profileTotals: Record<string, number>
+  profileTotals: Record<string, number>,
+  identity: Omit<RegistryBackendIdentity, 'backendIds'> = {}
 ): Promise<number> {
   const reportedTotals = new Map<string, number>()
   const registryRows = await fetchRegistrySessionRows(sources, searchParams, getJson, reportedTotals)
   const before = merged.length
   spliceRegistrySessionRows(merged, registryRows, profileTotals)
 
-  return applyRegistrySessionTotals(
-    registryRows,
-    merged.slice(before),
-    reportedTotals,
-    profileTotals,
-    merged.slice(0, before)
-  )
+  const backendIds = new Map<string, string>()
+
+  for (const source of sources) {
+    const id = typeof source.backendId === 'string' ? source.backendId.trim() : ''
+
+    if (id) {
+      backendIds.set(source.connectionId, id)
+    }
+  }
+
+  return applyRegistrySessionTotals(registryRows, merged.slice(before), reportedTotals, profileTotals, merged.slice(0, before), {
+    ...identity,
+    backendIds
+  })
 }
 
 /**

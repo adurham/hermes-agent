@@ -547,6 +547,154 @@ for (const [label, primaryIds] of [
   })
 }
 
+// Review round 2 (RT-42): production primary rows are never tagged with a connection_id, so
+// overlap must come from the BACKEND each side read (its install_id), not from row tags.
+// Unknown identity takes the larger total per profile and never the sum.
+const rt42Host = (all: Array<{ id: string; profile: string; started_at: number }>) => {
+  const profileTotals: Record<string, number> = {}
+
+  for (const row of all) {
+    profileTotals[row.profile] = (profileTotals[row.profile] || 0) + 1
+  }
+
+  return async (_descriptor: unknown, path: string) => {
+    const params = new URL(path, 'http://x').searchParams
+    const start = Number(params.get('offset'))
+    const limit = Number(params.get('limit'))
+
+    return { sessions: all.slice(start, start + limit).map(row => ({ ...row })), total: all.length, profile_totals: profileTotals }
+  }
+}
+
+const rt42Rows = Array.from({ length: 650 }, (_, i) => ({ id: `s${i}`, profile: 'default', started_at: 650 - i }))
+
+const rt42Source = (connectionId: string, backendId?: string) => ({
+  connectionId,
+  kind: 'remote',
+  backends: [{ descriptor: 'r', profileLabel: null }],
+  ...(backendId ? { backendId } : {})
+})
+
+for (const [label, ids] of [
+  ['the oldest half of', Array.from({ length: 325 }, (_, i) => 325 + i)],
+  ['the newest half of', Array.from({ length: 325 }, (_, i) => i)],
+  ['all of', Array.from({ length: 650 }, (_, i) => i)]
+] as const) {
+  for (const identity of ['unknown', 'the same install_id'] as const) {
+    test(`an untagged primary holding ${label} a registry host (${identity}) totals the 650 union`, async () => {
+      const merged: unknown[] = ids.slice(0, 20).map(i => ({ id: `s${i}`, profile: 'default' }))
+      const profileTotals: Record<string, number> = { default: ids.length }
+      const same = identity !== 'unknown'
+
+      const contribution = await mergeRegistrySessionRows(
+        [rt42Source('R', same ? 'host' : undefined)],
+        new URLSearchParams({ limit: '20', offset: '0' }),
+        rt42Host(rt42Rows),
+        merged,
+        profileTotals,
+        same ? { primaryBackendId: 'host' } : {}
+      )
+
+      assert.equal(ids.length + contribution, 650)
+      assert.equal(profileTotals.default, 650)
+    })
+  }
+}
+
+test('two registry connections to one install plus a known-distinct primary total the 750 union', async () => {
+  const merged: unknown[] = Array.from({ length: 20 }, (_, i) => ({ id: `L${i}`, profile: 'default' }))
+  const profileTotals: Record<string, number> = { default: 100 }
+
+  const contribution = await mergeRegistrySessionRows(
+    [rt42Source('R1', 'host'), rt42Source('R2', 'host')],
+    new URLSearchParams({ limit: '20', offset: '0' }),
+    rt42Host(rt42Rows),
+    merged,
+    profileTotals,
+    { primaryBackendId: 'local' }
+  )
+
+  assert.equal(100 + contribution, 750)
+  assert.equal(profileTotals.default, 750)
+})
+
+test('two registry connections with unknown identity never sum: the larger total wins', async () => {
+  const merged: unknown[] = Array.from({ length: 20 }, (_, i) => ({ id: `L${i}`, profile: 'default' }))
+  const profileTotals: Record<string, number> = { default: 100 }
+
+  const contribution = await mergeRegistrySessionRows(
+    [rt42Source('R1'), rt42Source('R2')],
+    new URLSearchParams({ limit: '20', offset: '0' }),
+    rt42Host(rt42Rows),
+    merged,
+    profileTotals
+  )
+
+  // An undercount (650, not 750) is acceptable here; 1300 would be a double count.
+  assert.equal(100 + contribution, 650)
+  assert.equal(profileTotals.default, 650)
+})
+
+test('a registry host known to differ from the primary is summed', async () => {
+  const merged: unknown[] = Array.from({ length: 20 }, (_, i) => ({ id: `L${i}`, profile: 'default' }))
+  const profileTotals: Record<string, number> = { default: 100 }
+
+  const contribution = await mergeRegistrySessionRows(
+    [rt42Source('R', 'host')],
+    new URLSearchParams({ limit: '20', offset: '0' }),
+    rt42Host(rt42Rows),
+    merged,
+    profileTotals,
+    { primaryBackendId: 'local' }
+  )
+
+  assert.equal(100 + contribution, 750)
+})
+
+for (const identity of ['unknown', 'the same install_id'] as const) {
+  test(`primary and registry on one host (${identity}): a profile absent from the prefix is not double counted`, async () => {
+    const all = [
+      ...Array.from({ length: 650 }, (_, i) => ({ id: `d${i}`, profile: 'default', started_at: 10_000 - i })),
+      ...Array.from({ length: 100 }, (_, i) => ({ id: `w${i}`, profile: 'work', started_at: 100 - i }))
+    ]
+
+    const merged: unknown[] = all.slice(0, 20).map(row => ({ ...row }))
+    const profileTotals: Record<string, number> = { default: 650, work: 100 }
+    const same = identity !== 'unknown'
+
+    const contribution = await mergeRegistrySessionRows(
+      [rt42Source('R', same ? 'host' : undefined)],
+      new URLSearchParams({ limit: '20', offset: '0' }),
+      rt42Host(all),
+      merged,
+      profileTotals,
+      same ? { primaryBackendId: 'host' } : {}
+    )
+
+    assert.equal(750 + contribution, 750)
+    assert.equal(profileTotals.work, 100)
+  })
+}
+
+test('a remote-override profile on the primary side is never summed with a registry host', async () => {
+  // `work` came from a per-profile remote override, not the primary backend: its backend is
+  // unknown even though the primary's own install_id differs from the registry host's.
+  const all = Array.from({ length: 100 }, (_, i) => ({ id: `w${i}`, profile: 'work', started_at: 100 - i }))
+  const merged: unknown[] = all.slice(0, 20).map(row => ({ ...row }))
+  const profileTotals: Record<string, number> = { work: 100 }
+
+  const contribution = await mergeRegistrySessionRows(
+    [rt42Source('R', 'host')],
+    new URLSearchParams({ limit: '20', offset: '0' }),
+    rt42Host(all),
+    merged,
+    profileTotals,
+    { primaryBackendId: 'local', unknownPrimaryProfiles: ['work'] }
+  )
+
+  assert.equal(100 + contribution, 100)
+})
+
 test('a failed later registry page does not contribute a stale first-page total', async () => {
   const reported = new Map<string, number>()
 
