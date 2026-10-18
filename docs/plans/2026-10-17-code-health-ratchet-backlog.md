@@ -2750,6 +2750,16 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `tests/gateway/test_feishu_comment_event_loop.py` (2 tests, both red on main); the 5
   feishu_comment-referencing test files 32/32. `scripts/check` green, 12 checks.
   Branch `claude/fix-feishu-comment-correctness-yxzvmm`.
+- 2026-10-18 — C-1061 `plugins/platforms/google_chat/adapter.py` (async): ASYNC240×1 → 0 (file
+  hits 12 → 11; the 11 BLE001 untouched, in place and in order). `_send_file`'s pre-upload
+  existence check is now `await asyncio.to_thread(os.path.exists, path)`; same result, same
+  `file not found` error. No sibling instances: the other path I/O in the file
+  (`_load_sa_credentials_from`, `_ThreadCountStore.load`, bot-id cache) runs in sync functions.
+  FILE_LINES 1786 → 1786. The 4 queue-row test files 156 passed, 2 skipped; a throwaway
+  missing-file `_send_file` check (not committed) returned the same error. `scripts/check`: health
+  ok (0 blocking), 11 of 12 checks green; ruff fails only on `agent/turn_truncation.py:572`
+  (RUF100 unused `# noqa: BLE001`, added by main's f21f8ad2), identical on clean main, left alone.
+  Branch `claude/c1061-google-chat-adapter-async-80kzyy`.
 
 
 ## Campaign close-out — 2026-10-17/18 (50 units)
