@@ -23,13 +23,18 @@ def _platforms(authority, policy):
 READS = {'toolsets': _toolsets, 'platforms': _platforms}
 
 
-async def run_info_read(authority, live, name) -> dict:
-    """Render *name* off the owner loop, in the owning profile; None policy = no frozen route."""
+async def owner_lines(authority, lines) -> dict:
+    """``slash.exec``'s reply for ``lines()``, built off the owner loop in the owning profile."""
     from gateway.session_authorities import owner_scope
-    from gateway.session_policy import policy_for_source
-    policy = policy_for_source(authority.runner, live.source)
 
     def build():
         with owner_scope(authority):
-            return '\n'.join(READS[name](authority, policy)).strip('\n')
+            return '\n'.join(lines()).strip('\n')
     return {'type': 'exec', 'output': await asyncio.to_thread(build)}
+
+
+async def run_info_read(authority, live, name) -> dict:
+    """Render *name* off the owner loop, in the owning profile; None policy = no frozen route."""
+    from gateway.session_policy import policy_for_source
+    policy = policy_for_source(authority.runner, live.source)
+    return await owner_lines(authority, lambda: READS[name](authority, policy))

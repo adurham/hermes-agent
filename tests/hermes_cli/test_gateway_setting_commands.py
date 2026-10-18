@@ -42,3 +42,38 @@ def test_refine_and_review_run_on_the_gateway_sessions_agent(monkeypatch, capsys
     assert conn.calls == [("slash.exec", {"session_id": "local-s", "command": "refine naming"}),
                           ("slash.exec", {"session_id": "local-s", "command": "review the diff"})]
     assert "Busy input mode: queue" in capsys.readouterr().out  # the owner's reply is printed
+
+
+def test_cron_writes_run_on_the_gateway_not_in_the_cli(monkeypatch, capsys):
+    """T1 (#134889): /cron add|pause|remove go to the gateway's handler (one writer to the profile's
+    cron store), with no answer deadline (a /cron run lasts as long as its job); nothing writes here."""
+    calls = []
+
+    class _UntilConn(_Conn):
+        def call_until(self, method, wake, **params):
+            calls.append((method, params, wake.is_set()))
+            return {"type": "exec", "output": "(^_^)b Paused job: probe (probe)"}
+    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: _UntilConn())
+
+    def local_write(**_k):
+        raise AssertionError("the CLI process must not write the cron store")
+    monkeypatch.setattr("tools.cronjob_tools.cronjob", local_write)
+    cli = SimpleNamespace(session_id="local-s", _gateway_command_wait=None)
+    assert gateway_setting_commands.run(cli, "cron", "/cron pause probe") is True
+    assert calls == [("slash.exec", {"session_id": "local-s", "command": "cron pause probe"}, False)]
+    assert "Paused job: probe" in capsys.readouterr().out and cli._gateway_command_wait is None
+
+
+def test_ctrl_c_during_a_cron_wait_prints_the_stopped_line_and_propagates(monkeypatch, capsys):
+    """Ctrl+C while /cron waits on the gateway (a /cron run lasts as long as its job): the same stopped line
+    as a plugin command, the wait handle cleared, and the interrupt still reaches the CLI."""
+    import pytest
+
+    class _InterruptedConn(_Conn):
+        def call_until(self, method, wake, **params):
+            raise KeyboardInterrupt
+    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: _InterruptedConn())
+    cli = SimpleNamespace(session_id="local-s", _gateway_command_wait=None)
+    with pytest.raises(KeyboardInterrupt):
+        gateway_setting_commands.run(cli, "cron", "/cron run probe")
+    assert "/cron: stopped waiting" in capsys.readouterr().out and cli._gateway_command_wait is None

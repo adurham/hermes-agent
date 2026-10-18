@@ -7,6 +7,8 @@ command, every surface) and the CLI prints its reply. Client-side state the CLI 
 (``/busy``: what Enter does while a turn runs) is mirrored locally after the owner accepts it.
 ``/refine`` and ``/review`` take the same route: their background reviewer must run beside the
 session's agent in the gateway (as on messaging), where its result is delivered back to the session.
+``/cron`` too: the profile's cron store belongs to the gateway that fires its jobs, so the gateway runs
+main's handler (one writer); ``/cron run`` lasts as long as the job, so it waits with no deadline.
 """
 from __future__ import annotations
 
@@ -28,7 +30,17 @@ def _watch_reviewer(cli, _arg):
 
 
 GATEWAY_SETTINGS = {"personality": None, "busy": _mirror_busy, "approvals": None, "footer": None, "fast": None,
-                    "refine": None, "review": _watch_reviewer}
+                    "refine": None, "review": _watch_reviewer, "cron": None}
+# Answered when their work is done, however long (``/cron run`` runs the job): no deadline, on a socket of
+# their own so the session's prompts never queue behind them (GatewayConnection.call_until); Ctrl+C stops waiting.
+_UNBOUNDED = frozenset({"cron"})
+
+
+def _call(cli, connection, canonical, command):
+    if canonical not in _UNBOUNDED:
+        return connection.call("slash.exec", session_id=cli.session_id, command=command)
+    from hermes_cli.gateway_plugin_commands import call_unbounded
+    return call_unbounded(cli, connection, canonical, command)
 
 
 def run(cli, canonical, cmd):
@@ -41,13 +53,15 @@ def run(cli, canonical, cmd):
         return False
     from cli import _cprint
     from hermes_cli.gateway_client import GatewayClientError
+    from hermes_cli.gateway_plugin_commands import STOPPED
     parts = (cmd or "").strip().split(None, 1)
     arg = parts[1].strip() if len(parts) > 1 else ""
     try:
-        reply = connection.call("slash.exec", session_id=cli.session_id,
-                                command=canonical + (" " + arg if arg else ""))
+        reply = _call(cli, connection, canonical, canonical + (" " + arg if arg else ""))
     except GatewayClientError as exc:
         _cprint(f"  /{canonical}: {exc}")
+        return True
+    if reply is STOPPED:
         return True
     for line in str((reply or {}).get("output") or "").splitlines():
         _cprint(f"  {line}" if line else "")
