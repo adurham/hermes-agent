@@ -21363,3 +21363,25 @@ The exo dsv41 engine replaced its in-band "repetition-loop degeneration" ERROR w
 **Tests:** `tests/agent/test_engine_loop_truncation.py` (6 cases: passthrough, stream accumulation, cause detection, ordinary-length negative, defensive transport failure). Related single-file suites still pass (`test_truncated_tool_call_boost.py` 7, `test_anthropic_truncation_continuation.py` 8, `test_relay_compaction.py` 10). Two relay ATOF tests fail identically on the pre-change tree (pre-existing).
 
 **Upstreamable:** no — the extension is exo-specific.
+
+## 2026-10-18 — Ratchet campaign tail: 15 units merged past the `code-health-2026-10-17` tag
+
+**Scope:** the campaign's last 15 units reached `main` *after* the close-out tag, so the campaign record above (base `6bb436671e67` -> head `26ddeb4c51`) does not cover them. Range `26ddeb4c51` -> `5dd6189f6d` is 26 commits; 16 of them post-date the previous FORK.md entry. The unit contract is unchanged (one unit = one commit, one rule family, behaviour identical beyond the fix, `scripts/check` green at each merge). Per-unit before/after counts, branch names and focused test numbers live in `docs/plans/2026-10-17-code-health-ratchet-backlog.md`'s progress log: its `2026-10-18` block has 27 entries, of which 12 landed before the tag and these 15 after it.
+
+**Swallow narrowing (BLE001/S110 -> 0):** `plugins/platforms/feishu/adapter.py` 21+5 (C-1089 — 17 catch-all boundaries kept, now logging the traceback at debug/`exc_info=True` instead of passing silently; OGG duration parse narrowed to `OSError/ValueError/struct.error`), `tui_gateway/methods_session.py` 34 (C-1088), `tui_gateway/methods_tools.py` 25 (C-1090), `tui_gateway/session_notifications.py` 24+1 (C-1091), `tui_gateway/methods_prompt.py` 12 (C-1108), `cron/scheduler_delivery.py` 23 (C-1094), `plugins/platforms/email/adapter.py` 14 (C-1105), `plugins/platforms/wecom/adapter.py` 13 (C-1106), `providers/__init__.py` 14+2 (C-1100), `mcp_serve.py` 11+1 (C-1107). Return values unchanged throughout; the pattern is a narrowed exception tuple where the failure is understood, and a logged catch-all where the boundary must stay.
+
+**Async off the event loop (ASYNC230/ASYNC240, RUF006):** `plugins/platforms/telegram/adapter.py` (C-1048 — blocking `Path` probes in coroutines -> `asyncio.to_thread`), `plugins/platforms/slack/adapter.py` (C-1051 — socket-restart task now owned and held instead of fire-and-forget; new `tests/gateway/test_slack_socket_restart_task.py`, 2 tests, red on base), `plugins/platforms/discord/adapter.py` (C-1045 — detached notifier tasks kept alive, blocking I/O off-loop; new `tests/plugins/test_discord_runtime_failure.py`), `plugins/platforms/feishu/adapter.py` (C-1047), `plugins/platforms/google_chat/adapter.py` (C-1061 — `_send_file`'s existence check off-loop).
+
+**Profile / structure / timeout (HX005, HX006, HX011):** slack's rich_text walker ladder -> type -> walker table (C-1081, `HX011`); buzz's credentials fallback dir expanded at call time (C-1078, new `tests/gateway/test_buzz_credentials_home.py`) and its CLI reap bounded after a timeout kill (C-1068); `tui_gateway/contracts/registry.py` reads the strict-mode marker at report time rather than import time (C-1079, new `tests/tui_gateway/contracts/test_registry_strict_mode.py`); `tui_gateway/host_supervisor.py`'s compute-host exit watcher wait bounded (C-1073).
+
+**Left unfixed by design:** C-1072 `pm/runtime.py` `HX006`x1 — `run_cli`'s timeout value is an owner call, not a mechanical fix. Count stays 1; the reasoning is recorded in `dd2b843868`.
+
+**Structural:** two pure helpers moved to sibling modules so the file-length ratchet did not move backwards — feishu's OGG duration parser from `_get_audio_duration_ms` (one internal caller) to `plugins/platforms/feishu/feishu_audio.py::ogg_duration_ms` (differential vs the old copy over 302 inputs: 0 mismatches), and slack's `_collect_slack_table_cell_text` to `plugins/platforms/slack/adapter_rich_text.py`.
+
+**Verification at head `5dd6189f6d` (macOS, repo `.venv`):** the four new test files plus `tests/agent/test_engine_loop_truncation.py` -> 13 passed. `scripts/check` -> 12 checks, ok. Note `scripts/check` run inside the live install (`~/.hermes/hermes-agent`) trips `profile-archives` on untracked `.cache/desktop-inputs/...` tarballs that live in that checkout; run the gate from `~/repos/hermes-agent`, where it is green.
+
+**Open (unchanged from the campaign record):** the full-suite head-vs-base FAILED-set delta still awaits amd-workstation, and the live CLI async smoke has not been run.
+
+**Upstreamable:** the ASYNC230/240 and RUF006 moves are the same family as the earlier ratchet batch and are genuinely upstreamable; HX005/HX006/HX011 are fork-local rules and BLE001 narrowing is opinionated style, so both stay fork-side. No PRs filed — that needs per-action approval, and an approved patch should be byte-identical to the fork commit.
+
+**Tag state:** `code-health-2026-10-17` still points at `26ddeb4c51`; head is 26 commits past it. Whether to re-tag belongs to the owner.
