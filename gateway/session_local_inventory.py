@@ -227,8 +227,8 @@ def publish_settled_info(turn, agent) -> None:
 
     A ``model_override`` admission (``/model --once``, ``/moa``) built its agent on the one-turn
     route. That agent must not become the route Desktop, the TUI, and resume read. Drop it from
-    the cache (released once this turn's running slot clears) and publish the policy model and
-    provider."""
+    the cache (released once this turn's running slot clears) and publish the model and provider
+    of the policy route, both from one read of the profile."""
     if agent is None:
         return
     with contextlib.suppress(Exception):
@@ -259,7 +259,9 @@ def publish_settled_info(turn, agent) -> None:
                 logger.debug("one-turn policy route unavailable", exc_info=True)
                 policy = None
             if policy is not None:
-                info["model"] = policy.current_model(authority)
-                if policy.provider:
-                    info["provider"] = policy.provider
+                config, info["model"] = policy.effective(authority, secrets=False)
+                section = config.get("model")
+                provider = section.get("provider") if isinstance(section, dict) else None
+                if provider:
+                    info["provider"] = provider
         turn._publish_execution("session.info", info)

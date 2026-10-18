@@ -9,7 +9,8 @@ from hermes_cli.model_switch import ModelSwitchResult
 def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monkeypatch):
     from gateway.session_local_inventory import publish_settled_info
     published, evicted = [], []
-    policy = SimpleNamespace(current_model=lambda _authority: "session-model", provider="openrouter", source="cli")
+    policy = SimpleNamespace(effective=lambda _authority, secrets=True: (
+        {"model": {"provider": "openrouter"}}, "session-model"), source="cli")
     live = SimpleNamespace(route="route-1", source=SimpleNamespace())
     authority = SimpleNamespace(profile_id="p", sessions={"s": live})
     turn = SimpleNamespace(
@@ -122,7 +123,7 @@ def test_a_one_turn_agent_is_released_once_its_running_slot_clears(monkeypatch):
     turn = SimpleNamespace(_ctx=SimpleNamespace(inbound_message_id="adm", session_key=route),
                            _approval_owner=(authority, "s", 1), _runner=runner,
                            _publish_execution=lambda kind, payload: published.append(payload))
-    policy = SimpleNamespace(current_model=lambda _a: "session-model", provider="openrouter")
+    policy = SimpleNamespace(effective=lambda _a, secrets=True: ({"model": {"provider": "openrouter"}}, "session-model"))
     monkeypatch.setattr(session_local, "local_session_info", lambda *_a, **_k: {"model": "once-model"})
     monkeypatch.setattr(session_policy, "policy_for_source", lambda *_a, **_k: policy)
 
@@ -138,3 +139,33 @@ def test_a_one_turn_agent_is_released_once_its_running_slot_clears(monkeypatch):
     assert wait_until(released.is_set, timeout=5, what="the one-turn agent was released")
     assert agent.release_clients.call_count == 1
 
+
+def test_settled_info_pairs_model_and_provider_from_one_profile_read(monkeypatch):
+    """Review of #140969: ``policy.provider`` read the frozen config while ``current_model`` followed
+    the profile, so a following Bot Chat whose profile moved published the new model with the old
+    provider."""
+    from gateway import session_local, session_policy
+    from gateway.session_local_inventory import publish_settled_info
+    published = []
+
+    class _Policy:
+        provider = "anthropic"  # the frozen config's
+
+        def effective(self, _authority, *, secrets=True):
+            assert secrets is False
+            return {"model": {"provider": "openrouter", "default": "openai/gpt-b"}}, "openai/gpt-b"
+
+        def current_model(self, _authority):
+            return "openai/gpt-b"
+
+    live = SimpleNamespace(route="route-1", source=SimpleNamespace())
+    authority = SimpleNamespace(profile_id="p", sessions={"s": live})
+    turn = SimpleNamespace(_ctx=SimpleNamespace(inbound_message_id="adm"), _approval_owner=(authority, "s", 1),
+                           _runner=SimpleNamespace(), _publish_execution=lambda kind, payload: published.append(payload))
+    agent = SimpleNamespace(model="once-model", provider="nous", tools=None, _cached_system_prompt="",
+                            context_compressor=None)
+    monkeypatch.setattr(session_local, "local_session_info", lambda *_a, **_k: {"model": "once-model", "provider": "nous"})
+    monkeypatch.setattr(session_policy, "policy_for_source", lambda *_a, **_k: _Policy())
+    with cli_turn_scope("adm", {"model_override": {"model": "once-model", "provider": "nous"}}):
+        publish_settled_info(turn, agent)
+    assert (published[-1]["model"], published[-1]["provider"]) == ("openai/gpt-b", "openrouter")
