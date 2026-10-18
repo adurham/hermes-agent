@@ -206,8 +206,49 @@ function setMarkerBucket(profile: string, ids: readonly string[]): void {
   $unreadFinishedMarkers.set(next)
 }
 
+/** Admission ids of turns this Desktop submitted, oldest first, until their
+ *  stamped completion consumes them. Per turn, never per session; bounded so ids
+ *  of turns that never complete here cannot accumulate. */
+const desktopAdmissions = new Set<string>()
+const DESKTOP_ADMISSIONS_CAP = 256
+
+/** Desktop's own submit was admitted as `admissionId`: that turn's completion is the user's. */
+export function noteDesktopAdmission(admissionId: string | undefined): void {
+  if (!admissionId) {
+    return
+  }
+
+  desktopAdmissions.add(admissionId)
+
+  for (const oldest of desktopAdmissions) {
+    if (desktopAdmissions.size <= DESKTOP_ADMISSIONS_CAP) {
+      break
+    }
+
+    desktopAdmissions.delete(oldest)
+  }
+}
+
+/** A messaging turn Desktop submitted has completed (`admissionId`, the owner's
+ *  stamp on its `message.complete`): mark it unread unless it is on screen. The
+ *  busy-to-idle edge never lights messaging sessions; this stamped completion is
+ *  the one place their unread is decided, so no settle path can misattribute it. */
+export function lightDesktopMessagingCompletion(
+  storedSessionId: string,
+  admissionId: string | undefined,
+  focused: boolean
+) {
+  if (!admissionId || !desktopAdmissions.delete(admissionId) || focused) {
+    return
+  }
+
+  if (isMessagingSource(resolveLoadedRow(storedSessionId)?.source)) {
+    markSessionUnreadFinished(storedSessionId)
+  }
+}
+
 /** A messaging conversation delivers its completion to its own platform; a
- *  Desktop observer is not an unread recipient of it. */
+ *  Desktop observer is not an unread recipient of it at the busy-to-idle edge. */
 export function isMessagingCompletion(storedSessionId: string, profile?: string): boolean {
   const row = profile
     ? rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]).find(
