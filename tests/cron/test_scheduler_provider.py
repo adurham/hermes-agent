@@ -460,8 +460,6 @@ def test_heartbeat_roundtrip_and_age(tmp_path, monkeypatch):
     cron_dir = tmp_path / "cron"
     monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
     monkeypatch.setattr(jobs, "OUTPUT_DIR", cron_dir / "output")
-    monkeypatch.setattr(jobs, "TICKER_HEARTBEAT_FILE", cron_dir / "ticker_heartbeat")
-    monkeypatch.setattr(jobs, "TICKER_SUCCESS_FILE", cron_dir / "ticker_last_success")
 
     # No files yet -> unknown (None), NOT "dead"
     assert jobs.get_ticker_heartbeat_age() is None

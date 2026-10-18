@@ -30,7 +30,6 @@ def cron_store(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     (hermes_home / "cron").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
     monkeypatch.setattr(jobs_mod, "OUTPUT_DIR", hermes_home / "cron" / "output")

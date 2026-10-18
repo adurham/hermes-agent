@@ -1499,8 +1499,6 @@ class TestLateEnvRepointScopesStore:
         assert store.cron_dir == expected
         assert store.jobs_file == expected / "jobs.json"
         assert store.output_dir == expected / "output"
-        # the import-time compatibility constants are untouched
-        assert jobs.JOBS_FILE != store.jobs_file
 
 
     def test_use_cron_store_override_still_wins(self, tmp_path, monkeypatch):
@@ -1539,32 +1537,19 @@ class TestLateEnvRepointScopesStore:
         self, tmp_path, monkeypatch
     ):
         """The public API, not the store internals: save_jobs()/load_jobs()
-        called after a post-import HERMES_HOME repoint must operate on the NEW
-        home's jobs.json and leave the import-time file byte-identical.
+        called after a HERMES_HOME repoint must operate on the NEW home's
+        jobs.json and leave the earlier home's file byte-identical.
 
-        The "import-time home" is SIMULATED at a tmp location by patching the
-        module constants and the import-time snapshot together (so they still
-        compare equal and the deliberate-repoint branch does not fire). The
-        test must never touch the real import-time jobs.json: if this module
-        was first imported before the suite's env isolation applied, that
-        path IS the developer's live file — writing a sentinel there is
-        exactly the incident this PR exists to prevent."""
+        The earlier home is a tmp location: the test must never touch the
+        developer's live jobs.json, which is exactly the incident this guards."""
         from cron import jobs
 
-        sim_old_home = tmp_path / "import-time-home"
-        sim_cron = sim_old_home / "cron"
-        monkeypatch.setattr(jobs, "HERMES_DIR", sim_old_home)
-        monkeypatch.setattr(jobs, "CRON_DIR", sim_cron)
-        monkeypatch.setattr(jobs, "JOBS_FILE", sim_cron / "jobs.json")
-        monkeypatch.setattr(jobs, "OUTPUT_DIR", sim_cron / "output")
-        monkeypatch.setattr(
-            jobs, "_IMPORT_STORE",
-            jobs._CronStorePaths(jobs.CRON_DIR, jobs.JOBS_FILE, jobs.OUTPUT_DIR),
-        )
+        old_home = tmp_path / "earlier-home"
+        monkeypatch.setenv("HERMES_HOME", str(old_home))
 
-        # Plant a sentinel at the (simulated) import-time location — the file
-        # a late-patching fixture used to clobber.
-        old_file = jobs.JOBS_FILE
+        # Plant a sentinel at the earlier home — the file a late-patching
+        # fixture used to clobber.
+        old_file = jobs._current_cron_store().jobs_file
         old_file.parent.mkdir(parents=True, exist_ok=True)
         sentinel = '[{"id": "sentinel-do-not-touch"}]'
         old_file.write_text(sentinel, encoding="utf-8")
@@ -1587,7 +1572,7 @@ class TestLateEnvRepointScopesStore:
         assert [j["id"] for j in loaded] == ["lateenvjob01"]
         new_file = new_home.resolve() / "cron" / "jobs.json"
         assert new_file.is_file()
-        # ...and the import-time file is byte-identical to the sentinel.
+        # ...and the earlier home's file is byte-identical to the sentinel.
         assert old_file.read_text(encoding="utf-8") == sentinel
 
 

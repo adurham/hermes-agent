@@ -44,7 +44,6 @@ def slot_env(tmp_path, monkeypatch):
     import cron.jobs as J
     import cron.scheduler as S
 
-    monkeypatch.setattr(J, "HERMES_DIR", home)
     monkeypatch.setattr(J, "CRON_DIR", home / "cron")
     monkeypatch.setattr(J, "JOBS_FILE", home / "cron" / "jobs.json")
     monkeypatch.setattr(J, "OUTPUT_DIR", home / "cron" / "output")
