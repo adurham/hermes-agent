@@ -174,3 +174,51 @@ async def test_next_burst_waits_while_the_chats_last_one_commits(monkeypatch, tm
         release.set()
     await asyncio.wait_for(second, 10)
     assert await owner.settle(3) == [('', 1), ('', 1)]
+
+
+@pytest.mark.asyncio
+async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkeypatch, tmp_path):
+    """Idle video V (slow capture), then queue-mode text B (held as a burst, then queued behind V's
+    route reservation, which lets the serial reader go on), then an authorized /restart. The command
+    barrier must wait until B is durably committed, not only until its FIFO position is fixed: admission
+    closes after it, and an input with no row then is lost for good."""
+    adapter, source = _signal(monkeypatch)
+    entered, release = _hold_capture(monkeypatch)
+    runner = GatewayRunner(GatewayConfig())
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True, message_id='sent')
+    monkeypatch.setattr(adapter, 'send', send)
+    monkeypatch.setattr(adapter, 'send_typing', lambda *a, **k: asyncio.sleep(0))
+    adapter.gateway_runner = runner
+    runner.adapters = {adapter.platform: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    runner._wire_adapter_handlers(adapter, busy_text_mode='queue')
+    monkeypatch.setattr(runner, 'request_restart', lambda **kw: setattr(runner, '_draining', True))
+
+    async def turn(event, source, quick_key, run_generation):
+        execution_result.get()['result'] = {'final_response': 'ok', 'messages': []}
+        return 'ok'
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    clip = tmp_path / 'clip.mp4'
+    clip.write_bytes(b'video-bytes' * 1000)
+    video = MessageEvent(text='', message_type=MessageType.VIDEO, source=source, message_id='V',
+                         media_urls=[str(clip)], media_types=['video/mp4'])
+    restart = None
+    try:
+        await adapter.handle_message(video)
+        assert await asyncio.to_thread(entered.wait, 5)
+        await adapter.handle_message(MessageEvent(text='B', source=source, message_id='B'))
+        restart = asyncio.create_task(adapter.handle_message(
+            MessageEvent(text='/restart', source=source, message_id='R')))
+        await async_wait_until(lambda: any(entry[1] >= 2 for entry in authority._route_turns.values()),
+                               timeout=5, what='B queued behind the capturing V')
+        await asyncio.wait({restart}, timeout=2.0)  # a negative window: the restart must still wait here
+    finally:
+        release.set()
+    await asyncio.wait_for(restart, 15)
+    assert sorted(row['request_id'] for row in _rows(authority)) == ['B', 'V'], _rows(authority)
+    runner._draining = False
+    await async_wait_until(lambda: all(row['status'] == 'terminal' for row in _rows(authority)), timeout=15,
+                           what='both turns to run')
+    await asyncio.to_thread(authority.db.close)

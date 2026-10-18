@@ -17,6 +17,10 @@ executing_admission = ContextVar('executing_admission', default=False)
 viewer_turn: ContextVar = ContextVar('viewer_turn', default=None)
 # Set by a busy-path caller that must be released once its input is durably queued.
 busy_acceptance = ContextVar('busy_acceptance', default=None)
+# Set beside it by a caller that must also know when the row is durably committed (a busy burst's
+# commit task, which command barriers and /restart wait on): ``busy_acceptance`` may already resolve
+# once the input's FIFO position is fixed behind an earlier input of its chat still capturing.
+busy_commit = ContextVar('busy_commit', default=None)
 # ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
 _CONTENT_CLAUSES = frozenset({
     'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
@@ -30,11 +34,14 @@ QUEUE_FULL_REPLY = ('⏳ Too many messages are already waiting in this conversat
 
 async def admit_message(authority, event):
     from gateway.session_authority import messaging_admission
-    accepted = busy_acceptance.get()
+    accepted, committed = busy_acceptance.get(), busy_commit.get()
     busy_acceptance.set(None)  # the drain task this schedules must not inherit the busy caller's future
+    busy_commit.set(None)
     ingress = messaging_admission.set(True if accepted is None else accepted)
     try:
         receipt = await authority.admit_native(event)
+        if committed is not None and not committed.done():
+            committed.set_result(None)  # the row is durable (any status): a barrier may go on
     except RuntimeStoreError as exc:
         if exc.reason == 'stale_generation' and exc.field == 'route':
             return None  # a later /stop or /new of the chat fenced it, as main cancels a queued row
@@ -392,13 +399,16 @@ async def deliver_response(adapter, event, session_key, response):
                                        record_delivery=results.append)
 
 
-async def dispatch_shared_busy(adapter, event, session_key):
+async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     """Serial receive loops (IRC, Signal) await this before reading their next frame, so return
     once the follow-up is committed to the FIFO, or queued behind an earlier input of its chat still
     capturing (its position is then fixed; acceptance still waits for the commit); a tracked
-    observer delivers its one reply."""
+    observer delivers its one reply. *durable*: return only once the row is committed (or the input
+    was refused, fenced or answered), never on the earlier position release: a busy burst's commit
+    task, which a command barrier (``/restart`` closing admission) waits on."""
     delivery_event = replace(event, source=replace(event.source))
     accepted = asyncio.get_running_loop().create_future()
+    committed = asyncio.get_running_loop().create_future() if durable else None
 
     async def observe():
         # Like the first message's lifecycle, this sender adopts the turn's crash marker and
@@ -421,15 +431,18 @@ async def dispatch_shared_busy(adapter, event, session_key):
             await adapter._release_turn_marker(delivery_event)
             await adapter._release_turn_marker(event)
 
-    token = busy_acceptance.set(accepted)
+    token, commit_token = busy_acceptance.set(accepted), busy_commit.set(committed)
     try:
         task = asyncio.create_task(observe())
     finally:
         busy_acceptance.reset(token)
+        busy_commit.reset(commit_token)
     adapter._background_tasks.add(task)
     task.add_done_callback(adapter._background_tasks.discard)
     try:
         await asyncio.wait({accepted, task}, return_when=asyncio.FIRST_COMPLETED)
+        if committed is not None and not task.done():
+            await asyncio.wait({committed, task}, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:
         if not accepted.done():
             task.cancel()  # cancelled before commit: the input was never ACKed
