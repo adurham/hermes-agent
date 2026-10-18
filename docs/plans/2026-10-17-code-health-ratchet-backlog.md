@@ -2630,3 +2630,11 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `test_cancelled_server_omitted_and_others_still_reported` (red on main); MCP probe/catalog/config
   + 89 `tests/tools/test_mcp*.py` files 964 passed; acp_adapter 4 files 46 passed (needs `--extra
   acp`). Branch `claude/fix-mcp-tool-discovery-timeout-95wueo`.
+- 2026-10-18 — C-0046 `tools/send_message_tool.py` async: ASYNC240 1 → 0 (no other ASYNC/HX007-9/RUF006
+  hits in the file; no unflagged sibling path I/O in its `async def`s — `os.path.splitext` is pure).
+  `_send_live_adapter_media`'s per-descriptor `os.path.exists` now runs via
+  `await asyncio.to_thread(os.path.exists, media_path)` (same check order, same not-found error, no
+  adapter call for a missing file). 30 test files referencing the module + buzz adapter: 565 passed,
+  0 failed, 1 skipped (`tests/hermes_cli/test_send_cmd.py` 5 errors = missing `aiohttp`, same on main);
+  old-vs-new differential over 14,364 descriptor/caption/voice/force_document/failure combos: 0
+  mismatches. `scripts/check` green. Branch `claude/c-0046-send-message-tool-async-swsiba`.
