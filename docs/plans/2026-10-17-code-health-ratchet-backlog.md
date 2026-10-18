@@ -2844,3 +2844,21 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   health ok, 11/12 — ruff fails on clean main too (RUF100 unused `noqa` at
   `agent/turn_truncation.py:572`, from f21f8ad2; not this unit). Branch
   `claude/fix-c1079-registry-profile-tcw38d`.
+- 2026-10-18 — C-1088 `tui_gateway/methods_session.py` swallow: BLE001 34 → 0 (file hits 34 → 0;
+  FILE_LINES 2357 → 2357, at its cap). No handler narrowed: every catch is an RPC/fail-open boundary
+  whose body reaches SessionDB, config, portal, compute-host or third-party pet/image code, and its
+  reply (`_err(code, str(e))`, fail-open payload, fail-closed 5036) is the contract; each now logs the
+  traceback. Existing message-only logs gained `exc_info=True` (pet emit / `_pet_method` / gallery /
+  config follow-up / provider list / draft copy, resume guard warning, `llm.oneshot` warning); silent
+  ones gained `logger.debug(..., exc_info=True)` (resume lazy/cold/eager x2, branch_stored parent read,
+  session.list / delete / title read+write / workspace.move / context_breakdown / undo / compress /
+  save write, message.react, handoff config + db, compute-host save/compress, billing call / views /
+  state, `display.pet` read); the fail-closed active-session snapshot logs at warning. Line budget:
+  `session.archive` and `session.set_hidden` (same body, different flag) now share
+  `_set_session_flag` (same db choice, pending_<flag>, 4001/5007 and reply keys; set_hidden still
+  resolves the stripped `session_id`), and four duplicated comment summaries (the longer copy beside
+  each kept) plus one wrapped `logger.info` were folded. 5 queue-row + delete test files 34/34;
+  `tests/tui_gateway/` 2617 passed, 5 failed + 1 collection error, identical on clean main
+  (connector accounts/operation, hosted-room two-gateway). `scripts/check`: health ok (0 blocking);
+  ruff red on clean main too (RUF100 unused `# noqa: BLE001` at `agent/turn_truncation.py:572`, from
+  main's f21f8ad2) — not this unit. Branch `claude/fix-c1088-methods-session-ble001-n0w73l`.
