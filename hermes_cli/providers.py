@@ -202,7 +202,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     mdev_info = _models_dev_info(canonical, allow_network)
     overlay = HERMES_OVERLAYS.get(canonical)
     if mdev_info is not None:
-        ov = overlay or HermesOverlay()
+        ov = overlay or _profile_overlay(canonical) or HermesOverlay()
         env_vars = list(mdev_info.env)
         for ev in ov.extra_env_vars:
             if ev not in env_vars:
@@ -249,6 +249,17 @@ def _plugin_profile_pdef(name: str) -> Optional[ProviderDef]:
                        api_key_env_vars=key_vars, base_url=(prof.base_url or "").strip(),
                        base_url_env_var=next(iter(url_vars), ""),
                        auth_type=prof.auth_type or "api_key", source="plugin-profile")
+
+
+def _profile_overlay(canonical: str) -> Optional[HermesOverlay]:
+    """A plugin profile with no ``HERMES_OVERLAYS`` entry is Hermes's own metadata for that id. When
+    models.dev starts listing the same id (``commandcode`` arrived under ``CMD_API_KEY``), its bare
+    entry must not shadow the key/base-URL env vars, transport and endpoint the runtime uses."""
+    pdef = _plugin_profile_pdef(canonical)
+    if pdef is None or pdef.id != canonical:
+        return None
+    return HermesOverlay(transport=pdef.transport, auth_type=pdef.auth_type, extra_env_vars=pdef.api_key_env_vars,
+                         base_url_override=pdef.base_url, base_url_env_var=pdef.base_url_env_var)
 
 
 def get_label(provider_id: str) -> str:

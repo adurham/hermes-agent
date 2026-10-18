@@ -140,20 +140,31 @@ class TestCommandCodeFetchModelsPickerContract:
     """
 
 
-    def test_resolve_provider_full(self):
+    @pytest.mark.parametrize("models_dev_lists_commandcode", [False, True])
+    def test_resolve_provider_full(self, monkeypatch, models_dev_lists_commandcode):
         """Both profiles must resolve through the model-switch path.
 
         Regression: ``resolve_provider_full`` only knew models.dev + overlay
         providers, so plugin-only providers (commandcode) failed with
         "Unknown provider" on /model switches even though the picker listed
-        them.
+        them. models.dev later listed ``commandcode`` under ``CMD_API_KEY``;
+        that entry must not shadow the key and base-URL vars the runtime reads.
         """
+        from agent import models_dev
         from hermes_cli.providers import resolve_provider_full
+
+        catalog = {"commandcode": {
+            "id": "commandcode", "name": "Command Code", "env": ["CMD_API_KEY"],
+            "api": "https://api.commandcode.ai/provider/v1", "models": {},
+        }} if models_dev_lists_commandcode else {}
+        monkeypatch.setattr(models_dev, "fetch_models_dev", lambda *a, **k: catalog)
 
         chat = resolve_provider_full("commandcode", {}, [])
         assert chat is not None and chat.id == "commandcode"
         assert chat.transport == "openai_chat"
         assert "COMMANDCODE_API_KEY" in chat.api_key_env_vars
+        assert chat.base_url_env_var == "COMMANDCODE_BASE_URL"
+        assert chat.base_url == "https://api.commandcode.ai/provider/v1"
 
         anth = resolve_provider_full("commandcode-anthropic", {}, [])
         assert anth is not None and anth.id == "commandcode-anthropic"
