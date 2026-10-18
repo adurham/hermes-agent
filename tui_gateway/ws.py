@@ -102,6 +102,8 @@ _WS_DISPATCH_QUEUE_MAX = 256
 # RPCs still retain arrival order, and no more than two expensive reads consume a connection.
 _WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown"})
 _WS_CONCURRENT_READ_LIMIT = 2
+# Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
+_WS_WAITING_READ_LIMIT = 8
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
 # of waking the loop once per token (each wakeup competes with the agent turn for the GIL). Keep this
@@ -412,7 +414,13 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     pending: asyncio.Queue = asyncio.Queue(maxsize=_WS_DISPATCH_QUEUE_MAX)
     dispatcher: asyncio.Task | None = None
     concurrent_reads: set[asyncio.Task] = set()
+    started_reads: set[asyncio.Task] = set()
     concurrent_read_slots = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT)
+    # Running + waiting reads: taken by the reader before a read is queued, so a flood parks it.
+    read_admission = asyncio.Semaphore(_WS_CONCURRENT_READ_LIMIT + _WS_WAITING_READ_LIMIT)
+    # Set when the read lane could not send a reply: ends the reader without cancelling the
+    # control handler the serial lane is running (it finishes, then the dispatcher stops).
+    send_failed: asyncio.Future = asyncio.get_running_loop().create_future()
     stop = object()  # queue sentinel; a JSON ``null`` frame parses to None, so None can't be it
 
     async def _dispatch_one(req: Any) -> None:
@@ -438,22 +446,36 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
 
     async def _dispatch_concurrent_read(req: Any) -> None:
         async with concurrent_read_slots:
+            started_reads.add(asyncio.current_task())
             try:
                 await _dispatch_one(req)
             except _SendFailed:
-                # A failed response must end the reader even when it came from the concurrent lane.
-                if dispatcher is not None:
-                    dispatcher.cancel()
+                # A failed response ends the reader even from the concurrent lane, never by
+                # cancelling the serial lane's in-flight handler.
+                if not send_failed.done():
+                    send_failed.set_result(None)
                 raise
 
     def _finish_concurrent_read(task: asyncio.Task) -> None:
+        # Here, not in the task: a task cancelled before its first step never runs its body.
+        read_admission.release()
         concurrent_reads.discard(task)
+        started_reads.discard(task)
         with contextlib.suppress(asyncio.CancelledError, _SendFailed):
             task.result()
 
+    async def _next_request() -> Any:
+        """The next queued frame, or ``stop`` once the read lane failed to send a reply."""
+        step = asyncio.ensure_future(pending.get())
+        await asyncio.wait({step, send_failed}, return_when=asyncio.FIRST_COMPLETED)
+        if step.done():
+            return stop if send_failed.done() else step.result()
+        step.cancel()
+        return stop
+
     async def _dispatch_loop() -> None:
         """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
-        while (req := await pending.get()) is not stop:
+        while (req := await _next_request()) is not stop:
             req_method = req.get("method") if isinstance(req, dict) else None
             if req_method in _WS_CONCURRENT_READ_METHODS:
                 task = asyncio.create_task(_dispatch_concurrent_read(req))
@@ -463,11 +485,12 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             await _dispatch_one(req)
 
     async def _unless_dispatch_failed(aw: Any) -> Any:
-        """Await *aw*, or raise _SendFailed once the dispatcher has ended on a reply it could not send."""
+        """Await *aw*, or raise _SendFailed once a reply could not be sent (the dispatcher ended on one,
+        or the read lane failed one)."""
         assert dispatcher is not None
         step = asyncio.ensure_future(aw)
         try:
-            await asyncio.wait({step, dispatcher}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({step, dispatcher, send_failed}, return_when=asyncio.FIRST_COMPLETED)
             if step.done():
                 return step.result()
             raise _SendFailed
@@ -545,6 +568,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 await _reply({"jsonrpc": "2.0", "result": {"ok": True}, "id": req_id}, "send_failed_after_heartbeat",
                              "ws heartbeat reply send failed peer=%s id=%s", peer, req_id)
                 continue
+            if isinstance(req, dict) and req.get("method") in _WS_CONCURRENT_READ_METHODS:
+                # A read past the waiting cap parks the reader, as the serial lane did; released
+                # when its task ends (a read cancelled before it ran releases it too).
+                await _unless_dispatch_failed(read_admission.acquire())
             await _unless_dispatch_failed(pending.put(req))
     except _SendFailed:
         pass
@@ -563,7 +590,13 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             failure = None if dispatcher.cancelled() else dispatcher.exception()
             if failure is not None and not isinstance(failure, _SendFailed):
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
-        # Concurrent reads finish before the authority closes (gathering none is a no-op).
+        # Reads that never started are dropped (their client is gone); started ones finish before the
+        # authority closes, unless the connection itself was cancelled (server shutdown).
+        task = asyncio.current_task()
+        shutting_down = task is not None and task.cancelling()
+        for read in concurrent_reads:
+            if shutting_down or read not in started_reads:
+                read.cancel()
         await asyncio.gather(*concurrent_reads, return_exceptions=True)
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
