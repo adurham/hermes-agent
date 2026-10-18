@@ -152,8 +152,9 @@ def follow_bot_chat(authority, session_id, policy, live, picked=()):
     The caller is a client opening the chat (``session.resume``), which adopts it on the same rule
     and composer pick as adoption above; *live* is the profile's config the open read. A request
     that names ``follow_profile_config`` (``false`` included) is the client's own choice, and a
-    bypass launch never reads the profile. The request is not rewritten. A committed ``/reasoning``
-    (*picked*, the session's policy edits) stays the session's level, recorded as its session pin.
+    bypass launch never reads the profile. The request is not rewritten. A committed ``/model``
+    (*picked*, the session's policy edits) holds like a composer pick, and a committed ``/reasoning``
+    stays the session's level, recorded as its session pin.
     The caller re-binds the private values without the followed sections, so a frozen key never
     reaches the profile's route.
     """
@@ -174,8 +175,10 @@ def follow_bot_chat(authority, session_id, policy, live, picked=()):
                 return policy
     live = present_sections(live)
     config = json.loads(policy.config_json)
-    if composer_pick_holds(owner, live):
+    model = config.get('model') if isinstance(config.get('model'), dict) else {}
+    if composer_pick_holds(owner, live) or ('model' in picked and model.get('selection_profile') is None):
         # Recorded the way a create records a pick: it holds until the profile's model or provider moves.
+        # A ``/model`` committed while the chat was frozen is such a pick too (its receipt, in *picked*).
         config.setdefault('model', {})['selection_profile'] = list(profile_target(live))
     pins = config.get(SESSION_PINS) if isinstance(config.get(SESSION_PINS), dict) else {}
     if 'reasoning' in picked and not isinstance(pins.get('reasoning'), bool):
