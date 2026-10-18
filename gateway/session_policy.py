@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import cached_property
 import contextlib
 import json
 import logging
@@ -188,8 +189,10 @@ class LocalSessionPolicy:
             config['model']['api_key'] = value
         return config, model
 
-    @property
+    @cached_property
     def follows_profile(self):
+        # Read ~8-10 times a turn on the event loop, and a frozen policy's config is a whole profile:
+        # parse once per (immutable) policy; ``replace()`` builds a fresh instance with its own cache.
         return (json.loads(self.request_json).get('follow_profile_config') is True
                 or json.loads(self.config_json).get(FOLLOW_ADOPTED) is True)
 

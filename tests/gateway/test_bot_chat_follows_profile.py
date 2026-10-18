@@ -612,3 +612,26 @@ async def test_a_reasoning_choice_after_the_follow_beats_the_profile_level(home,
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+def test_follows_profile_parses_each_frozen_blob_once_per_policy(monkeypatch):
+    """``follows_profile`` is read ~8-10 times a turn on the event loop. A frozen session's policy holds
+    a whole profile config (tens of KB), so each read must not re-parse it."""
+    import json as real_json
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from gateway import session_policy
+    from gateway.session_policy import FOLLOW_ADOPTED, LocalSessionPolicy
+    config = real_json.dumps({'model': {'default': 'm'}, 'pad': 'x' * 20000})
+    parsed = []
+
+    def loads(text, *a, **kw):
+        parsed.append(text)
+        return real_json.loads(text, *a, **kw)
+    monkeypatch.setattr(session_policy, 'json', SimpleNamespace(loads=loads, dumps=real_json.dumps))
+    policy = LocalSessionPolicy(source='cli', platform='cli', cwd='/', model='m', toolsets=(),
+                                config_json=config, request_json='{}', terminal_json='{}')
+    assert [policy.follows_profile for _ in range(10)] == [False] * 10
+    assert parsed.count(config) <= 1 and parsed.count('{}') <= 1
+    adopted = replace(policy, config_json=real_json.dumps({FOLLOW_ADOPTED: True}))
+    assert adopted.follows_profile is True and policy.follows_profile is False
