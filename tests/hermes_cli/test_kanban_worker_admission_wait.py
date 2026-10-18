@@ -54,3 +54,35 @@ async def test_a_slow_admission_answer_is_awaited_not_failed(monkeypatch, tmp_pa
     # One submission: the wait never resends the claim, and the budget never goes on the wire.
     assert [r['method'] for r in owner.sent] == ['kanban.run']
     assert all('_timeout' not in r['params'] for r in owner.sent)
+
+
+class _StalledOwner(_Owner):
+    """Admits (its ``owner_admitted`` marker is committed) and then never answers or hangs up."""
+
+    async def send(self, raw):
+        self.sent.append(json.loads(raw))
+
+
+@pytest.mark.asyncio
+async def test_an_owner_that_stalls_after_admitting_fails_the_wait_within_the_lock_budget(monkeypatch, tmp_path):
+    """Once ``owner_admitted`` commits, ``enforce_max_runtime`` and TTL reclaim both skip the run
+    (``owner_reclaim_paused``), so nothing outside the submitter bounds it: the wait for the
+    answer must end once the board's real lock wait (``write_txn``'s retried ``BEGIN IMMEDIATE``
+    under the busy timeout) plus a margin has passed. Time is scaled 1000x."""
+    from hermes_cli import kanban_db_connect
+    monkeypatch.setenv('HERMES_KANBAN_BUSY_TIMEOUT_MS', '1000')
+    budget = kanban_worker_client.admission_answer_budget()
+    assert budget == (kanban_db_connect._BUSY_MAX_RETRIES + 1) * 1.0 + kanban_worker_client.ADMISSION_ANSWER_MARGIN_S
+    real_wait_for, budgets = asyncio.wait_for, []
+
+    def scaled(fut, timeout):
+        budgets.append(timeout)
+        return real_wait_for(fut, None if timeout is None else timeout / 1000)
+    monkeypatch.setattr(asyncio, 'wait_for', scaled)
+    owner = _StalledOwner()
+    params = {'board': 'b', 'task_id': 't1', 'run_id': 1, 'claim_lock': 'lock'}
+    async with GatewayClient(owner) as client:
+        with pytest.raises(TimeoutError):
+            # The outer 5 s guard only stops an unbounded wait from hanging the test.
+            await real_wait_for(kanban_worker_client._submit_claim(client, params, str(tmp_path / 'kanban.db')), 5)
+    assert budgets == [budget] and [r['method'] for r in owner.sent] == ['kanban.run']
