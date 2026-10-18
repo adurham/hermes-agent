@@ -14,6 +14,8 @@ PR slots allow — see "Upstreaming" below for the current queue and the rules t
 
 **Not changed:** the exo cap itself (it is correct for the cluster's hang watchdog); `delegation.reasoning_effort` etc.
 
+**Resulting scope (confirmed with the owner 2026-10-18, verified against the real config):** exo DSv4.1 keeps its 8192 cap as the main model AND for its own subagents (including the `exo-dsv41` role, which pins that model) — that is intended; a child resolves the cap of ITS route at init. Cloud `deepseek-v4.1-flash` gets no cap, as main model or as a child (including a cloud child spawned from an exo parent), unless an explicit cap is set. Switching exo <-> cloud re-resolves on each switch. First post-restart check: a cloud child's `sessions.model_config.max_tokens` in state.db should be null.
+
 **Tests:** `tests/agent/test_route_output_cap_follows_switch_and_delegation.py` (7). Mutation check: neutering the re-resolve guard + the delegation filter fails 3 of them; restored, 23 passed across it, `test_switch_model_*`, and `test_delegate_role_runtime.py` (Mac single-file runs).
 
 **Live effect:** none until new processes start; the running CLI/children keep the cap they were built with. Config-only remedy for a running session meanwhile: `/model` re-select (now re-resolves).
