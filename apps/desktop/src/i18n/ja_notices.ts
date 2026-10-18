@@ -25,6 +25,7 @@ export const jaNotices = {
     mcpReloadNotInChat: server => `${server} はこのチャットでは有効になっていません`,
     mcpReloadUnavailable: servers => `接続できませんでした: ${servers}`,
     compactedTurnUnavailable: 'このメッセージはチャットの圧縮時に要約されたため、復元や編集はできなくなりました。',
+    staleTurnUnavailable: 'このメッセージはこのチャットの履歴にはもうありません。',
     sessionCommands: jaSessionCommands
   },
   keepAwakeOffer: {

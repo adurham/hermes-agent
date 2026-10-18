@@ -82,6 +82,7 @@ export const arBoot = {
     mcpReloadNotInChat: server => `${server} غير مفعّل في هذه المحادثة`,
     mcpReloadUnavailable: servers => `تعذّر الاتصال: ${servers}`,
     compactedTurnUnavailable: 'تم تلخيص هذه الرسالة عند ضغط المحادثة، لذا لم يعد بالإمكان استعادتها أو تحريرها.',
+    staleTurnUnavailable: 'لم تعد هذه الرسالة موجودة في سجل هذه المحادثة.',
     sessionCommands: arSessionCommands
   },
   updates: {

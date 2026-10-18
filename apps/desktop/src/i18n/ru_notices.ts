@@ -26,6 +26,7 @@ export const ruNotices = {
     mcpReloadUnavailable: servers => `Не удалось подключиться: ${servers}`,
     compactedTurnUnavailable:
       'Это сообщение было сжато в краткое изложение при сжатии чата, поэтому его больше нельзя восстановить или изменить.',
+    staleTurnUnavailable: 'Этого сообщения больше нет в истории этого чата.',
     sessionCommands: ruSessionCommands
   },
   keepAwakeOffer: {

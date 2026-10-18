@@ -26,6 +26,7 @@ export const deNotices = {
     mcpReloadUnavailable: servers => `Keine Verbindung: ${servers}`,
     compactedTurnUnavailable:
       'Diese Nachricht wurde beim Komprimieren des Chats zusammengefasst und kann nicht mehr wiederhergestellt oder bearbeitet werden.',
+    staleTurnUnavailable: 'Diese Nachricht ist nicht mehr im Verlauf dieses Chats.',
     sessionCommands: deSessionCommands
   },
   keepAwakeOffer: {

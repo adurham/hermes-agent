@@ -26,6 +26,7 @@ export const frNotices = {
     mcpReloadUnavailable: servers => `Connexion impossible : ${servers}`,
     compactedTurnUnavailable:
       'Ce message a été résumé lors de la compression de la conversation : il ne peut plus être restauré ni modifié.',
+    staleTurnUnavailable: 'Ce message ne fait plus partie de l’historique de cette discussion.',
     sessionCommands: frSessionCommands
   },
   keepAwakeOffer: {

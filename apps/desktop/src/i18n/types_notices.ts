@@ -21,6 +21,8 @@ export interface NoticeTranslations {
     mcpReloadUnavailable: (servers: string) => string
     /** An edit/restore/regenerate whose target compaction archived: the owner refused the rewind. */
     compactedTurnUnavailable: string
+    /** The same refusal for any other stale target: undone in another window, not a user turn, or gone. */
+    staleTurnUnavailable: string
     /** Typed /undo /retry /steer /queue lines (the Ink TUI's wording on the same gateway). */
     sessionCommands: SessionCommandNotices
   }

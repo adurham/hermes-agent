@@ -26,6 +26,7 @@ export const esNotices = {
     mcpReloadUnavailable: servers => `No se conectó: ${servers}`,
     compactedTurnUnavailable:
       'Ese mensaje se resumió al comprimir el chat, así que ya no se puede restaurar ni editar.',
+    staleTurnUnavailable: 'Ese mensaje ya no está en el historial de este chat.',
     sessionCommands: esSessionCommands
   },
   keepAwakeOffer: {

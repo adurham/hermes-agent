@@ -91,3 +91,42 @@ def test_rewind_refuses_a_row_a_compression_archived(tmp_path):
             rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='s', request_id='rewind',
                 expected_revision=0, expected_generation=0, operation='rewind', payload={'target_message_id': archived})
         assert [m['content'] for m in db.get_messages('s')] == live
+
+
+def _refusal(db, epoch, target, request_id):
+    with pytest.raises(rt.RuntimeStoreError, match='invalid_params') as refused:
+        _rewind_to(db, epoch, target, request_id=request_id)
+    assert refused.value.field == 'target_message_id'
+    return refused.value.detail
+
+
+def test_only_a_compacted_target_carries_the_compaction_marker(tmp_path):
+    """Desktop says "summarized when the chat was compressed" only for the ``compacted:`` detail: a turn
+    another window already undid, an assistant row and an unknown id are stale for other reasons."""
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        shown, epoch = _compacted_session(db)
+        db.append_messages_batch('s', [{'role': 'user', 'content': 'Q4'}, {'role': 'assistant', 'content': 'A4'}])
+        q4 = db.get_messages('s')[-2]['id']
+        db.rewind_to_message('s', q4)  # another client's /undo: no compaction involved
+        compacted = _refusal(db, epoch, shown['Q2'], 'compacted')
+        assert compacted.startswith('compacted:')
+        for name, target in {'assistant': shown['A3'], 'undone': q4, 'archived-assistant': shown['A1'],
+                             'missing': 99999}.items():
+            detail = _refusal(db, epoch, target, name)
+            assert detail != compacted and not detail.startswith('compacted:'), name
+
+
+def test_a_turn_a_rotating_compression_left_on_the_parent_carries_the_marker(tmp_path):
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('p', source='test')
+        db.append_messages_batch('p', [{'role': 'user', 'content': 'old'}, {'role': 'assistant', 'content': 'reply'}])
+        old = db.get_messages('p')[0]['id']
+        db.end_session('p', 'compression')
+        db.create_session('s', source='test', parent_session_id='p')
+        db.append_messages_batch('s', [{'role': 'user', 'content': '[CONTEXT SUMMARY] old'},
+                                       {'role': 'user', 'content': 'live'}, {'role': 'assistant', 'content': 'ok'}])
+        db.create_session('elsewhere', source='test')
+        foreign = db.append_message('elsewhere', 'user', 'not this chat')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        assert _refusal(db, epoch, old, 'parent').startswith('compacted:')
+        assert not _refusal(db, epoch, foreign, 'foreign').startswith('compacted:')

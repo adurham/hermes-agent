@@ -26,6 +26,7 @@ export const enNotices = {
     mcpReloadUnavailable: servers => `Did not connect: ${servers}`,
     compactedTurnUnavailable:
       "That message was summarized when the chat was compressed, so it can't be restored or edited anymore.",
+    staleTurnUnavailable: "That message is no longer in this chat's history.",
     sessionCommands: enSessionCommands
   },
   keepAwakeOffer: {

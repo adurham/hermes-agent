@@ -22,6 +22,7 @@ export const zhNotices = {
     mcpReloadNotInChat: server => `此对话未启用 ${server}`,
     mcpReloadUnavailable: servers => `未能连接：${servers}`,
     compactedTurnUnavailable: '这条消息在压缩对话时已被概括，无法再恢复或编辑。',
+    staleTurnUnavailable: '这条消息已不在此对话的历史记录中。',
     sessionCommands: zhSessionCommands
   },
   keepAwakeOffer: {

@@ -2454,6 +2454,7 @@
     "promptNotices.sessionCommands.undidOther",
     "promptNotices.sessionCommands.undoNothing",
     "promptNotices.sessionCommands.undoUsage",
+    "promptNotices.staleTurnUnavailable",
     "prompts.gatewayDisconnected",
     "prompts.reconnect",
     "prompts.secretDesc",
