@@ -2806,3 +2806,15 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   files: 1485 passed, 2 failed identically on base (aiohttp absent → `web` is None). Full
   `scripts/check` red only on main's own RUF100 in `agent/turn_truncation.py:572` (from f21f8ad2,
   out of unit); health 0 blocking. Branch `claude/feishu-adapter-async-rules-sr2u8e`.
+- 2026-10-18 — C-1081 `plugins/platforms/slack/adapter.py` (structure): HX011×1 → 0 (file hits
+  72 → 71; FILE_LINES 6944 → 6913). The `elem_type` ladder in
+  `_extract_text_from_slack_blocks._walk_elements` is now the `_RICH_TEXT_WALKERS` type → walker
+  table in new sibling `plugins/platforms/slack/adapter_rich_text.py` (69 lines, max CC 2; unknown
+  types fall to `_walk_inline`, as the old `else`). The inline renderer is passed in, not imported,
+  since the adapter loads as a package and as a flat plugin dir. No sibling ladders in the file.
+  Differential old-vs-new over 30,000 random block trees (all element types, nesting, unhashable
+  and missing `type`, raising inputs): 0 mismatches. Unit tests + slack-adapter test files (58 files): 913
+  passed, 7 failed, 13 skipped (same 7 fail on clean main: media download retry, multi-image send,
+  standalone send). `scripts/check`: health 0 blocking; ruff red only on main's own RUF100 at
+  `agent/turn_truncation.py:572` (from `f21f8ad2`, untouched here). Branch
+  `claude/fix-adapter-structure-hx011-26a03v`.
