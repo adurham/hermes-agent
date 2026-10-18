@@ -49,6 +49,11 @@ class OwnerNotRunning(OwnerUnavailable):
     """No ready gateway serves the home: nothing will end the ledger's work on its own."""
 
 
+class OwnerUnconfirmed(OwnerUnavailable):
+    """The owner's admission receipt did not arrive in time. The relay keeps going, so the prompt
+    may still be (or already be) queued there: never "nothing was sent", never a retry."""
+
+
 def discover_owner(home: Path):
     """The ready gateway endpoint serving ``home``. Discovery only: never starts one."""
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
@@ -191,4 +196,4 @@ def forward_prompt(sid: str, session: dict, text: str, *, emit=None, home: Path 
     try:
         return relay.admitted.result(timeout=ADMIT_TIMEOUT_S)
     except FutureTimeout as exc:
-        raise OwnerUnavailable("the gateway did not confirm it in time; check the chat before sending again") from exc
+        raise OwnerUnconfirmed("the gateway did not confirm it in time") from exc

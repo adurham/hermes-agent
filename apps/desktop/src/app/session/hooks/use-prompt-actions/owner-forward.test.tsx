@@ -2,6 +2,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { errorRecoveryPlan, type ErrorSurface } from '@/lib/error-surface'
 import { clearNotifications } from '@/store/notifications'
 
 import { actRender, Harness, type HarnessHandle } from './index-test-utils'
@@ -42,6 +43,38 @@ describe('usePromptActions gateway-owner queue (#140385)', () => {
     expect(await handle!.submitText('continue here')).toBe(false)
     const bubble = (latest?.messages as { errorSurface?: Record<string, unknown> }[]).at(-1)
     expect(bubble?.errorSurface).toEqual({ layer: 'gateway', code: 'SESSION_OWNER_BUSY', retryable: true })
+  })
+
+  it('turns an unconfirmed forward into a card without Retry: the owner may already hold it', async () => {
+    let latest: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new JsonRpcGatewayError(
+          'The gateway is running a turn in this chat and did not confirm your message in time. It may already be queued there: check the chat before sending it again.',
+          { code: 4090, data: { reason: 'SESSION_OWNER_UNCONFIRMED' } }
+        )
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={next => {
+          latest = next
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.submitText('continue here')).toBe(false)
+    const bubble = (latest?.messages as { errorSurface?: ErrorSurface }[]).at(-1)
+    expect(bubble?.errorSurface).toEqual({ layer: 'gateway', code: 'SESSION_OWNER_UNCONFIRMED', retryable: false })
+    expect(errorRecoveryPlan(bubble?.errorSurface).retry).toBe(false)
   })
 
   it('shows a prompt the legacy backend forwarded to the gateway owner as queued, not as a failed turn (#140385)', async () => {

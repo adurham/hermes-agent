@@ -158,6 +158,40 @@ def test_outcome_unknown_work_is_still_refused_and_never_forwarded(monkeypatch, 
         db.close()
 
 
+def test_an_unconfirmed_forward_is_never_reported_as_not_sent(monkeypatch, tmp_path):
+    """The owner's receipt timed out but the relay keeps going, so the prompt may already sit in the
+    owner's FIFO: the refusal says to check the chat, with a reason the client never offers Retry for
+    (a retry would admit a second copy under a fresh submission id)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, turns, _emitted = _legacy(monkeypatch, db)
+    try:
+        db.create_session(key, "test")
+        epoch = begin_runtime_epoch(db, instance_id="gateway")
+        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+                            payload={"text": "a DM"})
+        claim_session_input(db, epoch=epoch, session_id=key)
+        _owner(monkeypatch, db, key, epoch)
+        from tui_gateway import owner_forward
+        monkeypatch.setattr(owner_forward, "ADMIT_TIMEOUT_S", 0)
+        hold = asyncio.Event()
+
+        @contextlib.asynccontextmanager
+        async def slow(_home, _endpoint):
+            await asyncio.wait_for(hold.wait(), 5)  # the owner never answers inside the admit wait
+            yield
+        monkeypatch.setattr(owner_forward, "connect_owner", slow)
+        reply = server.handle_request({"id": "p", "method": "prompt.submit",
+                                       "params": {"session_id": sid, "text": "hi"}})
+        assert reply["error"]["code"] == 4090
+        assert reply["error"]["data"] == {"reason": "SESSION_OWNER_UNCONFIRMED"}
+        message = reply["error"]["message"]
+        assert "Nothing was sent" not in message and "check the chat" in message
+        assert turns == []
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 @pytest.mark.parametrize("case", ["owner_refused", "rewind"])
 def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatch, tmp_path, case):
     """Where admission is impossible the refusal names why and says to send when the turn ends,

@@ -698,6 +698,9 @@ _TRUNCATION_PARAMS = (
 #: The refusal reason when the owner's FIFO could not take a typed prompt (RT-37): transient, the
 #: gateway's turn ends on its own, so the client offers "send when the turn ends", not a new chat.
 SESSION_OWNER_BUSY = "SESSION_OWNER_BUSY"
+#: The owner's FIFO did not confirm a forwarded prompt in time; it may still have been queued, so the
+#: client must not offer Retry (a second copy would run): check the chat first.
+SESSION_OWNER_UNCONFIRMED = "SESSION_OWNER_UNCONFIRMED"
 
 
 def _slot_refusal(rid, sid, session, text, params, refusal, internal_hosted_submit) -> dict:
@@ -728,6 +731,10 @@ def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
             receipt = owner_forward.forward_prompt(sid, session, text)
         except owner_forward.OwnerNotRunning:
             return not_owned  # no gateway runs the ledger's work: it will not end on its own
+        except owner_forward.OwnerUnconfirmed:
+            return _err(rid, 4090, "The gateway is running a turn in this chat and did not confirm your message"
+                        " in time. It may already be queued there: check the chat before sending it again.",
+                        {"reason": SESSION_OWNER_UNCONFIRMED})
         except Exception as exc:  # every owner failure is the same named refusal
             logger.info("forwarding prompt for %s to the owner failed: %s",
                         session.get("session_key") or sid, exc, exc_info=True)

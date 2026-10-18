@@ -312,7 +312,11 @@ export function isSessionNotOwnedError(error: unknown): boolean {
 // prompt.submit refused because the gateway that owns this chat is mid-turn and could not queue
 // the send (4090 / SESSION_OWNER_BUSY, #140385). Transient: the turn ends on its own.
 export function isSessionOwnerBusyError(error: unknown): boolean {
-  return error instanceof JsonRpcGatewayError && (error.data as { reason?: unknown } | undefined)?.reason === 'SESSION_OWNER_BUSY'
+  return gatewayReason(error) === 'SESSION_OWNER_BUSY'
+}
+
+function gatewayReason(error: unknown): unknown {
+  return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
 }
 
 // The error card's surface for an ownership refusal: another surface owns the session (#106217,
@@ -323,13 +327,23 @@ export function ownershipErrorSurface(error: unknown): { errorSurface?: ErrorSur
     return { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }
   }
 
-  return isSessionOwnerBusyError(error) ? { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_BUSY', retryable: true } } : {}
+  if (gatewayReason(error) === 'SESSION_OWNER_UNCONFIRMED') {
+    // The owner may already hold the send: a Retry would run a second copy.
+    return { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_UNCONFIRMED', retryable: false } }
+  }
+
+  return isSessionOwnerBusyError(error)
+    ? { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_BUSY', retryable: true } }
+    : {}
 }
 
 // RT-37: a legacy backend handed this prompt to the gateway that owns the chat, where it waits in
 // the owner's FIFO behind the gateway's turn. The queued-row card (the backend's
 // pending_submissions) stands for it until the owner starts it: no optimistic bubble or spinner.
-export function isForwardedReceipt(legacyAccepted: boolean, result: { forwarded?: boolean | null; status?: string } | undefined): boolean {
+export function isForwardedReceipt(
+  legacyAccepted: boolean,
+  result: { forwarded?: boolean | null; status?: string } | undefined
+): boolean {
   return legacyAccepted && result?.forwarded === true && result.status === 'queued'
 }
 
