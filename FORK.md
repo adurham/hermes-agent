@@ -21308,3 +21308,22 @@ config still depends on. Commit fork fixes on the main checkout, push, and pull 
 **Verification:** RED-first — 4 by-model-wins tests failed on base (returned `ultra`/`low`); GREEN after the fix (8 passed). Regression: `tests/test_hermes_constants.py` 52 passed/21 skipped, `tests/hermes_cli/test_reasoning_effort.py` 10 passed. ruff clean.
 
 **Upstreamable:** no — fork-only feature (upstream has no `reasoning_effort_by_model` key).
+
+
+## 2026-10-17/18 — Code-health ratchet campaign (50 units, nine batches, cloud agent sessions)
+
+### Campaign record — 2026-10-17/18 (rule-family cleanup: F821/F811, BLE001/S110, ASYNC/HX, RUF006, LIX001, correctness)
+
+**Scope:** 50 independently verified work units merged to `main` in one day from cloud agent sessions. Base `6bb436671e67` -> head `26ddeb4c51` (annotated tag `code-health-2026-10-17`). Every unit = one commit, one rule-family fix, behaviour identical beyond the fix; repo gate `scripts/check` (12 checks) plus the unit's focused test files green, re-run independently by the supervisor before each merge pass. Per-unit detail (counts before/after, test numbers, branch names) is in `docs/plans/2026-10-17-code-health-ratchet-backlog.md`'s progress log.
+
+**Families:** F821 undefined names and F811 redefinitions; BLE001/S110 swallowed exceptions (the largest group — adapters, scheduler delivery, mcp_serve, providers, email, tui_gateway); the ASYNC family across nine platform adapters plus async I/O moved off the loop; HX005/HX009 timeout handling; RUF006 fire-and-forget task retention; LIX001; plus focused correctness fixes (duplicate imports, cron store-home resolved at call time rather than import, CancelledError probe outcomes treated as failures).
+
+**Sync-conflict surface:** roughly 50 files across `agent/`, `gateway/`, `tools/`, `hermes_cli/`, `plugins/platforms/`, `cron/`, `providers/`, `tui_gateway/`. Expect conflicts on the next upstream sync where the campaign touched a file; rule-family hunks are fork-side changes and should be kept, with upstream's newer context merged around them.
+
+**Evidence at close-out:** per-unit gate + focused tests (doc log); merge-time re-gate and smoke on merged main; branch-tip reconciliation — all 51 recorded tips present on main (49 via `cherry picked from commit` trailers, slice-1 by subject since it was landed as the modified series with `run_import` dropped per the Fable ruling), zero missing; progress log has no duplicated entries; `scripts/check` 12/12 on head.
+
+**Pending:** the full pytest suite was last run on the interim campaign head (589 failures across 115 files, all in update/install/pm/shallow-clone machinery, zero failures in any campaign-touched file); the same-host base-SHA comparison is blocked because amd-workstation was offline when this entry was written. Re-run head and base when it returns, diff the FAILED node lists, and record the delta here. A single live CLI session smoke (asyncio debug; watch for new tracebacks, "Task was destroyed but it is pending", "coroutine was never awaited") is also pending.
+
+**Deliberately skipped:** units in files still 60-90% identical to upstream (doc policy) — a fix there belongs upstream, not in the fork.
+
+**Upstream candidates:** F821 and F811 units only (genuine NameError/shadowing defects, tiny, uncontroversial); HX*/LIX001 are fork-local rules and BLE001 narrowing is opinionated style, so both are excluded. No upstream PRs were filed; candidates need explicit per-action approval, and any approved patch should be byte-identical to the fork commit so the next sync merges clean.
