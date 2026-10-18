@@ -447,27 +447,45 @@ def _profiles(authority, actor, home, params, siblings=()):
 
 
 # The Bots pane polls ``profiles.list`` every 5 s. Re-listing ``profiles/`` and re-parsing every
-# sibling ``profile.yaml`` each time cost ~60 ms at 50 profiles, so both are cached by stat:
-# the directory listing by the stat keys of ``profiles/`` and each entry (a new profile, its
-# identity marker or a tombstone each bump one of them), and a parsed ``profile.yaml`` by
-# (path, stat key). A stat key carries ctime and the inode beside mtime and size: mtime alone
-# misses a change inside one coarse timestamp tick (FAT/SMB/HFS+) and can be set back with
-# utime, while ctime moves on every metadata or content change and cannot be set by callers.
+# sibling ``profile.yaml`` each time cost ~60 ms at 50 profiles, so both are cached, and neither
+# cache trusts a timestamp to notice a change. Linux stamps mtime AND ctime from the coarse clock
+# (one jiffy, 1-10 ms), FAT/SMB/HFS+ tick coarser still, and a directory's size and inode survive
+# a file appearing and vanishing inside it; so a create-then-delete inside one tick leaves every
+# stat field of the profile dir as it was. The listing is therefore keyed on what
+# ``_iter_named_profile_dirs`` actually decides by (each entry's identity markers and tombstone,
+# present or not), and a parsed ``profile.yaml`` on the file's bytes: the read is cheap, the
+# YAML parse is the cost the cache avoids.
 _NAMED_DIRS_CACHE: dict[str, tuple[tuple, list]] = {}
-_PROFILE_META_CACHE: dict[str, tuple[tuple, object]] = {}
+_PROFILE_META_CACHE: dict[str, tuple[bytes, object]] = {}
 
 
 def _stat_key(stat):
     return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
 
 
+def _lstat_key(path):
+    try:
+        stat = os.lstat(path)
+    except OSError:
+        return None
+    return (stat.st_mode, *_stat_key(stat))
+
+
 def _named_profile_dirs():
     from hermes_cli.profiles import _get_profiles_root, _iter_named_profile_dirs
+    from hermes_constants import _PROFILE_IDENTITY_MARKERS, profile_tombstone_path
     profiles_root = _get_profiles_root()
     try:
         with os.scandir(profiles_root) as entries:
-            signature = (_stat_key(os.stat(profiles_root)),
-                         tuple(sorted((entry.name, _stat_key(entry.stat())) for entry in entries)))
+            rows = []
+            for entry in entries:
+                # Presence (not just timestamps) of every marker ``named_profile_has_identity``
+                # checks, and of the tombstone ``named_profile_is_deleted`` checks: one lstat each.
+                markers = tuple(_lstat_key(os.path.join(entry.path, marker))
+                                for marker in _PROFILE_IDENTITY_MARKERS)
+                tombstone = os.path.exists(profile_tombstone_path(Path(entry.path)))
+                rows.append((entry.name, _stat_key(entry.stat()), markers, tombstone))
+            signature = (_stat_key(os.stat(profiles_root)), tuple(sorted(rows)))
     except OSError:
         signature = None
     cached = _NAMED_DIRS_CACHE.get(str(profiles_root))
@@ -489,17 +507,19 @@ def _discovered_profile_meta(name, meta_path):
     bad YAML, a permission error) degrades that row to basic metadata; it never fails the roster."""
     import hermes_yaml as yaml
     try:
-        stat = meta_path.stat()
-    except OSError:
+        raw = meta_path.read_bytes()
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
         return {}
-    key = _stat_key(stat)
+    except OSError as exc:
+        logger.warning('profiles.list: skipping unreadable profile.yaml for %s (%s): %s', name, meta_path, exc)
+        return {}
     cached = _PROFILE_META_CACHE.get(str(meta_path))
-    if cached and cached[0] == key:
+    if cached and cached[0] == raw:
         return cached[1]
     try:
-        meta = yaml.safe_load(meta_path.read_text(encoding='utf-8-sig')) if meta_path.is_file() else {}
-    except (OSError, ValueError, yaml.YAMLError) as exc:
+        meta = yaml.safe_load(raw.decode('utf-8-sig'))
+    except (ValueError, yaml.YAMLError) as exc:
         logger.warning('profiles.list: skipping unreadable profile.yaml for %s (%s): %s', name, meta_path, exc)
         meta = {}
-    _PROFILE_META_CACHE[str(meta_path)] = (key, meta)
+    _PROFILE_META_CACHE[str(meta_path)] = (raw, meta)
     return meta

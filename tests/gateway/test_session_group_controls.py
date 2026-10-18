@@ -252,35 +252,31 @@ def test_profiles_list_reuses_its_disk_scan_until_a_profile_changes(tmp_path, mo
 
 
 def test_profiles_list_cache_sees_changes_inside_one_mtime_tick(tmp_path, monkeypatch):
-    """Independent review on #140972: the stat caches keyed only on mtime (and size), so a change
-    inside one coarse mtime tick (FAT/SMB/HFS+, or two writes in one kernel timestamp tick) was
-    served stale. Pinning mtimes back with os.utime emulates that tick; ctime still moves."""
-    import os
-
+    """Independent review on #140972, then CI: the stat caches missed a change made inside one
+    kernel timestamp tick. Linux stamps mtime AND ctime from the coarse clock, and a dir's size and
+    inode survive a file appearing and vanishing in it, so every stat field can be unchanged. The
+    test forces that case on every run by making every stat key identical (one frozen tick)."""
     from gateway import session_group_controls as g
     home = _roster_home(tmp_path, monkeypatch)
     root = home / 'profiles'
-    tick = 1_700_000_000_000_000_000
-
-    def pin(*paths):
-        for path in paths:
-            os.utime(path, ns=(tick, tick))
+    monkeypatch.setattr(g, '_stat_key', lambda stat: ('one-tick',))
 
     lone = root / 'lone'
     lone.mkdir()
     (lone / 'profile.yaml').write_text('display_name: Lone\n')
-    pin(root, lone)
     assert 'lone' in [p.name for p in g._named_profile_dirs()]
     # Deleting the profile's only identity file, inside the same tick, drops it from the roster.
     (lone / 'profile.yaml').unlink()
-    pin(root, lone)
     assert 'lone' not in [p.name for p in g._named_profile_dirs()]
+    # Recreating a different marker inside the same tick lists it again.
+    (lone / 'SOUL.md').write_text('hi\n')
+    assert 'lone' in [p.name for p in g._named_profile_dirs()]
 
-    # An edit that keeps both size and mtime serves the new content.
+    # An edit that keeps every stat field serves the new content.
     meta = root / 'writer' / 'profile.yaml'
     meta.write_text('display_name: AAAA\n')
-    pin(meta)
     assert g._discovered_profile_meta('writer', meta) == {'display_name': 'AAAA'}
     meta.write_text('display_name: BBBB\n')
-    pin(meta)
     assert g._discovered_profile_meta('writer', meta) == {'display_name': 'BBBB'}
+    meta.unlink()
+    assert g._discovered_profile_meta('writer', meta) == {}
