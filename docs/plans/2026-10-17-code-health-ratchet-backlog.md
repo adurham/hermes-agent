@@ -2933,3 +2933,21 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   test_slack_socket_restart_task.py` (2 tests, red on main). 63 Slack-importing test files: 855
   passed, 7 failed (`aiohttp` missing, identical on main). `scripts/check` green, 12 checks. Branch
   `claude/fix-adapter-async-rules-9j7u27`.
+- 2026-10-18 — C-1089 `plugins/platforms/feishu/adapter.py` swallow: BLE001 21 → 0, S110 5 → 0
+  (no other hits in the file). Narrowed 4: WS-thread loop `stop`/`close` → `(RuntimeError, OSError)`,
+  `_auto_reconnect = False` → `AttributeError`, card-action `json.dumps` → `(TypeError, ValueError)`,
+  OGG duration parse → `(OSError, ValueError, struct.error)`. Kept 17 catch-all boundaries, now
+  logging the traceback: debug for the silent fallbacks (`ws_client.start()` exit, deps check and
+  lazy install, dropped-event id read, webhook body read, WS supervisor's thread result, QR render,
+  thread-last-message fetch, SDK bot probe, the two `interactive_setup` fallbacks), `exc_info=True`
+  on the existing warnings/errors (exec-approval and update-prompt sends, approval and update-prompt
+  resolution, WS restart), and `logger.error(..., exc_info=True)` in `_standalone_send` (matches
+  Discord's). Return values unchanged. To offset FILE_LINES growth the OGG parser moved from the
+  `_get_audio_duration_ms` staticmethod (one internal caller, no external refs) to new sibling
+  `feishu_audio.py::ogg_duration_ms`, late-imported; differential vs main's copy over 302 inputs:
+  0 mismatches. FILE_LINES 4,493 → 4,480. Unit test files + 18 Feishu gateway/plugin test files,
+  run in an env with `--extra messaging --extra feishu`: 252 passed, 0 failed, 1 skipped (the plain
+  dev/test env fails 2 `test_feishu.py` webhook tests identically on clean main: no aiohttp).
+  `scripts/check`: 12/12 ok, health 0 blocking. Noted, not fixed: the OGG parser (unchanged
+  logic) never advances past a page with 0 segments and 0-length payload — an infinite loop on such
+  a file in main's copy too. Branch `claude/feishu-adapter-code-health-xyoues`.

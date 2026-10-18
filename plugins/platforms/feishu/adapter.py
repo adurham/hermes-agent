@@ -1165,7 +1165,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     try:
         ws_client.start()
     except Exception:
-        pass
+        logger.debug("[Feishu] lark WS client start() exited with error", exc_info=True)
     finally:
         _ws_isolation_state.loop = None
         _ws_isolation_state.connect_kwargs = None
@@ -1181,8 +1181,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         for closer in (loop.stop, loop.close):
             try:
                 closer()
-            except Exception:
-                pass
+            except (RuntimeError, OSError):
+                logger.debug("[Feishu] WS thread loop %s failed", closer.__name__, exc_info=True)
         adapter._ws_thread_loop = None
 
 
@@ -1223,6 +1223,7 @@ def feishu_deps_present() -> bool:
         from pm.extras import available
         return available("feishu")
     except Exception:  # pragma: no cover — defensive
+        logger.debug("[Feishu] dependency availability check failed", exc_info=True)
         return False
 
 
@@ -1237,6 +1238,7 @@ def check_feishu_requirements() -> bool:
         ensure_import("feishu")
         return True
     except Exception:
+        logger.debug("[Feishu] dependency install failed", exc_info=True)
         return False
 
 
@@ -1634,8 +1636,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         try:
             self._ws_client._auto_reconnect = False
-        except Exception:
-            pass
+        except AttributeError:
+            logger.debug("[Feishu] Could not disable websocket auto-reconnect", exc_info=True)
         finally:
             self._ws_client = None
 
@@ -1788,7 +1790,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
             )
         except Exception as exc:
-            logger.warning("[Feishu] send_exec_approval failed: %s", exc)
+            logger.warning("[Feishu] send_exec_approval failed: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     async def _send_interactive_card(
@@ -1835,7 +1837,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 state_map=self._update_prompt_state, state_id=prompt_id, session_key=session_key,
             )
         except Exception as exc:
-            logger.warning("[Feishu] send_update_prompt failed: %s", exc)
+            logger.warning("[Feishu] send_update_prompt failed: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
@@ -2037,6 +2039,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     message = getattr(getattr(dropped, "event", None), "message", None)
                     message_id = str(getattr(message, "message_id", "") or "unknown")
                 except Exception:
+                    logger.debug("[Feishu] Could not read dropped event's message_id", exc_info=True)
                     message_id = "unknown"
                 logger.error(
                     "[Feishu] Pending-inbound queue full (%d); dropped oldest event %s",
@@ -2369,7 +2372,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     except Exception:
                         logger.debug("[Feishu] expired-approval notice failed", exc_info=True)
         except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+            logger.error("Failed to resolve gateway approval from Feishu button: %s", exc, exc_info=True)
 
     async def _resolve_update_prompt(
         self, prompt_id: Any, answer: str, user_name: str, *, open_id: str = "", chat_id: str = "",
@@ -2389,7 +2392,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 state["session_key"], answer, user_name,
             )
         except Exception as exc:
-            logger.error("Failed to resolve Feishu update prompt: %s", exc)
+            logger.error("Failed to resolve Feishu update prompt: %s", exc, exc_info=True)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -2465,8 +2468,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if action_value:
             try:
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                logger.debug("[Feishu] Card action value is not JSON-serializable", exc_info=True)
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
         await self._dispatch_synthetic_event(
             text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
@@ -2829,6 +2832,7 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Webhook body read timed out after %ds from %s", _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS, remote_ip)
             return self._webhook_reject(remote_ip, "408", 408, "Request Timeout")
         except Exception:
+            logger.debug("[Feishu] Webhook body read failed from %s", remote_ip, exc_info=True)
             return self._webhook_reject(remote_ip, "400", 400, json_msg="failed to read body")
 
         try:
@@ -3630,28 +3634,6 @@ class FeishuAdapter(BasePlatformAdapter):
             return "post", _build_markdown_post_payload(content)
         return "text", json.dumps({"text": content}, ensure_ascii=False)
 
-    @staticmethod
-    def _get_audio_duration_ms(file_path: str) -> int:
-        """OGG/Opus duration in ms (pure Python): last granule position / 48000 Hz; 0 on non-OGG or error."""
-        import struct
-        try:
-            with open(file_path, "rb") as f:
-                data = f.read()
-            pos = last_granule = 0
-            while pos < len(data) - 27:
-                pos = data.find(b"OggS", pos)
-                if pos == -1 or pos + 27 > len(data):
-                    break
-                granule = struct.unpack_from("<q", data, pos + 6)[0]
-                num_segments = data[pos + 26]
-                last_granule = granule if granule > 0 else last_granule
-                if pos + 27 + num_segments > len(data):
-                    break
-                pos += num_segments + sum(data[pos + 27 : pos + 27 + num_segments])
-            return int(last_granule / 48000 * 1000) if last_granule > 0 else 0
-        except Exception:
-            return 0
-
     async def _send_uploaded_file_message(
         self, *, chat_id: str, file_path: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
         caption: Optional[str] = None, file_name: Optional[str] = None, outbound_message_type: str = "file",
@@ -3665,8 +3647,9 @@ class FeishuAdapter(BasePlatformAdapter):
         upload_file_type, resolved_message_type = self._resolve_outbound_file_routing(
             file_path=display_name, requested_message_type=outbound_message_type,
         )
+        from plugins.platforms.feishu.feishu_audio import ogg_duration_ms
         try:
-            duration_ms = await asyncio.to_thread(self._get_audio_duration_ms, file_path) if upload_file_type == "opus" else 0
+            duration_ms = await asyncio.to_thread(ogg_duration_ms, file_path) if upload_file_type == "opus" else 0
             with await asyncio.to_thread(open, file_path, "rb") as file_obj:  # streamed to the upload
                 body = self._build_file_upload_body(
                     file_type=upload_file_type, file_name=display_name, file=file_obj, duration=duration_ms,
@@ -3740,7 +3723,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 if items and len(items) > 0:
                     return getattr(items[0], "message_id", None)
         except Exception as exc:
-            logger.debug("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc)
+            logger.debug("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc, exc_info=True)
         return None
 
     async def _send_raw_message(
@@ -3835,7 +3818,7 @@ class FeishuAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                logger.debug("[Feishu] WebSocket client thread raised", exc_info=True)
             # Deliberate disconnects nil ``_ws_client``/``_running`` first; only restart a live link.
             if not self._running or self._ws_client is None:
                 return
@@ -3854,7 +3837,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 await self._connect_websocket()
                 backoff = initial_backoff
             except Exception as exc:
-                logger.warning("[Feishu] WebSocket restart failed (retrying): %s", exc)
+                logger.warning("[Feishu] WebSocket restart failed (retrying): %s", exc, exc_info=True)
                 backoff = min(backoff * 2, 60.0)
 
     def _ws_link_up(self, ws_client: Any) -> None:
@@ -4190,6 +4173,7 @@ def _render_qr(url: str) -> bool:
         qr.print_ascii(invert=True)
         return True
     except Exception:
+        logger.debug("[Feishu onboard] QR render failed", exc_info=True)
         return False
 
 
@@ -4226,7 +4210,7 @@ def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
         content = getattr(getattr(resp, "raw", None), "content", None)
         return None if content is None else _parse_bot_response(json.loads(content))
     except Exception as exc:
-        logger.debug("[Feishu onboard] SDK probe failed: %s", exc)
+        logger.debug("[Feishu onboard] SDK probe failed: %s", exc, exc_info=True)
         return None
 
 
@@ -4341,6 +4325,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             return send_error("No deliverable text or media remained after processing MEDIA tags")
         return {"success": True, "platform": "feishu", "chat_id": chat_id, "message_id": last_result.message_id}
     except Exception as e:
+        logger.error("Feishu standalone send failed", exc_info=True)
         return send_error(f"Feishu send failed: {e}")
 
 
@@ -4368,6 +4353,7 @@ def interactive_setup() -> None:
             print_warning("Feishu / Lark setup cancelled.")
             return
         except Exception as exc:
+            logger.debug("[Feishu onboard] QR registration failed", exc_info=True)
             print_warning(f"QR registration failed: {exc}")
         if not credentials:
             print_info("QR setup did not complete. Continuing with manual input.")
@@ -4394,6 +4380,7 @@ def interactive_setup() -> None:
             else:
                 print_warning("Could not verify bot connection. Credentials saved anyway.")
         except Exception as exc:
+            logger.debug("[Feishu onboard] credential verification failed", exc_info=True)
             print_warning(f"Credential verification skipped: {exc}")
 
         credentials = {"app_id": app_id, "app_secret": app_secret, "domain": domain, "open_id": None, "bot_name": bot_name}
