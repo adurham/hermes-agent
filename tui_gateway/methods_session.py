@@ -1458,19 +1458,6 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, usage)
 
 
-def _account_usage_lines(session: dict) -> list[str]:
-    """Account-limit lines for the live agent's route, else ``model.provider``. Session scope: a
-    non-launch profile's credentials are unreadable without it when multiplexed (#132422)."""
-    from agent.account_usage import fetch_account_usage, render_account_usage_lines
-    agent = session.get("agent")
-    with _session_profile_runtime_scope(session):
-        provider = getattr(agent, "provider", None) or _config_model_target()[1]
-        if not provider:
-            return []
-        snapshot = fetch_account_usage(provider, base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None))
-    return render_account_usage_lines(snapshot)
-
-
 @_session_method("session.context_breakdown")
 def _(rid, params: dict, session: dict) -> dict:
     if (agent := session.get("agent")) is None:
