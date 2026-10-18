@@ -85,11 +85,11 @@ def process_birth(proc) -> float:
 
 
 def _process_create_time(pid: Optional[int] = None) -> Optional[float]:
-    """``psutil`` create time for ``pid`` (default: this process); ``None`` when psutil can't say."""
+    """:func:`process_birth` of ``pid`` (default: this process); ``None`` when psutil can't say."""
     try:
         import psutil
 
-        return float(psutil.Process(os.getpid() if pid is None else pid).create_time())
+        return process_birth(psutil.Process(os.getpid() if pid is None else pid))
     except Exception:
         return None
 
@@ -205,7 +205,7 @@ def _read_ledger_or_quarantine(path: Path) -> Optional[list[dict]]:
 
 def _same_incarnation(proc, create_time: Optional[float]) -> bool:
     """Does the live ``proc`` match a recorded ``create_time`` (2 s tolerance; ``None`` matches)?"""
-    return create_time is None or abs(float(proc.create_time()) - float(create_time)) < 2.0
+    return create_time is None or abs(process_birth(proc) - float(create_time)) < 2.0
 
 
 def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool = False) -> Optional[bool]:
@@ -217,7 +217,7 @@ def _pid_alive_matches(pid: int, create_time: Optional[float], *, strict: bool =
     try:
         proc = psutil.Process(int(pid))
         if strict:
-            return (create_time is not None and proc.create_time() == create_time
+            return (create_time is not None and process_birth(proc) == create_time
                     and proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE)
         # A zombie keeps its create_time until its parent reaps it, but it is already dead: the
         # dashboard stop check (``gateway.status._pid_exists``) books it stopped, so the ledger must
