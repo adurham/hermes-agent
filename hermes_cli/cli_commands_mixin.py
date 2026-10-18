@@ -641,9 +641,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Print a diff, capped at ``limit`` lines (of ``total`` when its sender cut it) with a pointer to the --stat form."""
         print()
         diff_lines = diff.splitlines()
-        if (total := max(total, len(diff_lines))) > limit:
-            self._print_diff_text("\n".join(diff_lines[:limit]))
-            print(f"\n  {_t('diff.more_lines', count=total - limit, hint=stat_hint)}")
+        if (total := max(total, len(diff_lines))) > len(shown := diff_lines[:limit]):
+            self._print_diff_text("\n".join(shown))
+            print(f"\n  {_t('diff.more_lines', count=total - len(shown), hint=stat_hint)}")
         else:
             self._print_diff_text(diff)
 
