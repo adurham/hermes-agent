@@ -21327,3 +21327,14 @@ config still depends on. Commit fork fixes on the main checkout, push, and pull 
 **Deliberately skipped:** units in files still 60-90% identical to upstream (doc policy) — a fix there belongs upstream, not in the fork.
 
 **Upstream candidates:** F821 and F811 units only (genuine NameError/shadowing defects, tiny, uncontroversial); HX*/LIX001 are fork-local rules and BLE001 narrowing is opinionated style, so both are excluded. No upstream PRs were filed; candidates need explicit per-action approval, and any approved patch should be byte-identical to the fork commit so the next sync merges clean.
+
+
+## 2026-10-18 — Test harness: neutralize `hermes update`'s owning-install redirect under pytest
+
+**Problem:** running the suite from a checkout's own in-tree venv (`.venv` or `venv` beside `hermes_cli`) makes `cmd_update` call `retarget_to_owning_install(PROJECT_ROOT)`, which sees "this venv belongs to the repo checkout, but you are updating the temp install the test built" and re-execs `hermes` with pytest's argv — the CLI rejects the test path and exits 2. Every update test that reaches `cmd_update` therefore false-failed on a developer machine while passing in CI (plain interpreter, no in-tree venv): 68 failures across six update test files on this Mac.
+
+**Fix:** `tests/conftest.py` gains an autouse fixture, `_neutralize_owning_install_redirect`, that pins `hermes_cli.update_owning_install.retarget_to_owning_install` to a no-op for every test except `tests/hermes_cli/test_update_owning_install.py` (which exercises `owning_install_root` directly and keeps the real logic). This matches the suite's existing hermetic-test invariants and the ad-hoc monkeypatches several update tests already carried.
+
+**Effect (macOS, in-tree venv):** `test_update_target_identity` 31→1, `test_update_products` 12→0, `test_update_completion_process` 8→0, `test_update_autostash` 8→0, `test_update_parked_branch_guard` 7→0, `test_update_channel` 3→0. Remaining failures in those files are separate causes (fleet-restart fixture repo, desktop build lock, sessions gate, web-profile unification).
+
+**Upstreamable:** yes — any developer running the suite in-tree hits this.

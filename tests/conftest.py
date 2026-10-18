@@ -446,6 +446,27 @@ def _isolate_hermes_home(_hermetic_environment):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_owning_install_redirect(request, monkeypatch):
+    """Pin ``hermes update``'s owning-install redirect to a no-op for every test.
+
+    The redirect fires when the running interpreter is an in-tree venv
+    (``venv``/``.venv`` beside ``hermes_cli``) that belongs to a different
+    checkout than the one being updated, and re-execs that install's updater
+    with the current argv. A checkout's own ``.venv`` is exactly that shape,
+    so every update test that reaches ``cmd_update`` re-execs ``hermes`` with
+    pytest's argv and dies with ``SystemExit(2)``. CI runs on a plain
+    interpreter and never sees it; neutralize it here so a local run matches
+    CI. Tests that exercise the helper itself call ``owning_install_root``
+    directly (tests/hermes_cli/test_update_owning_install.py) and are left
+    alone.
+    """
+    if "test_update_owning_install" in request.node.nodeid:
+        return
+    module = importlib.import_module("hermes_cli.update_owning_install")
+    monkeypatch.setattr(module, "retarget_to_owning_install", lambda project_root: None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_foreground_exit_fence():
     """A test that drives a hard-exit path raises the one-way foreground-spawn fence; lower it after."""
     yield
