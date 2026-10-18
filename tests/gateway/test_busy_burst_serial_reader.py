@@ -168,7 +168,7 @@ async def test_next_burst_waits_while_the_chats_last_one_commits(monkeypatch, tm
         await adapter.handle_message(_photo(source, tmp_path, 1))
         assert await asyncio.to_thread(entered.wait, 5)
         second = asyncio.create_task(adapter.handle_message(_photo(source, tmp_path, 2)))
-        done, _ = await asyncio.wait({second}, timeout=0.5)
+        done, _ = await asyncio.wait({second}, timeout=2.0)  # a negative window: >= 2 s per tests/AGENTS.md
         assert not done, 'the reader went on while the chat still had a burst committing'
     finally:
         release.set()

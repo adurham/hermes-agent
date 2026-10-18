@@ -35,7 +35,7 @@ def _hold_capture(monkeypatch):
 
     def held(paths):
         entered.set()
-        release.wait(5.0)
+        release.wait(15.0)  # outlasts every bound below: an input done within one never waited on it
         return real_capture(paths)
     monkeypatch.setattr(envelope, 'capture_native_media', held)
     return entered, release
@@ -146,12 +146,14 @@ async def test_a_held_capture_never_delays_another_chat_nor_outlives_its_cancel(
         first = admit(X, 'x1-video', media=True)
         await asyncio.to_thread(entered.wait, 5)
         other = admit(Y, 'y-text')
-        assert other in (await asyncio.wait({other}, timeout=1.0))[0], 'chat Y waited on chat X'
+        # X's capture is held past this bound, so chat Y finishing within it proves it never queued on X.
+        await async_wait_until(other.done, timeout=5.0, what='chat Y admitted while chat X still captures')
+        assert not first.done(), 'chat Y waited on chat X'
         follower = admit(X, 'x2-text')
         await asyncio.sleep(0)
         first.cancel()  # the earlier input is abandoned mid-capture: its successor goes on
         await asyncio.gather(first, return_exceptions=True)
-        assert follower in (await asyncio.wait({follower}, timeout=1.0))[0], 'a cancelled input blocked the next'
+        await async_wait_until(follower.done, timeout=5.0, what='the next input after a cancelled capture')
     finally:
         release.set()
         authority.db.close()
