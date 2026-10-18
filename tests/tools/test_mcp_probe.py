@@ -111,3 +111,40 @@ class TestProbeMcpServerTools:
         assert "github" in result
         assert "disabled_one" not in result
         assert "disabled_one" not in connect_calls
+
+
+def test_cancelled_server_omitted_and_others_still_reported():
+    """A server whose connect is cancelled comes back from gather as CancelledError
+    (a BaseException); it is skipped like any failure, not treated as a server."""
+    config = {
+        "cancelled": {"command": "npx", "connect_timeout": 5},
+        "github": {"command": "npx", "connect_timeout": 5},
+    }
+    mock_server = MagicMock()
+    mock_server._tools = [SimpleNamespace(name="create_issue", description="Create")]
+    mock_server.shutdown = AsyncMock()
+
+    async def fake_connect(name, cfg):
+        if name == "cancelled":
+            raise asyncio.CancelledError()
+        return mock_server
+
+    def run_coro(coro_or_factory, timeout=120):
+        coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+         patch("tools.mcp_tool_config._load_mcp_config", return_value=config), \
+         patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+         patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
+         patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=run_coro), \
+         patch("tools.mcp_tool_loop._stop_mcp_loop"):
+        from tools.mcp_tool_discovery import probe_mcp_server_tools
+        result = probe_mcp_server_tools()
+
+    assert result == {"github": [("create_issue", "Create")]}
+    mock_server.shutdown.assert_awaited_once()
