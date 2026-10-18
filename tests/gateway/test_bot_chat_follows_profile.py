@@ -635,3 +635,41 @@ def test_follows_profile_parses_each_frozen_blob_once_per_policy(monkeypatch):
     assert parsed.count(config) <= 1 and parsed.count('{}') <= 1
     adopted = replace(policy, config_json=real_json.dumps({FOLLOW_ADOPTED: True}))
     assert adopted.follows_profile is True and policy.follows_profile is False
+
+
+@pytest.mark.asyncio
+async def test_an_mcp_reload_keeps_a_busy_first_opens_adoption_pending(home, monkeypatch):
+    """``reload.mcp`` refreshes only the MCP section (it never runs ``follow_bot_chat``): it must not
+    forget an adoption a busy first open left pending, or the warm reopen returns early on the old route."""
+    import hermes_state_mutation_guards as guards
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_policy_refresh import commit_refresh
+    from hermes_state_runtime import RuntimeStoreError
+    _profile(home, 'old-model', 1, 'old-key')
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    real, refused = guards.require_idle, []
+
+    def busy_once(db, conn, ids):
+        if not refused:
+            refused.append(ids)
+            raise RuntimeStoreError('session_busy')
+        return real(db, conn, ids)
+    monkeypatch.setattr(guards, 'require_idle', busy_once)
+    desktop = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    try:
+        ref, _params = _frozen_bot_chat(authority, owner.actor, home)
+        live = authority.sessions[ref.session_id]
+        _profile(home, 'new-model', 2, 'new-key')
+        params = {'session_id': ref.session_id}
+        response = await desktop.dispatch({'id': 'busy', 'method': 'session.resume', 'params': dict(params)})
+        assert 'result' in response and refused and not _follows(runner, live), response
+        await commit_refresh(authority, ref, mcp_only=True)  # reload.mcp on that idle chat
+        assert not _follows(runner, live)
+        response = await desktop.dispatch({'id': 'warm', 'method': 'session.resume', 'params': dict(params)})
+        assert 'result' in response, response
+        assert _follows(runner, live) and _route(runner, live) == ('new-model', 'http://127.0.0.1:2/v1', 'new-key')
+    finally:
+        await desktop.close()
+        await owner.close()
+        store.close_all_db_handles()

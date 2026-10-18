@@ -220,7 +220,9 @@ async def _commit_refresh(authority, ref, mcp_only, adopt_only=False):
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_mutation_prepared import commit_refreshed_policy
     prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only, adopt_only)
-    pending = _pending_adoptions(authority)
+    # An MCP-only refresh never runs follow_bot_chat: it neither settles nor commits an adoption, so it
+    # leaves a pending one for the next open.
+    pending = _pending_adoptions(authority) if not mcp_only else set()
     if prepared is None:
         pending.discard(ref.session_id)
         return False
