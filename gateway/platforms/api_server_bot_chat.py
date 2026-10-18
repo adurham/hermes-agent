@@ -77,8 +77,12 @@ def _refusal(authority, tip, exc):
             validate_legacy_row(authority.db, tip)
             reason, hint = 'bot_chat_unbound', 'open it once with `hermes chat -c "Bot Chat"` on that host'
         except RuntimeStoreError:
-            reason, hint = 'bot_chat_not_local', ("it is a conversation the gateway cannot own; it is moved aside "
-                                                  "as 'Bot Chat (API <id>)' on the next delivery")
+            from gateway.session_bot import displaceable_bot_chat
+            reason = 'bot_chat_not_local'
+            if displaceable_bot_chat(authority, tip) is not None:
+                hint = "it is a conversation the gateway cannot own; it is moved aside as 'Bot Chat (API <id>)' on the next delivery"
+            else:  # local history a peer may not adopt (a served remote login's Desktop row, another profile's): never moved
+                hint = 'it is local history owned by another login or profile; open or rename it from the client that owns it'
         logger.warning('Peer DM into Bot Chat %s refused: %s (not_found: field=%s detail=%s)',
                        tip['id'], reason, exc.field, exc.detail)
         return reason, f"Bot Chat admission refused: {reason} (this profile's 'Bot Chat' is not a local chat; {hint})"

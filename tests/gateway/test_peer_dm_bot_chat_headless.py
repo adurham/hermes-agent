@@ -425,3 +425,20 @@ async def test_a_turn_after_the_move_aside_names_the_local_bot_chat(headless, do
     new = db.get_session_by_title('Bot Chat')['id']
     assert new != old and named == {new}, (named, old, new)
     assert [sid for sid, _, _ in headless.executed] == [new]
+
+
+@pytest.mark.asyncio
+async def test_a_protected_desktop_bot_chat_refusal_never_promises_a_move(headless):
+    # A Desktop row a served remote login stamped is that login's local history: it is never moved
+    # aside (``displaceable_bot_chat``), so the refusal must not say it will be.
+    db = headless.authority.db
+    db.create_session('desktop_alice', 'desktop')
+    db.set_session_title('desktop_alice', 'Bot Chat')
+    db._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET user_id='github:alice' WHERE id='desktop_alice'"))
+    for _attempt in range(2):  # "on the next delivery": the second is refused the same way
+        resp = await headless.cli.post("/api/sessions/desktop_alice/chat", json={"message": "ping", "author": AUTHOR})
+        body = await resp.json()
+        assert resp.status == 502 and body['error']['code'] == 'bot_chat_not_local', body
+        assert 'moved aside' not in body['error']['message'], body
+    assert db.get_session_by_title('Bot Chat')['id'] == 'desktop_alice' and len(_sessions(headless.authority)) == 1
