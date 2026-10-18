@@ -69,6 +69,7 @@ def _profile_scoped_rpc(
             except ProfileUnavailableError:
                 raise  # a body that binds ``profile`` itself (_session_home_scope) reports 4064 via dispatch
             except Exception as e:
+                logger.debug("RPC handler failed (code %s)", fail_code, exc_info=True)
                 return _err(rid, fail_code, f"{prefix}{e}")
         handler.__doc__ = body.__doc__
         return handler
@@ -154,6 +155,7 @@ def _session_key_or_err(rid, session, module: str, label: str):
     try:
         return sid_key, _tools_mod(module), None
     except Exception as exc:
+        logger.debug("%s unavailable: import of %s failed", label, module, exc_info=True)
         return None, None, _err(rid, 5030, f"{label} unavailable: {exc}")
 
 
@@ -182,6 +184,7 @@ def _rewind_or_err(rid, session, keep: int, value_err: tuple, fail_prefix: str, 
     except ValueError as exc:
         return None, _err(rid, value_err[0], f"{value_err[1]}{exc}")
     except Exception as exc:
+        logger.debug("session history rewind failed", exc_info=True)
         return None, _err(rid, 5008, f"{fail_prefix}{exc}")
 
 
@@ -207,6 +210,7 @@ def _captured_exec(rid, cmd, timeout: int, *, on_result, timeout_err: tuple, fai
     except subprocess.TimeoutExpired:
         return _err(rid, *timeout_err)
     except Exception as e:
+        logger.debug("captured command failed", exc_info=True)
         return _err(rid, fail_code, str(e))
 
 
@@ -256,6 +260,7 @@ def _(rid, params: dict) -> dict:
             "available": batt.available, "percent": batt.percent, "plugged": batt.plugged,
             "category": battery.battery_category(batt)})
     except Exception:
+        logger.debug("battery read failed", exc_info=True)
         return _ok(rid, {"available": False, "percent": None, "plugged": None, "category": "dim"})
 
 
@@ -302,6 +307,7 @@ def _mcp_reload_confirm_required() -> bool:
         approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
         return bool(approvals.get("mcp_reload_confirm", True)) if isinstance(approvals, dict) else True
     except Exception:
+        logger.debug("approvals.mcp_reload_confirm read failed; requiring confirmation", exc_info=True)
         return True
 
 
@@ -333,7 +339,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
                 refresh(agent, enabled_override=enabled, disabled_override=disabled,
                         quiet_mode=True, preserve_prefix=preserve_prefix)
         except Exception as _exc:
-            logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc)
+            logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc, exc_info=True)
         if plugin_note:
             _tools_mod("agent.plugin_live_notes").queue_plugin_notice(agent, *plugin_note)
         _emit("session.info", sid, _session_info(agent, sess))
@@ -363,6 +369,7 @@ def _(rid, params: dict) -> dict:
             ack = _get_compute_host_supervisor().reload_mcp(
                 str(params.get("session_id") or ""), request_id=f"reload-mcp-{rid}")
         except Exception as exc:
+            logger.warning("compute-host reload_mcp failed", exc_info=True)
             return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
         return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
     _mcp_agent, _mcp_lifecycle, _mcp_discovery = (
@@ -405,7 +412,7 @@ def _(rid, params: dict) -> dict:
                 with _session_profile_runtime_scope({"profile_home": home}):
                     _mcp_discovery.discover_mcp_tools()
             except Exception as _exc:
-                logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc)
+                logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc, exc_info=True)
         _refresh_session_agent()
         _mcp_reload_loaded_rev = loaded
         _mcp_reload_gen += 1
@@ -521,15 +528,18 @@ def _(rid, params: dict) -> dict:
         try:
             _catalog_quick_commands(cat)
         except Exception as e:
+            logger.debug("quick_commands discovery failed", exc_info=True)
             warning = f"quick_commands discovery unavailable: {e}"
         try:
             _catalog_plugin_commands(cat)
         except Exception as e:
+            logger.debug("plugin command discovery failed", exc_info=True)
             warning = warning or f"plugin command discovery unavailable: {e}"
         try:
             collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
             warning = warning or collision_note
         except Exception as e:
+            logger.debug("skill discovery failed", exc_info=True)
             warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
@@ -591,6 +601,7 @@ def _plugin_command_handler(name: str):
     try:
         return _tools_mod("hermes_cli.plugins").get_plugin_command_handler(name)
     except Exception:
+        logger.debug("plugin command lookup failed for %s", name, exc_info=True)
         return None
 
 
@@ -649,6 +660,7 @@ def _profile_skill_command(session: dict, base: str) -> bool | None:
         with _session_home_scope(session):
             return f"/{base}" in _tools_mod("agent.skill_commands").get_interactive_skill_commands()
     except Exception:
+        logger.debug("skill command scan failed for /%s", base, exc_info=True)
         return None
 
 
@@ -676,6 +688,7 @@ def _is_registry_command(base: str) -> bool:
     try:
         return _tools_mod("hermes_cli.commands").resolve_command(base) is not None
     except Exception:
+        logger.debug("registry lookup failed for /%s", base, exc_info=True)
         return False
 
 
@@ -693,6 +706,7 @@ def _bundle_key_for(name: str):
             return _tools_mod("agent.skill_bundles").resolve_bundle_command_key(name)
         return None
     except Exception:
+        logger.debug("skill-bundle lookup failed for %s", name, exc_info=True)
         return None
 
 
@@ -706,6 +720,7 @@ def _dispatch_bundle(rid, params, session, name, arg):
             bundle_key, arg, task_id=session.get("session_key", "") if session else "",
             platform=_resolve_session_platform())
     except Exception as exc:
+        logger.debug("bundle dispatch failed for %s", bundle_key, exc_info=True)
         return _err(rid, 4018, f"bundle dispatch failed: {exc}")
     if not bundle_result:
         return _err(rid, 4018, f"failed to load bundle: {bundle_key}")
@@ -820,6 +835,7 @@ def _cmd_moa(rid, params, session, name, arg):
         notice = f"MoA one-shot queued with preset {preset}; previous model will be restored after this turn."
         return _ok(rid, {"type": "send", "notice": notice, "message": arg})
     except Exception as exc:
+        logger.debug("moa dispatch failed", exc_info=True)
         return _err(rid, 5030, f"moa unavailable: {exc}")
 
 
@@ -894,6 +910,7 @@ def _cmd_goal(rid, params, session, name, arg):
         try:
             max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
         except Exception:
+            logger.debug("goals.max_turns read failed; using 20", exc_info=True)
             max_turns = 20
         mgr = goals.GoalManager(session_id=sid_key, default_max_turns=max_turns)
         from hermes_cli.goal_command import dispatch_goal_command
@@ -1002,6 +1019,7 @@ def _cmd_compress(rid, params, session, name, arg):
     except CompressionBusy as exc:  # a turn won the race after the unlocked pre-check above
         return _err(rid, 4009, str(exc))
     except Exception as exc:
+        logger.warning("compress failed (session %s)", sid, exc_info=True)
         _tools_mod("agent.conversation_compression").finalize_context_engine_compression_notification(
             session["agent"], committed=False)
         return _err(rid, 5009, f"compress failed: {exc}")
@@ -1153,6 +1171,7 @@ def _(rid, params: dict) -> dict:
         try:
             return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
         except Exception as e:
+            logger.warning("plugin command /%s failed", base, exc_info=True)
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
     if not worker:
@@ -1170,6 +1189,7 @@ def _(rid, params: dict) -> dict:
                         provider=getattr(session.get("agent"), "provider", None) or None)
                     _attach_worker(sid, session, worker)
                 except Exception as e:
+                    logger.warning("slash worker start failed (session %s)", sid, exc_info=True)
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
         output = worker.run(cmd)
@@ -1184,6 +1204,7 @@ def _(rid, params: dict) -> dict:
             _publish_session_control_snapshot(sid, session)
         return _ok(rid, payload)
     except Exception as e:
+        logger.debug("slash worker run failed (session %s)", sid, exc_info=True)
         if _worker_refused_skill(e):
             # Refused before process_command; the worker is still healthy.
             return _skill_dispatch_or_refuse(rid, sid, base, arg)
@@ -1534,7 +1555,7 @@ def _(rid, params: dict) -> dict:
     for entry in mcp_catalog.list_catalog():
         try:
             requires = [str(k) for k in (getattr(entry, "env_keys", None) or [])]
-        except Exception:
+        except TypeError:  # env_keys not iterable
             requires = []
         transport = getattr(entry, "transport", None)  # TransportSpec → its kind string
         out.append({
@@ -1670,6 +1691,7 @@ def _(rid, params: dict) -> dict:
         tools = mc._probe_single_server(name, cfg, details=details)
         token_present = mc._oauth_tokens_present(name) if needs_oauth_token else True
     except Exception as exc:
+        logger.debug("MCP probe failed for %s", name, exc_info=True)
         return failure(str(exc), needs_oauth_token, mc._oauth_tokens_present(name) if needs_oauth_token else None)
     if not token_present:
         return failure("OAuth authentication required — no token found.", True, False)
