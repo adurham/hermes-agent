@@ -356,6 +356,38 @@ async def test_a_coalesced_bare_route_to_an_unserved_profile_is_refused_like_the
 
 
 @pytest.mark.asyncio
+async def test_a_route_rule_admission_never_matches_does_not_refuse_the_coalesced_route(tmp_path, monkeypatch):
+    """Admission's source carries ``chat_id=webhook:v2:<token>`` (per delivery), not
+    ``webhook:<route>``: a ``profile_routes`` rule keyed on ``chat_id: webhook:<route>`` never matches
+    there, so the delivery is admitted on default. The coalesced route's edge check must ask that
+    same source and answer what the immediate route answers (202), not a 503 forever."""
+    from gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from gateway.profile_routing import ProfileRoute
+    homes = _homes(tmp_path, monkeypatch)
+    root, beta = homes[0][1].resolve(), homes[1][1].resolve()
+    runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
+        ProfileRoute(name=f'{route}-to-ghost', platform='webhook', profile='ghost', chat_id=f'webhook:{route}')
+        for route in ('events', 'events_now')])
+    await _serve_beta_again(runner, beta)
+    adapter = _webhook(runner, {
+        'events': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}', 'coalesce': {'key': 'id', 'window_seconds': 0.05}},
+        'events_now': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}'}})
+    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    try:
+        immediate = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}, 'events_now', None))
+        coalesced = await adapter._handle_webhook(_webhook_request('delivery-2', {'id': 18}, 'events', None))
+        assert immediate.status == 202, (immediate.status, immediate.text)
+        assert coalesced.status == 202 and json.loads(coalesced.text)['status'] == 'coalesced', \
+            (coalesced.status, coalesced.text)
+        await async_wait_until(settled, what='the coalesced batch dispatched')
+        await async_wait_until(lambda: _admissions(root) == 2, what='both deliveries admitted on default')
+        assert _admissions(beta) == 0
+    finally:
+        _cancel(adapter)
+        _close(runner, homes)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['deliver_only', 'cron_job'])
 async def test_a_non_durable_webhook_for_a_parked_profile_is_refused_before_its_id_is_recorded(
         tmp_path, monkeypatch, mode):
