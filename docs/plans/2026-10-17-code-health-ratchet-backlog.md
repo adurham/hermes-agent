@@ -2862,3 +2862,21 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   (connector accounts/operation, hosted-room two-gateway). `scripts/check`: health ok (0 blocking);
   ruff red on clean main too (RUF100 unused `# noqa: BLE001` at `agent/turn_truncation.py:572`, from
   main's f21f8ad2) — not this unit. Branch `claude/fix-c1088-methods-session-ble001-n0w73l`.
+- 2026-10-18 — C-1045 `plugins/platforms/discord/adapter.py` (async): ASYNC230×1 + ASYNC240×4 +
+  RUF006×2 → 0 (the ASYNC230 carried a `# noqa`, now removed; `--ignore-noqa` count 7 → 0). The two
+  fire-and-forget notifiers (`_handle_bot_task_done`'s supervisor notify, the unauthorized-slash
+  admin alert) go through new `agent.async_utils.spawn_detached_task`, which holds a strong ref in
+  a module-level set until done and observes the result (`consume_detached_task_result`) — not
+  `_background_tasks`, so the runner's teardown never cancels the notifier that triggered it.
+  Blocking path/file calls move to `asyncio.to_thread`: `play_ack_in_voice` (+ sibling `makedirs`,
+  `unlink`), `_standalone_send`'s two `os.path.exists` and the media `open()` (handle still
+  streams into the multipart upload), and sibling instances `_process_voice_input`
+  (`NamedTemporaryFile`, `unlink`) and `UpdatePromptView._respond` (`write_text`/`replace`; the
+  path is still resolved on the loop under the profile scope). Same calls, same order, same
+  error handling; baselined BLE001s untouched. FILE_LINES 7674 → 7674. New
+  `tests/plugins/test_discord_runtime_failure.py::test_discord_bot_task_exit_notifier_survives_garbage_collection`
+  (red on main: the unreferenced notifier is collected mid-run). Unit tests + 62 discord/send-message
+  test files, run with a `--extra messaging --extra discord` env (the dev/test env lacks aiohttp):
+  546 passed, 0 failed, 19 skipped. `scripts/check`: 11 of 12 green, health 0 blocking; ruff
+  fails only on RUF100 at `agent/turn_truncation.py:572`, identical on clean main@f21f8ad2 (left
+  alone). Branch `claude/fix-discord-adapter-async-56xffx`.
