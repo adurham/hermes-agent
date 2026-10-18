@@ -437,7 +437,14 @@ class HostSupervisor:
                 _call_logged(pending[1], frame, "compute host turn completion callback failed")
 
     def _wait_for_exit(self, proc: subprocess.Popen[str]) -> None:
-        code = proc.wait()
+        # The host lives as long as the supervisor wants it, so the watch has no overall deadline;
+        # each wait is bounded to the heartbeat cadence so the thread never parks in one unbounded call.
+        while True:
+            try:
+                code = proc.wait(timeout=self.heartbeat_secs)
+                break
+            except subprocess.TimeoutExpired:
+                continue
         if self._closing:
             return
         with self._lock:

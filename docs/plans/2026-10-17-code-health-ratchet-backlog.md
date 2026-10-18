@@ -2775,3 +2775,12 @@ Open items:
 4. F821/F811 upstream candidates: produce the list, get explicit per-action approval, submit byte-identical patches. Nothing filed.
 
 Carried forward: tier-2/3 single-finding units, the remaining large rule families elsewhere in the tree, and the 589-failure environmental triage (update/install/pm/shallow-clone) — the last is the highest-value next hermes-agent work, since the fork has no trustworthy full-suite gate until it is explained.
+- 2026-10-18 — C-1073 `tui_gateway/host_supervisor.py` (timeout): HX006×1 → 0. The only hit was
+  `_wait_for_exit`'s bare `proc.wait()`; the exit watcher must block for the host's whole lifetime,
+  so a single deadline would be wrong. Each wait is now bounded to `heartbeat_secs` and retried on
+  `TimeoutExpired`, so exit handling (closing check, crash fail-out, respawn) is unchanged. Sibling
+  waits in the file already pass deadlines (`_check_output` timeout=2, shutdown/terminate
+  `_SHUTDOWN_TIMEOUT_SECS`, post-kill reap timeout=2); nothing else left. Unit's 4 test files 30/30.
+  `scripts/check` 11/12: health and the other checks green; ruff fails identically on clean main
+  (RUF100 unused `# noqa: BLE001` at `agent/turn_truncation.py:572`, from main@f21f8ad2; not this
+  unit). Branch `claude/c1073-host-supervisor-timeout-fylkc4`.
