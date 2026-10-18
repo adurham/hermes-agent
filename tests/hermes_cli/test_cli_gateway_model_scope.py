@@ -281,3 +281,42 @@ def test_switching_to_the_route_the_session_runs_commits_nothing(monkeypatch):
     stub.agent.run_conversation("next turn")
     mutates, overrides = _model_routes(conn)
     assert not mutates and not overrides, (mutates, overrides)
+
+
+def _reasoning_mutates(conn):
+    return [p["payload"] for m, p in conn.calls if m == "session.mutate" and p.get("operation") == "reasoning"]
+
+
+def test_once_reasoning_rides_the_admission_and_never_mutates_the_session(monkeypatch):
+    """Review of #140969: ``/model B --once --reasoning high`` sent session-scope ``reasoning`` mutations
+    (each a durable ``session_pins.reasoning``), so the session stopped following its profile's level."""
+    conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
+    cli_mod, stub, printed = _chat_cli(monkeypatch, conn)
+    stub._confirm_and_apply_cli_model_switch = cli_mod.HermesCLI._confirm_and_apply_cli_model_switch.__get__(stub)
+    cli_mod.HermesCLI._handle_model_switch(stub, "/model claude-sonnet-4.6 --provider anthropic --once --reasoning high")
+    assert not [line for line in printed if "fail" in line.lower()], printed
+    assert stub.chat("the once turn") == "ok"
+    assert stub.chat("the turn after") == "ok"
+    assert _reasoning_mutates(conn) == []
+    once, after = _submits(conn)
+    assert once.get("model_override") == {"model": "claude-sonnet-4.6", "provider": "anthropic", "reasoning": "high"}
+    assert "model_override" not in after, after
+    assert stub._reasoning_user_set is False
+
+
+def test_once_reasoning_equal_to_the_inherited_level_commits_nothing(monkeypatch):
+    """dokterdok's probe: the session already runs ``high`` by inheritance; neither the --once pick nor its
+    restore may write the session's reasoning."""
+    import cli
+    from hermes_cli.cli_model_switch_mixin import _commit_model_switch
+    conn = RecordingConnection({"model": "old/model", "provider": "openrouter", "reasoning_effort": "high"})
+    _cli_mod, stub, _printed = _cli(monkeypatch, conn)
+    stub.agent = _agent(conn, model="old/model", provider="openrouter",
+                        reasoning_config={"enabled": True, "effort": "high"})
+    stub.reasoning_config = {"enabled": True, "effort": "high"}
+    stub._reasoning_user_set = False
+    result = ModelSwitchResult(success=True, new_model="next/model", target_provider="openrouter",
+                               api_key="key", base_url=stub.base_url, api_mode="chat_completions")
+    _commit_model_switch(stub, result, persist_global=False, one_turn=True, reasoning_effort="high")
+    cli.HermesCLI._restore_model_runtime_snapshot(stub, stub._pending_one_turn_model_restore)
+    assert _reasoning_mutates(conn) == []

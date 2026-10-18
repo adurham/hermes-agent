@@ -222,3 +222,18 @@ def test_a_plain_same_provider_pick_still_keeps_the_session_endpoint(alias_confi
         {"provider": "custom", "api_key": "sk-session", "base_url": SESSION_URL, "api_mode": "chat_completions"},
         alias_config)
     assert (runtime["base_url"], runtime["api_key"]) == (SESSION_URL, "sk-session")
+
+
+def test_a_one_turn_override_carries_its_reasoning_level_for_that_admission_only():
+    from gateway.session_cli_turn import admit_cli_turn, one_turn_reasoning
+    from hermes_state_runtime import RuntimeStoreError
+    committed = admit_cli_turn({"model_override": {"model": "m", "provider": "p", "reasoning": "high"}})
+    assert committed["cli_turn_v1"]["model_override"] == {"model": "m", "provider": "p", "reasoning": "high"}
+    with pytest.raises(RuntimeStoreError):
+        admit_cli_turn({"model_override": {"model": "m", "reasoning": "hgih"}})
+    session_level = {"enabled": True, "effort": "low"}
+    turn = SimpleNamespace(_ctx=SimpleNamespace(inbound_message_id="adm"))
+    with cli_turn_scope("adm", committed["cli_turn_v1"]):
+        assert one_turn_reasoning(turn, session_level) == {"enabled": True, "effort": "high"}
+    with cli_turn_scope("other", committed["cli_turn_v1"]):
+        assert one_turn_reasoning(turn, session_level) is session_level

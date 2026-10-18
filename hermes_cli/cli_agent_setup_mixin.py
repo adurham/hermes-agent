@@ -647,7 +647,8 @@ class CLIAgentSetupMixin:
             effective_model = model_override or self.model
             # ``/model --once`` has already staged the pick on the CLI and saved the restore
             # snapshot. chat retires the previous agent, so the pick has to be on this one.
-            one_turn = getattr(self, "_pending_one_turn_model_restore", None) is not None
+            pending_one_turn = getattr(self, "_pending_one_turn_model_restore", None)
+            one_turn = pending_one_turn is not None
             # -q never builds the prompt_toolkit app, so the clarify modal can't be
             # answered — answer headless instead of polling until clarify_timeout.
             single_query_mode = getattr(self, "_single_query_mode", False)
@@ -671,7 +672,8 @@ class CLIAgentSetupMixin:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config, service_tier=self.service_tier,
-                push_reasoning=getattr(self, "_reasoning_user_set", False),
+                # A --once level rides the admission; a session /reasoning is committed by the next rebuild.
+                push_reasoning=getattr(self, "_reasoning_user_set", False) and not one_turn,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,
@@ -685,6 +687,7 @@ class CLIAgentSetupMixin:
                 # Another viewer answering the gateway's clarify/sudo/secret request closes this modal.
                 modal_withdraw_callback=None if single_query_mode else self._withdraw_gateway_modal,
                 one_turn=one_turn,
+                one_turn_reasoning=(pending_one_turn or {}).get("one_turn_reasoning") if one_turn else None,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,

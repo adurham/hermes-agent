@@ -78,7 +78,7 @@ class GatewayAgent:
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
                  reaction_callback=None, interim_assistant_callback=None, connection=None,
                  push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None,
-                 one_turn=False, **_ignored):
+                 one_turn=False, one_turn_reasoning=None, **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -174,6 +174,8 @@ class GatewayAgent:
         # ``/model --once``: chat retires the agent that switch_model touched and builds this one.
         # Capture the pick before ``_apply_info`` copies the session model over it.
         self._turn_route = self._route_off_session(model, provider) if one_turn else None
+        # ``/model B --once --reasoning X``: X rides that admission's ``model_override``, never a session pin.
+        self._turn_reasoning = one_turn_reasoning if one_turn else None
         self._apply_info(self._state().info)
         if self._turn_route:
             self.model = self._turn_route["model"]
@@ -221,6 +223,17 @@ class GatewayAgent:
         level by inheritance, so it becomes the session's own choice."""
         self._set_reasoning(config, explicit=True)
 
+    def stage_turn_reasoning(self, config):
+        """``/model B --once --reasoning X``: X for the one-turn admission only (its ``model_override``).
+        Nothing is sent to the session."""
+        self._reasoning_config = config
+        self._turn_reasoning = _effort_word(config)
+
+    def restore_reasoning(self, config):
+        """A one-turn restore: the level goes back on this object only. The session was never written."""
+        self._reasoning_config = config
+        self._turn_reasoning = None
+
     def _set_reasoning(self, config, *, explicit):
         self._reasoning_config = config
         effort = _effort_word(config)
@@ -266,6 +279,8 @@ class GatewayAgent:
         own fields back."""
         if once or restore:
             self._turn_route = None if restore else self._route_off_session(new_model, new_provider)
+            if restore:
+                self._turn_reasoning = None
             if new_model:
                 self.model = new_model
             if new_provider:
@@ -588,6 +603,8 @@ class GatewayAgent:
         if pending and self._route_off_session(**pending):
             # /model --once: this admission alone runs the pick. The session row stays put.
             params["model_override"] = dict(pending)
+            if self._turn_reasoning:
+                params["model_override"]["reasoning"] = self._turn_reasoning
         elif self._moa_preset and (info.get("provider"), info.get("model")) != ("moa", self._moa_preset):
             # /moa one-shot: this admission alone runs the preset (unless it is the session's own
             # route); the session's route is untouched.

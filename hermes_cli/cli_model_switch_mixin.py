@@ -280,15 +280,29 @@ def _picker_offers_reasoning(provider_data: dict, model: str) -> bool:
     return not (isinstance(entry, dict) and entry.get("reasoning") is False)
 
 
-def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> None:
+def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool, one_turn: bool = False) -> None:
     """Apply a ``--reasoning <level>`` that rode along with a model pick. Runs AFTER the swap: the
     agent's ``switch_model`` re-resolves ``reasoning_config`` from config.yaml, so an earlier write
-    would be clobbered. Session-scoped unless the pick itself persists (``--global``)."""
+    would be clobbered. Session-scoped unless the pick itself persists (``--global``).
+
+    ``one_turn`` (``--once``): the level rides the one-turn admission (``model_override.reasoning``)
+    and the restore snapshot puts the CLI's own level back. It is never a session pin."""
     from cli import CLI_CONFIG, _cprint, _parse_reasoning_config, save_config_value
     parsed = _parse_reasoning_config(effort)
     if parsed is None:
         return
     cli.reasoning_config = parsed
+    if one_turn:
+        from hermes_cli.gateway_agent import GatewayAgent
+        pending = getattr(cli, "_pending_one_turn_model_restore", None)
+        if isinstance(pending, dict):
+            pending["one_turn_reasoning"] = effort  # the agent chat rebuilds carries it too
+        if isinstance(cli.agent, GatewayAgent):
+            cli.agent.stage_turn_reasoning(parsed)
+        elif cli.agent is not None:
+            cli.agent.reasoning_config = parsed
+        _cprint(f"    {t('cli.model.reasoning_effort', effort=effort)}")
+        return
     cli._reasoning_user_set = True
     if cli.agent is not None:
         # The gateway session's agent commits an explicit level even when it equals the inherited one.
@@ -331,6 +345,9 @@ def _commit_model_switch(
     # A second ``--once`` before the turn restores to the route before the first one.
     snapshot = (getattr(cli, "_pending_one_turn_model_restore", None)
                 or cli._snapshot_model_runtime()) if one_turn else None
+    if snapshot is not None:
+        # The level belongs to this --once pick only: a second pick without --reasoning drops it.
+        snapshot = {key: value for key, value in snapshot.items() if key != "one_turn_reasoning"}
     # ``--once`` must not session.mutate.
     cli._model_switch_one_turn = bool(one_turn)
     try:
@@ -349,7 +366,8 @@ def _commit_model_switch(
         cli._pending_one_turn_model_restore = snapshot
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
     if reasoning_effort:
-        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn)
+        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn,
+                                      one_turn=one_turn)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
@@ -703,8 +721,12 @@ class CLIModelSwitchMixin:
         agent = getattr(self, "agent", None)
         if agent is None:
             return
+        from hermes_cli.gateway_agent import GatewayAgent
+        # A gateway agent's one-turn level only rode the admission: put it back locally, write nothing.
+        restore_reasoning = (agent.restore_reasoning if isinstance(agent, GatewayAgent)
+                             else lambda config: setattr(agent, "reasoning_config", config))
         if "reasoning_config" in snapshot:
-            agent.reasoning_config = snapshot["reasoning_config"]
+            restore_reasoning(snapshot["reasoning_config"])
         primary = snapshot.get("agent_primary_runtime")
         if primary and hasattr(agent, "_restore_primary_runtime"):
             try:
@@ -735,7 +757,7 @@ class CLIModelSwitchMixin:
                 _cprint(f"  {notice}")
                 return
             if "reasoning_config" in snapshot:
-                agent.reasoning_config = snapshot["reasoning_config"]
+                restore_reasoning(snapshot["reasoning_config"])
 
     @staticmethod
     def _filter_model_picker_entries(entries: list, query: str) -> list:
