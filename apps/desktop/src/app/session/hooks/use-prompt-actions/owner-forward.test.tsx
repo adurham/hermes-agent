@@ -3,7 +3,9 @@ import { cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { errorRecoveryPlan, type ErrorSurface } from '@/lib/error-surface'
+import { $composerAttachments } from '@/store/composer'
 import { clearNotifications } from '@/store/notifications'
+import { $connection, $currentCwd } from '@/store/session'
 
 import { actRender, Harness, type HarnessHandle } from './index-test-utils'
 
@@ -12,6 +14,62 @@ describe('usePromptActions gateway-owner queue (#140385)', () => {
   afterEach(() => {
     cleanup()
     clearNotifications()
+    $composerAttachments.set([])
+  })
+
+  it('re-uploads the image of a draft restored after a SESSION_OWNER_BUSY refusal: serve dropped it (#140968)', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/root')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=') }
+    })
+    $composerAttachments.set([
+      {
+        detail: '/home/alice/photo.jpg',
+        id: 'image:photo.jpg',
+        kind: 'image',
+        label: 'photo.jpg',
+        occurrenceId: 'occurrence-photo',
+        path: '/home/alice/photo.jpg'
+      }
+    ])
+
+    const calls: string[] = []
+    let submits = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'image.attach_bytes' || method === 'image.attach') {
+        return { attached: true, path: '/root/tmp/photo.jpg' } as never
+      }
+
+      if (method === 'prompt.submit' && ++submits === 1) {
+        throw new JsonRpcGatewayError(
+          'The gateway is running a turn in this chat and an attachment cannot join its queue. The image was removed. Nothing was sent.',
+          { code: 4090, data: { reason: 'SESSION_OWNER_BUSY' } }
+        )
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('describe this')).toBe(false)
+    expect($composerAttachments.get()).toHaveLength(1)
+
+    await handle!.submitText('describe this')
+
+    const uploads = (m: string) => m === 'image.attach_bytes' || m === 'image.attach'
+    const firstRefusal = calls.indexOf('prompt.submit')
+    const resend = calls.lastIndexOf('prompt.submit')
+    expect(resend).toBeGreaterThan(firstRefusal)
+    expect(calls.slice(firstRefusal + 1, resend).some(uploads)).toBe(true)
   })
 
   it('turns a SESSION_OWNER_BUSY refusal into a retryable card, not "Start new session" (#140385)', async () => {

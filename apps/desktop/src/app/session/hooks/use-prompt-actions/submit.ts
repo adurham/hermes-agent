@@ -16,8 +16,10 @@ import {
 import {
   $composerAttachments,
   type ComposerAttachment,
+  type ComposerAttachmentPatch,
   freezeComposerTransportPayload,
   mainComposerScope,
+  patchMainComposerAttachmentOccurrence,
   revokeDiscardedAttachmentPreviews
 } from '@/store/composer'
 import { serverOwnsComposerQueue } from '@/store/composer-queue'
@@ -66,6 +68,7 @@ import {
   isSessionBusyError,
   isTargetSessionBusy,
   ownershipErrorSurface,
+  refusalDroppedImages,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
   type SubmitTextOptions,
@@ -101,6 +104,8 @@ interface SubmitPromptDeps {
    *  the primary view's $busy/$messages or clears the main attachment chips. */
   scope?: {
     removeAttachments: (attachments: readonly ComposerAttachment[]) => void
+    /** Merge `patch` into the chip occurrence `expected` names, if it is still there. */
+    patchAttachment: (expected: ComposerAttachment, patch: ComposerAttachmentPatch) => void
     readAttachments: () => ComposerAttachment[]
     setAwaitingResponse: (awaiting: boolean) => void
     setBusy: (busy: boolean) => void
@@ -108,10 +113,40 @@ interface SubmitPromptDeps {
   }
 }
 
+// #140968: serve unstages the images of a send the gateway owner refused, so the restored chips must
+// not claim the session still holds them. Un-stage them (original source path back, no session
+// stamp) and the resend uploads them again.
+function unstageRefusedImages(
+  err: unknown,
+  usingComposerAttachments: boolean,
+  scope: NonNullable<SubmitPromptDeps['scope']>,
+  attachments: readonly ComposerAttachment[]
+): void {
+  if (!usingComposerAttachments || !refusalDroppedImages(err)) {
+    return
+  }
+
+  for (const original of attachments) {
+    // The chip as staged now (a legacy chip without an occurrence id was replaced by object).
+    const current = scope
+      .readAttachments()
+      .find(item => item.id === original.id && item.occurrenceId === original.occurrenceId)
+
+    if (current && original.kind === 'image' && original.path) {
+      scope.patchAttachment(current, {
+        attachedSessionId: undefined,
+        label: original.label,
+        path: original.attachedSessionId ? (original.detail ?? original.path) : original.path
+      })
+    }
+  }
+}
+
 // Stable identity — a fresh default object per render would churn the
 // useCallback below on every render.
 const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
   removeAttachments: attachments => mainComposerScope.removeOccurrences(attachments),
+  patchAttachment: (expected, patch) => void patchMainComposerAttachmentOccurrence(expected, patch),
   readAttachments: () => $composerAttachments.get(),
   setAwaitingResponse,
   setBusy,
@@ -1307,6 +1342,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return true
       } catch (err) {
         releaseBusy()
+
+        unstageRefusedImages(err, usingComposerAttachments, scope, attachments)
 
         // A queued drain that raced a not-yet-settled turn gets a transient
         // "session busy" (4009). Don't surface an error bubble/toast — the entry

@@ -315,6 +315,14 @@ export function isSessionOwnerBusyError(error: unknown): boolean {
   return gatewayReason(error) === 'SESSION_OWNER_BUSY'
 }
 
+// The refused send's staged images are gone server-side: SESSION_OWNER_BUSY unstages them (#140968),
+// and any refusal whose prose says the image was removed did the same.
+export function refusalDroppedImages(error: unknown): boolean {
+  return (
+    isSessionOwnerBusyError(error) || /\bimages?\b[^.]*\bremoved\b/i.test(error instanceof Error ? error.message : '')
+  )
+}
+
 function gatewayReason(error: unknown): unknown {
   return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
 }
