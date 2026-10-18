@@ -673,3 +673,53 @@ async def test_an_mcp_reload_keeps_a_busy_first_opens_adoption_pending(home, mon
         await desktop.close()
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_model_pick_that_was_refused_is_no_pick_when_an_open_adopts_the_chat(home, monkeypatch):
+    """A ``/model`` sent while a turn ran is deferred to the turn boundary, where it no longer resolved and
+    was dropped. Its receipt stays (exact retries), but no selection was committed: the open follows the
+    profile's current model."""
+    import asyncio
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    from gateway.session_contract import Submission
+    from hermes_cli import model_switch
+    from tests.waiting import async_wait_until
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=False, new_model='', target_provider=''))
+    _profile(home, 'old-model', 1, 'profile-key')
+    store, runner, authority, owner = _owner(home)
+    runner._peek_session_state = lambda key: None
+    runner._set_session_reasoning_override = lambda route, value: None
+    runner._resolve_session_agent_runtime = (
+        lambda **k: GatewayTurnPrepareMixin._resolve_session_agent_runtime(runner, **k))
+    entered, release, published = asyncio.Event(), asyncio.Event(), []
+
+    async def turn(event):
+        entered.set()
+        await release.wait()
+        return 'ok'
+    runner._handle_message = turn
+    try:
+        ref, _params = _frozen_bot_chat(authority, owner.actor, home)
+        live = authority.sessions[ref.session_id]
+        publish = live.event_stream.publish
+        monkeypatch.setattr(live.event_stream, 'publish', lambda sid, payload, **kw: (
+            published.append(payload), publish(sid, payload, **kw))[1])
+        await authority.submit(owner.actor, Submission('running', ref, {'text': 'RUNNING'}, 'queue'))
+        await asyncio.wait_for(entered.wait(), 10)
+        snap = authority.db.get_session(ref.session_id)
+        response = await owner.dispatch({'id': 'pick', 'method': 'session.mutate', 'params': dict(
+            session_id=ref.session_id, request_id='pick', operation='model', payload={'model': 'gone-model'},
+            expected_revision=snap['runtime_revision'], expected_generation=snap['runtime_generation'])})
+        assert response['result']['status'] == 'deferred', response
+        release.set()
+        await async_wait_until(lambda: any(p.get('status') == 'refused' for p in published), timeout=10,
+                               what='the deferred pick to be refused at the turn boundary')
+        _profile(home, 'new-model', 2, 'new-key')
+        await _open(authority, ref)
+        assert _follows(runner, live) and _route(runner, live) == ('new-model', 'http://127.0.0.1:2/v1', 'new-key')
+    finally:
+        release.set()
+        await owner.close()
+        store.close_all_db_handles()
