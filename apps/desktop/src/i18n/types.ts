@@ -2107,6 +2107,12 @@ export interface Translations extends NoticeTranslations {
     importedBadge: string
     resetToMine: string
   }
+  /** Bots: reopening a gateway group by name or restored tab key (#140805). */
+  gatewayGroupOpen: {
+    opening: string
+    lookupFailed: string
+    missing: string
+  }
   agents: {
     extendedTranscript: string
     transcriptTruncated: string

@@ -593,6 +593,7 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 
 function GroupExecutionGate(props: GroupChatWorkspaceProps) {
   const b = useBots()
+  const { t } = useI18n()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
   const gateway = useValue(host.state.gateway)
@@ -658,17 +659,17 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
 
   const message = mode !== 'canonical'
     ? mode === 'unavailable' ? b.canonical.driverUnavailable : 'Checking group driver…'
-    : lookupStatus === 'pending' ? 'Opening gateway group…'
-      : lookupStatus === 'failed' ? 'Could not look up this group on the gateway. Try again.'
+    : lookupStatus === 'pending' ? t.gatewayGroupOpen.opening
+      : lookupStatus === 'failed' ? t.gatewayGroupOpen.lookupFailed
         : canCreate ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.'
-          : 'This gateway group no longer exists.'
+          : t.gatewayGroupOpen.missing
 
   return <div className="grid gap-3 p-3">
     <h2>{props.group}</h2>
     <p>{message}</p>
     {error && <p role="alert">{error}</p>}
     {mode === 'canonical' && lookupStatus !== 'pending' && !canCreate &&
-      <Button onClick={() => setLookupAttempt(value => value + 1)} variant="secondary">Retry</Button>}
+      <Button onClick={() => setLookupAttempt(value => value + 1)} variant="secondary">{t.common.retry}</Button>}
     <Button disabled={!canCreate || busy} onClick={() => {
       const route = { connectionId: connectionId ?? '', profile }
 

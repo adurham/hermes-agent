@@ -14,7 +14,9 @@ import { translateBots } from './i18n-test-helper'
 // #140805: after a Desktop restart the in-memory room_id-keyed bindings are
 // empty, so opening a group by NAME (roster row, restored tab) used to reach
 // the gate whose only action minted a fresh room via groups.create.
-const { request, notify, openWorkspace } = vi.hoisted(() => ({ request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn() }))
+const { request, notify, openWorkspace, catalog } = vi.hoisted(() => ({
+  request: vi.fn(), notify: vi.fn(), openWorkspace: vi.fn(), catalog: { patch: null as null | ((t: Record<string, unknown>) => unknown) }
+}))
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
   const { en } = await import('@/i18n/en')
@@ -33,7 +35,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
         gateway: sdk.atom('open')
       }
     },
-    useI18n: () => ({ locale: 'en', t: en }),
+    useI18n: () => ({ locale: 'en', t: catalog.patch ? catalog.patch(en as unknown as Record<string, unknown>) : en }),
     usePluginI18n: () => translateBots
   }
 })
@@ -53,6 +55,7 @@ const members = roster.map(m => ({ member_id: m.name, profile: m.name, handle: m
 const original = { room_id: 'room-original', name: 'Team', members }
 
 beforeEach(() => {
+  catalog.patch = null
   state.connectionId.set('local')
   state.profile.set('default')
   state.gateway.set('open')
@@ -181,4 +184,24 @@ it('a late lookup from a superseded connection does not publish its room', async
   expect(methods()).not.toContain('groups.state')
   expect(Object.values($canonicalGroupBindings.get()).some(binding => binding.connectionId === 'local')).toBe(false)
   expect(screen.getByRole('button', { name: 'Start gateway group' })).toBeTruthy()
+})
+
+it('renders the lookup states and Retry from the active catalog, not hardcoded English', async () => {
+  catalog.patch = t => ({
+    ...t,
+    common: { ...(t.common as object), retry: 'T:retry' },
+    gatewayGroupOpen: { opening: 'T:opening', lookupFailed: 'T:lookupFailed', missing: 'T:missing' }
+  })
+  let releaseList: (value: unknown) => void = () => undefined
+  let fail = true
+  gateway(() => fail ? Promise.reject(new Error('down')) : new Promise(resolve => { releaseList = resolve }))
+  await act(async () => { render(<GroupChatWorkspace group="canonical:local:default:gone" members={[]} />) })
+  expect(screen.getByText('T:lookupFailed')).toBeTruthy()
+
+  fail = false
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'T:retry' })) })
+  expect(screen.getByText('T:opening')).toBeTruthy()
+
+  await act(async () => { releaseList({ rooms: [], next_offset: null }) })
+  expect(screen.getByText('T:missing')).toBeTruthy()
 })

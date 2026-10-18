@@ -2349,6 +2349,11 @@ export const en: Translations = {
     importedBadge: 'imported map',
     resetToMine: 'Back to my map'
   },
+  gatewayGroupOpen: {
+    opening: 'Opening gateway group…',
+    lookupFailed: 'Could not look up this group on the gateway. Try again.',
+    missing: 'This gateway group no longer exists.'
+  },
   agents: {
     extendedTranscript: 'Extended transcript',
     transcriptTruncated: 'Showing the latest 16 KiB',
