@@ -80,6 +80,13 @@ def _hang_one_call(name="hangs"):
     return mgr, provider
 
 
+def _skip(mgr, text):
+    """sync_all runs the gate on the manager's mem-sync worker; wait for it so the skip is recorded."""
+    mgr.sync_all(text, "x")
+    assert mgr.flush_pending(timeout=5)
+    mgr.shutdown_all()
+
+
 def test_sustained_wedge_pins_at_most_max_stuck_threads():
     """A backend that stays wedged: every call hangs. Calls keep being admitted until
     _MAX_STUCK_CALLS are stuck, then later managers are skipped, so pinned threads stay bounded."""
@@ -134,7 +141,7 @@ def test_new_outage_warns_on_its_first_skip_even_with_an_orphan_alive(caplog):
     hung = [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]
     key = hung[0][0]._registry_key(hung[0][1])
     try:
-        _manager(_HangingProvider()).sync_all("skipped", "x")
+        _skip(_manager(_HangingProvider()), "skipped")
         assert MemoryManager._BACKGROUND_SKIPS[key] == 1
         hung[-1][1].release.set()  # one returns: the gate reopens, three orphans keep the key alive
         assert hung[-1][0].flush_pending(timeout=5)
@@ -142,7 +149,7 @@ def test_new_outage_warns_on_its_first_skip_even_with_an_orphan_alive(caplog):
         hung.append((reopened, healthy))
         caplog.clear()
         with caplog.at_level("WARNING", logger="agent.memory_manager"):
-            _manager(_HangingProvider()).sync_all("skipped again", "x")
+            _skip(_manager(_HangingProvider()), "skipped again")
         assert MemoryManager._BACKGROUND_SKIPS[key] == 1
         assert "background calls stuck" in caplog.text
     finally:
