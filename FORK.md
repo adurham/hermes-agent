@@ -1,7 +1,8 @@
 # Fork notes — adurham/hermes-agent
 
 This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
-Code here is **not intended for upstream contribution.** See "Why a fork" below.
+Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
+PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
 ### Fork-only UX fix — 2026-10-17 (todo board toggle moved Ctrl+E → Ctrl+O: the fork had killed emacs end-of-line in the composer)
 
@@ -21326,7 +21327,7 @@ config still depends on. Commit fork fixes on the main checkout, push, and pull 
 
 **Deliberately skipped:** units in files still 60-90% identical to upstream (doc policy) — a fix there belongs upstream, not in the fork.
 
-**Upstream candidates:** F821 and F811 units only (genuine NameError/shadowing defects, tiny, uncontroversial); HX*/LIX001 are fork-local rules and BLE001 narrowing is opinionated style, so both are excluded. No upstream PRs were filed; candidates need explicit per-action approval, and any approved patch should be byte-identical to the fork commit so the next sync merges clean.
+**Upstream candidates:** F821 and F811 units only (genuine NameError/shadowing defects, tiny, uncontroversial); HX*/LIX001 are fork-local rules and BLE001 narrowing is opinionated style, so both are excluded. No upstream PRs were filed; candidates need explicit per-action approval, and any approved patch should be byte-identical to the fork commit so the next sync merges clean. **[Corrected 2026-10-18: this line was wrong about HX. `scripts/code_health` is byte-identical between fork and upstream, and upstream defines HX005 `import_time_capture`, HX006 `missing_timeout`, HX011 `elif_ladder` etc. in `scripts/code_health/py_rules.py` — HX is upstream's own rule family, not fork-local. LIX001 and the FILE_LINES ratchet are genuinely fork-only (zero hits upstream). See the upstreaming entry below.]**
 
 
 ## 2026-10-18 — Test harness: neutralize `hermes update`'s owning-install redirect under pytest
@@ -21385,3 +21386,24 @@ The exo dsv41 engine replaced its in-band "repetition-loop degeneration" ERROR w
 **Upstreamable:** the ASYNC230/240 and RUF006 moves are the same family as the earlier ratchet batch and are genuinely upstreamable; HX005/HX006/HX011 are fork-local rules and BLE001 narrowing is opinionated style, so both stay fork-side. No PRs filed — that needs per-action approval, and an approved patch should be byte-identical to the fork commit.
 
 **Tag state:** `code-health-2026-10-17` stays at `26ddeb4c51` as the unchanged 50-unit, nine-batch boundary; this tail closes out under a second annotated tag, `code-health-2026-10-18`, carried on the commit that adds this entry. The pair covers the campaign's 65 units — 64 fixed, C-1072 deliberately skipped. A `git diff code-health-2026-10-18..<later>` is the post-campaign surface, but note that the range since the 10-17 tag also contains non-campaign work (the four cloud async-ratchet merges, `feat(truncation)` dsv41, `fix(tests)` pytest owning-install redirect), because the 15 late units were merged interleaved with it rather than as a clean block.
+
+## 2026-10-18 — Upstreaming pass: which campaign work is upstreamable, and what got filed
+
+**Question asked:** should the 2026-10-17/18 code-health campaign (65 units) go upstream? **Answer: partially — about a third of it, in coherent bundles; the rest is either fork-only code or work upstream's own policy excludes.**
+
+**Method (repeatable):** a worktree at `upstream/main` and every unit commit applied to it, first with the fork's exact paths, then with the legacy→plugin path migration (`gateway/platforms/<x>.py` → `plugins/platforms/<x>/adapter.py`) and fork-only aux files (new tests, new sibling modules) dropped. Result over 66 unit commits: **57 apply to upstream today** (35 clean, 22 via 3-way), **0 conflicts**, **9 are fork-only** (agent/fork/rate_limit_tracker.py, tools/personas_sync.py, tools/delegation_router.py, fork-only tests). An earlier count of 34 was wrong because it compared paths literally and did not know about the two adapter trees.
+
+**Filed:** upstream PR **#141174** — "move blocking file/path I/O off the event loop and hold detached tasks" (13 commits, 18 files, +253/−84): telegram, feishu, google_chat, discord (+`agent/async_utils`), mattermost, line, photon, dingtalk, buzz, simplex adapters, `/api/media` uploads, `send_message` media probe, @-reference roots. This is the exact class upstream's `pyproject.toml` says it wants: "ASYNC230 (blocking open()) and ASYNC240 (blocking path methods) are real but ~180 legacy sites deep; they graduate to this list once the backlog is burned down". Commit messages were rewritten for upstream (no C-ids, ratchet counts or FILE_LINES references). CI runs sit at `action_required` — GitHub needs a maintainer to approve workflow runs for a fork PR.
+
+**Prepared but not filed** (branches on origin, bodies in `~/.hermes/cache/scratch/pr-bodies/`): `upstream-pr/correctness-micro` (5 commits), `upstream-pr/timeout-bounds` (3), `upstream-pr/test-owning-install-redirect` (1).
+
+**The hard constraint:** GitHub caps open PRs at **5 for users without write access** on the repo, and the account had 17. Every API attempt surfaced this as a generic `FORBIDDEN / CreatePullRequest` (GraphQL) and `404` (REST) — not as a limit message; the web form is what named it. To file anything, PRs must be closed: 1 new PR needs 13 closed, 4 need 16. Closed 13 on 2026-10-18 (131959, 132899, 132227, 132228, 132229, 132246, 132249, 132250, 132439, 128793, 128794, 132889, 132900), keeping #132442 (live maintainer thread), #136664, #136704, #136705. Branches survive; any can be reopened with one click. None of the 17 were obsolete — 15 still applied to current upstream, 2 conflicted.
+
+**What stays fork-side, and why:**
+- **BLE001/S110 swallow narrowing (10 units)** — upstream enables only `PLW1514, ASYNC210, ASYNC220, ASYNC221, ASYNC251, TID251` ("all other lints are intentionally disabled while we wrangle typechecks"). A 10-file logging-style PR would be judged against a policy upstream chose deliberately.
+- **Ratchet refactors (8 units)** — they exist to satisfy LIX001 / the FILE_LINES budget, which has zero footprint upstream.
+- **9 fork-only commits** — the files do not exist upstream.
+- **dsv41 loop-truncation** — exo engine extension, no upstream analogue.
+- **Two units dropped after checking: already fixed upstream.** `hermes_cli/web_routers/display.py` imports `Path` at module level, and `tools/web_tools.py` no longer carries the function-local `selection_exists` re-import. Nothing to send.
+
+**Rule correction:** HX005/HX006/HX011 are upstream's rules, not fork-local (see the correction on the campaign entry above). Future campaigns should treat a fix in a file that is still mostly upstream as an upstream candidate by default, not as fork-local, which is what the campaign's "deliberately skipped" note already implied.
