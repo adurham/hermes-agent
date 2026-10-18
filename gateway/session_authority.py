@@ -248,6 +248,8 @@ class SessionAuthority:
 
     def _handle(self, ref):
         row = self.db.get_session(ref.session_id)
+        if row is None:  # deleted after ``authorize``: the commit lands before the retirement runs
+            raise RuntimeStoreError('not_found')
         pending = self._pending_rows(ref)
         state = 'unknown' if any(r['status'] == 'unknown' for r in pending) else (
             'running' if any(r['status'] == 'started' for r in pending) else 'idle')
@@ -258,6 +260,17 @@ class SessionAuthority:
         self.authorize(actor, ref, 'session:read')
         return self._handle(ref)
 
+    def unless_deleted(self, ref, read):
+        """``read()``; a refusal because *ref* was deleted after ``authorize`` passed is ``not_found``.
+        A delete commits off the loop, so its rows can be gone while the live entry still waits for its
+        retirement, and readers meet the missing receipt instead."""
+        try:
+            return read()
+        except RuntimeStoreError:
+            if self.db.get_session(ref.session_id) is None:
+                raise RuntimeStoreError('not_found') from None
+            raise
+
     async def attach(self, actor, ref):
         self.authorize(actor, ref, 'session:read')
         from gateway.session_local_recovery import local_history, prepare_history
@@ -267,6 +280,7 @@ class SessionAuthority:
         live = self.sessions[ref.session_id]
         from gateway.session_queued_controls import pending_rows
         with live.event_stream.lock:
+            handle = self._handle(ref)  # before the viewer joins: a delete committed meanwhile is not_found
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
@@ -277,12 +291,11 @@ class SessionAuthority:
             if transport is not None:
                 live.event_stream.fanout.attach(transport)
                 live.event_stream.on_overflow = partial(self._retire_overflowed, ref.session_id)
-            handle = self._handle(ref)
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()
-            snapshot = SubscriptionSnapshot(subscription, handle, epoch,
-                                        sequence, tuple(local_history(self, ref, prepared)),
+            history = self.unless_deleted(ref, lambda: tuple(local_history(self, ref, prepared)))
+            snapshot = SubscriptionSnapshot(subscription, handle, epoch, sequence, history,
                                         tuple(self._pending_receipt(r) for r in pending_rows(self, ref)), prompts)
         from gateway.session_viewer_close import cancel_persisted_close
         await asyncio.to_thread(cancel_persisted_close, self, ref.session_id)  # the viewer cancels it
