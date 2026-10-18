@@ -1060,8 +1060,14 @@ class SessionAuthority:
             admission_id = row['admission_id']
             try:
                 response, outcome = await self._execute_claimed(ref, live, row)
-            except ManagedExecutionUnknown:
-                return
+            except BaseException as exc:
+                # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
+                # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
+                # never left to fire after a later settled turn with a stale entry.
+                self.deferred_resets.pop(live.route, None)
+                if isinstance(exc, ManagedExecutionUnknown):
+                    return
+                raise
             settled = None
             settlement = {}
             try:
