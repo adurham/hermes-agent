@@ -2799,3 +2799,10 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   blocking), all checks ok but ruff, which fails identically on clean main (RUF100 unused `# noqa`
   at `agent/turn_truncation.py:572`, from f21f8ad2; not this unit). Branch
   `claude/c1091-session-notifications-swallow-l44xen`. Next: next open Queue C tier-2 swallow row.
+- 2026-10-18 — C-1047 `plugins/platforms/feishu/adapter.py` async: ASYNC230×1 + ASYNC240×5 → 0
+  (exists/getsize/read_text/open moved behind `asyncio.to_thread`; the upload handle is still
+  streamed, opened in a thread; sibling blocking `_get_audio_duration_ms` read in the same coroutine
+  also moved; the stale `# noqa: ASYNC230` dropped). BLE001×21/S110×5 untouched. 63 feishu test
+  files: 1485 passed, 2 failed identically on base (aiohttp absent → `web` is None). Full
+  `scripts/check` red only on main's own RUF100 in `agent/turn_truncation.py:572` (from f21f8ad2,
+  out of unit); health 0 blocking. Branch `claude/feishu-adapter-async-rules-sr2u8e`.
