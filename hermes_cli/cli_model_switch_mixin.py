@@ -330,7 +330,9 @@ def _commit_model_switch(
                 or cli._snapshot_model_runtime()) if one_turn else None
     if snapshot is not None:
         # The level belongs to this --once pick only: a second pick without --reasoning drops it.
-        snapshot = {key: value for key, value in snapshot.items() if key != "one_turn_reasoning"}
+        # So does the alias it resolved through.
+        snapshot = {key: value for key, value in snapshot.items()
+                    if key not in ("one_turn_reasoning", "one_turn_alias")}
     # ``--once`` must not session.mutate.
     cli._model_switch_one_turn = bool(one_turn)
     try:
@@ -347,6 +349,8 @@ def _commit_model_switch(
             session_id=getattr(getattr(cli, "agent", None), "session_id", None) or getattr(cli, "session_id", None))
     if not picker:
         cli._pending_one_turn_model_restore = snapshot
+        if snapshot is not None and getattr(result, "resolved_via_alias", ""):
+            snapshot["one_turn_alias"] = result.resolved_via_alias  # the agent chat rebuilds carries it
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
     if reasoning_effort:
         _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn,
@@ -813,7 +817,8 @@ class CLIModelSwitchMixin:
                     api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode,
                     capabilities=getattr(result, "runtime_capabilities", None))
                 if getattr(self, "_model_switch_one_turn", False):
-                    fields["once"] = True
+                    # The CLI and agent show the resolved model; the admission sends the alias.
+                    fields.update(once=True, alias=getattr(result, "resolved_via_alias", "") or "")
                 if self.agent.switch_model(**fields) is False:
                     # Declined at the gateway owner's guard prompt: nothing was committed.
                     for _k, _v in _cli_snapshot.items():

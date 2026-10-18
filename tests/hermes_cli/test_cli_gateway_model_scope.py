@@ -285,6 +285,42 @@ def test_once_reasoning_equal_to_the_inherited_level_commits_nothing(monkeypatch
     assert _reasoning_mutates(conn) == []
 
 
+@pytest.mark.parametrize("session_model", ["shared-model", "other-model"])
+def test_once_sends_the_alias_it_resolved_through(monkeypatch, session_model):
+    """Review by @dokterdok: two ``model_aliases`` entries name one model on one provider, at different
+    endpoints. ``/model second --once`` sends ``second``, not the bare model the owner would re-resolve to
+    the first alias, and still sends it when the session already runs that model."""
+    from gateway.session_cli_turn import one_turn_runtime
+    from hermes_cli import model_switch
+    resolve = model_switch.switch_model
+    conn = RecordingConnection({"model": session_model, "provider": "custom"})
+    cli_mod, stub, printed = _chat_cli(monkeypatch, conn)
+    monkeypatch.setattr(model_switch, "switch_model", resolve)  # the real resolver over these aliases
+    for name, port in (("first", 7002), ("second", 7003)):
+        monkeypatch.setitem(model_switch.DIRECT_ALIASES, name, model_switch.DirectAlias(
+            model="shared-model", provider="custom", base_url=f"http://127.0.0.1:{port}/v1", api_key=f"sk-{name}"))
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *_a, **_k: {
+        "accepted": True, "persist": True, "recognized": True, "message": ""})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    session = {"provider": "custom", "api_key": "sk-session", "base_url": "http://127.0.0.1:7001/v1"}
+    stub.model, stub.provider, stub.requested_provider = session_model, "custom", "custom"
+    stub.base_url = stub._explicit_base_url = session["base_url"]
+    stub.api_key = stub._explicit_api_key = session["api_key"]
+    stub.agent.model, stub.agent.provider = session_model, "custom"
+    cli_mod.HermesCLI._handle_model_switch(stub, "/model second --once")
+    assert not [line for line in printed if "fail" in line.lower()], printed
+    assert stub.agent.model == "shared-model", "the agent shows the resolved model, not the alias"
+    stub.chat("run on second")
+    stub.chat("the turn after")
+    once, after = _submits(conn)
+    override = once.get("model_override")
+    assert override == {"model": "second", "provider": "custom"}, override
+    assert "model_override" not in after, after
+    _model, runtime = one_turn_runtime(override, session_model, {**session, "api_mode": "chat_completions"}, {})
+    assert (runtime["base_url"], runtime["api_key"]) == ("http://127.0.0.1:7003/v1", "sk-second")
+    assert not _model_routes(conn)[0]
+
+
 class BusyOnceConnection(RecordingConnection):
     """The owner refuses the first ``prompt.submit`` with ``session_busy``: nothing was admitted."""
 

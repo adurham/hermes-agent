@@ -78,7 +78,7 @@ class GatewayAgent:
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
                  reaction_callback=None, interim_assistant_callback=None, connection=None,
                  push_reasoning=False, model_confirm_callback=None, modal_withdraw_callback=None,
-                 one_turn=False, one_turn_reasoning=None, **_ignored):
+                 one_turn=False, one_turn_reasoning=None, one_turn_alias="", **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -174,14 +174,15 @@ class GatewayAgent:
         # below then overwrites ``model``): that preset rides the turn's submit as its model_override.
         self._moa_preset = model if provider == "moa" else None
         # ``/model --once``: chat retires the agent that switch_model touched and builds this one.
-        # Capture the pick before ``_apply_info`` copies the session model over it.
-        self._turn_route = self._route_off_session(model, provider) if one_turn else None
+        # Capture the pick, and the alias it resolved through, before ``_apply_info`` copies the session
+        # model over it.
+        self._turn_route = self._route_off_session(model, provider, one_turn_alias) if one_turn else None
         self._taken_turn_route = None  # the pick the admission being sent took (``_take_turn_route``)
         # ``/model B --once --reasoning X``: X rides that admission's ``model_override``, never a session pin.
         self._turn_reasoning = one_turn_reasoning if one_turn else None
         self._apply_info(self._state().info)
         if self._turn_route:
-            self.model = self._turn_route["model"]
+            self.model = model  # the resolved model, never the alias the admission sends
             if self._turn_route.get("provider"):
                 self.provider = self._turn_route["provider"]
         self.reasoning_callback = reasoning_callback
@@ -258,15 +259,19 @@ class GatewayAgent:
             logger.debug("session.mutate reasoning failed: %s", exc)
             return False
 
-    def _route_off_session(self, model, provider=""):
-        """``{model, provider}`` when the session runs another route, else None."""
+    def _route_off_session(self, model, provider="", alias=""):
+        """``{model, provider}`` the turn sends when the session runs another route, else None.
+
+        ``alias``, the ``model_aliases`` entry the pick resolved through, is sent instead of the bare
+        model: two aliases may name one model at different endpoints, so the owner must not re-resolve
+        it. An alias makes even the session's own model a one-turn override."""
         state = self._state()
-        if not model or not (state.info or {}).get("model") or state.runs_route(model, provider):
+        if not model or not (state.info or {}).get("model") or (state.runs_route(model, provider) and not alias):
             return None
-        return {"model": model, **({"provider": provider} if provider else {})}
+        return {"model": alias or model, **({"provider": provider} if provider else {})}
 
     def switch_model(self, new_model, new_provider="", api_key="", base_url="", api_mode="", capabilities=None, *,
-                     once=False, restore=False):
+                     once=False, restore=False, alias=""):
         """Session-scoped ``/model`` and /resume commit ``session.mutate model``.
 
         ``once=True`` does not write the session. The next ``chat`` builds a new agent; that
@@ -283,7 +288,8 @@ class GatewayAgent:
         written; with no prompt the refusal raises. Any refusal raises: main's callers roll their
         own fields back."""
         if once or restore:
-            self._turn_route = None if restore else self._route_off_session(new_model, new_provider)
+            # ``alias``: the ``model_aliases`` entry a ``--once`` pick resolved through (``_route_off_session``).
+            self._turn_route = None if restore else self._route_off_session(new_model, new_provider, alias)
             if restore:
                 self._turn_reasoning = None
             if new_model:

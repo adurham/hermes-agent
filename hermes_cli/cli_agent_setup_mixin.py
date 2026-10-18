@@ -688,6 +688,7 @@ class CLIAgentSetupMixin:
                 modal_withdraw_callback=None if single_query_mode else self._withdraw_gateway_modal,
                 one_turn=one_turn,
                 one_turn_reasoning=(pending_one_turn or {}).get("one_turn_reasoning") if one_turn else None,
+                one_turn_alias=(pending_one_turn or {}).get("one_turn_alias", "") if one_turn else "",
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
