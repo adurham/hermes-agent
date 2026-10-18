@@ -158,22 +158,21 @@ def _check_registry_scope(request, profile_id, launch_home):
 
 
 def _redeem_http_ticket(store, ticket, request):
+    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
     try:
         grant = store.redeem(ticket, profile_id=None, purpose='native-http')
-        expected = frozenset({'http:owner'})
     except PermissionError:
         # Only these host-management operations accept a dedicated same-user grant.
         # Wrong-purpose redemption does not consume a ticket; ordinary profile grants
         # still reach _check_profile_scope and remain unable to create, move or delete profiles.
         if request.method == 'POST' and request.url.path.rstrip('/') == '/api/profiles':
             grant = store.redeem(ticket, profile_id=None, purpose='native-profile-create')
-            expected = frozenset({'profiles:create'})
         elif _registry_target(request) is not None:
             grant = store.redeem(ticket, profile_id=None, purpose='native-profile-registry')
-            expected = frozenset({'profiles:registry'})
         else:
             raise
-    if grant['capabilities'] != expected:
+    # The issuer's own purpose -> capability table, not a second copy of it.
+    if grant['capabilities'] != _PURPOSE_CAPABILITIES[grant['purpose']]:
         raise PermissionError('invalid native grant')
     return grant
 

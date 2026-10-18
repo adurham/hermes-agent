@@ -1146,10 +1146,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         return final_response + "\n" + "\n".join(unique_tags)
 
     def run_sync(self):
-        from gateway.session_policy import policy_for_source, policy_scope
+        from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope
         from gateway.session_api_turn import api_policy_scope
         from gateway.session_authorities import active_authority
-        from gateway.session_policy import bind_turn_workspace
         policy = policy_for_source(self._runner, self._ctx.source)
         with policy_scope(policy, authority=active_authority(self._runner)), api_policy_scope():
             bind_turn_workspace(policy, self._ctx.session_id)

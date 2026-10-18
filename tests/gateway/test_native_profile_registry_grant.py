@@ -105,20 +105,24 @@ def test_registry_grant_renames_and_deletes_only_its_own_served_profile(tmp_path
                 response = client.delete('/api/profiles/beta', headers=grant('beta', registry))
                 assert response.status_code == 200, response.text
                 assert not (home / 'profiles' / 'beta').exists()
-                # Single use: the same ticket never authorizes a second write.
-                once = grant('keep', registry)
                 ready()
-                assert client.delete('/api/profiles/keep', headers=once).status_code == 200
-                assert client.patch('/api/profiles/delta', json={'new_name': 'again'},
-                                    headers=once).status_code == 401
-
+                assert client.delete('/api/profiles/keep', headers=grant('keep', registry)).status_code == 200
                 # The launch (default) home never moves: rename is its presentation-only display name.
                 served = ready()
                 assert home_of('default') in {p['profile_id'] for p in served['served_profiles']}
+                once = grant('default', registry)
+                response = client.patch('/api/profiles/default', json={'new_name': 'Main'}, headers=once)
+                assert response.status_code == 200, response.text
+                assert (response.json()['name'], response.json()['display_name']) == ('default', 'Main')
+                # Single use, against a profile that stays served (a display-name rename never moves
+                # the default home): the same ticket's identical second PATCH is refused, while a
+                # fresh ticket's identical PATCH succeeds, so only the reuse explains the 401.
+                ready()
+                assert client.patch('/api/profiles/default', json={'new_name': 'Main'},
+                                    headers=once).status_code == 401
                 response = client.patch('/api/profiles/default', json={'new_name': 'Main'},
                                         headers=grant('default', registry))
                 assert response.status_code == 200, response.text
-                assert (response.json()['name'], response.json()['display_name']) == ('default', 'Main')
                 response = client.delete('/api/profiles/default', headers=grant('default', registry))
                 assert response.status_code == 403, response.text
                 assert (home / 'config.yaml').is_file()
