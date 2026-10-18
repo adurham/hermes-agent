@@ -21353,3 +21353,13 @@ Four `claude/*` cloud-agent branches (pushed 2026-10-17 19:26-19:29Z, none opene
 **Tests (single-file, macOS in-tree venv):** `tests/agent/test_context_references.py` 31 passed / 1 skipped; `tests/tools/test_signal_media.py` 1 passed.
 
 **Upstreamable:** yes — same async-offload family as the ratchet campaign.
+
+## 2026-10-17 — Engine loop truncation: end the turn on the dsv41 cause instead of auto-continuing
+
+The exo dsv41 engine replaced its in-band "repetition-loop degeneration" ERROR with a TRUNCATION: `finish_reason="length"` plus a vendor extension on the choice, `dsv41={"finish_cause": "repetition_loop", "cycle_period": N, "dropped_tokens": N, "retryable": false}`. An error frame is a retry signal and under greedy decoding the same request reproduces the same cycle, so the engine now ends such a turn cleanly and withholds the repeated tail.
+
+**Client side:** the extension is carried through `NormalizedResponse.loop_cause` (transport `normalize_response` reads `choice.dsv41`; the SSE accumulator keeps it on the assembled final chunk). `recover_from_truncation` checks it FIRST — before the continuation nudges and before the legacy `_guard_error` path — and ends the turn with the engine-stopped copy, exactly like `_runaway_repetition`. No retry, no "continue" nudge: both re-enter the same deterministic path.
+
+**Tests:** `tests/agent/test_engine_loop_truncation.py` (6 cases: passthrough, stream accumulation, cause detection, ordinary-length negative, defensive transport failure). Related single-file suites still pass (`test_truncated_tool_call_boost.py` 7, `test_anthropic_truncation_continuation.py` 8, `test_relay_compaction.py` 10). Two relay ATOF tests fail identically on the pre-change tree (pre-existing).
+
+**Upstreamable:** no — the extension is exo-specific.

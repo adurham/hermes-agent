@@ -762,6 +762,11 @@ class ChatCompletionsTransport(ProviderTransport):
         # Poolside returns int finish_reason; Gemini-fronting gateways return
         # uppercase STOP / MAX_TOKENS — fold to the OpenAI contract here.
         finish_reason = _normalize_finish_reason(str(_fr) if isinstance(_fr, int) else _fr) or "stop"
+        # exo dsv41 vendor extension: a looping turn ends as finish_reason="length"
+        # plus {finish_cause: "repetition_loop", cycle_period, dropped_tokens,
+        # retryable:false} on the choice. SDKs park unknown keys in model_extra.
+        _loop_cause = _attr_or_model_extra(choice, "dsv41")
+        loop_cause = _loop_cause if isinstance(_loop_cause, dict) else None
 
         tool_calls = None
         if getattr(msg, "tool_calls", None):
@@ -795,6 +800,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         return NormalizedResponse(
             content=content, tool_calls=tool_calls, finish_reason=finish_reason,
+            loop_cause=loop_cause,
             # Copilot /chat/completions names its readable reasoning ``reasoning_text``.
             reasoning=getattr(msg, "reasoning", None) or provider_data.get("reasoning_text"), usage=usage,
             provider_data=provider_data or None,

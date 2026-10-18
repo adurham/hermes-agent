@@ -559,6 +559,24 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     )
 
 
+def _engine_loop_cause(agent: Any, response: Any) -> Optional[dict[str, Any]]:
+    """The engine's ``dsv41`` loop cause on ``response`` (normalized), if any.
+
+    The exo engine replaced its in-band repetition error with a TRUNCATION:
+    ``finish_reason="length"`` plus ``{"finish_cause": "repetition_loop", ...}``
+    on the choice. A continuation would re-enter the same deterministic greedy
+    path, so the turn must end here -- the same rule as ``_runaway_repetition``.
+    """
+    try:
+        normalized = agent._get_transport().normalize_response(response)
+    except Exception:  # noqa: BLE001 - a probe must never break truncation recovery
+        return None
+    cause = getattr(normalized, "loop_cause", None)
+    if isinstance(cause, dict) and str(cause.get("finish_cause")) == "repetition_loop":
+        return cause
+    return None
+
+
 def recover_from_truncation(
     agent: Any, response: Any, finish_reason: str, _retry: TurnRetryState, *,
     messages: list[dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
@@ -579,6 +597,19 @@ def recover_from_truncation(
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
         compression_attempts=compression_attempts,
     )
+    _engine_cause = _engine_loop_cause(agent, response)
+    if _engine_cause is not None:
+        # The ENGINE cut a repetition loop and said so in a machine-readable cause
+        # (finish_reason="length" + dsv41.finish_cause). Do NOT nudge a continuation
+        # and do NOT retry: under greedy decoding the same request reproduces the
+        # same cycle. Keep the partial and end the turn with the engine's copy.
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  The engine truncated a repetition loop "
+            f"(period {_engine_cause.get('cycle_period')}, "
+            f"{_engine_cause.get('dropped_tokens')} tokens withheld) — not continuing.",
+            force=True, diagnostic=True,
+        )
+        return st.end_turn(_GUARD_KILL_PARTIAL_FINAL, "model repetition loop; turn not continued")
     if getattr(response, "_runaway_repetition", False):
         # The streaming call cut a live repetition loop: a continuation would only re-enter it,
         # whatever the partial or its tool calls look like.

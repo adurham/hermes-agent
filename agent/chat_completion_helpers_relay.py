@@ -38,6 +38,7 @@ class RelayChatAccumulator:
         self._reasoning_details: list[Any] = []  # opaque provider records (signed blocks); order preserved verbatim
         self._tool_calls = _ToolCallAccumulator()
         self._model = self._usage = self._finish_reason = None
+        self._loop_cause: dict | None = None
         self._role = "assistant"
 
     def observe(self, chunk: Any) -> None:
@@ -51,6 +52,9 @@ class RelayChatAccumulator:
         if not isinstance(choice, dict):
             return
         self._finish_reason = choice.get("finish_reason") or self._finish_reason
+        _cause = choice.get("dsv41")
+        if isinstance(_cause, dict):
+            self._loop_cause = _cause
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             return
@@ -78,5 +82,7 @@ class RelayChatAccumulator:
             "reasoning_details": self._reasoning_details or None,
             "tool_calls": [acc[i] for i in sorted(acc)] or None}
         # "stop" also covers Nous Portal ``lastOne`` usage frames, which carry no finish_reason.
-        return {"model": self._model, "usage": self._usage,
-            "choices": [{"message": message, "finish_reason": self._finish_reason or "stop"}]}
+        choice: dict[str, Any] = {"message": message, "finish_reason": self._finish_reason or "stop"}
+        if self._loop_cause is not None:
+            choice["dsv41"] = self._loop_cause
+        return {"model": self._model, "usage": self._usage, "choices": [choice]}
