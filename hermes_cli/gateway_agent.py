@@ -164,8 +164,10 @@ class GatewayAgent:
         self._reasoning_config = None
         # Only a user-picked effort (/reasoning, a model pick's --reasoning) is committed at build; the
         # config-resolved level must never override the session's frozen launch policy on resume.
+        # ``reasoning_pushed``: the commit landed, so the CLI stops re-sending it on every later rebuild.
+        self.reasoning_pushed = False
         if push_reasoning:
-            self.pin_reasoning(reasoning_config)
+            self.reasoning_pushed = self.pin_reasoning(reasoning_config)
         else:
             self._reasoning_config = reasoning_config
         # Main's /moa rebuilds its agent on the MoA virtual provider for one turn (the session's info
@@ -221,8 +223,8 @@ class GatewayAgent:
     def pin_reasoning(self, config):
         """``/reasoning <level>`` (session scope; main rebuilds its agent with the new config) and a model
         pick's ``--reasoning``: always ``session.mutate reasoning``, even when the session already runs that
-        level by inheritance, so it becomes the session's own choice."""
-        self._set_reasoning(config, explicit=True)
+        level by inheritance, so it becomes the session's own choice. True when the owner committed it."""
+        return self._set_reasoning(config, explicit=True)
 
     def stage_turn_reasoning(self, config):
         """``/model B --once --reasoning X``: X for the one-turn admission only (its ``model_override``).
@@ -239,10 +241,10 @@ class GatewayAgent:
         self._reasoning_config = config
         effort = _effort_word(config)
         if effort is None:
-            return
+            return False
         info = self._state().info or {}
         if not explicit and info.get("reasoning_effort") == effort:
-            return
+            return True
         try:
             snapshot = self.connection.call("session.resume", session_id=self.session_id)
             # A policy mutation is generation-fenced: the owner refuses it without the generation.
@@ -251,8 +253,10 @@ class GatewayAgent:
                                  expected_generation=snapshot["execution_generation"], operation="reasoning",
                                  payload={"effort": effort})
             info["reasoning_effort"] = effort
+            return True
         except (GatewayClientError, KeyError, TypeError) as exc:
             logger.debug("session.mutate reasoning failed: %s", exc)
+            return False
 
     def _route_off_session(self, model, provider=""):
         """``{model, provider}`` when the session runs another route, else None."""

@@ -386,3 +386,20 @@ def test_an_image_staging_failure_is_a_failed_turn_not_an_exception():
     result = agent.run_conversation(parts)
     assert (result.get("failed"), result.get("failure_reason")) == (True, "gateway_connection"), result
     assert not _submits(conn)
+
+
+def test_a_session_reasoning_pick_is_committed_once_not_on_every_rebuild(monkeypatch):
+    """Review of #140969: ``_reasoning_user_set`` never cleared after the commit, so every later agent
+    rebuild (``/fast``, ``/personality``, a route change, a --once restore) re-sent the explicit level: a
+    full ``session.resume``, a prepare+commit, a receipt and a gateway agent eviction each time."""
+    from hermes_cli.cli_agent_setup_mixin import _retire_agent
+    conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
+    _cli_mod, stub, _printed = _chat_cli(monkeypatch, conn)
+    stub.agent = None
+    stub.reasoning_config = {"enabled": True, "effort": "high"}
+    stub._reasoning_user_set = True  # ``/reasoning high`` (cli_commands_mixin) then retires the agent
+    assert stub.chat("first") == "ok"
+    _retire_agent(stub)  # e.g. /personality
+    assert stub.chat("second") == "ok"
+    assert _reasoning_mutates(conn) == [{"effort": "high"}]
+    assert stub._reasoning_user_set is False

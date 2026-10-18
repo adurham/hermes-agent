@@ -731,6 +731,10 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
             self._active_agent_route_signature = _route_signature(effective_model, runtime)
+            if getattr(self.agent, "reasoning_pushed", False):
+                # The session holds the pick now; later rebuilds (/fast, /personality, a route change)
+                # must not re-commit it (a resume, a prepare+commit, a receipt, an agent eviction each).
+                self._reasoning_user_set = False
 
             # Force-create DB row on /title intent, then apply title.
             if self._pending_title and self._session_db:
