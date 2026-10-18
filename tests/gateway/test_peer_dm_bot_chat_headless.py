@@ -442,3 +442,31 @@ async def test_a_protected_desktop_bot_chat_refusal_never_promises_a_move(headle
         assert resp.status == 502 and body['error']['code'] == 'bot_chat_not_local', body
         assert 'moved aside' not in body['error']['message'], body
     assert db.get_session_by_title('Bot Chat')['id'] == 'desktop_alice' and len(_sessions(headless.authority)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_messaging_bot_chat_moved_aside_is_labelled_by_its_platform(headless):
+    # A messaging row that took the canonical title is moved aside too, but it is no API conversation:
+    # its new name says where it came from.
+    from pathlib import Path
+    from gateway.session_authorities import served_profile_name
+    from gateway.session_bot import deliver
+    db = headless.authority.db
+    db.create_session('tg_row', 'telegram')
+    db.set_session_title('tg_row', 'Bot Chat')
+    db._execute_write(lambda conn: conn.execute("UPDATE sessions SET chat_id='12345' WHERE id='tg_row'"))
+    profile = served_profile_name(Path(db.db_path).parent.resolve())
+    record = await deliver(_local_owner(headless.authority),
+                           dict(id='c' * 32, profile=profile, message='relayed', author=AUTHOR))
+    assert record['session_id'] != 'tg_row'
+    assert db.get_session('tg_row')['title'] == 'Bot Chat (telegram tg_row)'
+
+
+def test_a_local_bot_chat_is_never_displaceable_without_a_lineage_read(headless, monkeypatch):
+    # Every delivery asks; a bound local chat answers from its own row, before any tip or session read.
+    from gateway.session_bot import displaceable_bot_chat
+    db = headless.authority.db
+    reads = []
+    monkeypatch.setattr(db, 'get_compression_tip', lambda sid: reads.append(sid) or sid)
+    assert displaceable_bot_chat(headless.authority, {'id': 'x', 'chat_id': 'local-abc', 'source': 'gui'}) is None
+    assert reads == []

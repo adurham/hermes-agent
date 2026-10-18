@@ -210,14 +210,18 @@ def displaceable_bot_chat(authority, row):
     local chat and old local history (CLI, TUI, Desktop rows a native open adopts) are never moved."""
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, LEGACY_PREFIX
+
+    def owned(candidate):
+        return (str(candidate.get('chat_id') or '').startswith('local-')
+                or candidate.get('source') in LEGACY_LOCAL_SOURCES)
+    if owned(row):  # every delivery asks: a bound local chat answers from its own row, with no read
+        return None
     db = authority.db
     tip = db.get_session(db.get_compression_tip(row['id']) or row['id'])
     for candidate in (row, tip):
-        if candidate is None:
+        if candidate is None or owned(candidate):
             return None
         chat_id = str(candidate.get('chat_id') or '')
-        if chat_id.startswith('local-') or candidate.get('source') in LEGACY_LOCAL_SOURCES:
-            return None
         with db._read_ctx() as conn:
             if conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
                             (POLICY_PREFIX + (chat_id or candidate['id']),
@@ -228,8 +232,11 @@ def displaceable_bot_chat(authority, row):
 
 def _displace_bot_chat(db, sid):
     """Free the canonical title from *sid*: it keeps its id and history under a visible name the
-    user can find, rename or delete (``Bot Chat (API <id>)``). False when the title moved meanwhile."""
-    name = f'Bot Chat (API {sid})'
+    user can find, rename or delete: ``Bot Chat (API <id>)`` for an API conversation, else named by
+    its platform (``Bot Chat (telegram <id>)``). False when the title moved meanwhile."""
+    source = str((db.get_session(sid) or {}).get('source') or '')
+    label = 'API' if source in ('', 'api_server', 'bot_peer_dm') else source
+    name = f'Bot Chat ({label} {sid})'
     if len(name) > db.MAX_TITLE_LENGTH:
         name = name[:db.MAX_TITLE_LENGTH - 2] + '…)'
 
