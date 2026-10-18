@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
 _POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp'})
+# Controls that leave the transcript alone authorize on the lineage owner (see ``_owner_ref``).
+_OWNER_AUTHORIZED = _METADATA | {'delete'}
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
 
 
@@ -58,13 +60,19 @@ def _authorize_control(authority, actor, ref, params):
 
 
 def _owner_ref(authority, ref, params):
-    """A control mutation names the listed row, which may be a later reset or compression segment of
-    a local conversation; the conversation's creation id owns its policy, FIFO and live session, so
-    control and the session gate are checked on that owner for every operation. The write itself
+    """A metadata control (rename, archive, pin) or a delete names the listed row, which may be a
+    later reset or compression segment of a local conversation; the conversation's creation id owns
+    its live session, so control and the session gate are checked on that owner. The write itself
     still names the listed row (a title or archive flag belongs to it; delete takes the lineage).
-    Gating only ``delete`` restored a cold segment as if it were an owner, and rename/archive of a
-    compressed conversation answered ``storage_unavailable`` (#134889 LC-22, as LC-12 on resume)."""
-    del params
+    Gating only ``delete`` answered rename/archive of a compressed conversation with
+    ``storage_unavailable`` (#134889 LC-22, as LC-12 on resume).
+
+    A transcript- or policy-changing operation (rewind, reset, compress, a policy pick) keeps the
+    listed id: its busy gate, generation fence and eviction are keyed by the session it writes, so
+    authorizing it on the owner while writing the segment would bypass the owner's FIFO. A segment
+    of a live owner therefore stays a named refusal for those, as on main."""
+    if params.get('operation') not in _OWNER_AUTHORIZED:
+        return ref
     from gateway.session_contract import SessionRef
     from hermes_state_local import local_lineage_owner
     with authority.db._read_ctx() as conn:
