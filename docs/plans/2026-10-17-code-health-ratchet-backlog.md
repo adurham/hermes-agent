@@ -2761,6 +2761,18 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   (RUF100 unused `# noqa: BLE001`, added by main's f21f8ad2), identical on clean main, left alone.
   Branch `claude/c1061-google-chat-adapter-async-80kzyy`.
 
+- 2026-10-18 — C-1072 `pm/runtime.py` timeout HX006×1: **left, not fixed** (count 1 → 1). `run_cli`
+  re-execs the whole PM CLI into the runtime and waits for it; the child deliberately has
+  unbounded waits — the patient install lock (`pm/install.py::_venv_install_lock`, `timeout=None`
+  for an explicit install) and the interactive sudo prompt (`pm/libatomic.py`, "no timeout, so a
+  slow prompt or mirror is never killed mid-dpkg") — and chains up to 1800s uv steps, so any
+  finite outer deadline kills legitimate runs, and a `wait(timeout=…)` retry loop would only hide
+  the hit. Ctrl-C already reaches the child (same process group; `subprocess.run` kills on
+  exception). No sibling instances (the file's other call, the 30s runtime probe, is bounded).
+  Owner call: reviewed allow, or exempt waits on a delegated foreground CLI. The next diverged
+  timeout row, C-1073 `tui_gateway/host_supervisor.py:440`, is the same shape (`_wait_for_exit`
+  is the lifetime watcher thread of the long-lived compute host) — left for the same owner call.
+  Branch `claude/fix-pm-runtime-timeout-mjrdm1`.
 
 ## Campaign close-out — 2026-10-17/18 (50 units)
 
