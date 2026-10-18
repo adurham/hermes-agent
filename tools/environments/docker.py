@@ -48,6 +48,11 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
 _ENVIRONMENT_LABEL_KEY = "hermes-environment"
+# Stamped at create time on per-workspace persistent containers (task key ``<base>:ws:<digest>``)
+# with the digest as its value. The orphan reaper reads it to spare a container the idle reaper
+# stopped on purpose; ``hermes-task-id`` cannot serve, it is truncated to 63 chars.
+_WORKSPACE_LABEL_KEY = "hermes-workspace"
+_WORKSPACE_TASK_RE = re.compile(r":ws:([0-9a-f]{16})$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -222,15 +227,17 @@ def reap_orphan_containers(
 
 
 def _is_idle_workspace_container(docker_exe: str, container_id: str) -> bool:
-    """A persistent per-workspace container (task key ``<base>:ws:<digest>``, label ``<base>_ws_<digest>``)
-    that the idle reaper STOPPED on purpose (``DockerEnvironment.stop_idle``): it is that workspace's
-    sandbox, restarted on next use, not an orphan. Unknown (inspect failed) reads as not one."""
+    """A persistent per-workspace container (task key ``<base>:ws:<digest>``, stamped with the
+    ``hermes-workspace=<digest>`` label at create time) that the idle reaper STOPPED on purpose
+    (``DockerEnvironment.stop_idle``): it is that workspace's sandbox, restarted on next use, not an
+    orphan. Reads the dedicated label, never the 63-char-truncated ``hermes-task-id``, whose
+    ``_ws_<digest>`` suffix a long profile name cuts. Unknown (inspect failed) reads as not one."""
     result = _docker_query(
-        [docker_exe, "inspect", "--format", '{{index .Config.Labels "hermes-task-id"}}', container_id], timeout=10,
-        fail="orphan reaper docker inspect %s failed: %s", fail_args=(container_id[:12],))
+        [docker_exe, "inspect", "--format", f'{{{{index .Config.Labels "{_WORKSPACE_LABEL_KEY}"}}}}', container_id],
+        timeout=10, fail="orphan reaper docker inspect %s failed: %s", fail_args=(container_id[:12],))
     if result is None or result.returncode != 0:
         return False
-    return re.search(r"_ws_[0-9a-f]{16}$", result.stdout.strip()) is not None
+    return re.fullmatch(r"[0-9a-f]{16}", result.stdout.strip()) is not None
 
 
 def _container_finished_at(docker_exe: str, container_id: str):
@@ -747,6 +754,8 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label}
+        if workspace := _WORKSPACE_TASK_RE.search(task_id or ""):
+            self._labels[_WORKSPACE_LABEL_KEY] = workspace.group(1)
         # Explicit sharing opts into the first creator's settings. Otherwise,
         # changed image/mount/home configuration must start a fresh container.
         if not shared_container_key:
