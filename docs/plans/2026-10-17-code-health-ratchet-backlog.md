@@ -2880,3 +2880,16 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   546 passed, 0 failed, 19 skipped. `scripts/check`: 11 of 12 green, health 0 blocking; ruff
   fails only on RUF100 at `agent/turn_truncation.py:572`, identical on clean main@f21f8ad2 (left
   alone). Branch `claude/fix-discord-adapter-async-56xffx`.
+- 2026-10-18 — C-1090 `tui_gateway/methods_tools.py` swallow: BLE001 25 → 0 (no other hits in the
+  file). Narrowed 1: `mcp.catalog.list`'s `env_keys` coercion → `TypeError` (`CatalogEntry` has no
+  `env_keys`; only a non-iterable value can fail). Kept 24 catch-all RPC boundaries, now logging the
+  traceback: debug for the silent fallbacks and the handlers that already reply `str(e)` (profile
+  RPC wrapper, module import in `_session_key_or_err`, rewind, captured exec, battery, MCP-reload
+  confirm read, the three catalog discovery steps, plugin/skill/registry/bundle lookups on the
+  dispatch path, bundle dispatch, moa, goals max_turns read, slash-worker run, MCP probe); warning
+  for the unexpected ones (compute-host `reload_mcp`, `/compress`, plugin command crash, slash-worker
+  start) and `exc_info=True` added to the two existing warnings (live-session tool refresh, MCP
+  rediscovery). Replies unchanged. FILE_LINES 1,971 → 1,993. 30 tui_gateway test files covering
+  these RPCs 920/920. `scripts/check`: health ok; ruff fails on main's own
+  `agent/turn_truncation.py:572` unused `# noqa` (RUF100, from f21f8ad2; identical on clean main,
+  outside this unit). Branch `claude/fix-methods-tools-ble001-fcw81u`.
