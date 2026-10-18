@@ -12,6 +12,7 @@ import smtplib
 import socket
 import ssl
 import uuid
+from email.errors import HeaderParseError
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -130,6 +131,7 @@ def _close_imap(imap: imaplib.IMAP4) -> None:
     try:
         imap.logout()
     except Exception:
+        logger.debug("[Email] IMAP logout failed; forcing socket shutdown", exc_info=True)
         with suppress(Exception):
             imap.shutdown()
 
@@ -194,11 +196,12 @@ def _send_imap_id(imap: imaplib.IMAP4) -> None:
             from hermes_cli.version_info import get_version_info
             version = get_version_info().base_version
         except Exception:
+            logger.debug("[Email] Could not resolve the Hermes version for IMAP ID", exc_info=True)
             version = "0"
         imap.xatom("ID", f'("name" "hermes-agent" "version" "{version}" '
                          '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
     except Exception as e:
-        logger.debug("[Email] IMAP ID command not accepted: %s", e)
+        logger.debug("[Email] IMAP ID command not accepted: %s", e, exc_info=True)
 
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
@@ -252,7 +255,7 @@ def _decode_header_value(raw: str) -> str:
     """
     try:
         parts = decode_header(raw)
-    except Exception:  # malformed RFC 2047 structure
+    except HeaderParseError:  # malformed RFC 2047 structure (e.g. bad base64 in an encoded-word)
         return raw
     return " ".join(_safe_decode(part, charset) if isinstance(part, bytes) else part for part, charset in parts)
 
@@ -578,8 +581,10 @@ class EmailAdapter(BasePlatformAdapter):
             # Always set an explicit fatal code, else the gateway treats every failure as transient with zero
             # owner signal. retryable=True because imaplib raises the same generic IMAP4.error for bad credentials
             # AND transient NOs (Gmail "too many simultaneous connections"); loops surface via NEEDS_ATTENTION.
-            return self._fail("[Email] IMAP connection failed: %s", e, "email_imap_connect_error",
-                              f"IMAP connection to {self._imap_host}:{self._imap_port} failed: {e}", retryable=True)
+            logger.error("[Email] IMAP connection failed: %s", e, exc_info=True)
+            self._set_fatal_error("email_imap_connect_error", f"IMAP connection to {self._imap_host}:{self._imap_port} failed: {e}",
+                                  retryable=True)
+            return False
 
     def _probe_smtp(self) -> bool:
         """SMTP connect + login test. Sets a fatal error and returns False on failure."""
@@ -597,8 +602,9 @@ class EmailAdapter(BasePlatformAdapter):
                               f"SMTP authentication failed for {self._address}: {e}. Check EMAIL_PASSWORD (for Gmail/Outlook "
                               "this must be an app password, not the account password).", retryable=False)
         except Exception as e:
-            return self._fail("[Email] SMTP connection failed: %s", e, "email_smtp_connect_error",
-                              f"SMTP connection to {self._smtp_host} failed: {e}", retryable=True)
+            logger.error("[Email] SMTP connection failed: %s", e, exc_info=True)
+            self._set_fatal_error("email_smtp_connect_error", f"SMTP connection to {self._smtp_host} failed: {e}", retryable=True)
+            return False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
@@ -634,7 +640,7 @@ class EmailAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("[Email] Poll error: %s", e)
+                logger.error("[Email] Poll error: %s", e, exc_info=True)
             await asyncio.sleep(self._poll_interval)
 
     async def _check_inbox(self) -> None:
@@ -694,7 +700,7 @@ class EmailAdapter(BasePlatformAdapter):
                         candidate = self._parse_fetched_headers(uid, raw_headers)
                         accepted = candidate is not None and preauthorize(candidate)
                     except Exception as auth_exc:
-                        logger.error("[Email] Failed to authorize message UID %s, skipping: %s", uid, auth_exc)
+                        logger.error("[Email] Failed to authorize message UID %s, skipping: %s", uid, auth_exc, exc_info=True)
                         accepted = False
                     if not accepted:
                         self._mark_uid_consumed(imap, uid)
@@ -714,14 +720,14 @@ class EmailAdapter(BasePlatformAdapter):
                         # See #80032.
                         parsed = self._parse_fetched_message(uid, raw_email)
                     except Exception as parse_exc:
-                        logger.error("[Email] Failed to process message UID %s, skipping: %s", uid, parse_exc)
+                        logger.error("[Email] Failed to process message UID %s, skipping: %s", uid, parse_exc, exc_info=True)
                         continue
                     if parsed is not None:
                         results.append(parsed)
         except Exception as e:
             # _close_imap guarantees the socket dies even when logout() raises IMAP4.abort on a broken
             # connection (#79889).
-            logger.error("[Email] IMAP fetch error: %s", e)
+            logger.error("[Email] IMAP fetch error: %s", e, exc_info=True)
             self._last_fetch_failed, self._last_fetch_error = True, str(e)
         # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
         self._seen_uids_snapshot[self._address] = set(self._seen_uids)
@@ -846,7 +852,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             return SendResult(success=True, message_id=await asyncio.get_running_loop().run_in_executor(None, fn, *args))
         except Exception as e:
-            logger.error(log_fmt, *log_args, e)
+            logger.error(log_fmt, *log_args, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -884,6 +890,7 @@ class EmailAdapter(BasePlatformAdapter):
             try:
                 smtp.quit()
             except Exception:
+                logger.debug("[Email] SMTP quit failed; closing the connection", exc_info=True)
                 smtp.close()
 
     def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
@@ -981,10 +988,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
+        logger.debug("[Email] Standalone send failed", exc_info=True)
         try:
             from tools.send_message_tool import _error as _e
             return _e(f"Email send failed: {e}")
-        except Exception:
+        except ImportError:
             return send_error(f"Email send failed: {e}")
 
 

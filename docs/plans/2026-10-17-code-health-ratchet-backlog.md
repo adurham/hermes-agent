@@ -2662,3 +2662,14 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   tests/cron + the unit's listed files: 1576 passed, 0 failed; 44 more cron-referencing files 951
   passed (`test_webhook_cron_trigger.py` needs aiohttp, absent here). Branch
   `claude/fix-c1076-timeout-jobs-yrjv0z`.
+- 2026-10-18 — C-1105 `plugins/platforms/email/adapter.py` swallow: BLE001 14 → 0 (file hits 15 → 1;
+  the ASYNC240 hit, C-1060, untouched). Narrowed 2: `_decode_header_value` → `HeaderParseError`
+  (the only exception `decode_header` raises; 300k-input fuzz plus compat32 `Header` objects agree),
+  `_standalone_send`'s fallback import → `ImportError`. Kept 12 deliberate catch-alls and made them
+  log the traceback: error-level lines that already existed gained `exc_info=True` (`_poll_loop`,
+  per-UID authorize/parse, IMAP fetch, `_run_send`, IMAP ID); the probes' generic branches log inline
+  with `exc_info=True` and set the same fatal code/detail `_fail` did; teardown/best-effort sites
+  (`_close_imap` logout, `_smtp_send` quit, IMAP ID version lookup, `_standalone_send`) log at debug.
+  Fatal codes, return values and messages unchanged. FILE_LINES 1,007 → 1,015. 10 email test files:
+  135 passed, 2 failed (Weixin session recycle, Mattermost multi-image: missing `aiohttp`; identical
+  on main). `scripts/check` green, 12 checks. Branch `claude/fix-email-adapter-exceptions-r4r94f`.
