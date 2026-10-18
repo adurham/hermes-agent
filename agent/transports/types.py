@@ -71,6 +71,11 @@ class NormalizedResponse:
     reasoning: str | None = None
     usage: Usage | None = None
     provider_data: dict[str, Any] | None = field(default=None, repr=False)
+    #: Vendor extension (``dsv41``) on the choice: the exo engine's loop guard can
+    #: end a turn as a TRUNCATION (finish_reason="length" + {"finish_cause":
+    #: "repetition_loop"}) instead of an in-band error. Carried so the turn loop
+    #: can end the turn there instead of auto-continuing into the same cycle.
+    loop_cause: dict[str, Any] | None = field(default=None, repr=False)
 
     # Back-compat accessors so NormalizedResponse passes through where the old
     # _nr_to_assistant_message() shim mapped these from provider_data.
