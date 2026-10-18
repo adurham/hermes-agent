@@ -423,12 +423,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     clearPendingTools()
   }
 
-  messages.forEach((message, index) => {
-    // Skipped in place, not filtered first: `index` keys tool-part and message ids by the stored row position.
-    if (!isPainted(message)) {
-      return
-    }
+  // `index` stays the stored row position (it keys tool-part and message ids), so skipped merges shift nothing.
+  const painted = messages.flatMap((message, index) => (isPainted(message) ? [{ index, message }] : []))
 
+  painted.forEach(({ message, index }) => {
     if (message.role === 'assistant') {
       nearestAssistant = message
     } else if (message.role === 'user' || message.role === 'system') {
