@@ -41,7 +41,6 @@ import {
 } from '@/store/session'
 import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
-import { noteDesktopAdmission } from '@/store/session-unread'
 import type { SessionInfo } from '@/types/hermes'
 
 import { cronRunWriteGateApplies, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
@@ -211,19 +210,6 @@ function isPreAdmissionRefusal(error: unknown): boolean {
   const { code, message } = error as { code?: unknown; message?: unknown }
 
   return code === 4094 || (code === 4000 && typeof message === 'string' && /submission_id/.test(message))
-}
-
-/** Track an admitted submission, and note its admission as this Desktop's own turn when one will run. */
-function trackAdmittedSubmission(
-  storedId: string,
-  entry: Parameters<typeof trackPendingSubmission>[1],
-  admissionId?: string
-) {
-  trackPendingSubmission(storedId, entry)
-
-  if (entry.status === 'queued' || entry.status === 'started') {
-    noteDesktopAdmission(admissionId)
-  }
 }
 
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
@@ -1249,11 +1235,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             }
 
             if ((result?.submission_id ?? result?.admission_id) === submissionId) {
-              trackAdmittedSubmission(
-                targetStoredSessionId ?? liveSessionId,
-                { id: submissionId, text, displayText: options?.displayText, status: result.status },
-                result.admission_id
-              )
+              trackPendingSubmission(targetStoredSessionId ?? liveSessionId, {
+                id: submissionId,
+                text,
+                displayText: options?.displayText,
+                status: result.status
+              })
 
               // Queued is also the initial receipt for an idle session's first
               // turn. Keep its input and any start event that raced this ACK;

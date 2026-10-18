@@ -1,3 +1,4 @@
+import { observeCanonicalAdmissions } from '@/api/canonical-protocol'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 import { isMessagingSource } from '@/lib/session-source'
 import { stableArray } from '@/lib/stable-array'
@@ -219,14 +220,7 @@ export function noteDesktopAdmission(admissionId: string | undefined): void {
   }
 
   desktopAdmissions.add(admissionId)
-
-  for (const oldest of desktopAdmissions) {
-    if (desktopAdmissions.size <= DESKTOP_ADMISSIONS_CAP) {
-      break
-    }
-
-    desktopAdmissions.delete(oldest)
-  }
+  trimOldest(desktopAdmissions)
 }
 
 /** A messaging turn Desktop submitted has completed (`admissionId`, the owner's
@@ -236,27 +230,72 @@ export function noteDesktopAdmission(admissionId: string | undefined): void {
 export function lightDesktopMessagingCompletion(
   storedSessionId: string,
   admissionId: string | undefined,
-  focused: boolean
+  focused: boolean,
+  profile?: string
 ) {
-  if (!admissionId || !desktopAdmissions.delete(admissionId) || focused) {
+  if (!admissionId) {
     return
   }
 
-  if (isMessagingSource(resolveLoadedRow(storedSessionId)?.source)) {
-    markSessionUnreadFinished(storedSessionId)
+  if (!desktopAdmissions.delete(admissionId)) {
+    // Its receipt may still be in flight: keep the completion until the admission is noted.
+    earlyCompletions.set(admissionId, { storedSessionId, focused, profile })
+    trimOldest(earlyCompletions)
+
+    return
   }
+
+  // The delivering socket's profile, when it names one, picks the row: another profile's same-id
+  // session must not decide this completion. The row's own id is marked, so a compressed
+  // conversation's listed segment paints at once.
+  const row = resolveOwnedRow(storedSessionId, profile)
+
+  if (!focused && isMessagingSource(row?.source)) {
+    markSessionUnreadFinished(row!.id, profile)
+  }
+}
+
+/** Stamped completions that arrived before their admission was noted, keyed by admission. */
+const earlyCompletions = new Map<string, { storedSessionId: string; focused: boolean; profile?: string }>()
+
+function trimOldest(entries: Set<string> | Map<string, unknown>) {
+  for (const oldest of entries.keys()) {
+    if (entries.size <= DESKTOP_ADMISSIONS_CAP) {
+      break
+    }
+
+    entries.delete(oldest)
+  }
+}
+
+// A turn will run for a queued or started admission; a deduplicated or lost one starts none.
+observeCanonicalAdmissions((admissionId, status) => {
+  if (status !== 'queued' && status !== 'started') {
+    return
+  }
+
+  noteDesktopAdmission(admissionId)
+  const early = earlyCompletions.get(admissionId)
+
+  if (early) {
+    earlyCompletions.delete(admissionId)
+    lightDesktopMessagingCompletion(early.storedSessionId, admissionId, early.focused, early.profile)
+  }
+})
+
+/** The row of a known owner profile; with no owner, the bare-id tie-break. */
+function resolveOwnedRow(storedSessionId: string, profile?: string): SessionInfo | undefined {
+  return profile
+    ? rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]).find(
+        r => sessionMatchesStoredId(r, storedSessionId) && profileKeyForRow(r) === normalizeProfileKey(profile)
+      )
+    : resolveLoadedRow(storedSessionId)
 }
 
 /** A messaging conversation delivers its completion to its own platform; a
  *  Desktop observer is not an unread recipient of it at the busy-to-idle edge. */
 export function isMessagingCompletion(storedSessionId: string, profile?: string): boolean {
-  const row = profile
-    ? rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()]).find(
-        r => sessionMatchesStoredId(r, storedSessionId) && profileKeyForRow(r) === normalizeProfileKey(profile)
-      )
-    : resolveLoadedRow(storedSessionId)
-
-  return isMessagingSource(row?.source)
+  return isMessagingSource(resolveOwnedRow(storedSessionId, profile)?.source)
 }
 
 /** UNREAD WRITER — the live busy→idle edge (session-states.ts) and any surface

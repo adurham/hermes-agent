@@ -119,9 +119,9 @@ function appendMoaReference(ctx: GatewayEventContext, sessionId: string): void {
 /** The message/reasoning/MoA streaming family: message.start → deltas →
  *  interim → complete, thinking/reasoning deltas, moa.* progress, reaction. */
 /** The stamped completion of a messaging turn Desktop sent decides its unread dot. */
-function lightOwnMessagingTurn(runtimeId: string, admissionId: string | undefined) {
+function lightOwnMessagingTurn(runtimeId: string, admissionId: string | undefined, profile?: string) {
   const storedId = $sessionStates.get()[runtimeId]?.storedSessionId ?? runtimeId
-  lightDesktopMessagingCompletion(storedId, admissionId, storedId === $focusedStoredSessionId.get())
+  lightDesktopMessagingCompletion(storedId, admissionId, storedId === $focusedStoredSessionId.get(), profile)
 }
 
 export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
@@ -382,7 +382,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     // Keyed by session so only one window beeps when several are open.
     playCompletionSound(sessionId)
-    lightOwnMessagingTurn(sessionId, event.admission_id)
+    lightOwnMessagingTurn(sessionId, event.admission_id, event.profile)
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
