@@ -175,3 +175,77 @@ def test_profiles_list_names_every_profile_on_disk_and_its_install(tmp_path, mon
     assert rows['writer']['display_name'] == 'Writer Bot'
     # Discovery is metadata only: a profile this socket does not route to adds no session fields.
     assert 'canonical_session' not in rows['writer'] and 'last_session' not in rows['writer']
+
+
+def _roster_home(tmp_path, monkeypatch):
+    home = tmp_path / 'state'
+    for name in ('helper', 'writer'):
+        (home / 'profiles' / name).mkdir(parents=True)
+        (home / 'profiles' / name / 'config.yaml').write_text('model:\n  default: m\n')
+    (home / 'profiles' / 'writer' / 'profile.yaml').write_text('display_name: Writer Bot\n')
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('HOME', str(tmp_path / 'user'))
+    (home / 'config.yaml').write_text('model:\n  default: fixture-model\n')
+    return home
+
+
+def _list_profiles(home):
+    with SessionDB(home / 'state.db') as db:
+        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={})
+
+        async def probe():
+            connection = AuthorityConnection(authority, object(), {'user_id': 'reader'})
+            return await connection.dispatch({'id': 'r', 'method': 'profiles.list', 'params': {}})
+        return asyncio.run(probe())
+
+
+def test_profiles_list_survives_an_undecodable_sibling_profile_yaml(tmp_path, monkeypatch, caplog):
+    """@dokterdok on #140972: a sibling profile.yaml saved in a legacy Windows code page raised
+    UnicodeDecodeError and failed the healthy default's whole roster. The roster still answers,
+    that profile keeps a basic row, and the unreadable file is logged."""
+    home = _roster_home(tmp_path, monkeypatch)
+    (home / 'profiles' / 'helper' / 'profile.yaml').write_bytes('display_name: Andr\xe9\n'.encode('cp1252'))
+    with caplog.at_level('WARNING', logger='gateway.session_group_controls'):
+        reply = _list_profiles(home)
+    assert 'result' in reply, reply
+    rows = {row['name']: row for row in reply['result']['profiles']}
+    assert list(rows) == ['default', 'helper', 'writer']
+    assert rows['helper']['display_name'] == 'helper'
+    assert rows['writer']['display_name'] == 'Writer Bot'
+    assert any('helper' in record.getMessage() and 'profile.yaml' in record.getMessage()
+               for record in caplog.records)
+
+
+def test_profiles_list_reuses_its_disk_scan_until_a_profile_changes(tmp_path, monkeypatch):
+    """@kshitijk4poor on #140972: the Bots pane polls profiles.list every 5 s, and each call
+    re-enumerated profiles/ and re-parsed every profile.yaml. An unchanged tree is served from
+    cache; a new profile or an edited profile.yaml is picked up on the next call."""
+    import os
+
+    from hermes_cli import profiles
+    import hermes_yaml
+    home = _roster_home(tmp_path, monkeypatch)
+    scans, parses = [], []
+    real_iter, real_load = profiles._iter_named_profile_dirs, hermes_yaml.safe_load
+    monkeypatch.setattr(profiles, '_iter_named_profile_dirs',
+                        lambda *a, **k: scans.append(1) or real_iter(*a, **k))
+    monkeypatch.setattr(hermes_yaml, 'safe_load', lambda text: parses.append(text) or real_load(text))
+
+    def sibling_parses():
+        return sum('Writer' in str(text) for text in parses)
+
+    _list_profiles(home)
+    first_scans, first_parses = len(scans), sibling_parses()
+    assert first_scans and first_parses
+    _list_profiles(home)
+    assert (len(scans), sibling_parses()) == (first_scans, first_parses)
+
+    meta = home / 'profiles' / 'writer' / 'profile.yaml'
+    meta.write_text('display_name: Renamed Writer\n')
+    stat = meta.stat()
+    os.utime(meta, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    (home / 'profiles' / 'scout').mkdir()
+    (home / 'profiles' / 'scout' / 'config.yaml').write_text('model:\n  default: m\n')
+    rows = {row['name']: row for row in _list_profiles(home)['result']['profiles']}
+    assert rows['writer']['display_name'] == 'Renamed Writer'
+    assert 'scout' in rows

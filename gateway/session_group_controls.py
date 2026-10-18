@@ -1,6 +1,7 @@
 """Profile-owned room controls over the canonical hosted service."""
 import asyncio
 import logging
+import os
 from pathlib import Path
 import weakref
 
@@ -409,11 +410,7 @@ def _profiles(authority, actor, home, params, siblings=()):
                  'skill_count': 0}
         if include_sessions and reach is not None:
             entry.update(_sibling_sessions(*reach))
-        meta_path = target / 'profile.yaml'
-        try:
-            meta = yaml.safe_load(meta_path.read_text(encoding='utf-8-sig')) if meta_path.is_file() else {}
-        except (OSError, yaml.YAMLError):
-            meta = {}
+        meta = _discovered_profile_meta(configured, target / 'profile.yaml')
         if isinstance(meta, dict):
             entry['display_name'] = str(meta.get('display_name') or configured)
             if isinstance(meta.get('ui_meta'), dict):
@@ -436,17 +433,67 @@ def _profiles(authority, actor, home, params, siblings=()):
     # (RT-38): a host running one gateway per profile serves no siblings, and Desktop drops every
     # union agent the active source leaves out, so a default-only answer hid the other bots.
     # Metadata only, like any discovery above.
-    from hermes_cli.profiles import _get_default_hermes_home, _iter_named_profile_dirs
+    from hermes_cli.profiles import _get_default_hermes_home
     root = _get_default_hermes_home()
     if root.is_dir():
         discovered('default', root)
-    for target in _iter_named_profile_dirs():
+    for target in _named_profile_dirs():
         discovered(target.name, target)
     # ``install_id`` (same value as /api/status) lets a multi-connection client prove which
-    # machine answered; the roster trace logged ``answered=-`` without it.
+    # machine answered; the roster trace logged ``answered=-`` without it. It already returns
+    # None for an unreadable root.
     from hermes_cli.install_identity import get_install_id
+    return {'profiles': profiles, 'bot_mode_protocol': True, 'install_id': get_install_id() or ''}
+
+
+# The Bots pane polls ``profiles.list`` every 5 s. Re-listing ``profiles/`` and re-parsing every
+# sibling ``profile.yaml`` each time cost ~60 ms at 50 profiles, so both are cached by stat:
+# the directory listing by the mtimes of ``profiles/`` and each entry (a new profile, its
+# identity marker or a tombstone each bump one of them), and a parsed ``profile.yaml`` by
+# (path, mtime_ns, size).
+_NAMED_DIRS_CACHE: dict[str, tuple[tuple, list]] = {}
+_PROFILE_META_CACHE: dict[str, tuple[tuple[int, int], object]] = {}
+
+
+def _named_profile_dirs():
+    from hermes_cli.profiles import _get_profiles_root, _iter_named_profile_dirs
+    profiles_root = _get_profiles_root()
     try:
-        install_id = get_install_id() or ''
+        with os.scandir(profiles_root) as entries:
+            signature = (os.stat(profiles_root).st_mtime_ns,
+                         tuple(sorted((entry.name, entry.stat().st_mtime_ns) for entry in entries)))
     except OSError:
-        install_id = ''
-    return {'profiles': profiles, 'bot_mode_protocol': True, 'install_id': install_id}
+        signature = None
+    cached = _NAMED_DIRS_CACHE.get(str(profiles_root))
+    if signature is not None and cached and cached[0] == signature:
+        return cached[1]
+    try:
+        targets = _iter_named_profile_dirs()
+    except OSError as exc:
+        # An unreadable ``profiles/`` drops the siblings, never the authority's own roster.
+        logger.warning('profiles.list: cannot list %s: %s', profiles_root, exc)
+        return []
+    if signature is not None:
+        _NAMED_DIRS_CACHE[str(profiles_root)] = (signature, targets)
+    return targets
+
+
+def _discovered_profile_meta(name, meta_path):
+    """A sibling's parsed ``profile.yaml``, or ``{}``. One unreadable file (a legacy code page,
+    bad YAML, a permission error) degrades that row to basic metadata; it never fails the roster."""
+    import hermes_yaml as yaml
+    try:
+        stat = meta_path.stat()
+    except OSError:
+        return {}
+    key = (stat.st_mtime_ns, stat.st_size)
+    cached = _PROFILE_META_CACHE.get(str(meta_path))
+    if cached and cached[0] == key:
+        return cached[1]
+    try:
+        meta = yaml.safe_load(meta_path.read_text(encoding='utf-8-sig')) if meta_path.is_file() else {}
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        logger.warning('profiles.list: skipping unreadable profile.yaml for %s (%s): %s', name, meta_path, exc)
+        meta = {}
+    _PROFILE_META_CACHE[str(meta_path)] = (key, meta)
+    return meta
