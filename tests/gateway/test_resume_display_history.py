@@ -73,10 +73,28 @@ async def test_resume_shows_the_turns_a_compression_archived(tmp_path, monkeypat
     tip = _compact(db, physical, mode)
     rows = (await _resume(authority, actor, ref))['messages']
     # The earlier turns are shown and marked archived; the carried tail appears once; a rewound turn stays out.
-    assert [(r['content'], bool(r.get('archived'))) for r in rows if r['content'] != SUMMARY] == [
-        ('OLD_Q', True), ('OLD_A', True), ('TAIL_Q', False), ('TAIL_A', False)]
+    # The summary sits before the tail it precedes in the store, in both modes.
+    assert [(r['content'], bool(r.get('archived'))) for r in rows] == [
+        ('OLD_Q', True), ('OLD_A', True), (SUMMARY, False), ('TAIL_Q', False), ('TAIL_A', False)]
     # The rows not archived are exactly the live transcript, each with its durable row id.
-    assert sorted(r['row_id'] for r in rows if not r.get('archived')) == [m['id'] for m in db.get_messages(tip)]
+    assert [r['row_id'] for r in rows if not r.get('archived')] == [m['id'] for m in db.get_messages(tip)]
+
+
+@pytest.mark.asyncio
+async def test_cli_undo_prefix_keeps_the_summary_after_a_rotated_compression(tmp_path, monkeypatch):
+    """``GatewaySessionStore.rewind_user_turn`` and ``/compress`` take the live rows as the CLI's history:
+    the prefix before the newest user turn holds the summary the store keeps active (review of #140971)."""
+    from agent.context_compressor import history_before_user_originated_turn
+    from hermes_state_rewind import _user_indices
+    authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
+    db = authority.db
+    _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
+    _compact(db, physical, 'rotated')
+    _append(db, 'child', 'NEW_Q', 'NEW_A')
+    live = [r for r in (await _resume(authority, actor, ref))['messages'] if not r.get('archived')]
+    prefix, turn = history_before_user_originated_turn(live, _user_indices(live)[-1])
+    assert turn['content'] == 'NEW_Q'
+    assert [m['content'] for m in prefix] == [SUMMARY, 'TAIL_Q', 'TAIL_A']
 
 
 @pytest.mark.asyncio
@@ -147,6 +165,6 @@ async def test_a_long_archived_history_keeps_the_resume_reply_bounded(tmp_path, 
     assert len(json.dumps(reply)) < 8 * 1024 * 1024
     rows = reply['messages']
     assert rows[0]['archived_truncated'] and rows[-1]['content'] == 'R23'
-    assert sorted(r['row_id'] for r in rows if not r.get('archived')) == [m['id'] for m in db.get_messages(tip)]
+    assert [r['row_id'] for r in rows if not r.get('archived')] == [m['id'] for m in db.get_messages(tip)]
     archived = [r['content'][:4] for r in rows if r.get('archived') and r['role'] == 'user']
     assert archived and archived[-1] == 'Q39 ' and 'Q0 x' not in archived  # the newest are kept

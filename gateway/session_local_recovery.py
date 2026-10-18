@@ -245,6 +245,32 @@ async def prepare_history(authority, ref):
     return target, await asyncio.to_thread(display_rows, authority.db, target)
 
 
+def _merge_live_in_stored_order(display, live):
+    """The live rows in stored (``row_id``) order, each archived display row placed before the live
+    row it preceded in display order.
+
+    Display deduplication keeps a carried message at its FIRST copy's position, so after a rotated
+    compression the copied tail sits before the new summary. Clients take the live rows of a resume
+    as the transcript (the CLI's ``conversation_history``, ``/undo``'s prefix, rollback, ACP replay),
+    so the live subsequence must be the stored one; archived rows only anchor between live rows."""
+    current = {row['_row_id'] for row in live}
+    groups, pending, shown = [], [], 0
+    for row in display:
+        if row['_row_id'] in current:
+            groups.append(pending)
+            pending, shown = [], shown + 1
+        else:
+            pending.append({**row, 'archived': True})
+    shown_ids = {row['_row_id'] for row in display} & current
+    rows, seen = [], 0
+    for row in sorted(live, key=lambda r: r['_row_id']):
+        if row['_row_id'] in shown_ids:
+            rows.extend(groups[seen])
+            seen += 1
+        rows.append(row)
+    return rows + pending
+
+
 def local_history(authority, ref, prepared=None):
     """Display history of logical *ref*: every stored row the user saw, in display order.
 
@@ -269,18 +295,8 @@ def local_history(authority, ref, prepared=None):
     if not read_live <= {row['_row_id'] for row in live}:
         read_live, display, truncated = display_rows(db, target)
         live = db.get_messages_as_conversation(target, include_row_ids=True)
-    current = {row['_row_id']: row for row in live}
-    shown = {row['_row_id'] for row in display}
-    unshown = [row for row in live if row['_row_id'] not in shown]  # hidden by the display, or appended since
-    rows = []
-    for row in display:
-        if row['_row_id'] not in current:
-            rows.append({**row, 'archived': True})
-            continue
-        while unshown and unshown[0]['_row_id'] < row['_row_id']:
-            rows.append(unshown.pop(0))
-        rows.append(current[row['_row_id']])
-    rows = [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']} for row in rows + unshown]
+    rows = [{**{k: v for k, v in row.items() if k != '_row_id'}, 'row_id': row['_row_id']}
+            for row in _merge_live_in_stored_order(display, live)]
     if truncated and rows:
         rows[0]['archived_truncated'] = True  # earlier archived history was left out (the byte budget)
     return rows
