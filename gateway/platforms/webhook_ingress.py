@@ -138,15 +138,9 @@ async def _delivery_turn(key):
     if not key[2]:  # no provider id: admission mints one, nothing can overlap
         yield
         return
-    entry = _deliveries.setdefault(key, [asyncio.Lock(), 0])
-    entry[1] += 1
-    try:
-        async with entry[0]:
-            yield
-    finally:
-        entry[1] -= 1
-        if not entry[1]:
-            del _deliveries[key]
+    from gateway.session_authority import keyed_turn
+    async with keyed_turn(_deliveries, key):
+        yield
 
 
 async def _release_preparation(authority, payload):
@@ -163,14 +157,12 @@ async def _prepared(authority, event):
     authorization as admission, so a refused sender raises here."""
     import json
     from gateway.session_envelope import prepare_native, restore_native
-    from gateway.session_ingress_media import capture_lease, release_abandoned_capture
+    from gateway.session_ingress_media import abandon_capture, capture_lease
     with capture_lease(authority) as scope:
         try:
             payload = await prepare_native(authority.runner, event)
         except BaseException:
-            if not scope.abandoned:
-                scope.abandoned = True
-                await release_abandoned_capture(scope)
+            await abandon_capture(scope)
             raise
     source = restore_native(payload).source
     identity = json.dumps([source.profile, source.platform.value, source.chat_id,

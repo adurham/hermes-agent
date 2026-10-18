@@ -180,7 +180,7 @@ async def prepare_native(runner, event):
     # copied context carries the admission's capture lease.
     media = None
     if frozen.media_urls:
-        from gateway.session_ingress_media import _lease_scope, release_abandoned_capture
+        from gateway.session_ingress_media import _lease_scope, abandon_capture, release_abandoned_capture
         from gateway.session_runtime_workers import track_mutation
         scope = _lease_scope.get()
         work = asyncio.to_thread(capture_native_media, frozen.media_urls)
@@ -200,9 +200,7 @@ async def prepare_native(runner, event):
                 capture.add_done_callback(finished)
             raise
         except BaseException:
-            if scope is not None and scope.authority is not None:
-                scope.abandoned = True
-                await release_abandoned_capture(scope)
+            await abandon_capture(scope)
             raise
     return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
 

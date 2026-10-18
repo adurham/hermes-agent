@@ -78,6 +78,15 @@ def drop_capture_lease(paths=None, *, scope=None):
                 del _leases[path]
 
 
+async def abandon_capture(scope):
+    """Mark *scope*'s capture abandoned and release it, once: no row can own these bytes. A no-op for no
+    scope, a scope without an authority, or one already abandoned (its release ran or is arranged)."""
+    if scope is None or scope.authority is None or scope.abandoned:
+        return
+    scope.abandoned = True
+    await release_abandoned_capture(scope)
+
+
 async def release_abandoned_capture(scope):
     """Collect every path published by an abandoned worker, including after its caller left."""
     if scope.authority is None:

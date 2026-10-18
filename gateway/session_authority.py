@@ -89,6 +89,25 @@ def _log_drain_failure(task):
     logging.getLogger(__name__).error('Session drain task died: %r', task.exception())
 
 
+
+@contextlib.asynccontextmanager
+async def keyed_turn(table, key, *, queued=None):
+    """One FIFO turn per *key*: ``table[key]`` is ``[asyncio.Lock(), holder + waiters]``, created on
+    first use and deleted when the last one leaves. asyncio's Lock is FIFO and a cancelled waiter gives
+    up only its own place. *queued* runs (before waiting) when an earlier turn holds or awaits the key."""
+    entry = table.setdefault(key, [asyncio.Lock(), 0])
+    entry[1] += 1
+    if queued is not None and entry[1] > 1:
+        queued()
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if not entry[1]:
+            del table[key]
+
+
 class SessionAuthority:
     def __init__(self, runner, *, profile_id, instance_id, db, epoch):
         self.runner = runner
@@ -135,7 +154,7 @@ class SessionAuthority:
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
         # that reserved it before the rotation commits on that key's current route instead.
         self.rotated_owners = {}
-        # Route key -> [lock, holder + waiters, stop fence] of the native admissions in flight (``_route_turn``).
+        # Route key -> [lock, holder + waiters] of the native admissions in flight (``_route_turn``, ``keyed_turn``).
         self._route_turns = {}
         # Per route: how many messaging /stop and /new fenced it (``fence_route``). Kept for the
         # owner's life (one int per chat that ever got one): an input or command turn holding an older
@@ -409,7 +428,7 @@ class SessionAuthority:
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
-        from gateway.session_ingress_media import capture_lease, release_abandoned_capture
+        from gateway.session_ingress_media import abandon_capture, capture_lease
         async with self._route_turn(event) as fence:
             with capture_lease(self) as scope:  # captured bytes are held until commit or refusal
                 try:
@@ -417,9 +436,8 @@ class SessionAuthority:
                 except BaseException:
                     # Before the shielded write starts, no row can own these bytes. A cancelled copy
                     # arranges its own completion cleanup in prepare_native; other failures clean here.
-                    if not scope.write_started and not scope.abandoned:
-                        scope.abandoned = True
-                        await release_abandoned_capture(scope)
+                    if not scope.write_started:
+                        await abandon_capture(scope)
                     raise
 
     @contextlib.asynccontextmanager
@@ -438,25 +456,20 @@ class SessionAuthority:
         if key is None:
             yield None
             return
-        entry = self._route_turns.setdefault(key, [asyncio.Lock(), 0])
-        entry[1] += 1
         arrived = self.route_epoch(key)
 
         def fence(_conn=None):
             if self.route_epoch(key) != arrived:
                 raise RuntimeStoreError('stale_generation', field='route',
                                         detail='a /stop or /new of this chat came after this message')
-        if isinstance(ingress, asyncio.Future) and entry[1] > 1 and not ingress.done():
-            ingress.set_result(None)  # its FIFO position is fixed behind the earlier input
-        try:
-            async with entry[0]:
-                if ingress is not None:
-                    fence()
-                yield fence if ingress is not None else None
-        finally:
-            entry[1] -= 1
-            if not entry[1]:
-                del self._route_turns[key]
+
+        def queued():  # its FIFO position is fixed behind the earlier input
+            if isinstance(ingress, asyncio.Future) and not ingress.done():
+                ingress.set_result(None)
+        async with keyed_turn(self._route_turns, key, queued=queued):
+            if ingress is not None:
+                fence()
+            yield fence if ingress is not None else None
 
     def route_epoch(self, route):
         """How many messaging /stop and /new fenced *route* (``fence_route``)."""
