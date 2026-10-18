@@ -943,11 +943,12 @@ def bind_turn_workspace(policy, task_id):
     terminal = json.loads(policy.terminal_json)
     if str(terminal.get('TERMINAL_ENV') or '').strip().lower() != 'docker' or not terminal_uses_host_cwd(terminal):
         return
-    from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides
+    from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides, workspace_key_for
     current = resolve_task_overrides(task_id)
     if current.get('cwd') == policy.cwd and current.get('cwd_source') == 'session':
         return
-    register_task_env_overrides(task_id, {**current, 'cwd': policy.cwd, 'cwd_source': 'session'})
+    register_task_env_overrides(task_id, {**current, 'cwd': policy.cwd, 'cwd_source': 'session',
+                                          'workspace_key': workspace_key_for(policy.cwd)})
 
 
 @contextmanager

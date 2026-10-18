@@ -105,3 +105,45 @@ def test_backends_that_do_not_mount_the_host_cwd_register_nothing(home, tmp_path
     with policy_scope(policy):
         bind_turn_workspace(policy, 'local-x')
         assert terminal_tool.resolve_task_overrides('local-x') == {}
+
+
+def test_delegated_child_shares_its_parents_persistent_workspace_container(home, tmp_path):
+    # Review probe (@kshitijk4poor W1, @dokterdok 1): parent `default:ws:<h>`, child `default`.
+    from tools.terminal_tool import register_container_alias
+    ws1, ws2 = tmp_path / 'ws1', tmp_path / 'ws2'
+    ws1.mkdir(), ws2.mkdir()
+    keys = {}
+    for sid, ws in (('local-a', ws1), ('local-b', ws2)):
+        with _turn(_policy(home, ws, persistent=True), sid):
+            register_container_alias(f'{sid}-child', sid)  # delegate_tool_child_run.seed_workspace
+            keys[sid] = (_plan(sid)[0], _plan(f'{sid}-child')[0])
+    assert keys['local-a'][1] == keys['local-a'][0]
+    assert keys['local-b'][1] == keys['local-b'][0]
+    assert keys['local-a'][0] != keys['local-b'][0]  # children of two workspaces never share one
+
+
+def test_workspace_container_key_is_idempotent_and_lazy_setup_creates_the_sessions_own(home, tmp_path, monkeypatch):
+    # Review probe (@kshitijk4poor W2, @dokterdok 2): get_active_env(effective) -> the profile container.
+    from tools import terminal_tool, terminal_tool_lifecycle
+    from tools.terminal_tool import _resolve_container_task_id
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    other = object()
+    created = []
+    monkeypatch.setattr(terminal_tool_lifecycle, '_create_configured_env',
+                        lambda *a, **kw: created.append(kw['task_id']) or object())
+    monkeypatch.setattr(terminal_tool, '_start_cleanup_thread', lambda: None)
+    saved = dict(terminal_tool._active_environments)
+    terminal_tool._active_environments['default'] = other  # a messaging/cron turn's profile container
+    try:
+        with _turn(_policy(home, ws1, persistent=True), 'local-a'):
+            eff = _resolve_container_task_id('local-a')
+            assert ':ws:' in eff and _resolve_container_task_id(eff) == eff
+            assert terminal_tool_lifecycle.get_active_env(eff) is not other
+            env = terminal_tool_lifecycle.ensure_task_env('local-a')
+            assert created == [eff] and env is not other
+            assert terminal_tool_lifecycle.get_active_env('local-a') is env
+    finally:
+        for key in [k for k in terminal_tool._active_environments if k not in saved]:
+            terminal_tool._active_environments.pop(key, None)
+        terminal_tool._active_environments.update(saved)
