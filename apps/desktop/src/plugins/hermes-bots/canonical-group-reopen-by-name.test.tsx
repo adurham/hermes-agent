@@ -103,7 +103,7 @@ it('adopts the existing gateway room by name instead of minting a fork', async (
 
 it('adopts a restored canonical tab key whose binding was lost with the restart', async () => {
   gateway(() => ({ rooms: [original], next_offset: null }))
-  await act(async () => { render(<GroupChatWorkspace group="canonical:local:default:room-original" members={[]} />) })
+  await act(async () => { render(<GroupChatWorkspace group="canonical:local:default:room-original" members={[]} origin="key" />) })
   expect(methods()).not.toContain('groups.create')
   expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[2]).toMatchObject({ room_id: 'room-original' })
 })
@@ -186,6 +186,27 @@ it('a late lookup from a superseded connection does not publish its room', async
   expect(screen.getByRole('button', { name: 'Start gateway group' })).toBeTruthy()
 })
 
+// Review on #140972 (F4): a room NAME spelled like another connection's key
+// must resolve as a name on the current source, never open that room.
+it('a roster name shaped like a canonical key resolves on the current connection, not the one it spells', async () => {
+  routedGateway(route => ({ rooms: route.connectionId === 'remote' ? [{ room_id: 'room-b', name: 'canonical:local:default:room-original', members }] : [original], next_offset: null }))
+  state.connectionId.set('remote')
+  await act(async () => { render(<GroupChatWorkspace group="canonical:local:default:room-original" members={roster} />) })
+  const lists = request.mock.calls.filter(call => call[1] === 'groups.list')
+  expect(lists.map(call => call[0]?.connectionId)).toEqual(['remote'])
+  const states = request.mock.calls.filter(call => call[1] === 'groups.state')
+  expect(states.map(call => [call[0]?.connectionId, call[2]?.room_id])).toEqual([['remote', 'room-b']])
+})
+
+it('a main-format key restored from a tab minted before this change still opens its room', async () => {
+  routedGateway(route => ({ rooms: [roomOn(route)], next_offset: null }))
+  state.connectionId.set('remote')
+  await act(async () => { render(<GroupChatWorkspace group="canonical:local:default:room-original" members={[]} origin="key" />) })
+  expect(methods()).not.toContain('groups.create')
+  const states = request.mock.calls.filter(call => call[1] === 'groups.state')
+  expect(states.map(call => [call[0]?.connectionId, call[2]?.room_id])).toEqual([['local', 'room-original']])
+})
+
 it('renders the lookup states and Retry from the active catalog, not hardcoded English', async () => {
   catalog.patch = t => ({
     ...t,
@@ -195,7 +216,7 @@ it('renders the lookup states and Retry from the active catalog, not hardcoded E
   let releaseList: (value: unknown) => void = () => undefined
   let fail = true
   gateway(() => fail ? Promise.reject(new Error('down')) : new Promise(resolve => { releaseList = resolve }))
-  await act(async () => { render(<GroupChatWorkspace group="canonical:local:default:gone" members={[]} />) })
+  await act(async () => { render(<GroupChatWorkspace group="canonical:local:default:gone" members={[]} origin="key" />) })
   expect(screen.getByText('T:lookupFailed')).toBeTruthy()
 
   fail = false

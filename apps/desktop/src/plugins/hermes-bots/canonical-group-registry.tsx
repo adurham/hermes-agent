@@ -14,7 +14,22 @@ export function registerCanonicalGroup(route: CanonicalGroupRoute, room: Canonic
   return key
 }
 
-/** The route a `canonical:<connection>:<profile>:<room_id>` key was minted on, or null for a name. */
+/** Where a group string entered. Room and group names are free text (hosted_rooms
+ *  has no pattern), so a name can spell `canonical:<conn>:<profile>:<room>`
+ *  exactly; the string alone cannot tell the two apart, the caller can.
+ *  - 'key': minted by `registerCanonicalGroup`, or a persisted/restored tab
+ *    string. Parsed as main always parsed it, so pre-existing keys keep opening.
+ *  - 'name': a user-typed group name, a room record's name, a roster row. Never
+ *    parsed: it resolves only through the alias for the current source. */
+export type CanonicalGroupOrigin = 'key' | 'name'
+
+/** The route `group` names when it is a key: null for a name, whatever its shape. */
+export function canonicalGroupKeyRoute(group: string, origin: CanonicalGroupOrigin): ReturnType<typeof parseCanonicalGroupKey> {
+  return origin === 'name' ? null : parseCanonicalGroupKey(group)
+}
+
+/** The route a `canonical:<connection>:<profile>:<room_id>` key was minted on, or null for a name.
+ *  Format-only: callers holding a possible NAME go through `canonicalGroupKeyRoute`. */
 export function parseCanonicalGroupKey(key: string): (CanonicalGroupRoute & { roomId: string }) | null {
   const match = /^canonical:([^:]*):([^:]*):(.+)$/.exec(key)
 
@@ -39,9 +54,10 @@ export function canonicalGroupAliasKey(route: CanonicalGroupRoute, group: string
 export function canonicalGroupBindingFor(
   bindings: Record<string, CanonicalGroupBinding>,
   route: CanonicalGroupRoute,
-  group: string
+  group: string,
+  origin: CanonicalGroupOrigin
 ): CanonicalGroupBinding | undefined {
-  return parseCanonicalGroupKey(group) ? bindings[group] : bindings[canonicalGroupAliasKey(route, group)]
+  return canonicalGroupKeyRoute(group, origin) ? bindings[group] : bindings[canonicalGroupAliasKey(route, group)]
 }
 
 /** #140805: bindings live in memory, so after a restart a group opened by name
@@ -54,9 +70,10 @@ export function canonicalGroupBindingFor(
  *  recently updated room (list order). */
 export async function resolveCanonicalGroup(
   route: CanonicalGroupRoute,
-  group: string
+  group: string,
+  origin: CanonicalGroupOrigin
 ): Promise<{ authority: CanonicalGroupRoute; room: CanonicalRoom } | null> {
-  const parsed = parseCanonicalGroupKey(group)
+  const parsed = canonicalGroupKeyRoute(group, origin)
   const authority = parsed ? { connectionId: parsed.connectionId, profile: parsed.profile } : route
   const { rooms } = await discoverCanonicalGroups(authority)
   const room = parsed ? rooms.find(r => r.room_id === parsed.roomId) : rooms.find(r => r.name === group)
@@ -69,17 +86,18 @@ export async function resolveCanonicalGroup(
 export function publishCanonicalGroup(
   route: CanonicalGroupRoute,
   group: string,
-  resolved: { authority: CanonicalGroupRoute; room: CanonicalRoom }
+  resolved: { authority: CanonicalGroupRoute; room: CanonicalRoom },
+  origin: CanonicalGroupOrigin
 ): void {
   const key = registerCanonicalGroup(resolved.authority, resolved.room)
 
-  if (key === group) {return}
+  if (origin === 'key' && key === group) {return}
   const binding = { ...resolved.authority, roomId: resolved.room.room_id, roomName: resolved.room.name }
-  const alias = parseCanonicalGroupKey(group) ? group : canonicalGroupAliasKey(route, group)
+  const alias = canonicalGroupKeyRoute(group, origin) ? group : canonicalGroupAliasKey(route, group)
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [alias]: binding })
 }
 
-export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }) {
+export function CanonicalGroupList({ onOpen }: { onOpen: (key: string, origin: CanonicalGroupOrigin) => void }) {
   const labels = useCanonicalGroupLabels()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
@@ -103,6 +121,6 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
   return <div className="grid gap-1 px-2">
     <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
     {error && <p role="alert">{error}</p>}
-    {rooms.map(room => <Button key={room.key} onClick={() => onOpen(room.key)} variant="ghost">{room.name}</Button>)}
+    {rooms.map(room => <Button key={room.key} onClick={() => onOpen(room.key, 'key')} variant="ghost">{room.name}</Button>)}
   </div>
 }
