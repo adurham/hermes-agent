@@ -2834,3 +2834,13 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   green; real-process old-vs-new check (plain timeout + grandchild holding the pipes) returns an
   identical `(124, "", …)` in ~1s. Pre-existing ruff RUF100 on main at `agent/turn_truncation.py:572`
   left alone (outside this unit) (branch `claude/fix-buzz-adapter-timeout-5jwcvt`).
+- 2026-10-18 — C-1079 `tui_gateway/contracts/registry.py` (profile): HX005×1 → 0 (file hits 2 → 0;
+  the HX010 on the same line goes with it). The import-time `STRICT =
+  bool(os.environ.get("HERMES_TEST_ISOLATION"))` constant is gone; `_report` reads the marker when a
+  violation is reported (same truthiness: set and non-empty raises `ContractViolation`, else logs).
+  `STRICT` had no other readers; no sibling instances in the file. FILE_LINES 173 → 172. New
+  `tests/tui_gateway/contracts/test_registry_strict_mode.py` (2 tests; the marker-removed one red on
+  main); the 4 queue-row test files + `test_turn_payload_response_transformed.py` 27/27. `scripts/check`:
+  health ok, 11/12 — ruff fails on clean main too (RUF100 unused `noqa` at
+  `agent/turn_truncation.py:572`, from f21f8ad2; not this unit). Branch
+  `claude/fix-c1079-registry-profile-tcw38d`.
