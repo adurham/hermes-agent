@@ -82,18 +82,12 @@ def _ensure_croniter() -> bool:
 # `~/.hermes/profiles/coder/cron/jobs.json` and executes with `coder`'s `.env`, `config.yaml`, and skills.
 # Do NOT change this to the default root: that re-breaks per-profile isolation. See also the dynamic
 # `_get_hermes_home()` / `_get_lock_paths()` resolution in cron/scheduler.py. See #4707.
-HERMES_DIR = get_hermes_home().resolve()
-# Default-profile fallback and compatibility surface for callers/tests. Cross-profile callers must
-# scope paths with use_cron_store() instead of mutating these process-wide.
-CRON_DIR = HERMES_DIR / "cron"
-JOBS_FILE = CRON_DIR / "jobs.json"
-# Heartbeat: touched every ticker loop so `hermes cron status` can tell the ticker THREAD is alive,
-# not just the gateway PROCESS; success = last tick that completed WITHOUT raising.
-# The gateway process and the (separate) ``hermes cron status`` process share it so status can tell whether
-# the ticker THREAD is alive, not just whether the gateway PROCESS exists — a ticker that dies silently
-# inside a live gateway would otherwise report healthy (#32612, #32895).
-TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
-TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
+# The home is resolved per call in _current_cron_store(): one process serves many profiles, so an
+# import-time capture would pin every profile to the launch profile's store.
+# Escape hatch for tests/embedders: None follows the active profile; setting a path re-points the
+# store process-wide. Cross-profile callers must scope paths with use_cron_store() instead.
+CRON_DIR: Optional[Path] = None
+JOBS_FILE: Optional[Path] = None
 # Single source of truth for the ticker interval (scheduler_provider.py) and the staleness
 # threshold in `hermes cron status` (hermes_cli/cron.py), so they never drift apart.
 TICKER_INTERVAL_SECONDS = 60
@@ -110,7 +104,7 @@ _fire_fence_lock_state = threading.local()
 # _jobs_lock(), so blocking forever on a wedged sibling process would freeze the ticker and every
 # job. 30s is far above any legitimate critical section yet under one status-alarm threshold.
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
-OUTPUT_DIR = CRON_DIR / "output"
+OUTPUT_DIR: Optional[Path] = None
 ONESHOT_GRACE_SECONDS = 120
 
 
@@ -160,26 +154,16 @@ def self_removal_delivery_allowed(job_id: str) -> bool:
         return False
     return all(item.get("id") != job_id for item in load_jobs())
 
-# Import-time snapshot so deliberate re-pointing of CRON_DIR/JOBS_FILE/OUTPUT_DIR (the documented
-# escape hatch for tests/embedders) is distinguishable from the constants merely being stale.
-_IMPORT_STORE = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
-
-
 def _current_cron_store() -> _CronStorePaths:
     """Paths pinned to this execution context's profile. Precedence: (1) active use_cron_store()
-    override; (2) deliberately re-pointed module constants; (3) the ACTIVE profile home via
-    get_hermes_home(), so re-pointing HERMES_HOME after import uses ITS OWN store rather than the
-    user's real jobs.json frozen at import; (4) import-time constants."""
+    override; (2) re-pointed module constants, each one that is set; (3) the ACTIVE profile home
+    via get_hermes_home(), so re-pointing HERMES_HOME after import uses ITS OWN store."""
     override = _cron_store_override.get()
     if override is not None:
         return override
-    live_constants = _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
-    if live_constants != _IMPORT_STORE:
-        return live_constants
-    home = get_hermes_home().resolve()
-    if home == HERMES_DIR:
-        return live_constants
-    return _CronStorePaths.for_dir(home / "cron")
+    home_store = _CronStorePaths.for_dir(get_hermes_home().resolve() / "cron")
+    return _CronStorePaths(CRON_DIR or home_store.cron_dir, JOBS_FILE or home_store.jobs_file,
+                           OUTPUT_DIR or home_store.output_dir)
 
 
 @contextlib.contextmanager

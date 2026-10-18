@@ -16,7 +16,6 @@ leaking config/credentials/skills across profiles, the security boundary #4707
 was filed for. These tests pin per-profile isolation so a stale-branch merge or
 a re-anchor "fix" can't silently flip it back.
 """
-import importlib
 from pathlib import Path
 
 
@@ -46,24 +45,14 @@ def test_cron_storage_anchors_at_profile_home(tmp_path, monkeypatch):
     assert hermes_constants.get_hermes_home().resolve() == profile_home.resolve()
     assert hermes_constants.get_default_hermes_root().resolve() == root.resolve()
 
-    # cron/jobs.py computes HERMES_DIR from get_hermes_home() at import, so a
-    # fresh import under this env anchors the store at <profile>/cron.
+    # cron/jobs.py resolves the store from get_hermes_home() at call time, so
+    # the active profile anchors it at <profile>/cron.
     from cron import jobs
 
-    importlib.reload(jobs)
-    try:
-        assert jobs.HERMES_DIR.resolve() == profile_home.resolve()
-        assert (
-            jobs.JOBS_FILE.resolve()
-            == (profile_home / "cron" / "jobs.json").resolve()
-        )
-        # The shared-root path must NOT be the store — that would re-break
-        # per-profile isolation (#4707).
-        assert (
-            jobs.JOBS_FILE.resolve() != (root / "cron" / "jobs.json").resolve()
-        )
-    finally:
-        monkeypatch.undo()
-        importlib.reload(jobs)
+    jobs_file = jobs._current_cron_store().jobs_file
+    assert jobs_file == (profile_home / "cron" / "jobs.json").resolve()
+    # The shared-root path must NOT be the store — that would re-break
+    # per-profile isolation (#4707).
+    assert jobs_file != (root / "cron" / "jobs.json").resolve()
 
 

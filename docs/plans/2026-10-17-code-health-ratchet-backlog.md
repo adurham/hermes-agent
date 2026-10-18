@@ -2648,3 +2648,17 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   dingtalk-referencing test files 394 passed, 5 failed — the same 5 Matrix/Mattermost failures in
   `test_multiplex_endpoint_identity_scope.py` / `test_send_message_missing_platforms.py` on clean main.
   Branch `claude/c-1059-dingtalk-adapter-async-kcm9zh`.
+- 2026-10-18 — C-1076 `cron/jobs.py` profile HX005×1 → 0 (file hits 17 → 16; the BLE001×15 + S110×1 swallow hits untouched): dropped the
+  import-time `HERMES_DIR = get_hermes_home().resolve()` and the `_IMPORT_STORE` snapshot built on it;
+  `CRON_DIR`/`JOBS_FILE`/`OUTPUT_DIR` now default to `None` (= follow the active profile; set = re-point,
+  the `cron/executions.py::EXECUTIONS_FILE` idiom) and `_current_cron_store()` resolves the home per
+  call, filling each unset path from it. Unpatched and fully re-pointed stores resolve exactly as
+  before. Fixed sibling instances of the class: a partial re-point (e.g. only `CRON_DIR`) used to send
+  the unset paths to the import-time home (a real jobs.json); `hermes_cli/cron.py::_scripts_dir_for_cron`
+  read the import-time `CRON_DIR` (the cron doctor's script check ignored the active profile); dead
+  `TICKER_HEARTBEAT_FILE`/`TICKER_SUCCESS_FILE` (markers already go through the store) removed.
+  New `tests/cron/test_cron_store_call_time_resolution.py` (2 tests, both red on main); 15 test files
+  dropped their no-op `HERMES_DIR` patch, 2 snapshot tests restated on call-time resolution.
+  tests/cron + the unit's listed files: 1576 passed, 0 failed; 44 more cron-referencing files 951
+  passed (`test_webhook_cron_trigger.py` needs aiohttp, absent here). Branch
+  `claude/fix-c1076-timeout-jobs-yrjv0z`.
