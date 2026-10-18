@@ -2606,3 +2606,8 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   change). FILE_LINES 2,820 → 2,819 (two docstring and two call repacks in `ConnectionManager`).
   New `tests/gateway/test_yuanbao_reconnect_task.py` (logging test red on main); 25
   yuanbao-referencing test files 362 passed. Branch `claude/yuanbao-async-ratchet-tcjium`.
+- 2026-10-18 — C-0008 `hermes_cli/web_server_chat.py` F811×1 → 0: removed the second
+  `from typing import Optional` (line 21, a duplicate of line 17 left by the module extraction);
+  both bound the same `typing.Optional`, so nothing changes at runtime. No other F811 (or F821/F841)
+  in the file; the swallow-family hits untouched. 12 test files: 338 passed, 0 failed, 25 skipped.
+  `python scripts/check` green, 12 checks. Branch `claude/fix-web-server-chat-f811-xzn9nf`. Next: C-0009.
