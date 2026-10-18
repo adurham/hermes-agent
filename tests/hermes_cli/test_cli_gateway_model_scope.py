@@ -320,3 +320,69 @@ def test_once_reasoning_equal_to_the_inherited_level_commits_nothing(monkeypatch
     _commit_model_switch(stub, result, persist_global=False, one_turn=True, reasoning_effort="high")
     cli.HermesCLI._restore_model_runtime_snapshot(stub, stub._pending_one_turn_model_restore)
     assert _reasoning_mutates(conn) == []
+
+
+class BusyOnceConnection(RecordingConnection):
+    """The owner refuses the first ``prompt.submit`` with ``session_busy``: nothing was admitted."""
+
+    def __init__(self, info):
+        super().__init__(info)
+        self.refused = False
+
+    def call(self, method, *, timeout=None, **params):
+        if method == "prompt.submit" and not self.refused:
+            from hermes_cli.gateway_client import GatewayRPCError
+            self.refused = True
+            self.calls.append((method, params))
+            raise GatewayRPCError("session_busy")
+        return super().call(method, timeout=timeout, **params)
+
+
+def test_a_once_pick_refused_as_session_busy_rides_the_resend(monkeypatch):
+    """Review of #140969: the submit's ``finally`` cleared the pick even when the owner refused it with
+    ``session_busy`` (nothing admitted), and the CLI restored its route, so the resend ran on the session
+    model."""
+    conn = BusyOnceConnection({"model": "old/model", "provider": "openrouter"})
+    cli_mod, stub, _printed = _chat_cli(monkeypatch, conn)
+    cli_mod.HermesCLI._handle_model_switch(stub, "/model claude-sonnet-4.6 --provider anthropic --once")
+    stub.chat("refused")
+    assert stub.chat("the resend") == "ok"
+    assert stub.chat("the turn after") == "ok"
+    refused, resend, after = _submits(conn)
+    pick = {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+    assert refused.get("model_override") == pick
+    assert resend.get("model_override") == pick, resend
+    assert "model_override" not in after, after
+    assert (stub.model, stub.agent.model) == ("old/model", "old/model")
+
+
+def test_the_once_pick_is_taken_when_the_admission_is_built(monkeypatch):
+    """dokterdok on #140969: consume the pick when the params are built, not in the call's ``finally``, so
+    a second ``run_conversation`` submitting while the first ``prompt.submit`` is still blocked cannot carry
+    it too."""
+    seen = []
+
+    class Watching(RecordingConnection):
+        def call(self, method, *, timeout=None, **params):
+            if method == "prompt.submit":
+                seen.append(agent._turn_route)  # the first submit is "blocked" here
+            return super().call(method, timeout=timeout, **params)
+
+    conn = Watching({"model": "old/model", "provider": "openrouter"})
+    agent = _agent(conn, model="claude-sonnet-4.6", provider="anthropic", one_turn=True)
+    assert agent._turn_route
+    agent.run_conversation("the once turn")
+    assert seen == [None]
+    assert _submits(conn)[0]["model_override"] == {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+
+
+def test_an_image_staging_failure_is_a_failed_turn_not_an_exception():
+    """dokterdok on #140969: ``_submit_params`` stages images over the gateway (``image.attach_bytes``); it
+    moved out of the ``try``, so a lost connection while staging raised out of ``run_conversation``."""
+    conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})  # attach_bytes is unsupported
+    agent = _agent(conn, model="old/model", provider="openrouter")
+    parts = [{"type": "text", "text": "what is this"},
+             {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}}]
+    result = agent.run_conversation(parts)
+    assert (result.get("failed"), result.get("failure_reason")) == (True, "gateway_connection"), result
+    assert not _submits(conn)

@@ -174,6 +174,7 @@ class GatewayAgent:
         # ``/model --once``: chat retires the agent that switch_model touched and builds this one.
         # Capture the pick before ``_apply_info`` copies the session model over it.
         self._turn_route = self._route_off_session(model, provider) if one_turn else None
+        self._taken_turn_route = None  # the pick the admission being sent took (``_take_turn_route``)
         # ``/model B --once --reasoning X``: X rides that admission's ``model_override``, never a session pin.
         self._turn_reasoning = one_turn_reasoning if one_turn else None
         self._apply_info(self._state().info)
@@ -599,17 +600,31 @@ class GatewayAgent:
             # Main's batch panel answers the clarify tool's whole question set (one ``clarify`` request).
             params["clarify_batch"] = True
         info = self._state().info or {}
-        pending = self._turn_route
-        if pending and self._route_off_session(**pending):
+        pending = self._take_turn_route()
+        if pending:
             # /model --once: this admission alone runs the pick. The session row stays put.
-            params["model_override"] = dict(pending)
-            if self._turn_reasoning:
-                params["model_override"]["reasoning"] = self._turn_reasoning
+            params["model_override"] = pending
         elif self._moa_preset and (info.get("provider"), info.get("model")) != ("moa", self._moa_preset):
             # /moa one-shot: this admission alone runs the preset (unless it is the session's own
             # route); the session's route is untouched.
             params["model_override"] = {"model": self._moa_preset, "provider": "moa"}
         return params
+
+    def _take_turn_route(self):
+        """The ``/model --once`` pick for the admission being built, consumed here: one admission carries
+        it, even when a later ``run_conversation`` submits while this one's ``prompt.submit`` still blocks.
+        A refusal that admitted nothing (``session_busy``) puts it back with ``_give_back_turn_route``."""
+        pending, reasoning = self._turn_route, self._turn_reasoning
+        self._turn_route = self._turn_reasoning = self._taken_turn_route = None
+        if not pending or not self._route_off_session(**pending):
+            return None
+        self._taken_turn_route = (pending, reasoning)
+        return {**pending, **({"reasoning": reasoning} if reasoning else {})}
+
+    def _give_back_turn_route(self):
+        taken, self._taken_turn_route = getattr(self, "_taken_turn_route", None), None
+        if taken and self._turn_route is None:
+            self._turn_route, self._turn_reasoning = taken
 
     def _stage_content_parts(self, parts):
         """``[{type: text}, {type: image_url, image_url: {url: data:...}}]`` -> (text, attachments): each
@@ -647,22 +662,23 @@ class GatewayAgent:
             receipt = adopted
         else:
             self._drain_stale()
-            params = self._submit_params(user_message, persist_user_message, turn_author)
+            self._taken_turn_route = None
             try:
-                receipt = self.connection.call("prompt.submit", **params)
+                # Inside the try: staging an image is a gateway call, and its failure is a failed turn.
+                # Building the params consumes a ``/model --once`` pick (``_take_turn_route``).
+                receipt = self.connection.call("prompt.submit", **self._submit_params(
+                    user_message, persist_user_message, turn_author))
             except GatewayRPCError as exc:
                 # The owner answered and refused: not a lost connection. Only its own site code
                 # (session_busy: send again) is a verdict; any other refusal stays unclassified.
                 busy = str(exc) == "session_busy"
+                if busy:
+                    # Nothing was admitted: the resend carries the pick (the CLI keeps its restore).
+                    self._give_back_turn_route()
                 return self._failed(history, user_message, str(exc),
                                     failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:
                 return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
-            finally:
-                # One admission. A later submit on this agent, including a failed attempt's retry
-                # after the CLI restores, must not send the pick again.
-                if params.get("model_override") and self._turn_route:
-                    self._turn_route = None
         self._epoch = getattr(self.connection, "epoch", None)
         self._admission = (receipt or {}).get("admission_id")
         if receipt and receipt.get("execution_generation") is not None:
