@@ -21338,3 +21338,18 @@ config still depends on. Commit fork fixes on the main checkout, push, and pull 
 **Effect (macOS, in-tree venv):** `test_update_target_identity` 31→1, `test_update_products` 12→0, `test_update_completion_process` 8→0, `test_update_autostash` 8→0, `test_update_parked_branch_guard` 7→0, `test_update_channel` 3→0. Remaining failures in those files are separate causes (fleet-restart fixture repo, desktop build lock, sessions gate, web-profile unification).
 
 **Upstreamable:** yes — any developer running the suite in-tree hits this.
+
+## 2026-10-17 — Cloud async-ratchet batch merged (buzz, simplex, Signal, @-references)
+
+Four `claude/*` cloud-agent branches (pushed 2026-10-17 19:26-19:29Z, none opened a PR) are merged into `main`. All four are the same unit family: blocking filesystem calls moved off the event loop (`Path.expanduser/is_file/exists/stat/resolve` -> `asyncio.to_thread`; `get_event_loop()` -> `get_running_loop()`), so a slow or hung mount can no longer stall the gateway loop.
+
+- `claude/buzz-adapter-async-fixes-fn9jmb` — `plugins/platforms/buzz/adapter.py` (send_image_url, file attachment, send_image_file probes).
+- `claude/c1053-async-adapter-ratchet-5o50p4` — `plugins/platforms/simplex/adapter.py` (pending future; image/document/voice existence checks).
+- `claude/code-health-ratchet-c0017-uea4i3` — `gateway/platforms/signal.py` (`_existing_file_size` helper; attachment stat off-loop).
+- `claude/fix-context-references-async-e59xwr` — `agent/context_references.py` (`_expand_and_resolve` off-loop).
+
+**Conflict:** each branch added rows to `docs/plans/2026-10-17-code-health-ratchet-backlog.md`; main's copy was kept (the campaign doc is maintained there).
+
+**Tests (single-file, macOS in-tree venv):** `tests/agent/test_context_references.py` 31 passed / 1 skipped; `tests/tools/test_signal_media.py` 1 passed.
+
+**Upstreamable:** yes — same async-offload family as the ratchet campaign.
