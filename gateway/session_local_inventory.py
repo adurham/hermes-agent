@@ -227,7 +227,8 @@ def publish_settled_info(turn, agent) -> None:
 
     A ``model_override`` admission (``/model --once``, ``/moa``) built its agent on the one-turn
     route. That agent must not become the route Desktop, the TUI, and resume read. Drop it from
-    the cache and publish the policy model and provider."""
+    the cache (released once this turn's running slot clears) and publish the policy model and
+    provider."""
     if agent is None:
         return
     with contextlib.suppress(Exception):
@@ -245,7 +246,7 @@ def publish_settled_info(turn, agent) -> None:
             evict = getattr(getattr(turn, "_runner", None), "_evict_cached_agent", None)
             if live is not None and callable(evict):
                 try:
-                    evict(live.route)
+                    evict(live.route, release_after_turn=True)
                 except Exception:
                     logger.debug("one-turn agent cache drop failed", exc_info=True)
         ref = SessionRef(authority.profile_id, session_id)
