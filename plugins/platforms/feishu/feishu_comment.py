@@ -574,6 +574,16 @@ async def _local_comment_prompt(client: Any, comment_id: str, reply_id: str, fro
                                       target_index=target_index, referenced_docs=await _referenced_docs_text(client, replies, file_token), **doc)
 
 
+# The fire-and-forget OK-reaction add: the loop holds tasks only weakly, so keep each one until done.
+_reaction_tasks: set[asyncio.Future] = set()
+
+
+def _reap_reaction_task(task: asyncio.Future) -> None:
+    _reaction_tasks.discard(task)
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        logger.warning("[Feishu-Comment] Adding the OK reaction failed", exc_info=exc)
+
+
 async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: str = "") -> None:
     """Full orchestration for a drive comment event. Parse + filter (self-reply, receiver, notice_type) -> access rules -> OK reaction -> parallel fetch (doc meta +
     comment) -> build timeline/prompt by is_whole -> run agent -> deliver reply -> remove OK reaction."""
@@ -596,7 +606,7 @@ async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: st
     # Access control. Wiki-hosted docs report their underlying obj token, so when no exact rule
     # matched and the config has wiki: keys, reverse-lookup the wiki node.
     from plugins.platforms.feishu.feishu_comment_rules import load_config, resolve_rule, is_user_allowed, has_wiki_keys
-    comments_cfg = load_config()
+    comments_cfg = await asyncio.to_thread(load_config)  # disk read; to_thread keeps the profile scope
     rule = resolve_rule(comments_cfg, file_type, file_token)
     if rule.match_source in {"wildcard", "top"} and has_wiki_keys(comments_cfg) and (wiki_token := await _reverse_lookup_wiki_token(client, file_type, file_token)):
         rule = resolve_rule(comments_cfg, file_type, file_token, wiki_token=wiki_token)
@@ -607,7 +617,9 @@ async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: st
     logger.info("[Feishu-Comment] Access granted: user=%s policy=%s rule=%s", from_open_id, rule.policy, rule.match_source)
     reaction_kwargs = dict(file_token=file_token, file_type=file_type, reply_id=reply_id, reaction_type="OK")
     if reply_id:
-        asyncio.ensure_future(update_comment_reaction(client, "add", **reaction_kwargs))
+        reaction_task = asyncio.ensure_future(update_comment_reaction(client, "add", **reaction_kwargs))
+        _reaction_tasks.add(reaction_task)
+        reaction_task.add_done_callback(_reap_reaction_task)
     logger.info("[Feishu-Comment] [Step 2/5] Parallel fetch: doc meta + comment batch_query")
     doc_meta, comment_detail = await asyncio.gather(asyncio.ensure_future(query_document_meta(client, file_token, file_type)),
                                                     asyncio.ensure_future(batch_query_comment(client, file_token, file_type, comment_id)))
