@@ -317,6 +317,45 @@ async def test_an_explicit_parked_profile_prefix_is_retried_even_when_a_route_po
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('target', ['standalone', 'unknown'])
+async def test_a_coalesced_bare_route_to_an_unserved_profile_is_refused_like_the_immediate_one(
+        tmp_path, monkeypatch, target):
+    """A ``profile_routes`` rule sending a bare route to a profile this gateway does not serve and
+    has not parked (``standalone: true``, or no such profile) is refused by admission for good. The
+    coalesced route must give the immediate route's answer before its delivery id is recorded, not
+    ``202 coalesced`` followed by a flush that drops the event (providers never resend a 202)."""
+    from gateway.platforms.webhook import _INSECURE_NO_AUTH
+    from gateway.profile_routing import ProfileRoute
+    homes = _homes(tmp_path, monkeypatch)
+    root, beta = homes[0][1].resolve(), homes[1][1].resolve()
+    name = 'gamma' if target == 'standalone' else 'ghost'
+    if target == 'standalone':
+        gamma = root / 'profiles' / 'gamma'
+        gamma.mkdir(parents=True, mode=0o700)
+        (gamma / 'config.yaml').write_text('gateway:\n  standalone: true\n')
+    runner = await _runner_with_beta_parked(tmp_path, monkeypatch, homes, profile_routes=[
+        ProfileRoute(name=f'{route}-to-{name}', platform='webhook', profile=name, user_id=f'webhook:{route}')
+        for route in ('events', 'events_now')])
+    await _serve_beta_again(runner, beta)
+    adapter = _webhook(runner, {
+        'events': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}', 'coalesce': {'key': 'id', 'window_seconds': 0.05}},
+        'events_now': {'secret': _INSECURE_NO_AUTH, 'prompt': 'event {id}'}})
+    settled = lambda: not adapter._coalescer.pending and not adapter._background_tasks
+    try:
+        immediate = await adapter._handle_webhook(_webhook_request('delivery-1', {'id': 17}, 'events_now', None))
+        coalesced = await adapter._handle_webhook(_webhook_request('delivery-2', {'id': 18}, 'events', None))
+        await async_wait_until(settled, what='nothing left to flush')
+        assert immediate.status == 503, (immediate.status, immediate.text)
+        assert (coalesced.status, json.loads(coalesced.text)) == (immediate.status, json.loads(immediate.text)), \
+            (coalesced.status, coalesced.text)
+        assert adapter._seen_deliveries == {}, 'the refused delivery id was recorded'
+        assert _admissions(root) + _admissions(beta) == 0
+    finally:
+        _cancel(adapter)
+        _close(runner, homes)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['deliver_only', 'cron_job'])
 async def test_a_non_durable_webhook_for_a_parked_profile_is_refused_before_its_id_is_recorded(
         tmp_path, monkeypatch, mode):
