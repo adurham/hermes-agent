@@ -374,8 +374,9 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
                 strip(session_ids)
             except Exception:
                 logger.warning('could not strip retired routes from sessions.json', exc_info=True)
-    from gateway.session_policy import release_launch_secrets
+    from gateway.session_policy import release_launch_secrets, release_session_workspaces
     release_launch_secrets(authority, session_ids)
+    release_session_workspaces(authority, session_ids)
     from tools.async_delegation import allow_for_session
     for sid in session_ids:
         # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.

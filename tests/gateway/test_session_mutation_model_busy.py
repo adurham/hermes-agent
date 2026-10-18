@@ -462,3 +462,42 @@ async def test_a_reasoning_command_during_a_running_turn_is_committed_for_the_ne
         release.set()
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('conflicts', [1, 99], ids=['moved-once', 'keeps-moving'])
+async def test_a_reasoning_command_raced_by_another_mutation_is_not_refused(tmp_path, monkeypatch, conflicts):
+    """Review of #140969: ``/reasoning high`` on an idle session whose fence another viewer's mutation just
+    moved (``revision_conflict``) failed the command, where main always applied it. The fence moving is not
+    a verdict on this command: it re-reads the fences and commits; a fence that keeps moving defers it to the
+    next boundary like a busy session."""
+    from gateway import session_mutations
+    from gateway.session_policy import policy_for_source
+    from hermes_state_runtime import RuntimeStoreError
+
+    async def handle(event):
+        return 'ok'
+    monkeypatch.chdir(tmp_path)
+    store, _db, authority, owner, ref = _owner(tmp_path, monkeypatch, handle)
+    authority.runner._set_session_reasoning_override = lambda *a: None
+    authority.runner._apply_reasoning_selection = lambda *a, **k: 'ok'
+    real, raced = session_mutations.mutate_session, []
+
+    async def racing(authority_, actor, ref_, params, *a, **k):
+        if params.get('operation') == 'reasoning' and len(raced) < conflicts:
+            raced.append(params['expected_revision'])
+            raise RuntimeStoreError('revision_conflict')
+        return await real(authority_, actor, ref_, params, *a, **k)
+    monkeypatch.setattr(session_mutations, 'mutate_session', racing)
+    try:
+        reply = await owner.dispatch({'id': 1, 'method': 'config.set', 'params': {
+            'session_id': ref.session_id, 'key': 'reasoning', 'value': 'high', 'scope': 'session'}})
+        assert reply.get('result', {}).get('value') == 'high', reply
+        live = authority.sessions[ref.session_id]
+        if conflicts == 1:
+            assert (policy_for_source(authority.runner, live.source).reasoning_config or {}).get('effort') == 'high'
+        else:
+            assert live.pending_reasoning == (owner.actor.subject, 'high')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

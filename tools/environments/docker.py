@@ -50,6 +50,11 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
 _ENVIRONMENT_LABEL_KEY = "hermes-environment"
+# Stamped at create time on per-workspace persistent containers (task key ``<base>:ws:<digest>``)
+# with the digest as its value. The orphan reaper reads it to spare a container the idle reaper
+# stopped on purpose; ``hermes-task-id`` cannot serve, it is truncated to 63 chars.
+_WORKSPACE_LABEL_KEY = "hermes-workspace"
+_WORKSPACE_TASK_RE = re.compile(r":ws:([0-9a-f]{16})$")
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -207,6 +212,8 @@ def reap_orphan_containers(
         if age < max_age_seconds:
             continue
         strip_sandbox_privileges(docker, cid)  # its teardown never ran; owners stay (it may restart)
+        if _is_idle_workspace_container(docker, cid):
+            continue
         # No -f: a sibling may have restarted the container between the ps snapshot
         # and now (FinishedAt still reports the previous exit), and the daemon refuses
         # a plain rm on a running container, which is the atomic recheck this sweep needs.
@@ -220,6 +227,20 @@ def reap_orphan_containers(
         else:
             logger.debug("docker rm %s failed: %s", cid[:12], result.stderr.strip())
     return removed
+
+
+def _is_idle_workspace_container(docker_exe: str, container_id: str) -> bool:
+    """A persistent per-workspace container (task key ``<base>:ws:<digest>``, stamped with the
+    ``hermes-workspace=<digest>`` label at create time) that the idle reaper STOPPED on purpose
+    (``DockerEnvironment.stop_idle``): it is that workspace's sandbox, restarted on next use, not an
+    orphan. Reads the dedicated label, never the 63-char-truncated ``hermes-task-id``, whose
+    ``_ws_<digest>`` suffix a long profile name cuts. Unknown (inspect failed) reads as not one."""
+    result = _docker_query(
+        [docker_exe, "inspect", "--format", f'{{{{index .Config.Labels "{_WORKSPACE_LABEL_KEY}"}}}}', container_id],
+        timeout=10, fail="orphan reaper docker inspect %s failed: %s", fail_args=(container_id[:12],))
+    if result is None or result.returncode != 0:
+        return False
+    return re.fullmatch(r"[0-9a-f]{16}", result.stdout.strip()) is not None
 
 
 def _container_finished_at(docker_exe: str, container_id: str):
@@ -738,6 +759,8 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label}
+        if workspace := _WORKSPACE_TASK_RE.search(task_id or ""):
+            self._labels[_WORKSPACE_LABEL_KEY] = workspace.group(1)
         # Explicit sharing opts into the first creator's settings. Otherwise,
         # changed image/mount/home configuration must start a fresh container.
         if not shared_container_key:
@@ -1313,6 +1336,30 @@ class DockerEnvironment(BaseEnvironment):
         # once the container itself is removed.
         if not self._persistent:
             self._remove_bind_dirs()
+
+    def stop_idle(self) -> None:
+        """Idle reclaim of a per-workspace persistent container (#140665): ``docker stop``, never
+        ``rm``. Its writable layer and ``/root`` sandbox stay, and the next use in that workspace
+        re-attaches through :meth:`_attach_existing_container`, which ``docker start``s a stopped
+        container. Without this, persistent mode left one RUNNING container per workspace a user
+        ever opened (each with its own ``container_memory``) until the process exited. Like a
+        persist-mode cleanup, the host user may touch what it left before it is reattached, so its
+        sandbox privileges are stripped once it has stopped."""
+        container_id = self._container_id
+        if not container_id:
+            return
+        docker_exe, log_id = self._docker_exe, container_id[:12]
+
+        def _do_stop() -> None:
+            try:
+                subprocess.run([docker_exe, "stop", "-t", "10", container_id], capture_output=True,
+                               timeout=30, stdin=subprocess.DEVNULL, check=False)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logger.warning("docker stop %s (idle workspace) failed: %s", log_id, e)
+            strip_sandbox_privileges(docker_exe, container_id)
+
+        self._start_teardown(_do_stop, log_id)
+        self._container_id = None
 
     def _start_teardown(self, work, log_id: str) -> None:
         """Run *work* on a daemon thread the atexit drain joins."""
