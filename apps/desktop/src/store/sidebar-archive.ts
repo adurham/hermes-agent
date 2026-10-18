@@ -8,7 +8,11 @@ import type { SessionInfo } from '@/types/hermes'
 import { $sidebarShowArchived } from './layout'
 import { $sessions } from './session'
 
-const ARCHIVED_FETCH_PAGE_SIZE = 200
+// The backend's `/api/profiles/sessions` page cap (`le=500`). The Electron
+// merge path (remote profiles, registry gateways) answers every page by
+// re-reading the prefix through offset + limit, so fewer, larger pages keep a
+// deep archive from re-reading that prefix once per 200 rows.
+const ARCHIVED_FETCH_PAGE_SIZE = 500
 
 /**
  * Pages through `archived=only` until every archived row is loaded.
