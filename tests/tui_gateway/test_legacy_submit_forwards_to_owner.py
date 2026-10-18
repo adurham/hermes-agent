@@ -213,6 +213,76 @@ def test_an_unconfirmed_forward_is_never_reported_as_not_sent(monkeypatch, tmp_p
         db.close()
 
 
+def test_a_receipt_lost_after_the_owner_queued_it_is_unconfirmed_not_resendable(monkeypatch, tmp_path):
+    """The owner COMMITS the forwarded admission, then its socket drops before the receipt reaches
+    serve (a gateway restart mid-forward). The prompt sits in the owner's durable FIFO and survives
+    the restart, so "Nothing was sent. Send it again" would run a second copy: the answer is
+    SESSION_OWNER_UNCONFIRMED (check the chat, no Retry). Wire-level: a real loopback websockets
+    server runs the real ``AuthorityConnection``; the relay uses the real ``GatewayClient``."""
+    import json
+    from gateway.session_controls import AuthorityConnection
+    from hermes_cli.gateway_client import GatewayClient
+    from websockets.asyncio.client import connect
+    from websockets.asyncio.server import serve
+    from tui_gateway import owner_forward
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, turns, _emitted = _legacy(monkeypatch, db)
+    try:
+        db.create_session(key, "test")
+        epoch = begin_runtime_epoch(db, instance_id="gateway")
+        admit_session_input(db, epoch=epoch, principal_id="bot", session_id=key, request_id="dm-1",
+                            payload={"text": "a DM"})
+        claim_session_input(db, epoch=epoch, session_id=key)
+        authority = _owner(monkeypatch, db, key, epoch)
+        seen = []
+
+        @contextlib.asynccontextmanager
+        async def wire_owner(_home, _endpoint):
+            loop = asyncio.get_running_loop()
+
+            async def handler(ws):
+                class _Socket:
+                    def write(self, frame):
+                        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(ws.send(json.dumps(frame))))
+                        return True
+
+                    def close(self):
+                        return None
+                conn = AuthorityConnection(authority, _Socket(), {"user_id": "desktop"})
+                async for raw in ws:
+                    request = json.loads(raw)
+                    reply = await conn.dispatch(request)
+                    seen.append(request["method"])
+                    if request["method"] == "prompt.submit":
+                        await ws.close()  # the gateway restarts after the admission committed
+                        return
+                    await ws.send(json.dumps(reply))
+            async with serve(handler, "127.0.0.1", 0) as listener:
+                port = listener.sockets[0].getsockname()[1]
+                async with connect(f"ws://127.0.0.1:{port}", proxy=None) as ws:
+                    async with GatewayClient(ws) as client:
+                        yield client
+        monkeypatch.setattr(owner_forward, "connect_owner", wire_owner)
+
+        reply = server.handle_request({"id": "p", "method": "prompt.submit",
+                                       "params": {"session_id": sid, "text": "my question"}})
+        mine = [row for row in list_session_admissions(db, session_id=key)
+                if row["payload"].get("text") == "my question"]
+        assert seen == ["session.resume", "prompt.submit"] and len(mine) == 1  # the owner holds it
+        recover_session_inputs(db, epoch=begin_runtime_epoch(db, instance_id="gateway-2"))
+        after = {row["admission_id"]: row["status"] for row in list_session_admissions(db, session_id=key)}
+        assert after[mine[0]["admission_id"]] == "queued"  # it survives the restart and will run
+        assert reply["error"]["code"] == 4090
+        assert reply["error"]["data"] == {"reason": "SESSION_OWNER_UNCONFIRMED"}
+        message = reply["error"]["message"]
+        assert "Nothing was sent" not in message and "check the chat" in message
+        assert turns == []
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 @pytest.mark.parametrize("case", ["owner_refused", "rewind"])
 def test_a_prompt_the_owner_cannot_queue_is_refused_with_why_and_when(monkeypatch, tmp_path, case):
     """Where admission is impossible the refusal names why and says to send when the turn ends,

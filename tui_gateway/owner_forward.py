@@ -128,8 +128,7 @@ class _Relay:
         async with connect_owner(self.home, self.endpoint) as client:
             attached = await client.rpc("session.resume", session_id=self.key)
             target = str(attached.get("session_id") or self.key)
-            receipt = await client.rpc("prompt.submit", session_id=target, text=self.text,
-                                       submission_id=self.request_id)
+            receipt = await self._submit(client, target)
             admission_id = receipt.get("admission_id")
             if not isinstance(admission_id, str) or receipt.get("status") not in ("queued", "started", "terminal"):
                 raise OwnerUnavailable("the gateway did not admit it")
@@ -137,6 +136,20 @@ class _Relay:
             logger.info("forwarded Desktop prompt for %s to the owner FIFO: admission=%s",
                         self.key, admission_id)
             await self._relay(client, admission_id)
+
+    async def _submit(self, client, target: str) -> dict:
+        """``prompt.submit`` on the owner. Once the request is handed to the socket, only a received
+        refusal (``GatewayRPCError``) proves nothing was queued: a lost connection or a missing answer
+        may follow the owner's durable commit (a gateway restart mid-forward), so it is unconfirmed,
+        never "nothing was sent" (a resend would run a second copy)."""
+        from hermes_cli.gateway_client import GatewayRPCError
+        try:
+            return await client.rpc("prompt.submit", session_id=target, text=self.text,
+                                    submission_id=self.request_id)
+        except GatewayRPCError:
+            raise
+        except Exception as exc:
+            raise OwnerUnconfirmed("the gateway did not confirm it") from exc
 
     def _pending(self, params: dict, admission_id: str) -> None:
         """The owner's pending list as this wire's ``pending_submissions``, this admission only: the
@@ -190,8 +203,8 @@ def forward_prompt(sid: str, session: dict, text: str, *, emit=None, home: Path 
     """Admit ``text`` into the owner's FIFO for this session; the owner's receipt.
 
     Raises ``OwnerNotRunning`` when no gateway serves the home, ``OwnerUnavailable`` (or the
-    client's refusal) when the owner did not take it; nothing was admitted unless the receipt
-    timed out, which is reported as such."""
+    client's refusal) when the owner did not take it, and ``OwnerUnconfirmed`` when the prompt may
+    be queued there: the receipt timed out, or the owner was lost after the request was sent."""
     from tui_gateway import server
     key = str(session.get("session_key") or "")
     if not key:
