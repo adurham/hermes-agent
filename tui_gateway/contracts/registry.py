@@ -79,14 +79,13 @@ def event(name: str, payload: type[Payload] | None = None, *, doc: str = "") -> 
 # JSON-RPC ``4000`` with the field path, never a silent ignore. Results and payloads are OUR bug when
 # raises, which is what makes the suite the gate.
 
-STRICT = bool(os.environ.get("HERMES_TEST_ISOLATION"))
-
 class ContractViolation(AssertionError):
     """A result or payload the gateway produced does not match its declared contract."""
 
 
 def _report(kind: str, name: str, exc: ValidationError) -> None:
-    if STRICT:
+    # Read at call time: an import-time constant freezes whatever env the process launched with.
+    if os.environ.get("HERMES_TEST_ISOLATION"):
         raise ContractViolation(f"{kind} {name!r} violates its contract: {exc}") from exc
     logger.error("%s %r violates its wire contract: %s", kind, name, exc)
 
