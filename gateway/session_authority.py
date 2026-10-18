@@ -58,6 +58,9 @@ class LiveSession:
     # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
     # still see the claim as started, so no snapshot shows a terminal row without its completion.
     settling: dict = field(default_factory=dict)
+    # ``(revision key, payload)`` of the last ``session.context_breakdown``: Desktop re-polls it on
+    # every idle mount and reconnect, and a rebuild walks the whole stored transcript (#140667).
+    context_breakdown: tuple | None = None
     # A viewer attached while a guarded deferred pick awaits consent: the next boundary asks again.
     reask_pick: bool = False
     # A historic messaging row mounted for reading after its lane moved on (``/new``): ``route`` is
@@ -127,6 +130,9 @@ class SessionAuthority:
         # Logical owner rotated away by the exhaustion auto-reset -> its session key: an admission
         # that reserved it before the rotation commits on that key's current route instead.
         self.rotated_owners = {}
+        # route -> the compression-exhaustion auto-reset its LOCAL turn deferred: the store refuses a
+        # reset while that turn's admission is started, so the drain runs it once the turn settles.
+        self.deferred_resets = {}
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -1054,8 +1060,14 @@ class SessionAuthority:
             admission_id = row['admission_id']
             try:
                 response, outcome = await self._execute_claimed(ref, live, row)
-            except ManagedExecutionUnknown:
-                return
+            except BaseException as exc:
+                # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
+                # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
+                # never left to fire after a later settled turn with a stale entry.
+                self.deferred_resets.pop(live.route, None)
+                if isinstance(exc, ManagedExecutionUnknown):
+                    return
+                raise
             settled = None
             settlement = {}
             try:
@@ -1130,9 +1142,23 @@ class SessionAuthority:
                     self.pending_deliveries.pop(admission_id, None)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
+                # Taken on every exit, so a turn that never settled leaves no reset for a later one.
+                reset = self.deferred_resets.pop(live.route, None)
+            await self._run_deferred_reset(live.route, reset)
             from gateway.session_ingress import deliver_settled
             await deliver_settled(self, admission_id)
             await self._resolve_settled_waiter(admission_id, response)
+
+    @staticmethod
+    async def _run_deferred_reset(route, reset):
+        """The auto-reset the settled turn deferred (``_hmwa_defer_exhaustion_reset``), before its
+        waiter wakes: a delivery retry or the next DM then reads the fresh target."""
+        if reset is not None:
+            try:
+                await reset()
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception('Deferred auto-reset of %s failed', route)
 
     async def _resolve_settled_waiter(self, admission_id, response):
         """Hand the settled reply to its waiter. The adapter sending it adopted the turn's crash marker

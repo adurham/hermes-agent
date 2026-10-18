@@ -5,6 +5,7 @@ import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import type { ErrorSurface } from '@/lib/error-surface'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -306,6 +307,52 @@ export function isSessionNotOwnedError(error: unknown): boolean {
   const reason = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : null
 
   return reason === 'SESSION_NOT_OWNED' || /already has a live owner/i.test(error instanceof Error ? error.message : '')
+}
+
+// prompt.submit refused because the gateway that owns this chat is mid-turn and could not queue
+// the send (4090 / SESSION_OWNER_BUSY, #140385). Transient: the turn ends on its own.
+export function isSessionOwnerBusyError(error: unknown): boolean {
+  return gatewayReason(error) === 'SESSION_OWNER_BUSY'
+}
+
+// The refused send's staged images are gone server-side: SESSION_OWNER_BUSY unstages them (#140968),
+// and any refusal whose prose says the image was removed did the same.
+export function refusalDroppedImages(error: unknown): boolean {
+  return (
+    isSessionOwnerBusyError(error) || /\bimages?\b[^.]*\bremoved\b/i.test(error instanceof Error ? error.message : '')
+  )
+}
+
+function gatewayReason(error: unknown): unknown {
+  return error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : undefined
+}
+
+// The error card's surface for an ownership refusal: another surface owns the session (#106217,
+// deterministic: drop Retry, offer a new session), or the gateway owner is mid-turn and could not
+// queue the send (#140385, transient: Retry once the turn ends). Empty for any other error.
+export function ownershipErrorSurface(error: unknown): { errorSurface?: ErrorSurface } {
+  if (isSessionNotOwnedError(error)) {
+    return { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }
+  }
+
+  if (gatewayReason(error) === 'SESSION_OWNER_UNCONFIRMED') {
+    // The owner may already hold the send: a Retry would run a second copy.
+    return { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_UNCONFIRMED', retryable: false } }
+  }
+
+  return isSessionOwnerBusyError(error)
+    ? { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_BUSY', retryable: true } }
+    : {}
+}
+
+// RT-37: a legacy backend handed this prompt to the gateway that owns the chat, where it waits in
+// the owner's FIFO behind the gateway's turn. The queued-row card (the backend's
+// pending_submissions) stands for it until the owner starts it: no optimistic bubble or spinner.
+export function isForwardedReceipt(
+  legacyAccepted: boolean,
+  result: { forwarded?: boolean | null; status?: string } | undefined
+): boolean {
+  return legacyAccepted && result?.forwarded === true && result.status === 'queued'
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))

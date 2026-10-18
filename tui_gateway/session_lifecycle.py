@@ -170,10 +170,14 @@ def _canonical_ledger_refusal(session: dict):
     if row is None:
         return None
     logger.info("Refusing legacy turn for %s: canonical ledger holds %s work", key, row[0])
-    return ActiveSessionRefusal(
+    refusal = ActiveSessionRefusal(
         f"Session {key} has {'outcome-unknown' if row[0] == 'unknown' else 'pending'} work in the gateway's "
         "durable queue. Resume it through the gateway (hermes chat --resume, Desktop or the TUI) to "
         "resolve it; nothing was run here.", SESSION_NOT_OWNED)
+    # prompt.submit forwards a typed prompt to the owner's FIFO for work that ends on its own
+    # (tui_gateway/owner_forward.py); an ``unknown`` admission is never forwarded past.
+    refusal.ledger_status = row[0]
+    return refusal
 
 
 def _attach_lease(session: dict, lease) -> None:
