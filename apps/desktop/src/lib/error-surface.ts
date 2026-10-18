@@ -49,6 +49,8 @@ export const ERROR_CODE_KEYS = [
   'empty_response',
   'loop_error',
   'SESSION_NOT_OWNED',
+  // The gateway that owns the chat is mid-turn and could not queue this send: transient.
+  'SESSION_OWNER_BUSY',
   'disk_full',
   // Raised by the desktop, never by the backend: the backend reported a turn
   // over after its events stopped, and no reply reached this window.
@@ -267,6 +269,7 @@ const SWITCH_PROVIDER_LAYERS: readonly ErrorSurfaceLayer[] = ['auth', 'billing',
 // conversation, a blocked prompt, a chat another surface owns).
 const CODE_PLANS: Partial<Record<ErrorCodeKey, Partial<ErrorRecoveryPlan>>> = {
   SESSION_NOT_OWNED: { retry: false, startNewSession: true },
+  SESSION_OWNER_BUSY: { retry: true, startNewSession: false },
   content_policy_blocked: { editMessage: true, retry: false },
   context_overflow: { compress: true, retry: false, startNewSession: true },
   disk_full: { openHermesFolder: true, retry: true },

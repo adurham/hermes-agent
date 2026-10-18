@@ -4694,6 +4694,10 @@ export const en: Translations = {
           title: 'Hermes got stuck in a loop',
           body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
         },
+        SESSION_OWNER_BUSY: {
+          title: 'Hermes is busy in this chat',
+          body: 'Another turn is running in this chat and your message could not wait in its queue. Nothing was sent. Retry once the current turn ends.'
+        },
         SESSION_NOT_OWNED: {
           title: 'This chat is open somewhere else',
           body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'

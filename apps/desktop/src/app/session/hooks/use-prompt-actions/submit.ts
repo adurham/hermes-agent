@@ -64,6 +64,7 @@ import {
   isProviderSetupError,
   isSessionBusyError,
   isSessionNotOwnedError,
+  isSessionOwnerBusyError,
   isTargetSessionBusy,
   releaseSubmitInFlight,
   SessionRecoveryAborted,
@@ -155,7 +156,7 @@ export function rebindPaneToResumedRuntime({
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
 /** Canonical admission receipt; `user_row_id` binds the optimistic bubble to its durable row. */
-type SubmitReceipt = Pick<PromptSubmitResult, 'user_row_id'> & {
+type SubmitReceipt = Pick<PromptSubmitResult, 'forwarded' | 'user_row_id'> & {
   admission_id?: string
   submission_id?: string
   session_id?: string
@@ -1256,6 +1257,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             return false
           }
 
+          // RT-37: a legacy backend handed this prompt to the gateway that owns the chat; it
+          // waits in that owner's FIFO behind the gateway's turn. The queued-row card (the
+          // backend's pending_submissions) stands for it until the owner starts it, so no
+          // optimistic bubble or spinner here; the owner's start and completion repaint it.
+          if (legacyAccepted && result?.forwarded === true && result.status === 'queued') {
+            dropOptimistic(sessionId)
+            releaseBusy()
+          }
+
           acceptedRuntimeSessionId = receiptSessionId
         } catch (firstErr) {
           if (firstErr instanceof SessionRecoveryAborted) {
@@ -1320,6 +1330,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // Another surface owns the session (#106217): a deterministic gateway
         // refusal, so the error card drops Retry and offers a new session.
         const notOwned = isSessionNotOwnedError(err)
+        // The gateway owner is mid-turn and could not queue this send (#140385): transient, so the
+        // card offers to send it again once the turn ends instead of a new session.
+        const ownerBusy = !notOwned && isSessionOwnerBusyError(err)
 
         updateSessionState(
           sessionId,
@@ -1333,6 +1346,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 parts: [],
                 error: message || copy.promptFailed,
                 ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
+                ...(ownerBusy && { errorSurface: { layer: 'gateway', code: 'SESSION_OWNER_BUSY', retryable: true } }),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,
                 timestamp: occurredAt

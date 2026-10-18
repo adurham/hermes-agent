@@ -52,6 +52,8 @@
   "assistant.thread.errorChooseModel": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.SESSION_NOT_OWNED.body": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.SESSION_NOT_OWNED.title": ["ar","ja","ru","zh","zh-hant"],
+  "assistant.thread.errorCodes.SESSION_OWNER_BUSY.body": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "assistant.thread.errorCodes.SESSION_OWNER_BUSY.title": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.auth.body": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.auth.title": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.auth_permanent.body": ["ar","ja","ru","zh","zh-hant"],
