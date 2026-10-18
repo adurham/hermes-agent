@@ -1455,11 +1455,6 @@ def _(rid, params: dict, session: dict) -> dict:
         from agent.account_usage import nous_credits_lines
         if credits := nous_credits_lines():
             usage["credits_lines"] = credits
-    # Provider account limits (e.g. Codex quota windows) — the same block the CLI and gateway /usage
-    # render, so the Desktop usage feed is not the one surface that omits them. Fail-open.
-    with contextlib.suppress(Exception):
-        if account := _account_usage_lines(session):
-            usage["account_lines"] = account
     return _ok(rid, usage)
 
 

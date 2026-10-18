@@ -131,11 +131,28 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
     )
 
 
+def _usage_account_blocks(session: dict) -> list[str]:
+    """Provider limits then Nous credits, as CLI/messaging /usage show them; both need no agent."""
+    lines: list[str] = []
+    with contextlib.suppress(Exception):
+        lines += _account_usage_lines(session)
+    with contextlib.suppress(Exception):
+        from agent.account_usage import nous_credits_lines
+        lines += nous_credits_lines()
+    return lines
+
+
 def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
+    extra = _usage_account_blocks(session)
+    tokens = _format_live_usage_tokens(session)
+    return "\n\n".join(filter(None, [tokens, "\n".join(extra)])) or _NO_AGENT_USAGE
+
+
+def _format_live_usage_tokens(session: dict) -> str:
     agent = session.get("agent")
     usage = _session_usage_snapshot(session)
     if agent is None and not usage:
-        return _NO_AGENT_USAGE
+        return ""
     if session.get("_metadata_message_count") is not None:
         message_count = int(session.get("_metadata_message_count") or 0)
     else:
