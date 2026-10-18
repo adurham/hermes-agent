@@ -2,6 +2,8 @@
 override must keep the session endpoint and key."""
 from types import SimpleNamespace
 
+import pytest
+
 from gateway.session_cli_turn import cli_turn_scope, one_turn_runtime
 from hermes_cli.model_switch import ModelSwitchResult
 
@@ -169,3 +171,54 @@ def test_settled_info_pairs_model_and_provider_from_one_profile_read(monkeypatch
     with cli_turn_scope("adm", {"model_override": {"model": "once-model", "provider": "nous"}}):
         publish_settled_info(turn, agent)
     assert (published[-1]["model"], published[-1]["provider"]) == ("openai/gpt-b", "openrouter")
+
+
+def test_same_provider_override_keeps_the_sessions_wire_when_the_model_does_not_pick_one(monkeypatch):
+    """Review of #140969: ``result.api_mode`` is derived from the provider's DEFAULT host. A session on
+    openai-api behind a chat-completions proxy kept the proxy but took ``codex_responses``, a wire the
+    proxy does not speak. Only a provider that picks its wire per model overrides the session's."""
+    runtime = _same_provider_override(
+        monkeypatch, "openai-api", "gpt-5.4", "codex_responses", "https://api.openai.com/v1",
+        {"base_url": "https://proxy.example/v1", "api_mode": "chat_completions"})
+    assert (runtime["base_url"], runtime["api_mode"]) == ("https://proxy.example/v1", "chat_completions")
+
+
+SESSION_URL, ALIAS_URL = "http://127.0.0.1:7001/v1", "http://127.0.0.1:7002/v1"
+
+
+@pytest.fixture
+def alias_config(monkeypatch):
+    """A ``model_aliases`` entry on the session's own provider with its own endpoint and key, resolved
+    by the real ``switch_model`` (only the catalog probe is stubbed)."""
+    cfg = {"model": {"default": "session-model", "provider": "custom", "base_url": SESSION_URL},
+           "model_aliases": {"fast": {"model": "fast-model", "provider": "custom", "base_url": ALIAS_URL,
+                                      "api_key": "sk-alias"}}}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {
+        "accepted": True, "persist": True, "recognized": True, "message": ""})
+    monkeypatch.setattr("hermes_cli.model_switch.DIRECT_ALIASES", {})
+    return cfg
+
+
+@pytest.mark.parametrize("override", [{"model": "fast"}, {"model": "fast-model", "provider": "custom"}],
+                         ids=["alias-name", "cli-resolved-form"])
+def test_a_same_provider_alias_runs_on_its_own_endpoint_and_key(alias_config, override):
+    """Review of #140969: the same-provider branch kept the session's endpoint and key for an alias that
+    names its own, so the turn asked the session's server for the alias's model with the session's key."""
+    model, runtime = one_turn_runtime(
+        override, "session-model",
+        {"provider": "custom", "api_key": "sk-session", "base_url": SESSION_URL, "api_mode": "chat_completions",
+         "credential_pool": object()},
+        alias_config)
+    assert model == "fast-model"
+    assert (runtime["base_url"], runtime["api_key"]) == (ALIAS_URL, "sk-alias")
+    assert runtime["credential_pool"] is None  # the session's pool holds the session's keys
+
+
+def test_a_plain_same_provider_pick_still_keeps_the_session_endpoint(alias_config):
+    _model, runtime = one_turn_runtime(
+        {"model": "other-model", "provider": "custom"}, "session-model",
+        {"provider": "custom", "api_key": "sk-session", "base_url": SESSION_URL, "api_mode": "chat_completions"},
+        alias_config)
+    assert (runtime["base_url"], runtime["api_key"]) == (SESSION_URL, "sk-session")

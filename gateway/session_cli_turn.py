@@ -102,17 +102,23 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
     runtime = dict(runtime_kwargs)
     current_provider = runtime_kwargs.get('provider') or ''
     same_provider = (result.target_provider or '').strip().lower() == current_provider.strip().lower()
-    if same_provider:
-        # The explicit provider on a one-turn override re-resolves the provider's default endpoint
-        # and key. The session already has both, so keep them. The wire follows the target, as a
-        # session /model writes it: Copilot, Nous Portal and OpenCode pick it per model.
+    if same_provider and not result.resolved_via_alias:
+        # A plain model pick on the session's provider: the explicit provider re-resolved that provider's
+        # default endpoint and key, and the session already has both (a mirror, a proxy, a pool), so keep
+        # them. The wire follows the target only where the provider picks it per model (Copilot, Nous
+        # Portal, OpenCode; ``_rederive_per_model_route``); otherwise ``result.api_mode`` describes the
+        # default host, not this session's endpoint, and the session's wire stays.
+        from hermes_cli.model_switch import model_derived_api_mode
         from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
-        api_mode = result.api_mode or runtime.get('api_mode')
-        runtime['api_mode'] = api_mode or None
+        if model_derived_api_mode(result.target_provider, result.new_model) is not None and result.api_mode:
+            runtime['api_mode'] = result.api_mode
+        api_mode = runtime.get('api_mode') or None
+        runtime['api_mode'] = api_mode
         if runtime.get('base_url') and opencode_provider_family(result.target_provider):
             runtime['base_url'] = normalize_opencode_base_url(result.target_provider, api_mode, runtime['base_url'])
     else:
-        # A different provider does not keep this session's pool, endpoint, or key.
+        # A different provider, or an alias that names its own endpoint and key (``model_aliases``), does
+        # not keep this session's pool, endpoint, or key: the route ``switch_model`` resolved runs whole.
         runtime.update(credential_pool=None, command=None, args=[],
                        api_key=result.api_key, base_url=result.base_url, api_mode=result.api_mode or None,
                        request_overrides=dict(result.request_overrides or {}),
