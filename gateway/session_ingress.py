@@ -405,10 +405,13 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     capturing (its position is then fixed; acceptance still waits for the commit); a tracked
     observer delivers its one reply. *durable*: return only once the row is committed (or the input
     was refused, fenced or answered), never on the earlier position release: a busy burst's commit
-    task, which a command barrier (``/restart`` closing admission) waits on."""
+    task, which a command barrier (``/restart`` closing admission) waits on. Otherwise an input
+    released before its commit is held until it commits or its handler ends, and a serial reader's
+    next command waits for that too (``burst_gate``): a non-burst busy input (a second video, a voice
+    note, text outside queue mode) has no burst commit task to wait on."""
     delivery_event = replace(event, source=replace(event.source))
     accepted = asyncio.get_running_loop().create_future()
-    committed = asyncio.get_running_loop().create_future() if durable else None
+    committed = asyncio.get_running_loop().create_future()
 
     async def observe():
         # Like the first message's lifecycle, this sender adopts the turn's crash marker and
@@ -441,7 +444,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
     task.add_done_callback(adapter._background_tasks.discard)
     try:
         await asyncio.wait({accepted, task}, return_when=asyncio.FIRST_COMPLETED)
-        if committed is not None and not task.done():
+        if durable and not task.done():
             await asyncio.wait({committed, task}, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:
         if not accepted.done():
@@ -449,3 +452,21 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
         raise
     if task.done():
         task.result()  # refused, consumed or answered inline before any durable acceptance
+    elif not committed.done():
+        _hold_until_committed(adapter, committed, task)
+
+
+def _hold_until_committed(adapter, committed, task):
+    """Released before its commit: the reader reads on, but this input is not durable yet. A serial
+    reader's next command waits for its commit or its handler's end (``burst_gate``), so /restart never
+    closes admission, and /new never cancels the chat's rows, before it lands."""
+    settled = asyncio.get_running_loop().create_future()
+
+    def settle(_):
+        if not settled.done():
+            settled.set_result(None)
+    committed.add_done_callback(settle)
+    task.add_done_callback(settle)
+    held = adapter.__dict__.setdefault('_uncommitted_inputs', set())
+    held.add(settled)
+    settled.add_done_callback(held.discard)

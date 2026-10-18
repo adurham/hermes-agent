@@ -222,3 +222,56 @@ async def test_restart_waits_for_a_held_text_queued_behind_a_slow_capture(monkey
     await async_wait_until(lambda: all(row['status'] == 'terminal' for row in _rows(authority)), timeout=15,
                            what='both turns to run')
     await asyncio.to_thread(authority.db.close)
+
+
+@pytest.mark.asyncio
+async def test_restart_waits_for_a_direct_busy_input_queued_behind_a_slow_capture(monkeypatch, tmp_path):
+    """The same with the default busy mode: the text is no burst, so it goes straight to the shared
+    runtime, queues behind the capture and releases the reader before it is durable. With no burst commit
+    to wait on, the /restart it reads next must still wait for that row (Signal live: both lost)."""
+    from gateway import session_ingress_burst
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_runtime_workers import mutation_tasks
+    adapter, source = _signal(monkeypatch)
+    entered, release = _hold_capture(monkeypatch)
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)  # no drain: rows stay queued
+    runner = GatewayRunner(GatewayConfig())
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        return SendResult(success=True, message_id='sent')
+    monkeypatch.setattr(adapter, 'send', send)
+    adapter.gateway_runner = runner
+    runner.adapters = {adapter.platform: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    runner._wire_adapter_handlers(adapter)  # no text burst: B goes straight to dispatch_shared_busy
+    monkeypatch.setattr(runner, 'request_restart', lambda **kw: setattr(runner, '_draining', True))
+    passed, real_gate = [], session_ingress_burst.burst_gate
+
+    async def gate(adapter, event, session_key):  # the rows when the command passes the reader's barrier
+        behind = await real_gate(adapter, event, session_key)
+        if event.get_command() == 'restart':
+            passed.append(sorted(row['request_id'] for row in _rows(authority)))
+        return behind
+    monkeypatch.setattr(session_ingress_burst, 'burst_gate', gate)
+    clip = tmp_path / 'clip.mp4'
+    clip.write_bytes(b'video bytes' * 100)
+    key = runner._session_key_for_source(source)
+    try:
+        await adapter.handle_message(MessageEvent(text='A', source=source, message_id='A', message_type=MessageType.VIDEO,
+                                                  media_urls=[str(clip)], media_types=['video/mp4']))
+        assert await asyncio.to_thread(entered.wait, 5)
+        await adapter.handle_message(MessageEvent(text='B', source=source, message_id='B'))
+        restart = asyncio.create_task(adapter.handle_message(MessageEvent(text='/restart', source=source,
+                                                                           message_id='R')))
+        await async_wait_until(lambda: passed or authority._route_turns.get(key, (None, 0))[1] >= 2,
+                               what='B to queue behind the capture')
+    finally:
+        release.set()
+    await asyncio.wait_for(restart, 10)
+    try:
+        assert passed == [['A', 'B']], passed
+    finally:
+        runner._draining = False
+        await adapter.cancel_background_tasks()
+        await async_wait_until(lambda: not mutation_tasks(authority), timeout=10)
+        runner.session_store.close_all_db_handles()

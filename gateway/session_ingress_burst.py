@@ -69,6 +69,8 @@ async def burst_gate(adapter, event, session_key):
             _flush(adapter, key, burst)
         if pending := list(adapter.__dict__.get('_shared_burst_commits', {}).values()):
             await asyncio.wait(pending)
+        if held := list(adapter.__dict__.get('_uncommitted_inputs', ())):
+            await asyncio.wait(held)  # a non-burst input released behind an earlier one, not durable yet
     return False
 
 
