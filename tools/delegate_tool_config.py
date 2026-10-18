@@ -496,6 +496,26 @@ def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) 
         pinned=pinned, owner="delegation")
 
 
+def _inherited_child_max_tokens(parent_agent) -> Optional[int]:
+    """The parent's output cap to hand a child, or ``None`` to let the child resolve its own.
+
+    A cap read from the parent's ROUTE config (``providers.<p>.models.<id>.max_tokens`` — exo's
+    runaway-generation bound, for instance) describes that route, not the user's policy. Handing
+    it to a child pinned to a different provider/model silently applies another route's ceiling:
+    8192 from an exo model landed on ollama-cloud's DeepSeek-V4.1-Flash, whose reasoning pass
+    alone emits 8-17K tokens, so every child returned ``finish_reason='length'`` with its whole
+    budget spent thinking ("Model used all output tokens on reasoning…"). With nothing passed,
+    the child's own init re-resolves the cap from ITS route (agent_init), which is the same lookup
+    the parent went through. An explicit user cap still inherits — that IS policy.
+    """
+    cap = getattr(parent_agent, "max_tokens", None)
+    if not isinstance(cap, int):
+        return None
+    if getattr(parent_agent, "_max_tokens_from_route_config", False):
+        return None
+    return cap
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
@@ -622,7 +642,7 @@ def _resolve_child_runtime(
     }
     if not override_provider:
         kwargs["provider_data_collection"] = kwargs["provider_data_collection"] or ""
-    child_max_tokens = getattr(parent_agent, "max_tokens", None)
-    if isinstance(child_max_tokens, int):
+    child_max_tokens = _inherited_child_max_tokens(parent_agent)
+    if child_max_tokens is not None:
         kwargs["max_tokens"] = child_max_tokens
     return kwargs

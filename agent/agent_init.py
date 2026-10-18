@@ -2546,6 +2546,11 @@ def init_agent(
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False
+    # Provenance of agent.max_tokens: True => it came from THIS route's config entry
+    # (``providers.<p>.models.<id>.max_tokens``), i.e. it describes the ROUTE, not the user's
+    # policy. switch_model re-resolves it (agent_runtime_helpers._re_resolve_route_output_cap)
+    # and delegation refuses to hand it to a child on another route.
+    agent._max_tokens_from_route_config = False
     if agent.max_tokens is None:
         # FORK: per-model config default (custom_providers[*].models.<id>.max_tokens) so thinking
         # models keep enough generation budget for reasoning_content + the visible response.
@@ -2554,6 +2559,7 @@ def init_agent(
             _cfg_max = get_custom_provider_max_tokens(agent.model, agent.base_url)
             if _cfg_max:
                 agent.max_tokens = _cfg_max
+                agent._max_tokens_from_route_config = True
         except Exception:
             pass
     # Routes that rejected image content / named reasoning keys; build_api_request strips those from wire copies only.
