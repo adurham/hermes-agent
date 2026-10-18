@@ -36,8 +36,9 @@ def _authorize_import(authority, actor, ref, params):
     return tuple(item['session']['id'] for item in normalized)
 
 
-def _authorize_control(authority, actor, ref, params):
-    """Control authorization; True when the session is cold history the write must claim."""
+def _authorize_control(authority, actor, ref, params, owner=None):
+    """Control authorization; True when the session is cold history the write must claim. *owner* is
+    ``_owner_ref``'s answer when the caller already resolved it (one read per mutation, not two)."""
     from hermes_state_mutation_retirement import has_mutation_receipt
     if actor.profile_id != authority.profile_id or ref.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -47,7 +48,7 @@ def _authorize_control(authority, actor, ref, params):
     # A receipt authorizes only its original principal's exact retry; the
     # transaction still verifies the entire digest and current epoch.
     if not has_mutation_receipt(authority.db, actor.subject, ref.session_id, params['request_id']):
-        ref = _owner_ref(authority, ref, params)
+        ref = owner or _owner_ref(authority, ref, params)
         if ref.session_id not in authority.sessions:
             from hermes_state_mutation_binding import authorize_history
             with authority.db._read_ctx() as conn:
@@ -93,9 +94,10 @@ async def _owned_mutation(authority, actor, ref, params):
     if (params.get('operation') in {*_POLICY, 'compress', 'reset', 'rewind'}
             and ref.session_id not in authority.sessions and 'request_id' in params):
         _authorize_control(authority, actor, ref, params)
-    live = authority.sessions.get(_owner_ref(authority, ref, params).session_id)
+    owner = _owner_ref(authority, ref, params)
+    live = authority.sessions.get(owner.session_id)
     if live is None:
-        return await _mutate_session(authority, actor, ref, params)
+        return await _mutate_session(authority, actor, ref, params, owner=owner)
     # Prepared policy/route publication is inseparable from its durable commit
     # for admission and claim: neither may observe a half-published policy.
     if params.get('operation') == 'compress':
@@ -103,11 +105,11 @@ async def _owned_mutation(authority, actor, ref, params):
         # edit is not parked behind it; the commit is revision/generation-fenced against anything
         # that lands meanwhile. Claims wait on ``claim_gate``, so no turn runs under it.
         async with live.claim_gate:
-            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock)
+            result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock, owner=owner)
     else:
         async with live.mutation_lock:
             try:
-                result = await _mutate_session(authority, actor, ref, params)
+                result = await _mutate_session(authority, actor, ref, params, owner=owner)
             except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
                 # A pick on a running session is for the next turn (the running turn keeps its route).
                 if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
@@ -120,7 +122,7 @@ async def _owned_mutation(authority, actor, ref, params):
     return result
 
 
-async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
+async def _mutate_session(authority, actor, ref, params, *, commit_lock=None, owner=None):
     if (set(params) - {'expected_generation'} != _FIELDS
             or params['session_id'] != ref.session_id):
         raise RuntimeStoreError('invalid_params')
@@ -136,7 +138,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
     if operation == 'import':
         imported_ids = _authorize_import(authority, actor, ref, params)
     else:
-        cold_history = _authorize_control(authority, actor, ref, params)
+        cold_history = _authorize_control(authority, actor, ref, params, owner)
     if operation == 'branch' and 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     authority._require_admission_open()
