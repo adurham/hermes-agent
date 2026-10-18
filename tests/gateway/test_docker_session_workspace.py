@@ -147,3 +147,42 @@ def test_workspace_container_key_is_idempotent_and_lazy_setup_creates_the_sessio
         for key in [k for k in terminal_tool._active_environments if k not in saved]:
             terminal_tool._active_environments.pop(key, None)
         terminal_tool._active_environments.update(saved)
+
+
+def test_switching_away_from_mounted_docker_drops_the_session_workspace_override(home, tmp_path):
+    # Review probe (@kshitijk4poor W3, @dokterdok 3, Greptile): Docker -> SSH kept the old host cwd.
+    from gateway.session_policy import bind_turn_workspace, build_policy, policy_scope, restore_policy
+    from tools import terminal_tool
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    with _turn(_policy(home, ws1, persistent=True), 'local-a'):
+        assert terminal_tool.resolve_task_overrides('local-a')['cwd'] == str(ws1)
+    (home / 'config.yaml').write_text(json.dumps({'terminal': {'backend': 'ssh', 'cwd': '/srv/project'}}))
+    ssh = restore_policy(asdict(build_policy({'source': 'cli', 'cwd': str(ws1), 'model': 'm'}, {})))
+    with policy_scope(ssh):
+        bind_turn_workspace(ssh, 'local-a')
+        assert terminal_tool.resolve_task_overrides('local-a') == {}
+        assert terminal_tool.get_session_cwd('local-a') != str(ws1)
+
+
+def test_unbind_keeps_an_override_the_session_workspace_binding_did_not_register(home, tmp_path):
+    from gateway.session_policy import unbind_turn_workspace
+    from tools import terminal_tool
+    terminal_tool.register_task_env_overrides('acp-1', {'cwd': str(tmp_path), 'cwd_source': 'session'})
+    unbind_turn_workspace('acp-1')
+    assert terminal_tool.resolve_task_overrides('acp-1')['cwd'] == str(tmp_path)
+
+
+def test_deleting_a_session_releases_its_workspace_binding(home, tmp_path):
+    # Review (@kshitijk4poor W3): the bindings were never cleared on session close.
+    from types import SimpleNamespace
+    from gateway.session_mutations import retire_live_sessions
+    from tools import terminal_tool
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    with _turn(_policy(home, ws1, persistent=True), 'local-a'):
+        pass
+    assert terminal_tool.resolve_task_overrides('local-a')['cwd'] == str(ws1)
+    authority = SimpleNamespace(runner=SimpleNamespace(), sessions={}, profile_id='fixture', instance_id='i', epoch=1)
+    retire_live_sessions(authority, ['local-a'])
+    assert terminal_tool.resolve_task_overrides('local-a') == {}
