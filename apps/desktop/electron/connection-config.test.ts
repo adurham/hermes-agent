@@ -665,6 +665,14 @@ test('a /api/profiles/<name>/… path already names its profile: no ambient scop
   }
 
   assert.equal(pathWithProfileScope('/api/profiles/p2/soul', 'default'), '/api/profiles/p2/soul')
+  // Method-aware: PATCH/DELETE of a profile NAMED active/import/sessions names that profile.
+  for (const [path, method] of [['/api/profiles/active', 'PATCH'], ['/api/profiles/import', 'DELETE'],
+    ['/api/profiles/sessions', 'DELETE']]) {
+    assert.equal(pathForRegistryBackendRequest(path, 'beta', { mode: 'local' }, method), path)
+  }
+
+  assert.equal(pathForRegistryBackendRequest('/api/profiles/active', 'beta', { mode: 'local' }, 'GET'),
+    '/api/profiles/active?profile=beta')
 })
 
 test('registry model reads and writes retain each profile on a shared local backend', () => {
