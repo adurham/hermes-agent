@@ -204,6 +204,8 @@ def reap_orphan_containers(
         age = (now - finished_at).total_seconds()
         if age < max_age_seconds:
             continue
+        if _is_idle_workspace_container(docker, cid):
+            continue
         # No -f: a sibling may have restarted the container between the ps snapshot
         # and now (FinishedAt still reports the previous exit), and the daemon refuses
         # a plain rm on a running container, which is the atomic recheck this sweep needs.
@@ -217,6 +219,18 @@ def reap_orphan_containers(
         else:
             logger.debug("docker rm %s failed: %s", cid[:12], result.stderr.strip())
     return removed
+
+
+def _is_idle_workspace_container(docker_exe: str, container_id: str) -> bool:
+    """A persistent per-workspace container (task key ``<base>:ws:<digest>``, label ``<base>_ws_<digest>``)
+    that the idle reaper STOPPED on purpose (``DockerEnvironment.stop_idle``): it is that workspace's
+    sandbox, restarted on next use, not an orphan. Unknown (inspect failed) reads as not one."""
+    result = _docker_query(
+        [docker_exe, "inspect", "--format", '{{index .Config.Labels "hermes-task-id"}}', container_id], timeout=10,
+        fail="orphan reaper docker inspect %s failed: %s", fail_args=(container_id[:12],))
+    if result is None or result.returncode != 0:
+        return False
+    return re.search(r"_ws_[0-9a-f]{16}$", result.stdout.strip()) is not None
 
 
 def _container_finished_at(docker_exe: str, container_id: str):
@@ -1303,6 +1317,31 @@ class DockerEnvironment(BaseEnvironment):
         # once the container itself is removed.
         if not self._persistent:
             self._remove_bind_dirs()
+
+    def stop_idle(self) -> None:
+        """Idle reclaim of a per-workspace persistent container (#140665): ``docker stop``, never
+        ``rm``. Its writable layer and ``/root`` sandbox stay, and the next use in that workspace
+        re-attaches through :meth:`_attach_existing_container`, which ``docker start``s a stopped
+        container. Without this, persistent mode left one RUNNING container per workspace a user
+        ever opened (each with its own ``container_memory``) until the process exited."""
+        container_id = self._container_id
+        if not container_id:
+            return
+        docker_exe, log_id = self._docker_exe, container_id[:12]
+
+        def _do_stop() -> None:
+            try:
+                subprocess.run([docker_exe, "stop", "-t", "10", container_id], capture_output=True,
+                               timeout=30, stdin=subprocess.DEVNULL, check=False)
+            except (subprocess.TimeoutExpired, OSError) as e:
+                logger.warning("docker stop %s (idle workspace) failed: %s", log_id, e)
+
+        t = threading.Thread(target=_do_stop, daemon=True, name=f"hermes-idle-stop-{log_id}")
+        with _TEARDOWN_LOCK:
+            _TEARDOWN_THREADS.add(t)
+        t.start()
+        self._cleanup_thread = t
+        self._container_id = None
 
     @staticmethod
     def wait_for_all_teardowns(timeout: float = 15.0) -> bool:

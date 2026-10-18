@@ -186,3 +186,31 @@ def test_deleting_a_session_releases_its_workspace_binding(home, tmp_path):
     authority = SimpleNamespace(runner=SimpleNamespace(), sessions={}, profile_id='fixture', instance_id='i', epoch=1)
     retire_live_sessions(authority, ['local-a'])
     assert terminal_tool.resolve_task_overrides('local-a') == {}
+
+
+def test_idle_reaper_stops_workspace_containers_and_keeps_the_profile_one_running(monkeypatch):
+    # Review (@kshitijk4poor W4): one RUNNING container per (profile, workspace), never reclaimed.
+    import time
+    from tools import terminal_tool, terminal_tool_lifecycle
+    calls = []
+
+    class Env:
+        def __init__(self, name):
+            self.name = name
+
+        def cleanup(self):
+            calls.append(('cleanup', self.name))  # persist mode: a no-op that leaves it running
+
+        def stop_idle(self):
+            calls.append(('stop', self.name))
+
+    monkeypatch.setattr(terminal_tool, '_active_environments', {})
+    monkeypatch.setattr(terminal_tool, '_last_activity', {})
+    old = time.time() - 3600
+    for key in ('default', 'default:ws:aaaa', 'profile:beta:ws:bbbb'):
+        terminal_tool._active_environments[key] = Env(key)
+        terminal_tool._last_activity[key] = old
+    terminal_tool_lifecycle._cleanup_inactive_envs(lifetime_seconds=300)
+    assert sorted(calls) == [('cleanup', 'default'), ('stop', 'default:ws:aaaa'),
+                             ('stop', 'profile:beta:ws:bbbb')]
+    assert terminal_tool._active_environments == {}
