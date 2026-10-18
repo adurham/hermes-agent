@@ -11,6 +11,8 @@ import type { GatewayEventName } from '@hermes/shared'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $messagingSessions, $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds } from '@/store/session'
 import { $sessionStates, publishSessionState } from '@/store/session-states'
+import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $unreadFinishedMarkers, noteDesktopAdmission } from '@/store/session-unread'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -71,14 +73,23 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     $selectedStoredSessionId.set(null)
     $unreadFinishedSessionIds.set([])
     $unreadFinishedMarkers.set({})
+    $activeGatewayProfile.set('default')
   })
 
-  const complete = (admission?: string) => {
+  const complete = (admission?: string, sessionId = 'tg-1', profile?: string) => {
     const ctx = context('message.complete')
-    ctx.sessionId = 'tg-1'
-    ctx.event = { type: 'message.complete', admission_id: admission }
+    ctx.sessionId = sessionId
+    ctx.event = { type: 'message.complete', admission_id: admission, profile }
     handleMessageStreamEvent(ctx)
   }
+
+  // A receipt as the canonical client sees it, whichever surface sent the prompt.
+  const admit = (admission: string, status = 'queued') =>
+    new CanonicalDesktopProtocol().result('prompt.submit', { session_id: 'tg-1', submission_id: admission }, {
+      admission_id: admission,
+      ref: { session_id: 'tg-1' },
+      status
+    })
 
   it('lights on the stamped completion of a turn Desktop submitted, once', () => {
     noteDesktopAdmission('desktop-turn')
@@ -108,6 +119,42 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     $selectedStoredSessionId.set('tg-1')
     complete('desktop-turn')
     expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+  })
+
+  it('notes every canonical submit, so an edit, a regenerate or a Quick Entry send lights too', () => {
+    admit('regenerated')
+    complete('regenerated')
+    expect($unreadFinishedSessionIds.get()).toContain('tg-1')
+  })
+
+  it('does not note a deduplicated submit that starts no turn', () => {
+    admit('dedup', 'terminal')
+    complete('dedup')
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+  })
+
+  it('lights a completion that arrived before its receipt, once the receipt lands', () => {
+    complete('fast-turn')
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+    admit('fast-turn')
+    expect($unreadFinishedSessionIds.get()).toContain('tg-1')
+  })
+
+  it("judges a background profile's completion by its own profile's row", () => {
+    // The active profile holds a Desktop session with the same id; it must not decide beta's turn.
+    $activeGatewayProfile.set('alpha')
+    $sessions.set([makeSessionInfo({ id: 'shared', source: 'desktop', profile: 'alpha' })])
+    $messagingSessions.set([makeSessionInfo({ id: 'shared', source: 'telegram', profile: 'beta' })])
+    noteDesktopAdmission('beta-turn')
+    complete('beta-turn', 'shared', 'beta')
+    expect($unreadFinishedSessionIds.get()).toContain('shared')
+  })
+
+  it('marks the listed segment of a compressed conversation', () => {
+    $messagingSessions.set([makeSessionInfo({ id: 'tg-tip', source: 'telegram', _lineage_root_id: 'tg-root' })])
+    noteDesktopAdmission('compressed-turn')
+    complete('compressed-turn', 'tg-root')
+    expect($unreadFinishedSessionIds.get()).toContain('tg-tip')
   })
 
   it('never lights a messaging session from a busy-to-idle settle, whatever turn it follows', () => {
