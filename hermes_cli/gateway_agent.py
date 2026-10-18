@@ -660,6 +660,11 @@ class GatewayAgent:
         """The ``abandon`` of a turn's blocking reads: it lost the terminal, or Ctrl-C's settle bound passed."""
         return lambda: not self._owns(turn) or self._expired()
 
+    def _lost(self, turn):
+        """The ``abandon`` of a turn's end-of-turn reads (its receipt, the cumulative stats): only losing the
+        terminal stops them. Past Ctrl-C's settle bound they still run, bounded by their own timeouts."""
+        return lambda: not self._owns(turn)
+
     def _pump(self, stream_callback, starts, turn):
         """Dispatch frames until this admission's ``message.complete``; returns its payload, or the
         transport error (disconnect)."""
@@ -1004,7 +1009,7 @@ class GatewayAgent:
             complete = {"outcome": receipt.get("outcome")}
         elif turn.admission:
             try:
-                receipt = self.connection.call("prompt.receipt", session_id=turn.session_id, abandon=self._stop(turn),
+                receipt = self.connection.call("prompt.receipt", session_id=turn.session_id, abandon=self._lost(turn),
                                                admission_id=turn.admission, include_result=True) or {}
             except GatewayClientError as exc:
                 logger.debug("prompt.receipt failed: %s", exc)
@@ -1092,7 +1097,7 @@ class GatewayAgent:
         """``session.stats`` → the same attributes ``session.usage`` sets; False when unavailable."""
         try:
             stats = self.connection.call("session.stats", session_id=self.session_id, timeout=10,
-                                         abandon=turn and self._stop(turn))
+                                         abandon=turn and self._lost(turn))
         except GatewayClientError as exc:
             logger.debug("session.stats unavailable: %s", exc)
             return False

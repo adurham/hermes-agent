@@ -99,6 +99,25 @@ def test_idle_gap_reattach_cannot_submit_abandoned_input(agents, monkeypatch, ch
     assert not [params for method, params in client.calls if method == "prompt.submit"]
 
 
+def test_a_turn_past_its_interrupt_settle_bound_still_reads_its_receipt_and_stats(agents, monkeypatch):
+    """Ctrl-C's settle bound ends the turn's wait for frames; the end-of-turn ``prompt.receipt`` and
+    cumulative ``session.stats`` reads still run (main made both), since the turn still owns the terminal."""
+    agent, client = agents([frame("message.delta", {"text": "partial"}), "wait", "wait", "wait", "wait"])
+    monkeypatch.setattr("hermes_cli.gateway_agent.INTERRUPT_SETTLE_SECONDS", 0)
+    worker = threading.Thread(target=lambda: agent.run_conversation("q"), daemon=True)
+    worker.start()
+    try:
+        deadline = threading.Event()
+        while not any(method == "prompt.submit" for method, _ in client.calls) and not deadline.wait(0.01):
+            pass
+        agent.interrupt()
+    finally:
+        worker.join(5)
+    assert not worker.is_alive()
+    methods = [method for method, _ in client.calls]
+    assert "prompt.receipt" in methods and "session.stats" in methods, methods
+
+
 def test_tool_start_closes_a_prefix_whose_separator_fell_in_the_hole(agents, monkeypatch):
     output, final = [], "The answer is 42."
     agent, client = agents([frame("message.delta", {"text": "The answer"}), GAP],
