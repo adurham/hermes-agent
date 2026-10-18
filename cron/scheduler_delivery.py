@@ -117,6 +117,7 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
             cfg = _sched.load_config() or {}
         return bool((cfg.get("cron", {}) or {}).get("mirror_delivery", False))
     except Exception:
+        logger.debug("cron.mirror_delivery lookup failed; mirror stays off", exc_info=True)
         return False
 
 
@@ -190,7 +191,7 @@ def _redact_cron_payload(text: str, what: str) -> str:
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(text, force=True)
     except Exception as e:
-        logger.warning("Failed to redact secrets from cron %s: %s", what, e)
+        logger.warning("Failed to redact secrets from cron %s: %s", what, e, exc_info=True)
         return "[REDACTED - redaction failed]"
 
 
@@ -243,8 +244,7 @@ def _maybe_mirror_cron_delivery(
     except Exception as e:
         logger.debug(
             "Job '%s': delivery mirror failed for %s:%s: %s", job.get("id", "?"), platform_name,
-            chat_id, e,
-        )
+            chat_id, e, exc_info=True)
 
 
 # chat_type slot a platform's adapter puts on a NON-DM in-thread reply. Discord (and the default)
@@ -273,7 +273,7 @@ def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Opt
         logger.debug(
             "Job '%s': create_handoff_thread failed on %s — falling back to "
             "DM-session mirror: %s",
-            job.get("id", "?"), getattr(adapter, "name", "?"), e)
+            job.get("id", "?"), getattr(adapter, "name", "?"), e, exc_info=True)
         return None
 
 
@@ -352,7 +352,7 @@ def _seed_cron_thread_session(
         # WARNING, not debug: a silent seed failure IS the continuation-amnesia bug.
         logger.warning(
             "Job '%s': seeding cron thread session failed for %s:%s:%s: %s",
-            job.get("id", "?"), platform_name, chat_id, thread_id, e)
+            job.get("id", "?"), platform_name, chat_id, thread_id, e, exc_info=True)
 
 
 def _seed_cron_channel_session(
@@ -384,7 +384,7 @@ def _seed_cron_channel_session(
         # WARNING, not debug: a silent seed failure IS the continuation-amnesia bug.
         logger.warning(
             "Job '%s': seeding in_channel session failed for %s:%s: %s",
-            job.get("id", "?"), platform_name, chat_id, e)
+            job.get("id", "?"), platform_name, chat_id, e, exc_info=True)
         return False
 
 
@@ -449,7 +449,7 @@ def _home_env_lookup(env_var: str, suffix: str = "", *, strip: bool = False) -> 
     value, not the host environ. ``os.getenv`` only if the scope module is missing."""
     try:
         from agent.secret_scope import get_secret
-    except Exception:
+    except ImportError:
         get_secret = None  # type: ignore
 
     def read(name: str) -> str:
@@ -689,15 +689,20 @@ def _resolve_single_delivery_target(
     return _home_target(platform_name, chat_id, home_provenance) if chat_id else None
 
 
+def _positive_cron_int(key: str, default: int) -> int:
+    """``cron.<key>`` as a positive int; ``default`` when unset, non-positive or unreadable."""
+    try:
+        value = int(_sched.load_config().get("cron", {}).get(key, default))
+        return value if value > 0 else default
+    except Exception:
+        logger.debug("cron.%s unreadable; using %s", key, default, exc_info=True)
+        return default
+
+
 def _get_bot_chat_delivery_timeout() -> int:
     """Timeout for one bot-chat delivery turn (a full agent turn — minutes, not seconds).
     ``cron.bot_chat_delivery_timeout_seconds``; default 600."""
-    try:
-        cfg = _sched.load_config()
-        value = int(cfg.get("cron", {}).get("bot_chat_delivery_timeout_seconds", 600))
-        return value if value > 0 else 600
-    except Exception:
-        return 600
+    return _positive_cron_int("bot_chat_delivery_timeout_seconds", 600)
 
 
 def _get_standalone_send_timeout() -> int:
@@ -710,12 +715,7 @@ def _get_standalone_send_timeout() -> int:
     indefinitely. Mirrors the sibling lanes: live dispatch ``future.result(timeout=60)``,
     thread fallback ``result(timeout=30)``. ``cron.standalone_send_timeout_seconds``;
     default 60."""
-    try:
-        cfg = _sched.load_config()
-        value = int(cfg.get("cron", {}).get("standalone_send_timeout_seconds", 60))
-        return value if value > 0 else 60
-    except Exception:
-        return 60
+    return _positive_cron_int("standalone_send_timeout_seconds", 60)
 
 
 _BOT_CHAT_STDERR_TAIL = 500
@@ -832,6 +832,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
                                              for_failure=for_failure)
     except Exception as exc:
         # Discovery/admission uncertainty must never open a second-writer fallback.
+        logger.debug("Job '%s': bot-chat discovery/admission raised", job_id, exc_info=True)
         return f"bot-chat delivery to profile '{profile_label}' unverified: {exc}"
 
     # The running install first (same trust order as gateway.run._resolve_hermes_bin): the
@@ -840,7 +841,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
     try:
         import importlib.util as _ilu
         found = _ilu.find_spec("hermes_cli") is not None
-    except Exception:
+    except (ImportError, ValueError):
         found = False
     if found:
         argv = [sys.executable, "-m", "hermes_cli.main"]
@@ -868,6 +869,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
         env = served_profile_child_env(
             delegated_child_subprocess_env(os.environ), target_home=home, inherit_credentials=True)
     except Exception as exc:  # unreadable target home / secret source: refuse, never fall back
+        logger.debug("Job '%s': target-profile env build raised", job_id, exc_info=True)
         return _fail(f"bot-chat delivery to profile '{profile_label}' could not build the target "
                      f"profile's environment ({type(exc).__name__}: {exc}); do not resend")
     _bot_chat.pin_cli_target(argv, env, home)
@@ -925,7 +927,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             except Exception as defer_exc:
                 logger.warning(
                     "Job '%s': degraded-delivery marker could not be queued: %s",
-                    job_id, defer_exc)
+                    job_id, defer_exc, exc_info=True)
         hint = (
             "a short degraded-delivery notice was queued to Bot Chat — posted once the "
             f"session frees; full output stays saved, run `hermes cron runs` for job '{job_id}'"
@@ -1094,6 +1096,7 @@ def _send_media_via_adapter(
         try:
             dropped = validate_media_delivery_path(raw_path) not in kept
         except Exception:
+            logger.debug("media path policy check raised for %r", raw_path, exc_info=True)
             dropped = True
         if dropped:
             errors.append(f"attachment dropped by media path policy: {raw_path}")
@@ -1130,6 +1133,7 @@ def _send_media_via_adapter(
                     errors,
                 )
         except Exception as e:
+            logger.debug("media send raised for %s", media_path, exc_info=True)
             # TimeoutError etc. have an empty str(); fall back to the class name.
             _note_target_error(
                 job_ref, f"failed to send media {media_path}: {str(e) or type(e).__name__}", errors)
@@ -1227,7 +1231,7 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
         cron_cfg = (cfg or {}).get("cron")
         delivery_cfg = cron_cfg.get("delivery") if isinstance(cron_cfg, dict) else None
         return not isinstance(delivery_cfg, dict) or delivery_cfg.get("notify", True) is not False
-    except Exception:
+    except AttributeError:  # a non-mapping ``cfg``
         return True
 
 
@@ -1249,7 +1253,7 @@ def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
         from cron.jobs import update_job
         update_job(job["id"], values)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc)
+        logger.debug("Job '%s': could not record delivery verification: %s", job.get("id"), exc, exc_info=True)
 
 
 @dataclass
@@ -1372,6 +1376,7 @@ def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
         try:
             return bool(per_platform_check(platform_name))
         except Exception:
+            logger.debug("in_channel support probe raised for %s", platform_name, exc_info=True)
             return False
     return bool(getattr(runtime_adapter, "supports_inchannel_continuable", False))
 
@@ -1654,6 +1659,7 @@ def _deliver_via_live_adapter(
             delivered = True
             _seed_live_delivery_sessions(t, delivered_message_id)
     except Exception as e:
+        logger.debug("Job '%s': live adapter delivery raised", job["id"], exc_info=True)
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):
             target_errors.append(err_msg)
@@ -1680,11 +1686,6 @@ def _standalone_send(
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
-        return None, msg
-
-    def _failed(e) -> tuple[None, str]:
-        msg = f"delivery to {t.where} failed: {e}"
-        logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
         return None, msg
 
     # Interpreter finalizing (SIGTERM/restart/OOM): asyncio.run and a fresh ThreadPoolExecutor both
@@ -1723,9 +1724,11 @@ def _standalone_send(
         except Exception as e:
             if _sched._interpreter_shutting_down(e):
                 return _warned(shutdown_msg)
-            return _failed(e)
+            logger.error("Job '%s': delivery to %s failed: %s", job["id"], t.where, e, exc_info=True)
+            return None, f"delivery to {t.where} failed: {e}"
     except Exception as e:
-        return _failed(e)
+        logger.error("Job '%s': delivery to %s failed: %s", job["id"], t.where, e, exc_info=True)
+        return None, f"delivery to {t.where} failed: {e}"
 
 
 def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: list, delivery_errors: list) -> None:
@@ -2008,10 +2011,7 @@ def _deliver_result(
 
     # Resolve the mirror gate ONCE (default off): successful deliveries are appended to the target
     # chat's session transcript. Mirror the CLEAN, unwrapped output (not the header/footer).
-    try:
-        mirror_enabled = _cron_mirror_delivery_enabled(job, user_cfg)
-    except Exception:
-        mirror_enabled = False
+    mirror_enabled = _cron_mirror_delivery_enabled(job, user_cfg)  # config errors: logged, off
     # Independent of the mirror knob: continuable surfaces (in_channel) must seed even when
     # attach_to_session=false and cron.mirror_delivery=false, else the seed gets "" and fails.
     _, mirror_text = BasePlatformAdapter.extract_media(content)
@@ -2024,7 +2024,7 @@ def _deliver_result(
         config = load_gateway_config()
     except Exception as e:
         msg = f"failed to load gateway config: {e}"
-        logger.error("Job '%s': %s", job["id"], msg)
+        logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
         return msg
 
     delivery_errors = []

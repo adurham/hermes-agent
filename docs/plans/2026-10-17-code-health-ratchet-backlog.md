@@ -2692,3 +2692,18 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   per-session read, `_poll_loop`, `_poll_once`'s per-session read, `messages_send`. Return values
   unchanged on every path. New `tests/test_mcp_serve_error_logging.py` (2 tests, red on main); unit's
   2 files + new: 78 passed. `scripts/check` green. Branch `claude/fix-mcp-serve-exceptions-klmhfb`.
+- 2026-10-18 — C-1094 `cron/scheduler_delivery.py` swallow: BLE001 23 → 0 (FILE_LINES 2085 → 2085).
+  Narrowed 3: `_home_env_lookup` secret-scope import → `ImportError` (docstring: getenv only if the
+  module is missing), `find_spec("hermes_cli")` → `(ImportError, ValueError)` (its documented
+  raises), `_cron_delivery_notify_enabled` → `AttributeError` (non-mapping cfg). Existing log calls
+  gained `exc_info=True` (redaction, mirror, handoff thread, both seed paths, degraded marker,
+  verification bookkeeping, gateway-config load). Silent catch-alls kept as boundaries with a
+  `logger.debug(..., exc_info=True)` (mirror gate, bot-chat discovery and env build, media-policy
+  check, per-media send, in_channel probe, live-adapter lane); the two timeout getters share new
+  `_positive_cron_int` (same values, logs at debug). `_standalone_send`'s `_failed` helper is
+  inlined so the existing `logger.error(..., exc_info=True)` sits in each handler (same message).
+  `_deliver_result`'s wrapper around `_cron_mirror_delivery_enabled` dropped (that gate catches its
+  own errors; `job` is already indexed earlier). No site left. 162 test files (every
+  `cron.scheduler_delivery` referrer + `tests/cron/`): 1598 passed, 0 failed, 8 skipped;
+  old-vs-new differential on the narrowed/refactored helpers over 138 config shapes: identical.
+  `python scripts/check` green, 12 checks. Branch `claude/fix-scheduler-delivery-exceptions-3cj0k7`.
