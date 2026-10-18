@@ -20,6 +20,7 @@ the delivery yet: it runs that dispatch in :func:`retryable_ingress` and answers
 import asyncio
 import contextvars
 import logging
+import time
 from contextlib import contextmanager
 
 from hermes_state_runtime import RuntimeStoreError
@@ -70,6 +71,28 @@ def retryable_ingress():
 # Worded as an outage notice Discord's backfill recognises (``_is_down_notice_content``): the reply
 # must not mark the never-admitted message answered, so backfill picks it up once it is served again.
 PARKED_ROUTE_NOTICE = 'The agent is currently unavailable; please resend your message in a moment.'
+# One notice per (profile, platform, chat) per window: a relay reconnect drains its whole backlog
+# for a parked profile at once, and N frames must not post N notices in the same chat.
+PARKED_NOTICE_WINDOW_S = 60.0
+_monotonic = time.monotonic
+
+
+def _notice_due(adapter, profile, platform, chat_id):
+    """True (and the window restarts) when this chat was not told about *profile* in the window."""
+    sent = getattr(adapter, '_parked_notice_sent_at', None)
+    if not isinstance(sent, dict):
+        sent = {}
+        try:
+            adapter._parked_notice_sent_at = sent
+        except AttributeError:
+            return True
+    now, key = _monotonic(), (profile, platform, chat_id)
+    for stale in [k for k, at in sent.items() if now - at >= PARKED_NOTICE_WINDOW_S]:
+        del sent[stale]
+    if key in sent:
+        return False
+    sent[key] = now
+    return True
 
 
 def drop_rejected_route(adapter, source):
@@ -99,6 +122,12 @@ def refuse_parked_route(adapter, source, profile, reply_to=None):
         logger.warning(
             '[%s] Refusing inbound event for %s: routed profile %r on %s is parked (reason=profile_parked); '
             'nothing was admitted, the delivery is answered retryably', name, chat_id, profile, platform)
+        return
+    if not _notice_due(adapter, profile, platform, chat_id):
+        logger.info(
+            '[%s] Refusing inbound event for %s: routed profile %r on %s is parked (reason=profile_parked); '
+            'nothing was admitted, the chat was already told within %.0fs', name, chat_id, profile, platform,
+            PARKED_NOTICE_WINDOW_S)
         return
     logger.warning(
         '[%s] Refusing inbound event for %s: routed profile %r on %s is parked (reason=profile_parked); '
