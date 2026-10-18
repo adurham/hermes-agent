@@ -150,7 +150,8 @@ def _end_unless_ledger_busy(db, session_id: str, session_key, end_reason: str) -
     A viewer process (a dashboard, a second Desktop window) runs this reaper for a session the
     owning gateway is still executing; stamping it ended mid-turn made the owner treat its own live
     route as stale (#54878) and replace the conversation (#140642). The ledger names a local session
-    by its logical id (the row's ``chat_id``), so the physical id, the key and that id are checked."""
+    by its logical id (the row's ``chat_id``), so the physical id, the key and that id are checked: a
+    ``local-`` id, or the lineage owner its receipt names (an adopted conversation keeps its legacy id)."""
     execute_write = getattr(db, "_execute_write", None)
     if execute_write is None:
         db.end_session(session_id, end_reason)
@@ -161,6 +162,8 @@ def _end_unless_ledger_busy(db, session_id: str, session_key, end_reason: str) -
         ids = {session_id, str(session_key or "")}
         if row is not None and str(row[0] or "").startswith("local-"):
             ids.add(str(row[0]))
+        from hermes_state_local import local_lineage_owner
+        ids.add(local_lineage_owner(conn, session_id))
         for sid in filter(None, ids):
             if conn.execute(_CANONICAL_PENDING_SQL, (sid, sid)).fetchone() is not None:
                 return False
