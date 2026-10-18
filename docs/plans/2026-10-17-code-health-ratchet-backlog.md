@@ -2750,3 +2750,18 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `tests/gateway/test_feishu_comment_event_loop.py` (2 tests, both red on main); the 5
   feishu_comment-referencing test files 32/32. `scripts/check` green, 12 checks.
   Branch `claude/fix-feishu-comment-correctness-yxzvmm`.
+
+
+## Campaign close-out — 2026-10-17/18 (50 units)
+
+**Status: completed.** Base `6bb436671e67` -> head `26ddeb4c51`; annotated tag `code-health-2026-10-17`.
+
+Integrity checks at close-out: branch reconciliation 51/51 recorded tips present on main (0 missing); progress-log duplicate scan clean; `scripts/check` 12/12 on head; every unit was re-gated and focused-tested by the supervisor before its merge pass; all merged branches deleted with SHAs recorded.
+
+Open items:
+1. Full pytest suite + same-host base-SHA comparison on the final main. The last full run was on the interim head (589 failures / 115 files, all environmental classes, zero in campaign-touched files). **Blocked at close-out: amd-workstation offline.** When it returns: run both, `comm -13 base_fails head_fails` must be empty.
+2. One live CLI session smoke with `PYTHONASYNCIODEBUG=1` — watch for new tracebacks, "Task was destroyed but it is pending", "coroutine was never awaited".
+3. Lock the ratchet: remove the cleared families (F821, F811, BLE001/S110, ASYNC, RUF006, HX*, LIX001) from the code-health baseline/allowlist so a regression fails `scripts/check`.
+4. F821/F811 upstream candidates: produce the list, get explicit per-action approval, submit byte-identical patches. Nothing filed.
+
+Carried forward: tier-2/3 single-finding units, the remaining large rule families elsewhere in the tree, and the 589-failure environmental triage (update/install/pm/shallow-clone) — the last is the highest-value next hermes-agent work, since the fork has no trustworthy full-suite gate until it is explained.
