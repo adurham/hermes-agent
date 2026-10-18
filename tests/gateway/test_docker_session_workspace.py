@@ -214,3 +214,47 @@ def test_idle_reaper_stops_workspace_containers_and_keeps_the_profile_one_runnin
     assert sorted(calls) == [('cleanup', 'default'), ('stop', 'default:ws:aaaa'),
                              ('stop', 'profile:beta:ws:bbbb')]
     assert terminal_tool._active_environments == {}
+
+
+@pytest.mark.parametrize('persistent', [False, True])
+def test_side_agent_runs_in_its_sessions_workspace(home, tmp_path, persistent):
+    # Review (@kshitijk4poor S2, @dokterdok 4): /bg, /btw and preview restart never bound the workspace.
+    from types import SimpleNamespace
+    from gateway.session_tui_side import _side_scope
+    from tools import terminal_tool
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    policy = _policy(home, ws1, persistent=persistent)
+    with _turn(policy, 'local-a'):
+        session_key = _plan('local-a')[0]
+    authority = SimpleNamespace(runner=SimpleNamespace(), profile_id='fixture')
+    with _side_scope(authority, policy, 'bg_123456'):
+        key, mount = _plan('bg_123456')
+    assert mount == str(ws1)
+    if persistent:
+        assert key == session_key  # the session's own workspace container, not the profile's
+    assert terminal_tool.resolve_task_overrides('bg_123456') == {}  # released with the side task
+
+
+def test_managed_worker_turn_runs_in_its_sessions_workspace(home, tmp_path, monkeypatch):
+    # Review (@kshitijk4poor S2): out-of-process (managed worker) turns never bound the workspace.
+    from gateway import session_kanban
+    from gateway.session_policy import policy_scope
+    ws1 = tmp_path / 'ws1'
+    ws1.mkdir()
+    policy = _policy(home, ws1, persistent=True)
+    seen = {}
+
+    class Agent:
+        def run_conversation(self, text, **kwargs):
+            seen['task_id'] = kwargs.get('task_id')
+            seen['plan'] = _plan(kwargs.get('task_id'))
+            return {}
+
+    frame = {'policy': asdict(policy), 'text': 'hi', 'route': 'agent:main:local:dm:worker-s1',
+             'scope': {'session_id': 'worker-s1'}}
+    with policy_scope(policy):  # agent/managed_worker.py: policy_scope(policy), no session key bound
+        session_kanban.run_worker_turns(Agent(), frame, [])
+    assert seen['task_id'] == 'worker-s1'
+    assert ':ws:' in seen['plan'][0]
+    assert seen['plan'][1] == str(ws1)

@@ -59,12 +59,16 @@ def _side_scope(authority, policy, task_id):
     identity (approval key, HERMES_SESSION_ID) for the side agent's thread."""
     from gateway.session_authorities import owner_scope
     from gateway.session_context import clear_session_vars, set_session_vars
-    from gateway.session_policy import policy_scope
+    from gateway.session_policy import bind_turn_workspace, policy_scope, unbind_turn_workspace
     with owner_scope(authority, hydrate_secrets=True), policy_scope(policy, authority=authority):
         tokens = set_session_vars(session_key=task_id, session_id=task_id, cwd=policy.cwd)
         try:
+            # The session's workspace, as its own turns get it (#140665): mounted at /workspace in a
+            # per-task container, or the session's own persistent workspace container (same digest).
+            bind_turn_workspace(policy, task_id)
             yield
         finally:
+            unbind_turn_workspace(task_id)
             clear_session_vars(tokens)
 
 
