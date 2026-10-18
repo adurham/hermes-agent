@@ -494,15 +494,8 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         pass
 
-    # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
-    # cross-platform creation time.  Quantize to centiseconds so repeated reads
-    # of the same process compare equal without float-precision fragility.
-    # ``process_birth`` is the kernel start on macOS: psutil's ``create_time()``
-    # there shifts by a boot-time reference frozen per calling process, so after a
-    # clock step a long-lived gateway and a fresh worker fingerprinted the same
-    # live PID differently (Kanban ``_watch_submitter`` then exited; #140580).
-    # With no step (|drift| < 1 s) psutil returns the kernel start unchanged, so
-    # stored fingerprints keep matching.
+    # No /proc (macOS / Windows): psutil, quantized to centiseconds for stable equality.
+    # process_birth: macOS's clock-step-stable kernel start (#140580); unchanged with no step.
     try:
         import psutil  # type: ignore
         from hermes_cli.process_identity import process_birth

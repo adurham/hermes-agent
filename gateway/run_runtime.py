@@ -272,6 +272,12 @@ def stop_managed_turns(runner):
     return sum(stop_authority_turns(authority) for authority in _authorities(runner))
 
 
+def interrupt_side_agents(runner, reason):
+    """Whole-runtime shutdown: interrupt every counted side agent (``session_runtime_workers``)."""
+    from gateway.session_runtime_workers import interrupt_side_agents as interrupt
+    return interrupt(runner, reason)
+
+
 async def _retire_profile_authority(authority, timeout=None):
     """Stop profile-local services and turns before its ownership is released.
 
