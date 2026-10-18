@@ -1464,23 +1464,15 @@ def _(rid, params: dict, session: dict) -> dict:
 
 
 def _account_usage_lines(session: dict) -> list[str]:
-    """Rendered account-limit lines for the session's route: the live agent's provider/endpoint when
-    built, else the configured ``model.provider`` (on-disk credentials suffice, e.g. Codex OAuth).
-
-    Must run under the session's profile secret/config scope (#132422): multi-profile hosting
-    leaves ``os.environ`` / ``get_secret()`` on the launch profile, so an unscoped Anthropic OAuth
-    fetch raises ``UnscopedSecretError`` and the Desktop usage feed silently omits ``account_lines``.
-    Inside the scope, ``_config_model_target()`` also resolves the *session* profile's provider
-    when the agent is not built yet (pre-first-turn).
-    """
+    """Account-limit lines for the live agent's route, else ``model.provider``. Session scope: a
+    non-launch profile's credentials are unreadable without it when multiplexed (#132422)."""
     from agent.account_usage import fetch_account_usage, render_account_usage_lines
     agent = session.get("agent")
     with _session_profile_runtime_scope(session):
         provider = getattr(agent, "provider", None) or _config_model_target()[1]
         if not provider:
             return []
-        snapshot = fetch_account_usage(
-            provider, base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None))
+        snapshot = fetch_account_usage(provider, base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None))
     return render_account_usage_lines(snapshot)
 
 
