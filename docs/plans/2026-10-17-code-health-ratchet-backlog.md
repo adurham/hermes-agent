@@ -2828,3 +2828,9 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   the 3 other buzz suites 367/367. `scripts/check`: health green (FILE_LINES 2022 unchanged); ruff
   red only on main's own RUF100 at `agent/turn_truncation.py:572` (unused `# noqa: BLE001` from
   f21f8ad2, identical on clean main, not this unit's). Branch `claude/fix-buzz-adapter-profile-fhl54e`.
+- 2026-10-18 — C-1068 `plugins/platforms/buzz/adapter.py` timeout: HX006 1 → 0 (file hits 6 → 5,
+  FILE_LINES 2022 → 2022). `_exec_buzz`'s post-kill reap is now `asyncio.wait_for(proc.wait(), 5.0)`
+  under `contextlib.suppress(TimeoutError)`; no other HX006 class instances in the file. 348 tests
+  green; real-process old-vs-new check (plain timeout + grandchild holding the pipes) returns an
+  identical `(124, "", …)` in ~1s. Pre-existing ruff RUF100 on main at `agent/turn_truncation.py:572`
+  left alone (outside this unit) (branch `claude/fix-buzz-adapter-timeout-5jwcvt`).
