@@ -423,7 +423,12 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     clearPendingTools()
   }
 
-  messages.filter(isPainted).forEach((message, index) => {
+  messages.forEach((message, index) => {
+    // Skipped in place, not filtered first: `index` keys tool-part and message ids by the stored row position.
+    if (!isPainted(message)) {
+      return
+    }
+
     if (message.role === 'assistant') {
       nearestAssistant = message
     } else if (message.role === 'user' || message.role === 'system') {
