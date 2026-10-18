@@ -118,6 +118,19 @@ def test_a_turn_past_its_interrupt_settle_bound_still_reads_its_receipt_and_stat
     assert "prompt.receipt" in methods and "session.stats" in methods, methods
 
 
+def test_a_long_streamed_reply_keeps_its_delta_buffers_linear():
+    """``turn.shown += text`` on an attribute copied the segment per delta: 200k deltas took ~50 s."""
+    import time
+    from hermes_cli.gateway_agent import GatewayAgent, _Turn
+    agent = GatewayAgent.__new__(GatewayAgent)
+    agent.stream_delta_callback, agent._turn = (lambda _text: None), _Turn(SID)
+    started = time.monotonic()
+    for _ in range(200_000):
+        agent._on_delta({"text": "token-text "}, lambda _text: None, {})
+    assert time.monotonic() - started < 10
+    assert agent._turn.shown == agent._turn.spoken == "token-text " * 200_000
+
+
 def test_tool_start_closes_a_prefix_whose_separator_fell_in_the_hole(agents, monkeypatch):
     output, final = [], "The answer is 42."
     agent, client = agents([frame("message.delta", {"text": "The answer"}), GAP],

@@ -71,8 +71,21 @@ class _Turn:
 
     def __init__(self, session_id):
         self.session_id, self.admission = session_id, None
-        self.shown = self.spoken = ""
+        # Parts, joined on read: ``+=`` on an attribute copies the whole segment per delta (quadratic).
+        self._shown, self._spoken = [], []
         self.seen, self.answered, self.gapped = set(), set(), False
+
+    @property
+    def shown(self):
+        return "".join(self._shown)
+
+    @property
+    def spoken(self):
+        return "".join(self._spoken)
+
+    def close_segment(self):
+        self.seen |= {self.shown.strip(), self.spoken.strip()}
+        self._shown, self._spoken = [], []
 
 
 class GatewayAgent:
@@ -754,18 +767,17 @@ class GatewayAgent:
             return  # live text stopped at the replay gap; the settlement shows the reply once
         if self.stream_delta_callback is not None:
             self.stream_delta_callback(text)
-            turn.shown += text
+            turn._shown.append(text)
         if stream_callback is not None:
             stream_callback(text)
-            turn.spoken += text
+            turn._spoken.append(text)
 
     def _close_segment(self, starts, separator=False):
         """A segment boundary: the ``text: None`` separator, or a later boundary when it fell in a gap."""
         turn = self._turn
-        if self.stream_delta_callback is not None and (separator or turn.shown):
+        if self.stream_delta_callback is not None and (separator or any(turn._shown)):
             self.stream_delta_callback(None)
-        turn.seen |= {turn.shown.strip(), turn.spoken.strip()}
-        turn.shown = turn.spoken = ""
+        turn.close_segment()
 
     def _on_interim(self, payload, stream_callback, starts):
         text = payload.get("text")
