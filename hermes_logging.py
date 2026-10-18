@@ -689,14 +689,39 @@ class _ProfileRoutingFileHandler(logging.Handler):
 
     def _handler_for_home(self, home: Path) -> _ManagedRotatingFileHandler:
         with self._profile_handlers_lock:
-            if home not in self._profile_handlers:
-                handler = _new_file_handler(
-                    home / "logs" / self._filename, level=self.level, max_bytes=self._max_bytes,
-                    backup_count=self._backup_count, formatter=self.formatter,
-                )
-                handler._skip_write_when_dir_missing = home != self._default_home
-                self._profile_handlers[home] = handler
-            return self._profile_handlers[home]
+            existing = self._profile_handlers.get(home)
+        if existing is not None:
+            return existing
+        # Built with NO lock held: Handler.__init__ takes logging's module lock, and
+        # logging.shutdown (dictConfig's _clearExistingHandlers) holds that lock while it takes
+        # this router's lock and then, via close(), _profile_handlers_lock. Building under
+        # either inverts that order and deadlocks the listener against dictConfig.
+        handler = _new_file_handler(
+            home / "logs" / self._filename, level=self.level, max_bytes=self._max_bytes,
+            backup_count=self._backup_count, formatter=self.formatter,
+        )
+        handler._skip_write_when_dir_missing = home != self._default_home
+        with self._profile_handlers_lock:
+            released = home != self._default_home and home not in self._profile_homes
+            winner = None if released else self._profile_handlers.setdefault(home, handler)
+        if winner is not handler:
+            _quietly(handler.close)  # another thread routed it first, or release_profile ran
+        return self._handler_for_home(self._default_home) if winner is None else winner
+
+    def handle(self, record: logging.LogRecord) -> logging.LogRecord | bool:
+        """Filter and route *record* without taking this handler's own lock.
+
+        ``logging.Handler.handle`` emits under ``self.lock``, and routing may build a child
+        handler (which takes logging's module lock): the inverse of ``logging.shutdown``'s
+        order. The router's lock guarded nothing of its own: each child serializes its I/O
+        under its own lock, and the routing map is guarded by ``_profile_handlers_lock``.
+        """
+        rv = self.filter(record)
+        if isinstance(rv, logging.LogRecord):
+            record = rv
+        if rv:
+            self.emit(record)
+        return rv
 
     def emit(self, record: logging.LogRecord) -> None:
         try:

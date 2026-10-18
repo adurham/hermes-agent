@@ -1033,3 +1033,62 @@ class TestRolloverPreservesLogOwnership:
         monkeypatch.setattr(os, "chown", _refuse)
         self._rolled_handler(log_path)
         assert log_path.exists()
+
+
+def test_router_never_builds_a_child_handler_under_a_lock_logging_shutdown_takes(hermes_home, monkeypatch):
+    """CI run 39131422357 hung: the listener thread held the router's handler lock while building a
+    child handler (which takes ``logging._lock``), while dictConfig held ``logging._lock`` inside
+    ``logging.shutdown`` and waited on the router's lock. Both sides must finish."""
+    profile_home = (hermes_home / "profiles" / "lockorder").resolve()
+    (profile_home / "logs").mkdir(parents=True)
+    (hermes_home / "logs").mkdir(exist_ok=True)
+    existing = RotatingFileHandler(str(hermes_home / "logs" / "agent.log"), encoding="utf-8")
+    router = hermes_logging._ProfileRoutingFileHandler(existing, [profile_home])
+    existing.close()
+
+    building, go = threading.Event(), threading.Event()
+    real_new_file_handler = hermes_logging._new_file_handler
+
+    def paused_new_file_handler(*args, **kwargs):
+        building.set()
+        go.wait(5)
+        return real_new_file_handler(*args, **kwargs)  # Handler.__init__ takes logging._lock
+
+    monkeypatch.setattr(hermes_logging, "_new_file_handler", paused_new_file_handler)
+    record = logging.LogRecord("lockorder", logging.WARNING, __file__, 1, "routed", None, None)
+    record.hermes_home = str(profile_home)
+    holding_module_lock, emitter_released = threading.Event(), threading.Event()
+    shutdown_got_router_lock = []
+
+    def shutdown_like_dictconfig():
+        # dictConfig.configure holds logging._lock -> _clearExistingHandlers -> logging.shutdown,
+        # whose per-handler step is h.acquire(). Bounded here so a regression fails instead of
+        # wedging the process (a real shutdown would block forever while holding logging._lock).
+        with logging._lock:
+            holding_module_lock.set()
+            emitter_released.wait(5)
+            got = router.lock.acquire(timeout=5)
+            shutdown_got_router_lock.append(got)
+            if got:
+                try:
+                    router.flush()
+                    router.close()
+                finally:
+                    router.release()
+
+    emitter = threading.Thread(target=router.handle, args=(record,), daemon=True)
+    emitter.start()
+    assert building.wait(5)
+    clearer = threading.Thread(target=shutdown_like_dictconfig, daemon=True)
+    clearer.start()
+    assert holding_module_lock.wait(5)
+    go.set()  # the emitter now heads for logging._lock, which the clearer holds
+    emitter_released.set()
+    clearer.join(10)
+    emitter.join(10)
+    for child in list(router._profile_handlers.values()):
+        child.close()
+    assert not clearer.is_alive() and not emitter.is_alive()
+    assert shutdown_got_router_lock == [True], (
+        "lock-order inversion: logging.shutdown (under logging._lock) could not take the router's "
+        "lock while the router built a child handler (which needs logging._lock)")
