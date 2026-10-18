@@ -27,28 +27,56 @@ export function parseCanonicalGroupKey(key: string): (CanonicalGroupRoute & { ro
   }
 }
 
+/** The binding key for a group opened by name on one (connection, profile).
+ *  A bare name is not an identity: two gateways can each hold a "Team", so a
+ *  name resolved on one source must never answer for another. */
+export function canonicalGroupAliasKey(route: CanonicalGroupRoute, group: string): string {
+  return `alias:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${group}`
+}
+
+/** The binding `group` opens on `route`: a `canonical:` key names its own route;
+ *  a name only matches the alias published for the current source. */
+export function canonicalGroupBindingFor(
+  bindings: Record<string, CanonicalGroupBinding>,
+  route: CanonicalGroupRoute,
+  group: string
+): CanonicalGroupBinding | undefined {
+  return parseCanonicalGroupKey(group) ? bindings[group] : bindings[canonicalGroupAliasKey(route, group)]
+}
+
 /** #140805: bindings live in memory, so after a restart a group opened by name
- *  (roster row) or by a restored `canonical:` tab key misses. Resolve it against
- *  the gateway's `groups.list` and alias the existing room under the key the
- *  caller used. Returns null only when the authority answered and holds no such
- *  room; a failed lookup THROWS, so the caller fails closed (retry, never mint).
- *  Same-name forks resolve to the most recently updated room (list order). */
+ *  (roster row) or by a restored `canonical:` tab key misses. Look it up in the
+ *  gateway's `groups.list`. Read-only: the caller publishes the result with
+ *  `publishCanonicalGroup` only if its lookup is still current, so a superseded
+ *  source's late answer never opens its room. Returns null only when the
+ *  authority answered and holds no such room; a failed lookup THROWS, so the
+ *  caller fails closed (retry, never mint). Same-name forks resolve to the most
+ *  recently updated room (list order). */
 export async function resolveCanonicalGroup(
   route: CanonicalGroupRoute,
   group: string
-): Promise<CanonicalGroupBinding | null> {
+): Promise<{ authority: CanonicalGroupRoute; room: CanonicalRoom } | null> {
   const parsed = parseCanonicalGroupKey(group)
   const authority = parsed ? { connectionId: parsed.connectionId, profile: parsed.profile } : route
   const { rooms } = await discoverCanonicalGroups(authority)
   const room = parsed ? rooms.find(r => r.room_id === parsed.roomId) : rooms.find(r => r.name === group)
 
-  if (!room) {return null}
+  return room ? { authority, room } : null
+}
 
-  registerCanonicalGroup(authority, room)
-  const binding = { ...authority, roomId: room.room_id, roomName: room.name }
-  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [group]: binding })
+/** Publish a resolved room under its `canonical:` key and, for a name, under
+ *  the alias scoped to the route it was resolved on. */
+export function publishCanonicalGroup(
+  route: CanonicalGroupRoute,
+  group: string,
+  resolved: { authority: CanonicalGroupRoute; room: CanonicalRoom }
+): void {
+  const key = registerCanonicalGroup(resolved.authority, resolved.room)
 
-  return binding
+  if (key === group) {return}
+  const binding = { ...resolved.authority, roomId: resolved.room.room_id, roomName: resolved.room.name }
+  const alias = parseCanonicalGroupKey(group) ? group : canonicalGroupAliasKey(route, group)
+  $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [alias]: binding })
 }
 
 export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }) {

@@ -134,3 +134,51 @@ it('still offers to start a gateway group for a legacy room with no gateway room
   await act(async () => { fireEvent.click(start) })
   expect(methods().filter(m => m === 'groups.create')).toHaveLength(1)
 })
+
+// Review on #140972: a name binding must stay on the (connection, profile) it was
+// resolved on, and a superseded lookup must never publish.
+const roomOn = (route: { connectionId: string; profile: string }) =>
+  route.connectionId === 'remote' ? { room_id: 'room-b', name: 'Team', members } : original
+
+function routedGateway(list: (route: { connectionId: string; profile: string }) => unknown) {
+  request.mockImplementation(async (route, method, params) => {
+    if (method === 'groups.capabilities') {return { driver: true, persistent_process: true }}
+
+    if (method === 'groups.list') {return list(route)}
+
+    if (method === 'groups.state') {return { room: { ...roomOn(route), latest_seq: 0 }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events: [] }}
+
+    throw new Error(`Unexpected RPC: ${method} ${String(params)}`)
+  })
+}
+
+it('a name resolved on one connection does not open that room from another connection', async () => {
+  routedGateway(route => ({ rooms: [roomOn(route)], next_offset: null }))
+  const view = await act(async () => render(<GroupChatWorkspace group="Team" members={roster} />))
+  expect(request.mock.calls.find(call => call[1] === 'groups.state')?.[2]).toMatchObject({ room_id: 'room-original' })
+  view.unmount()
+  request.mockClear()
+
+  state.connectionId.set('remote')
+  await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
+  const states = request.mock.calls.filter(call => call[1] === 'groups.state')
+  expect(states.map(call => call[2]?.room_id)).toEqual(['room-b'])
+  expect(states[0][0]).toMatchObject({ connectionId: 'remote' })
+})
+
+it('a late lookup from a superseded connection does not publish its room', async () => {
+  let releaseA: (value: unknown) => void = () => undefined
+  const pendingA = new Promise(resolve => { releaseA = resolve })
+  routedGateway(route => route.connectionId === 'local' ? pendingA : { rooms: [], next_offset: null })
+  await act(async () => { render(<GroupChatWorkspace group="Team" members={roster} />) })
+
+  await act(async () => { state.connectionId.set('remote') })
+  expect((screen.getByRole('button', { name: 'Start gateway group' }) as HTMLButtonElement).disabled).toBe(false)
+
+  await act(async () => { releaseA({ rooms: [original], next_offset: null }) })
+  expect(methods()).not.toContain('groups.state')
+  expect(Object.values($canonicalGroupBindings.get()).some(binding => binding.connectionId === 'local')).toBe(false)
+  expect(screen.getByRole('button', { name: 'Start gateway group' })).toBeTruthy()
+})

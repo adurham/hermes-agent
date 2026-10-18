@@ -42,7 +42,14 @@ import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
-import { $canonicalGroupBindings, parseCanonicalGroupKey, registerCanonicalGroup, resolveCanonicalGroup } from './canonical-group-registry'
+import {
+  $canonicalGroupBindings,
+  canonicalGroupBindingFor,
+  parseCanonicalGroupKey,
+  publishCanonicalGroup,
+  registerCanonicalGroup,
+  resolveCanonicalGroup
+} from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import {
@@ -575,7 +582,9 @@ interface GroupChatWorkspaceProps {
 
 export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const bindings = useValue($canonicalGroupBindings)
-  const binding = bindings[props.group]
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const binding = canonicalGroupBindingFor(bindings, { connectionId: connectionId ?? '', profile }, props.group)
 
   if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
 
@@ -603,8 +612,13 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     let cancelled = false
     setLookup({ source, status: 'pending' })
     setError('')
-    void resolveCanonicalGroup({ connectionId: connectionId ?? '', profile }, props.group)
-      .then(binding => { if (!cancelled && !binding) {setLookup({ source, status: 'missing' })} })
+    const route = { connectionId: connectionId ?? '', profile }
+    void resolveCanonicalGroup(route, props.group)
+      .then(resolved => {
+        if (cancelled) {return}
+
+        if (resolved) {publishCanonicalGroup(route, props.group, resolved)} else {setLookup({ source, status: 'missing' })}
+      })
       .catch(e => {
         if (!cancelled) {
           setLookup({ source, status: 'failed' })
@@ -1742,7 +1756,8 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
-      const title = $canonicalGroupBindings.get()[group]?.roomName || group
+      const route = { connectionId: host.state.connectionId.get() ?? '', profile: host.state.profile.get() }
+      const title = canonicalGroupBindingFor($canonicalGroupBindings.get(), route, group)?.roomName || group
 
       const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
         title,
