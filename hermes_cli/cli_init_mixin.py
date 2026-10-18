@@ -408,11 +408,13 @@ class CLIInitMixin:
             from hermes_state_user_copy import describe_storage_failure, storage_failure_details
             from agent.i18n import t
             failure = describe_storage_failure(e)
+            # The closure must not read `e`: Python unbinds an except name when the block ends.
+            store_error = e
             def _present_store_warning():
                 try:
                     Console(stderr=True).print(t(
                         "cli.session_store.unavailable_rich",
-                        reason=failure.gloss, action=failure.action, details=storage_failure_details(e)))
+                        reason=failure.gloss, action=failure.action, details=storage_failure_details(store_error)))
                 except Exception:
                     print(t("cli.session_store.unavailable_plain", reason=failure.gloss, action=failure.action))
             # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
