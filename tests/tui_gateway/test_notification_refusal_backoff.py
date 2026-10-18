@@ -52,6 +52,13 @@ def test_canonical_busy_notification_backs_off_without_consuming_work(monkeypatc
         assert registry.completion_queue.get_nowait() is event
         assert not completed
 
+        # Still refused (the gateway keeps owning the chat): each retry waits twice as long, to a cap.
+        for _ in range(8):
+            dispatch()
+            assert registry.completion_queue.get_nowait() is event
+        assert waits == [0.25, 0.5, 1.0, 2.0, 4.0, 5.0, 5.0, 5.0, 5.0], waits
+        assert waits[-1] == server._NOTIF_REFUSAL_BACKOFF_MAX_S
+
         # Human submissions still report ownership refusals.
         assert server._run_prompt_submit("human", "ui", session, "hello") is False
         assert emitted[0][0] == "error"
@@ -63,3 +70,15 @@ def test_canonical_busy_notification_backs_off_without_consuming_work(monkeypatc
         assert len(completed) == 1
         assert registry.completion_queue.empty()
         assert not waits
+        assert "_notif_refusal_delay" not in session  # the next refusal starts from the floor again
+
+
+def test_a_refusal_that_is_not_requeued_does_not_delay_the_poller(monkeypatch):
+    """Kanban and /loop callers keep their notice themselves; the poller thread must not sleep for them
+    (it also drives the kanban and loop polls)."""
+    waits = []
+    monkeypatch.setattr(server, "time", SimpleNamespace(sleep=waits.append, time=lambda: 1))
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **k: False)
+    session = {"history_lock": threading.RLock(), "running": True}
+    assert server._notif_submit("r", "ui", session, "tick", "loop wakeup send failed") is False
+    assert session["running"] is False and not waits
