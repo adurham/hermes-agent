@@ -63,7 +63,7 @@ def _read_json(path: Path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception as e:
+    except (OSError, ValueError) as e:  # ValueError covers JSONDecodeError and UnicodeDecodeError
         logger.debug("Failed to load %s: %s", path.name, e)
         return {}
 
@@ -81,7 +81,7 @@ def _get_session_db():
         from hermes_state_registry import acquire
         return acquire()
     except Exception as e:
-        logger.debug("SessionDB unavailable: %s", e)
+        logger.debug("SessionDB unavailable: %s", e, exc_info=True)
         return None
 
 
@@ -93,6 +93,7 @@ def _load_session_messages(session_id: str):
     try:
         return db.get_messages(session_id), None
     except Exception as e:
+        logger.debug("Failed to read messages for session %s", session_id, exc_info=True)
         return None, f"Failed to read messages: {e}"
     finally:
         try:
@@ -161,13 +162,10 @@ def _load_sessions_index_from_db() -> dict:
             return {}
         return {row["session_key"]: _row_to_index_entry(row) for row in lister(active_only=True) if row.get("session_key")}
     except Exception as e:
-        logger.debug("Failed to load gateway sessions from state.db: %s", e)
+        logger.debug("Failed to load gateway sessions from state.db: %s", e, exc_info=True)
         return {}
     finally:
-        try:
-            db.close()
-        except Exception:
-            pass
+        _close_quietly(db, "index")
 
 
 def _load_sessions_index_from_json() -> dict:
@@ -252,7 +250,7 @@ def _ts_float(ts) -> float:
     except ValueError:
         try:
             return datetime.fromisoformat(ts).timestamp()
-        except Exception:
+        except (ValueError, OverflowError, OSError):  # unparseable, or out of the platform's time_t range
             return 0.0
 
 
@@ -362,6 +360,7 @@ class EventBridge:
             try:
                 self._cached_sessions_index = _load_sessions_index()
             except Exception:
+                logger.debug("EventBridge: baseline sessions index failed", exc_info=True)
                 self._cached_sessions_index = {}
             for session_key, entry in self._cached_sessions_index.items():
                 session_id = entry.get("session_id", "")
@@ -370,6 +369,7 @@ class EventBridge:
                 try:
                     latest = _latest_ts(db.get_messages(session_id))
                 except Exception:
+                    logger.debug("EventBridge: baseline read failed for %s", session_key, exc_info=True)
                     continue
                 if latest > 0.0:
                     self._last_poll_timestamps[session_key] = latest
@@ -387,7 +387,7 @@ class EventBridge:
                 try:
                     self._poll_once(db)
                 except Exception as e:
-                    logger.debug("EventBridge poll error: %s", e)
+                    logger.debug("EventBridge poll error: %s", e, exc_info=True)
                 time.sleep(POLL_INTERVAL)
         finally:
             _close_quietly(db, "polling")
@@ -417,6 +417,7 @@ class EventBridge:
             try:
                 messages = db.get_messages(session_id)
             except Exception:
+                logger.debug("EventBridge: poll read failed for %s", session_key, exc_info=True)
                 continue
             if not messages:
                 continue
@@ -621,6 +622,7 @@ class _ToolHandlers:
         except ImportError:
             return json.dumps({"error": "Send message tool not available"})
         except Exception as e:
+            logger.debug("messages_send to %s failed", target, exc_info=True)
             return json.dumps({"error": f"Send failed: {e}"})
 
     def channels_list(self, platform: Optional[str] = None) -> str:

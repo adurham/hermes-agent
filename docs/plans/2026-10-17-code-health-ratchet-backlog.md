@@ -2683,3 +2683,12 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   unexpected hosted-room probe failure and a crashed side agent (`_spawn_side_agent.run`).
   Replies unchanged. FILE_LINES 1,455 → 1,465. 16 tui_gateway test files 850/850. Branch
   `claude/fix-swallowed-exceptions-c1108-hdl1u0`. Next: C-1109.
+- 2026-10-18 — C-1107 `mcp_serve.py` swallow: BLE001 11 → 0, S110 1 → 0 (no other hits in the file).
+  Narrowed: `_read_json` → `(OSError, ValueError)` (open/decode/JSON errors); `_ts_float`'s ISO
+  fallback → `(ValueError, OverflowError, OSError)` (same set as `_iso`). The `_load_sessions_index_from_db`
+  `db.close()` / `pass` now goes through the file's own `_close_quietly` (debug + traceback). Kept as
+  catch-all boundaries with `exc_info=True` at debug: `_get_session_db`, `_load_session_messages`
+  (returns the error string to the MCP client), the index load, the baseline's index load and
+  per-session read, `_poll_loop`, `_poll_once`'s per-session read, `messages_send`. Return values
+  unchanged on every path. New `tests/test_mcp_serve_error_logging.py` (2 tests, red on main); unit's
+  2 files + new: 78 passed. `scripts/check` green. Branch `claude/fix-mcp-serve-exceptions-klmhfb`.
