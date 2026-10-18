@@ -448,11 +448,17 @@ def _profiles(authority, actor, home, params, siblings=()):
 
 # The Bots pane polls ``profiles.list`` every 5 s. Re-listing ``profiles/`` and re-parsing every
 # sibling ``profile.yaml`` each time cost ~60 ms at 50 profiles, so both are cached by stat:
-# the directory listing by the mtimes of ``profiles/`` and each entry (a new profile, its
+# the directory listing by the stat keys of ``profiles/`` and each entry (a new profile, its
 # identity marker or a tombstone each bump one of them), and a parsed ``profile.yaml`` by
-# (path, mtime_ns, size).
+# (path, stat key). A stat key carries ctime and the inode beside mtime and size: mtime alone
+# misses a change inside one coarse timestamp tick (FAT/SMB/HFS+) and can be set back with
+# utime, while ctime moves on every metadata or content change and cannot be set by callers.
 _NAMED_DIRS_CACHE: dict[str, tuple[tuple, list]] = {}
-_PROFILE_META_CACHE: dict[str, tuple[tuple[int, int], object]] = {}
+_PROFILE_META_CACHE: dict[str, tuple[tuple, object]] = {}
+
+
+def _stat_key(stat):
+    return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
 
 
 def _named_profile_dirs():
@@ -460,8 +466,8 @@ def _named_profile_dirs():
     profiles_root = _get_profiles_root()
     try:
         with os.scandir(profiles_root) as entries:
-            signature = (os.stat(profiles_root).st_mtime_ns,
-                         tuple(sorted((entry.name, entry.stat().st_mtime_ns) for entry in entries)))
+            signature = (_stat_key(os.stat(profiles_root)),
+                         tuple(sorted((entry.name, _stat_key(entry.stat())) for entry in entries)))
     except OSError:
         signature = None
     cached = _NAMED_DIRS_CACHE.get(str(profiles_root))
@@ -486,7 +492,7 @@ def _discovered_profile_meta(name, meta_path):
         stat = meta_path.stat()
     except OSError:
         return {}
-    key = (stat.st_mtime_ns, stat.st_size)
+    key = _stat_key(stat)
     cached = _PROFILE_META_CACHE.get(str(meta_path))
     if cached and cached[0] == key:
         return cached[1]
