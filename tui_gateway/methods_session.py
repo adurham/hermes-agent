@@ -155,6 +155,7 @@ def _snapshot_sessions(rid):
         with _sessions_lock:
             return list(_sessions.items()), None
     except Exception as e:
+        logger.warning("active-session snapshot failed", exc_info=True)
         return None, _err(rid, 5036, f"could not enumerate active sessions: {e}")
 
 
@@ -166,6 +167,7 @@ def _pet_display_cfg() -> dict:
         display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
         return display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
     except Exception:
+        logger.debug("display.pet config read failed", exc_info=True)
         return {}
 
 
@@ -174,7 +176,7 @@ def _pet_emit(event: str, payload: dict, what: str) -> None:
     try:
         _emit(event, "", payload)
     except Exception as exc:
-        logger.debug("%s emit failed: %s", what, exc)
+        logger.debug("%s emit failed: %s", what, exc, exc_info=True)
 
 
 def _pet_gen_abort(rid, token: str, code: int, message: str) -> dict:
@@ -193,7 +195,7 @@ def _pet_method(name: str, *, fail_open=None, slug: bool = False, scoped: bool =
                     return _err(rid, 4004, "missing slug")
                 return fn(rid, params, value) if slug else fn(rid, params)
             except Exception as exc:
-                logger.debug("%s failed: %s", name, exc)
+                logger.debug("%s failed: %s", name, exc, exc_info=True)
                 if fail_open is not None:
                     return _ok(rid, fail_open(params) if callable(fail_open) else dict(fail_open))
                 return _err(rid, 5031, f"{name} failed: {exc}")
@@ -215,6 +217,7 @@ def _billing_call(rid, fn, extra: dict | None = None) -> dict:
     except BillingError as exc:
         return _ok(rid, {**_serialize_billing_error(exc), **(extra or {})})
     except Exception as exc:
+        logger.debug("billing portal call failed", exc_info=True)
         return _ok(rid, {"ok": False, "error": "error", "message": str(exc), **(extra or {})})
 
 
@@ -390,6 +393,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             try:
                 _, display_history = db.get_resume_conversations(parent_session_id)
             except Exception as exc:
+                logger.debug("branch_stored: parent %s history read failed", parent_session_id, exc_info=True)
                 return _err(rid, 4008, f"nothing to branch — {exc}")
         history = _visible_branch_history(display_history)
         if not history:
@@ -442,7 +446,6 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         logger.info("session.create %s: model=%s provider=%s source=client override (profile default: %s)",
                     key, session_model_override["model"], session_model_override.get("provider") or "-",
                     _session_default_route(_sessions[sid])[0])
-    # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
     # empty session behind for every launch the user never typed into. The row is now created lazily on the
@@ -518,8 +521,6 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
     row = db.get_session_by_title(title_lookup)
     if row and row.get("archived"):
         from tools.bot_mode_probe import BOT_CHAT_TITLE
-        # A Bot Chat archived by the ws-orphan reaper / agent_close is an accident (the desktop would mint
-        # replacements forever): resurrect recoverable reasons only. Re-fetch by ID — title is not UNIQUE.
         if title_lookup == BOT_CHAT_TITLE and _unarchive_recoverable(db, row["id"]):
             # The canonical Bot Chat is identity-scoped: an archive stamped by the ws-orphan reaper or older
             # agent cleanup (ws_orphan_reap / agent_close) is an accident, not user intent, and hiding the
@@ -562,6 +563,7 @@ def _(rid, params: dict, db) -> dict:
         # per-session scan and would turn one listing call into hundreds of them.
         return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
     except Exception as e:
+        logger.debug("session.list failed", exc_info=True)
         return _err(rid, 5006, str(e))
 
 
@@ -738,17 +740,10 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
 
 
 def _resume_adopt_stranded(ctx: _Resume) -> None:
-    """Adopt a lineage stranded in the DEFAULT store (older builds ran a profile bot's turns on the focused
-    tile's backend; unadopted it 4001s forever). Exact-id ONLY — bot titles collide; never a retired donor."""
+    """Adopt a lineage stranded in the DEFAULT store (#93296 follow-up: older builds ran a profile bot's turns on
+    the focused tile's backend; unadopted it 4001s forever), then retry the lookup. Exact-id ONLY — bot titles
+    collide; never a retired donor. Only profile-scoped resumes (owns_db) reach here; unknown ids still 4007."""
     try:
-        # Stranded-session adoption (#93296 follow-up): before session RPCs routed by their TARGET session,
-        # a profile bot's turns executed on the focused tile's backend — usually default — so its canonical
-        # session accumulated in the DEFAULT profile's state.db. Now that routing is correct, this
-        # profile-scoped resume is the first place the fix and the stranded data collide: the id exists in
-        # the default store but not here, and without adoption the same chat 4001s forever (the fix made it
-        # unreachable instead of misrouted). Adopt the full lineage from the default store into this
-        # profile's db, then retry the lookup. Only profile-scoped resumes reach here (owns_db); unknown ids
-        # in the default store still 4007 exactly as before.
         default_db = _get_db()
         donor_row = default_db.get_session(ctx.target) if default_db is not None else None
         if not donor_row or donor_row.get("archived"):
@@ -787,10 +782,7 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
             profile_name=profile_name_for_home(ctx.profile_home) or _response_profile_name(ctx.profile),
         )
         ctx.found = ctx.db.get_session(ctx.target)
-        logger.info(
-            "materialized session row for minted-but-unpersisted key %s (resume no longer 4007s)",
-            ctx.target,
-        )
+        logger.info("materialized session row for minted-but-unpersisted key %s (resume no longer 4007s)", ctx.target)
     except Exception:
         logger.warning("failed to materialize session row for %s", ctx.target, exc_info=True)
 
@@ -861,7 +853,7 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     except SessionResumeTooLargeError as exc:
         return _err(ctx.rid, 4130, str(exc))
     except Exception as exc:
-        logger.warning("resume safety check failed for %s (proceeding without guard): %s", ctx.target, exc)
+        logger.warning("resume safety check failed for %s (proceeding without guard): %s", ctx.target, exc, exc_info=True)
     return None
 
 
@@ -925,6 +917,7 @@ def _resume_lazy(ctx: _Resume) -> dict:
         # repair_alternation heals a durable ``user;user`` once here.
         history = ctx.child_history(repair=True)
     except Exception as e:
+        logger.debug("lazy resume history read failed for %s", ctx.target, exc_info=True)
         return _err(ctx.rid, 5000, resume_failed_message(e))
     record = ctx.record(source, cwd, history, lazy=True, todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
@@ -971,6 +964,7 @@ def _resume_cold(ctx: _Resume) -> dict:
     try:
         history, display_history, raw_history = ctx.restore()
     except Exception as e:
+        logger.debug("cold resume history read failed for %s", ctx.target, exc_info=True)
         return _err(ctx.rid, 5000, resume_failed_message(e))
     with _profile_build_scope(ctx.profile_home):
         overrides = _stored_session_runtime_overrides(ctx.found)
@@ -1001,6 +995,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
         except Exception as e:
+            logger.debug("eager resume build failed for %s", ctx.target, exc_info=True)
             return _err(ctx.rid, 5000, resume_failed_message(e))
     with _session_resume_lock:
         live = _find_live_session_by_key(ctx.target, ctx.profile_home)
@@ -1033,6 +1028,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                     session["profile_home"] = str(ctx.profile_home)
                 session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
         except Exception as e:
+            logger.debug("eager resume session init failed for %s", ctx.target, exc_info=True)
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.
             if ctx.owns_db:
@@ -1130,6 +1126,7 @@ def _(rid, params: dict) -> dict:
             try:
                 db.update_session_cwd(target, target_cwd, branch, root, replace_git_meta=True)
             except Exception as e:
+                logger.debug("session.workspace.move failed for %s", target, exc_info=True)
                 return _err(rid, 5007, f"move failed: {e}")
     if live is not None:
         try:
@@ -1193,6 +1190,7 @@ def _(rid, params: dict) -> dict:
         except SessionActiveWriteGuardError:
             return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:
+            logger.debug("session.delete failed for %s", target, exc_info=True)
             return _err(rid, 5036, f"delete failed: {e}")
     return _ok(rid, {"deleted": target}) if deleted else _err(rid, 4007, "session not found")
 
@@ -1212,6 +1210,7 @@ def _title_read(session: dict, db, key: str) -> str:
         elif not resolved_title:
             resolved_title = fallback
     except Exception:
+        logger.debug("session.title read failed for %s", key, exc_info=True)
         resolved_title = fallback
     return resolved_title
 
@@ -1241,11 +1240,34 @@ def _(rid, params: dict, session: dict, db) -> dict:
         except ValueError as e:
             return _err(rid, 4022, str(e))
         except Exception as e:
+            logger.debug("session.title write failed for %s", key, exc_info=True)
             return _err(rid, 5007, str(e))
         session["pending_title"] = value if pending else None
         result = {"pending": pending, "title": value}
     _emit_session_info_for_session(params.get("session_id", ""), session)
     return _ok(rid, result)
+
+
+def _set_session_flag(rid, params: dict, session: dict | None, flag: str, value: bool, stored_target: str) -> dict:
+    """``db.set_session_<flag>`` on the LIVE session's key (no row yet: ``pending_<flag>``, which
+    ``_ensure_session_db_row`` applies at birth), else on the stored id/key ``stored_target``."""
+    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        try:
+            if session is not None:
+                key = session["session_key"]
+                if not getattr(db, f"set_session_{flag}")(key, value):
+                    session[f"pending_{flag}"] = value
+            else:
+                # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
+                if not (key := db.resolve_session_id(stored_target) if hasattr(db, "resolve_session_id") else stored_target):
+                    return _err(rid, 4001, "session not found")
+                getattr(db, f"set_session_{flag}")(key, value)
+            return _ok(rid, {flag: value, "session_key": key})
+        except Exception as e:
+            logger.debug("set_session_%s failed for %s", flag, stored_target, exc_info=True)
+            return _err(rid, 5007, str(e))
 
 
 @method("session.archive")
@@ -1259,23 +1281,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4006, "session_id required")
     # Quiet live lookup, the set_hidden reasoning: a stored id that is not in memory is this method's
     # expected second tier, not a rejection (session.list rows archive without a live runtime here).
-    session = _sessions.get(target)
-    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
-        if db is None:
-            return _db_unavailable_error(rid, code=5007)
-        try:
-            if session is not None:
-                key = session["session_key"]
-                if not db.set_session_archived(key, archived):
-                    session["pending_archived"] = archived  # no row yet: _ensure_session_db_row applies it
-            else:
-                # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
-                if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
-                    return _err(rid, 4001, "session not found")
-                db.set_session_archived(key, archived)
-            return _ok(rid, {"archived": archived, "session_key": key})
-        except Exception as e:
-            return _err(rid, 5007, str(e))
+    return _set_session_flag(rid, params, _sessions.get(target), "archived", archived, target)
 
 
 @method("session.set_hidden")
@@ -1289,24 +1295,8 @@ def _(rid, params: dict) -> dict:
     # Quiet live lookup: a stored id that is not in memory is this method's expected second tier, not a
     # rejection — _sess_nowait would log "session-scoped RPC rejected … not in memory" for a request that is
     # then fulfilled from the profile db, burying the real stale-runtime-id signal under sweep noise.
-    session = _sessions.get(str(params.get("session_id") or ""))
-    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
-        if db is None:
-            return _db_unavailable_error(rid, code=5007)
-        try:
-            if session is not None:
-                key = session["session_key"]
-                if not db.set_session_hidden(key, hidden):
-                    session["pending_hidden"] = hidden  # no row yet: _ensure_session_db_row is born hidden
-            else:
-                # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
-                target = _str_param(params, "session_id")
-                if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
-                    return _err(rid, 4001, "session not found")
-                db.set_session_hidden(key, hidden)
-            return _ok(rid, {"hidden": hidden, "session_key": key})
-        except Exception as e:
-            return _err(rid, 5007, str(e))
+    return _set_session_flag(rid, params, _sessions.get(str(params.get("session_id") or "")), "hidden", hidden,
+                             _str_param(params, "session_id"))
 
 
 @_session_method("message.react")
@@ -1335,6 +1325,7 @@ def _(rid, params: dict, session: dict) -> dict:
                     return _err(rid, 4040, "no message to react to yet")
             reactions = db.set_message_reaction(row_session, int(row_id), emoji, author=author)
         except Exception as e:
+            logger.debug("message.react failed for %s", row_session, exc_info=True)
             return _err(rid, 5007, str(e))
     if reactions is None:
         return _err(rid, 4040, "message not found in this session")
@@ -1370,7 +1361,7 @@ def _(rid, params: dict) -> dict:
     except (KeyError, ValueError) as e:
         return _err(rid, 4031 if isinstance(e, KeyError) else 4032, str(e))
     except Exception as e:
-        logger.warning("llm.oneshot failed: %s", e)
+        logger.warning("llm.oneshot failed: %s", e, exc_info=True)
         return _err(rid, 5030, f"one-shot generation failed: {e}")
 
 
@@ -1392,6 +1383,7 @@ def _(rid, params: dict, session: dict) -> dict:
         with _session_profile_runtime_scope(session):
             gw_config = load_gateway_config()
     except Exception as e:
+        logger.debug("handoff.request: gateway config load failed", exc_info=True)
         return _err(rid, 5021, f"could not load gateway config: {e}")
     if not getattr(gw_config.platforms.get(platform), "enabled", False):
         return _err(rid, 4025, f"platform '{platform_name}' is not configured/enabled in the gateway")
@@ -1410,6 +1402,7 @@ def _(rid, params: dict, session: dict) -> dict:
             if not db.request_handoff(key, platform_name):
                 return _err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
         except Exception as e:
+            logger.debug("handoff.request failed for %s", key, exc_info=True)
             return _err(rid, 5007, str(e))
     return _ok(rid, {"queued": True, "session_key": key, "platform": platform_name, "home_name": home.name})
 
@@ -1504,6 +1497,7 @@ def _(rid, params: dict, session: dict) -> dict:
             payload["context_files"] = context_file_sources_for_agent(agent)
         return _ok(rid, payload)
     except Exception as exc:
+        logger.debug("session.context_breakdown failed", exc_info=True)
         return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
     finally:
         _clear_session_context(tokens)
@@ -1520,7 +1514,6 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"enabled": False})
     pet, scale = active
     payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale)}
-    # Send-once for the multi-MB sheet: same revision → metadata only.
     if (known := str(params.get("knownRevision", "") or "")) and known == payload.get("spritesheetRevision"):
         # Send-once semantics for the multi-MB spritesheet (#54730): a caller that already holds the sheet
         # passes the revision it has, and an unchanged sheet comes back as metadata only
@@ -1604,7 +1597,7 @@ def _(rid, params: dict) -> dict:
                 "curated": "/curated/" in entry.spritesheet_url,
                 "generated": entry.slug in installed and installed[entry.slug].generated})
     except Exception as exc:
-        logger.debug("pet.gallery manifest fetch failed: %s", exc)
+        logger.debug("pet.gallery manifest fetch failed: %s", exc, exc_info=True)
     seen = {item["slug"] for item in gallery}
     gallery.extend(
         {"slug": slug, "displayName": pet.display_name, "installed": True, "spritesheetUrl": "",
@@ -1643,7 +1636,7 @@ def _pet_config_followup(what: str, fn, *args) -> None:
     try:
         fn(*args)
     except Exception as exc:
-        logger.debug("%s config update failed: %s", what, exc)
+        logger.debug("%s config update failed: %s", what, exc, exc_info=True)
 
 
 def _b64(data: bytes) -> str:
@@ -1718,7 +1711,7 @@ def _(rid, params: dict) -> dict:
     try:
         providers = list_sprite_providers()
     except Exception as exc:
-        logger.debug("pet provider list failed: %s", exc)
+        logger.debug("pet provider list failed: %s", exc, exc_info=True)
     return _ok(rid, {"available": available, "providers": providers})
 
 
@@ -1768,7 +1761,7 @@ def _(rid, params: dict) -> dict:
             shutil.copyfile(src, dest)
             data_uri = _pet_png_data_uri(dest)
         except Exception as exc:
-            logger.debug("pet.generate draft %d failed: %s", index, exc)
+            logger.debug("pet.generate draft %d failed: %s", index, exc, exc_info=True)
             return
         out.append({"index": index, "dataUri": data_uri})
         _pet_emit("pet.generate.progress", {"token": token, "index": index, "dataUri": data_uri, "count": count},
@@ -1843,6 +1836,7 @@ def _billing_view(name: str, module: str, builder: str, serializer: str, fallbac
             from importlib import import_module
             return _ok(rid, globals()[serializer](getattr(import_module(module), builder)()))
         except Exception:
+            logger.debug("%s view failed", name, exc_info=True)
             return _ok(rid, dict(fallback))
 
 
@@ -1858,6 +1852,7 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, _serialize_billing_state(BillingState(logged_in=False), free_tier_account=True))
         return _ok(rid, _serialize_billing_state(build_billing_state()))
     except Exception:
+        logger.debug("billing.state failed", exc_info=True)
         return _ok(rid, {"ok": True, "logged_in": False, "free_tier_account": False, "error": "could not load billing state"})
 
 
@@ -2032,6 +2027,7 @@ def _(rid, params: dict, session: dict) -> dict:
             try:
                 removed = _rewind_active_session_history(session, user_turns - 1)[2]
             except Exception as exc:
+                logger.debug("session.undo failed", exc_info=True)
                 return _err(rid, 5008, f"undo: {exc}")
     if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
         _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
@@ -2043,6 +2039,7 @@ def _save_via_compute_host(rid, params: dict) -> dict:
     try:
         ack = _send_compute_host_control(str(params.get("session_id") or ""), route_name="session.save", wait=True)
     except Exception as exc:
+        logger.debug("compute-host session.save failed", exc_info=True)
         return _err(rid, 5011, f"compute-host session save failed: {exc}")
     if (resp := _compute_host_ack_error(rid, ack, ack.get("code") or 5011, "compute-host session save failed")) is not None:
         return resp
@@ -2070,6 +2067,7 @@ def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
                          "message": ("compression still running in the background; "
                                      "the transcript will refresh when it finishes")})
     except Exception as exc:
+        logger.debug("compute-host session.compress failed", exc_info=True)
         return _err(rid, 5019, f"compute-host compress failed: {exc}")
     if (resp := _compute_host_ack_error(rid, ack, 4009, "compute-host compress failed")) is not None:
         return resp
@@ -2155,6 +2153,7 @@ def _(rid, params: dict) -> dict:
         from agent.manual_compression_feedback import describe_compression_lock_skip
         return _ok(rid, {"compressed": False, "lock_held": True, "message": describe_compression_lock_skip(e.holder)})
     except Exception as e:
+        logger.debug("session.compress failed", exc_info=True)
         from agent.conversation_compression import finalize_context_engine_compression_notification
         finalize_context_engine_compression_notification(session["agent"], committed=False)
         return _err(rid, 5005, str(e))
@@ -2188,6 +2187,7 @@ def _(rid, params: dict, session: dict) -> dict:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_session_for_save(data, "json"), encoding="utf-8")
     except Exception as e:
+        logger.debug("session.save write failed for %s", path, exc_info=True)
         return _err(rid, 5011, f"failed to save {path}: {e}")
     return _ok(rid, {"file": str(path)})
 
