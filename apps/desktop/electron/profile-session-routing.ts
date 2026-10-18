@@ -621,15 +621,29 @@ export function spliceRegistrySessionRows(
   return { added }
 }
 
-/** Report full registry totals for scopes the primary/override path did not already count.
+/** Report registry totals for scopes the primary/override path did not already count.
  *  The fetched prefix can be shorter than the backend's total and can include pins outside
- *  the ordinary cursor, so counting only its rows undercounts deep pages or overcounts pins. */
+ *  the ordinary cursor, so counting only its rows undercounts deep pages or overcounts pins.
+ *
+ *  Overlap with the primary is never extrapolated from the fetched prefix: duplicates in
+ *  one page say nothing about how much of the deeper scope the primary also holds. A scope
+ *  is disjoint (its full backend total is owed) only when no fetched row was a duplicate
+ *  AND the primary served no row from the same connection. Otherwise both sides counted
+ *  the same backend scope, and the only exact-or-safe figure is max(primary, registry):
+ *  exact when they are the same backend (their totals agree), a lower bound otherwise.
+ *  `primaryRows` are the merged rows BEFORE the registry splice. */
 export function applyRegistrySessionTotals(
   fetchedRows: unknown[],
   addedRows: unknown[],
   reportedTotals: Map<string, number>,
-  profileTotals: Record<string, number>
+  profileTotals: Record<string, number>,
+  primaryRows: unknown[] = []
 ): number {
+  const connectionOf = (row: unknown) =>
+    row && typeof row === 'object' && typeof (row as { connection_id?: unknown }).connection_id === 'string'
+      ? (row as { connection_id: string }).connection_id
+      : ''
+
   const counts = (rows: unknown[]) => {
     const perScope = new Map<string, number>()
 
@@ -639,27 +653,42 @@ export function applyRegistrySessionTotals(
       }
 
       const session = row as Record<string, unknown>
-      const connection = typeof session.connection_id === 'string' ? session.connection_id : ''
       const profile = typeof session.profile === 'string' && session.profile ? session.profile : 'default'
-      const key = `${connection}\0${profile}`
+      const key = `${connectionOf(row)}\0${profile}`
       perScope.set(key, (perScope.get(key) || 0) + 1)
     }
 
     return perScope
   }
 
+  const primaryConnections = new Set(primaryRows.map(connectionOf).filter(Boolean))
   const fetched = counts(fetchedRows)
   const added = counts(addedRows)
+  // Per-profile totals as the primary/override side left them, before this scan's splice.
+  const primaryTotals: Record<string, number> = { ...profileTotals }
+
+  for (const [key, n] of added) {
+    const profile = key.slice(key.indexOf('\0') + 1)
+    primaryTotals[profile] = (primaryTotals[profile] || 0) - n
+  }
+
   let contribution = 0
 
   for (const key of new Set([...fetched.keys(), ...reportedTotals.keys()])) {
     const addedCount = added.get(key) || 0
     const duplicates = (fetched.get(key) || 0) - addedCount
-    // A scope whose rows were already in `merged` overlaps the primary/override
-    // source, whose total already counted that whole scope. Only a scope that
-    // added every row it fetched is new, and only then is its full total owed.
-    const count = reportedTotals.has(key) && duplicates === 0 ? reportedTotals.get(key)! : addedCount
+    const connection = key.slice(0, key.indexOf('\0'))
     const profile = key.slice(key.indexOf('\0') + 1)
+    const primaryCount = Math.max(0, primaryTotals[profile] || 0)
+    const overlaps = duplicates > 0 || primaryConnections.has(connection)
+    let count = addedCount
+
+    if (reportedTotals.has(key)) {
+      const reported = reportedTotals.get(key)!
+      // Never below the rows this scope visibly added.
+      count = Math.max(addedCount, overlaps ? reported - primaryCount : reported)
+    }
+
     profileTotals[profile] = (profileTotals[profile] || 0) + count - addedCount
     contribution += count
   }
@@ -680,7 +709,13 @@ export async function mergeRegistrySessionRows(
   const before = merged.length
   spliceRegistrySessionRows(merged, registryRows, profileTotals)
 
-  return applyRegistrySessionTotals(registryRows, merged.slice(before), reportedTotals, profileTotals)
+  return applyRegistrySessionTotals(
+    registryRows,
+    merged.slice(before),
+    reportedTotals,
+    profileTotals,
+    merged.slice(0, before)
+  )
 }
 
 /**

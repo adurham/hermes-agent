@@ -18,6 +18,7 @@ import {
   isAllProfilesSessionListRequest,
   isRemoteSessionRequestPath,
   mergeProfileSessionWindow,
+  mergeRegistrySessionRows,
   pathWithRemoteOwnerScope,
   remoteOwnerRoutePath,
   remoteProfileQueryScope,
@@ -512,6 +513,39 @@ test('a registry source that overlaps the primary base is counted once, not twic
   assert.equal(650 + applyRegistrySessionTotals(fetched, merged.slice(before), reported, profileTotals), 650)
   assert.equal(profileTotals.default, 650)
 })
+
+// Independent review (RT-42): overlap was extrapolated from the first fetched page, so a
+// half-overlapping primary gave 325 or 975 for a 650-session union depending on which half
+// it held. Drive both partial cases through mergeRegistrySessionRows, the real entry point.
+for (const [label, primaryIds] of [
+  ['none of', [] as number[]],
+  ['all of', Array.from({ length: 650 }, (_, i) => i)],
+  ['the newest half of', Array.from({ length: 325 }, (_, i) => i)],
+  ['the oldest half of', Array.from({ length: 325 }, (_, i) => 325 + i)]
+] as const) {
+  test(`a registry scope whose primary holds ${label} its sessions totals the 650-session union`, async () => {
+    const rows = Array.from({ length: 650 }, (_, i) => ({ id: `s${i}`, profile: 'default', started_at: 650 - i }))
+    const merged: unknown[] = primaryIds.slice(0, 20).map(i => ({ id: `s${i}`, profile: 'default', connection_id: 'R' }))
+    const profileTotals: Record<string, number> = primaryIds.length ? { default: primaryIds.length } : {}
+
+    const contribution = await mergeRegistrySessionRows(
+      [{ connectionId: 'R', kind: 'remote', backends: [{ descriptor: 'remote', profileLabel: null }] }],
+      new URLSearchParams({ limit: '20', offset: '0' }),
+      async (_descriptor, path) => {
+        const params = new URL(path, 'http://x').searchParams
+        const start = Number(params.get('offset'))
+        const limit = Number(params.get('limit'))
+
+        return { sessions: rows.slice(start, start + limit), total: 650, profile_totals: { default: 650 } }
+      },
+      merged,
+      profileTotals
+    )
+
+    assert.equal(primaryIds.length + contribution, 650)
+    assert.equal(profileTotals.default, 650)
+  })
+}
 
 test('a failed later registry page does not contribute a stale first-page total', async () => {
   const reported = new Map<string, number>()
