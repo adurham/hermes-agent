@@ -72,6 +72,12 @@ def _free_port():
         return s.getsockname()[1]
 
 
+def _get(port, path):
+    req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', headers={'Authorization': f'Bearer {KEY}'})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
 def _post(port, path, body, timeout=180):
     req = urllib.request.Request(f'http://127.0.0.1:{port}{path}', data=json.dumps(body).encode(), method='POST',
                                  headers={'Authorization': f'Bearer {KEY}', 'Content-Type': 'application/json'})
@@ -115,6 +121,8 @@ def overflow_run(tmp_path_factory):
             assert status == 201, created
             sid = created['session']['id']
             first = _post(api_port, f'/api/sessions/{sid}/chat', {'message': big})
+            # ``hermes peer dm`` resolves the Bot Chat by exact title before every DM (``_find_bot_chat``).
+            found = _get(api_port, '/api/sessions?limit=200&title=Bot+Chat&include_hidden=1')['data']
             follow = _post(api_port, f'/api/sessions/{sid}/chat', {'message': 'short follow-up MKFOLLOW'})
     finally:
         model.shutdown()
@@ -125,7 +133,7 @@ def overflow_run(tmp_path_factory):
     with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
         rows = db.execute("SELECT session_id, role, substr(coalesce(content,''),1,24) FROM messages ORDER BY id").fetchall()
         bot_chat = db.execute('SELECT end_reason FROM sessions WHERE id=?', (sid,)).fetchone()
-    return SimpleNamespace(first=first, follow=follow, log=log, rows=rows, rejected=model.rejected,
+    return SimpleNamespace(sid=sid, found=[row['id'] for row in found], first=first, follow=follow, log=log, rows=rows, rejected=model.rejected,
                            bot_chat_end=bot_chat[0])
 
 
@@ -141,6 +149,8 @@ def test_peer_dm_overflow_resets_the_local_bot_chat_and_answers_the_follow_up(ov
     # The overflow is answered with its typed reason, and the Bot Chat was reset after that turn settled.
     assert run.first[0] == 502 and run.first[1]['error']['code'] == 'context_overflow', run.first
     assert run.bot_chat_end == 'session_reset', run.rows
+    # The client's title lookup still finds the reset Bot Chat (no title-collision create).
+    assert run.found == [run.sid], run.found
     # The follow-up runs on the fresh transcript, is answered, and is stored once.
     assert run.follow[0] == 200, (run.follow, run.rows)
     assert run.follow[1]['message']['content'].startswith('ACK short follow-up'), run.follow

@@ -84,6 +84,26 @@ def _refusal(authority, tip, exc):
     return reason, f'Bot Chat admission refused: {reason}'
 
 
+async def reset_local_title_owner(db, title, include_hidden):
+    """``[row]`` for the exact-title lookup of a LOCAL conversation that was reset (``/new``, the
+    compression-exhaustion auto-reset), else ``[]``. The listing shows a reset lineage as its latest,
+    untitled segment, so ``hermes peer dm`` stopped finding its Bot Chat and its create collided
+    with the title. The titled creation id still owns the FIFO and is what the chat door admits."""
+    return await asyncio.to_thread(_reset_local_title_owner, db, title, include_hidden) if title else []
+
+
+def _reset_local_title_owner(db, title, include_hidden):
+    row = db.get_session_by_title(title)
+    if row is None or row.get('end_reason') != 'session_reset' or (row.get('hidden') and not include_hidden):
+        return []
+    from hermes_state_local import local_receipt
+    try:
+        lineage = local_receipt(db, row['id']).get('lineage') or []
+    except RuntimeStoreError:
+        return []
+    return [row] if len(lineage) > 1 else []
+
+
 def bot_chat_tip(authority, session_id):
     """The canonical Bot Chat's tip row when *session_id* is in its lineage, else None."""
     db = authority.db
