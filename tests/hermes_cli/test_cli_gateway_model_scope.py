@@ -402,3 +402,36 @@ def test_a_session_reasoning_pick_is_committed_once_not_on_every_rebuild(monkeyp
     assert stub.chat("second") == "ok"
     assert _reasoning_mutates(conn) == [{"effort": "high"}]
     assert stub._reasoning_user_set is False
+
+
+@pytest.mark.parametrize("override", [
+    {"model": "first", "reasoning": "high"},
+    {"model": "claude-sonnet-4.6", "provider": "anthropic", "reasoning": "high"},
+])
+def test_once_reasoning_admission_passes_the_real_submit_contract(monkeypatch, override):
+    """Live pass on #140969: ``/model first --once --reasoning high`` failed its turn ``invalid_params``.
+    The CLI sends ``model_override.reasoning`` but ``CanonicalModelOverride`` forbade the key, and the
+    owner's dispatcher (``canonical_param_problems``) refuses an unknown key before the handler runs.
+    The recorded submit goes through that same production check, not a stubbed connection."""
+    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    contract = CANONICAL_METHODS["prompt.submit"]
+    params = {"session_id": "s", "text": "t", "submission_id": "x", "model_override": override}
+    assert canonical_param_problems(contract, params) == []
+    assert contract.params.model_validate(params).model_override.reasoning == "high"
+
+    conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
+    cli_mod, stub, _printed = _chat_cli(monkeypatch, conn)
+    stub._confirm_and_apply_cli_model_switch = cli_mod.HermesCLI._confirm_and_apply_cli_model_switch.__get__(stub)
+    cli_mod.HermesCLI._handle_model_switch(stub, "/model claude-sonnet-4.6 --provider anthropic --once --reasoning high")
+    assert stub.chat("the once turn") == "ok"
+    (submit,) = _submits(conn)
+    assert submit["model_override"].get("reasoning") == "high", submit
+    assert canonical_param_problems(contract, submit) == [], submit
+
+
+def test_every_model_override_key_the_cli_sends_is_in_the_contract():
+    """``GatewayAgent._take_turn_route`` and the ``/moa`` one-shot build ``model_override`` from
+    ``_route_off_session`` (``model``/``provider``) plus ``reasoning``: each key must be declared."""
+    from tui_gateway.contracts.canonical_sessions import CanonicalModelOverride
+    assert {"model", "provider", "reasoning"} <= set(CanonicalModelOverride.model_fields)
+
