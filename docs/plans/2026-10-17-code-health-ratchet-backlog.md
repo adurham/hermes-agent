@@ -2737,3 +2737,16 @@ re-measures. Test files are split into `test_<stem>_<topic>.py`.
   `providers`-referencing test files: 2612 passed, 4 failed + 2 collection errors, identical on
   clean main (e2e catalog/codex/model-validation env failures). `scripts/check` green, 12 checks.
   Branch `claude/fix-swallowed-exceptions-providers-epykec`.
+- 2026-10-18 — C-1057 `plugins/platforms/feishu/feishu_comment.py` (async): HX007×1 + RUF006×1 → 0
+  (file hits 4 → 2; C-1208's BLE001/S110 in `_resolve_model_and_runtime` untouched, in place and in
+  order). (The session brief named this unit `tools/feishu_comment.py`, family correctness, LIX001;
+  no such file or rule exists — this doc's C-1057 row was taken.) `handle_drive_comment_event` reads
+  the comment rules with `await asyncio.to_thread(load_config)` (to_thread copies the context, so the
+  adapter's profile scope still reaches the read); the fire-and-forget OK-reaction add is now held in
+  a module-level `_reaction_tasks` set until done, and a done callback logs an exception it raised
+  (SDK `client.request` / missing `lark_oapi` in `_exec_request`) with its traceback instead of
+  leaving it unretrieved. Same scheduling, same reaction calls. No sibling instances in the file
+  (the gather's two `ensure_future`s are awaited). FILE_LINES 638 → 650. New
+  `tests/gateway/test_feishu_comment_event_loop.py` (2 tests, both red on main); the 5
+  feishu_comment-referencing test files 32/32. `scripts/check` green, 12 checks.
+  Branch `claude/fix-feishu-comment-correctness-yxzvmm`.
