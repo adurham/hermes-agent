@@ -196,6 +196,7 @@ test('a primary aggregate supplies the full prefix before Desktop applies a late
   const rows = Array.from({ length: 650 }, (_, index) => ({
     id: `s${index}`,
     profile: 'default',
+    archived: true,
     last_active: 1000 - index
   }))
 
@@ -586,7 +587,9 @@ test('archived merged pages reach every archived row from older and current back
       )
 
       const merged = [...base.sessions].sort((a: any, b: any) => b.last_active - a.last_active)
-      const response = composeUnifiedSessionResponse(base, merged, offset, 200, base.total, base.profile_totals, [])
+      const response = composeUnifiedSessionResponse(base, merged, offset, 200, base.total, base.profile_totals, [], {
+        archivedOnly: true
+      })
 
       for (const row of response.sessions as typeof archived) {
         if (row.archived) {
@@ -596,6 +599,78 @@ test('archived merged pages reach every archived row from older and current back
     }
 
     assert.equal(seen.size, archived.length, name)
+  }
+})
+
+test('a full page of newer live pins does not hide an older archived row from the Archived loader', async () => {
+  // Greptile/@dokterdok on #140972: run the renderer loader's own stop rule
+  // (sidebar-archive.ts listEveryArchivedSession) over the merge path, with
+  // enough live pins to fill a page, on both backend orderings.
+  const archived = [{ id: 'old', profile: 'default', archived: true, pinned: false, last_active: 1 }]
+
+  const pins = Array.from({ length: 200 }, (_, index) => ({
+    id: `p${index}`,
+    profile: 'default',
+    archived: false,
+    pinned: true,
+    last_active: 1000 - index
+  }))
+
+  const backends = {
+    older: (offset: number, limit: number) => {
+      const rows = [...pins, ...archived]
+
+      return [...rows.slice(offset, offset + limit), ...rows.slice(offset + limit).filter(row => row.pinned)]
+    },
+    current: (offset: number, limit: number) => [...archived.slice(offset, offset + limit), ...pins]
+  }
+
+  for (const [name, page] of Object.entries(backends)) {
+    const seen = new Set<string>()
+    let archivedCount = 0
+
+    for (let offset = 0; offset < 2000; offset += 200) {
+      const params = new URLSearchParams({ profile: 'all', limit: '200', offset: String(offset), archived: 'only' })
+
+      const base = await fetchPrimaryProfileSessions(
+        params,
+        async (_profile, path) => {
+          const query = new URL(path, 'http://x').searchParams
+
+          return {
+            sessions: page(Number(query.get('offset')), Number(query.get('limit'))),
+            total: archived.length,
+            profile_totals: { default: archived.length }
+          }
+        },
+        { prefixForMerge: true }
+      )
+
+      const merged = [...base.sessions].sort((a: any, b: any) => b.last_active - a.last_active)
+
+      const response = composeUnifiedSessionResponse(base, merged, offset, 200, base.total, base.profile_totals, [], {
+        archivedOnly: true
+      })
+
+      const before = archivedCount
+
+      for (const row of response.sessions as typeof archived) {
+        if (!seen.has(row.id)) {
+          seen.add(row.id)
+          archivedCount += row.archived ? 1 : 0
+        }
+      }
+
+      if (
+        response.sessions.length === 0 ||
+        archivedCount >= response.total ||
+        (offset + 200 >= response.total && archivedCount === before)
+      ) {
+        break
+      }
+    }
+
+    assert.ok(seen.has('old'), name)
   }
 })
 

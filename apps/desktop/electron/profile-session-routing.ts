@@ -128,6 +128,10 @@ function isPinned(row: unknown): boolean {
   return Boolean(row && typeof row === 'object' && 'pinned' in row && row.pinned)
 }
 
+function isArchived(row: unknown): boolean {
+  return Boolean(row && typeof row === 'object' && 'archived' in row && row.archived)
+}
+
 function profileSessionId(row: unknown): string | null {
   const id = sessionId(row)
 
@@ -1016,13 +1020,33 @@ export function applyRemoteProfileSessionOutcomes(
   return { total, errors }
 }
 
+function archivedOnlyWindow(merged: unknown[], offset: number, limit: number): unknown[] {
+  const window = mergeProfileSessionWindow(merged.filter(isArchived), offset, limit)
+  const ids = new Set(window.map(profileSessionId).filter((id): id is string => id !== null))
+
+  for (const row of merged) {
+    const id = profileSessionId(row)
+
+    if (!isArchived(row) && isPinned(row) && !(id && ids.has(id))) {
+      if (id) {
+        ids.add(id)
+      }
+
+      window.push(row)
+    }
+  }
+
+  return window
+}
+
 /** Compose the unified aggregate's response (#75712): failures ride the
  *  payload, not the void — base scan errors and each dead remote's named
  *  error entry are merged into `errors` so a failed remote profile is
- *  identifiable. The window counts every merged row, live pins included, even
- *  on an archived-only page: an older backend's page lets a live pin take an
- *  archived position, so a window over archived rows alone would skip the
- *  archived rows that pin pushed past this source's prefix. */
+ *  identifiable. On an archived-only page the cursor counts archived rows
+ *  only, as `total` does, and live pins ride after the window: a window over
+ *  every merged row lets a page of newer pins stop the Archived loader before
+ *  an older archived row. The primary prefix reads enough archived rows for
+ *  that even from an older backend whose pins took cursor positions. */
 export function composeUnifiedSessionResponse(
   base: unknown,
   merged: unknown[],
@@ -1030,7 +1054,8 @@ export function composeUnifiedSessionResponse(
   limit: number,
   total: number,
   profileTotals: Record<string, number>,
-  extraErrors: Array<{ profile: string; error: string }>
+  extraErrors: Array<{ profile: string; error: string }>,
+  options: { archivedOnly?: boolean } = {}
 ) {
   const baseErrors = Array.isArray((base as { errors?: unknown })?.errors)
     ? (base as { errors: Array<{ profile: string; error: string }> }).errors
@@ -1040,7 +1065,7 @@ export function composeUnifiedSessionResponse(
 
   return {
     ...(base as Record<string, unknown>),
-    sessions: mergeProfileSessionWindow(merged, offset, limit),
+    sessions: options.archivedOnly ? archivedOnlyWindow(merged, offset, limit) : mergeProfileSessionWindow(merged, offset, limit),
     total,
     profile_totals: profileTotals,
     limit,
@@ -1135,10 +1160,16 @@ async function readProfileSessionRows(url: URL, profile: string, want: number, f
   const seen = new Set<string>()
   const errors: SessionScanError[] = []
   const storage: Record<string, unknown> = {}
+  // An archived-only prefix needs `want` ARCHIVED rows. An older backend lets
+  // live pins take cursor positions, so read on until enough archived rows
+  // arrived, the backend runs out, or a page brings no new row.
+  const archivedOnly = url.searchParams.get('archived') === 'only'
+  let archivedRows = 0
 
   for (let offset = 0; ; ) {
     const params = new URLSearchParams(url.searchParams)
-    const limit = Math.min(PROFILE_SESSION_PAGE_CAP, Math.max(0, want - offset))
+    const remaining = archivedOnly ? want - archivedRows : want - offset
+    const limit = Math.min(PROFILE_SESSION_PAGE_CAP, Math.max(0, remaining))
     params.set('limit', String(limit))
     params.set('offset', String(offset))
     params.set('profile', profile)
@@ -1157,6 +1188,8 @@ async function readProfileSessionRows(url: URL, profile: string, want: number, f
       Object.assign(storage, page.storage)
     }
 
+    let newRows = 0
+
     for (const row of pageRows) {
       const id = profileSessionId(row)
 
@@ -1165,6 +1198,8 @@ async function readProfileSessionRows(url: URL, profile: string, want: number, f
       }
 
       rows.push(row)
+      newRows += 1
+      archivedRows += isArchived(row) ? 1 : 0
 
       if (id) {
         seen.add(id)
@@ -1173,7 +1208,13 @@ async function readProfileSessionRows(url: URL, profile: string, want: number, f
 
     offset += limit
 
-    if (offset >= want || pageRows.length < limit) {
+    const total = nonNegativeNumber(page?.total)
+
+    const done = archivedOnly
+      ? newRows === 0 || archivedRows >= Math.min(want, total ?? want)
+      : offset >= want || pageRows.length < limit
+
+    if (done) {
       return { ...first, sessions: rows, errors, ...(first?.storage || Object.keys(storage).length ? { storage } : {}) }
     }
   }

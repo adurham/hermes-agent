@@ -16267,7 +16267,9 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles, registry
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
-  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors)
+  return composeUnifiedSessionResponse(base, merged, offset, limit, total, profileTotals, remoteErrors, {
+    archivedOnly: searchParams.get('archived') === 'only'
+  })
 }
 
 // Every CONNECTED registry gateway as a session source: resolved descriptors
