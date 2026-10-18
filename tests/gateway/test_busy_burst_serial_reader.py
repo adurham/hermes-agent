@@ -150,7 +150,7 @@ async def test_new_waits_for_a_burst_still_committing(monkeypatch, tmp_path):
         await adapter.handle_message(_photo(source, tmp_path, 1))
         assert await asyncio.to_thread(entered.wait, 5)
         new = asyncio.create_task(adapter.handle_message(MessageEvent(text='/new', source=source, message_id='N')))
-        await asyncio.wait({new}, timeout=0.5)
+        await asyncio.wait({new}, timeout=2.0)  # a negative window (>= 2 s): main's /new would land here
     finally:
         release.set()
     await asyncio.wait_for(new, 10)

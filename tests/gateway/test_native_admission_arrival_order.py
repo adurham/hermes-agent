@@ -129,7 +129,7 @@ async def test_a_cancelled_middle_input_does_not_let_the_next_overtake(tmp_path,
         await asyncio.sleep(0)
         second.cancel()  # e.g. the busy caller's task is cancelled
         await asyncio.gather(second, return_exceptions=True)
-        await asyncio.wait({third}, timeout=0.3)
+        await asyncio.wait({third}, timeout=2.0)  # a negative window (>= 2 s): main lets x3 overtake here
         release.set()
         await asyncio.gather(first, third)
         assert _order(authority) == ['x1-video', 'x3-text']
@@ -178,7 +178,7 @@ async def test_stop_fences_inputs_still_capturing_or_waiting(tmp_path, monkeypat
         first = admit(X, 'x1-video', media=True, ingress=True)
         await asyncio.to_thread(entered.wait, 5)
         second = admit(X, 'x2-text', ingress=True)
-        await asyncio.wait({second}, timeout=0.3)  # main commits it here
+        await asyncio.wait({second}, timeout=2.0)  # a negative window (>= 2 s): main commits it here
         await authority.runner._hm_stop_owner_turn(route(X))
         release.set()
         if chat == 'paused':
