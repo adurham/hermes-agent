@@ -1072,3 +1072,51 @@ def test_profile_router_never_holds_its_lock_while_taking_the_logging_module_loc
         assert "routed" in (profile / "logs" / "agent.log").read_text(encoding="utf-8")
     finally:
         router.close()
+
+
+@pytest.mark.parametrize("closed_at", ["after_pick", "before_publish"])
+def test_profile_router_close_is_never_undone_by_a_record_in_flight(hermes_home, monkeypatch, closed_at):
+    """T23 follow-up: with no router lock across ``emit``, ``logging.shutdown`` (uvicorn's
+    ``dictConfig``) can close the router and its per-home handler while a routed record is in
+    flight. ``after_pick``: the record picked the per-home handler, then it was closed; a
+    ``RotatingFileHandler`` in append mode reopens on emit, so the closed file came back (on
+    Windows its lock then stays held and the profile's logs/ cannot be removed). ``before_publish``:
+    the record built a new home's handler, and its ``setdefault`` landed in the closed router (a
+    leaked fd). Real handlers; only the interleaving is forced."""
+    profile = hermes_home / "profiles" / "t23b"
+    (profile / "logs").mkdir(parents=True)
+    hermes_home.joinpath("logs").mkdir(exist_ok=True)
+    existing = RotatingFileHandler(str(hermes_home / "logs" / "agent.log"), encoding="utf-8")
+    router = hermes_logging._ProfileRoutingFileHandler(existing, [profile])
+    existing.close()
+    profile_log = profile / "logs" / "agent.log"
+    built = []
+    if closed_at == "after_pick":
+        router._handler_for_home(profile)  # the home's handler is open before the record arrives
+        real_pick = router._handler_for_home
+
+        def pick_then_shutdown(home):
+            handler = real_pick(home)
+            router.close()  # logging.shutdown runs between the pick and the write
+            profile_log.unlink()
+            return handler
+
+        monkeypatch.setattr(router, "_handler_for_home", pick_then_shutdown)
+    else:
+        real_new = hermes_logging._new_file_handler
+
+        def build_then_shutdown(*args, **kwargs):
+            handler = real_new(*args, **kwargs)
+            built.append(handler)
+            if len(built) == 1:  # the routed home's build; a later default-home build is not raced
+                router.close()  # logging.shutdown runs between the build and the publish
+                profile_log.unlink()
+            return handler
+
+        monkeypatch.setattr(hermes_logging, "_new_file_handler", build_then_shutdown)
+    record = logging.LogRecord("t23", logging.ERROR, __file__, 1, "in flight", None, None)
+    record.hermes_home = str(profile)
+    router.handle(record)
+    assert not profile_log.exists(), "a closed per-home log file was reopened"
+    assert router._profile_handlers == {}
+    assert all(handler.stream is None for handler in built), "a handler built after close leaked its fd"
