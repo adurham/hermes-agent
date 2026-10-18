@@ -94,13 +94,14 @@ def test_sustained_wedge_pins_at_most_max_stuck_threads():
         fresh.shutdown_all()
 
     key = hung[0][0]._registry_key(hung[0][1])
-    assert MemoryManager._BACKGROUND_SKIPS[key] == 10
-    assert len(MemoryManager._BACKGROUND_CALLS[key]) == mm._MAX_STUCK_CALLS
-    # Idle workers of shut-down executors exit asynchronously.
-    wait_until(lambda: len(_mem_sync_threads()) <= before, timeout=5, what="idle mem-sync workers to exit")
-
-    for _, provider in hung:
-        provider.release.set()
+    try:
+        assert MemoryManager._BACKGROUND_SKIPS[key] == 10
+        assert len(MemoryManager._BACKGROUND_CALLS[key]) == mm._MAX_STUCK_CALLS
+        # Idle workers of shut-down executors exit asynchronously.
+        wait_until(lambda: len(_mem_sync_threads()) <= before, timeout=5, what="idle mem-sync workers to exit")
+    finally:
+        for _, provider in hung:
+            provider.release.set()
     for mgr, _ in hung:
         assert mgr.flush_pending(timeout=5)
     assert key not in MemoryManager._BACKGROUND_CALLS
@@ -127,6 +128,30 @@ def test_healthy_replacement_still_writes_behind_an_orphaned_call():
         orphan_mgr.shutdown_all()
 
 
+def test_new_outage_warns_on_its_first_skip_even_with_an_orphan_alive(caplog):
+    """An orphan keeps the key alive after the gate reopens; the next outage must still warn on
+    its first skip instead of waiting for the 100th."""
+    hung = [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]
+    key = hung[0][0]._registry_key(hung[0][1])
+    try:
+        _manager(_HangingProvider()).sync_all("skipped", "x")
+        assert MemoryManager._BACKGROUND_SKIPS[key] == 1
+        hung[-1][1].release.set()  # one returns: the gate reopens, three orphans keep the key alive
+        assert hung[-1][0].flush_pending(timeout=5)
+        reopened, healthy = _hang_one_call()  # admitted, then it wedges too: a new outage
+        hung.append((reopened, healthy))
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="agent.memory_manager"):
+            _manager(_HangingProvider()).sync_all("skipped again", "x")
+        assert MemoryManager._BACKGROUND_SKIPS[key] == 1
+        assert "background calls stuck" in caplog.text
+    finally:
+        for _, provider in hung:
+            provider.release.set()
+    for mgr, _ in hung:
+        mgr.shutdown_all()
+
+
 def test_slow_call_below_threshold_is_not_skipped(monkeypatch):
     monkeypatch.setattr(mm, "_BACKGROUND_CALL_STALL_S", 60.0)
     provider = _HangingProvider()
@@ -135,10 +160,11 @@ def test_slow_call_below_threshold_is_not_skipped(monkeypatch):
     assert provider.started.wait(5)
 
     second = _manager(provider)
-    second.sync_all("again", "reply")
-    assert second.flush_pending(timeout=5)
-    assert provider.sync_calls == 2
-
-    provider.release.set()
+    try:
+        second.sync_all("again", "reply")
+        assert second.flush_pending(timeout=5)
+        assert provider.sync_calls == 2
+    finally:
+        provider.release.set()
     for m in (first, second):
         m.shutdown_all()
