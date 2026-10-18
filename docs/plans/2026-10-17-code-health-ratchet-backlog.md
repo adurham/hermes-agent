@@ -2920,3 +2920,16 @@ Carried forward: tier-2/3 single-finding units, the remaining large rule familie
   media/send sweep fails the same 22 non-Telegram tests on main and on the branch.
   `scripts/check` (full): 12 checks ok, health 0 blocking/0 advisory. Branch
   `claude/fix-telegram-adapter-async-hkofei`.
+- 2026-10-18 — C-1051 `plugins/platforms/slack/adapter.py` (async): ASYNC240×4 + RUF006×1 → 0. The
+  four `os.path.exists` checks (`_upload_file`, `_send_local_file`, `_collect_image_uploads`,
+  `_standalone_send_media`) go through `await asyncio.to_thread(os.path.exists, …)` (same
+  short-circuits, errors, skips). `_on_socket_mode_task_done`'s reconnect task is held in a dedicated
+  `_socket_restart_tasks` set (not `_background_tasks`, so shutdown's `cancel_background_tasks` is
+  unchanged); its done callback discards it and logs a failed restart with the traceback (it was
+  previously only asyncio's "exception never retrieved"). FILE_LINES 6913 → 6899: the pure
+  `_collect_slack_table_cell_text` moved into the existing `adapter_rich_text.py` sibling (no rule
+  hits, not patched by tests). Left: `_load_slack_bot_tokens` (sync, reads the tokens file; called
+  from `connect`/`_standalone_send`) — not flagged, own change. New `tests/gateway/
+  test_slack_socket_restart_task.py` (2 tests, red on main). 63 Slack-importing test files: 855
+  passed, 7 failed (`aiohttp` missing, identical on main). `scripts/check` green, 12 checks. Branch
+  `claude/fix-adapter-async-rules-9j7u27`.

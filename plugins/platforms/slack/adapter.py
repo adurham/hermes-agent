@@ -53,10 +53,10 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
-    from .adapter_rich_text import walk_rich_text_elements
+    from .adapter_rich_text import _collect_slack_table_cell_text, walk_rich_text_elements
     from .block_kit import render_blocks, sanitize_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
-    from adapter_rich_text import walk_rich_text_elements  # type: ignore
+    from adapter_rich_text import _collect_slack_table_cell_text, walk_rich_text_elements  # type: ignore
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
 
@@ -525,32 +525,6 @@ _SLACK_TABLE_MAX_CHARS = 20_000
 #: top-level ``blocks`` path is capped once (``_serialize_slack_blocks_for_agent``) and this
 #: keeps the unfurl path in the same order of magnitude.
 _SLACK_UNFURL_BLOCKS_MAX_CHARS = 6000
-
-
-def _collect_slack_table_cell_text(value: Any) -> str:
-    """Collect the text leaves in a Slack table cell's raw/rich-text subtree.
-
-    Cells arrive as ``raw_text`` objects or nested rich-text trees depending
-    on formatting; walking every ``text`` leaf keeps formatted cells intact
-    without enumerating Slack's cell schema.
-    """
-    parts: list[str] = []
-
-    def _visit(node: Any) -> None:
-        if isinstance(node, list):
-            for item in node:
-                _visit(item)
-            return
-        if not isinstance(node, dict):
-            return
-        text = node.get("text")
-        if isinstance(text, str):
-            parts.append(text)
-        for child in node.values():
-            _visit(child)
-
-    _visit(value)
-    return " ".join(p for p in parts if p).strip()
 
 
 def _render_slack_table_block(
@@ -1103,6 +1077,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
+        # Strong refs for the restarts _on_socket_mode_task_done schedules (GC-safe).
+        self._socket_restart_tasks: set[asyncio.Task] = set()
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1375,7 +1351,17 @@ class SlackAdapter(BasePlatformAdapter):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._restart_socket_mode("socket task exited"))
+        restart = loop.create_task(self._restart_socket_mode("socket task exited"))
+        self._socket_restart_tasks.add(restart)
+        restart.add_done_callback(self._on_socket_restart_done)
+
+    def _on_socket_restart_done(self, task: asyncio.Task) -> None:
+        self._socket_restart_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning("[Slack] Socket Mode restart failed: %s", exc, exc_info=exc)
 
     def _describe_slack_api_error(
         self, response: Any, *, file_obj: Optional[dict[str, Any]] = None) -> Optional[str]:
@@ -2909,7 +2895,7 @@ class SlackAdapter(BasePlatformAdapter):
         blocked = self._outbound_blocked(chat_id, "file upload in")
         if blocked:
             return blocked
-        if not os.path.exists(file_path):
+        if not await asyncio.to_thread(os.path.exists, file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         chat_id = await self._dm_target(chat_id, metadata)
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
@@ -2923,7 +2909,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Shared body of ``send_video``/``send_document``: upload with retry, notice on failure."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
-        if not os.path.exists(file_path):
+        if not await asyncio.to_thread(os.path.exists, file_path):
             return SendResult(success=False, error=not_found_error)
         chat_id = await self._dm_target(chat_id, metadata)
         try:
@@ -3000,7 +2986,7 @@ class SlackAdapter(BasePlatformAdapter):
                     initial_comment_parts.append(alt_text)
                 if image_url.startswith("file://"):
                     local_path = unquote_fn(image_url[7:])
-                    if not os.path.exists(local_path):
+                    if not await asyncio.to_thread(os.path.exists, local_path):
                         logger.warning("[Slack] Skipping missing image: %s", local_path)
                         continue
                     file_uploads.append(
@@ -6644,7 +6630,7 @@ async def _standalone_send_media(
     caption_pending = caption_as_upload_comment
     uploaded_any = False
     for media_path, _is_voice in media_files:
-        if not os.path.exists(media_path):
+        if not await asyncio.to_thread(os.path.exists, media_path):
             warning = f"Media file not found, skipping: {media_path}"
             logger.warning("[Slack] %s", warning)
             warnings.append(warning)
