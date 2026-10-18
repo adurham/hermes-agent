@@ -41,9 +41,13 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 # A background provider call (sync_turn / queue_prefetch) running longer than this is treated as
-# stuck: later calls for the same provider are skipped until it returns. Well above the shutdown
-# drain bound and the prefetch timeout so a slow-but-healthy backend is never skipped.
+# stuck. Well above the shutdown drain bound and the prefetch timeout so a slow-but-healthy backend
+# is never counted.
 _BACKGROUND_CALL_STALL_S = 30.0
+# Stuck (overdue) calls tolerated per (home, provider) before later calls are skipped. Python cannot
+# stop a thread, so each one pins a thread until it returns; more than one keeps a recovered backend
+# (one orphaned socket, a healthy replacement connection) usable while bounding the pinned threads.
+_MAX_STUCK_CALLS = 4
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
@@ -128,6 +132,11 @@ def _redact_messages_for_egress(messages: Optional[list[Any]]) -> Optional[list[
     return None if messages is None else list(_redact_for_provider(messages))
 
 
+def _stuck_calls(inflight: dict[Any, float], now: float) -> int:
+    """How many registered calls are past their deadline."""
+    return sum(now > deadline for deadline in inflight.values())
+
+
 def _forget_inflight(registry: dict, key: tuple[str, str], token: object) -> bool:
     """Drop one call's entry from a process-wide in-flight registry (caller holds its lock); the key goes
     with its last entry. True when the key is now clear."""
@@ -161,7 +170,7 @@ class MemoryManager:
     # (Hermes home, provider name). Python cannot stop a thread, so a call that never returns pins its
     # mem-sync worker for the process lifetime; managers are rebuilt per agent, so without a shared
     # view every fresh manager would start one more call against the hung backend and pin one more
-    # thread. Calls are skipped while any call for the key is stuck past _BACKGROUND_CALL_STALL_S.
+    # thread. Calls are skipped once _MAX_STUCK_CALLS for the key are stuck past _BACKGROUND_CALL_STALL_S.
     _BACKGROUND_CALLS: dict[tuple[str, str], dict[object, float]] = {}
     _BACKGROUND_SKIPS: dict[tuple[str, str], int] = {}
     _BACKGROUND_CALLS_LOCK = threading.Lock()
@@ -316,7 +325,8 @@ class MemoryManager:
 
     def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> str:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
-        call keeps running on its daemon thread and the provider is skipped on later turns until it returns."""
+        call keeps running on its daemon thread; once _MAX_STUCK_CALLS are stuck the provider is skipped
+        on later turns until one returns."""
         if provider.name == "builtin":
             return provider.prefetch(query, session_id=session_id)
 
@@ -339,8 +349,9 @@ class MemoryManager:
         with self._EXTERNAL_PREFETCH_LOCK:
             inflight = self._EXTERNAL_PREFETCH_THREADS.setdefault(key, {})
             now = time.monotonic()
-            if any(now > deadline for deadline in inflight.values()):
-                logger.debug("Memory provider '%s' prefetch is still stuck; skipping this turn", provider.name)
+            if _stuck_calls(inflight, now) >= _MAX_STUCK_CALLS:
+                logger.debug("Memory provider '%s' prefetch has %d stuck calls; skipping this turn",
+                             provider.name, _MAX_STUCK_CALLS)
                 return ""
             inflight[thread] = now + self._external_prefetch_timeout
             try:
@@ -476,9 +487,9 @@ class MemoryManager:
             logger.debug("Inline memory background task failed: %s", e)
 
     def _call_unless_stalled(self, provider: MemoryProvider, call: Callable[[], Any]) -> None:
-        """Run a background provider call unless an earlier one for the same provider (any manager in
-        this process) is stuck; skipping costs that turn's write/prefetch but keeps the thread count
-        bounded. The builtin provider is local and never gated."""
+        """Run a background provider call unless _MAX_STUCK_CALLS earlier ones for the same provider (any
+        manager in this process) are stuck; skipping costs that turn's write/prefetch but keeps the
+        pinned-thread count bounded. The builtin provider is local and never gated."""
         if provider.name == "builtin":
             call()
             return
@@ -487,12 +498,13 @@ class MemoryManager:
         now = time.monotonic()
         with self._BACKGROUND_CALLS_LOCK:
             calls = self._BACKGROUND_CALLS.setdefault(key, {})
-            if any(now - started > _BACKGROUND_CALL_STALL_S for started in calls.values()):
+            if _stuck_calls(calls, now - _BACKGROUND_CALL_STALL_S) >= _MAX_STUCK_CALLS:
                 skips = self._BACKGROUND_SKIPS[key] = self._BACKGROUND_SKIPS.get(key, 0) + 1
                 if skips == 1 or skips % 100 == 0:
                     logger.warning(
-                        "Memory provider '%s' has a background call stuck for over %.0fs; skipping its "
-                        "sync/prefetch until it returns (%d skipped)", provider.name, _BACKGROUND_CALL_STALL_S, skips,
+                        "Memory provider '%s' has %d background calls stuck for over %.0fs; skipping its "
+                        "sync/prefetch until one returns (%d skipped)", provider.name, _MAX_STUCK_CALLS,
+                        _BACKGROUND_CALL_STALL_S, skips,
                     )
                 return
             calls[token] = now

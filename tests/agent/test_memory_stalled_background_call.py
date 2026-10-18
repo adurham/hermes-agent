@@ -1,7 +1,7 @@
 """A background provider call that never returns pins its mem-sync worker thread forever (Python cannot
 stop a thread). MemoryManagers are rebuilt per agent, so without a process-wide view every fresh manager
 started one more call against the hung backend and pinned one more thread. Calls for a provider are now
-skipped while an earlier call for it is stuck past the stall threshold."""
+skipped once _MAX_STUCK_CALLS earlier calls for it are stuck past the stall threshold."""
 import threading
 
 import pytest
@@ -71,32 +71,60 @@ def _mem_sync_threads():
     return [t for t in threading.enumerate() if t.name.startswith("mem-sync")]
 
 
-def test_stuck_call_stops_fresh_managers_from_pinning_more_threads():
-    provider = _HangingProvider()
-    first = _manager(provider)
-    first.sync_all("hello", "hi")
+def _hang_one_call(name="hangs"):
+    """A manager whose provider's first sync_turn never returns (until released)."""
+    provider = _HangingProvider(name)
+    mgr = _manager(provider)
+    mgr.sync_all("hello", "hi")
     assert provider.started.wait(5)
+    return mgr, provider
+
+
+def test_sustained_wedge_pins_at_most_max_stuck_threads():
+    """A backend that stays wedged: every call hangs. Calls keep being admitted until
+    _MAX_STUCK_CALLS are stuck, then later managers are skipped, so pinned threads stay bounded."""
+    hung = [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]
     before = len(_mem_sync_threads())
 
     for _ in range(5):
-        fresh = _manager(provider)
+        fresh = _manager(_HangingProvider())
         fresh.sync_all("again", "reply")
         fresh.queue_prefetch_all("query")
-        assert fresh.flush_pending(timeout=5)  # returns: nothing blocked behind the hung call
+        assert fresh.flush_pending(timeout=5)  # returns: nothing blocked behind the hung calls
         fresh.shutdown_all()
 
-    assert provider.sync_calls == 1 and provider.prefetch_calls == 0
-    assert MemoryManager._BACKGROUND_SKIPS[(first._home_key, provider.name)] == 10
+    key = (hung[0][0]._home_key, hung[0][1].name)
+    assert MemoryManager._BACKGROUND_SKIPS[key] == 10
+    assert len(MemoryManager._BACKGROUND_CALLS[key]) == mm._MAX_STUCK_CALLS
     # Idle workers of shut-down executors exit asynchronously.
     wait_until(lambda: len(_mem_sync_threads()) <= before, timeout=5, what="idle mem-sync workers to exit")
 
-    provider.release.set()
-    assert first.flush_pending(timeout=5)
-    assert (first._home_key, provider.name) not in MemoryManager._BACKGROUND_CALLS
-    first.sync_all("next", "turn")  # calls resume once the stuck one returns
-    assert first.flush_pending(timeout=5)
-    assert provider.sync_calls == 2
-    first.shutdown_all()
+    for _, provider in hung:
+        provider.release.set()
+    for mgr, _ in hung:
+        assert mgr.flush_pending(timeout=5)
+    assert key not in MemoryManager._BACKGROUND_CALLS
+    for mgr, _ in hung:
+        mgr.shutdown_all()
+
+
+def test_healthy_replacement_still_writes_behind_an_orphaned_call():
+    """One call that never returns must not silence the provider for the process lifetime: a fresh
+    manager with a healthy provider instance (the backend recovered) keeps writing."""
+    orphan_mgr, orphan = _hang_one_call()
+    healthy = _HangingProvider()
+    healthy.hang_next = False
+    try:
+        for _ in range(5):
+            fresh = _manager(healthy)
+            fresh.sync_all("again", "reply")
+            fresh.queue_prefetch_all("query")
+            assert fresh.flush_pending(timeout=5)
+            fresh.shutdown_all()
+        assert (healthy.sync_calls, healthy.prefetch_calls) == (5, 5)
+    finally:
+        orphan.release.set()
+        orphan_mgr.shutdown_all()
 
 
 def test_slow_call_below_threshold_is_not_skipped(monkeypatch):

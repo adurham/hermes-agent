@@ -453,7 +453,10 @@ class TestMemoryManager:
     # -- Error resilience ---------------------------------------------------
 
 
-    def test_external_prefetch_timeout_skips_stuck_provider(self):
+    def test_external_prefetch_timeout_skips_stuck_provider(self, monkeypatch):
+        import agent.memory_manager as mm
+
+        monkeypatch.setattr(mm, "_MAX_STUCK_CALLS", 1)  # the gate closes on the first stuck call
         mgr = MemoryManager(external_prefetch_timeout=0.01)
         builtin = FakeMemoryProvider("builtin")
         builtin._prefetch_result = "builtin memory"
@@ -493,15 +496,17 @@ class TestMemoryManager:
 
     def test_stuck_prefetch_thread_is_shared_across_managers(self, tmp_path):
         """#134392: a new MemoryManager is built per agent init, so the in-flight
-        registry must be process-wide — N fresh managers against one stuck provider
-        keep at most one live ``memory-prefetch-*`` thread, not one per manager. It is
-        keyed per Hermes home: another profile's same-named provider still recalls.
+        registry must be process-wide — fresh managers against a wedged provider keep at
+        most ``_MAX_STUCK_CALLS`` live ``memory-prefetch-*`` threads, not one per manager. It
+        is keyed per Hermes home: another profile's same-named provider still recalls.
         """
+        import agent.memory_manager as mm
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
+        stuck = mm._MAX_STUCK_CALLS
         external = BlockingPrefetchProvider("cross-manager-stuck")
         try:
-            for i in range(5):
+            for i in range(stuck + 3):
                 mgr = MemoryManager(external_prefetch_timeout=0.01)
                 mgr.add_provider(external)
                 mgr._prefetch_provider(external, "query", session_id=f"s{i}")
@@ -510,8 +515,8 @@ class TestMemoryManager:
                 t for t in threading.enumerate()
                 if t.name.startswith("memory-prefetch-cross-manager-stuck")
             ]
-            assert len(live) == 1
-            assert external.prefetch_queries == ["query"]
+            assert len(live) == stuck
+            assert external.prefetch_queries == ["query"] * stuck
 
             other_profile = FakeMemoryProvider("cross-manager-stuck")
             other_profile._prefetch_result = "profile b memory"
@@ -523,18 +528,37 @@ class TestMemoryManager:
             mgr_b.add_provider(other_profile)
             assert mgr_b._prefetch_provider(other_profile, "q", session_id="b") == "profile b memory"
 
-            # Once the stuck call returns, the shared registry clears and a fresh
+            # Once the stuck calls return, the shared registry clears and a fresh
             # manager prefetches again.
             external.release.set()
-            live[0].join(timeout=2.0)
-            assert not live[0].is_alive()
+            for thread in live:
+                thread.join(timeout=2.0)
+                assert not thread.is_alive()
             assert (mgr._home_key, external.name) not in MemoryManager._EXTERNAL_PREFETCH_THREADS
             mgr = MemoryManager(external_prefetch_timeout=1.0)
             mgr.add_provider(external)
             mgr._prefetch_provider(external, "after", session_id="s-after")
-            assert external.prefetch_queries == ["query", "after"]
+            assert external.prefetch_queries == ["query"] * stuck + ["after"]
         finally:
             external.release.set()
+
+    def test_healthy_replacement_recalls_behind_an_orphaned_prefetch(self):
+        """One prefetch that never returns must not blank recall for the process lifetime: a fresh
+        manager with a healthy provider instance (the backend recovered) still recalls."""
+        orphan = BlockingPrefetchProvider("orphaned-recall")
+        stuck_mgr = MemoryManager(external_prefetch_timeout=0.01)
+        stuck_mgr.add_provider(orphan)
+        try:
+            stuck_mgr._prefetch_provider(orphan, "q", session_id="stuck")
+            assert orphan.started.wait(timeout=2.0)
+            healthy = FakeMemoryProvider("orphaned-recall")
+            healthy._prefetch_result = "recalled"
+            for i in range(5):
+                mgr = MemoryManager(external_prefetch_timeout=5.0)
+                mgr.add_provider(healthy)
+                assert mgr._prefetch_provider(healthy, "q", session_id=f"s{i}") == "recalled"
+        finally:
+            orphan.release.set()
 
     def test_healthy_concurrent_prefetches_from_two_sessions_both_recall(self):
         """Only a TIMED-OUT call gates other managers: a slow-but-healthy prefetch in one session
