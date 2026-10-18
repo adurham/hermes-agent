@@ -1247,13 +1247,13 @@ class GatewayBusySessionMixin:
         return event
 
     async def _admit_command_turn(self, event: MessageEvent, source, session_key: str,
-                                  stop_epoch: Optional[int] = None) -> tuple[bool, Optional[str]]:
+                                  stop_epoch: int) -> tuple[bool, Optional[str]]:
         """Inline admission (the idle path, a mid-run skill reaching the runner): ``(True, reply)``
-        like ``_hm_authority_admission``, else ``(False, None)`` to stay in-process."""
+        like ``_hm_authority_admission``, else ``(False, None)`` to stay in-process. *stop_epoch* is
+        the route's /stop and /new epoch read when the command arrived, before any rewrite."""
         if not self._command_turn_admitted(event, session_key):
             return False, None
-        epoch = self._route_stop_epoch(session_key) if stop_epoch is None else stop_epoch
-        return await self._hm_authority_admission(self._as_fifo_turn(event, epoch), source, session_key, False)
+        return await self._hm_authority_admission(self._as_fifo_turn(event, stop_epoch), source, session_key, False)
 
     async def _queue_command_turn(self, session_key: str, command: MessageEvent, event: MessageEvent, adapter,
                                   ack: Optional[str] = None, stop_epoch: Optional[int] = None) -> bool:

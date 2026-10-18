@@ -352,3 +352,55 @@ async def test_queued_approval_word_is_a_turn_never_an_approval(monkeypatch):
     monkeypatch.setattr(GatewayRunner, '_handle_approve_command', approve)
     order = await _run_a_then(monkeypatch, 'queue', '/queue yes')
     assert approved == [] and 'C' in [m for m, _ in order], (approved, order)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reset', ['/new', '/stop'])
+async def test_reset_during_an_idle_skill_rewrite_drops_it(monkeypatch, reset):
+    """Idle chat: ``/demo C``'s (slow) rewrite runs off the loop; a ``/new`` or ``/stop`` landing during it
+    must drop the command, which keeps the epoch it arrived under. Read after the rewrite, the epoch
+    already counts the reset and the old command commits into the fresh conversation."""
+    import threading
+    import agent.skill_commands as skills
+    from gateway.platforms.event import MessageEvent, MessageType
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_ingress import executing_admission
+    from gateway.session_results import execution_result
+
+    _skill(monkeypatch)
+    started, gate = threading.Event(), threading.Event()
+
+    def slow(text):
+        started.set()
+        gate.wait(10)
+        return f'[demo skill] {text}'
+    monkeypatch.setattr(skills, 'build_skill_invocation_message', lambda key, text='', **_: slow(text))
+    runner, adapter, _sent = _owner(monkeypatch)
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    runner._wire_adapter_handlers(adapter)
+    source = adapter.build_source(chat_id='42', chat_type='dm', user_id='42')
+    order = []
+
+    async def turn(event, source, quick_key, run_generation):
+        order.append((event.message_id, executing_admission.get()))
+        captured = execution_result.get()
+        if captured is not None:
+            captured['result'] = {'final_response': 'ok', 'messages': []}
+        return 'ok'
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    await adapter.handle_message(MessageEvent(text='A', source=source, message_id='A'))
+    await async_wait_until(lambda: order == [('A', True)] and not runner._is_session_running(
+        runner.session_store._generate_session_key(source)), timeout=15, what='A to run and settle')
+    command = MessageEvent(text='/demo C', message_type=MessageType.COMMAND, source=source, message_id='C')
+    task = asyncio.create_task(runner._handle_message(command))
+    await async_wait_until(lambda: started.is_set() or task.done(), what='the idle rewrite to start')
+    assert not task.done()
+    await runner._handle_message(MessageEvent(text=reset, message_type=MessageType.COMMAND,
+                                              source=source, message_id='S'))
+    gate.set()
+    await asyncio.wait_for(task, 15)
+    key = runner.session_store._generate_session_key(source)
+    from hermes_state_runtime import list_session_admissions
+    rows = [row['request_id'] for row in list_session_admissions(
+        authority.db, session_id=runner.session_store.peek_session_id(key), pending_only=False)]
+    assert 'C' not in rows and 'C' not in [m for m, _ in order], (rows, order)

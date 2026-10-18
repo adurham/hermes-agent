@@ -1146,7 +1146,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     async def _hm_dispatch_idle_commands(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
     ) -> tuple[bool, Optional[str]]:
-        """Idle path: resolve + dispatch slash commands; rewriting commands fall through to the agent."""
+        """Idle path: resolve + dispatch slash commands; rewriting commands fall through to the agent.
+        A command rewritten into a turn keeps the /stop and /new epoch it arrived under, read before
+        the (slow, off-loop) rewrite, so a reset during it drops the command, as on the busy path."""
+        stop_epoch = self._route_stop_epoch(_quick_key)
         _handled, _result, command, canonical = await self._hm_resolve_command(event, source, _quick_key)
         if not _handled:
             _handled, _result = await self._hm_dispatch_canonical_command(event, source, _quick_key, canonical)
@@ -1161,7 +1164,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 self._hm_skill_slash_rewrite, event, source, _quick_key, command)
             _handled = _result is not None
         if not _handled and command:  # rewritten into a turn: the authority's FIFO, like text
-            _handled, _result = await self._admit_command_turn(event, source, _quick_key)
+            _handled, _result = await self._admit_command_turn(event, source, _quick_key, stop_epoch)
         return _handled, _result
 
     def _hm_rescue_orphaned_fifo(
