@@ -4,6 +4,22 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### Fix — 2026-10-18 (subagents died "Model used all output tokens on reasoning": an exo route's 8192 output cap followed the session onto ollama-cloud and into every delegated child)
+
+**Symptom (user screenshot):** delegated children on `deepseek-v4.1-flash` (ollama-cloud) failing with `Response truncated (finish_reason='length')` / "Thinking Budget Exhausted"; one finished its work but never wrote the file (reasoning ate the budget, the final answer was cut).
+
+**Root cause (measured, not guessed).** `providers.exo.models.<dsv4>.max_tokens: 8192` (added 2026-10-17 to bound runaway generations on the cluster) is resolved ONCE at agent init into `agent.max_tokens`. Two paths then carried that route-specific number onto a route that configures no cap: (1) `switch_model` never re-resolved it (it re-derives `reasoning_config` and `_config_context_length` but not the output cap), and (2) `delegate_tool_config._resolve_child_runtime` copied the parent's LIVE `agent.max_tokens` into every child. State.db confirmed it: all 10 subagent sessions of the failing batches carried `model_config.max_tokens=8192` while their parent (`max_tokens: null` on ollama-cloud) did not; 98 non-delegated deepseek sessions in the same 3 days had no cap and emitted calls up to 19,992 output tokens (162 calls >= 8K) vs 0 calls >= 8K under the cap (max 7,338). Direct A/B on ollama-cloud (same prompt, with/without a cap) ruled out a server-side default cap: both finished `stop`, 11.4K completion tokens. models.dev lists 384,000 max output for this model.
+
+**Fix.** `agent_init` records provenance (`agent._max_tokens_from_route_config`); `agent_runtime_helpers._re_resolve_route_output_cap` re-resolves a route-derived (or absent) cap on every `switch_model` (explicit user caps are policy and survive), and `max_tokens`/provenance joined `_SWITCH_SNAPSHOT_FIELDS` so a failed switch rolls them back; `delegate_tool_config._inherited_child_max_tokens` stops handing a route-derived cap to children (the child re-resolves from ITS route in init; an explicit cap still inherits).
+
+**Not changed:** the exo cap itself (it is correct for the cluster's hang watchdog); `delegation.reasoning_effort` etc.
+
+**Tests:** `tests/agent/test_route_output_cap_follows_switch_and_delegation.py` (7). Mutation check: neutering the re-resolve guard + the delegation filter fails 3 of them; restored, 23 passed across it, `test_switch_model_*`, and `test_delegate_role_runtime.py` (Mac single-file runs).
+
+**Live effect:** none until new processes start; the running CLI/children keep the cap they were built with. Config-only remedy for a running session meanwhile: `/model` re-select (now re-resolves).
+
+**Files:** `agent/agent_init.py`, `agent/agent_runtime_helpers.py`, `tools/delegate_tool_config.py`, the test above.
+
 ### Fork-only UX fix — 2026-10-17 (todo board toggle moved Ctrl+E → Ctrl+O: the fork had killed emacs end-of-line in the composer)
 
 **Symptom (user):** "ctrl+a jumps to the start of a line, ctrl+e used to jump to the end of a line as well but no longer does."

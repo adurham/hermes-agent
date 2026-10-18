@@ -2148,6 +2148,9 @@ _SWITCH_SNAPSHOT_FIELDS = (
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
+    # The output cap is route state now that switch_model re-resolves it
+    # (_re_resolve_route_output_cap): a failed switch must put the old cap back.
+    "max_tokens", "_max_tokens_from_route_config",
 )
 _MISSING = object()
 
@@ -2490,6 +2493,39 @@ def _persist_switch_billing_route(agent) -> None:
         logger.warning("Failed to persist billing route after model switch", exc_info=True)
 
 
+def _re_resolve_route_output_cap(agent) -> None:
+    """Re-resolve ``agent.max_tokens`` from the CURRENT route after a model/provider switch.
+
+    A per-model ``max_tokens`` read from a provider's config entry is a property of THAT route
+    (``providers.exo.models.<id>.max_tokens`` exists to bound run-away generations on the
+    cluster), not of the user. Before this, the value resolved at init followed the session onto
+    a route that configures no cap at all — an 8K ceiling on ollama-cloud's DeepSeek-V4.1-Flash
+    (384K max output per models.dev) meant a reasoning-heavy turn spent the entire budget
+    thinking: ``finish_reason='length'``, no visible content, and every delegated child inherited
+    the same 8K cap because delegation hands the parent's live ``max_tokens`` to the child.
+
+    An explicit cap (constructor ``--max-tokens``/config ``agent.max_tokens``) is policy and is
+    never touched; only a route-config cap, or the absence of any cap, is re-resolved.
+    """
+    # getattr: tests (and some embedders) build bare agents via __new__ without every field.
+    if getattr(agent, "max_tokens", None) is not None and not getattr(
+        agent, "_max_tokens_from_route_config", False
+    ):
+        return  # explicit user cap — keep it across switches
+    try:
+        from hermes_cli.config import get_custom_provider_max_tokens
+
+        route_cap = get_custom_provider_max_tokens(agent.model, agent.base_url)
+        agent.max_tokens = route_cap
+        agent._max_tokens_from_route_config = bool(route_cap)
+        logger.info(
+            "switch_model: max_tokens resolved for %s (%s): %s",
+            agent.model, agent.base_url, route_cap,
+        )
+    except Exception as _cap_err:
+        logger.debug("switch_model: could not re-resolve route max_tokens: %s", _cap_err)
+
+
 def switch_model(
     agent, new_model, new_provider, api_key='', base_url='', api_mode='', capabilities=None
 ):
@@ -2539,6 +2575,14 @@ def switch_model(
         )
     except Exception as _reasoning_err:
         logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+    # Same rule for the per-model OUTPUT CAP, which init resolves from the same config entry.
+    # Leaving it untouched let a cap configured for the OLD route follow the session: 8192 from
+    # ``providers.exo.models.<dsv4>.max_tokens`` (the cluster's runaway-generation bound) landing
+    # on ollama-cloud's DeepSeek-V4.1-Flash, whose reasoning pass alone routinely emits 8-17K
+    # tokens. Reasoning ate the whole budget, the turn came back finish_reason='length' with no
+    # visible content, and every delegated child inherited the same 8K cap (delegation takes the
+    # parent's live max_tokens), so children died with "thinking budget exhausted".
+    _re_resolve_route_output_cap(agent)
     # Invalidate the cached system prompt so it rebuilds next turn.
     agent._cached_system_prompt = None
     # Publish the destination capability map only after every runtime setup above has succeeded.
