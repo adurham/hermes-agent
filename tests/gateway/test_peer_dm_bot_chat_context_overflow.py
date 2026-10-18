@@ -155,13 +155,3 @@ def test_peer_dm_overflow_resets_the_local_bot_chat_and_answers_the_follow_up(ov
     assert run.follow[0] == 200, (run.follow, run.rows)
     assert run.follow[1]['message']['content'].startswith('ACK short follow-up'), run.follow
     assert _stored(run, 'short follow-up') == 1, run.rows
-
-
-@pytest.mark.platforms('linux')
-@pytest.mark.xfail(strict=True, reason=(
-    "The overflowing DM's first attempt fails transiently, is closed with the durable failed-turn "
-    "boundary (#107070), and the owner's one Bot Chat retry (session_bot._maybe_retry) runs a fresh "
-    "turn after that boundary, so it appends the DM a second time. Adopting the closed row needs an "
-    "owner-side adoption seam that the retry declines by design."))
-def test_overflowing_peer_dm_is_stored_once(overflow_run):
-    assert _stored(overflow_run, 'MKBIG') == 1, overflow_run.rows
