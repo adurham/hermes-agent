@@ -457,6 +457,35 @@ test('registry paging uses the backend total instead of its fetched prefix or pi
   assert.equal(profileTotals.work, 650)
 })
 
+test('a registry source that overlaps the primary base is counted once, not twice', async () => {
+  // Remote registry primary R is both `base` and a pooled registry source:
+  // base already counted all 650, and every fetched registry row is a duplicate.
+  const rows = Array.from({ length: 650 }, (_, index) => ({ id: `s${index}`, profile: 'default', started_at: 650 - index }))
+  const reported = new Map<string, number>()
+
+  const fetched = await fetchRegistrySessionRows(
+    [{ connectionId: 'R', kind: 'remote', backends: [{ descriptor: 'remote', profileLabel: null }] }],
+    new URLSearchParams({ limit: '20', offset: '0' }),
+    async (_descriptor, path) => {
+      const params = new URL(path, 'http://x').searchParams
+      const start = Number(params.get('offset'))
+      const limit = Number(params.get('limit'))
+
+      return { sessions: rows.slice(start, start + limit), total: 650, profile_totals: { default: 650 } }
+    },
+    reported
+  )
+
+  const merged: unknown[] = fetched.map(row => ({ ...(row as object) }))
+  const profileTotals: Record<string, number> = { default: 650 }
+  const before = merged.length
+  const { added } = spliceRegistrySessionRows(merged, fetched, profileTotals)
+
+  assert.equal(added, 0)
+  assert.equal(650 + applyRegistrySessionTotals(fetched, merged.slice(before), reported, profileTotals), 650)
+  assert.equal(profileTotals.default, 650)
+})
+
 test('a failed later registry page does not contribute a stale first-page total', async () => {
   const reported = new Map<string, number>()
 

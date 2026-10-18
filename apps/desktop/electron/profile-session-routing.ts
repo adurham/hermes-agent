@@ -642,7 +642,7 @@ export function spliceRegistrySessionRows(
   return { added }
 }
 
-/** Report full registry totals, minus rows already supplied by the primary/override path.
+/** Report full registry totals for scopes the primary/override path did not already count.
  *  The fetched prefix can be shorter than the backend's total and can include pins outside
  *  the ordinary cursor, so counting only its rows undercounts deep pages or overcounts pins. */
 export function applyRegistrySessionTotals(
@@ -676,7 +676,10 @@ export function applyRegistrySessionTotals(
   for (const key of new Set([...fetched.keys(), ...reportedTotals.keys()])) {
     const addedCount = added.get(key) || 0
     const duplicates = (fetched.get(key) || 0) - addedCount
-    const count = reportedTotals.has(key) ? Math.max(0, reportedTotals.get(key)! - duplicates) : addedCount
+    // A scope whose rows were already in `merged` overlaps the primary/override
+    // source, whose total already counted that whole scope. Only a scope that
+    // added every row it fetched is new, and only then is its full total owed.
+    const count = reportedTotals.has(key) && duplicates === 0 ? reportedTotals.get(key)! : addedCount
     const profile = key.slice(key.indexOf('\0') + 1)
     profileTotals[profile] = (profileTotals[profile] || 0) + count - addedCount
     contribution += count
