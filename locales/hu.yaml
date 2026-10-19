@@ -3027,7 +3027,6 @@ cli:
       usage_status: "status       Jelenlegi böngészőmód megjelenítése"
       usage_use: "use [off]    Átváltás Browser Use módra (CLI 3.0) / vissza a beépített eszközökre"
       remote_gateway: "A /browser connect és /browser disconnect egy Chromium böngészőt kezel az átjáró gépén — csak helyi átjáróval érhető el."
-      profile_shared: "A /browser connect és /browser disconnect nem érhető el több profilt kiszolgáló átjárón: az élő böngészőkapcsolaton minden profil csevegései osztoznának. Inkább állítsd be a browser.cdp_url értéket ennek a profilnak a config.yaml fájljában."
       checking: "A Chromium böngésző távoli hibakeresésének ellenőrzése: {url}..."
       new_sessions_only: "Új munkamenetekre vonatkozik — ez megtartja a jelenlegi eszközeit (/new újat indít)."
       status_gateway_default: "🌐 Böngésző: az átjáró alapértelmezett böngésző-háttere (nincs élő CDP-kapcsolat)"

@@ -3315,7 +3315,6 @@ cli:
       usage_status: "status       Afficher le mode de navigateur actuel"
       usage_use: "use [off]    Passer en mode Browser Use (CLI 3.0) / revenir aux outils intégrés"
       remote_gateway: "/browser connect et /browser disconnect gèrent un navigateur Chromium sur l'hôte de la passerelle — disponible uniquement avec une passerelle locale."
-      profile_shared: "/browser connect et /browser disconnect ne sont pas disponibles sur une passerelle qui sert plusieurs profils : la connexion au navigateur serait partagée par les discussions de tous les profils. Définissez plutôt browser.cdp_url dans le config.yaml de ce profil."
       checking: "Vérification du débogage distant du navigateur Chromium à {url}..."
       new_sessions_only: "S'applique aux nouvelles sessions — celle-ci garde ses outils actuels (/new pour en démarrer une)."
       status_gateway_default: "🌐 Navigateur : backend de navigateur par défaut de la passerelle (pas de connexion CDP en direct)"

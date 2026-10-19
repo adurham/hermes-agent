@@ -3010,7 +3010,6 @@ cli:
       usage_status: "status       Wys die huidige blaaiermodus"
       usage_use: "use [off]    Skakel oor na Browser Use-modus (CLI 3.0) / terug na ingeboude gereedskap"
       remote_gateway: "/browser connect en /browser disconnect bestuur 'n Chromium-blaaier op die gateway-gasheer — slegs beskikbaar wanneer aan 'n plaaslike gateway gekoppel."
-      profile_shared: "/browser connect en /browser disconnect is nie beskikbaar op 'n gateway wat verskeie profiele bedien nie: die lewendige blaaierverbinding sou deur elke profiel se kletse gedeel word. Stel eerder browser.cdp_url in hierdie profiel se config.yaml."
       checking: "Kontroleer Chromium-blaaier se afstandontfouting by {url}..."
       new_sessions_only: "Geld vir nuwe sessies — hierdie een behou sy huidige gereedskap (/new om een te begin)."
       status_gateway_default: "🌐 Blaaier: die gateway se verstek-blaaier (geen lewendige CDP-verbinding nie)"

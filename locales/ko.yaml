@@ -3010,7 +3010,6 @@ cli:
       usage_status: "status       현재 브라우저 모드 표시"
       usage_use: "use [off]    Browser Use 모드(CLI 3.0)로 전환 / 내장 도구로 복귀"
       remote_gateway: "/browser connect 및 /browser disconnect는 게이트웨이 호스트의 Chromium 계열 브라우저를 관리합니다 — 로컬 게이트웨이에 연결된 경우에만 사용할 수 있습니다."
-      profile_shared: "여러 프로필을 제공하는 게이트웨이에서는 /browser connect 및 /browser disconnect를 사용할 수 없습니다. 실시간 브라우저 연결이 모든 프로필의 채팅에서 공유되기 때문입니다. 대신 이 프로필의 config.yaml에 browser.cdp_url을 설정하세요."
       checking: "{url}에서 Chromium 계열 브라우저 원격 디버깅을 확인하는 중..."
       new_sessions_only: "새 세션에 적용됩니다 — 이 세션은 현재 도구를 유지합니다 (/new로 새로 시작)."
       status_gateway_default: "🌐 브라우저: 게이트웨이 기본 브라우저 백엔드 (실시간 CDP 연결 없음)"

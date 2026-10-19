@@ -1,8 +1,8 @@
 """/browser connect|disconnect through the real WS legacy fallback (dokterdok N25, #134889 CLI-9).
 
-An owner serving ONE profile runs them: every chat on it is that profile's, and Ink, Desktop and the
-classic CLI all send /browser here. An owner serving SEVERAL profiles refuses them by name, so a
-browser one profile connects never reaches another profile's sessions; status still answers."""
+Ink, Desktop and the classic CLI all send /browser here. On an owner serving one profile or several,
+connect/disconnect run in the session's profile: the live endpoint and the browser reap are that
+profile's, so a browser one profile connects never reaches another profile's sessions."""
 import json
 from pathlib import Path
 import subprocess
@@ -11,8 +11,6 @@ import sys
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env
-
-_OTHER_CHAT = 'http://127.0.0.1:9333'
 
 
 @pytest.fixture(scope='module')
@@ -31,21 +29,22 @@ def receipt(tmp_path_factory):
     return json.loads((home / 'receipt.json').read_text())
 
 
-@pytest.mark.parametrize('action', ['connect', 'disconnect', 'status', 'missing'])
-def test_several_served_profiles_keep_the_process_wide_cdp(receipt, action):
-    row = receipt['two:' + action]
-    assert row['cdp'] == _OTHER_CHAT and row['reaps'] == 0, row  # nothing process-wide changed
-    if action in ('connect', 'disconnect'):
-        assert row['code'] == 4030 and row['result'] is None, row  # refused in words, not -32601
-        assert 'several profiles' in row['message'], row
-    else:
-        assert row['code'] is None and row['result']['url'] == _OTHER_CHAT, row
-
-
-def test_one_served_profile_connects_and_disconnects_the_gateways_browser(receipt):
-    connect = receipt['one:connect']
-    assert connect['code'] is None and connect['result']['connected'] is True, connect
-    assert connect['cdp'] == f"http://127.0.0.1:{connect['cdp_port']}" and connect['reaps'] > 0, connect
-    disconnect = receipt['one:disconnect']
-    assert disconnect['code'] is None and disconnect['cdp'] is None, disconnect
-    assert receipt['one:status']['result']['connected'] is False
+@pytest.mark.parametrize('phase', ['one', 'two'])
+def test_connect_and_disconnect_are_the_sessions_profiles_alone(receipt, phase):
+    """One served profile or several: connect publishes THIS profile's endpoint and reaps only its
+    browsers; the operator's env endpoint and the other profile's own live connection stay."""
+    url, key = f"http://127.0.0.1:{receipt['one:connect']['cdp_port']}", receipt['home_key']
+    # The other profile keeps its own live connection, or the operator's env (which outranks its
+    # browser.cdp_url, as before); never this profile's.
+    bee = 'http://127.0.0.1:9444' if phase == 'two' else 'http://127.0.0.1:9333'
+    connect = receipt[f'{phase}:connect']
+    assert connect['code'] is None and connect['result'] == {'connected': True, 'url': url}, connect
+    assert connect['own'] == url and connect['reaps'] == [key, key], connect  # never 'ALL'
+    assert connect['env'] == 'http://127.0.0.1:9333' and connect['bee'] == bee, connect
+    assert receipt[f'{phase}:status']['result']['url'] == url
+    disconnect = receipt[f'{phase}:disconnect']
+    assert disconnect['code'] is None and disconnect['result'] == {'connected': False}, disconnect
+    assert disconnect['own'] is None and disconnect['reaps'] == [key] * 4, disconnect
+    assert disconnect['env'] == 'http://127.0.0.1:9333' and disconnect['bee'] == bee, disconnect
+    # Back on the operator's env endpoint (a missing action means status).
+    assert receipt[f'{phase}:missing']['result']['url'] == 'http://127.0.0.1:9333'

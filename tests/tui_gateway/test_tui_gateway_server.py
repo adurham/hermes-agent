@@ -18024,19 +18024,32 @@ def test_browser_manage_use_swaps_the_profiles_browser_tools_for_new_agents(monk
     assert (backend(other_home), backend(get_hermes_home())) == ("off", "browser-use")
 
 
+@pytest.fixture(autouse=True)
+def _no_live_cdp(monkeypatch):
+    """Each test starts with no profile's live ``/browser connect`` endpoint."""
+    from tools import browser_tool_cdp
+    monkeypatch.setattr(browser_tool_cdp, "_live_overrides", {})
+
+
+def _live_cdp() -> str:
+    """The launch profile's live ``/browser connect`` endpoint (per profile since CLI-9)."""
+    from tools.browser_tool_cdp import live_cdp_override
+    return live_cdp_override()
+
+
 def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
-    """`/browser connect` must reach the live process: set env, reap browser
+    """`/browser connect` must reach the live process: set this profile's endpoint, reap its browser
     sessions before AND after publishing the new URL.  The double-cleanup
     closes the supervisor swap window where ``_ensure_cdp_supervisor``
     could re-attach to the *old* CDP endpoint between steps."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     cleanup_calls: list[str] = []
 
-    def _cleanup_all():
-        cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", ""))
+    def _cleanup_all(_key):
+        cleanup_calls.append(_live_cdp())
 
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=_cleanup_all,
+        cleanup_profile_browsers=_cleanup_all,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
@@ -18051,7 +18064,7 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
+    assert _live_cdp() == "http://127.0.0.1:9222"
     # First cleanup runs against the OLD env (none here), second against the NEW.
     assert cleanup_calls == ["", "http://127.0.0.1:9222"]
 
@@ -18059,7 +18072,7 @@ def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
 def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
@@ -18086,7 +18099,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         lambda evt, sid, payload=None: emitted.append((evt, payload or {})),
     )
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
@@ -18135,7 +18148,7 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
         lambda evt, sid, payload=None: emitted.append((evt, payload or {})),
     )
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
@@ -18170,7 +18183,7 @@ def test_browser_manage_connect_handles_null_url(monkeypatch):
     by the outer 5031 catch."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
@@ -18205,7 +18218,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
 
@@ -18248,7 +18261,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+    assert _live_cdp() == "http://127.0.0.1:9222"
 
 
 def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
@@ -18257,7 +18270,7 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
     endpoint instead of timing out against the squatter."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
 
@@ -18285,7 +18298,7 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://[::1]:9222"
-    assert os.environ["BROWSER_CDP_URL"] == "http://[::1]:9222"
+    assert _live_cdp() == "http://[::1]:9222"
 
 
 def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch):
@@ -18295,7 +18308,7 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
 
@@ -18335,16 +18348,17 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
     assert launch_ports == [9223]
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9223"
-    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9223"
+    assert _live_cdp() == "http://127.0.0.1:9223"
 
 
 def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
     """An unreachable endpoint must NOT mutate the env or reap sessions."""
-    monkeypatch.setenv("BROWSER_CDP_URL", "http://existing:9222")
+    from tools.browser_tool_cdp import set_live_cdp_override
+    set_live_cdp_override("http://existing:9222")
     cleanup_calls: list[str] = []
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: cleanup_calls.append(
-            os.environ.get("BROWSER_CDP_URL", "")
+        cleanup_profile_browsers=lambda _key: cleanup_calls.append(
+            _live_cdp()
         ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
@@ -18360,7 +18374,7 @@ def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
 
     assert "error" in resp
     # Env preserved; nothing reaped.
-    assert os.environ["BROWSER_CDP_URL"] == "http://existing:9222"
+    assert _live_cdp() == "http://existing:9222"
     assert cleanup_calls == []
 
 
@@ -18370,7 +18384,7 @@ def test_browser_manage_connect_normalizes_bare_host_port(monkeypatch):
     tool calls (Copilot review on #17120)."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
@@ -18386,7 +18400,7 @@ def test_browser_manage_connect_normalizes_bare_host_port(monkeypatch):
     assert resp["result"]["connected"] is True
     # Bare host:port got promoted to a full URL with explicit scheme.
     assert resp["result"]["url"].startswith("http://")
-    assert os.environ["BROWSER_CDP_URL"].startswith("http://")
+    assert _live_cdp().startswith("http://")
 
 
 def test_browser_manage_connect_strips_discovery_path(monkeypatch):
@@ -18396,7 +18410,7 @@ def test_browser_manage_connect_strips_discovery_path(monkeypatch):
     produce a duplicate path (Copilot review round-2 on #17120)."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
@@ -18411,7 +18425,7 @@ def test_browser_manage_connect_strips_discovery_path(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"
-    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+    assert _live_cdp() == "http://127.0.0.1:9222"
 
 
 def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch):
@@ -18419,7 +18433,7 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
     survive verbatim — we only collapse discovery-style paths."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     concrete = "ws://browserbase.example/devtools/browser/abc123"
@@ -18449,7 +18463,7 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == concrete
-    assert os.environ["BROWSER_CDP_URL"] == concrete
+    assert _live_cdp() == concrete
 
 
 def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
@@ -18458,7 +18472,7 @@ def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
     ``/devtools/browser/...`` path or it breaks valid local CDP connects."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     concrete = "ws://127.0.0.1:9222/devtools/browser/abc123"
@@ -18482,7 +18496,7 @@ def test_browser_manage_connect_local_devtools_ws_preserves_path(monkeypatch):
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == concrete
-    assert os.environ["BROWSER_CDP_URL"] == concrete
+    assert _live_cdp() == concrete
 
 
 def test_browser_manage_connect_rejects_invalid_port(monkeypatch):
@@ -18519,7 +18533,7 @@ def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
     The HTTP probe used to reject these even though they're valid."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     concrete = "wss://chrome.browserless.io/devtools/browser/sess-1"
@@ -18563,7 +18577,7 @@ def test_browser_manage_connect_concrete_ws_tcp_unreachable(monkeypatch):
     can never succeed for these URLs anyway)."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: None,
+        cleanup_profile_browsers=lambda _key: None,
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     concrete = "ws://offline.example/devtools/browser/missing"
@@ -18583,10 +18597,12 @@ def test_browser_manage_connect_concrete_ws_tcp_unreachable(monkeypatch):
 
 
 def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
-    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+    from tools.browser_tool_cdp import set_live_cdp_override
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://operator:9222")  # an operator's env is not the live connect
+    set_live_cdp_override("http://127.0.0.1:9222")
     cleanup_count = {"n": 0}
     fake = types.SimpleNamespace(
-        cleanup_all_browsers=lambda: cleanup_count.__setitem__(
+        cleanup_profile_browsers=lambda _key: cleanup_count.__setitem__(
             "n", cleanup_count["n"] + 1
         ),
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
@@ -18597,8 +18613,8 @@ def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
         )
 
     assert resp["result"] == {"connected": False}
-    assert "BROWSER_CDP_URL" not in os.environ
-    # Two cleanups: once before env removal, once after, matching connect.
+    assert _live_cdp() == "" and os.environ["BROWSER_CDP_URL"] == "http://operator:9222"
+    # Two cleanups: once before the override is dropped, once after, matching connect.
     assert cleanup_count["n"] == 2
 
 

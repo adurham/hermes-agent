@@ -2,8 +2,8 @@
 
 Browser tools run in the gateway, so a ``/browser connect`` that only rewrites the CLI process's
 ``BROWSER_CDP_URL`` changes nothing the agent uses. ``connect``/``disconnect`` follow Desktop's rule
-(local gateway only); on a gateway serving several profiles they are refused by name, because the
-live CDP endpoint is process-wide and must never reach another profile's sessions.
+(local gateway only) and are scoped to the session's profile on every gateway: on a multiplexed
+gateway one profile's live browser never reaches another profile's sessions.
 """
 import threading
 import types
@@ -83,23 +83,6 @@ def test_classic_browser_connect_against_a_remote_gateway_is_refused(gateway_cli
     assert _browser_calls(conn) == [{"action": "status", "session_id": "local-s"}]
 
 
-def test_classic_browser_shows_the_gateways_named_refusal(gateway_cli, monkeypatch, capsys):
-    """Review #141357 F5: the real client sanitizes the owner's prose to a bounded code, so the
-    refusal crosses as ``data.reason`` and the CLI prints its own catalog text, not request_failed."""
-    from hermes_cli.gateway_client import rpc_error
-    from tui_gateway.ws_legacy_fallback import _PROCESS_GLOBAL_ACTIONS
-    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
-    _actions, reason, prose = _PROCESS_GLOBAL_ACTIONS["browser.manage"]
-
-    def refuse(params):
-        raise rpc_error({"code": 4030, "message": prose, "data": {"reason": reason}})
-    cli, _conn = gateway_cli(**{"browser.manage": refuse})
-    cli.process_command("/browser disconnect")
-    out = capsys.readouterr().out
-    assert "request_failed" not in out and "browser_profile_shared" not in out, out
-    assert "several profiles" in out and "browser.cdp_url" in out, out
-
-
 # --- the gateway side: browser.manage on a multiplexed owner -------------------------------------
 
 class _Cdp(BaseHTTPRequestHandler):
@@ -122,8 +105,11 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
     import tools.browser_tool_lifecycle as lifecycle
+    from tools import browser_tool_cdp
+    monkeypatch.setattr(browser_tool_cdp, "_live_overrides", {})
     reaps = []
-    monkeypatch.setattr(lifecycle, "cleanup_all_browsers", lambda: reaps.append(1))
+    monkeypatch.setattr(lifecycle, "cleanup_profile_browsers", reaps.append)
+    monkeypatch.setattr(lifecycle, "cleanup_all_browsers", lambda: reaps.append("ALL"))
     cdp = ThreadingHTTPServer(("127.0.0.1", 0), _Cdp)
     threading.Thread(target=cdp.serve_forever, daemon=True).start()
     yield server, launch, bee, f"http://127.0.0.1:{cdp.server_port}", reaps
@@ -148,56 +134,71 @@ def _call(server, profile_id, params):
     return reply if reply is not None else (done.wait(10) and written[0])
 
 
+def _registry(launch, *homes):
+    from gateway.session_authorities import SessionAuthorities
+    registry = SessionAuthorities(launch, multiplexed=True)
+    for home in (launch, *homes):
+        registry.add(home, types.SimpleNamespace(profile_id=str(home), retiring=False), name=home.name)
+    return registry
+
+
+def _resolved(home):
+    from gateway.run import _profile_runtime_scope
+    from tools.browser_tool_cdp import _get_cdp_override_raw
+    with _profile_runtime_scope(home, hydrate_secrets=False):
+        return _get_cdp_override_raw()
+
+
 def test_a_browser_one_profile_connects_never_reaches_another_profiles_session(homes, monkeypatch):
-    """Multiplexed owner: connect/disconnect from ANY profile are refused by name, so the
-    process-wide CDP endpoint never changes under another profile's sessions; status still answers."""
+    """CLI-9 (a, c): a multiplexed owner serving A (launch) and B. Connect from A is A's alone: A's
+    browser tools resolve A's URL, B keeps its own browser.cdp_url, only A's browsers are reaped, and
+    disconnect from A leaves B's own live connection standing."""
     import os
     from gateway import run_api
+    from hermes_constants import hermes_home_key
     server, launch, bee, url, reaps = homes
-    monkeypatch.setattr(run_api, "_ACTIVE_RUNNER", _runner_serving("default", "bee"))
-    for home in (launch, bee):
-        for action in ("connect", "disconnect"):
-            reply = _call(server, home, {"action": action, "url": url})
-            assert reply["error"]["code"] == 4030, reply
-            assert "profile" in reply["error"]["message"], reply
-    assert "BROWSER_CDP_URL" not in os.environ and reaps == []
-    status = _call(server, bee, {"action": "status"})
-    assert status["result"]["connected"] is False, status
+    (bee / "config.yaml").write_text("browser:\n  cdp_url: ws://bee.invalid/devtools/browser/PROFILE-B\n")
+    monkeypatch.setattr(run_api, "_ACTIVE_RUNNER", types.SimpleNamespace(session_authorities=_registry(launch, bee)))
+    reply = _call(server, launch, {"action": "connect", "url": url})
+    assert reply["result"] == {"connected": True, "url": url}, reply
+    assert _resolved(launch) == url and _resolved(bee).endswith("/PROFILE-B")
+    assert reaps == [hermes_home_key(launch)] * 2 and "BROWSER_CDP_URL" not in os.environ
+    assert _call(server, launch, {"action": "status"})["result"]["url"] == url
+    assert _call(server, bee, {"action": "status"})["result"]["url"].endswith("/PROFILE-B")
+    reaps.clear()
+    assert _call(server, bee, {"action": "connect", "url": url + "/"})["result"]["connected"] is True
+    assert reaps == [hermes_home_key(bee)] * 2
+    reaps.clear()
+    assert _call(server, launch, {"action": "disconnect"})["result"]["connected"] is False
+    assert reaps == [hermes_home_key(launch)] * 2  # B's browsers are not reaped
+    assert _resolved(launch) == "" and _resolved(bee) == url  # B's live connection stands
+    assert _call(server, bee, {"action": "status"})["result"]["url"] == url
 
 
 def test_single_profile_standalone_owner_connects_the_gateways_browser(homes, monkeypatch):
-    """A standalone owner (never multiplexes, so it can never hot-serve another profile): the
-    gateway's browser tools are that profile's alone, so connect/disconnect run (what Ink, Desktop
-    and now the classic CLI send)."""
+    """CLI-9 (d): a standalone owner connects and disconnects as before."""
     import os
     from gateway import run_api
     server, launch, _bee, url, reaps = homes
     monkeypatch.setattr(run_api, "_ACTIVE_RUNNER", _runner_serving("default", multiplexed=False))
     reply = _call(server, launch, {"action": "connect", "url": url})
     assert reply["result"]["connected"] is True, reply
-    assert os.environ["BROWSER_CDP_URL"] == url and reaps
+    assert _resolved(launch) == url and reaps and "ALL" not in reaps
     assert _call(server, launch, {"action": "status"})["result"]["url"] == url
     assert _call(server, launch, {"action": "disconnect"})["result"]["connected"] is False
-    assert "BROWSER_CDP_URL" not in os.environ
+    assert _resolved(launch) == "" and "BROWSER_CDP_URL" not in os.environ
 
 
 def test_connect_then_hot_serve_never_hands_one_profiles_browser_to_the_next(homes, monkeypatch):
-    """Review #141357 P1: a multiplexing owner serving ONE profile must still refuse connect, or a
-    profile hot-served afterwards inherits the process-wide override over its own browser.cdp_url
-    (and disconnect is then refused, so it can never be withdrawn)."""
-    import os
+    """CLI-9 (b), review #141357 P1: A connects while it is the only profile served; B, hot-served
+    afterwards, still resolves its own browser.cdp_url, and A can still disconnect."""
     from gateway import run_api
-    from gateway.session_authorities import SessionAuthorities
-    from tools.browser_tool_cdp import _get_cdp_override_raw
-    from gateway.run import _profile_runtime_scope
-    server, launch, bee, url, reaps = homes
+    server, launch, bee, url, _reaps = homes
     (bee / "config.yaml").write_text("browser:\n  cdp_url: ws://bee.invalid/devtools/browser/PROFILE-B\n")
-    registry = SessionAuthorities(launch, multiplexed=True)
-    registry.add(launch, types.SimpleNamespace(profile_id=str(launch), retiring=False), name="default")
+    registry = _registry(launch)
     monkeypatch.setattr(run_api, "_ACTIVE_RUNNER", types.SimpleNamespace(session_authorities=registry))
-    reply = _call(server, launch, {"action": "connect", "url": url})
-    assert reply["error"]["code"] == 4030 and reply["error"]["data"]["reason"] == "browser_profile_shared", reply
+    assert _call(server, launch, {"action": "connect", "url": url})["result"]["connected"] is True
     registry.add(bee, types.SimpleNamespace(profile_id=str(bee), retiring=False), name="bee")  # hot-serve
-    assert "BROWSER_CDP_URL" not in os.environ and reaps == []
-    with _profile_runtime_scope(bee):
-        assert _get_cdp_override_raw().endswith("/PROFILE-B")
+    assert _resolved(bee).endswith("/PROFILE-B") and _resolved(launch) == url
+    assert _call(server, launch, {"action": "disconnect"})["result"]["connected"] is False
+    assert _resolved(launch) == "" and _resolved(bee).endswith("/PROFILE-B")

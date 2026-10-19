@@ -3010,7 +3010,6 @@ cli:
       usage_status: "status       顯示目前的瀏覽器模式"
       usage_use: "use [off]    切換至 Browser Use 模式（CLI 3.0）／切回內建工具"
       remote_gateway: "/browser connect 與 /browser disconnect 管理閘道主機上的 Chromium 系瀏覽器 — 僅在連線至本機閘道時可用。"
-      profile_shared: "在服務多個設定檔的閘道上無法使用 /browser connect 與 /browser disconnect：即時瀏覽器連線會由所有設定檔的對話共用。請改為在此設定檔的 config.yaml 中設定 browser.cdp_url。"
       checking: "正在檢查 {url} 的 Chromium 系瀏覽器遠端偵錯..."
       new_sessions_only: "套用於新工作階段 — 此工作階段保留目前工具（/new 開始新的）。"
       status_gateway_default: "🌐 瀏覽器：閘道的預設瀏覽器後端（無即時 CDP 連線）"

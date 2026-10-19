@@ -3010,7 +3010,6 @@ cli:
       usage_status: "status       Taispeáin mód reatha an bhrabhsálaí"
       usage_use: "use [off]    Athraigh go mód Browser Use (CLI 3.0) / ar ais go huirlisí ionsuite"
       remote_gateway: "Bainistíonn /browser connect agus /browser disconnect brabhsálaí Chromium ar óstach an gheata — ar fáil ach amháin le geata áitiúil."
-      profile_shared: "Níl /browser connect ná /browser disconnect ar fáil ar gheata a fhreastalaíonn ar roinnt próifílí: roinnfí an nasc beo brabhsálaí idir comhráite gach próifíle. Socraigh browser.cdp_url i config.yaml na próifíle seo ina ionad."
       checking: "Ag seiceáil dífhabhtú cianda an bhrabhsálaí Chromium ag {url}..."
       new_sessions_only: "Baineann sé le seisiúin nua — coinníonn an ceann seo a uirlisí reatha (/new chun ceann a thosú)."
       status_gateway_default: "🌐 Brabhsálaí: inneall réamhshocraithe brabhsálaí an gheata (gan nasc beo CDP)"
