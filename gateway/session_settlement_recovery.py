@@ -98,7 +98,31 @@ def _publish_completion(authority, live, ref, row, settled, response, captured):
         live.controls.snapshot(ref.session_id, None)
     except Exception:
         logger.exception('Terminal control cleanup failed for admission %s', row['admission_id'])
-    live.event_stream.publish(ref.session_id, completion_payload(row, settled, response, captured))
+    complete = completion_payload(row, settled, response, captured)
+    notice = owner_stop_notice(getattr(authority, 'runner', None), settled['outcome'])
+    if notice and not complete.get('warning'):
+        # ``warning`` is the slot every surface already renders on message.complete (Ink activity
+        # line, Desktop toast), so a turn the owner's stop cut short says why (#134889 F1).
+        complete['warning'] = notice
+    live.event_stream.publish(ref.session_id, complete)
+
+
+RESTART_INTERRUPT_NOTICE = ('Gateway restarting: this turn was interrupted and will not be run again. '
+                            'Send your message again once Hermes reconnects.')
+SHUTDOWN_INTERRUPT_NOTICE = ('Gateway shutting down: this turn was interrupted and will not be run again. '
+                             'Send your message again once Hermes is back.')
+
+
+def owner_stop_notice(runner, outcome):
+    """The named notice for a turn the owner's restart/stop interrupted, or None. With the default
+    ``agent.restart_drain_timeout: 0`` a restart interrupts in-flight turns at once; the admission
+    settles ``interrupted`` and is never replayed, so the viewer is told the restart did it."""
+    # ``_running`` drops only once stop() begins: a user Stop during a restart's after-turn wait
+    # (draining, still running) is the user's own interrupt and gets no restart notice.
+    if (outcome != 'interrupted' or runner is None or getattr(runner, '_draining', False) is not True
+            or getattr(runner, '_running', True) is not False):
+        return None
+    return RESTART_INTERRUPT_NOTICE if getattr(runner, '_restart_requested', False) is True else SHUTDOWN_INTERRUPT_NOTICE
 
 
 def _release_media(authority, row):
