@@ -191,7 +191,7 @@ describe('/agents', () => {
 describe('/config', () => {
   it("shows the profile's client config projection from config.get", async () => {
     const requestGateway = gateway(method =>
-      method === 'config.get' ? { config: { display: { skin: 'mono', timestamps: true } } } : undefined
+      method === 'config.get' ? { config: { display: { skin: 'mono', timestamps: true }, voice: {} } } : undefined
     )
 
     const handle = await mount(requestGateway)
@@ -201,6 +201,8 @@ describe('/config', () => {
     expect(callsOf(requestGateway, 'config.get')).toEqual([{ session_id: RUNTIME_SESSION_ID, key: 'full' }])
     const text = renderedText(handle)
     expect(text).toContain('skin: mono')
+    // An empty section (the live projection always carries `voice: {}`) prints no dangling header.
+    expect(text).not.toContain('voice:')
     expect(text).toContain('Settings')
   })
 })

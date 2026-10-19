@@ -196,7 +196,9 @@ function yamlLines(value: unknown, indent = ''): string[] {
 
   return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
     child !== null && typeof child === 'object' && !Array.isArray(child)
-      ? [`${indent}${key}:`, ...yamlLines(child, `${indent}  `)]
+      ? Object.keys(child).length
+        ? [`${indent}${key}:`, ...yamlLines(child, `${indent}  `)]
+        : []
       : [`${indent}${key}: ${Array.isArray(child) ? JSON.stringify(child) : String(child)}`]
   )
 }
