@@ -112,6 +112,7 @@ canonical.queue.journalCleanupFailed: "ionchur seachadta; theip ar ghlanadh an d
 canonical.queue.notSavedDraftKept: "ionchur gan sábháil: {0} — dréacht coinnithe"
 canonical.queue.notSavedQueueKept: "ionchur gan sábháil: {0} — scuaine coinnithe"
 canonical.queue.serverRow: "[{0}] {1}"
+canonical.queue.lostRow: "[ar sos: caillte san atosú · ↑ roghnaigh, Ctrl+X caith amach] {0}"
 canonical.queue.statusInputNotSaved: "ionchur gan sábháil"
 canonical.queue.unconfirmedPrefix: "[gan dearbhú · Alt+K triail arís] "
 canonical.queue.unknownExecution: "forghníomhú anaithnid — Ctrl+X le scriosadh roimh thriail arís"

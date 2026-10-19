@@ -112,6 +112,7 @@ canonical.queue.journalCleanupFailed: "entrada entregada; falló la limpieza del
 canonical.queue.notSavedDraftKept: "entrada no guardada: {0} — borrador conservado"
 canonical.queue.notSavedQueueKept: "entrada no guardada: {0} — cola conservada"
 canonical.queue.serverRow: "[{0}] {1}"
+canonical.queue.lostRow: "[en pausa: perdido al reiniciar · ↑ seleccionar, Ctrl+X descartar] {0}"
 canonical.queue.statusInputNotSaved: "entrada no guardada"
 canonical.queue.unconfirmedPrefix: "[sin confirmar · Alt+K reintentar] "
 canonical.queue.unknownExecution: "ejecución desconocida — Ctrl+X para descartar antes de reintentar"

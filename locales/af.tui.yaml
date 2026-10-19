@@ -112,6 +112,7 @@ canonical.queue.journalCleanupFailed: "invoer afgelewer; joernaalopruiming het m
 canonical.queue.notSavedDraftKept: "invoer nie gestoor nie: {0} — konsep behou"
 canonical.queue.notSavedQueueKept: "invoer nie gestoor nie: {0} — tou behou"
 canonical.queue.serverRow: "[{0}] {1}"
+canonical.queue.lostRow: "[gepouseer: verlore in herbegin · ↑ kies, Ctrl+X gooi weg] {0}"
 canonical.queue.statusInputNotSaved: "invoer nie gestoor nie"
 canonical.queue.unconfirmedPrefix: "[onbevestig · Alt+K probeer weer] "
 canonical.queue.unknownExecution: "onbekende uitvoering — Ctrl+X om weg te gooi voor jy weer probeer"
