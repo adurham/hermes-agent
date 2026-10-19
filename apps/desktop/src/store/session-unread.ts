@@ -8,6 +8,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import {
   $cronSessions,
+  $lastReadAtBySessionId,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -231,7 +232,8 @@ export function lightDesktopMessagingCompletion(
   storedSessionId: string,
   admissionId: string | undefined,
   focused: boolean,
-  profile?: string
+  profile?: string,
+  completedAt = Date.now()
 ) {
   if (!admissionId) {
     return
@@ -239,9 +241,14 @@ export function lightDesktopMessagingCompletion(
 
   if (!desktopAdmissions.delete(admissionId)) {
     // Its receipt may still be in flight: keep the completion until the admission is noted.
-    earlyCompletions.set(admissionId, { storedSessionId, focused, profile })
+    earlyCompletions.set(admissionId, { storedSessionId, focused, profile, completedAt })
     trimOldest(earlyCompletions)
 
+    return
+  }
+
+  // A held completion the user has since read (opened, even if left again) is already seen.
+  if (($lastReadAtBySessionId.get()[storedSessionId] ?? -1) >= completedAt) {
     return
   }
 
@@ -250,13 +257,36 @@ export function lightDesktopMessagingCompletion(
   // conversation's listed segment paints at once.
   const row = resolveOwnedRow(storedSessionId, profile)
 
-  if (!focused && isMessagingSource(row?.source)) {
-    markSessionUnreadFinished(row!.id, profile)
+  if (row && !focused && isMessagingSource(row.source)) {
+    markRowUnread(row)
+  }
+}
+
+/** The live-edge write for a row already resolved to its owner: transient dot plus the marker in
+ *  that row's own profile (`markSessionUnreadFinished` re-resolves a bare id, which another
+ *  profile's same-id row can win). */
+function markRowUnread(row: SessionInfo) {
+  const current = $unreadFinishedSessionIds.get()
+
+  if (!current.includes(row.id)) {
+    $unreadFinishedSessionIds.set([...current, row.id])
+  }
+
+  const profile = profileKeyForRow(row)
+  const bucket = $unreadFinishedMarkers.get()[profile] ?? []
+  const durableId = sessionPinId(row)
+
+  if (!bucket.includes(durableId)) {
+    const next = [...bucket, durableId]
+    setMarkerBucket(profile, next.length > MARKERS_CAP ? next.slice(next.length - MARKERS_CAP) : next)
   }
 }
 
 /** Stamped completions that arrived before their admission was noted, keyed by admission. */
-const earlyCompletions = new Map<string, { storedSessionId: string; focused: boolean; profile?: string }>()
+const earlyCompletions = new Map<
+  string,
+  { storedSessionId: string; focused: boolean; profile?: string; completedAt: number }
+>()
 
 function trimOldest(entries: Set<string> | Map<string, unknown>) {
   for (const oldest of entries.keys()) {
@@ -279,7 +309,7 @@ observeCanonicalAdmissions((admissionId, status) => {
 
   if (early) {
     earlyCompletions.delete(admissionId)
-    lightDesktopMessagingCompletion(early.storedSessionId, admissionId, early.focused, early.profile)
+    lightDesktopMessagingCompletion(early.storedSessionId, admissionId, early.focused, early.profile, early.completedAt)
   }
 })
 
