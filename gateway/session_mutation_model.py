@@ -53,7 +53,7 @@ async def prepare_model(authority, live, payload, prepared):
     # providers, as CLI/TUI ``/model`` do (#139740). A following session's ``config`` already is
     # the profile's current read; every other session keeps ``config`` for its own route below.
     resolution = config if old.follows_profile else await asyncio.to_thread(
-        _provider_resolution_config, authority, config)
+        _provider_resolution_config, authority, config, old.ignore_user_config)
 
     def switch(**kwargs):
         result = switch_model(**kwargs)
@@ -144,12 +144,15 @@ async def prepare_model(authority, live, payload, prepared):
     return dict(prepared, policy=asdict(policy))
 
 
-def _provider_resolution_config(authority, config):
+def _provider_resolution_config(authority, config, bypass=False):
     """*config* with the owning profile's CURRENT named providers over its frozen ones, used only to
     resolve and freeze a pick. Reads this owner's own config.yaml (never another profile's); a
-    frozen entry the profile no longer declares stays resolvable."""
+    frozen entry the profile no longer declares stays resolvable. A session that bypasses the
+    profile (``ignore_user_config``, implied by safe mode) resolves only its own frozen config."""
     from pathlib import Path
     from gateway.run import _load_gateway_config
+    if bypass:
+        return config
     current = _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml')
     if not isinstance(current, dict):
         return config

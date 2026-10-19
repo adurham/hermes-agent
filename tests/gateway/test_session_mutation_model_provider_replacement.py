@@ -89,6 +89,21 @@ async def test_named_provider_replacement_does_not_keep_withdrawn_secrets(tmp_pa
         assert config['providers']['reviewprovider'].get('extra_headers') is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bypass', ['ignore_user_config', 'safe_mode'])
+async def test_config_only_pick_does_not_import_profile_provider(tmp_path, monkeypatch, bypass):
+    from hermes_state_runtime import RuntimeStoreError
+    with peers() as (_a, au, b, bu):
+        before = {'model': {'provider':'custom', 'base_url':au,'default':'original'}}
+        after = {**before, 'providers': {'reviewprovider':{'base_url':bu,'api_key':'profile-only-key'}}}
+        try:
+            await pick(tmp_path, monkeypatch, before, after, 'reviewprovider',
+                       request={bypass: True, 'provider': 'custom', 'base_url': au})
+        except RuntimeStoreError as exc:
+            assert str(exc) == 'model_resolution_failed'
+        assert not b.bearers, 'ignore_user_config session imported profile-only provider'
+
+
 @pytest.mark.platforms('linux')
 def test_removed_provider_key_is_not_sent_to_retargeted_endpoint(tmp_path):
     root = Path(__file__).resolve().parents[2]
