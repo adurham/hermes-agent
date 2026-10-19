@@ -536,3 +536,57 @@ def test_a_queue_submit_the_owner_refused_still_says_nothing_was_queued():
         assert [m for m, _ in client.calls].count("prompt.submit") == 1  # a verdict is never retried
     finally:
         conn.close()
+
+
+def _busy_enter(cli, mode, text, images=()):
+    """Enter typed while the turn runs, through main's ``_tui_enter_while_busy``."""
+    cli.busy_input_mode = mode
+    cli.agent = getattr(cli, "agent", None)
+    with patch("agent.onboarding.is_seen", lambda *a: True), patch("cli._cprint"):
+        cli._tui_enter_while_busy(text, list(images), (text, list(images)) if images else text)
+
+
+@pytest.mark.asyncio
+async def test_probe_queue_mode_enter_then_queue_keep_entry_order(tmp_path, monkeypatch):
+    """Review round 2, major 1: a queue-mode Enter typed before ``/queue X`` used to stay in
+    ``_pending_input`` while X went to the owner's FIFO, so X ran first (and the typed item had no
+    ``session_admissions`` row). With a gateway store attached it is an admission too, in entry order."""
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    conn = GatewayConnection(connect=owners.dial)
+    try:
+        store = GatewaySessionStore(conn)
+        await asyncio.to_thread(store.attach, owners.sid)
+        cli = _busy_cli(store, owners.sid)
+        await asyncio.to_thread(_busy_enter, cli, "queue", "typed first")
+        await asyncio.to_thread(_command, cli, f"/queue {TEXT}")
+        assert cli._pending_input.empty()
+        listed = await asyncio.to_thread(_command, cli, "/queue list")
+        assert listed.index("typed first") < listed.index(TEXT), f"entry order lost: {listed}"
+    finally:
+        await owners.close(conn)
+
+
+def test_a_steer_that_falls_back_to_queue_is_a_gateway_admission_and_images_stay_local():
+    """The steer fallback inherits the queue-mode path; an image follow-up (no text-only admission) and
+    a run with no gateway store keep main's ``_pending_input``."""
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        cli._agent_running = True
+        cli.agent = SimpleNamespace(steer=lambda text: False)  # the running turn refused the steer
+        _busy_enter(cli, "steer", "steer me")
+        assert cli._pending_input.empty() and list(conn.state(SID).queued_inputs.values()) == ["steer me"]
+        _busy_enter(cli, "queue", "look", images=["/img.png"])
+        assert cli._pending_input.get_nowait() == ("look", ["/img.png"])
+        submits = [m for m, _ in client.calls].count("prompt.submit")
+        assert submits == 1
+    finally:
+        conn.close()
+    local = _idle_cli(conn)
+    local._session_db = object()  # not a gateway viewer
+    local._agent_running = True
+    _busy_enter(local, "queue", "plain")
+    assert local._pending_input.get_nowait() == "plain"
+
