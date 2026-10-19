@@ -139,8 +139,21 @@ function settleControlReply(
   item: QueueItem,
   r: PromptSubmitResponse,
   deps: SubmitPromptDeps,
-  focused: () => boolean
+  focused: () => boolean,
+  sid: string
 ): void {
+  // A bare stop phrase typed as a busy correction ended the voice chat and reached
+  // no turn (TUI-26): settled, rendered as the stop-phrase event, the turn untouched.
+  if (r?.voice_stopped === true) {
+    item.settle?.(true)
+
+    if (deps.gw.isCanonical) {
+      deps.gw.publishLocalEvent({ payload: { stop_phrase: true, typed: true }, session_id: sid, type: 'voice.transcript' })
+    }
+
+    return
+  }
+
   const control = r as PromptSubmitResponse & { execution_generation?: number }
 
   const accepted =
@@ -349,7 +362,7 @@ export function submitPrompt(
       )
       .then(r => {
         if (item?.controlMethod) {
-          settleControlReply(item, r, deps, focused)
+          settleControlReply(item, r, deps, focused, sid)
 
           return
         }

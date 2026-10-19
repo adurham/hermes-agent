@@ -8483,6 +8483,40 @@
         "title": "CanonicalControlParams",
         "type": "object"
       },
+      "CanonicalCorrectionAck": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "queued",
+              "redirected",
+              "rejected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "execution_generation": {
+            "title": "Execution Generation",
+            "type": "integer"
+          },
+          "authority_epoch": {
+            "title": "Authority Epoch",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "text",
+          "execution_generation",
+          "authority_epoch"
+        ],
+        "title": "CanonicalCorrectionAck",
+        "type": "object"
+      },
       "CanonicalCorrectionParams": {
         "additionalProperties": false,
         "properties": {
@@ -8520,38 +8554,16 @@
         "type": "object"
       },
       "CanonicalCorrectionResult": {
-        "additionalProperties": false,
-        "properties": {
-          "status": {
-            "enum": [
-              "queued",
-              "redirected",
-              "rejected"
-            ],
-            "title": "Status",
-            "type": "string"
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/CanonicalCorrectionAck"
           },
-          "text": {
-            "title": "Text",
-            "type": "string"
-          },
-          "execution_generation": {
-            "title": "Execution Generation",
-            "type": "integer"
-          },
-          "authority_epoch": {
-            "title": "Authority Epoch",
-            "type": "integer"
+          {
+            "$ref": "#/components/schemas/CanonicalVoiceStopped"
           }
-        },
-        "required": [
-          "status",
-          "text",
-          "execution_generation",
-          "authority_epoch"
         ],
-        "title": "CanonicalCorrectionResult",
-        "type": "object"
+        "description": "``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``\nwhen the busy-time text was a bare stop phrase that ended the LOCAL voice chat.",
+        "title": "CanonicalCorrectionResult"
       },
       "CanonicalCreateParams": {
         "additionalProperties": false,

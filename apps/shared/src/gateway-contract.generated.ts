@@ -5070,11 +5070,17 @@ export interface CanonicalCorrectionParams {
   execution_generation: number
   text: string
 }
-export interface CanonicalCorrectionResult {
+/** ``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}`` when the busy-time text was a bare stop phrase that ended the LOCAL voice chat. */
+export type CanonicalCorrectionResult = CanonicalCorrectionAck | CanonicalVoiceStopped
+export interface CanonicalCorrectionAck {
   status: 'queued' | 'redirected' | 'rejected'
   text: string
   execution_generation: number
   authority_epoch: number
+}
+/** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
+export interface CanonicalVoiceStopped {
+  voice_stopped: true
 }
 export interface CanonicalEventsParams {
   profile?: string | null
@@ -5141,10 +5147,6 @@ export interface CanonicalModelOverride {
 }
 /** ``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``. */
 export type CanonicalSubmitResult = AdmissionStatus | CanonicalVoiceStopped
-/** A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was admitted (TUI-26). */
-export interface CanonicalVoiceStopped {
-  voice_stopped: true
-}
 export interface CanonicalApprovalParams {
   profile?: string | null
   session_id: string

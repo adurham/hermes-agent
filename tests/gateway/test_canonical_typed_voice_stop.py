@@ -101,6 +101,33 @@ async def test_a_messaging_lane_viewer_typing_stop_is_admitted_untouched(voice_o
     assert _ledger(voice_owner.db) == ['r1']
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('method', ['session.redirect', 'session.steer'])
+async def test_a_stop_typed_as_a_busy_correction_ends_the_voice_chat_and_reaches_no_agent(voice_owner, method):
+    """Ink's ``interrupt``/``steer`` busy modes send text typed during a running turn through
+    ``session.redirect``/``session.steer``, not ``prompt.submit``: the same stop decision covers them."""
+    voice_owner.runner._voice_mode['s'] = 'voice_only'
+    agent_calls = []
+    voice_owner.authority.steer_agent = lambda *a: agent_calls.append(a) or (None, True)
+    with voice_owner.db:
+        reply = await _call(_connection(voice_owner.authority), method, text='stop', execution_generation=0)
+    assert reply.get('result') == {'voice_stopped': True}, reply
+    assert voice_owner.runner._voice_mode['s'] == 'off'
+    assert agent_calls == [], 'the stop phrase must never reach the running turn'
+
+
+@pytest.mark.asyncio
+async def test_other_busy_corrections_still_reach_the_turn(voice_owner):
+    voice_owner.runner._voice_mode['s'] = 'voice_only'
+    voice_owner.authority.steer_agent = lambda *a: (None, True)
+    voice_owner.authority.check_approval_generation = lambda *a: None
+    with voice_owner.db:
+        reply = await _call(_connection(voice_owner.authority), 'session.steer', text='stop doing that',
+                            execution_generation=0)
+    assert reply['result']['status'] == 'queued', reply
+    assert voice_owner.runner._voice_mode['s'] == 'voice_only'
+
+
 def test_the_canonical_contract_declares_the_voice_stopped_reply():
     from tui_gateway.contracts.registry import CANONICAL_METHODS
     contract = CANONICAL_METHODS['prompt.submit']

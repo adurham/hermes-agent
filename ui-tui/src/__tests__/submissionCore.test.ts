@@ -300,6 +300,34 @@ describe('submissionCore.submitPrompt — typed voice stop on the shared gateway
     expect(publishLocalEvent).not.toHaveBeenCalled()
   })
 
+  it.each(['session.redirect', 'session.steer'] as const)(
+    'a stop typed as a %s busy correction settles as the stop-phrase event, not a rejected correction',
+    async controlMethod => {
+      const request = vi.fn(async () => ({ voice_stopped: true }))
+      const publishLocalEvent = vi.fn()
+      const gw = { isCanonical: true, publishLocalEvent, request } as unknown as GatewayClient
+      const sys = vi.fn()
+      const settle = vi.fn()
+
+      patchUiState({ busy: true, status: 'running…' })
+      submitPrompt('stop', makeDeps(gw, { sys }), true, undefined, {
+        behindTurn: true,
+        destination: captureDestination(),
+        queueItem: { controlMethod, executionGeneration: 3, settle, submissionId: 'c1', text: 'stop' } as never,
+        skipDetectDrop: true
+      })
+
+      await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(true))
+      expect(publishLocalEvent).toHaveBeenCalledWith({
+        payload: { stop_phrase: true, typed: true },
+        session_id: 'sess-1',
+        type: 'voice.transcript'
+      })
+      expect(sys).not.toHaveBeenCalled()
+      expect(getUiState().busy).toBe(true)
+    }
+  )
+
   it('a stop typed behind a running turn (queue mode) ends voice but leaves that turn running', async () => {
     const request = vi.fn(async () => ({ voice_stopped: true }))
     const publishLocalEvent = vi.fn()

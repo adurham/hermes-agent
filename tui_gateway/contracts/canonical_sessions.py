@@ -261,11 +261,16 @@ class CanonicalCorrectionParams(CanonicalControlParams):
     text: str
 
 
-class CanonicalCorrectionResult(Result):
+class CanonicalCorrectionAck(Result):
     status: Literal['queued', 'redirected', 'rejected']
     text: str
     execution_generation: int
     authority_epoch: int
+
+
+class CanonicalCorrectionResult(RootModel[CanonicalCorrectionAck | CanonicalVoiceStopped]):
+    """``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``
+    when the busy-time text was a bare stop phrase that ended the LOCAL voice chat."""
 
 
 class CanonicalApprovalParams(CanonicalControlParams):
