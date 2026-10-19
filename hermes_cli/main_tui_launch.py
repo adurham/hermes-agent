@@ -397,6 +397,33 @@ def _setup_tui_worktree() -> dict:
     return wt_info
 
 
+def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
+    """Remove the ``--tui -w`` checkout on quit when nothing still needs it (N8) -> True if gone.
+
+    Kept when the gateway has queued or started work for a session inside it (quitting only
+    detaches the viewer), when another process still works in it, and by ``_cleanup_worktree``
+    when it is dirty, holds unpushed commits or something no branch keeps.
+    """
+    from hermes_cli.config import get_hermes_home
+    from hermes_cli.worktree_exit import _still_in_use
+    from hermes_cli.worktree_ops import _retained_tree_is_live
+
+    path = wt_info.get("path")
+    if not path or not Path(path).is_dir():
+        return False
+    try:
+        if _retained_tree_is_live(str(get_hermes_home() / "state.db"), path, pending_only=True):
+            return False
+        if _still_in_use(path):
+            return False
+        from cli import _cleanup_worktree
+        _cleanup_worktree(wt_info)
+    except Exception:
+        logger.debug("TUI worktree cleanup failed; keeping %s", path, exc_info=True)
+        return False
+    return not Path(path).exists()
+
+
 def _require_bypass_model(env: dict, model: Optional[str], resume_session_id: Optional[str]) -> None:
     """A --safe-mode / --ignore-user-config session reads no profile default model, so the owner
     refuses its session.create without one (bare invalid_params). Say so before the TUI starts,
@@ -550,6 +577,8 @@ def _launch_tui(
         from hermes_cli.worktree_exit import apply_exit_choice
         if wt_info and apply_exit_choice(wt_info, print):
             wt_info = None  # archived or discarded at the user's request
+        if wt_info and _remove_idle_clean_tui_worktree(wt_info):
+            wt_info = None  # clean and idle: removed with its branch, as before the shared gateway
         if wt_info:
             # Quitting detaches a viewer; the gateway may still be executing in
             # this checkout and future resumes retain its frozen cwd.

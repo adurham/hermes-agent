@@ -63,9 +63,10 @@ hermes -w -z "Fix issue #123"     # Single query in worktree
 
 `hermes -w` sessions create disposable worktrees under `<repo>/.worktrees/`.
 With `hermes --tui -w`, closing the terminal detaches from the gateway-owned
-session. Its worktree is retained even when clean: the turn may still be running
-there, and resuming the session uses the same working directory. Review and prune
-it after the session's work is finished.
+session. A clean worktree with no turn still queued or running is removed with
+its branch on quit. One with uncommitted changes or unpushed commits, or with a
+turn the gateway is still running there, is retained, and resuming the session
+uses the same working directory.
 A sweep runs automatically at `hermes -w` startup and every 6 hours from the
 cron ticker: idle clean+merged trees are removed, and idle trees with
 uncommitted changes or unpushed commits are **archived, then removed**
