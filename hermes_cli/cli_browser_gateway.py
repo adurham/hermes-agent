@@ -8,6 +8,10 @@ from urllib.parse import urlparse
 from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
 from hermes_cli.cli_commands_session_tools import _say_block, _t
 
+# The gateway's bounded refusal codes for browser.manage -> this CLI's catalog text (the client
+# sanitizes the owner's prose, so the code is what crosses the wire).
+_REFUSALS = {"browser_profile_shared": "browser.profile_shared"}
+
 
 def _gateway_is_remote() -> bool:
     """True when this CLI attaches to an explicitly named gateway WebSocket that is not loopback
@@ -45,7 +49,8 @@ def gateway_browser(cli, connection, word: str, rest: str) -> None:
     try:
         result = connection.call("browser.manage", **params) or {}
     except GatewayClientError as exc:
-        return _say_block(f"   ⚠ {exc}")
+        key = _REFUSALS.get(str(exc))
+        return _say_block(f"   ⚠ {_t(key) if key else exc}")
     for message in result.get("messages") or ():
         print(f"   {message}")
     if word == "use":

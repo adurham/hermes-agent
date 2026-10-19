@@ -3010,6 +3010,7 @@ cli:
       usage_status: "status       Показати поточний режим браузера"
       usage_use: "use [off]    Перемкнутися в режим Browser Use (CLI 3.0) / назад до вбудованих інструментів"
       remote_gateway: "/browser connect і /browser disconnect керують браузером Chromium на хості шлюзу — доступно лише з локальним шлюзом."
+      profile_shared: "/browser connect і /browser disconnect недоступні на шлюзі, що обслуговує кілька профілів: живе з'єднання з браузером стало б спільним для чатів усіх профілів. Натомість задайте browser.cdp_url у config.yaml цього профілю."
       checking: "Перевірка віддаленого налагодження браузера Chromium за адресою {url}..."
       new_sessions_only: "Застосовується до нових сеансів — цей зберігає поточні інструменти (/new, щоб почати новий)."
       status_gateway_default: "🌐 Браузер: типовий браузер шлюзу (немає активного CDP-з'єднання)"

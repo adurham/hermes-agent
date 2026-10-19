@@ -83,6 +83,23 @@ def test_classic_browser_connect_against_a_remote_gateway_is_refused(gateway_cli
     assert _browser_calls(conn) == [{"action": "status", "session_id": "local-s"}]
 
 
+def test_classic_browser_shows_the_gateways_named_refusal(gateway_cli, monkeypatch, capsys):
+    """Review #141357 F5: the real client sanitizes the owner's prose to a bounded code, so the
+    refusal crosses as ``data.reason`` and the CLI prints its own catalog text, not request_failed."""
+    from hermes_cli.gateway_client import rpc_error
+    from tui_gateway.ws_legacy_fallback import _PROCESS_GLOBAL_ACTIONS
+    monkeypatch.delenv("HERMES_TUI_GATEWAY_URL", raising=False)
+    _actions, reason, prose = _PROCESS_GLOBAL_ACTIONS["browser.manage"]
+
+    def refuse(params):
+        raise rpc_error({"code": 4030, "message": prose, "data": {"reason": reason}})
+    cli, _conn = gateway_cli(**{"browser.manage": refuse})
+    cli.process_command("/browser disconnect")
+    out = capsys.readouterr().out
+    assert "request_failed" not in out and "browser_profile_shared" not in out, out
+    assert "several profiles" in out and "browser.cdp_url" in out, out
+
+
 # --- the gateway side: browser.manage on a multiplexed owner -------------------------------------
 
 class _Cdp(BaseHTTPRequestHandler):

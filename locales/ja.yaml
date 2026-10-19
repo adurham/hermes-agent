@@ -3010,6 +3010,7 @@ cli:
       usage_status: "status       現在のブラウザモードを表示します"
       usage_use: "use [off]    Browser Use モード (CLI 3.0) に切り替え / 組み込みツールに戻します"
       remote_gateway: "/browser connect と /browser disconnect はゲートウェイホスト上の Chromium 系ブラウザーを管理します — ローカルゲートウェイ接続時のみ利用できます。"
+      profile_shared: "複数のプロファイルを提供するゲートウェイでは /browser connect と /browser disconnect は使用できません。ライブのブラウザー接続がすべてのプロファイルのチャットで共有されるためです。代わりにこのプロファイルの config.yaml で browser.cdp_url を設定してください。"
       checking: "{url} で Chromium 系ブラウザーのリモートデバッグを確認しています..."
       new_sessions_only: "新しいセッションに適用されます — このセッションは現在のツールを維持します（/new で開始）。"
       status_gateway_default: "🌐 ブラウザー: ゲートウェイの既定ブラウザーバックエンド（ライブ CDP 接続なし）"

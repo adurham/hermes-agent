@@ -3010,6 +3010,7 @@ cli:
       usage_status: "status       Mostra la modalità browser attuale"
       usage_use: "use [off]    Passa alla modalità Browser Use (CLI 3.0) / torna agli strumenti integrati"
       remote_gateway: "/browser connect e /browser disconnect gestiscono un browser Chromium sull'host del gateway — disponibile solo con un gateway locale."
+      profile_shared: "/browser connect e /browser disconnect non sono disponibili su un gateway che serve più profili: la connessione al browser sarebbe condivisa dalle chat di ogni profilo. Imposta invece browser.cdp_url nel config.yaml di questo profilo."
       checking: "Verifica del debug remoto del browser Chromium su {url}..."
       new_sessions_only: "Si applica alle nuove sessioni — questa mantiene gli strumenti attuali (/new per avviarne una)."
       status_gateway_default: "🌐 Browser: backend browser predefinito del gateway (nessuna connessione CDP attiva)"

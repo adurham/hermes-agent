@@ -3010,6 +3010,7 @@ cli:
       usage_status: "status       عرض وضع المتصفح الحالي"
       usage_use: "use [off]    التبديل إلى وضع Browser Use (CLI 3.0) / الرجوع إلى الأدوات المضمّنة"
       remote_gateway: "‏/browser connect و /browser disconnect يديران متصفحًا من عائلة Chromium على مضيف البوابة — متاح فقط عند الاتصال ببوابة محلية."
+      profile_shared: "‏/browser connect و /browser disconnect غير متاحين على بوابة تخدم عدة ملفات تعريف: سيُشارَك اتصال المتصفح المباشر بين محادثات كل ملف تعريف. اضبط browser.cdp_url في config.yaml لهذا الملف بدلًا من ذلك."
       checking: "جارٍ التحقق من التصحيح عن بُعد لمتصفح Chromium على {url}..."
       new_sessions_only: "ينطبق على الجلسات الجديدة — تحتفظ هذه الجلسة بأدواتها الحالية (‏/new لبدء جلسة)."
       status_gateway_default: "🌐 المتصفح: الواجهة الافتراضية لمتصفح البوابة (لا يوجد اتصال CDP مباشر)"

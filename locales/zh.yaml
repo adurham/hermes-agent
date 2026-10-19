@@ -3010,6 +3010,7 @@ cli:
       usage_status: "status       显示当前浏览器模式"
       usage_use: "use [off]    切换到 Browser Use 模式（CLI 3.0）/ 切回内置工具"
       remote_gateway: "/browser connect 和 /browser disconnect 管理网关主机上的 Chromium 系浏览器 — 仅在连接到本地网关时可用。"
+      profile_shared: "在服务多个配置文件的网关上无法使用 /browser connect 和 /browser disconnect：实时浏览器连接会被所有配置文件的对话共享。请改为在此配置文件的 config.yaml 中设置 browser.cdp_url。"
       checking: "正在检查 {url} 的 Chromium 系浏览器远程调试..."
       new_sessions_only: "应用于新会话 — 此会话保留当前工具（/new 开始新的）。"
       status_gateway_default: "🌐 浏览器：网关的默认浏览器后端（无实时 CDP 连接）"
