@@ -1,5 +1,6 @@
 import { foldPersonalityName } from '@/lib/personalities'
 import { asText, normalize } from '@/lib/text'
+import { localShowReasoning } from '@/store/reasoning-disclosure'
 import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
 import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
@@ -254,6 +255,26 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
   safeSet(cur, parts[parts.length - 1], value)
 
   return clone
+}
+
+// Reasoning Blocks edits what local surfaces show, and they read the local key a local
+// `/reasoning show|hide` saves (`display.platforms.cli.show_reasoning`) before the global one.
+// The schema has no entry for that per-platform key, so the field stays on the global key and
+// shows the local value, and a change writes both.
+const LOCAL_SHOW_REASONING = 'display.platforms.cli.show_reasoning'
+
+/** The value a Settings field shows. */
+export function configFieldValue(config: HermesConfigRecord, key: string): unknown {
+  return key === 'display.show_reasoning'
+    ? localShowReasoning(config.display)
+    : getNested(config, key)
+}
+
+/** The config after a Settings field edit. */
+export function setConfigField(config: HermesConfigRecord, key: string, value: unknown): HermesConfigRecord {
+  const next = setNested(config, key, value)
+
+  return key === 'display.show_reasoning' ? setNested(next, LOCAL_SHOW_REASONING, value) : next
 }
 
 function personalityOptions(config: HermesConfigRecord): string[] {

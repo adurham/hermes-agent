@@ -159,3 +159,41 @@ def test_footer_writes_global_from_chat_and_cli_key_locally(tmp_path, monkeypatc
     assert node is True, saved
     if platform == 'telegram':
         assert 'platforms' not in saved['display'], saved
+
+
+# What Desktop Settings -> Chat -> Reasoning Blocks PUTs when switched on (apps/desktop/src/app/settings/helpers.ts
+# setConfigField; pinned by its vitest): the global key and the local key every local surface reads first.
+_SETTINGS_REASONING_ON = {'display': {'show_reasoning': True, 'platforms': {'cli': {'show_reasoning': True}}}}
+
+
+def test_settings_reasoning_toggle_wins_after_a_local_reasoning_hide(tmp_path, monkeypatch):
+    """After a local ``/reasoning hide`` saved the ``cli`` key, the Settings toggle still turns reasoning on:
+    the real ``PUT /api/config`` keeps the nested key, and ``config.get full`` and the launch default follow it."""
+    from starlette.testclient import TestClient
+
+    import hermes_cli.config as config_mod
+    from gateway.local_viewer_events import launch_shows_reasoning
+    from gateway.session_config import _client_config
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    config_mod._RAW_CONFIG_CACHE.clear()
+    # The state a local `/reasoning hide` leaves (test_reasoning_hide_and_footer_reach_the_local_clients_config_read).
+    (tmp_path / 'config.yaml').write_text(json.dumps(
+        {'display': {'show_reasoning': True, 'platforms': {'cli': {'show_reasoning': False}}}}))
+    response = TestClient(app).put('/api/config', json={'config': _SETTINGS_REASONING_ON},
+                                   headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
+    assert response.status_code == 200, response.text
+    config_mod._LOAD_CONFIG_CACHE.clear()
+    config_mod._RAW_CONFIG_CACHE.clear()
+    saved = config_mod.load_config()
+
+    class _Policy:
+        source = 'gui'
+
+        def config(self, _authority, secrets=False):
+            return saved
+
+    assert _client_config(saved)['display']['show_reasoning'] is True, saved['display']
+    assert launch_shows_reasoning(_Policy(), None) is True

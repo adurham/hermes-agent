@@ -6,6 +6,7 @@ import { BUILTIN_PERSONALITIES } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
+  configFieldValue,
   credentialPreview,
   diffConfig,
   enumOptionsFor,
@@ -13,6 +14,7 @@ import {
   isExternalMemoryProvider,
   providerGroup,
   sectionFieldEntries,
+  setConfigField,
   setNested,
   stripToolsetLabel
 } from './helpers'
@@ -103,6 +105,22 @@ describe('settings helpers', () => {
 
     expect(getNested(next, 'display.theme')).toBe('slate')
     expect(getNested(config, 'display.theme')).toBe('mono')
+  })
+
+  it('Reasoning Blocks shows and writes the local key a local /reasoning saved', () => {
+    // After a local `/reasoning hide`: the local key wins on every local surface.
+    const config: HermesConfigRecord = { display: { show_reasoning: true, platforms: { cli: { show_reasoning: false } } } }
+
+    expect(configFieldValue(config, 'display.show_reasoning')).toBe(false)
+    const next = setConfigField(config, 'display.show_reasoning', true)
+
+    expect(getNested(next, 'display.platforms.cli.show_reasoning')).toBe(true)
+    expect(getNested(next, 'display.show_reasoning')).toBe(true)
+    expect(configFieldValue(next, 'display.show_reasoning')).toBe(true)
+    // The autosave patch carries the local key, so PUT /api/config's deep merge replaces it.
+    expect(diffConfig(config, next)).toEqual({ display: { platforms: { cli: { show_reasoning: true } } } })
+    // Other fields are untouched.
+    expect(setConfigField({}, 'display.skin', 'ares')).toEqual({ display: { skin: 'ares' } })
   })
 
   it('rejects prototype-polluting config paths', () => {
