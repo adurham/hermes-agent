@@ -343,3 +343,71 @@ def test_a_queued_turn_the_owner_ran_before_this_viewer_reattached_is_still_pain
         assert state.queued_inputs == {}
     finally:
         conn.close()
+
+
+def test_dock_drops_a_cli_queued_admission_another_client_cancelled():
+    """Review N5-F1: another client retired the CLI's queued admission (prompt.cancel, replace, steer).
+    The owner's next published pending list omits it; the dock must stop listing it as queued."""
+    from hermes_cli.cli_session_dock import queued_prompts
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, _client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        state = conn.state(SID)
+        state.queued_inputs["adm-q"] = TEXT
+        state.apply_event("session.info", {"pending": [{"admission_id": "adm-q", "status": "queued",
+                                                         "sequence": 1, "text": TEXT}]})
+        assert queued_prompts(cli) == [TEXT]
+        state.apply_event("session.info", {"pending": []})  # another client cancelled it
+        assert queued_prompts(cli) == [], "retired admission still painted as queued"
+    finally:
+        conn.close()
+
+
+def test_dock_shows_a_fresh_submit_until_the_owner_publishes_its_list():
+    """The gap between the submit's receipt and the owner's next pending list: the new admission is shown;
+    the first list published after it decides."""
+    from hermes_cli import gateway_queue
+    from hermes_cli.cli_session_dock import queued_prompts
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, _client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        state = conn.state(SID)
+        state.apply_event("session.info", {"pending": []})
+        gateway_queue.submit_queued(cli, cli._session_db, TEXT)  # FakeClient admits it as adm-1
+        assert queued_prompts(cli) == [TEXT]
+        state.apply_event("session.info", {"pending": [{"admission_id": "adm-1", "status": "queued",
+                                                         "sequence": 1, "text": TEXT}]})
+        assert queued_prompts(cli) == [TEXT]
+        state.apply_event("session.info", {"pending": []})
+        assert queued_prompts(cli) == []
+    finally:
+        conn.close()
+
+
+def test_a_queued_admission_another_client_cancelled_is_forgotten_not_painted():
+    """A remembered admission that settled without running (cancelled by Ink/Desktop) is dropped from
+    ``queued_inputs`` on the next published list; nothing is painted for it."""
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        state = conn.state(SID)
+        state.queued_inputs["adm-q"] = TEXT
+        real = client.rpc
+
+        async def rpc(method, **params):
+            if method == "prompt.receipt":
+                client.calls.append((method, params))
+                return {"admission_id": "adm-q", "status": "terminal", "outcome": "cancelled"}
+            return await real(method, **params)
+        client.rpc = rpc
+        state.apply_event("session.info", {"pending": []})
+        cli._drain_process_notifications("cli-idle")
+        assert cli._pending_input.empty() and state.queued_inputs == {}
+    finally:
+        conn.close()

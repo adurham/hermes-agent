@@ -32,7 +32,9 @@ def submit_queued(cli, store, text: str) -> str:
     admission = (receipt or {}).get("admission_id")
     if not admission:
         raise GatewayClientError("the gateway did not admit the queued prompt")
-    _state(cli, store).queued_inputs[admission] = text
+    state = _state(cli, store)
+    state.queued_inputs[admission] = text
+    state.queued_at[admission] = state.pending_seq
     return admission
 
 
@@ -65,13 +67,20 @@ def queued_rows(cli, store) -> list[tuple[str, str]]:
 
 
 def published_queue(cli, store) -> list[str]:
-    """The texts the owner last published as queued, plus this viewer's admissions not yet in that list
-    (no RPC: the dock repaints on every tick)."""
+    """The texts the owner last published as queued, plus this viewer's admissions submitted after that
+    list (no RPC: the dock repaints on every tick).
+
+    The owner's published list is authoritative: an admission it no longer lists (cancelled, replaced or
+    steered by another client, or started) is not shown as queued, even while ``queued_inputs`` still
+    owes its turn a paint."""
     state = _state(cli, store)
+    for gone in [admission for admission in state.queued_at if admission not in state.queued_inputs]:
+        state.queued_at.pop(gone, None)
     rows = [row for row in state.pending or () if isinstance(row, dict)]
     known = {row.get("admission_id") for row in rows}
-    return ([str(row.get("text") or "") for row in rows if row.get("status") == "queued"]
-            + [text for admission, text in state.queued_inputs.items() if admission not in known])
+    fresh = [text for admission, text in state.queued_inputs.items()
+             if admission not in known and state.queued_at.get(admission, -1) >= state.pending_seq]
+    return [str(row.get("text") or "") for row in rows if row.get("status") == "queued"] + fresh
 
 
 def cancel(cli, store, admission: str) -> bool:
@@ -90,4 +99,5 @@ def replace(cli, store, admission: str, text: str) -> str | None:
     new = (receipt or {}).get("admission_id")
     if new:
         state.queued_inputs[new] = text
+        state.queued_at[new] = state.pending_seq
     return new

@@ -74,6 +74,9 @@ class SessionState:
         # ``/queue`` admission whose ``message.start`` this viewer dropped unpainted (a local turn's
         # drain or pump) is in ``missed``. Both make the idle tick read its receipt (``recover_queued``).
         self.pending_seq = 0
+        # ``admission_id -> pending_seq`` when this viewer queued it: the dock shows it only until the
+        # owner publishes a list after that (``gateway_queue.published_queue``).
+        self.queued_at: dict = {}
         self.recovered_seq = 0
         self.missed: set = set()
         # ``session.replay_gap``s seen, and how many a re-attach covered: the owner retired this viewer's
