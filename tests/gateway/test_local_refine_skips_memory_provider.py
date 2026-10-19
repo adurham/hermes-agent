@@ -36,7 +36,7 @@ async def test_cold_refine_builds_no_memory_provider(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_init, 'is_core_memory_provider', lambda name: False)
     sid = 'refine-memory-parent'
     source = SimpleNamespace(chat_id=sid)
-    live = SimpleNamespace(source=source)
+    live = SimpleNamespace(source=source, review=SimpleNamespace())
     authority = SimpleNamespace(profile_id=str(tmp_path), sessions={sid: live},
         db=SimpleNamespace(get_messages_as_conversation=lambda *a, **k: [{'role': 'user', 'content': 'h'}]))
     policy = SimpleNamespace(ignore_rules=False)

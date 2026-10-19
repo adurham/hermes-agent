@@ -36,7 +36,7 @@ async def test_cold_refine_keeps_the_sessions_terminal(tmp_path, monkeypatch):
     assert key == sid, key
     terminal_tool._active_environments[key] = env
     source = SimpleNamespace(chat_id=sid)
-    live = SimpleNamespace(source=source)
+    live = SimpleNamespace(source=source, review=SimpleNamespace())
     authority = SimpleNamespace(profile_id=str(tmp_path), sessions={sid: live},
         db=SimpleNamespace(get_messages_as_conversation=lambda *a, **k: [{'role': 'user', 'content': 'history'}]))
     policy = object()

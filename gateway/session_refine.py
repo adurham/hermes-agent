@@ -42,7 +42,14 @@ async def refine_local_session(runner, source, focus):
     target, history = await asyncio.to_thread(load)
     if not history:
         return t('gateway.refine.nothing_yet')
+    from agent.background_review import finish_background_review_run, prepare_background_review_run
     from gateway.session_tui_side import _side_agent, _side_scope, _spawn
+    # The guard is the session's (its side agent is per call): a /refine while one runs joins it, as
+    # the resident agent's does, and the session's next turn cancels it (``_execute_claimed``).
+    run = prepare_background_review_run(live.review)
+    tail = t('gateway.refine.focus_suffix', focus=focus) if focus else ''
+    if run is None:
+        return t('gateway.refine.started', focus_suffix=tail)
     task_id = f'refine_{uuid.uuid4().hex[:6]}'
     holder = [None]
 
@@ -52,9 +59,14 @@ async def refine_local_session(runner, source, focus):
             current.event_stream.publish(ref.session_id, {'text': str(message)}, event_type='review.summary')
 
     def body():
-        from agent.background_review import (
-            finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
-        )
+        try:
+            review_body()
+        finally:  # whatever raised first, the session's guard is released
+            finish_background_review_run(live.review, run)
+        return ''  # the summary (if any) was published above; an empty review.summary draws nothing
+
+    def review_body():
+        from agent.background_review import spawn_background_review_thread
         from agent.turn_finalizer import _clone_background_review_messages
         with _side_scope(authority, policy, task_id):
             # The session's own id: the review's usage is recorded against it, and the agent never
@@ -67,7 +79,6 @@ async def refine_local_session(runner, source, focus):
             agent._end_session_on_close = False
             agent.background_review_callback = publish
             agent._print_fn = lambda *_a, **_k: None
-            run = prepare_background_review_run(agent)
             try:
                 review, _prompt = spawn_background_review_thread(
                     agent, _clone_background_review_messages(history), review_memory=True,
@@ -75,14 +86,12 @@ async def refine_local_session(runner, source, focus):
                     focus=focus or None, review_run=run, explicit=True)
                 review()
             finally:
-                finish_background_review_run(agent, run)
                 with contextlib.suppress(Exception):
                     agent.release_clients()
-        return ''  # the summary (if any) was published above; an empty review.summary draws nothing
 
     try:
         _spawn(authority, ref, task_id, 'review.summary', body, holder=holder)
     except RuntimeError as exc:  # the review thread could not start
+        finish_background_review_run(live.review, run)
         return t('gateway.refine.start_failed', error=exc)
-    tail = t('gateway.refine.focus_suffix', focus=focus) if focus else ''
     return t('gateway.refine.started', focus_suffix=tail)
