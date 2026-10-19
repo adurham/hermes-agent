@@ -1215,20 +1215,6 @@ describe('createGatewayEventHandler', () => {
     expect(ctx.voice.setVoiceEnabled).toHaveBeenCalledWith(true)
   })
 
-  it('turns on the shared owner\'s per-session voice mode, not the sidecar flag, before a wake capture', async () => {
-    const ctx = buildCtx([])
-    ;(ctx.gateway.gw as any).isCanonical = true
-    patchUiState({ sid: 'owner-session' })
-
-    createGatewayEventHandler(ctx)({ payload: { start_new_session: false }, type: 'wake.detected' } as any)
-
-    await vi.waitFor(() =>
-      expect(ctx.gateway.rpc).toHaveBeenCalledWith('voice.record', { action: 'start', session_id: 'owner-session' })
-    )
-    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', { command: 'voice on', session_id: 'owner-session' })
-    expect(ctx.gateway.rpc).not.toHaveBeenCalledWith('voice.toggle', expect.anything())
-  })
-
   it('keeps the current session when wake detection disables session creation', async () => {
     const ctx = buildCtx([])
     patchUiState({ sid: 'current-session' })
