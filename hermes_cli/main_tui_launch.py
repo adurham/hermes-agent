@@ -401,20 +401,26 @@ def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
     """Remove the ``--tui -w`` checkout on quit when nothing still needs it (N8) -> True if gone.
 
     Kept when the gateway has queued or started work for a session inside it (quitting only
-    detaches the viewer), when another process still works in it, and by ``_cleanup_worktree``
-    when it is dirty, holds unpushed commits or something no branch keeps.
+    detaches the viewer), still schedules work for one (an active loop, heartbeat or goal
+    continuation, or a cron job bound to it), another viewer still holds one, or another process
+    still works in it; and by ``_cleanup_worktree`` when it is dirty, holds unpushed commits or
+    something no branch keeps.
     """
     from hermes_cli.config import get_hermes_home
     from hermes_cli.worktree_exit import _still_in_use
-    from hermes_cli.worktree_ops import _retained_tree_is_live
+    from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
 
     path = wt_info.get("path")
     if not path or not Path(path).is_dir():
         return False
     try:
-        if _retained_tree_is_live(str(get_hermes_home() / "state.db"), path, pending_only=True):
+        db_path = str(get_hermes_home() / "state.db")
+        if _retained_tree_is_live(db_path, path, pending_only=True):
             return False
         if _still_in_use(path):
+            return False
+        # After the grace above: a legacy sidecar stamps its rows ``tui_shutdown`` as it exits.
+        if _tree_still_served(db_path, path):
             return False
         from cli import _cleanup_worktree
         _cleanup_worktree(wt_info)
