@@ -684,7 +684,7 @@ export const coreCommands: SlashCommand[] = [
         const cwd = (remote ? process.env.HERMES_CWD : sessionCwd()) || process.cwd()
 
         // The write is the user's accepted request: it runs even when another slash has started
-        // since (the stale-flight guard drops only the notice).
+        // since (the stale-flight guard drops only the success notice; a failure always shows).
         return void ctx.gateway
           .rpc<SessionExportResponse>('session.export', { format, redact, session_id: ctx.sid })
           .then(r => {
@@ -692,16 +692,14 @@ export const coreCommands: SlashCommand[] = [
               return
             }
 
-            let notice: string
-
             try {
-              notice = t('slashCmd.core.save.saved', writeSessionExport(r, filename, cwd))
-            } catch (e) {
-              notice = `${t('slashCmd.core.save.failed')}: ${e instanceof Error ? e.message : String(e)}`
-            }
+              const notice = t('slashCmd.core.save.saved', writeSessionExport(r, filename, cwd))
 
-            if (!ctx.stale()) {
-              ctx.transcript.sys(notice)
+              if (!ctx.stale()) {
+                ctx.transcript.sys(notice)
+              }
+            } catch (e) {
+              ctx.transcript.sys(`${t('slashCmd.core.save.failed')}: ${e instanceof Error ? e.message : String(e)}`)
             }
           })
           .catch(ctx.guardedErr)

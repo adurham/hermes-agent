@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -117,6 +117,28 @@ it('/save still writes the file when another slash command starts before the exp
     await flush()
     await flush()
     expect(readFileSync(join(dir, 'race.md'), 'utf8')).toBe('RACE')
+  } finally {
+    rmSync(dir, { force: true, recursive: true })
+  }
+})
+
+it('/save still reports a failed write after another slash command started', async () => {
+  const dir = mkdtempSync(join(process.env.TMPDIR || tmpdir(), 'ink-save-fail-'))
+  let finish!: (value: unknown) => void
+
+  try {
+    writeFileSync(join(dir, 'file'), '')
+    const { request, slash, sys } = harness({ 'shared_metrics.slash_command': {} })
+
+    request.mockImplementation(async (method: string) =>
+      method === 'session.export' ? new Promise(resolve => (finish = resolve)) : {}
+    )
+    slash(`/save md ${join(dir, 'file', 'out.md')}`)
+    slash('/timestamps status')
+    finish({ content: 'X', filename: 'x.md', format: 'md' })
+    await flush()
+    await flush()
+    expect(notices(sys).some(n => n.startsWith('failed to save: '))).toBe(true)
   } finally {
     rmSync(dir, { force: true, recursive: true })
   }
