@@ -1271,8 +1271,12 @@ class GatewaySlashCommandsMixin(
                                       collect_debug_report, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
 
-        if (getattr(event.source, "platform", None) == Platform.LOCAL
-                and "local" in {w.lower() for w in (event.get_command_args() or "").split()}):
+        wants_local = "local" in {w.lower() for w in (event.get_command_args() or "").split()}
+        if wants_local and getattr(event.source, "platform", None) != Platform.LOCAL:
+            # From a chat the report can't stay on the machine; `/debug local` must never fall
+            # through to the public paste. Bare `/debug` is the upload form.
+            return t("gateway.debug.local_refused")
+        if wants_local:
             # A local session's `/debug local` (main's CLI form) asks for the report on this machine:
             # return the redacted report for the client to show, with no network call at all (not
             # even the expired-paste sweep). Uploading stays on the explicit `/debug` form (T7).

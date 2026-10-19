@@ -2,7 +2,8 @@
 
 The messaging ``/debug`` handler ignored its argument and always uploaded the summary to a public
 paste. A local session's ``/debug local`` asks for the report on this machine: the gateway returns
-the redacted report for the client to show and makes no network call. Messaging keeps its upload.
+the redacted report for the client to show and makes no network call. From a messaging chat
+``/debug local`` is refused and uploads nothing; bare ``/debug`` keeps the upload.
 """
 import socket
 from unittest.mock import patch
@@ -66,9 +67,24 @@ async def test_messaging_debug_still_uploads_the_summary():
             patch('hermes_cli.debug._best_effort_sweep_expired_pastes', lambda: None), \
             patch('hermes_cli.debug._capture_dump', lambda: 'dump'), \
             patch('hermes_cli.debug.collect_debug_report', lambda **kw: 'SUMMARY'):
-        out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug local'))
+        out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug'))
     assert uploaded == ['SUMMARY']
     assert 'https://paste.rs/x' in out
+
+
+@pytest.mark.asyncio
+async def test_messaging_debug_local_is_refused_without_uploading():
+    """``/debug local`` from a chat is a named refusal pointing at bare ``/debug``; nothing is uploaded."""
+    guard = _NoNetwork()
+    with patch('hermes_cli.debug.upload_to_pastebin', guard), \
+            patch('hermes_cli.diagnostics_upload.share_to_nous', guard), \
+            patch('hermes_cli.debug._schedule_auto_delete', guard), \
+            patch('hermes_cli.debug._best_effort_sweep_expired_pastes', guard), \
+            patch('hermes_cli.debug.collect_debug_report', guard), \
+            patch.object(socket.socket, 'connect', guard):
+        out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug local'))
+    assert guard.calls == []
+    assert '/debug' in out and 'http' not in out.lower()
 
 
 @pytest.mark.asyncio
