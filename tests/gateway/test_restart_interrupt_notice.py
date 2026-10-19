@@ -397,6 +397,72 @@ def test_automation_turn_transcript_notice_is_the_neutral_copy(tmp_path):
         assert _notices(db) == [AUTOMATION_INTERRUPTED_NOTICE]
 
 
+
+def _core_closed_turn(tmp_path, monkeypatch, *, principal='person', earlier_failed=False):
+    """A claimed admission whose agent was interrupted by the restart before any assistant text:
+    the real AIAgent persists the user row and the real core closer
+    (``agent/conversation_loop.py::_close_durable_failed_turn``) writes its failed-turn boundary.
+    ``earlier_failed``: a previous turn already ended on a failed-turn boundary before this claim."""
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    from agent.conversation_loop import _close_durable_failed_turn
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import SessionRef
+    from hermes_state import SessionDB
+    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+    from run_agent import AIAgent
+
+    runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=True)
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    if earlier_failed:
+        db.append_message('s', 'user', 'earlier request')
+        db.append_message('s', 'assistant', FAILED_TURN_NOTICE, display_kind=FAILED_TURN_DISPLAY_KIND)
+    epoch = begin_runtime_epoch(db, instance_id='owner')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    live = authority.sessions['s'] = LiveSession(None, 'route')
+    ref = SessionRef('owned', 's')
+    payload = {'text': 'please work'}
+    admit_session_input(db, epoch=epoch, principal_id=principal, session_id='s', request_id='r', payload=payload)
+    row = claim_session_input(db, epoch=epoch, session_id='s')
+    authority._stamp_claim(ref, live, row)
+    result = {'final_response': '', 'interrupted': True, 'completed': False, 'interrupt_message': 'Gateway restarting'}
+    if not earlier_failed:
+        agent = AIAgent(session_db=db, session_id='s', model='test-model', provider='openai-compat', api_key='test',
+                        base_url='http://127.0.0.1:1/v1', quiet_mode=True, skip_context_files=True, skip_memory=True)
+        messages = [{'role': 'user', 'content': 'please work'}]
+        agent._flush_messages_to_session_db(messages)  # the turn-start flush of the accepted user row
+        result['messages'] = messages
+        _close_durable_failed_turn(agent, result)
+    return db, authority, live, ref, row, result
+
+
+@pytest.mark.parametrize('principal', ['person', 'cron-owner'])
+def test_restart_notice_replaces_the_core_failed_turn_boundary_of_the_same_turn(tmp_path, monkeypatch, principal):
+    """#134889 GW-21 review (GW-A): the agent's own closer already ended this turn with
+    "Send it again"; settlement replaces that boundary with the restart notice in its own write,
+    so the transcript holds one Hermes boundary, and an automation row never keeps resend advice."""
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE, FAILED_TURN_NOTICE
+    from gateway.session_settlement_recovery import commit_and_publish
+    db, authority, live, ref, row, result = _core_closed_turn(tmp_path, monkeypatch, principal=principal)
+    with db:
+        assert _notices(db) == [FAILED_TURN_NOTICE]  # the real core closer wrote it
+        commit_and_publish(authority, live, ref, row, '', 'interrupted', {'result': result}, {})
+        expected = RESTART_INTERRUPT_NOTICE if principal == 'person' else AUTOMATION_INTERRUPTED_NOTICE
+        assert _notices(db) == [expected]
+        assert [m['role'] for m in db.get_messages('s')] == ['user', 'assistant']
+
+
+def test_an_earlier_turns_failed_boundary_is_kept_and_the_restart_notice_appended(tmp_path, monkeypatch):
+    """A failed-turn boundary written before this claim belongs to an earlier turn: it stays."""
+    from agent.turn_failure_copy import FAILED_TURN_NOTICE
+    from gateway.session_settlement_recovery import commit_and_publish
+    db, authority, live, ref, row, result = _core_closed_turn(tmp_path, monkeypatch, earlier_failed=True)
+    with db:
+        commit_and_publish(authority, live, ref, row, '', 'interrupted', {'result': result}, {})
+        assert _notices(db) == [FAILED_TURN_NOTICE, RESTART_INTERRUPT_NOTICE]
+
+
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize('ending', ['spawned', 'cancelled'])
 def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_path, monkeypatch, ending):
@@ -456,6 +522,7 @@ def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_p
     result = authority.pending_results[row['admission_id']]['result']
     assert response == '' and not bootstrapped
     assert result['interrupted'] and result['interrupt_message'] == 'Gateway restarting'
+
 
 
 def test_a_user_stop_first_keeps_no_shutdown_cause_before_spawn():

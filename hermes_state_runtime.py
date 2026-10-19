@@ -227,7 +227,12 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
         changed = conn.execute("UPDATE session_admissions SET status='started',owner_epoch=?,generation=? WHERE admission_id=? AND status='queued'", (epoch, generation, row['admission_id']))
         if changed.rowcount != 1:
             raise RuntimeStoreError('stale_generation')
-        return _row(_admission(conn, row['admission_id']))
+        claimed = _row(_admission(conn, row['admission_id']))
+        # The transcript high-water mark at the claim (``messages.id`` is AUTOINCREMENT across every
+        # session): a row above it on this conversation was written by this turn, so settlement can
+        # tell this turn's own failed-turn boundary from an earlier turn's (#134889 GW-21).
+        claimed['transcript_mark'] = conn.execute('SELECT COALESCE(MAX(id), 0) FROM messages').fetchone()[0]
+        return claimed
     return db._execute_write(write)
 
 
