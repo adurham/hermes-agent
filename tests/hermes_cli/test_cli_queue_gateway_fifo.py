@@ -590,3 +590,94 @@ def test_a_steer_that_falls_back_to_queue_is_a_gateway_admission_and_images_stay
     _busy_enter(local, "queue", "plain")
     assert local._pending_input.get_nowait() == "plain"
 
+
+
+def _run_loop(cli, until):
+    """Run main's ``_tui_process_loop`` in a thread; returns ``(processed, stop)``."""
+    import threading
+    import time
+    processed = []
+
+    def one(item):
+        processed.append((time.monotonic(), item))
+        if len(processed) >= until:
+            cli._should_exit = True
+    cli._should_exit = False
+    cli._tui_process_one_input = one
+    cli._tui_idle_tick = lambda: cli._drain_process_notifications("cli-idle")
+    thread = threading.Thread(target=cli._tui_process_loop, daemon=True)
+    thread.start()
+
+    def stop(timeout):
+        thread.join(timeout)
+        cli._should_exit = True
+        thread.join(2)
+    return processed, stop
+
+
+def test_probe_slash_command_typed_after_queue_runs_after_it():
+    """Review round 2, major 2: ``/queue X`` then ``/new`` typed while busy. On main both sat in
+    ``_pending_input`` in that order; with X in the owner's FIFO the input loop must still run X first,
+    not let ``/new`` detach the session before the owner claims X."""
+    from tests.waiting import wait_until
+    from tests.hermes_cli.test_gateway_agent import SID, frame
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        state = conn.state(SID)
+        state.queued_inputs["adm-q"] = TEXT
+        state.apply_event("session.info", {"running": True, "pending": [
+            {"admission_id": "adm-1", "status": "started", "sequence": 1, "text": "turn"},
+            {"admission_id": "adm-q", "status": "queued", "sequence": 2, "text": TEXT}]})
+        cli._pending_input.put("/new")  # typed while the CLI's turn ran; that turn just returned
+        processed, stop = _run_loop(cli, 2)
+        wait_until(lambda: cli._pending_input.empty(), timeout=5)  # the loop took /new and holds it
+        # The owner settles the turn, then claims X.
+        frames = [frame("session.info", {"running": False, "pending": [
+                      {"admission_id": "adm-q", "status": "queued", "sequence": 2, "text": TEXT}]}, admission=None),
+                  frame("message.start", {}, admission="adm-q")]
+
+        async def put():  # not _play: the held loop consumes the frames as they land
+            for item in frames:
+                await client.events.put(item)
+        asyncio.run_coroutine_threadsafe(put(), conn.loop).result(5)
+        stop(5)
+        order = [str(item) for _, item in processed]
+        assert order == [TEXT, "/new"], f"input loop runs {order[0]!r} before the /queue prompt"
+        assert getattr(processed[0][1], "admission_id", None) == "adm-q"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("pending, running", [
+    ([{"admission_id": "adm-0", "status": "unknown", "sequence": 1, "text": "lost"},
+      {"admission_id": "adm-q", "status": "queued", "sequence": 2, "text": TEXT}], False),
+    ([{"admission_id": "adm-q", "status": "queued", "sequence": 2, "text": TEXT}], False),
+    ([{"admission_id": "adm-q", "status": "queued", "sequence": 2, "text": TEXT}], True),
+])
+def test_typing_stays_responsive_when_the_owner_queue_is_paused(pending, running):
+    """The hold is bounded: a FIFO paused on an ``unknown`` row runs a typed command at once, and an owner
+    that never claims this viewer's admission (idle, or busy with someone else's turn) delays it by at
+    most ``OWN_QUEUE_HOLD_S``; the admission stays queued, never dropped."""
+    import time
+    from hermes_cli.gateway_queue import OWN_QUEUE_HOLD_S
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    assert OWN_QUEUE_HOLD_S >= 2.0
+    conn, _client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        state = conn.state(SID)
+        state.queued_inputs["adm-q"] = TEXT
+        state.apply_event("session.info", {"running": running, "pending": pending})
+        started = time.monotonic()
+        cli._pending_input.put("/help")
+        processed, stop = _run_loop(cli, 1)
+        stop(OWN_QUEUE_HOLD_S + 2)
+        assert [str(item) for _, item in processed] == ["/help"]
+        waited = processed[0][0] - started
+        assert waited < (0.5 if pending[0]["status"] == "unknown" else OWN_QUEUE_HOLD_S + 1.0), waited
+        assert state.queued_inputs == {"adm-q": TEXT}
+    finally:
+        conn.close()

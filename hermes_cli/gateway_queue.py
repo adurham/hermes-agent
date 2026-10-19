@@ -107,6 +107,95 @@ def published_queue(cli, store) -> list[str]:
     return [str(row.get("text") or "") for row in rows if row.get("status") == "queued"] + fresh
 
 
+# How long the input loop holds a local input behind this viewer's own ``/queue`` admission at most.
+OWN_QUEUE_HOLD_S = 2.0
+
+
+def _own_head(state):
+    """This viewer's ``/queue`` admission at the head of the owner's queue, not yet adopted; None when
+    the head is someone else's, nothing is queued, or the FIFO is paused on an ``unknown`` row."""
+    rows = [row for row in state.pending or () if isinstance(row, dict)]
+    if any(row.get("status") == "unknown" for row in rows):
+        return None  # paused until the owner resolves that row: never hold typing behind it
+    queued = sorted((row for row in rows if row.get("status") == "queued" and row.get("admission_id")),
+                    key=lambda row: int(row.get("sequence") or 0))
+    if queued:
+        head = queued[0]["admission_id"]
+    else:  # submitted after the last published list (``published_queue``'s fresh rows)
+        listed = {row.get("admission_id") for row in rows}
+        head = next((a for a in state.queued_inputs
+                     if a not in listed and state.queued_at.get(a, -1) >= state.pending_seq), None)
+    return head if head in state.queued_inputs and head not in state.adopted else None
+
+
+class OwnQueueHold:
+    """A local input (a slash command, a typed turn) taken while this viewer's own ``/queue`` admission
+    is the owner's next turn. On main both sat in ``_pending_input`` in entry order; now the admission
+    is in the owner's FIFO and its turn is adopted only when the owner's ``message.start`` arrives, so
+    the input loop holds the local item until that admission was taken (or left the queue).
+
+    Bounded: an ``unknown`` row (a paused FIFO) never starts a hold; an owner that publishes an idle
+    list still queuing it (beyond the one a just-settled turn publishes before its claim) releases it;
+    and ``OWN_QUEUE_HOLD_S`` caps the wait. The admission itself is never touched.
+    """
+
+    def __init__(self, item, state, admission):
+        import time
+        self.item, self.state, self.admission = item, state, admission
+        self.seq = state.pending_seq
+        # A turn the owner reports running settles with one idle list (still queuing this admission)
+        # before its drain claims it: that list is expected, a further one means the FIFO is paused.
+        self.allowed_idle_lists = 1 if state.info.get("running") else 0
+        self.idle_lists = 0
+        self.deadline = time.monotonic() + OWN_QUEUE_HOLD_S
+        self.taken = False
+
+    @classmethod
+    def begin(cls, cli, item):
+        from cli import _SeededQueryMessage
+        from hermes_cli.gateway_tools_notify import gateway_store
+        from tools.process_registry_notifications import TimelineNotification
+        if getattr(cli, "_agent_running", False) or isinstance(item, (_SeededQueryMessage, TimelineNotification)):
+            return None  # a turn the owner already runs (or a seeded prompt) is never held
+        store = gateway_store(cli) if getattr(cli, "session_id", None) else None
+        if store is None:
+            return None
+        state = _state(cli, store)
+        admission = _own_head(state)
+        return cls(item, state, admission) if admission else None
+
+    def take_gateway_turn(self, pending):
+        """Pop a turn the owner is running now (an adopted admission, a notification header) from the
+        head of ``_pending_input``: those run before the held item, typed items stay behind it."""
+        from tools.process_registry_notifications import TimelineNotification
+        with pending.mutex:
+            if not pending.queue:
+                return None
+            head = pending.queue[0]
+            if not (getattr(head, "admission_id", None) or isinstance(head, TimelineNotification)):
+                return None
+            pending.queue.popleft()
+            pending.unfinished_tasks = max(0, pending.unfinished_tasks - 1)
+        if getattr(head, "admission_id", None) == self.admission:
+            self.taken = True
+        return head
+
+    def done(self) -> bool:
+        import time
+        if self.taken or time.monotonic() >= self.deadline:
+            return True
+        state = self.state
+        if _own_head(state) != self.admission:
+            # Adopted: its item is at the head of ``_pending_input``, taken on the next step. Otherwise
+            # it started unseen (the idle tick recovers it), was cancelled, or is no longer next.
+            return self.admission not in state.adopted
+        if state.pending_seq != self.seq:
+            self.seq = state.pending_seq
+            if not state.info.get("running"):
+                self.idle_lists += 1
+        return self.idle_lists > self.allowed_idle_lists  # idle and still not claiming it: stop waiting
+
+
 STARTED_REFUSALS = frozenset({"stale_generation", "admission_started"})
 
 
