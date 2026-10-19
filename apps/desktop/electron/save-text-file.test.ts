@@ -4,7 +4,7 @@ import path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { SAVE_TEXT_FILE_MAX_BYTES, saveTextFileAs } from './save-text-file'
+import { registerSaveDialogIpc, SAVE_TEXT_FILE_MAX_BYTES, saveTextFileAs } from './save-text-file'
 
 const scratch: string[] = []
 
@@ -83,5 +83,22 @@ describe('saveTextFileAs (Electron-side /save write)', () => {
       'Content too large'
     )
     expect(opened).toBe(false)
+  })
+})
+
+describe('registerSaveDialogIpc', () => {
+  it('registers the path picker and the main-process write', async () => {
+    const handlers = new Map<string, (event: unknown, ...args: any[]) => unknown>()
+    const dir = tempDir()
+    const target = path.join(dir, 'out.json')
+    registerSaveDialogIpc(
+      { handle: (channel, listener) => void handlers.set(channel, listener) },
+      { defaultDir: () => dir, showSaveDialog: async () => ({ canceled: false, filePath: target }) }
+    )
+
+    expect([...handlers.keys()].sort()).toEqual(['hermes:saveTextFileAs', 'hermes:selectSavePath'])
+    expect(await handlers.get('hermes:selectSavePath')!(null, { title: 'Export' })).toBe(target)
+    expect(await handlers.get('hermes:saveTextFileAs')!(null, { content: '{}' })).toEqual({ saved: true, path: target })
+    expect(fs.readFileSync(target, 'utf8')).toBe('{}')
   })
 })

@@ -28,6 +28,10 @@ export interface SaveTextFileDeps {
   writeFile?: (filePath: string, content: string) => Promise<void>
 }
 
+interface IpcMainLike {
+  handle: (channel: string, listener: (event: unknown, ...args: any[]) => unknown) => void
+}
+
 /** Rendered transcripts can be large; cap well above any realistic /save output. */
 export const SAVE_TEXT_FILE_MAX_BYTES = 64 * 1024 * 1024
 
@@ -94,4 +98,21 @@ export async function saveTextFileAs(
   await write(result.filePath, content)
 
   return { saved: true, path: result.filePath }
+}
+
+/** Native save-location picker (profile export etc.): only picks the path; the write happens elsewhere. */
+export async function selectSavePath(options: any, deps: SaveTextFileDeps): Promise<null | string> {
+  const result = await deps.showSaveDialog({
+    title: options?.title || 'Save',
+    defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
+    filters: Array.isArray(options?.filters) ? options.filters : undefined
+  })
+
+  return result.canceled || !result.filePath ? null : result.filePath
+}
+
+/** `hermes:selectSavePath` (path only) and `hermes:saveTextFileAs` (dialog + main-process write). */
+export function registerSaveDialogIpc(ipcMain: IpcMainLike, deps: SaveTextFileDeps): void {
+  ipcMain.handle('hermes:selectSavePath', (_event, options = {}) => selectSavePath(options, deps))
+  ipcMain.handle('hermes:saveTextFileAs', (_event, request) => saveTextFileAs(request || {}, deps))
 }
