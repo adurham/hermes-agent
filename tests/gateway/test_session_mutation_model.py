@@ -475,7 +475,10 @@ async def test_picked_legacy_custom_provider_survives_a_profile_reorder_on_cold_
             assert runtime['base_url'].rstrip('/') == 'https://inkstone.example.invalid/v1', spelling
             assert runtime['api_key'] == 'sk-inkstone', spelling
 
-        config.write_text('custom_providers:\n' + other + other.replace('other', 'third'), encoding='utf-8')
+        # The entry now at the frozen index carries the SAME key under another name: an index
+        # lookup's fingerprint check would accept it, so only identity can refuse the deletion.
+        third = other.replace('other', 'third').replace('sk-third', 'sk-inkstone')
+        config.write_text('custom_providers:\n' + other + third, encoding='utf-8')
         with pytest.raises(RuntimeStoreError) as refused:
             switched.config(owner())
         assert refused.value.reason == 'launch_credentials_unavailable'
