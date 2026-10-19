@@ -224,8 +224,10 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
     assert complete['status'] == 'interrupted'
     if user_stopped_first:
         assert 'warning' not in complete, complete
+        assert _notices(db) == []
     else:
         assert complete['warning'] == RESTART_INTERRUPT_NOTICE
+        assert _notices(db) == [RESTART_INTERRUPT_NOTICE]  # GW-21: a reconnecting viewer reads it too
 
 
 @pytest.mark.parametrize('user_stopped_first', [False, True])
@@ -322,3 +324,74 @@ def test_automation_turn_the_owner_stop_interrupted_is_never_asked_to_resend(cau
     (frame,) = stream.frames
     assert frame['warning'] == AUTOMATION_INTERRUPTED_NOTICE
     assert 'again' not in frame['warning'].replace('not run again', '')
+
+
+def _settle_on_real_store(tmp_path, cause, principal='person', payload=None):
+    """One claimed admission on a real SessionDB settled through commit_and_publish (the owner's
+    worker-thread settlement) with *cause* recorded. Returns (db, row, frames, settlement)."""
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import SessionRef
+    from gateway.session_settlement_recovery import commit_and_publish
+    from hermes_state import SessionDB
+    from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
+
+    runner = SimpleNamespace(_draining=False, _running=True, _restart_requested=True)
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    epoch = begin_runtime_epoch(db, instance_id='owner')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    live = authority.sessions['s'] = LiveSession(None, 'route')
+    ref = SessionRef('owned', 's')
+    admit_session_input(db, epoch=epoch, principal_id=principal, session_id='s', request_id='r',
+                        payload=payload or {'text': 'please work'})
+    row = claim_session_input(db, epoch=epoch, session_id='s')
+    authority._stamp_claim(ref, live, row)
+    db.append_message('s', 'user', 'please work')  # the turn's own rows, as the agent wrote them
+    db.append_message('s', 'assistant', 'partial reply')
+    frames = []
+    live.event_stream.observers.add(frames.append)
+    result = {'final_response': 'partial reply', 'messages': [], 'interrupted': True, 'completed': False}
+    if cause:
+        result['interrupt_message'] = cause
+    settlement = {}
+    commit_and_publish(authority, live, ref, row, 'partial reply', 'interrupted', {'result': result}, settlement)
+    return db, authority, row, frames, settlement
+
+
+def _notices(db):
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND
+    return [m['content'] for m in db.get_messages('s') if m.get('display_kind') == FAILED_TURN_DISPLAY_KIND]
+
+
+@pytest.mark.parametrize(('cause', 'notice'), [('Gateway restarting', RESTART_INTERRUPT_NOTICE),
+                                               ('Gateway shutting down', SHUTDOWN_INTERRUPT_NOTICE)])
+def test_owner_stop_reason_is_in_the_transcript_for_a_viewer_that_reconnects(tmp_path, cause, notice):
+    """#134889 GW-21: a viewer that reconnects after the restart reads the transcript, not the live
+    frame. The reason commits as a Hermes notice in the settlement's own write, once; the live
+    ``message.complete.warning`` stays."""
+    from gateway.session_results import finish_result
+    db, authority, row, frames, settlement = _settle_on_real_store(tmp_path, cause)
+    with db:
+        assert settlement['settled']['outcome'] == 'interrupted'
+        assert _notices(db) == [notice]
+        (complete,) = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
+        assert complete['warning'] == notice
+        # A settlement retry that reads the committed row back never writes the notice again.
+        finish_result(db, epoch=authority.epoch, row=row, response='partial reply', outcome='interrupted',
+                      result={'result': {'final_response': 'partial reply', 'messages': [], 'interrupted': True,
+                                         'interrupt_message': cause}})
+        assert _notices(db) == [notice]
+
+
+@pytest.mark.parametrize('cause', [None, 'User requested stop'])
+def test_a_user_stop_writes_no_transcript_notice(tmp_path, cause):
+    db, *_ = _settle_on_real_store(tmp_path, cause)
+    with db:
+        assert _notices(db) == []
+
+
+def test_automation_turn_transcript_notice_is_the_neutral_copy(tmp_path):
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    db, *_ = _settle_on_real_store(tmp_path, 'Gateway restarting', principal='cron-owner')
+    with db:
+        assert _notices(db) == [AUTOMATION_INTERRUPTED_NOTICE]

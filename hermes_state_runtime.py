@@ -232,7 +232,10 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
 
 
 def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, outcome: str,
-                         result: dict | None = None, _transfers=None) -> dict:
+                         result: dict | None = None, _transfers=None, _terminal_write=None) -> dict:
+    """``_terminal_write(conn, row)`` is the owner's same-transaction effect (a transcript notice,
+    ``gateway.session_results.finish_result``); like ``resolve_unknown_session_input``'s it must
+    not commit, may run again on SQLite retry, and raising rolls the settlement back."""
     if outcome not in ('completed', 'interrupted', 'rejected', 'failed'):
         raise RuntimeStoreError('invalid_params')
     from hermes_state_terminal import compact_result, encode_result
@@ -245,6 +248,8 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
                 or session['runtime_generation'] != generation):
             raise RuntimeStoreError('stale_generation')
         _retire_admission_workers(conn, row, epoch)
+        if _terminal_write is not None:
+            _terminal_write(conn, row)
         if result is not None:
             from hermes_state_terminal import RESULT_PREFIX
             encoded = _json(encode_result(compact_result(result, user_message=json.loads(row['payload_json']).get('text'))))

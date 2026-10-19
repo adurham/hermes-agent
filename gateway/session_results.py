@@ -84,8 +84,16 @@ def finish_result(db, *, epoch, row, response, outcome, result=None, prepared=No
             result = load_result(saved[0])
             return dict(current), result['result'].get('final_response') or ''
     outcome, stored = prepared or prepare_result(row, response, outcome, result)
+    # A turn the owner's restart/stop interrupted: its reason commits as a Hermes transcript notice
+    # in this same write, so a viewer that reconnects after the restart reads why (#134889 GW-21);
+    # the live ``message.complete.warning`` carries the same copy. A retry that finds the row
+    # terminal returns above, so the notice is written once.
+    from gateway.session_settlement_recovery import owner_stop_notice
+    notice = owner_stop_notice(result, outcome, row)
+    write = None if notice is None else (lambda conn, _current: close_discarded_turn(db, conn, row, notice))
     settled = settle_session_input(db, epoch=epoch, admission_id=row['admission_id'],
-        generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers)
+        generation=row['generation'], outcome=outcome, result=stored, _transfers=transfers,
+        _terminal_write=write)
     return settled, response
 
 
