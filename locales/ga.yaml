@@ -2371,6 +2371,7 @@ cli:
     moved: "Bogadh mír scuaine {source} go {destination}."
     usage_add: "Úsáid: /queue add <prompt>"
     gateway_refused: "Níor chuir an geata sa scuaine é: {error}. Níor cuireadh aon rud sa scuaine; seol arís é nuair a chríochnaíonn an seal."
+    submit_unknown: "Níor fhreagair an geata ({error}), mar sin seans go bhfuil an leid sa scuaine cheana. Seiceáil /queue list sula seolann tú arís í."
     move_gateway_fifo: "Ritheann an geata leideanna sa scuaine san ord inar seoladh iad; cuir ceann in eagar nó bain é ina ionad."
     remove_refused: "Níorbh fhéidir mír {index} a bhaint den scuaine: {error}"
     edit_refused: "Níorbh fhéidir mír {index} den scuaine a chur in eagar: {error}"

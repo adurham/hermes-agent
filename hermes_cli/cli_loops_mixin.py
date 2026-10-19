@@ -378,7 +378,10 @@ class CLILoopsMixin:
             from hermes_cli import gateway_queue
             try:
                 gateway_queue.submit_queued(self, store, payload)
-            except GatewayClientError as exc:  # the owner refused or is gone: say so, nothing is held here
+            except gateway_queue.QueueOutcomeUnknown as exc:  # sent, no answer: it may be queued
+                _cprint(f"  {t('cli.queue.submit_unknown', error=exc)}")
+                return
+            except GatewayClientError as exc:  # the owner refused, or it was never sent: nothing is held here
                 _cprint(f"  {t('cli.queue.gateway_refused', error=exc)}")
                 return
         else:

@@ -2371,6 +2371,7 @@ cli:
     moved: "대기열 항목 {source}을(를) {destination}으로 이동했어요."
     usage_add: "사용법: /queue add <prompt>"
     gateway_refused: "게이트웨이가 대기열에 넣지 않았습니다: {error}. 아무것도 대기열에 없습니다. 턴이 끝나면 다시 보내세요."
+    submit_unknown: "게이트웨이가 응답하지 않았습니다 ({error}). 프롬프트가 이미 대기열에 있을 수 있습니다. 다시 보내기 전에 /queue list를 확인하세요."
     move_gateway_fifo: "게이트웨이는 대기 중인 프롬프트를 보낸 순서대로 실행합니다. 대신 편집하거나 삭제하세요."
     remove_refused: "대기열 항목 {index}을(를) 제거할 수 없습니다: {error}"
     edit_refused: "대기열 항목 {index}을(를) 편집할 수 없습니다: {error}"

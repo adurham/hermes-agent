@@ -2388,6 +2388,7 @@ cli:
     moved: "A(z) {source}. sorelem áthelyezve ide: {destination}."
     usage_add: "Használat: /queue add <prompt>"
     gateway_refused: "Az átjáró nem állította sorba: {error}. Semmi sem került sorba; küldd újra, amikor a kör véget ér."
+    submit_unknown: "Az átjáró nem válaszolt ({error}), így lehet, hogy a prompt már sorban van. Nézd meg a /queue list kimenetét, mielőtt újra elküldöd."
     move_gateway_fifo: "Az átjáró a sorban álló promptokat küldési sorrendben futtatja; inkább szerkessz vagy távolíts el egyet."
     remove_refused: "Nem sikerült eltávolítani a(z) {index}. sorelemet: {error}"
     edit_refused: "Nem sikerült szerkeszteni a(z) {index}. sorelemet: {error}"

@@ -2371,6 +2371,7 @@ cli:
     moved: "Elemento {source} della coda spostato in posizione {destination}."
     usage_add: "Uso: /queue add <prompt>"
     gateway_refused: "Il gateway non l'ha accodato: {error}. Nulla è stato accodato; invialo di nuovo a fine turno."
+    submit_unknown: "Il gateway non ha risposto ({error}), quindi il prompt potrebbe essere già in coda. Controlla /queue list prima di inviarlo di nuovo."
     move_gateway_fifo: "Il gateway esegue i prompt in coda nell'ordine di invio; modificane o rimuovine uno invece."
     remove_refused: "Impossibile rimuovere l'elemento {index} della coda: {error}"
     edit_refused: "Impossibile modificare l'elemento {index} della coda: {error}"

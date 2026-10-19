@@ -2644,6 +2644,7 @@ cli:
     moved: "Élément {source} de la file déplacé vers {destination}."
     usage_add: "Usage : /queue add <prompt>"
     gateway_refused: "Le gateway ne l'a pas mis en file : {error}. Rien n'a été mis en file ; renvoyez-le à la fin du tour."
+    submit_unknown: "Le gateway n'a pas répondu ({error}) ; le prompt est peut-être déjà en file. Vérifiez /queue list avant de le renvoyer."
     move_gateway_fifo: "Le gateway exécute les prompts en file dans l'ordre d'envoi ; modifiez ou supprimez-en un à la place."
     remove_refused: "Impossible de retirer l'élément {index} de la file : {error}"
     edit_refused: "Impossible de modifier l'élément {index} de la file : {error}"

@@ -484,3 +484,80 @@ def test_an_rm_racing_the_drain_claim_tells_the_user_the_gateway_stopped_it():
         assert "adm-q" in conn.state(SID).queued_inputs  # its interrupted turn is still painted
     finally:
         conn.close()
+
+
+def _flaky_submit(client, failures):
+    """``prompt.submit`` loses its answer ``failures`` times (sent, no reply), then admits ``adm-q``."""
+    from hermes_cli.gateway_client import GatewayClientError
+    real, seen = client.rpc, []
+
+    async def rpc(method, **params):
+        if method != "prompt.submit":
+            return await real(method, **params)
+        client.calls.append((method, params))
+        seen.append(params["submission_id"])
+        if len(seen) <= failures:
+            raise GatewayClientError("Gateway did not answer prompt.submit")
+        return {"admission_id": "adm-q", "status": "queued"}
+    client.rpc = rpc
+    return seen
+
+
+def test_a_queue_submit_whose_answer_was_lost_is_retried_under_the_same_identity():
+    """Greptile P1 (cli_loops_mixin.py:383): a timeout or disconnect after the submit was sent is not a
+    refusal; the owner may already hold the prompt. The CLI asks again with the SAME submission id (the
+    owner answers the existing admission), so the prompt is queued exactly once."""
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        cli._agent_running = True
+        cli._expand_paste_references = lambda text: text
+        seen = _flaky_submit(client, 1)
+        out = _queue_command(cli, cli._queue_enqueue, TEXT)
+        assert len(seen) == 2 and seen[0] == seen[1]
+        assert "Nothing was queued" not in out
+        assert conn.state(SID).queued_inputs == {"adm-q": TEXT}
+    finally:
+        conn.close()
+
+
+def test_a_queue_submit_with_no_answer_at_all_never_says_nothing_was_queued():
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        cli._agent_running = True
+        cli._expand_paste_references = lambda text: text
+        _flaky_submit(client, 2)
+        out = _queue_command(cli, cli._queue_enqueue, TEXT)
+        assert "Nothing was queued" not in out and "send it again" not in out, out
+        assert "/queue list" in out
+        assert conn.state(SID).queued_inputs == {}
+    finally:
+        conn.close()
+
+
+def test_a_queue_submit_the_owner_refused_still_says_nothing_was_queued():
+    from hermes_cli.gateway_client import GatewayRPCError
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        cli._agent_running = True
+        cli._expand_paste_references = lambda text: text
+        real = client.rpc
+
+        async def rpc(method, **params):
+            if method == "prompt.submit":
+                client.calls.append((method, params))
+                raise GatewayRPCError("queue_full")
+            return await real(method, **params)
+        client.rpc = rpc
+        out = _queue_command(cli, cli._queue_enqueue, TEXT)
+        assert "Nothing was queued" in out and "queue_full" in out
+        assert [m for m, _ in client.calls].count("prompt.submit") == 1  # a verdict is never retried
+    finally:
+        conn.close()

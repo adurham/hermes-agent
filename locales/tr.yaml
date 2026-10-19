@@ -2371,6 +2371,7 @@ cli:
     moved: "Kuyruk öğesi {source}, {destination} konumuna taşındı."
     usage_add: "Kullanım: /queue add <prompt>"
     gateway_refused: "Ağ geçidi bunu kuyruğa almadı: {error}. Hiçbir şey kuyruğa alınmadı; tur bitince yeniden gönderin."
+    submit_unknown: "Ağ geçidi yanıt vermedi ({error}); istem zaten kuyrukta olabilir. Yeniden göndermeden önce /queue list ile kontrol edin."
     move_gateway_fifo: "Ağ geçidi kuyruktaki istemleri gönderilme sırasıyla çalıştırır; bunun yerine birini düzenleyin veya kaldırın."
     remove_refused: "Kuyruk öğesi {index} kaldırılamadı: {error}"
     edit_refused: "Kuyruk öğesi {index} düzenlenemedi: {error}"

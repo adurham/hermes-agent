@@ -25,10 +25,34 @@ def _state(cli, store):
     return store.connection.state(cli.session_id)
 
 
+class QueueOutcomeUnknown(GatewayClientError):
+    """The submit was sent but no answer came back (timeout, disconnect): the owner may hold it."""
+
+
 def submit_queued(cli, store, text: str) -> str:
-    """Admit ``text`` behind the running turn in the owner's FIFO; returns its admission id."""
-    receipt = store.call("prompt.submit", session_id=cli.session_id, submission_id=uuid.uuid4().hex,
-                         text=text, queued=True)
+    """Admit ``text`` behind the running turn in the owner's FIFO; returns its admission id.
+
+    A refusal (``GatewayRPCError``) or a request never sent raises as is: nothing was queued. A lost
+    answer is asked once more under the SAME ``submission_id``, which the owner answers with the
+    admission it already holds (``admit_session_input`` keys it by principal, session and request id),
+    so the prompt is queued exactly once. Still no answer: :class:`QueueOutcomeUnknown`.
+    """
+    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_cli.gateway_connection import NOT_SENT
+    submission = uuid.uuid4().hex
+    for attempt in (1, 2):
+        try:
+            receipt = store.call("prompt.submit", session_id=cli.session_id, submission_id=submission,
+                                 text=text, queued=True)
+            break
+        except GatewayRPCError:
+            raise
+        except GatewayClientError as exc:
+            if str(exc) == NOT_SENT and attempt == 1:
+                raise  # never reached a socket: nothing is in doubt
+            if attempt == 2:
+                raise QueueOutcomeUnknown(str(exc)) from exc
+            logger.debug("prompt.submit answer lost (%s); asking again under the same identity", exc)
     admission = (receipt or {}).get("admission_id")
     if not admission:
         raise GatewayClientError("the gateway did not admit the queued prompt")

@@ -2371,6 +2371,7 @@ cli:
     moved: "Item {source} da fila movido para {destination}."
     usage_add: "Uso: /queue add <prompt>"
     gateway_refused: "O gateway não o enfileirou: {error}. Nada foi enfileirado; envie novamente quando o turno terminar."
+    submit_unknown: "O gateway não respondeu ({error}), então o prompt pode já estar na fila. Confira /queue list antes de enviá-lo de novo."
     move_gateway_fifo: "O gateway executa prompts enfileirados na ordem de envio; edite ou remova um em vez disso."
     remove_refused: "Não foi possível remover o item {index} da fila: {error}"
     edit_refused: "Não foi possível editar o item {index} da fila: {error}"
