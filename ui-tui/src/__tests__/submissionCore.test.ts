@@ -299,4 +299,24 @@ describe('submissionCore.submitPrompt — typed voice stop on the shared gateway
     await vi.waitFor(() => expect(getUiState().busy).toBe(false))
     expect(publishLocalEvent).not.toHaveBeenCalled()
   })
+
+  it('a stop typed behind a running turn (queue mode) ends voice but leaves that turn running', async () => {
+    const request = vi.fn(async () => ({ voice_stopped: true }))
+    const publishLocalEvent = vi.fn()
+    const gw = { isCanonical: true, publishLocalEvent, request } as unknown as GatewayClient
+    const settle = vi.fn()
+
+    patchUiState({ busy: true, status: 'running…' })
+    submitPrompt('stop', makeDeps(gw), true, undefined, {
+      behindTurn: true,
+      destination: captureDestination(),
+      queueItem: { settle, submissionId: 's2', text: 'stop' } as never,
+      skipDetectDrop: true
+    })
+
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(true))
+    expect(publishLocalEvent).toHaveBeenCalled()
+    expect(getUiState().busy).toBe(true)
+    expect(getUiState().status).toBe('running…')
+  })
 })

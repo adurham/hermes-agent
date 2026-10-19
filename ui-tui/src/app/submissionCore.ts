@@ -370,7 +370,9 @@ export function submitPrompt(
             })
           }
 
-          if (focused()) {
+          // Only the busy latch this submission took: a stop typed behind a running
+          // turn ends the voice chat, not that turn, so its busy/status stay.
+          if (ownsTurn()) {
             patchUiState({ busy: false, status: 'ready' })
           }
 
