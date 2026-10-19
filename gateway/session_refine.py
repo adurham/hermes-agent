@@ -60,7 +60,10 @@ async def refine_local_session(runner, source, focus):
             # The session's own id: the review's usage is recorded against it, and the agent never
             # runs a turn of its own, so it writes no row. close() would tear down that id's terminal,
             # browser and memory provider (the session's), so only the agent's own clients are released.
-            agent = holder[0] = _side_agent(authority, policy, live, task_id, session_id=target)
+            # No memory provider of its own either (release_clients would not stop it): the review
+            # reads the transcript, as the background review fork does (skip_memory=True).
+            agent = holder[0] = _side_agent(authority, policy, live, task_id, session_id=target,
+                                            skip_memory=True)
             agent._end_session_on_close = False
             agent.background_review_callback = publish
             agent._print_fn = lambda *_a, **_k: None
