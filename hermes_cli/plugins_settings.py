@@ -49,7 +49,7 @@ def _manifest_config_schema(plugin_dir: Optional[Path]) -> Mapping[str, Mapping[
             data = fast_safe_load(manifest.read_text(encoding="utf-8-sig")) or {}
             raw = data.get("config_schema") if isinstance(data, Mapping) else None
         else:
-            raw = portable_config_schema(Path(plugin_dir))
+            raw = _portable_config_schema(Path(plugin_dir))
     except Exception as exc:  # unreadable manifest: no settings surface, never a failed list
         logger.debug("plugin settings: cannot read the manifest in %s: %s", plugin_dir, exc)
         return {}
@@ -57,17 +57,14 @@ def _manifest_config_schema(plugin_dir: Optional[Path]) -> Mapping[str, Mapping[
         return {}
     return {str(k): v for k, v in raw.items() if isinstance(v, Mapping)}
 
-
-def portable_config_schema(plugin_dir: Path) -> Any:
-    """Raw ``extensions.com.nousresearch.hermes.config_schema`` of a ``plugin.json``, else ``None``."""
-    manifest = plugin_dir / "plugin.json"
-    if not manifest.is_file():
+def _portable_config_schema(plugin_dir: Path) -> Any:
+    portable = plugin_dir / "plugin.json"
+    if not portable.is_file():
         return None
     import json
-    data = json.loads(manifest.read_text(encoding="utf-8-sig"))
-    extensions = data.get("extensions") if isinstance(data, Mapping) else None
-    hermes = extensions.get("com.nousresearch.hermes") if isinstance(extensions, Mapping) else None
-    return hermes.get("config_schema") if isinstance(hermes, Mapping) else None
+    from hermes_cli.agent_plugins import manifest_config_schema
+    return manifest_config_schema(json.loads(portable.read_text(encoding="utf-8-sig")))
+
 
 
 def secret_env_name(plugin_id: str, key: str, spec: Mapping[str, Any]) -> str:

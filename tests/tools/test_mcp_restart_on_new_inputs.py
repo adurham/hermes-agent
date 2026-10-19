@@ -6,7 +6,6 @@ import json
 import os
 import sys
 import textwrap
-import time
 
 import pytest
 
@@ -30,7 +29,7 @@ def _pid_of(core, name):
 
 
 @pytest.mark.no_isolate
-@pytest.mark.skipif(sys.platform == "win32", reason="sh launcher")
+@pytest.mark.platforms("posix")
 def test_restart_only_when_resolved_launch_inputs_change(monkeypatch, tmp_path):
     pytest.importorskip("mcp.server.mcpserver")
     home = tmp_path / "home"
@@ -70,10 +69,8 @@ def test_restart_only_when_resolved_launch_inputs_change(monkeypatch, tmp_path):
 
         save_env_value("DEMO_KEY", "second")  # what the settings form's secret save does
         assert disc.restart_mcp_servers_with_new_inputs({"envecho"}) == ["envecho"]
-        deadline = time.monotonic() + 30
-        while _core._servers.get("envecho") is None or _pid_of(_core, "envecho") in (None, session):
-            assert time.monotonic() < deadline, "server did not reconnect"
-            time.sleep(0.2)
+        # Returns only once reconnected, so a later save compares against THIS connection's inputs.
+        assert _pid_of(_core, "envecho") not in (None, session)
         assert _core._servers["envecho"]._resolved_identity != first
         assert os.environ["DEMO_KEY"] == "second"
     finally:

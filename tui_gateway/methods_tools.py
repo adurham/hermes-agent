@@ -1826,13 +1826,10 @@ def _plugins_settings(rid, params):
     if plugin_dir and pc._is_portable_plugin_dir(plugin_dir):
         servers = _portable_server_names(Path(str(plugin_dir)), canonical)
         if servers:
-            import contextvars
-            import threading
+            from agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
             discovery = _tools_mod("tools.mcp_tool_discovery")
-            # copy_context: the worker must run under THIS request's profile scope, not the process's.
-            ctx = contextvars.copy_context()
-            threading.Thread(target=ctx.run, args=(discovery.restart_mcp_servers_with_new_inputs, servers),
-                             name=f"plugin-settings-mcp-{canonical}", daemon=True).start()
+            spawn_context_thread(discovery.restart_mcp_servers_with_new_inputs, args=(servers,),
+                                 name=f"plugin-settings-mcp-{canonical}").start()
     return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
 
 
