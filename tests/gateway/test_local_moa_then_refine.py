@@ -11,14 +11,15 @@ loopback model.
 import asyncio
 import json
 import signal
+import sqlite3
 import threading
-import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")  # the daemon is stopped with SIGINT, which raises on Windows
@@ -50,30 +51,29 @@ def test_local_refine_finds_the_conversation_after_a_moa_turn(tmp_path):
                                 cwd=str(work))
             sid = created['result']['session_id']
 
-            async def settle(marker):
-                deadline = time.monotonic() + 45
-                while True:
+            def rows():
+                with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+                    return dict(db.execute('SELECT request_id,status FROM session_admissions'))
+
+            async def settle(input_id, marker):
+                await async_wait_until(lambda: rows().get(input_id) == 'terminal', timeout=45,
+                                       what=f'{input_id} turn terminal')
+                if marker is not None:
                     snap = (await rpc(ws, 'session.resume', session_id=sid))['result']
-                    if not snap['running'] and not snap['pending'] and (
-                            marker is None or marker in json.dumps(snap['messages'])):
-                        return snap
-                    assert time.monotonic() < deadline, ('turn never settled', snap)
-                    await asyncio.sleep(.1)
+                    assert marker in json.dumps(snap['messages']), snap
 
             await rpc(ws, 'prompt.submit', session_id=sid, input_id='warm', text='WARM_REFINE')
-            await settle('RECOVERY_ACK_WARM_REFINE')
+            await settle('warm', 'RECOVERY_ACK_WARM_REFINE')
             moa = (await rpc(ws, 'slash.exec', session_id=sid, command='moa compare the options'))['result']
             out['moa'] = moa
             # The client submits /moa's rewritten turn with its own input id; it settles either way.
             await rpc(ws, 'prompt.submit', session_id=sid, input_id='moa', text=moa['message'])
-            await settle(None)
+            await settle('moa', None)
             reply = await rpc(ws, 'slash.exec', session_id=sid, command='refine keep the naming')
             out['refine'] = reply.get('result') or reply.get('error')
             # The review fork reaches the model with the session's conversation and the focus.
-            deadline = time.monotonic() + 30
-            while not any('keep the naming' in json.dumps(r) for r in peer.requests):
-                assert time.monotonic() < deadline, ('the review never ran', out)
-                await asyncio.sleep(.1)
+            await async_wait_until(lambda: any('keep the naming' in json.dumps(r) for r in peer.requests),
+                                   timeout=30, what='the review fork reaching the model')
             review = next(r for r in peer.requests if 'keep the naming' in json.dumps(r))
             out['review_saw_conversation'] = 'WARM_REFINE' in json.dumps(review['messages'])
 
