@@ -263,3 +263,42 @@ def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(u
             assert agent._interrupt_message == 'Gateway restarting' and notice == RESTART_INTERRUPT_NOTICE
     finally:
         set_interrupt(False)
+
+
+def _redirect_agent():
+    from run_agent import AIAgent
+    agent = AIAgent.__new__(AIAgent)
+    agent._interrupt_requested = False
+    agent._interrupt_message = agent._tool_interrupt_reason = None
+    agent._hard_interrupt_requested = threading.Event()
+    agent._execution_thread_id = None
+    agent._interrupt_thread_signal_pending = False
+    agent._active_children, agent._active_children_lock = [], threading.Lock()
+    agent.quiet_mode = True
+    agent._pending_redirect = None
+    agent._pending_redirect_lock = threading.Lock()
+    agent._model_request_active = threading.Event(); agent._model_request_active.set()
+    agent._executing_tools = False
+    agent._lock = threading.Lock()
+    agent.turn_active = True
+    return agent
+
+
+def test_restart_after_a_pending_redirect_still_gets_the_restart_notice():
+    """A mid-request correction is not a Stop: the restart drops it and is the turn's cause."""
+    from gateway.session_settlement_recovery import owner_stop_notice
+    from tests.gateway.restart_test_helpers import make_restart_runner
+    from tools.interrupt import set_interrupt
+    agent = _redirect_agent()
+    runner, _ = make_restart_runner()
+    runner._restart_requested = True
+    runner._running_agents = {'route': agent}
+    try:
+        assert agent.redirect("actually use python 3.12") is True
+        runner._interrupt_running_agents(runner._shutdown_interrupt_reason())
+        result = {'interrupted': True, **({'interrupt_message': agent._interrupt_message} if agent._interrupt_message else {})}
+        notice = owner_stop_notice({'result': result}, 'interrupted')
+        assert agent._pending_redirect is None  # the restart dropped the correction: the turn ends interrupted
+        assert notice == RESTART_INTERRUPT_NOTICE, (agent._interrupt_message, notice)
+    finally:
+        set_interrupt(False)
