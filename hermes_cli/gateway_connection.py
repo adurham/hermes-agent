@@ -66,6 +66,10 @@ class SessionState:
         # runs for one is painted like a typed turn (``gateway_tools_notify.queue_admitted_turn``).
         self.pending: list = []
         self.queued_inputs: dict = {}
+        # Started ``/queue`` admissions waiting for their turn (``admission_id -> receipt-like``), and the
+        # one whose item the input loop just took (``gateway_tools_notify.arm_adopted``).
+        self.adopted: dict = {}
+        self.armed_admission: str | None = None
         # ``session.replay_gap``s seen, and how many a re-attach covered: the owner retired this viewer's
         # subscription on overflow, so its frames stop until ``GatewayConnection.reattach``.
         self.gaps = self.attached_gaps = 0

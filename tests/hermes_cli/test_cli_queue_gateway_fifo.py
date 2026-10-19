@@ -166,10 +166,64 @@ def test_the_owner_claim_of_a_queued_prompt_runs_as_a_typed_turn_without_a_secon
         item = cli._pending_input.get_nowait()
         assert str(item) == TEXT and type(item).__name__ == "_SeededQueryMessage"  # literal, never a command
         assert conn.state(SID).queued_inputs == {}
+        cli._tui_unwrap_input(item)  # the input loop takes it: its admission is armed by id
         agent = GatewayAgent(connection=conn, session_id=SID)
         agent._pending_cli_user_message = {"role": "user", "content": TEXT}
         result = agent.run_conversation(TEXT, conversation_history=[])
         assert "prompt.submit" not in [method for method, _ in client.calls]
         assert result["final_response"] == "ran"
+    finally:
+        conn.close()
+
+
+def test_an_adopted_queued_prompt_never_submits_a_second_admission():
+    """Review N5-F3: the adopted item is matched to its admission by id, not by text. A queued text the
+    input path's cleanup rewrites (a leaked CPR, a bracketed-paste marker) must still be pumped as the
+    admission the owner is running, never sent again as a new ``prompt.submit``."""
+    from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
+    from hermes_cli.gateway_agent import GatewayAgent
+    from tests.hermes_cli.test_gateway_agent import SID, frame
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli, _play
+    text = "compare cursor log ^[[12;40R with the expected rows [200~"
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        conn.state(SID).queued_inputs["adm-q"] = text
+        _play(conn, client, [frame("message.start", {}, admission="adm-q"),
+                             frame("message.complete", {"text": "ran", "status": "complete"}, admission="adm-q")])
+        cli._drain_process_notifications("cli-idle")
+        client.script = [frame("message.complete", {"text": "again", "status": "complete"}, admission="adm-1")]
+        item = cli._pending_input.get_nowait()
+        user_input, _, seeded = cli._tui_unwrap_input(item)
+        assert seeded and user_input == text
+        # Even if a sanitizer still rewrote it (chat() strips lone surrogates), identity decides.
+        user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
+        user_input, _ = _strip_leaked_terminal_responses_with_meta(user_input)
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        agent._pending_cli_user_message = {"role": "user", "content": user_input}
+        result = agent.run_conversation(user_input, conversation_history=[])
+        assert "prompt.submit" not in [m for m, _ in client.calls], "second admission submitted"
+        assert result["final_response"] == "ran"
+    finally:
+        conn.close()
+
+
+def test_a_typed_turn_with_the_same_text_is_never_taken_for_the_adopted_admission():
+    """Identity cuts both ways: a typed input that happens to equal an adopted queued text, run before the
+    adopted item was unwrapped, is its own new submit."""
+    from hermes_cli.gateway_agent import GatewayAgent
+    from tests.hermes_cli.test_gateway_agent import SID, frame
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli, _play
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        conn.state(SID).queued_inputs["adm-q"] = TEXT
+        _play(conn, client, [frame("message.start", {}, admission="adm-q")])
+        cli._drain_process_notifications("cli-idle")
+        client.script = [frame("message.complete", {"text": "typed", "status": "complete"}, admission="adm-1")]
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        agent._pending_cli_user_message = {"role": "user", "content": TEXT}
+        agent.run_conversation(TEXT, conversation_history=[])
+        assert "prompt.submit" in [m for m, _ in client.calls]
     finally:
         conn.close()

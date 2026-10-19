@@ -70,10 +70,12 @@ def queue_admitted_turn(cli, store) -> None:
         if queued_text is not None:
             # A ``/queue`` prompt this viewer admitted (#134889 N5): the owner runs it now, and main's
             # input path paints and pumps it as a typed turn. Literal: it is a prompt, never a command.
+            # Adopted by admission id (the item carries it), never by text: the input path may rewrite
+            # the text, and a second ``prompt.submit`` would run the prompt twice.
             from cli import _SeededQueryMessage
-            state.admitted_turn = {"admission_id": params["admission_id"], "text": queued_text,
-                                   "execution_generation": params.get("execution_generation")}
-            _put_first(cli._pending_input, _SeededQueryMessage(queued_text))
+            state.adopted[params["admission_id"]] = {"admission_id": params["admission_id"],
+                                                     "execution_generation": params.get("execution_generation")}
+            _put_first(cli._pending_input, _SeededQueryMessage(queued_text, admission_id=params["admission_id"]))
             return
         card = _card(params)
         if card is None:
@@ -95,10 +97,24 @@ def _put_first(pending, item):
         pending.not_empty.notify()
 
 
+def arm_adopted(cli, item) -> None:
+    """The input loop took ``item``: when it is an adopted ``/queue`` admission, the next
+    ``run_conversation`` pumps exactly that admission (``take_admitted_turn``)."""
+    admission = getattr(item, "admission_id", None)
+    store = gateway_store(cli) if admission else None
+    if store is not None:
+        store.connection.state(getattr(cli, "session_id", None)).armed_admission = admission
+
+
 def take_admitted_turn(agent, text):
     """The admitted turn ``run_conversation(text)`` replays instead of submitting; None (and the
-    stale adoption dropped) for any other turn."""
+    stale notification adoption dropped) for any other turn. A ``/queue`` admission is matched by the
+    id ``arm_adopted`` recorded, a notification turn by its model text."""
     state = agent._state()
+    armed, state.armed_admission = getattr(state, "armed_admission", None), None
+    adopted = state.adopted.pop(armed, None) if armed else None
+    if adopted is not None:
+        return adopted
     adopted = getattr(state, "admitted_turn", None)
     state.admitted_turn = None
     if not adopted or adopted.get("text") != text:
