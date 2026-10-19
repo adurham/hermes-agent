@@ -622,11 +622,15 @@ class SessionAuthority:
         return results
 
     async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None, queue_while_restarting=False,
-                     _replay_guard=None):
+                     _replay_guard=None, _kanban_card=None):
         """``queue_while_restarting``: the caller is an interactive client attached to a restart's
         after-turn wait, which commits the input queued for the next owner. Machine callers (a2a,
         kanban, hosted rooms) keep the plain ``runtime_draining`` refusal and retry against the next
-        owner with their own stable request id; none of them reads a released waiter as queued."""
+        owner with their own stable request id; none of them reads a released waiter as queued.
+
+        ``_kanban_card`` is the Kanban dispatcher's trusted producer marker (``session_kanban.run_task``
+        only): committed as ``kanban_card_v1``, it lets a card attempt lost across an owner restart
+        settle interrupted (#134889 KB-8). Never a payload field: a client cannot supply it."""
         self.authorize(actor, request.ref, 'session:submit')
         async with self.sessions[request.ref.session_id].mutation_lock:
             # Deletion can retire this session while the caller waits on its writer.
@@ -634,9 +638,11 @@ class SessionAuthority:
             from gateway.session_ingress_media import capture_lease
             with capture_lease():  # captured bytes are held from capture until commit or refusal
                 return await self._submit(actor, request, _authorize_write=_authorize_write,
-                                          queue_only=queue_while_restarting is True, _replay_guard=_replay_guard)
+                                          queue_only=queue_while_restarting is True, _replay_guard=_replay_guard,
+                                          _kanban_card=_kanban_card)
 
-    async def _submit(self, actor, request, *, _authorize_write=None, queue_only=False, _replay_guard=None):
+    async def _submit(self, actor, request, *, _authorize_write=None, queue_only=False, _replay_guard=None,
+                      _kanban_card=None):
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
@@ -658,6 +664,8 @@ class SessionAuthority:
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_display(request.payload), **admit_cli_turn(request.payload),
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
+        if _kanban_card is not None:
+            payload['kanban_card_v1'] = _kanban_card
         source = self.sessions[request.ref.session_id].source
         if source is not None and source.user_id != actor.subject:
             # Durable server authorization, not a client payload field. The original
