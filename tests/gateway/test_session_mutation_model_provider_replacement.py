@@ -31,12 +31,12 @@ def peers():
             t.join(timeout=5)
 
 
-async def pick(tmp_path, monkeypatch, before, after, provider, *, request=None):
+async def pick(tmp_path, monkeypatch, before, after, provider, *, request=None, hermes_home=None):
     from gateway.session_mutation_model import prepare_model
     from gateway.session_policy import build_policy, bind_launch_key, restore_policy
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
     from hermes_state import SessionDB
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(hermes_home or tmp_path))
     (tmp_path / 'config.yaml').write_text(json.dumps(before))
     private = {}
     policy = build_policy({'cwd': str(tmp_path), 'model': 'original', **(request or {})},
@@ -126,6 +126,24 @@ async def test_appended_legacy_provider_keeps_inline_key_after_cold_restore(tmp_
         _, runtime = await pick(tmp_path, monkeypatch, before, after, 'custom:new-review')
         assert b.bearers == ['Bearer new-review-key'] and not a.bearers
         assert runtime['base_url'].rstrip('/') == bu
+
+
+@pytest.mark.asyncio
+async def test_pick_reads_only_the_owning_profiles_config(tmp_path, monkeypatch):
+    """A multiplexed owner whose state.db lives under ``profiles/other`` resolves that profile's
+    entry, never the root profile's same-named one (the real-daemon test runs unmultiplexed)."""
+    other = tmp_path / 'profiles' / 'other'
+    other.mkdir(parents=True)
+    with peers() as (root_peer, root_url, b, bu):
+        (tmp_path / 'config.yaml').write_text(json.dumps({'providers': {'loop': {
+            'base_url': root_url, 'api_key': 'root-only-key', 'models': {'switched': {}}}}}))
+        before = {'model': {'provider': 'custom', 'base_url': root_url, 'default': 'original'}}
+        after = {**before, 'providers': {'loop': {'base_url': bu, 'api_key': 'other-key',
+                                                  'models': {'switched': {}}}}}
+        config, runtime = await pick(other, monkeypatch, before, after, 'loop', hermes_home=tmp_path)
+        assert runtime['base_url'].rstrip('/') == bu
+        assert b.bearers == ['Bearer other-key'] and not root_peer.bearers
+        assert config['providers']['loop']['base_url'] == bu
 
 
 @pytest.mark.platforms('linux')
