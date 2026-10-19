@@ -1213,7 +1213,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // Validate the admission receipt and bind it to the optimistic bubble.
           // Returns false when the receipt is not this send's admission.
           const applySubmitReceipt = (result: SubmitReceipt, receiptSessionId: string): boolean => {
-            if (isVoiceStoppedReceipt(legacyAccepted, result)) {
+            if (isVoiceStoppedReceipt(result)) {
               // Settled with no turn: the stop phrase ended the voice chat another viewer runs. No
               // turn holds the bubble, so it goes, and nothing is tracked as pending.
               dropOptimistic(receiptSessionId)
