@@ -169,6 +169,16 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     expect($unreadFinishedMarkers.get()).toEqual({})
   })
 
+  it('does not light a compressed conversation whose listed segment the user read before the receipt landed', () => {
+    $messagingSessions.set([makeSessionInfo({ id: 'tg-tip', source: 'telegram', _lineage_root_id: 'tg-root' })])
+    complete('late-compressed', 'tg-root')
+    setSelectedStoredSessionId('tg-tip')
+    setSelectedStoredSessionId(null)
+    admit('late-compressed')
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-tip')
+    expect($unreadFinishedMarkers.get()).toEqual({})
+  })
+
   it('marks the listed segment of a compressed conversation', () => {
     $messagingSessions.set([makeSessionInfo({ id: 'tg-tip', source: 'telegram', _lineage_root_id: 'tg-root' })])
     noteDesktopAdmission('compressed-turn')
