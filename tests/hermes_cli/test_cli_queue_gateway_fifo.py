@@ -320,3 +320,26 @@ def test_queue_list_never_erases_a_finished_queued_turn_this_viewer_has_not_pain
     finally:
         conn.close()
 
+
+
+def test_a_queued_turn_the_owner_ran_before_this_viewer_reattached_is_still_painted():
+    """Greptile P1 (gateway_tools_notify.py:76): after an owner restart the drain can run the queued
+    admission before this CLI resubscribes; ``session.resume`` replays no frames. The resumed pending
+    list no longer lists it, so the idle tick reads its receipt and paints the saved reply (no pump,
+    no submit)."""
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        state = conn.state(SID)
+        state.queued_inputs["adm-q"] = TEXT
+        client.result = {"final_response": "ran while you were away"}
+        state.adopt_snapshot({"stored_session_id": SID, "pending": []})  # the reconnect's resume
+        cli._drain_process_notifications("cli-idle")
+        result = _run_adopted(cli, conn)
+        assert "prompt.submit" not in [m for m, _ in client.calls]
+        assert result["final_response"] == "ran while you were away"
+        assert state.queued_inputs == {}
+    finally:
+        conn.close()

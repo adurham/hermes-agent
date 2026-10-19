@@ -88,6 +88,7 @@ class SessionState:
         self.messages = list(snapshot.get("messages") or [])
         if isinstance(snapshot.get("pending"), list):
             self.pending = list(snapshot["pending"])
+            self.pending_seq += 1  # a (re)attach replays no frames: the idle tick checks this viewer's /queue rows
         if self.info.get("title"):
             self.title = self.info["title"]
 
