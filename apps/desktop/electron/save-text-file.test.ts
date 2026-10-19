@@ -50,6 +50,24 @@ describe('saveTextFileAs (Electron-side /save write)', () => {
     expect(seen!.filters).toEqual([{ name: 'Markdown', extensions: ['md'] }])
   })
 
+  it('asks before overwriting an existing file and can create a directory (Linux needs both flags)', async () => {
+    let seen: { properties?: string[] } | null = null
+
+    await saveTextFileAs(
+      { content: 'x', defaultPath: 'a.md' },
+      {
+        defaultDir: () => '/home/u',
+        showSaveDialog: async options => {
+          seen = options
+
+          return { canceled: true }
+        }
+      }
+    )
+
+    expect(seen!.properties).toEqual(['createDirectory', 'showOverwriteConfirmation'])
+  })
+
   it('writes nothing when the dialog is cancelled', async () => {
     const writes: string[] = []
 

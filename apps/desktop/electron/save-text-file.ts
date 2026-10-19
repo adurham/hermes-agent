@@ -23,6 +23,7 @@ export interface SaveTextFileDeps {
   showSaveDialog: (options: {
     defaultPath?: string
     filters?: Array<{ extensions: string[]; name: string }>
+    properties?: Array<'createDirectory' | 'showOverwriteConfirmation'>
     title: string
   }) => Promise<{ canceled: boolean; filePath?: string }>
   writeFile?: (filePath: string, content: string) => Promise<void>
@@ -87,7 +88,9 @@ export async function saveTextFileAs(
   const result = await deps.showSaveDialog({
     title: typeof request.title === 'string' && request.title ? request.title : 'Save',
     defaultPath: name ? path.join(deps.defaultDir(), name) : undefined,
-    filters: safeFilters(request.filters)
+    filters: safeFilters(request.filters),
+    // Linux dialogs replace an existing file silently unless asked to confirm.
+    properties: ['createDirectory', 'showOverwriteConfirmation']
   })
 
   if (result.canceled || !result.filePath) {
