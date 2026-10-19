@@ -252,19 +252,78 @@ describe('/config', () => {
     expect(text).toContain('Settings')
   })
 
-  it('never prints credentials or provider sections, whichever server answered', async () => {
-    // A standalone `hermes serve` answers config.get key=full with the raw effective config.
+  it('renders the canonical projection in full', async () => {
     const requestGateway = gateway(method =>
       method === 'config.get'
         ? {
             config: {
-              model: { default: 'm', api_key: 'sk-PROBE-SECRET' },
-              providers: { p: { api_key: 'sk-PROBE-SECRET' } },
-              custom_providers: [{ name: 'c', api_key: 'sk-PROBE-SECRET' }],
-              mcp_servers: { s: { env: { X: 'sk-PROBE-SECRET' } } },
-              display: { skin: 'mono' },
-              tools: { web: { api_key: 'sk-PROBE-SECRET', bearer_token: 'sk-PROBE-SECRET', backend: 'x' } },
-              auth: { password: 'sk-PROBE-SECRET', client_secret: 'sk-PROBE-SECRET' }
+              display: { skin: 'mono', timestamps: true, details_mode: 'collapsed' },
+              approvals: { mode: 'manual', timeout: 60 },
+              paste_collapse_threshold: 5,
+              paste_collapse_char_threshold: 800,
+              voice: { record_key: 'ctrl+b', submit_mode: 'auto' }
+            }
+          }
+        : undefined
+    )
+
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/config')
+
+    const text = renderedText(handle)
+
+    for (const line of [
+      'skin: mono',
+      'timestamps: true',
+      'details_mode: collapsed',
+      'mode: manual',
+      'timeout: 60',
+      'paste_collapse_threshold: 5',
+      'paste_collapse_char_threshold: 800',
+      'record_key: ctrl+b',
+      'submit_mode: auto'
+    ]) {
+      expect(text).toContain(line)
+    }
+  })
+
+  it('fails closed on a legacy raw config: only the canonical allowlist renders', async () => {
+    // A standalone `hermes serve` answers config.get key=full with the raw effective config.
+    const S = 'PROBE-SECRET'
+
+    const requestGateway = gateway(method =>
+      method === 'config.get'
+        ? {
+            config: {
+              model: { default: 'm', api_key: S },
+              providers: { p: { 'api-key': S } },
+              custom_providers: [{ name: 'c', api_key: S }],
+              mcp_servers: {
+                s: { headers: { Authorization: `Bearer ${S}`, 'X-Api-Key': S, Cookie: `sid=${S}` }, env: { X: S } }
+              },
+              FAL_KEY: S,
+              browser: { camofox: { session_key: S } },
+              terminal: {
+                ssh_private_key: S,
+                docker_shared_container_key: S,
+                docker_env: { DB_PASS: S, MY_CREDENTIALS: S }
+              },
+              tools: { web: { key: S, bearer: S, jwt: S, passwd: S, backend: 'x' } },
+              platforms: { hooks: [{ url: 'https://h', auth: `Bearer ${S}` }] },
+              display: {
+                skin: 'mono',
+                'api-key': S,
+                key: S,
+                bearer: S,
+                jwt: S,
+                passwd: S,
+                session_key: S,
+                headers: { Authorization: S, 'X-Api-Key': S, Cookie: S },
+                image_url: `https://user:${S}@example.com/x`,
+                list: [{ auth: `Bearer ${S}`, keep: 'ok', url: `https://u:${S}@h.example/` }]
+              },
+              voice: { record_key: 'ctrl+b', api_key: S, provider: 'openai' }
             }
           }
         : undefined
@@ -276,9 +335,15 @@ describe('/config', () => {
 
     const text = renderedText(handle)
     expect(text).toContain('skin: mono')
-    expect(text).toContain('backend: x')
-    expect(text).not.toContain('sk-PROBE-SECRET')
-    expect(text).not.toMatch(/^\s*(model|providers|custom_providers|mcp_servers):/m)
+    expect(text).toContain('record_key: ctrl+b')
+    expect(text).toContain('https://example.com/x')
+    expect(text).toContain('"keep":"ok"')
+    expect(text).not.toContain(S)
+    expect(text).not.toContain('provider: openai')
+    expect(text).not.toContain('backend: x')
+    expect(text).not.toMatch(
+      /^\s*(model|providers|custom_providers|mcp_servers|FAL_KEY|browser|terminal|tools|platforms):/m
+    )
   })
 })
 

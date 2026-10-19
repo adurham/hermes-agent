@@ -200,30 +200,68 @@ function formatAgents(subagents: SubagentRow[], processes: ProcessRow[]): string
 }
 
 // A standalone `hermes serve` answers config.get key=full with the raw effective config, so the
-// renderer drops credentials and provider/MCP sections itself rather than trusting the server.
-const CONFIG_HIDDEN_SECTIONS = new Set(['custom_providers', 'mcp_servers', 'model', 'providers'])
-const CONFIG_SECRET_KEY = /api_?key|secret|password|(^|_)tokens?$/i
+// renderer fails closed: it prints only the sections the canonical owner projects
+// (gateway/session_config.py::_client_config) and omits everything else. Keep in sync.
+const CONFIG_ALLOWED: Record<string, true | readonly string[]> = {
+  display: true,
+  approvals: true,
+  paste_collapse_threshold: true,
+  paste_collapse_char_threshold: true,
+  voice: ['record_key', 'submit_mode']
+}
 
-const hiddenConfigKey = (key: string, top: boolean) =>
-  CONFIG_SECRET_KEY.test(key) || (top && CONFIG_HIDDEN_SECTIONS.has(key))
+// Leaf rule of hermes_cli/config.py::_is_secret_config_key (+ auth/cookie), applied inside
+// allowlisted sections (the owner masks these; a legacy server sends them raw).
+const CONFIG_SECRET_KEY =
+  /^(api_?key|key|auth|cookie|token|access_token|refresh_token|id_token|secret|client_secret|password|passwd|authorization|private_key|bearer|jwt)$|_(api_key|token|secret|password|key|access_key)$/
 
-function yamlLines(value: unknown, indent = ''): string[] {
+const secretConfigKey = (key: string) => CONFIG_SECRET_KEY.test(key.toLowerCase().replace(/-/g, '_'))
+
+// `scheme://user:pass@host` -> `scheme://host`.
+const stripUserinfo = (value: string) => value.replace(/([a-z][a-z\d+.-]*:\/\/)[^/?#\s@]*@/gi, '$1')
+
+const scrubConfig = (key: string, value: unknown) =>
+  key && secretConfigKey(key) ? undefined : typeof value === 'string' ? stripUserinfo(value) : value
+
+function clientConfigProjection(config: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+
+  for (const [key, allowed] of Object.entries(CONFIG_ALLOWED)) {
+    const value = config[key]
+
+    if (value === undefined) {
+      continue
+    }
+
+    if (allowed === true) {
+      out[key] = value
+    } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const section = value as Record<string, unknown>
+      out[key] = Object.fromEntries(allowed.filter(name => name in section).map(name => [name, section[name]]))
+    }
+  }
+
+  return out
+}
+
+// `voice.record_key` is a keybinding the owner allowlists after masking, not a credential.
+const CONFIG_NOT_SECRET = new Set(['voice.record_key'])
+
+function yamlLines(value: unknown, indent = '', path = ''): string[] {
   if (value === null || typeof value !== 'object') {
-    return [`${indent}${String(value)}`]
+    return [`${indent}${String(scrubConfig('', value))}`]
   }
 
   return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
-    hiddenConfigKey(key, !indent)
+    secretConfigKey(key) && !CONFIG_NOT_SECRET.has(`${path}${key}`)
       ? []
       : child !== null && typeof child === 'object' && !Array.isArray(child)
         ? Object.keys(child).length
-          ? [`${indent}${key}:`, ...yamlLines(child, `${indent}  `)]
+          ? [`${indent}${key}:`, ...yamlLines(child, `${indent}  `, `${path}${key}.`)]
           : []
         : [
             `${indent}${key}: ${
-              Array.isArray(child)
-                ? JSON.stringify(child, (k, v) => (k && CONFIG_SECRET_KEY.test(k) ? undefined : v))
-                : String(child)
+              Array.isArray(child) ? JSON.stringify(child, scrubConfig) : String(scrubConfig('', child))
             }`
           ]
   )
@@ -338,11 +376,14 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
           key: 'full'
         })
 
-        const body = result?.config && typeof result.config === 'object' ? yamlLines(result.config) : []
+        const body =
+          result?.config && typeof result.config === 'object' && !Array.isArray(result.config)
+            ? yamlLines(clientConfigProjection(result.config as Record<string, unknown>))
+            : []
 
         out.render(
           [
-            'Configuration (display settings; secrets and provider config are not shown):',
+            'Configuration (display, approvals, paste and voice settings; everything else is not shown):',
             ...(body.length ? body : ['(defaults)']),
             '',
             'Change settings in Settings, or edit config.yaml with `hermes config edit` on the gateway host.'
