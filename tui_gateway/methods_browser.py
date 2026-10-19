@@ -15,8 +15,8 @@ def _resolve_browser_cdp_url() -> str:
     ``tools.browser_tool_cdp._get_cdp_override`` HTTP-probes discovery URLs). Same precedence (this
     profile's live connect, env, then ``browser.cdp_url``) minus WS resolution; ``browser_navigate``
     normalizes on the next call."""
-    from tools.browser_tool_cdp import live_cdp_override
-    if env_url := live_cdp_override() or os.environ.get("BROWSER_CDP_URL", "").strip():
+    from tools.browser_tool_cdp import env_cdp_url, live_cdp_override
+    if env_url := live_cdp_override() or env_cdp_url():
         return env_url
     with contextlib.suppress(Exception):
         from hermes_cli.config import read_raw_config

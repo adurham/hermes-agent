@@ -73,16 +73,28 @@ def set_live_cdp_override(url: Optional[str]) -> None:
             _live_overrides.pop(key, None)
 
 
+def env_cdp_url() -> str:
+    """``BROWSER_CDP_URL`` from this profile's secret scope. A routed profile (multiplex, or a scope
+    bound for another home) reads only its own ``.env``: ``os.environ`` holds the launch profile's
+    value. Single-profile reads fall through to ``os.environ`` as before (``get_secret``)."""
+    from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
+    if serves_routed_profile():
+        value = (current_secret_scope() or {}).get("BROWSER_CDP_URL")
+    else:
+        value = get_secret("BROWSER_CDP_URL")
+    return (value or "").strip()
+
+
 def _get_cdp_override_raw() -> str:
     """Return the *configured* CDP override without any network I/O.
 
-    Precedence: this profile's live ``/browser connect``, then the operator's ``BROWSER_CDP_URL`` env,
+    Precedence: this profile's live ``/browser connect``, then its ``BROWSER_CDP_URL`` (:func:`env_cdp_url`),
     then ``browser.cdp_url``. Is-it-configured
     gates (check_fns, ``_is_local_mode`` / ``_is_local_backend``, ``hermes doctor``) MUST use this, not
     :func:`_get_cdp_override`: its 10s HTTP discovery against a stale ``cdp_url`` would stall every startup's
     schema build with no error.
     """
-    env_override = live_cdp_override() or os.environ.get("BROWSER_CDP_URL", "").strip()
+    env_override = live_cdp_override() or env_cdp_url()
     return env_override or _origin()._browser_cfg("cdp_url", "", lambda v: str(v or "").strip(), "browser.cdp_url from config")
 
 

@@ -33,13 +33,31 @@ def test_a_live_override_is_this_profiles_alone(profiles, monkeypatch):
     with _profile_runtime_scope(b, hydrate_secrets=False):
         assert bt_cdp.live_cdp_override() == ""
         assert bt_cdp._get_cdp_override_raw().endswith("/PROFILE-B")
-    monkeypatch.setenv("BROWSER_CDP_URL", "http://operator:9222")  # an operator's env still applies
-    with _profile_runtime_scope(b, hydrate_secrets=False):
-        assert bt_cdp._get_cdp_override_raw() == "http://operator:9222"
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        assert bt_cdp._get_cdp_override_raw() == "http://127.0.0.1:9333"  # the live connect wins
         bt_cdp.set_live_cdp_override(None)
-        assert bt_cdp._get_cdp_override_raw() == "http://operator:9222"
+        assert bt_cdp._get_cdp_override_raw() == ""
+
+
+def test_disconnect_falls_back_to_this_profiles_own_env_never_the_launch_env(profiles, monkeypatch):
+    """After a disconnect the BROWSER_CDP_URL tier is the profile's own ``.env``; the launch process's
+    ``os.environ`` value belongs to the launch profile and must not reach a served one."""
+    from tui_gateway.server import _resolve_browser_cdp_url  # bound onto server.py globals
+    from tools.browser_camofox import is_camofox_mode
+
+    a, b = profiles
+    (b / ".env").write_text("BROWSER_CDP_URL=http://127.0.0.1:7777\n")
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:6666")  # the launch profile's
+    with _profile_runtime_scope(b, hydrate_secrets=False):
+        bt_cdp.set_live_cdp_override("http://127.0.0.1:4444")
+        assert bt_cdp._get_cdp_override_raw() == "http://127.0.0.1:4444"
+        bt_cdp.set_live_cdp_override(None)
+        assert bt_cdp._get_cdp_override_raw() == _resolve_browser_cdp_url() == "http://127.0.0.1:7777"
+    with _profile_runtime_scope(a, hydrate_secrets=False):  # no BROWSER_CDP_URL in A's .env
+        assert bt_cdp._get_cdp_override_raw() == _resolve_browser_cdp_url() == ""
+        monkeypatch.setattr("tools.browser_camofox._config_cdp_url", lambda: "")
+        monkeypatch.setattr("tools.tool_backend_helpers.read_selection", lambda _: "camofox")
+        assert is_camofox_mode() is True  # the launch env's CDP URL does not switch A off Camofox
+    assert bt_cdp._get_cdp_override_raw() == "http://127.0.0.1:6666"  # single-profile: env as before
 
 
 def test_a_new_session_records_its_profile(profiles, monkeypatch):
