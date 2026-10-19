@@ -128,6 +128,6 @@ def _request_tokens(agent, messages, row=None):
             pin = json.loads(row.get('tool_names') or 'null')
         except (TypeError, ValueError):
             pin = None  # a pin hash whose row was swept resolves to itself
-        pinned = pin.get('tools') if isinstance(pin, dict) else None
-        tools = ([t for t in pinned if isinstance(t, dict)] or None) if isinstance(pinned, list) else None
+        from tools.mcp_tool_agent import pinned_tool_defs
+        tools = pinned_tool_defs(pin) or None
     return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tools)

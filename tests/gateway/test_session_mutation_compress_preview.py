@@ -268,3 +268,29 @@ async def test_no_op_compress_without_a_resident_agent_estimates_the_stored_prom
             json.dumps(result['summary'])
     finally:
         await owner.close()
+
+
+def test_cold_estimate_resolves_a_legacy_name_list_pin_like_the_restored_agent():
+    """T15 review: a legacy pin (a bare name list) is restored to each tool's current definition, so the
+    cold estimate must price those definitions too, not the prompt alone (260 vs 1,714)."""
+    import json
+    from gateway.session_mutation_compress import _request_tokens
+    from tools.mcp_tool_agent import restore_agent_tool_prefix
+    from tools.registry import registry
+
+    schema = {'name': 'review_pin_probe', 'description': 'Read a local document. ' * 250,
+              'parameters': {'type': 'object', 'properties': {'path': {'type': 'string'}}}}
+    registry.register(name='review_pin_probe', toolset='review-pin-probe', schema=schema, handler=lambda a, **k: '{}')
+    try:
+        tools = [{'type': 'function', 'function': dict(schema)}]
+        prompt = 'Assistant instructions. ' * 40
+        resident = SimpleNamespace(tools=list(tools), _cached_system_prompt=prompt, session_id=None)
+        restore_agent_tool_prefix(resident, ['review_pin_probe'])
+        messages = [{'role': 'user', 'content': 'hi'}, {'role': 'assistant', 'content': 'hello'}]
+        warm = _request_tokens(resident, messages)
+        cold = _request_tokens(None, messages, {'system_prompt': prompt, 'tool_names': json.dumps(['review_pin_probe'])})
+        modern = _request_tokens(None, messages, {'system_prompt': prompt, 'tool_names': json.dumps({'tools': tools})})
+        assert modern == warm
+        assert cold == warm, f'legacy pin undercounts: cold={cold}, restored resident={warm}'
+    finally:
+        registry.deregister('review_pin_probe')
