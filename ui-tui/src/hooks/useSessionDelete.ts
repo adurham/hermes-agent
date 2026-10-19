@@ -25,8 +25,8 @@ export function useSessionDelete(
   }
 
   const performDelete = useCallback(
-    (target: SessionListRow) => {
-      if (deletingRef.current) {
+    (target: SessionListRow | undefined) => {
+      if (!target || deletingRef.current) {
         return
       }
 
@@ -55,7 +55,7 @@ export function useSessionDelete(
 
           settle()
         })
-        .catch((e: unknown) => {
+        .catch(rejection => {
           // The revision read attached this view to a session it was not showing; a refused
           // delete hands it back closed so it does not reappear in the live section.
           if (readSubscription) {
@@ -68,7 +68,7 @@ export function useSessionDelete(
               .catch(() => undefined)
           }
 
-          onError(rpcErrorMessage(e))
+          onError(rpcErrorMessage(rejection))
           settle()
         })
     },

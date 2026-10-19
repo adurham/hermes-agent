@@ -596,12 +596,8 @@ export function ActiveSessionSwitcher({
     // other key cancels the prompt (mirrors the standalone resume picker).
     if (confirmDelete !== null) {
       if (ch?.toLowerCase() === 'd') {
-        const target = history.find(h => h.id === confirmDelete)
         setConfirmDelete(null)
-
-        if (target) {
-          performDelete(target)
-        }
+        performDelete(history.find(h => h.id === confirmDelete))
       } else {
         setConfirmDelete(null)
       }
