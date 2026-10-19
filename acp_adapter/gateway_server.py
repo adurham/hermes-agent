@@ -188,13 +188,26 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 logger.info("ACP session %s not re-attached after reconnect", session_id, exc_info=True)
                 self._snapshots.pop(session_id, None)
                 continue
-            self._snapshots[session_id] = snapshot
+            await self._adopt(session_id, snapshot)
             # Before this session's cards are offered again: until ``_client`` returns, ``self._gateway`` is
             # not this connection, so a card answered while the request is out would lose its answer.
             await self._request_live_reasoning(gateway, session_id)
             for pending in snapshot.get("prompts", []):
                 self._permission(session_id, pending)
             await self._notify_unknown(session_id)
+
+    async def _adopt(self, session_id, snapshot, resumes=None):
+        """Replace a session's projection with a fresh ``session.resume`` snapshot (reconnect, replay gap).
+
+        Events before its watermark are skipped from here on, so the session state they would have carried
+        is projected from the snapshot itself: the editor is never left showing Default while the owner
+        enforces Accept Edits / Don't Ask (#141338 ACP-7)."""
+        async with self._changed:  # its pending rows and controls may settle or block a waiter
+            self._snapshots[session_id] = snapshot
+            if resumes is not None:
+                self._adopted[session_id] = resumes
+            self._changed.notify_all()
+        await self._project_mode(session_id, self._editor_id(session_id), snapshot.get("info") or {})
 
     async def _request_live_reasoning(self, client, session_id):
         """Ask the owner to stream this session's reasoning (``show_reasoning``), as the CLI does.
@@ -943,9 +956,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             params = {"editor": self._editor_mcp[sid]} if sid in self._editor_mcp else {}
             self._resumes[sid] = self._resumes.get(sid, 0) + 1
             snapshot = await self._gateway.rpc("session.resume", session_id=sid, **params)
-            async with self._changed:  # its pending rows and controls may settle or block a waiter
-                self._snapshots[sid], self._adopted[sid] = snapshot, self._resumes[sid]
-                self._changed.notify_all()
+            await self._adopt(sid, snapshot, self._resumes[sid])
             for prompt in snapshot.get("prompts", []):
                 self._permission(sid, prompt)
             started = [row["admission_id"] for row in snapshot.get("pending", []) if row.get("status") == "started"]
@@ -1003,7 +1014,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             return
         self._modes[sid] = mode
         if self._conn:
-            await self._conn.session_update(session_id=editor_id, update=acp.update_current_mode(mode))
+            from acp.schema import CurrentModeUpdate  # ``acp`` does not re-export ``update_current_mode``
+            await self._conn.session_update(session_id=editor_id, update=CurrentModeUpdate(
+                session_update="current_mode_update", current_mode_id=mode))
 
     async def _project_usage(self, sid, editor_id, stats):
         """The owner's usage dict: kept for the turn's ``PromptResponse.usage``, shown as ``usage_update``."""
