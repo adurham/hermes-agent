@@ -295,6 +295,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         """Main's new/load/resume/fork reply fields (model picker, modes, provenance ``_meta``); the
         command list and context indicator follow once the reply is queued, as main scheduled them."""
         from acp_adapter.gateway_session_meta import model_state, provenance_meta, session_modes
+        from acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
         title = info.get("title")
         if isinstance(title, str) and title.strip():
             self._titles[session_id] = title
@@ -304,8 +305,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
-        self._modes[session_id] = session_modes(info).current_mode_id
-        return {"models": models, "modes": session_modes(info), "field_meta": meta}
+        # ``_adopt`` seeded the mode from the snapshot: a change the pump projected since is what the reply shows.
+        modes = session_modes({"edit_approval_policy": MODE_TO_EDIT_APPROVAL_POLICY[self._modes.setdefault(
+            session_id, session_modes(info).current_mode_id)]})
+        return {"models": models, "modes": modes, "field_meta": meta}
 
     async def _after_attach(self, session_id, editor_id):
         from acp_adapter.gateway_session_meta import available_commands_update
@@ -1024,7 +1027,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         """Another surface's ``edit_policy`` change (its ``session.info``) as ``current_mode_update``."""
         from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
         mode = EDIT_APPROVAL_POLICY_TO_MODE.get(payload.get("edit_approval_policy"))
-        if mode is None or self._modes.get(sid, mode) == mode:
+        # A session's first (its attach's snapshot) seeds silently: the attach's reply shows it.
+        if mode is None or self._modes.setdefault(sid, mode) == mode:
             return
         self._modes[sid] = mode
         if self._conn:
