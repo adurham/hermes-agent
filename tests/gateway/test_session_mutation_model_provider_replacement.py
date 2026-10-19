@@ -146,6 +146,27 @@ async def test_pick_reads_only_the_owning_profiles_config(tmp_path, monkeypatch)
         assert config['providers']['loop']['base_url'] == bu
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('secondary', [False, True])
+async def test_pick_expands_provider_refs_against_the_profiles_current_env(tmp_path, monkeypatch, secondary):
+    """A ``providers:`` entry whose ``base_url`` is a ``${VAR}`` ref freezes the value in the owning
+    profile's CURRENT ``.env``, not the one the daemon started with (also for a multiplexed
+    secondary profile, whose state.db lives under ``profiles/<name>``)."""
+    import gateway.run  # the daemon is already up: its import-time .env load is done
+    home = tmp_path / 'profiles' / 'other' if secondary else tmp_path
+    home.mkdir(parents=True, exist_ok=True)
+    with peers() as (boot_peer, boot_url, b, bu):
+        monkeypatch.setenv('LOOP_URL', boot_url)  # the daemon's start-time value
+        (home / '.env').write_text(f'LOOP_URL={bu}\n')  # the user's edit after startup
+        before = {'model': {'provider': 'custom', 'base_url': boot_url, 'default': 'original'}}
+        after = {**before, 'providers': {'loop': {'base_url': '${LOOP_URL}', 'api_key': 'loop-key',
+                                                  'models': {'switched': {}}}}}
+        config, runtime = await pick(home, monkeypatch, before, after, 'loop', hermes_home=tmp_path)
+        assert runtime['base_url'].rstrip('/') == bu
+        assert b.bearers == ['Bearer loop-key'] and not boot_peer.bearers
+        assert config['providers']['loop']['base_url'] == bu
+
+
 @pytest.mark.platforms('linux')
 def test_removed_provider_key_is_not_sent_to_retargeted_endpoint(tmp_path):
     root = Path(__file__).resolve().parents[2]
