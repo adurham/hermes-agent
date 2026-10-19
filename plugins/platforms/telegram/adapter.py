@@ -685,8 +685,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._send_path_degraded: bool = False
         self._general_request_drain_lock = asyncio.Lock()
         self._dm_topics: dict[str, int] = {}  # topic_name -> message_thread_id
-        # Topic creation whose opening message has not arrived yet (#136567); see TelegramTopicRoutingMixin.
-        self._pending_created_topics: dict[tuple[str, str], tuple[str, int, float]] = {}
+        # (chat_id, sender_id) -> (new topic id, monotonic stamp) for client-created DM topics whose
+        # thread-less opener may still arrive (#136567); see TelegramTopicRoutingMixin.
+        self._pending_created_topics: dict[tuple[str, str], tuple[str, float]] = {}
         self._forum_command_registered: set[int] = set()  # forum chats with commands registered
         self._command_menu_fingerprint: str = ""  # language + menu payload last pushed via set_my_commands
         self._forum_lock = asyncio.Lock()
@@ -6961,6 +6962,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
         self._reload_dm_topics_from_config()  # cache miss — topics may have been added externally
         return _lookup()
 
+    def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
+        """Cache a thread_id -> topic_name mapping discovered from an incoming message."""
+        cache_key = f"{chat_id}:{topic_name}"
+        if cache_key not in self._dm_topics:
+            self._dm_topics[cache_key] = int(thread_id)
+            logger.info("[%s] Cached DM topic from message: %s -> thread_id=%s", self.name, cache_key, thread_id)
+
     @classmethod
     def _flatten_rich_inline_text(cls, value: Any) -> str:
         """Best-effort plaintext flattener for Bot API rich-message inline nodes."""
@@ -7025,6 +7033,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             if topic_info:
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
+            # forum_topic_created service messages also reveal topic names
+            if hasattr(message, "forum_topic_created") and message.forum_topic_created:
+                created_name = message.forum_topic_created.name
+                if created_name:
+                    self._cache_dm_topic_from_message(str(chat.id), thread_id_str, created_name)
+                    if not chat_topic:
+                        chat_topic = created_name
         elif chat_type == "group" and thread_id_str:
             # Forum topic skill binding via config.extra['group_topics']; accepts both
             # [{"chat_id": ..., "topics": [...]}] and legacy {"-100...": [{"thread_id": 12}]}.

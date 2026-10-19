@@ -1,12 +1,16 @@
-"""Telegram chat/topic identity and topic-creation bookkeeping (#136567).
+"""Route a client-created Telegram DM topic's thread-less opener into that topic (#136567).
 
-Telegram normally stamps a newly created private-chat topic's opening message with the new
-``message_thread_id``, but it sometimes delivers that opener with no thread id at all. The
-``Message`` carrying ``forum_topic_created`` supplies the new topic id, not ``ForumTopicCreated``
-itself. Recording authorized, non-bot private-chat creations in a bounded, short-lived store lets
-an adjacent thread-less opener adopt it instead of arriving lobby-shaped, where gateway topic
-recovery would pin it to the most recently bound topic. The first later message from the same
-chat and sender consumes the record, even when already threaded, so each creation is one-shot.
+Telegram for Android (13.0.x) delivers the opening message of a topic created from the "All
+messages" view with no ``message_thread_id``. The ``Message`` carrying ``forum_topic_created`` is then
+the only update that names the new topic (``ForumTopicCreated`` itself has only name/icon fields).
+Recording authorized, non-bot private-chat creations lets the thread-less messages that follow adopt
+the new topic instead of arriving lobby-shaped, where gateway topic recovery would pin them to the
+most recently bound topic.
+
+Adoption follows time and per-chat order, never message-id adjacency: private-chat message ids come
+from one sequence shared by every private chat of the bot account (bot replies included), so a send
+elsewhere between the creation and the opener breaks ``creation + 1``. Per-chat FIFO update
+processing guarantees nothing from this chat lands in between.
 """
 
 import logging
@@ -17,123 +21,66 @@ logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
 
 class TelegramTopicRoutingMixin:
-    """Chat/topic identity helpers and topic-creation bookkeeping for ``TelegramAdapter``."""
+    """Topic-creation bookkeeping for ``TelegramAdapter`` (relies on its ``_chat_type_str``/``_chat_id_str``)."""
 
-    # How long a recorded topic creation may claim a following thread-less message.
-    _NEW_TOPIC_OPENER_TTL_SECONDS = 120.0
+    # A thread-less message from the creator adopts the new topic while it arrives within this many
+    # seconds of the creation or of the previous adopted message (the client sends the opener
+    # ~0.2-1 s after the creation; a split long text or an album follows within the same second).
+    _NEW_TOPIC_FOLLOW_SECONDS = 5.0
     _NEW_TOPIC_OPENER_MAX_PENDING = 256
 
     @staticmethod
-    def _chat_type_str(chat) -> str:
-        """PTB enum or plain-string ``chat.type`` → bare lowercase name (``supergroup``)."""
-        return str(getattr(chat, "type", "")).split(".")[-1].lower() if chat else ""
-
-    @staticmethod
-    def _chat_id_str(message) -> str:
-        return str(getattr(getattr(message, "chat", None), "id", ""))
-
-    @classmethod
-    def _topic_id_or_general(cls, thread_id) -> str:
-        return str(thread_id) if thread_id is not None else cls._GENERAL_TOPIC_THREAD_ID
-
-    def _sender_id_str(self, message) -> str:
-        """Sender identity as a string; falls back to the chat id (equal in a private chat)."""
-        sender = getattr(message, "from_user", None)
-        sender_id = getattr(sender, "id", None)
-        return str(sender_id) if sender_id is not None else self._chat_id_str(message)
-
-    def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
-        """Cache a thread_id -> topic_name mapping discovered from an incoming message."""
-        cache_key = f"{chat_id}:{topic_name}"
-        if cache_key not in self._dm_topics:
-            self._dm_topics[cache_key] = int(thread_id)
-            logger.info("[%s] Cached DM topic from message: %s -> thread_id=%s", self.name, cache_key, thread_id)
-
-    def _pending_created_topics_store(self) -> dict:
-        """``(chat_id, sender_id) -> (thread_id, creation message id, monotonic stamp)``.
-
-        Prune expired records before returning the store for insertion. The caller then evicts
-        the oldest stamps as needed to keep new records within ``_NEW_TOPIC_OPENER_MAX_PENDING``.
-        A later message from the same chat and sender consumes its record even if already threaded,
-        rather than leaving healthy openers' records around until TTL expiry (#136567).
-        """
-        pending = getattr(self, "_pending_created_topics", None)
-        if not isinstance(pending, dict):
-            pending = {}
-            self._pending_created_topics = pending
-            return pending
-        now = time.monotonic()
-        expired = [
-            key for key, record in pending.items()
-            if (now - record[2]) > self._NEW_TOPIC_OPENER_TTL_SECONDS
-        ]
-        for key in expired:
-            pending.pop(key, None)
-        return pending
+    def _creator_key(message) -> str:
+        return str(getattr(getattr(message, "from_user", None), "id", ""))
 
     async def _handle_forum_topic_created(self, update: Any, context: Any) -> None:
         """Record an authorized, non-bot private-chat topic creation (#136567).
 
-        The service ``Message`` supplies ``message_thread_id``; ``ForumTopicCreated`` does not.
-        Apply the existing intake authorization gate before remembering routing state, so
-        rejected users cannot populate it. Routing signal only: never an agent turn.
+        Routing signal only, never an agent turn. The user-chosen name is NOT cached in ``_dm_topics``:
+        entries there mark operator-declared topics, which session-title auto-rename skips.
         """
         message = getattr(update, "effective_message", None)
-        created = getattr(message, "forum_topic_created", None) if message is not None else None
-        if created is None:
+        if message is None or getattr(message, "forum_topic_created", None) is None:
             return
         # Private chats only: in a forum group a thread-less message is General, never an opener.
         if self._chat_type_str(getattr(message, "chat", None)) != "private":
             return
         thread_id = getattr(message, "message_thread_id", None)
-        message_id = getattr(message, "message_id", None)
-        if thread_id is None or not isinstance(message_id, int):
-            return
         sender = getattr(message, "from_user", None)
-        if sender is None or getattr(sender, "is_bot", False) is True:
+        if thread_id is None or sender is None or getattr(sender, "is_bot", False) is True:
             return
         if not self._is_user_authorized_from_message(message):
             return
-        chat_id = self._chat_id_str(message)
-        pending = self._pending_created_topics_store()
+        pending = self.__dict__.setdefault("_pending_created_topics", {})
+        now = time.monotonic()
+        for key in [k for k, (_t, stamp) in pending.items() if now - stamp > self._NEW_TOPIC_FOLLOW_SECONDS]:
+            del pending[key]
         while len(pending) >= self._NEW_TOPIC_OPENER_MAX_PENDING:
-            oldest = min(pending, key=lambda key: pending[key][2])
-            pending.pop(oldest)
-        pending[(chat_id, self._sender_id_str(message))] = (
-            str(thread_id), message_id, time.monotonic())
-        # Never cache the user-chosen name in _dm_topics: _get_dm_topic_info hits there mark
-        # operator-fixed topics, so caching it would silently block session-title auto-rename.
+            del pending[min(pending, key=lambda k: pending[k][1])]
+        chat_id = self._chat_id_str(message)
+        pending[(chat_id, self._creator_key(message))] = (str(thread_id), now)
         logger.debug("[%s] Recorded new Telegram topic %s (chat=%s)", self.name, thread_id, chat_id)
 
     def _adopt_created_topic_thread(self, message: Any, chat_type: str, thread_id: Optional[str]) -> Optional[str]:
-        """Return the just-created topic's thread id for its thread-less non-bot opener (#136567).
+        """Thread id of the topic this sender just created, for its thread-less follow-up messages.
 
-        The first later integer message id from the same DM chat and sender consumes the record,
-        including already-threaded, non-adjacent or expired cases: one-shot, not left until TTL.
-        Adoption requires adjacency (``message_id == creation + 1``), a fresh record and no thread
-        in either the incoming routing value or the raw ``Message``. Other messages keep their thread.
+        A threaded message (the topic now routes normally) or a gap longer than
+        ``_NEW_TOPIC_FOLLOW_SECONDS`` ends the follow; each adoption extends it, so every chunk of a
+        split opener lands in the same topic.
         """
-        if chat_type != "dm":
+        # .get: adapters built without __init__ (object.__new__ in tests) have no store yet.
+        pending = self.__dict__.get("_pending_created_topics")
+        if chat_type != "dm" or not pending:
             return thread_id
-        pending = getattr(self, "_pending_created_topics", None)
-        if not isinstance(pending, dict) or not pending:
+        key = (self._chat_id_str(message), self._creator_key(message))
+        record = pending.pop(key, None)
+        if record is None or thread_id is not None or getattr(message, "message_thread_id", None) is not None:
             return thread_id
-        key = (self._chat_id_str(message), self._sender_id_str(message))
-        record = pending.get(key)
-        if record is None:
+        created_thread_id, stamp = record
+        now = time.monotonic()
+        if now - stamp > self._NEW_TOPIC_FOLLOW_SECONDS:
             return thread_id
-        created_thread_id, created_message_id, stamped_at = record
-        message_id = getattr(message, "message_id", None)
-        if not isinstance(message_id, int) or message_id <= created_message_id:
-            return thread_id
-        pending.pop(key)
-        if (time.monotonic() - stamped_at) > self._NEW_TOPIC_OPENER_TTL_SECONDS:
-            return thread_id
-        if thread_id is not None or getattr(message, "message_thread_id", None) is not None:
-            return thread_id
-        if message_id != created_message_id + 1 or getattr(getattr(message, "from_user", None), "is_bot", False) is True:
-            return thread_id
-        logger.info(
-            "[%s] New Telegram topic %s adopted by its opening message (chat=%s)",
-            self.name, created_thread_id, key[0])
+        pending[key] = (created_thread_id, now)
+        logger.info("[%s] Thread-less message %s adopted by new Telegram topic %s (chat=%s)",
+                    self.name, getattr(message, "message_id", "?"), created_thread_id, key[0])
         return created_thread_id
