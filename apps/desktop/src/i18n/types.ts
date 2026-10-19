@@ -16,6 +16,7 @@ import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
+import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { ModelSettingsTranslations } from './types_model_settings'
@@ -84,16 +85,7 @@ export interface Translations extends NoticeTranslations {
   sharedMetrics: SharedMetricsTranslations
   appTour: AppTourTranslations
   firstRun: FirstRunCopy
-  externalOpenFailed: {
-    title: string
-    message: string
-    copyUrl: string
-    close: string
-    missing: {
-      title: string
-      message: string
-    }
-  }
+  externalOpenFailed: ExternalOpenFailedCopy
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
