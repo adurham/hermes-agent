@@ -426,6 +426,27 @@ describe('a repeat after a lost rewind reply on a canonical session', () => {
     ])
   })
 
+  it('a replayed /undo 2 cuts both turns from a view without row ids', async () => {
+    const owner = lostRewindReply()
+
+    const unbound = THREE_EXCHANGES.map((row, index) => ({
+      id: `u${index}`,
+      parts: [textPart(String(row.content))],
+      role: row.role as 'assistant' | 'user',
+      timestamp: index
+    }))
+
+    const handle = await mountWith(owner.requestGateway, unbound)
+
+    await handle.submitText('/undo 2')
+    await handle.submitText('/undo')
+
+    expect(owner.active()).toEqual(['first question', 'first answer'])
+    expect(renderedText(handle)).toContain('first answer')
+    expect(renderedText(handle)).not.toContain('second question')
+    expect(renderedText(handle)).not.toContain('third question')
+  })
+
   it('a view refreshed after the reconnect keeps every exchange the owner still holds', async () => {
     const owner = lostRewindReply()
 

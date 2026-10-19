@@ -61,6 +61,10 @@ export interface SessionCommandEnv<C extends { arg: string }> {
 
 const copy = () => runtimeTranslations().promptNotices.sessionCommands
 
+// The cut (`turnsBack`) of each session's derived rewind still awaiting its reply. A repeat after a
+// lost reply replays THAT request, so an unbound view cuts by its count, not the repeat's own.
+const pendingRewindCuts = new Map<string, number>()
+
 /** Clip a queued/steered prompt for the confirmation line (Ink's previewOf). */
 const previewOf = (text: string) => `${text.slice(0, PREVIEW_CHARS)}${text.length > PREVIEW_CHARS ? '…' : ''}`
 
@@ -160,7 +164,10 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       replay_only: true
     })
 
-    const receipt = Number(replayed?.rewound_count ?? 0) > 0 ? replayed : await deriveAndRewind(out, turnsBack, intent)
+    const replay = Number(replayed?.rewound_count ?? 0) > 0
+    const receipt = replay ? replayed : await deriveAndRewind(out, turnsBack, intent)
+    const cut = replay ? (pendingRewindCuts.get(sessionId) ?? turnsBack) : turnsBack
+    pendingRewindCuts.delete(sessionId)
 
     if (!receipt) {
       return
@@ -179,7 +186,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     if (rowId !== undefined) {
       updateSessionState(
         sessionId,
-        state => ({ ...state, messages: truncateRewoundMessages(state.messages, rowId, turnsBack) }),
+        state => ({ ...state, messages: truncateRewoundMessages(state.messages, rowId, cut) }),
         storedSessionId
       )
     }
@@ -218,6 +225,8 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     }
 
     // A derived target: retained by operation alone, so a repeat after a lost reply re-sends it.
+    pendingRewindCuts.set(sessionId, turnsBack)
+
     const receipt = await requestGateway<RewindReceipt>('session.rewind', {
       session_id: sessionId,
       target_message_id: target.row_id,
