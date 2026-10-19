@@ -327,6 +327,33 @@ export class CanonicalDesktopProtocol {
     return method !== 'session.create' && params.profile !== undefined ? { ...prepared, profile: params.profile } : prepared
   }
 
+  private fencedMutation(method: string, params: Record<string, unknown>, fenced: { operation: string; payload: Record<string, unknown> }): Record<string, unknown> {
+    // An edit / regenerate / restore names its target explicitly; a typed /undo or /retry derives it.
+    const derived = method === 'session.rewind' && params.derived_target === true
+
+    // A replay-only probe only ever re-presents the retained rewind (localAnswer handles the rest).
+    if (derived && params.replay_only === true && !this.retainsDerivedRewind(params.session_id, params.profile)) {
+      throw new Error('No retained rewind to replay')
+    }
+
+    return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true, derived)
+  }
+
+  // A typed /undo or /retry whose reply was lost is still retained for its exact retry.
+  private retainsDerivedRewind(sessionId: unknown, profile: unknown): boolean {
+    return this.mutations.has(JSON.stringify([canonicalSessionKey(sessionId, profile), 'rewind', null]))
+  }
+
+  // A request this protocol answers without the owner, or undefined. A replay-only /undo or /retry
+  // probe with no retained rewind owes nothing: no request is sent, and the command derives its target.
+  localAnswer(method: string, params: Record<string, unknown>): Record<string, unknown> | undefined {
+    if (method === 'session.rewind' && params.replay_only === true && !this.retainsDerivedRewind(params.session_id, params.profile)) {
+      return { session_id: params.session_id, status: 'nothing', rewound_count: 0 }
+    }
+
+    return undefined
+  }
+
   // Drop the retained request the owner answered: its outcome is known, so no retry may resend it.
   private forgetMutation(params: Record<string, unknown>) {
     for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
@@ -392,12 +419,7 @@ export class CanonicalDesktopProtocol {
       'session.rewind': () => ({ operation: 'rewind', payload: { target_message_id: params.target_message_id } })
     } as Record<string, () => { operation: string; payload: Record<string, unknown> }>)[method]?.()
 
-    if (fenced) {
-      // An edit / regenerate / restore names its target explicitly; a typed /undo or /retry derives it.
-      const derived = method === 'session.rewind' && params.derived_target === true
-
-      return this.retainedMutation(params.session_id, params.profile, fenced.operation, fenced.payload, true, derived)
-    }
+    if (fenced) { return this.fencedMutation(method, params, fenced) }
 
     if (method === 'session.model') {
       const payload = { ...(params.payload as Record<string, unknown>), ...(typeof params.confirm === 'string' ? { confirm: params.confirm } : {}) }

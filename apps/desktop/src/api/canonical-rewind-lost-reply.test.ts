@@ -30,7 +30,12 @@ test('a derived rewind whose reply was lost is re-sent for the repeat, not re-de
 test('an answered derived rewind is not replayed for the next /undo', () => {
   const protocol = primed()
   const first = protocol.prepare('session.rewind', derived(5))
-  protocol.result('session.rewind', first, { session_id: 's', revision: 8, rewound_count: 2, target_message: { id: 5 } })
+  protocol.result('session.rewind', first, {
+    session_id: 's',
+    revision: 8,
+    rewound_count: 2,
+    target_message: { id: 5 }
+  })
 
   const next = protocol.prepare('session.rewind', derived(3))
 
@@ -83,4 +88,18 @@ test('an owner refusal that names a reason lets the next /undo derive again', ()
 
   expect(next.request_id).not.toBe(refused.request_id)
   expect(next).toMatchObject({ payload: { target_message_id: 3 }, expected_revision: 7 })
+})
+
+test('a replay-only probe re-presents only a retained derived rewind', () => {
+  const protocol = primed()
+  const probe = { session_id: 's', derived_target: true, replay_only: true }
+
+  expect(protocol.localAnswer('session.rewind', probe)).toMatchObject({ status: 'nothing', rewound_count: 0 })
+  expect(() => protocol.prepare('session.rewind', probe)).toThrow('No retained rewind')
+
+  const lost = protocol.prepare('session.rewind', derived(5))
+  protocol.failure(lost, new Error('socket closed'))
+
+  expect(protocol.localAnswer('session.rewind', probe)).toBeUndefined()
+  expect(protocol.prepare('session.rewind', probe)).toEqual(lost)
 })

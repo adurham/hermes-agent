@@ -13,6 +13,7 @@ import { dropSessionState, publishSessionState } from '@/store/session-states'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './index-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
+import { truncateRewoundMessages } from './slash-session-commands'
 
 // /undo, /retry, /steer and /queue run against the session owner's canonical verbs (the Ink TUI's
 // behaviour on the same gateway), never as `slash.exec`, which the shared gateway refuses.
@@ -47,8 +48,15 @@ const SNAPSHOT = {
 
 type Responder = (method: string, params?: Record<string, unknown>) => unknown
 
+// A canonical client answers the replay-only rewind probe locally while nothing is retained
+// (CanonicalDesktopProtocol.localAnswer); these single-shot peers retain nothing.
 function gateway(respond: Responder) {
-  return vi.fn(async (method: string, params?: Record<string, unknown>) => (respond(method, params) ?? {}) as never)
+  return vi.fn(
+    async (method: string, params?: Record<string, unknown>) =>
+      (method === 'session.rewind' && params?.replay_only
+        ? { status: 'nothing', rewound_count: 0 }
+        : (respond(method, params) ?? {})) as never
+  )
 }
 
 async function mount(requestGateway: ReturnType<typeof gateway>) {
@@ -60,8 +68,12 @@ async function mount(requestGateway: ReturnType<typeof gateway>) {
   return handle!
 }
 
+// The replay-only probe each /undo and /retry sends first (answered locally while nothing is
+// retained) is asserted on its own; these lists hold the requests that name a target.
 const callsOf = (requestGateway: ReturnType<typeof gateway>, method: string) =>
-  requestGateway.mock.calls.filter(([name]) => name === method).map(([, params]) => params)
+  requestGateway.mock.calls
+    .filter(([name, params]) => name === method && !(params as { replay_only?: unknown } | undefined)?.replay_only)
+    .map(([, params]) => params)
 
 const renderedText = (handle: HarnessHandle) =>
   handle
@@ -124,9 +136,12 @@ describe('/undo on a canonical session', () => {
     const handle = await mount(requestGateway)
     await handle.submitText('/undo')
 
-    expect(callsOf(requestGateway, 'session.rewind')).toEqual([
-      { session_id: RUNTIME_SESSION_ID, target_message_id: 14, derived_target: true }
-    ])
+    expect(requestGateway.mock.calls.filter(([name]) => name === 'session.rewind').map(([, params]) => params)).toEqual(
+      [
+        { session_id: RUNTIME_SESSION_ID, derived_target: true, replay_only: true },
+        { session_id: RUNTIME_SESSION_ID, target_message_id: 14, derived_target: true }
+      ]
+    )
     expect(callsOf(requestGateway, 'slash.exec')).toEqual([])
     expect($composerDraft.get()).toBe('second question')
     expect(renderedText(handle)).toContain(copy.undidOther('2'))
@@ -207,17 +222,18 @@ describe('/retry on a canonical session', () => {
 // The real CanonicalDesktopProtocol in front of a revision-fenced owner that answers an exact retry with
 // its original receipt (the authority's durable receipt by request_id). The first rewind commits and its
 // reply is lost; the user repeats the command.
-function lostRewindReply() {
-  const protocol = new CanonicalDesktopProtocol()
+const THREE_EXCHANGES: { content: unknown; role: string }[] = [
+  { role: 'user', content: 'first question' },
+  { role: 'assistant', content: 'first answer' },
+  { role: 'user', content: 'second question' },
+  { role: 'assistant', content: 'second answer' },
+  { role: 'user', content: 'third question' },
+  { role: 'assistant', content: 'third answer' }
+]
 
-  const rows = [
-    { role: 'user', content: 'first question', row_id: 11, active: true },
-    { role: 'assistant', content: 'first answer', row_id: 12, active: true },
-    { role: 'user', content: 'second question', row_id: 13, active: true },
-    { role: 'assistant', content: 'second answer', row_id: 14, active: true },
-    { role: 'user', content: 'third question', row_id: 15, active: true },
-    { role: 'assistant', content: 'third answer', row_id: 16, active: true }
-  ]
+function lostRewindReply(transcript = THREE_EXCHANGES) {
+  const protocol = new CanonicalDesktopProtocol()
+  const rows = transcript.map((row, index) => ({ ...row, row_id: 11 + index, active: true }))
 
   const receipts = new Map<unknown, Record<string, unknown>>()
   let revision = 4
@@ -268,6 +284,12 @@ function lostRewindReply() {
       return {} as never
     }
 
+    const local = protocol.localAnswer(method, params)
+
+    if (local) {
+      return local as never
+    }
+
     const prepared = protocol.prepare(method, params)
 
     try {
@@ -282,6 +304,30 @@ function lostRewindReply() {
   return { requestGateway, active: () => rows.filter(row => row.active).map(row => row.content) }
 }
 
+/** Rendered bubbles bound to the owner's durable rows (a hydrated or refreshed transcript). */
+const boundMessages = (texts: string[]) =>
+  texts.map((text, index) => ({
+    id: `m${index}`,
+    parts: [textPart(text)],
+    role: index % 2 ? ('assistant' as const) : ('user' as const),
+    rowId: 11 + index,
+    timestamp: index
+  }))
+
+async function mountWith(requestGateway: ReturnType<typeof gateway>, seedMessages: unknown[]) {
+  let handle: HarnessHandle | null = null
+  await actRender(
+    <Harness
+      onReady={h => (handle = h)}
+      refreshSessions={async () => undefined}
+      requestGateway={requestGateway}
+      seedMessages={seedMessages}
+    />
+  )
+
+  return handle!
+}
+
 describe('a repeat after a lost rewind reply on a canonical session', () => {
   beforeEach(canonical)
 
@@ -289,15 +335,20 @@ describe('a repeat after a lost rewind reply on a canonical session', () => {
     const owner = lostRewindReply()
     let handle: HarnessHandle | null = null
 
-    const seedMessages = ['first question', 'first answer', 'second question', 'second answer', 'third question', 'third answer'].map(
-      (text, index) => ({
-        id: `m${index}`,
-        parts: [textPart(text)],
-        role: index % 2 ? ('assistant' as const) : ('user' as const),
-        rowId: 11 + index,
-        timestamp: index
-      })
-    )
+    const seedMessages = [
+      'first question',
+      'first answer',
+      'second question',
+      'second answer',
+      'third question',
+      'third answer'
+    ].map((text, index) => ({
+      id: `m${index}`,
+      parts: [textPart(text)],
+      role: index % 2 ? ('assistant' as const) : ('user' as const),
+      rowId: 11 + index,
+      timestamp: index
+    }))
 
     await actRender(
       <Harness
@@ -332,6 +383,90 @@ describe('a repeat after a lost rewind reply on a canonical session', () => {
     expect(callsOf(owner.requestGateway, 'prompt.submit')).toEqual([
       expect.objectContaining({ session_id: RUNTIME_SESSION_ID, text: 'third question' })
     ])
+  })
+
+  // The repeat re-presents the retained rewind before deriving (or checking) a target of its own:
+  // the rewound transcript may hold no turn the command would accept.
+  it('/retry that removed the only user turn resends it', async () => {
+    const owner = lostRewindReply(THREE_EXCHANGES.slice(0, 2))
+    const handle = await mount(owner.requestGateway)
+
+    await handle.submitText('/retry')
+    await handle.submitText('/retry')
+
+    expect(renderedText(handle)).not.toContain(copy.retryNothing)
+    expect(callsOf(owner.requestGateway, 'prompt.submit')).toEqual([
+      expect.objectContaining({ session_id: RUNTIME_SESSION_ID, text: 'first question' })
+    ])
+  })
+
+  it('/undo N restores the removed question when fewer than N turns remain', async () => {
+    const owner = lostRewindReply()
+    const handle = await mount(owner.requestGateway)
+
+    await handle.submitText('/undo 2')
+    await handle.submitText('/undo 2')
+
+    expect(owner.active()).toEqual(['first question', 'first answer'])
+    expect($composerDraft.get()).toBe('second question')
+    expect(renderedText(handle)).toContain(copy.undidOther('4'))
+  })
+
+  it('a text-only /retry is not blocked by an older media turn', async () => {
+    const media = [{ type: 'image_url', image_url: 'x' }]
+    const owner = lostRewindReply([{ role: 'user', content: media }, ...THREE_EXCHANGES.slice(1, 4)])
+    const handle = await mount(owner.requestGateway)
+
+    await handle.submitText('/retry')
+    await handle.submitText('/retry')
+
+    expect(renderedText(handle)).not.toContain(copy.retryUnsupported)
+    expect(callsOf(owner.requestGateway, 'prompt.submit')).toEqual([
+      expect.objectContaining({ session_id: RUNTIME_SESSION_ID, text: 'second question' })
+    ])
+  })
+
+  it('a view refreshed after the reconnect keeps every exchange the owner still holds', async () => {
+    const owner = lostRewindReply()
+
+    // The reconnect refresh already shows the owner's rewound transcript (the third exchange gone).
+    const handle = await mountWith(
+      owner.requestGateway,
+      boundMessages(['first question', 'first answer', 'second question', 'second answer'])
+    )
+
+    await handle.submitText('/undo')
+    await handle.submitText('/undo')
+
+    expect(owner.active()).toEqual(['first question', 'first answer', 'second question', 'second answer'])
+    expect(renderedText(handle)).toContain('second question')
+    expect(renderedText(handle)).toContain('second answer')
+  })
+})
+
+describe('truncateRewoundMessages', () => {
+  const live = (text: string, role: 'assistant' | 'user') => ({ id: text, parts: [textPart(text)], role, timestamp: 9 })
+
+  it('is a no-op when the bound view no longer holds the rewound row', () => {
+    const messages = boundMessages(['first question', 'first answer', 'second question', 'second answer'])
+
+    expect(truncateRewoundMessages(messages as never, 15, 1)).toEqual(messages)
+  })
+
+  it('cuts unbound live bubbles after the bound history by position', () => {
+    const messages = [
+      ...boundMessages(['first question', 'first answer']),
+      live('new question', 'user'),
+      live('new answer', 'assistant')
+    ]
+
+    expect(truncateRewoundMessages(messages as never, 13, 1).map(message => message.id)).toEqual(['m0', 'm1'])
+  })
+
+  it('falls back by position on a wholly unbound view', () => {
+    const messages = [live('a', 'user'), live('b', 'assistant'), live('c', 'user'), live('d', 'assistant')]
+
+    expect(truncateRewoundMessages(messages as never, 13, 1).map(message => message.id)).toEqual(['a', 'b'])
   })
 })
 

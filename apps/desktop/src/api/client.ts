@@ -408,6 +408,10 @@ export class HermesGateway extends JsonRpcGatewayClient {
 
     params = this.routeCanonicalParams(method, params)
 
+    const local = this.protocol.localAnswer(method, params)
+
+    if (local) { return local as T }
+
     await this.attachForRequest(method, params, deadline, signal)
     this.requireConnectionGeneration(generation)
     // The attach may have identified the named launch profile behind an

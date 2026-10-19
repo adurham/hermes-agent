@@ -30,6 +30,8 @@ interface SnapshotRow {
 }
 
 interface RewindReceipt {
+  /** Client-side: the snapshot row a freshly derived rewind named (a replayed receipt has none). */
+  derivedRowId?: number
   rewound_count?: number
   status?: string
   target_message?: { content?: unknown; id?: unknown } | null
@@ -110,14 +112,25 @@ export function userTurnFromEnd(rows: readonly SnapshotRow[], turnsBack: number)
 }
 
 /** Drop the rewound rows from the rendered transcript: everything from the first message bound to a
- *  durable row at or after the target. Unbound bubbles fall back to the Nth newest user bubble. */
+ *  durable row at or after the target. A view bound to durable rows that holds none of them already
+ *  shows the cut (a refresh after reconnect): only unbound live bubbles after it fall back to the Nth
+ *  newest user bubble, and a wholly unbound view falls back by position. */
 export function truncateRewoundMessages(messages: ChatMessage[], rowId: number, turnsBack: number): ChatMessage[] {
+  const bound = (message: ChatMessage) =>
+    message.rowId !== undefined || message.parts.some(part => part.sourceRowId !== undefined)
+
   let cut = messages.findIndex(
     message => (message.rowId ?? -1) >= rowId || message.parts.some(part => (part.sourceRowId ?? -1) >= rowId)
   )
 
   if (cut < 0) {
-    const users = messages.flatMap((message, index) => (message.role === 'user' && !message.hidden ? [index] : []))
+    const tail = messages.length - [...messages].reverse().findIndex(bound)
+    const after = tail > messages.length ? 0 : tail
+
+    const users = messages.flatMap((message, index) =>
+      index >= after && message.role === 'user' && !message.hidden ? [index] : []
+    )
+
     cut = users[users.length - turnsBack] ?? -1
   }
 
@@ -135,6 +148,53 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
     intent: 'retry' | 'undo'
   ): Promise<undefined | { count: number; content: unknown }> {
     const { render, sessionId, storedSessionId } = out
+    const nothing = intent === 'retry' ? copy().retryNothing : copy().undoNothing
+
+    // An earlier /undo or /retry whose reply was lost is resolved FIRST: the owner already rewound, so
+    // the transcript a new target would come from may hold no turn this command accepts. The protocol
+    // re-sends that retained rewind (the owner answers with the original receipt), or answers
+    // 'nothing' locally, without a request, when none is retained.
+    const replayed = await requestGateway<RewindReceipt>('session.rewind', {
+      session_id: sessionId,
+      derived_target: true,
+      replay_only: true
+    })
+
+    const receipt = Number(replayed?.rewound_count ?? 0) > 0 ? replayed : await deriveAndRewind(out, turnsBack, intent)
+
+    if (!receipt) {
+      return
+    }
+
+    const count = Number(receipt?.rewound_count ?? 0)
+
+    if (receipt?.status === 'nothing' || count <= 0) {
+      return void render(nothing)
+    }
+
+    // The receipt names the row the owner rewound; a replayed receipt's row is not this snapshot's.
+    const receiptRowId = receipt?.target_message?.id
+    const rowId = Number.isSafeInteger(receiptRowId) ? (receiptRowId as number) : receipt.derivedRowId
+
+    if (rowId !== undefined) {
+      updateSessionState(
+        sessionId,
+        state => ({ ...state, messages: truncateRewoundMessages(state.messages, rowId, turnsBack) }),
+        storedSessionId
+      )
+    }
+
+    return { count, content: receipt?.target_message?.content }
+  }
+
+  // Derive the Nth newest user turn from the owner's snapshot and rewind it. Resolves undefined after
+  // it rendered why nothing was rewound.
+  async function deriveAndRewind(
+    out: SlashOutput,
+    turnsBack: number,
+    intent: 'retry' | 'undo'
+  ): Promise<RewindReceipt | undefined> {
+    const { render, sessionId } = out
     const nothing = intent === 'retry' ? copy().retryNothing : copy().undoNothing
     // The resume snapshot carries every row's durable id and primes the CAS revision/generation the
     // rewind mutation presents, as Ink's mutateCanonical does.
@@ -157,31 +217,14 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       }
     }
 
-    // A derived target: while an earlier rewind's reply is lost, the protocol re-sends that rewind
-    // (its original target) instead of this one, so the owner answers with the original receipt.
+    // A derived target: retained by operation alone, so a repeat after a lost reply re-sends it.
     const receipt = await requestGateway<RewindReceipt>('session.rewind', {
       session_id: sessionId,
       target_message_id: target.row_id,
       derived_target: true
     })
 
-    const count = Number(receipt?.rewound_count ?? 0)
-
-    if (receipt?.status === 'nothing' || count <= 0) {
-      return void render(nothing)
-    }
-
-    // The receipt names the row the owner rewound; a replayed receipt's row is not this snapshot's.
-    const receiptRowId = receipt?.target_message?.id
-    const rowId = Number.isSafeInteger(receiptRowId) ? (receiptRowId as number) : (target.row_id as number)
-
-    updateSessionState(
-      sessionId,
-      state => ({ ...state, messages: truncateRewoundMessages(state.messages, rowId, turnsBack) }),
-      storedSessionId
-    )
-
-    return { count, content: receipt?.target_message?.content }
+    return { ...receipt, derivedRowId: target.row_id as number }
   }
 
   // The next-turn queue the composer uses while busy: the owner's durable FIFO for a canonical
