@@ -165,13 +165,13 @@ def test_the_owner_claim_of_a_queued_prompt_runs_as_a_typed_turn_without_a_secon
         cli._drain_process_notifications("cli-idle")
         item = cli._pending_input.get_nowait()
         assert str(item) == TEXT and type(item).__name__ == "_SeededQueryMessage"  # literal, never a command
-        assert conn.state(SID).queued_inputs == {}
         cli._tui_unwrap_input(item)  # the input loop takes it: its admission is armed by id
         agent = GatewayAgent(connection=conn, session_id=SID)
         agent._pending_cli_user_message = {"role": "user", "content": TEXT}
         result = agent.run_conversation(TEXT, conversation_history=[])
         assert "prompt.submit" not in [method for method, _ in client.calls]
         assert result["final_response"] == "ran"
+        assert conn.state(SID).queued_inputs == {}  # cleared once its turn is the one painted
     finally:
         conn.close()
 
@@ -225,5 +225,73 @@ def test_a_typed_turn_with_the_same_text_is_never_taken_for_the_adopted_admissio
         agent._pending_cli_user_message = {"role": "user", "content": TEXT}
         agent.run_conversation(TEXT, conversation_history=[])
         assert "prompt.submit" in [m for m, _ in client.calls]
+    finally:
+        conn.close()
+
+
+def _run_adopted(cli, conn):
+    """The input loop takes the adopted item and chat() runs it: ``run_conversation`` result."""
+    from hermes_cli.gateway_agent import GatewayAgent
+    from tests.hermes_cli.test_gateway_agent import SID
+    item = cli._pending_input.get_nowait()
+    text, _, seeded = cli._tui_unwrap_input(item)
+    assert seeded and item.admission_id
+    agent = GatewayAgent(connection=conn, session_id=SID)
+    agent._pending_cli_user_message = {"role": "user", "content": text}
+    return agent.run_conversation(text, conversation_history=[])
+
+
+def test_a_local_turn_does_not_swallow_the_start_of_a_cli_queued_admission():
+    """Review N5-F2: the owner started the CLI's queued admission, but a local input (busy-mode Enter,
+    a /goal continuation) reached run_conversation before the idle tick adopted it. Its drain must not
+    lose that turn: the idle tick after the local turn paints it from its receipt (no second submit),
+    and only then is its ``queued_inputs`` entry cleared."""
+    from hermes_cli.gateway_agent import GatewayAgent
+    from tests.hermes_cli.test_gateway_agent import SID, frame
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli, _play
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        state = conn.state(SID)
+        state.queued_inputs["adm-q"] = TEXT
+        _play(conn, client, [frame("message.start", {}, admission="adm-q"),
+                             frame("message.delta", {"text": "queued reply"}, admission="adm-q")])
+        client.script = [frame("message.complete", {"text": "local", "status": "complete"}, admission="adm-1")]
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        agent._pending_cli_user_message = {"role": "user", "content": "local"}
+        agent.run_conversation("local", conversation_history=[])
+        assert "adm-q" in state.queued_inputs  # not painted yet: still owed
+        submits = [m for m, _ in client.calls].count("prompt.submit")
+        client.result = {"final_response": "queued reply"}
+        cli._drain_process_notifications("cli-post-turn")
+        result = _run_adopted(cli, conn)
+        assert [m for m, _ in client.calls].count("prompt.submit") == submits  # never submitted again
+        assert result["final_response"] == "queued reply"
+        assert state.queued_inputs == {}
+    finally:
+        conn.close()
+
+
+def test_a_queued_admission_another_client_cancelled_is_forgotten_not_painted():
+    """A remembered admission that settled without running (cancelled by Ink/Desktop) is dropped from
+    ``queued_inputs`` on the next published list; nothing is painted for it."""
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        state = conn.state(SID)
+        state.queued_inputs["adm-q"] = TEXT
+        real = client.rpc
+
+        async def rpc(method, **params):
+            if method == "prompt.receipt":
+                client.calls.append((method, params))
+                return {"admission_id": "adm-q", "status": "terminal", "outcome": "cancelled"}
+            return await real(method, **params)
+        client.rpc = rpc
+        state.apply_event("session.info", {"pending": []})
+        cli._drain_process_notifications("cli-idle")
+        assert cli._pending_input.empty() and state.queued_inputs == {}
     finally:
         conn.close()

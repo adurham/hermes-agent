@@ -70,6 +70,12 @@ class SessionState:
         # one whose item the input loop just took (``gateway_tools_notify.arm_adopted``).
         self.adopted: dict = {}
         self.armed_admission: str | None = None
+        # Each pending list the owner published (or a snapshot carried) bumps ``pending_seq``; a
+        # ``/queue`` admission whose ``message.start`` this viewer dropped unpainted (a local turn's
+        # drain or pump) is in ``missed``. Both make the idle tick read its receipt (``recover_queued``).
+        self.pending_seq = 0
+        self.recovered_seq = 0
+        self.missed: set = set()
         # ``session.replay_gap``s seen, and how many a re-attach covered: the owner retired this viewer's
         # subscription on overflow, so its frames stop until ``GatewayConnection.reattach``.
         self.gaps = self.attached_gaps = 0
@@ -96,6 +102,7 @@ class SessionState:
             self.info.update({k: v for k, v in payload.items() if k != "session_id"})
             if isinstance(payload.get("pending"), list):
                 self.pending = list(payload["pending"])
+                self.pending_seq += 1
             if payload.get("title"):
                 self.title = payload["title"]
         elif kind == "todo.updated" and isinstance(payload, dict):

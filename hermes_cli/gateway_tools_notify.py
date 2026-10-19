@@ -41,12 +41,15 @@ def queue_admitted_turn(cli, store) -> None:
     from tools.process_registry_notifications import TimelineNotification
     connection, session_id = store.connection, getattr(cli, "session_id", None)
     state = connection.state(session_id)
+    if _adoption_waiting(cli, state):
+        return  # an adopted /queue turn is waiting for the input loop: its frames stay queued for its pump
     state.admitted_turn = None  # a header queued earlier whose turn never ran is stale now
     events = connection.events
     while True:
         try:
             frame = events.get_nowait()
         except queue.Empty:
+            recover_queued(cli, store)
             return
         if isinstance(frame, Exception):
             from hermes_cli.gateway_connection import lost_before
@@ -66,16 +69,15 @@ def queue_admitted_turn(cli, store) -> None:
             continue
         if params.get("type") != "message.start" or not params.get("admission_id"):
             continue
-        queued_text = state.queued_inputs.pop(params["admission_id"], None)
+        queued_text = state.queued_inputs.get(params["admission_id"])
         if queued_text is not None:
             # A ``/queue`` prompt this viewer admitted (#134889 N5): the owner runs it now, and main's
             # input path paints and pumps it as a typed turn. Literal: it is a prompt, never a command.
             # Adopted by admission id (the item carries it), never by text: the input path may rewrite
             # the text, and a second ``prompt.submit`` would run the prompt twice.
             from cli import _SeededQueryMessage
-            state.adopted[params["admission_id"]] = {"admission_id": params["admission_id"],
-                                                     "execution_generation": params.get("execution_generation")}
-            _put_first(cli._pending_input, _SeededQueryMessage(queued_text, admission_id=params["admission_id"]))
+            _adopt(cli, state, {"admission_id": params["admission_id"],
+                                "execution_generation": params.get("execution_generation")}, queued_text)
             return
         card = _card(params)
         if card is None:
@@ -86,6 +88,81 @@ def queue_admitted_turn(cli, store) -> None:
             card["text"], card["display_text"], card["display_kind"],
             card.get("notification_category") or "result"))
         return
+
+
+def _adopt(cli, state, adopted, text):
+    from cli import _SeededQueryMessage
+    state.missed.discard(adopted["admission_id"])
+    state.adopted[adopted["admission_id"]] = adopted
+    _put_first(cli._pending_input, _SeededQueryMessage(text, admission_id=adopted["admission_id"]))
+
+
+def _adoption_waiting(cli, state) -> bool:
+    """An adopted item is still in ``_pending_input`` (one ``/queue clear`` dropped is forgotten)."""
+    if not state.adopted:
+        return False
+    pending = getattr(cli, "_pending_input", None)
+    if pending is None:
+        return False
+    with pending.mutex:
+        waiting = {getattr(item, "admission_id", None) for item in pending.queue}
+    waiting.add(state.armed_admission)  # taken by the input loop, its run_conversation not started yet
+    for admission in [a for a in state.adopted if a not in waiting]:
+        state.adopted.pop(admission, None)
+    return bool(state.adopted)
+
+
+_NEVER_RAN = {"cancelled", "rejected"}
+
+
+def recover_queued(cli, store) -> None:
+    """Idle tick, after the stream had no ``message.start`` for them: this viewer's ``/queue``
+    admissions the owner started or settled without this viewer painting the turn (a local turn's
+    drain or pump dropped the start, or it ran across a reconnect, which replays no frames). Read on
+    a new published pending list or a dropped start only, never every tick.
+
+    Still running: adopted and pumped live, its reply completed from the receipt (``recovered``).
+    Settled: adopted with its saved result, painted without a pump. One that never ran (cancelled,
+    rejected) is forgotten: the only point where ``queued_inputs`` drops a row unpainted.
+    """
+    from hermes_cli.gateway_client import GatewayClientError
+    state = store.connection.state(getattr(cli, "session_id", None))
+    if not state.queued_inputs or (state.recovered_seq == state.pending_seq and not state.missed):
+        return
+    state.recovered_seq = state.pending_seq
+    listed = {row.get("admission_id"): row.get("status") for row in state.pending or () if isinstance(row, dict)}
+    for admission, text in list(state.queued_inputs.items()):
+        if admission in state.adopted or (admission not in state.missed and listed.get(admission) == "queued"):
+            continue
+        try:
+            receipt = store.call("prompt.receipt", session_id=cli.session_id, admission_id=admission,
+                                 include_result=True) or {}
+        except GatewayClientError:
+            state.recovered_seq = -1  # unread: try again on the next tick
+            continue
+        status = receipt.get("status")
+        if status == "queued":
+            state.missed.discard(admission)
+            continue
+        if status == "terminal" and receipt.get("outcome") in _NEVER_RAN:
+            state.queued_inputs.pop(admission, None)
+            state.missed.discard(admission)
+            continue
+        if status not in ("started", "terminal"):
+            continue  # unknown: the owner resolves it; nothing to paint yet
+        adopted = {"admission_id": admission, "execution_generation": receipt.get("execution_generation"),
+                   "recovered": True}
+        if status == "terminal":
+            adopted["receipt"] = receipt
+        _adopt(cli, state, adopted, text)
+        return  # one turn at a time: the next one is recovered after this one ran
+
+
+def missed_start(state, params) -> None:
+    """A frame dropped outside its turn: a ``/queue`` admission's ``message.start`` is remembered so
+    the idle tick paints that turn from its receipt instead of losing it."""
+    if params.get("type") == "message.start" and params.get("admission_id") in state.queued_inputs:
+        state.missed.add(params["admission_id"])
 
 
 def _put_first(pending, item):
@@ -114,6 +191,7 @@ def take_admitted_turn(agent, text):
     armed, state.armed_admission = getattr(state, "armed_admission", None), None
     adopted = state.adopted.pop(armed, None) if armed else None
     if adopted is not None:
+        state.queued_inputs.pop(armed, None)  # painted now: the admission's turn is this one
         return adopted
     adopted = getattr(state, "admitted_turn", None)
     state.admitted_turn = None
