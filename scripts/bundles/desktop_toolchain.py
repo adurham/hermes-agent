@@ -147,7 +147,7 @@ def _msvc_identity() -> dict[str, str] | None:
         instance = instances[0]
         tools = Path(instance["installationPath"], "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
         return {"installationVersion": instance["installationVersion"],
-                "VCToolsVersion": tools.read_text(encoding="utf-8").strip()}
+                "VCToolsVersion": tools.read_text(encoding="utf-8-sig").strip()}
     except (OSError, subprocess.TimeoutExpired, ValueError, IndexError, KeyError) as error:
         print(f"warning: MSVC cache identity unavailable: {error}", file=sys.stderr, flush=True)
         return None

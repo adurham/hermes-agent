@@ -306,7 +306,7 @@ def test_native_cache_is_stable_without_a_developer_environment(tmp_path, monkey
     install = tmp_path / "vs"
     version_file = install / "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"
     version_file.parent.mkdir(parents=True)
-    version_file.write_text("14.44.35207\n", encoding="utf-8")
+    version_file.write_text("\ufeff14.44.35207\n", encoding="utf-8")  # Visual Studio writes a BOM
     vswhere = json.dumps([{"installationPath": str(install), "installationVersion": "17.14.1"}])
     # vswhere is never on PATH; hermes_platform finds it in the installer directory.
     installer = tmp_path / "Program Files (x86)/Microsoft Visual Studio/Installer"
@@ -316,7 +316,8 @@ def test_native_cache_is_stable_without_a_developer_environment(tmp_path, monkey
     monkeypatch.setenv("PATH", "")
 
     def probe(command, **kwargs):
-        stdout = vswhere if command[0] == str(installer / "vswhere.exe") else "rustc 1.98.0"
+        # The resolver joins its known dir with mixed separators; compare as paths.
+        stdout = vswhere if Path(command[0]) == installer / "vswhere.exe" else "rustc 1.98.0"
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
     desktop_toolchain.platform.platform()
