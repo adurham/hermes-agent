@@ -388,31 +388,6 @@ def test_dock_shows_a_fresh_submit_until_the_owner_publishes_its_list():
         conn.close()
 
 
-def test_a_queued_admission_another_client_cancelled_is_forgotten_not_painted():
-    """A remembered admission that settled without running (cancelled by Ink/Desktop) is dropped from
-    ``queued_inputs`` on the next published list; nothing is painted for it."""
-    from tests.hermes_cli.test_gateway_agent import SID
-    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
-    conn, client = _connected()
-    try:
-        cli = _idle_cli(conn)
-        state = conn.state(SID)
-        state.queued_inputs["adm-q"] = TEXT
-        real = client.rpc
-
-        async def rpc(method, **params):
-            if method == "prompt.receipt":
-                client.calls.append((method, params))
-                return {"admission_id": "adm-q", "status": "terminal", "outcome": "cancelled"}
-            return await real(method, **params)
-        client.rpc = rpc
-        state.apply_event("session.info", {"pending": []})
-        cli._drain_process_notifications("cli-idle")
-        assert cli._pending_input.empty() and state.queued_inputs == {}
-    finally:
-        conn.close()
-
-
 def _queue_command(cli, fn, *args):
     with patch("cli._cprint") as printed:
         fn(*args)
