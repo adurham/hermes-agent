@@ -180,3 +180,34 @@ async def test_messaging_pause_notice_names_discard_and_discard_resumes_the_fifo
         assert 'nothing' in (await discard_lost_turns(authority, 's')).lower()
     finally:
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_captured_completed_automation_result_gets_no_restart_notice(tmp_path, monkeypatch):
+    """Review #141357 F6: an automation turn fenced ``unknown`` only because its settlement write
+    failed, while this owner holds its completed result, commits that result as completed. Its
+    transcript must not also claim the turn was interrupted by a restart."""
+    from gateway.session_results import admission_result
+    from gateway.session_settlement_recovery import recover_failed_settlement
+    from gateway.session_unattended_unknown import settle_unattended_unknown
+    store, runner = _runner(tmp_path, monkeypatch, [])
+    db = store._db
+    db.create_session('s', source='telegram')
+    authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner-1')
+    authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='gw10'), 's')
+    authority._schedule = lambda ref: None
+    try:
+        admit_session_input(db, epoch=authority.epoch, principal_id='automation:probe', session_id='s',
+                            request_id='done', payload={'text': 'done'})
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        db.append_message('s', 'user', 'done')
+        db.append_message('s', 'assistant', 'REAL_FINISHED_ANSWER')
+        authority.pending_results[row['admission_id']] = {'result': {
+            'final_response': 'REAL_FINISHED_ANSWER', 'completed': True, 'messages': []}, 'usage': {}}
+        await recover_failed_settlement(authority, row)
+        assert await settle_unattended_unknown(authority, SessionRef('p', 's'))
+        assert _statuses(db)[row['admission_id']] == ('terminal', 'completed')
+        assert admission_result(db, row['admission_id'])['result']['final_response'] == 'REAL_FINISHED_ANSWER'
+        assert not [m for m in db.get_messages('s') if m.get('display_kind') == 'failed_turn']
+    finally:
+        store.close_all_db_handles()

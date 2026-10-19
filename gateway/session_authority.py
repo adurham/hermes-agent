@@ -808,7 +808,10 @@ class SessionAuthority:
         return await tracked_write(self, partial(
             resolve_unknown_session_input, self.db, epoch=self.epoch, admission_id=admission_id,
             generation=generation, _captured=prepared,
-            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost, notice)),
+            # ``notice`` says the turn was interrupted: only when that is the outcome, never beside a
+            # captured result this resolution commits as the turn's own answer.
+            _terminal_write=lambda conn, lost: close_discarded_turn(self.db, conn, lost, None if (
+                prepared is not None and lost['owner_epoch'] == self.epoch) else notice)),
             then=partial(self._resolved_unknown, ref, admission_id, prepared, captured))
 
     async def _resolved_unknown(self, ref, admission_id, prepared, captured, row):
