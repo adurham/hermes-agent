@@ -425,6 +425,9 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
     : new Date(nowMs)
 }
 
+const failureMetadata = (message: Pick<ChatMessage, 'failureAt'>) =>
+  message.failureAt !== undefined ? { failureAt: message.failureAt } : {}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -493,6 +496,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         ...(message.interrupted ? { interrupted: true } : {}),
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
+        ...failureMetadata(message),
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
         // Structured failure layer for the error card (see lib/error-surface).
         ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),

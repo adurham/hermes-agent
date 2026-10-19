@@ -392,6 +392,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       payload?.response_previewed,
       turnFailure(payload, finalText),
       occurredAt,
+      payload?.timestamp,
       payload?.persisted_turn,
       Boolean(payload?.response_transformed),
       typeof payload?.status === 'string' ? payload.status : undefined,

@@ -21,6 +21,7 @@ export interface GatewayEventDeps {
     responsePreviewed?: boolean,
     failure?: { error: string; partial: boolean },
     occurredAt?: number,
+    failureAt?: number,
     persistedTurn?: PersistedTurn | null,
     responseTransformed?: boolean,
     status?: string,

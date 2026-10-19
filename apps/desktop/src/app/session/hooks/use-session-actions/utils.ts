@@ -254,9 +254,8 @@ const COMPARED_FIELDS = [
   'reactions',
   'timestamp',
   'completedAt',
-  // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
-  // must re-render (set once at completion; stable afterwards).
-  'durationS'
+  // Turn duration and gateway failure time drive visible metadata.
+  'durationS', 'failureAt'
 ] as const
 
 const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan'] as const

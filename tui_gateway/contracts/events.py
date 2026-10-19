@@ -240,6 +240,9 @@ class MessageCompletePayload(Payload):
     ``compute_host_bridge`` (``text`` + ``status``)."""
 
     text: str | JsonValue = ""
+    #: Epoch seconds when the gateway recorded this terminal outcome. Older gateways omit it;
+    #: clients must keep their legacy receipt-time fallback for those frames.
+    timestamp: float | None = None
     usage: Usage | None = None
     status: TurnStatus | None = None
     reasoning: str | None = None

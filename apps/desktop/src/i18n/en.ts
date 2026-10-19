@@ -4625,16 +4625,16 @@ export const en: Translations = {
           body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
         },
         SESSION_OWNER_BUSY: {
-          title: 'Hermes is busy in this chat',
-          body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
+          title: 'Hermes is busy in this chat', body: 'Another turn is running here and your message could not join its queue. Nothing was sent. Retry once that turn ends.'
+        },
+        cron_session_read_only: {
+          title: 'This is a scheduled session', body: 'This session belongs to a scheduled run and cannot accept your message. Start a new chat to send it.'
         },
         SESSION_OWNER_UNCONFIRMED: {
-          title: 'Your message may already be queued',
-          body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
+          title: 'Your message may already be queued', body: 'The gateway did not confirm your message in time. If it was queued, it runs once the earlier turn finishes or is resolved. Check the chat before sending it again.'
         },
         SESSION_NOT_OWNED: {
-          title: 'This chat is open somewhere else',
-          body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'
+          title: 'This chat is open somewhere else', body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'
         },
         disk_full: {
           title: 'Disk full',

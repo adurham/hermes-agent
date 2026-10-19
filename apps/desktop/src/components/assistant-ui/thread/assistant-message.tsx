@@ -591,6 +591,13 @@ const useErrorText = () =>
     return status?.type === 'incomplete' && typeof status.error === 'string' ? status.error : ''
   })
 
+const useErrorFailureAt = () =>
+  useAuiState(s => {
+    const value = s.message.metadata?.custom?.failureAt
+
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+  })
+
 const ErrorCardHeadline: FC = () => {
   const { t } = useI18n()
   const surface = useErrorSurface()
@@ -825,6 +832,7 @@ const ErrorRecoveryActions: FC = () => {
   const copy = t.assistant.thread
   const surface = useErrorSurface()
   const errorText = useErrorText()
+  const failureAt = useErrorFailureAt()
 
   // useNavigate() would throw here when no Router is above us; the deep-link
   // children mount only when one is (see SettingsLinkAction).
@@ -910,10 +918,11 @@ const ErrorRecoveryActions: FC = () => {
     () =>
       formatErrorDiagnostics({
         errorText,
+        failureAt,
         model: model || undefined,
         surface
       }),
-    [errorText, model, surface]
+    [errorText, failureAt, model, surface]
   )
 
   const startNewSession = useCallback(() => {

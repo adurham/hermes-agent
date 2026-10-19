@@ -77,8 +77,19 @@ describe('formatErrorDiagnostics', () => {
     const text = formatErrorDiagnostics({ errorText: 'boom' })
 
     expect(text).not.toContain('layer:')
+    expect(text).not.toContain('time:')
     expect(text).not.toContain('model:')
     expect(text.split('\n').every(line => line.trim().length > 0)).toBe(true)
+  })
+
+  it('uses the gateway failure timestamp when one is present', () => {
+    const text = formatErrorDiagnostics({ errorText: 'boom', failureAt: 1792345678.25 })
+
+    expect(text).toContain(`time: ${new Date(1792345678.25 * 1000).toISOString()}`)
+  })
+
+  it('omits an out-of-range gateway timestamp', () => {
+    expect(formatErrorDiagnostics({ errorText: 'boom', failureAt: Number.MAX_VALUE })).not.toContain('time:')
   })
 })
 
@@ -185,6 +196,17 @@ describe('free-tier refusals', () => {
       en.assistant.thread.errorCodes.free_tier_rate_limited.body
     )
     expect(errorRecoveryPlan(bare).retry).toBe(true)
+  })
+})
+
+describe('cron admission conflicts', () => {
+  it('uses scheduled-session copy and starts a new chat instead of retrying', () => {
+    const surface = parseErrorSurface({ layer: 'gateway', code: 'cron_session_read_only', retryable: false })!
+    const { body, title } = errorCardText(en.assistant.thread, surface)
+
+    expect(title).toBe(en.assistant.thread.errorCodes.cron_session_read_only.title)
+    expect(body).toBe(en.assistant.thread.errorCodes.cron_session_read_only.body)
+    expect(errorRecoveryPlan(surface)).toMatchObject({ retry: false, startNewSession: true })
   })
 })
 

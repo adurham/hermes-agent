@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
 import sqlite3
+import time
 from types import SimpleNamespace
 import uuid
 
@@ -38,6 +39,14 @@ native_write_started = ContextVar('native_write_started', default=False)
 # released once the input queues behind an earlier one of its chat, so a serial reader moves on
 # while acceptance itself still waits for the commit.
 messaging_admission = ContextVar('messaging_admission', default=None)
+
+_CRON_ADMISSION_CONFLICT_TEXT = (
+    'This session belongs to a scheduled run and cannot accept your message. '
+    'Start a new chat to send it.'
+)
+_CRON_ADMISSION_CONFLICT_SURFACE = {
+    'layer': 'gateway', 'code': 'cron_session_read_only', 'retryable': False,
+}
 
 
 @dataclass
@@ -1170,6 +1179,31 @@ class SessionAuthority:
                 return None, 'settled_unknown'
             self._pause(ref, 'unknown_execution')
             raise
+        except RuntimeStoreError as exc:
+            if exc.reason == 'admission_conflict':
+                try:
+                    from gateway.session_policy import policy_for_source
+                    policy = policy_for_source(self.runner, live.source)
+                except (RuntimeStoreError, AttributeError):
+                    policy = None
+                if policy is not None and policy.source == 'cron':
+                    failure_at = time.time()
+                    self.pending_results[row['admission_id']] = {
+                        'result': {
+                            'final_response': '',
+                            'messages': [],
+                            'failed': True,
+                            'completed': False,
+                            'error': _CRON_ADMISSION_CONFLICT_TEXT,
+                            'error_surface': dict(_CRON_ADMISSION_CONFLICT_SURFACE),
+                            'failure_at': failure_at,
+                        },
+                        'usage': {},
+                    }
+                    return _CRON_ADMISSION_CONFLICT_TEXT, 'failed'
+            import logging
+            logging.getLogger(__name__).exception('Admitted turn %s failed', row['admission_id'])
+            return 'The admitted turn failed.', 'failed'
         except Exception:
             import logging
             logging.getLogger(__name__).exception('Admitted turn %s failed', row['admission_id'])

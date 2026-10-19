@@ -61,6 +61,9 @@ export type ChatMessage = {
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */
   durationS?: number
+  /** Gateway-recorded failure epoch. Absent when an older gateway omitted it;
+   *  never substitute the Desktop receipt clock for diagnostics. */
+  failureAt?: number
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */

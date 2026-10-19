@@ -86,6 +86,9 @@ let streamMessageSeq = 0
 
 const nextStreamMessageId = (prefix: string) => `${prefix}-${Date.now()}-${++streamMessageSeq}`
 
+const validGatewayFailureAt = (failureAt: number | undefined, completionError: string | null): number | undefined =>
+  completionError && typeof failureAt === 'number' && Number.isFinite(failureAt) && failureAt > 0 ? failureAt : undefined
+
 /**
  * A sealed stream can lose a few characters while the authoritative final
  * remains the same reply. Limit the tolerated edit distance so a separate
@@ -740,6 +743,7 @@ export function useMessageStream({
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
       occurredAt = Date.now() / 1000,
+      failureAt?: number,
       persistedTurn?: PersistedTurn | null,
       responseTransformed?: boolean,
       status?: string,
@@ -786,6 +790,8 @@ export function useMessageStream({
         const durationS = state.turnStartedAt
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
           : undefined
+
+        const validFailureAt = validGatewayFailureAt(failureAt, completionError)
 
         const replaceTextPart = (parts: ChatMessagePart[], interim: boolean) => {
           // The backend says every word of this final is already on screen; a
@@ -837,6 +843,7 @@ export function useMessageStream({
             interim: false,
             recovered: false,
             ...(durationS !== undefined ? { durationS } : {}),
+            ...(validFailureAt !== undefined ? { failureAt: validFailureAt } : {}),
             ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
           }
 
@@ -867,6 +874,7 @@ export function useMessageStream({
             completedAt: occurredAt,
             branchGroupId: state.pendingBranchGroup ?? undefined,
             ...(durationS !== undefined ? { durationS } : {}),
+            ...(validFailureAt !== undefined ? { failureAt: validFailureAt } : {}),
             ...(completionError && { error: completionError }),
             ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
           })

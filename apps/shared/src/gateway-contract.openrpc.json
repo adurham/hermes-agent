@@ -23466,6 +23466,18 @@
             "default": "",
             "title": "Text"
           },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timestamp"
+          },
           "usage": {
             "anyOf": [
               {

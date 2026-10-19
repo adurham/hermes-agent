@@ -77,6 +77,7 @@ describe('terminal error message.complete frames', () => {
 
     const bubble = lastAssistant()
     expect(bubble?.error).toBe('Error: something broke')
+    expect(bubble?.failureAt).toBeUndefined()
   })
 
   it('attaches the structured error_surface descriptor to the failed bubble', async () => {
@@ -94,6 +95,23 @@ describe('terminal error message.complete frames', () => {
     const bubble = lastAssistant()
     expect(bubble?.error).toBe('rate limited')
     expect(bubble?.errorSurface).toEqual({ layer: 'provider', code: 'rate_limit', retryable: true })
+  })
+
+  it('uses the gateway terminal timestamp for the failed bubble', async () => {
+    mountStream()
+    await start()
+
+    await completeWithError({
+      timestamp: 123.5,
+      text: 'This session belongs to a scheduled run and cannot accept your message. Start a new chat to send it.',
+      error: 'This session belongs to a scheduled run and cannot accept your message. Start a new chat to send it.',
+      error_surface: { layer: 'gateway', code: 'cron_session_read_only', retryable: false }
+    })
+
+    const bubble = lastAssistant()
+    expect(bubble?.completedAt).toBe(123.5)
+    expect(bubble?.failureAt).toBe(123.5)
+    expect(bubble?.errorSurface).toEqual({ layer: 'gateway', code: 'cron_session_read_only', retryable: false })
   })
 
   it('ignores a garbled error_surface payload (older/foreign backends)', async () => {

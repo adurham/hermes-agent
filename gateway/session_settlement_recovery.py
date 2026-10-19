@@ -1,6 +1,7 @@
 """Fence an unsettled claim in a live owner without inventing a terminal result."""
 import asyncio
 import logging
+import math
 import sqlite3
 
 from hermes_state_runtime import RuntimeStoreError, _admission, _epoch, settle_steer_transfers
@@ -61,6 +62,22 @@ def completion_payload(row, settled, response, captured):
     # Only the agent's reuse site sets this (never inferred from equal text): the
     # final repeats a reply the viewer already painted, so it settles in place.
     captured_result = (captured or {}).get('result') or {}
+    # This is the one gateway-owned failure descriptor that is safe to echo to the client. Other
+    # captured error strings can contain provider details, so they stay behind the persisted result
+    # boundary and do not become a live error card by accident.
+    error_surface = captured_result.get('error_surface')
+    if (isinstance(error_surface, dict)
+            and error_surface.get('layer') == 'gateway'
+            and error_surface.get('code') == 'cron_session_read_only'
+            and error_surface.get('retryable') is False
+            and isinstance(captured_result.get('error'), str)
+            and captured_result['error']):
+        complete['error'] = captured_result['error']
+        complete['error_surface'] = dict(error_surface)
+        failure_at = captured_result.get('failure_at')
+        if (isinstance(failure_at, (int, float)) and not isinstance(failure_at, bool)
+                and math.isfinite(failure_at) and failure_at > 0):
+            complete['timestamp'] = failure_at
     if response and captured_result.get('response_reused'):
         complete['response_reused'] = True
     if captured_result.get('local_viewer'):
