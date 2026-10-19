@@ -226,3 +226,40 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
         assert 'warning' not in complete, complete
     else:
         assert complete['warning'] == RESTART_INTERRUPT_NOTICE
+
+
+@pytest.mark.parametrize('user_stopped_first', [False, True])
+def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(user_stopped_first):
+    """An in-process turn the user stopped is still unwinding (e.g. inside a tool) when the restart
+    interrupts its agent: the shutdown reason must not overwrite the pending Stop, so the turn
+    records no restart cause and gets no notice. A turn only the restart stopped still gets it."""
+    from agent.interrupt_compat import request_hard_interrupt
+    from gateway.session_settlement_recovery import owner_stop_notice
+    from run_agent import AIAgent
+    from tests.gateway.restart_test_helpers import make_restart_runner
+    from tools.interrupt import set_interrupt
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._interrupt_requested = False
+    agent._interrupt_message = agent._tool_interrupt_reason = None
+    agent._hard_interrupt_requested = threading.Event()
+    agent._execution_thread_id = None
+    agent._interrupt_thread_signal_pending = False
+    agent._active_children, agent._active_children_lock = [], threading.Lock()
+    agent.quiet_mode = True
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._running_agents = {'route': agent}
+    try:
+        if user_stopped_first:
+            request_hard_interrupt(agent)  # SessionAuthority.interrupt: the user's Stop carries no message
+        runner._interrupt_running_agents(runner._shutdown_interrupt_reason())
+        assert agent._interrupt_requested and agent._hard_interrupt_requested.is_set()
+        result = {'interrupted': True, **({'interrupt_message': agent._interrupt_message} if agent._interrupt_message else {})}
+        notice = owner_stop_notice({'result': result}, 'interrupted')
+        if user_stopped_first:
+            assert agent._interrupt_message is None and notice is None
+        else:
+            assert agent._interrupt_message == 'Gateway restarting' and notice == RESTART_INTERRUPT_NOTICE
+    finally:
+        set_interrupt(False)
