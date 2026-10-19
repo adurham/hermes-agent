@@ -1,7 +1,7 @@
 import { foldPersonalityName } from '@/lib/personalities'
 import { asText, normalize } from '@/lib/text'
 import { localShowReasoning } from '@/store/reasoning-disclosure'
-import type { ConfigFieldSchema, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
+import type { ConfigFieldSchema, HermesConfig, HermesConfigRecord, ToolsetInfo } from '@/types/hermes'
 
 import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, PROVIDER_GROUPS, SECTIONS } from './constants'
 
@@ -266,7 +266,7 @@ const LOCAL_SHOW_REASONING = 'display.platforms.cli.show_reasoning'
 /** The value a Settings field shows. */
 export function configFieldValue(config: HermesConfigRecord, key: string): unknown {
   return key === 'display.show_reasoning'
-    ? localShowReasoning(config.display)
+    ? localShowReasoning((config as HermesConfig).display)
     : getNested(config, key)
 }
 

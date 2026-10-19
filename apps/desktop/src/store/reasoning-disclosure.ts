@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { modeBound } from '@/store/interface-mode'
+import type { HermesConfig } from '@/types/hermes'
 
 const REASONING_COLLAPSED_BY_DEFAULT_STORAGE_KEY = 'hermes.desktop.reasoning.collapsedByDefault'
 
@@ -33,15 +34,6 @@ export function setShowReasoningFromConfig(value: unknown): void {
 /** The `display.show_reasoning` a local surface uses: a local session's `/reasoning show|hide` saves the
  *  per-platform `display.platforms.cli` key (the gateway's key for local sessions), which wins over the
  *  global one, as the gateway and the other local clients resolve it. */
-export function localShowReasoning(display: unknown): unknown {
-  if (!display || typeof display !== 'object') {
-    return undefined
-  }
-
-  const block = display as { platforms?: unknown; show_reasoning?: unknown }
-  const platforms = block.platforms && typeof block.platforms === 'object' ? block.platforms : undefined
-  const local = platforms ? (platforms as Record<string, unknown>).cli : undefined
-  const override = local && typeof local === 'object' ? (local as { show_reasoning?: unknown }).show_reasoning : undefined
-
-  return override ?? block.show_reasoning
+export function localShowReasoning(display: HermesConfig['display']): boolean | string | undefined {
+  return display?.platforms?.cli?.show_reasoning ?? display?.show_reasoning
 }
