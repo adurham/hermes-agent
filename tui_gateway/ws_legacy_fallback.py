@@ -65,7 +65,7 @@ _PROCESS_GLOBAL_ACTIONS = {"browser.manage": ({"connect", "disconnect"}, "browse
 def _owner_may_multiplex() -> bool:
     """Whether this owner serves, or can hot-serve, more than one profile (the running gateway's
     authority registry: multiplex mode, or a second profile ever served); without a registered
-    runner, whether the process multiplexes at all. Unknown means yes (fail closed)."""
+    runner, whether the process multiplexes at all (fail closed)."""
     from agent.secret_scope import is_multiplex_active
     from gateway import run_api
     runner = getattr(run_api, "_ACTIVE_RUNNER", None)
@@ -73,7 +73,7 @@ def _owner_may_multiplex() -> bool:
     if registry is None:
         return is_multiplex_active()
     from gateway.session_authorities import serving_authorities
-    return bool(getattr(registry, "multiplexed", True)) or len(serving_authorities(runner)) > 1
+    return getattr(registry, "multiplexed", False) or len(serving_authorities(runner)) > 1
 
 
 def legacy_fallback_allowed(actor: Any, method: str) -> bool:
