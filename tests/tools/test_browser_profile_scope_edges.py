@@ -258,9 +258,9 @@ def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not
     monkeypatch.setattr(lifecycle, "_start_browser_cleanup_thread", lambda: None)
     monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda key: None)
     monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
-    closed = []
-    monkeypatch.setattr(lifecycle, "_cleanup_single_browser_session",
-                        lambda task_id: closed.append(sessions.pop(task_id, {}).get("cdp_url")))
+    closed = []  # released by object: the stale session is never in ``sessions``
+    monkeypatch.setattr(lifecycle, "_release_session_backend", lambda task_id, info: closed.append(info["cdp_url"]))
+    monkeypatch.setattr(bt_session, "_browser_command_preflight", lambda: {"error": "no CLI in this test"})
     created = []
 
     def create(task_id, local):
@@ -277,6 +277,48 @@ def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not
     assert info["cdp_url"] == "http://127.0.0.1:9502"
     assert sessions["task-a"] is info
     assert closed == ["http://127.0.0.1:9501"]
+
+
+def test_a_stale_session_is_closed_without_ever_being_handed_to_a_concurrent_caller(profiles, monkeypatch):
+    """A session found stale after creation is closed by object, never published first: while its
+    backend ``close`` runs, a concurrent ``_get_session_info`` for the same key must not find it in
+    ``_active_sessions`` (it would return a browser that is being closed underneath it)."""
+    from tools import browser_tool, browser_tool_lifecycle as lifecycle, browser_tool_session as bt_session
+    from tui_gateway import server
+
+    a, _b = profiles
+    sessions = {}
+    monkeypatch.setattr(browser_tool, "_active_sessions", sessions)
+    monkeypatch.setattr(lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(bt_cdp, "_stop_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
+    monkeypatch.setattr(bt_session, "_browser_command_preflight", lambda: {"browser_cmd": "agent-browser"})
+    visible_during_close = []
+
+    def dispatch(task_id, info, browser_cmd, command, args, timeout, engine):
+        if command == "close":  # what the existing-session path would hand a concurrent caller now
+            visible_during_close.append((info["cdp_url"], (sessions.get(task_id) or {}).get("cdp_url")))
+        return "chrome", {"success": True}
+    monkeypatch.setattr(bt_session, "_dispatch_browser_command", dispatch)
+    released = []
+    monkeypatch.setattr(lifecycle, "_release_session_backend", lambda task_id, info: released.append(info["cdp_url"]))
+    created = []
+
+    def create(task_id, local):
+        url = bt_cdp._get_cdp_override_raw()
+        if not created:
+            assert server._browser_connect("r1", {"url": "http://127.0.0.1:9512"})["result"]["connected"]
+        created.append(url)
+        return {"session_name": f"s{len(created)}", "cdp_url": url, "bb_session_id": None}
+    monkeypatch.setattr(bt_session, "_create_session_for_key", create)
+
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        bt_cdp.set_live_cdp_override("http://127.0.0.1:9511")
+        info = bt_session._get_session_info("task-a")
+    assert visible_during_close == [("http://127.0.0.1:9511", None)]
+    assert released == ["http://127.0.0.1:9511"]
+    assert info["cdp_url"] == "http://127.0.0.1:9512" and sessions["task-a"] is info
 
 
 def test_another_profiles_connect_does_not_invalidate_this_profiles_new_session(profiles, monkeypatch):

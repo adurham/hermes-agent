@@ -425,25 +425,20 @@ def _get_session_info(task_id: Optional[str] = None) -> dict[str, Any]:
         with _bt._cleanup_lock:
             if task_id in _bt._active_sessions:  # created concurrently during the network call — don't leak ours
                 return _bt._active_sessions[task_id]
-            session_info = dict(session_info)
-            session_info.setdefault("session_key", task_id)
-            session_info.setdefault("owner_task_id", _bt._bare_task_id_for_session_key(task_id))
-            session_info.setdefault("home_key", home_key)  # the profile reaped on /browser connect
-            _bt._active_sessions[task_id] = session_info
-            _bt._suspect_browser_sessions.pop(task_id, None)  # brand-new session is healthy by definition
+            # This profile published a new live endpoint while ours was being created: it may have
+            # resolved the old one after /browser connect's second reap. Never publish it (a concurrent
+            # caller would be handed a browser being closed); close it by object and build again.
             stale = _cdp.live_cdp_generation(home_key) != generation
-        if not stale or attempt == _STALE_ENDPOINT_RETRIES:
-            break
-        # This profile published a new live endpoint while ours was being created: it may have resolved
-        # the old one after /browser connect's second reap. Close it (registered, so the normal teardown
-        # finds it) and build again on the endpoint published now.
+            if not stale or attempt == _STALE_ENDPOINT_RETRIES:
+                session_info = dict(session_info)
+                session_info.setdefault("session_key", task_id)
+                session_info.setdefault("owner_task_id", _bt._bare_task_id_for_session_key(task_id))
+                session_info.setdefault("home_key", home_key)  # the profile reaped on /browser connect
+                _bt._active_sessions[task_id] = session_info
+                _bt._suspect_browser_sessions.pop(task_id, None)  # brand-new session is healthy by definition
+                break
         _bt.logger.info("Browser endpoint changed during session creation for %s; recreating", task_id)
-        with _bt._cleanup_lock:
-            current = _bt._active_sessions.get(task_id)
-        if current is not None and current is not session_info:  # another thread already replaced it
-            return current
-        _lifecycle._cleanup_single_browser_session(task_id)
-        _lifecycle._update_session_activity(task_id)
+        _close_unpublished_session(task_id, session_info)
 
     # Lazy-start the CDP supervisor (idempotent). Skip local sidecars (no CDP URL) and
     # Lightpanda sessions (Browser Use mode hides the tools that consume supervisor state).
@@ -451,6 +446,20 @@ def _get_session_info(task_id: Optional[str] = None) -> dict[str, Any]:
         _cdp._ensure_cdp_supervisor(task_id)
 
     return session_info
+
+
+def _close_unpublished_session(task_id: str, session_info: dict[str, Any]) -> None:
+    """Close a session that was never put in ``_active_sessions``, by object: its backend ``close``
+    and resources only, never a lookup by key (that entry, if any, is another caller's session)."""
+    if (session_info.get("features") or {}).get("lightpanda"):  # no daemon to ``close``
+        from tools.browser_lightpanda import stop_lightpanda
+        stop_lightpanda(session_info.get("session_name", ""))
+    else:
+        preflight = _browser_command_preflight()
+        if "browser_cmd" in preflight:
+            run_fenced_pair(session_info, lambda: _dispatch_browser_command(
+                task_id, session_info, preflight["browser_cmd"], "close", [], 10, None))
+    _lifecycle._release_session_backend(task_id, session_info)
 
 
 def _discard_timed_out_browser_session(task_id: str, session_info: dict[str, Any], task_socket_dir: str) -> None:
