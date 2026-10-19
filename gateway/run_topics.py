@@ -199,17 +199,16 @@ class GatewayTopicThreadsMixin:
                 return recovered if recovered and recovered != inbound else None
         return None
 
-    def _telegram_dm_topic_auto_transfer_configured(self) -> bool:
-        """``gateway.platforms.telegram.extra.dm_topic_auto_transfer``; default False. Off keeps the
-        v0.22 lobby recovery (#136567). Config only: no state.db read, safe on the event loop."""
-        config = getattr(self, "config", None)
-        platforms = getattr(config, "platforms", None) if config is not None else None
-        platform_cfg = platforms.get(Platform.TELEGRAM) if platforms else None
+    def _telegram_dm_topic_auto_transfer_configured(self, source: SessionSource) -> bool:
+        """The RECEIVING bot's ``extra.dm_topic_auto_transfer`` (default False): under multiplexing each
+        bot owns its opt-in. Off keeps the v0.22 lobby recovery (#136567). No state.db read."""
+        adapter = self._delivery_adapter_for(source)
+        platform_cfg = getattr(adapter, "config", None) if adapter is not None else None
         return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("dm_topic_auto_transfer"))
 
     def _telegram_topic_auto_transfer_enabled(self, source: SessionSource) -> bool:
         """The key is on and ``source`` is a ``/topic``-mode root DM (reads state.db: call off-loop)."""
-        return self._telegram_dm_topic_auto_transfer_configured() and self._is_telegram_topic_root_lobby(source)
+        return self._telegram_dm_topic_auto_transfer_configured(source) and self._is_telegram_topic_root_lobby(source)
 
     async def _transfer_telegram_root_dm(self, source: SessionSource) -> Optional[tuple[str, bool]]:
         """Adapter-ingress transfer hook for an opted-in root-DM message (#139136).
@@ -218,7 +217,7 @@ class GatewayTopicThreadsMixin:
         creating it failed, so the message falls back to lobby recovery (the last bound topic).
         ``None``: not applicable (key off, not a topic-mode root DM) or nothing to recover to.
         """
-        if (not source.chat_id or not self._telegram_dm_topic_auto_transfer_configured()
+        if (not source.chat_id or not self._telegram_dm_topic_auto_transfer_configured(source)
                 or not await asyncio.to_thread(self._is_telegram_topic_root_lobby, source)):
             return None
         adapter = self._delivery_adapter_for(source)

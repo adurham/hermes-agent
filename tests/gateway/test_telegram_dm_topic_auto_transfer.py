@@ -173,3 +173,69 @@ def test_top_level_telegram_yaml_key_reaches_extra(monkeypatch):
 
     extras = _apply_yaml_config({}, {"dm_topic_auto_transfer": True}) or {}
     assert extras.get("dm_topic_auto_transfer") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("launch,secondary", [(False, True), (True, False), (False, False), (True, True)])
+async def test_receiving_secondary_bot_controls_opt_in(tmp_path, monkeypatch, launch, secondary):
+    """Multiplexed: the bot that RECEIVED the root DM owns ``dm_topic_auto_transfer``, not the launch bot."""
+    from tests.waiting import async_wait_until
+
+    runner, primary, db, _runs = _rig(tmp_path, monkeypatch, extra={"dm_topic_auto_transfer": launch})
+    runner.config.multiplex_profiles = True
+    runner._primary_profile_name = "default"
+    second = TelegramAdapter(PlatformConfig(enabled=True, token="***", extra={"dm_topic_auto_transfer": secondary}))
+    second._bot = _fake_bot()
+    second.gateway_runner = runner
+    second.set_owner_profile("probe-secondary")
+    runner._profile_adapters = {"probe-secondary": {Platform.TELEGRAM: second}}
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988", profile_name="probe-secondary")
+    db.create_session(session_id="secondary-old", source="telegram", user_id="208214988",
+                      profile_name="probe-secondary")
+    db.bind_telegram_topic(chat_id="208214988", thread_id="333", user_id="208214988",
+                           profile_name="probe-secondary", session_key="secondary-old-route",
+                           session_id="secondary-old")
+    done = asyncio.Event()
+
+    async def capture(_event):
+        done.set()
+
+    runner._wire_adapter_handlers(second, message_handler=capture, authorization_check=lambda *_a, **_k: True,
+                                  platform_event_handler=AsyncMock())
+    source = second.build_source(chat_id="208214988", user_id="208214988", chat_type="dm", message_id="4242")
+    event = MessageEvent(text="root prompt", source=source, message_id="4242")
+    second._text_batch_delay_seconds = second._text_batch_split_delay_seconds = 0
+    second._enqueue_text_event(event)
+    await asyncio.wait_for(done.wait(), 10)
+    await async_wait_until(lambda: not second._session_tasks and not second._pending_text_batch_tasks,
+                           what="secondary batch settles")
+    db.close()
+    assert second._bot.create_forum_topic.await_count == int(secondary)
+    assert event.source.thread_id == (str(NEW_TOPIC_ID) if secondary else "333")
+    primary._bot.create_forum_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_topic_reply_anchor_survives_native_codec(tmp_path, monkeypatch):
+    """A durably admitted (snapshot -> restore) transferred event still sends without quoting the root DM."""
+    from gateway.session_envelope import restore_native, snapshot_native
+    from gateway.session_ingress import deliver_response
+    from plugins.platforms.telegram.telegram_topic_transfer import apply_root_dm_topic_transfer
+
+    runner, adapter, db, _runs = _rig(tmp_path, monkeypatch, extra={"dm_topic_auto_transfer": True})
+    runner.config.multiplex_profiles = False
+    runner._is_user_authorized = lambda _source, **_kwargs: True
+    event = MessageEvent(text="root prompt", source=_make_source(), message_id="4242")
+    await apply_root_dm_topic_transfer(adapter, event)
+    assert event.source.thread_id == str(NEW_TOPIC_ID)
+    payload = snapshot_native(runner, event)
+    restored = restore_native(payload, runner)
+    assert restored.message_id == "4242"  # inbound identity is kept
+    await deliver_response(adapter, restored, payload["native_text_v1"]["route"], "restored reply")
+    send = adapter._bot.send_message.await_args.kwargs
+    db.close()
+    assert send.get("message_thread_id") == NEW_TOPIC_ID
+    assert send.get("reply_to_message_id") is None
+    # The default (None) override stays out of the envelope, so older retries keep their fingerprint.
+    plain = MessageEvent(text="x", source=_make_source(), message_id="4243")
+    assert "reply_anchor_override" not in snapshot_native(runner, plain)["native_text_v1"]["event"]
