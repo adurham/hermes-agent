@@ -231,3 +231,111 @@ describe('/history', () => {
     expect(text).not.toContain('tool noise')
   })
 })
+
+describe('/save writes on the Electron side', () => {
+  it('asks the owner for the rendered file (session.export) and saves it through the main process', async () => {
+    const saveTextFileAs = vi.fn(async () => ({ saved: true, path: '/home/u/Documents/notes.md' }))
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { saveTextFileAs }
+
+    const requestGateway = gateway(method =>
+      method === 'session.export'
+        ? { format: 'md', filename: 'hermes_session_s1.md', content: '# transcript' }
+        : undefined
+    )
+
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/save md notes.md redact')
+
+    expect(callsOf(requestGateway, 'session.export')).toEqual([
+      { session_id: RUNTIME_SESSION_ID, format: 'md', redact: true }
+    ])
+    expect(callsOf(requestGateway, 'session.save')).toEqual([])
+    expect(saveTextFileAs).toHaveBeenCalledWith(
+      expect.objectContaining({ content: '# transcript', defaultPath: 'notes.md' })
+    )
+    expect(renderedText(handle)).toContain('/home/u/Documents/notes.md')
+  })
+
+  it('defaults to json and the owner filename, and reports a cancelled dialog', async () => {
+    const saveTextFileAs = vi.fn(async () => ({ saved: false, canceled: true }))
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { saveTextFileAs }
+
+    const requestGateway = gateway(method =>
+      method === 'session.export' ? { format: 'json', filename: 'hermes_session_s1.json', content: '{}' } : undefined
+    )
+
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/save')
+
+    expect(callsOf(requestGateway, 'session.export')).toEqual([{ session_id: RUNTIME_SESSION_ID, format: 'json' }])
+    expect(saveTextFileAs).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: 'hermes_session_s1.json' }))
+    expect(renderedText(handle)).toMatch(/not saved/i)
+  })
+
+  it('rejects an unknown format without a gateway call', async () => {
+    const requestGateway = gateway(() => undefined)
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/save pdf')
+
+    expect(callsOf(requestGateway, 'session.export')).toEqual([])
+    expect(renderedText(handle)).toMatch(/usage: \/save/i)
+  })
+})
+
+describe('/timestamps, /palette, /worktree, /snapshot', () => {
+  it('/timestamps toggles the transcript timestamps locally (UI state, no gateway call)', async () => {
+    const { $displayTimestamps } = await import('@/store/display-timestamps')
+    $displayTimestamps.set(false)
+    const requestGateway = gateway(() => undefined)
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/timestamps on')
+    expect($displayTimestamps.get()).toBe(true)
+    await handle.submitText('/ts')
+    expect($displayTimestamps.get()).toBe(false)
+    await handle.submitText('/timestamps status')
+
+    expect(requestGateway.mock.calls.filter(([m]) => m === 'slash.exec' || m === 'command.dispatch')).toEqual([])
+    expect(renderedText(handle)).toMatch(/timestamps: off/i)
+  })
+
+  it('/palette opens the desktop command palette', async () => {
+    const { $commandPaletteOpen } = await import('@/store/command-palette')
+    $commandPaletteOpen.set(false)
+    const handle = await mount(gateway(() => undefined))
+
+    await handle.submitText('/palette')
+
+    expect($commandPaletteOpen.get()).toBe(true)
+  })
+
+  it('/worktree and /snapshot are named refusals that say what to use instead', () => {
+    expect(resolveDesktopCommand('/worktree')?.surface.kind).toBe('unavailable')
+    expect(resolveDesktopCommand('/snapshot')?.surface.kind).toBe('unavailable')
+  })
+})
+
+describe('/export and /import (profile archives)', () => {
+  it('route to the desktop profile share flows on a local gateway', () => {
+    expect(resolveDesktopCommand('/export')?.surface).toEqual({ kind: 'action', action: 'export' })
+    expect(resolveDesktopCommand('/import')?.surface).toEqual({ kind: 'action', action: 'import' })
+  })
+
+  it('refuse by name on a remote gateway, whose filesystem is not this machine', async () => {
+    $connection.set({ mode: 'remote', wsUrl: 'wss://example.test/api/ws' } as never)
+    const requestGateway = gateway(() => undefined)
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/export')
+    await handle.submitText('/import')
+
+    expect(callsOf(requestGateway, 'slash.exec')).toEqual([])
+    expect(renderedText(handle)).toMatch(/hermes profile export/)
+    expect(renderedText(handle)).toMatch(/hermes profile import/)
+  })
+})

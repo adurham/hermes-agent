@@ -126,6 +126,6 @@
   "/voice": "composer-voice",
   "/wake": null,
   "/whoami": null,
-  "/worktree": null,
+  "/worktree": "terminal",
   "/yolo": null
 }

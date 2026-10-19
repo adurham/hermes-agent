@@ -173,8 +173,8 @@ describe('desktop slash command curation', () => {
   })
 
   it('routes only stateless session commands through dedicated gateway RPCs', () => {
+    // /save is an action now: it renders on the owner (session.export) and writes through Electron (T11).
     const expected = {
-      '/save': 'session.save',
       '/status': 'session.status'
     } as const
 

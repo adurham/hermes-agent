@@ -1,3 +1,9 @@
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { openCommandPalette } from '@/store/command-palette'
+import { $displayTimestamps } from '@/store/display-timestamps'
+import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import { $connection } from '@/store/session'
+
 import type { GatewayRequest } from './utils'
 
 // T11 (#134889): /rollback, /agents (/tasks), /config and /history on the session owner's existing
@@ -32,6 +38,44 @@ interface RestoreResult {
 }
 
 const errorText = (err: unknown) => `error: ${err instanceof Error ? err.message : String(err)}`
+
+const SAVE_USAGE = 'usage: /save [json|md|html] [filename] [redact]'
+
+const SAVE_FORMATS: Record<string, 'html' | 'json' | 'md'> = {
+  html: 'html',
+  json: 'json',
+  markdown: 'md',
+  md: 'md',
+  snapshot: 'json'
+}
+
+const SAVE_FILTERS: Record<string, { extensions: string[]; name: string }> = {
+  html: { extensions: ['html'], name: 'HTML' },
+  json: { extensions: ['json'], name: 'JSON' },
+  md: { extensions: ['md'], name: 'Markdown' }
+}
+
+/** `/save` words → format, optional filename and redact flag (main's `/save` grammar); null = usage. */
+export function saveRequest(
+  arg: string
+): { filename?: string; format: 'html' | 'json' | 'md'; redact: boolean } | null {
+  const words = arg.trim().split(/\s+/).filter(Boolean)
+  const redact = words.length > 0 && ['redact', '--redact'].includes(words[words.length - 1].toLowerCase())
+  const rest = redact ? words.slice(0, -1) : words
+  const format = rest.length ? SAVE_FORMATS[rest[0].toLowerCase()] : 'json'
+
+  if (!format || rest.length > 2) {
+    return null
+  }
+
+  return { format, redact, ...(rest[1] ? { filename: rest[1] } : {}) }
+}
+
+const isRemoteGateway = () => {
+  const mode = ($connection.get() as { mode?: string } | null)?.mode
+
+  return Boolean(mode && mode !== 'local')
+}
 
 const ROLLBACK_USAGE = 'usage: /rollback [list] | diff <n|hash> | <n|hash> [file] [--all]'
 const HISTORY_PREVIEW = 400
@@ -288,6 +332,106 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
       } catch (err) {
         out.render(errorText(err))
       }
+    },
+    save: async (ctx: C) => {
+      const out = await env.withSlashOutput(ctx)
+
+      if (!out) {
+        return
+      }
+
+      const request = saveRequest(ctx.arg)
+
+      if (!request) {
+        return out.render(SAVE_USAGE)
+      }
+
+      let file: { content?: string; filename?: string; format?: string } | null
+
+      try {
+        file = await requestGateway('session.export', {
+          session_id: out.sessionId,
+          format: request.format,
+          ...(request.redact ? { redact: true } : {})
+        })
+      } catch (err) {
+        if (!isMissingRpcMethod(err)) {
+          return out.render(errorText(err))
+        }
+
+        // An older gateway without session.export: its session.save writes JSON on the gateway host.
+        try {
+          const saved = await requestGateway<{ file?: string }>('session.save', { session_id: out.sessionId })
+
+          return out.render(`Saved on the gateway host: ${saved?.file ?? '(unknown path)'}`)
+        } catch (fallbackErr) {
+          return out.render(errorText(fallbackErr))
+        }
+      }
+
+      const save = window.hermesDesktop?.saveTextFileAs
+
+      if (typeof file?.content !== 'string' || !save) {
+        return out.render('error: this desktop build cannot save files')
+      }
+
+      try {
+        const result = await save({
+          content: file.content,
+          defaultPath: request.filename || file.filename,
+          filters: [SAVE_FILTERS[request.format]],
+          title: 'Save conversation'
+        })
+
+        out.render(result?.saved && result.path ? `Saved conversation to ${result.path}` : 'Not saved (cancelled).')
+      } catch (err) {
+        out.render(errorText(err))
+      }
+    },
+    export: async (ctx: C) => {
+      if (isRemoteGateway()) {
+        const out = await env.withSlashOutput(ctx)
+
+        return out?.render(
+          '/export packages a profile from the gateway host, which is not this machine. Run `hermes profile export` on that host.'
+        )
+      }
+
+      await runExportProfileFlow(ctx.arg.trim().split(/\s+/)[0] || undefined)
+    },
+    import: async (ctx: C) => {
+      if (isRemoteGateway()) {
+        const out = await env.withSlashOutput(ctx)
+
+        return out?.render(
+          '/import installs a profile on the gateway host, which is not this machine. Run `hermes profile import <archive>` on that host.'
+        )
+      }
+
+      await runImportProfileFlow()
+    },
+    timestamps: async (ctx: C) => {
+      const word = ctx.arg.trim().toLowerCase()
+      const current = $displayTimestamps.get()
+      const next = word === 'on' ? true : word === 'off' ? false : word === '' || word === 'toggle' ? !current : current
+
+      if (word && !['on', 'off', 'toggle', 'status'].includes(word)) {
+        const out = await env.withSlashOutput(ctx)
+
+        return out?.render('usage: /timestamps [on|off|status]')
+      }
+
+      $displayTimestamps.set(next)
+
+      if (word === 'status') {
+        const out = await env.withSlashOutput(ctx)
+        out?.render(
+          `Timestamps: ${next ? 'on' : 'off'} (this window; set display.timestamps in config.yaml to keep it)`
+        )
+      }
+    },
+    palette: async () => {
+      openCommandPalette()
     },
     history: async (ctx: C) => {
       const out = await env.withSlashOutput(ctx)

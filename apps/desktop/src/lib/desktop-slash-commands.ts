@@ -65,21 +65,26 @@ export type DesktopActionId =
   | 'btw'
   | 'compress'
   | 'config'
+  | 'export'
   | 'handoff'
   | 'hatch'
   | 'help'
   | 'history'
+  | 'import'
   | 'journey'
   | 'new'
+  | 'palette'
   | 'pet'
   | 'profile'
   | 'queue'
   | 'reasoning'
   | 'retry'
   | 'rollback'
+  | 'save'
   | 'skin'
   | 'steer'
   | 'stop'
+  | 'timestamps'
   | 'title'
   | 'undo'
   | 'wake'
@@ -344,11 +349,29 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
   { name: '/config', description: 'Show current configuration', surface: action('config') },
   { name: '/history', description: 'Show conversation history', surface: action('history') },
+  // /save renders on the owner (session.export) and writes on this machine through Electron: the
+  // gateway may be remote, so it never writes the client's file (T11).
   {
     name: '/save',
-    description: 'Save the current transcript to JSON',
-    surface: rpc('session.save', ctx => ({ session_id: ctx.sessionId }))
+    description: 'Save the transcript to a file [json|md|html] [filename] [redact]',
+    surface: action('save'),
+    argumentMode: 'text'
   },
+  {
+    name: '/export',
+    description: 'Export a profile to a shareable archive',
+    surface: action('export'),
+    argumentMode: 'text'
+  },
+  { name: '/import', description: 'Import a shared profile archive as a new profile', surface: action('import') },
+  {
+    name: '/timestamps',
+    description: 'Toggle message timestamps [on|off|status]',
+    aliases: ['/ts'],
+    surface: action('timestamps'),
+    argumentMode: 'options'
+  },
+  { name: '/palette', description: 'Open the command palette', surface: action('palette') },
   {
     name: '/status',
     description: 'Show current session status',
