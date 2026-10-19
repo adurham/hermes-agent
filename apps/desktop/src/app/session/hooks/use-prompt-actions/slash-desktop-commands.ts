@@ -1,7 +1,7 @@
 import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { openCommandPalette } from '@/store/command-palette'
-import { $displayTimestamps } from '@/store/display-timestamps'
+import { $displayTimestamps, setDisplayTimestampsWindowOverride } from '@/store/display-timestamps'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import { $connection } from '@/store/session'
 import type { SessionMessage } from '@/types/hermes'
@@ -431,7 +431,7 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
         return out?.render('usage: /timestamps [on|off|status]')
       }
 
-      $displayTimestamps.set(next)
+      setDisplayTimestampsWindowOverride(next)
 
       if (word === 'status') {
         const out = await env.withSlashOutput(ctx)

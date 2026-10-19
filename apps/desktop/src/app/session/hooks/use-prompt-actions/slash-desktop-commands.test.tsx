@@ -1,10 +1,12 @@
-import { cleanup } from '@testing-library/react'
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { toChatMessages } from '@/lib/chat-messages'
 import { resolveDesktopCommand } from '@/lib/desktop-slash-commands'
 import { $connection } from '@/store/session'
 import { dropSessionState } from '@/store/session-states'
+
+import { useHermesConfig } from '../use-hermes-config'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './index-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
@@ -16,6 +18,8 @@ import { formatHistory } from './slash-desktop-commands'
 vi.mock('@/hermes', () => ({
   getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: 'session' })),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
+  getHermesConfig: vi.fn(async () => ({ display: { timestamps: false } })),
+  getHermesConfigDefaults: vi.fn(async () => ({})),
   getSession: vi.fn(),
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
   setApiRequestProfile: vi.fn(),
@@ -388,6 +392,21 @@ describe('/timestamps, /palette, /worktree, /snapshot', () => {
 
     expect(requestGateway.mock.calls.filter(([m]) => m === 'slash.exec' || m === 'command.dispatch')).toEqual([])
     expect(renderedText(handle)).toMatch(/timestamps: off/i)
+  })
+
+  it('/timestamps is a window override that survives an ordinary config refresh', async () => {
+    const { $displayTimestamps } = await import('@/store/display-timestamps')
+    $displayTimestamps.set(false)
+    const config = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: RUNTIME_SESSION_ID } }))
+    const handle = await mount(gateway(() => undefined))
+
+    await handle.submitText('/timestamps on')
+    await act(async () => {
+      await config.result.current.refreshHermesConfig()
+    })
+
+    expect($displayTimestamps.get()).toBe(true)
+    await handle.submitText('/timestamps off')
   })
 
   it('/palette opens the desktop command palette', async () => {
