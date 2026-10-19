@@ -477,7 +477,9 @@ class CLILoopsMixin:
             except Exception as exc:
                 _cprint(f"  {t('cli.steer.failed', error=exc)}")
             else:
-                if accepted:
+                if accepted == "voice_stopped":  # TUI-26: the owner ended the voice chat; consumed
+                    pass
+                elif accepted:
                     _cprint(f"  {t('cli.steer.queued', preview=_preview(payload))}")
                 else:
                     _cprint(f"  {t('cli.steer.rejected_empty')}")

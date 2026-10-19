@@ -1519,10 +1519,12 @@ class CLITuiMixin:
                 accepted = False
                 try:
                     if self.agent is not None and hasattr(self.agent, "steer"):
-                        accepted = bool(self.agent.steer(text))
+                        accepted = self.agent.steer(text)
                 except Exception as exc:
                     _cprint(f"  {_DIM}{t('cli.tui.steer_failed_queued', error=exc)}{_RST}")
                     accepted = False
+                if accepted == "voice_stopped":  # TUI-26: consumed as a voice stop; nothing to queue
+                    return
                 if accepted:
                     preview = text[:80] + ("..." if len(text) > 80 else "")
                     _cprint(f"  {_ACCENT}{t('cli.tui.steered', preview=preview)}{_RST}")
@@ -1540,9 +1542,11 @@ class CLITuiMixin:
                         self.agent is not None
                         and getattr(self.agent, "_supports_active_turn_redirect", False) is True
                         and hasattr(self.agent, "redirect")):
-                        redirected = bool(self.agent.redirect(text))
+                        redirected = self.agent.redirect(text)
                 except Exception:
                     redirected = False
+            if redirected == "voice_stopped":  # TUI-26: consumed as a voice stop; nothing to queue
+                return
             if redirected:
                 preview = text[:80] + ("..." if len(text) > 80 else "")
                 _cprint(f"  {_ACCENT}{t('cli.tui.redirected_turn', preview=preview)}{_RST}")
