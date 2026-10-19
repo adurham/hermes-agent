@@ -257,29 +257,31 @@ export function lightDesktopMessagingCompletion(
   // conversation's listed segment paints at once.
   const row = resolveOwnedRow(storedSessionId, profile)
 
+  // Written for the resolved row directly: a bare id would be re-resolved, and another profile's
+  // same-id row can win that tie-break.
   if (row && !focused && isMessagingSource(row.source)) {
-    markRowUnread(row)
+    writeUnread(row.id, profileKeyForRow(row), sessionPinId(row))
   }
 }
 
-/** The live-edge write for a row already resolved to its owner: transient dot plus the marker in
- *  that row's own profile (`markSessionUnreadFinished` re-resolves a bare id, which another
- *  profile's same-id row can win). */
-function markRowUnread(row: SessionInfo) {
+/** The one unread write: the transient dot for `transientId`, plus `durableId`'s marker in
+ *  `profile`'s bucket. */
+function writeUnread(transientId: string, profile: string, durableId: string) {
   const current = $unreadFinishedSessionIds.get()
 
-  if (!current.includes(row.id)) {
-    $unreadFinishedSessionIds.set([...current, row.id])
+  if (!current.includes(transientId)) {
+    $unreadFinishedSessionIds.set([...current, transientId])
   }
 
-  const profile = profileKeyForRow(row)
   const bucket = $unreadFinishedMarkers.get()[profile] ?? []
-  const durableId = sessionPinId(row)
 
-  if (!bucket.includes(durableId)) {
-    const next = [...bucket, durableId]
-    setMarkerBucket(profile, next.length > MARKERS_CAP ? next.slice(next.length - MARKERS_CAP) : next)
+  if (bucket.includes(durableId)) {
+    return
   }
+
+  const next = [...bucket, durableId]
+
+  setMarkerBucket(profile, next.length > MARKERS_CAP ? next.slice(next.length - MARKERS_CAP) : next)
 }
 
 /** Stamped completions that arrived before their admission was noted, keyed by admission. */
@@ -335,24 +337,13 @@ export function isMessagingCompletion(storedSessionId: string, profile?: string)
  *  no loaded row it lands in `profileHint`'s, falling back to the active
  *  gateway's — the only place a live edge can come from. */
 export function markSessionUnreadFinished(storedSessionId: string, profileHint?: null | string): void {
-  const current = $unreadFinishedSessionIds.get()
-
-  if (!current.includes(storedSessionId)) {
-    $unreadFinishedSessionIds.set([...current, storedSessionId])
-  }
-
   const row = resolveLoadedRow(storedSessionId)
-  const profile = row ? profileKeyForRow(row) : unlistedProfile(profileHint)
-  const durableId = row ? sessionPinId(row) : storedSessionId
-  const bucket = $unreadFinishedMarkers.get()[profile] ?? []
 
-  if (bucket.includes(durableId)) {
-    return
-  }
-
-  const next = [...bucket, durableId]
-
-  setMarkerBucket(profile, next.length > MARKERS_CAP ? next.slice(next.length - MARKERS_CAP) : next)
+  writeUnread(
+    storedSessionId,
+    row ? profileKeyForRow(row) : unlistedProfile(profileHint),
+    row ? sessionPinId(row) : storedSessionId
+  )
 }
 
 /** ACK — the user opened (or is looking at) this session: watermark := its
