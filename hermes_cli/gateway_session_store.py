@@ -22,7 +22,7 @@ import re
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_client import GatewayClientError
 from hermes_cli.gateway_connection import GatewayConnection
 
 logger = logging.getLogger(__name__)
@@ -123,17 +123,11 @@ class GatewaySessionStore:
 
     def attach(self, session_id):
         """``session.resume`` once per session id this viewer uses (idempotent), carrying this CLI's launch
-        key as the thin client does. An owner refusal of the keyed resume (a session launched without that
-        key: a keyed startup alias resuming a Desktop/TUI session) attaches as is; its frozen route decides."""
+        key as the thin client does (``GatewayConnection.resume``, the reconnect's too). A session that does
+        not take the key (a keyed startup alias resuming a Desktop/TUI session) attaches as is."""
         if session_id in self.snapshots:
             return self.snapshots[session_id]
-        key = self.connection.launch_api_key
-        try:
-            snapshot = self.call("session.resume", session_id=session_id, **({"api_key": key} if key else {}))
-        except GatewayRPCError:
-            if not key:
-                raise
-            snapshot = self.call("session.resume", session_id=session_id)
+        snapshot = self.connection.resume(self.call, session_id)
         self._adopt(snapshot)
         return snapshot
 

@@ -26,6 +26,10 @@ DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the print
 NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 # Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls).
 _GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
+# Keyed-resume refusals a plain resume answers as main did: the key does not apply to this session
+# (``rebind_launch_key``: keyless or non-local, another key held, another fingerprint), or the viewer
+# lacks the ``session:control`` a rebind needs but may still read. Any other refusal is the resume's.
+_KEY_NOT_TAKEN = frozenset({"admission_conflict", "permission_denied"})
 
 
 class CallStopped(GatewayClientError):
@@ -247,27 +251,34 @@ class GatewayConnection:
         that resumed it. Resume each session this viewer had open; one gone meanwhile is dropped. Any
         other failure fails the reconnect: ready without the subscription, every prompt is refused on a
         live socket that never redials, while a failed redial is retried by the next call."""
+        loop = asyncio.get_running_loop()
+
+        def call(method, **params):  # :meth:`resume` runs on a worker thread; this loop carries its requests
+            return asyncio.run_coroutine_threadsafe(client.rpc(method, **params), loop).result()
         for session_id, state in list(self.states.items()):
             if state.subscription_id is None:
                 continue
             try:
-                state.adopt_snapshot(await self._resume(client, session_id))
+                state.adopt_snapshot(await asyncio.to_thread(self.resume, call, session_id))
             except GatewayClientError as exc:
                 if str(exc) not in _GONE:
                     raise
                 logger.debug("session.resume %s after reconnect: %s", session_id, exc)
                 state.subscription_id = None
 
-    async def _resume(self, client, session_id):
-        """``session.resume`` carrying :attr:`launch_api_key`. An owner refusal of the keyed resume (a session
-        launched without that key: a keyed startup alias on a Desktop/TUI session) resumes it as is."""
+    def resume(self, call, session_id):
+        """``session.resume`` through ``call`` (the store's attach; :meth:`_resubscribe`), re-supplying
+        :attr:`launch_api_key`. Only a refusal in ``_KEY_NOT_TAKEN`` resumes plain (a keyed startup alias on
+        a Desktop/TUI session); any other is raised, not hidden by a keyless attach whose first turn fails."""
         key = self.launch_api_key
-        try:
-            return await client.rpc("session.resume", session_id=session_id, **({"api_key": key} if key else {}))
-        except GatewayRPCError:
-            if not key:
-                raise
-            return await client.rpc("session.resume", session_id=session_id)
+        if key:
+            try:
+                return call("session.resume", session_id=session_id, api_key=key)
+            except GatewayRPCError as exc:
+                if str(exc) not in _KEY_NOT_TAKEN:
+                    raise
+                logger.debug("session.resume %s: launch key not taken (%s); resuming without it", session_id, exc)
+        return call("session.resume", session_id=session_id)
 
     async def _pump(self, client):
         while True:

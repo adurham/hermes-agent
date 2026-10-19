@@ -9,12 +9,13 @@ Real owners (``initialize_session_authority`` again on the same DB is the restar
 ``AuthorityConnection.dispatch``, real ``GatewayConnection`` and ``GatewaySessionStore``: each dial of the
 CLI's connection reaches the current owner through a bridge client."""
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.gateway_client import GatewayClientError, rpc_error
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, rpc_error
 from hermes_cli.gateway_connection import GatewayConnection
 from hermes_cli.gateway_session_store import GatewaySessionStore
 
@@ -48,6 +49,7 @@ class _Owners:
         from gateway.session_local import create_local_session
         monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: {'platform_toolsets': {'cli': []}})
         self.profile, self.loop, self.lives = str(tmp_path), asyncio.get_running_loop(), []
+        self.identity = {'user_id': 'owner'}  # the CLI's principal on each dial
         self.store = SessionStore(tmp_path / 'sessions', GatewayConfig())
         first = await self.boot('first')
         actor = AuthorityConnection(first, object(), {'user_id': 'owner'}).actor
@@ -67,7 +69,7 @@ class _Owners:
 
     async def _open(self):
         from gateway.session_controls import AuthorityConnection
-        self.lives.append(_Life(AuthorityConnection(self.current, object(), {'user_id': 'owner'}), self.loop))
+        self.lives.append(_Life(AuthorityConnection(self.current, object(), self.identity), self.loop))
         return self.lives[-1]
 
     @asynccontextmanager
@@ -125,5 +127,77 @@ async def test_a_reconnect_after_a_restart_resupplies_the_launch_key(tmp_path, m
         await asyncio.to_thread(conn.start, 10)  # the redial resubscribes before it counts as ready
         assert owners.key_of(owners.keyed) == RAW
         assert conn.states[owners.plain].subscription_id not in (None, before)
+    finally:
+        await owners.close(conn)
+
+
+def _refuse_the_rebind(monkeypatch, code):
+    """The owner refuses the keyed resume with ``code`` where it takes the key back (a receipt read that
+    fails is ``storage_unavailable``); a plain resume never gets there."""
+    from gateway import session_policy
+    from hermes_state_runtime import RuntimeStoreError
+
+    def refuse(*_a):
+        raise RuntimeStoreError(code)
+    monkeypatch.setattr(session_policy, 'rebind_launch_key', refuse)
+
+
+def _plain_retries(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == 'hermes_cli.gateway_connection']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['attach', 'reconnect'])
+@pytest.mark.parametrize('code, plain', [('admission_conflict', True), ('permission_denied', True),
+                                         ('storage_unavailable', False)])
+async def test_a_refused_keyed_resume_retries_plain_only_when_the_key_does_not_apply(
+        tmp_path, monkeypatch, caplog, path, code, plain):
+    """A key the session does not take (``admission_conflict``) or a viewer without ``session:control``
+    (``permission_denied``) resumes plain as main did, with a debug line naming the code, never the key. Any
+    other refusal fails the resume, on ``/resume`` and on a reconnect alike (one helper): a plain retry would
+    hide it, and the first turn would fail ``launch_credentials_unavailable`` with nothing in the log."""
+    caplog.set_level(logging.DEBUG, logger='hermes_cli.gateway_connection')
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    conn = GatewayConnection(connect=owners.dial)
+    store = GatewaySessionStore(conn)
+    cli = SimpleNamespace(_resumed=True, session_id=owners.keyed)
+    try:
+        before = None
+        if path == 'reconnect':
+            await asyncio.to_thread(store.open_session, cli, LAUNCH)
+            before = conn.states[owners.keyed].subscription_id
+            await owners.hang_up(conn)
+        await owners.boot('restarted')
+        _refuse_the_rebind(monkeypatch, code)
+        resume = (lambda: conn.start(10)) if path == 'reconnect' else (lambda: store.open_session(cli, LAUNCH))
+        if plain:
+            await asyncio.to_thread(resume)
+            assert conn.states[owners.keyed].subscription_id not in (None, before)
+            assert any(code in line for line in _plain_retries(caplog))
+        else:
+            with pytest.raises(GatewayRPCError, match=code):
+                await asyncio.to_thread(resume)
+        assert RAW not in caplog.text
+    finally:
+        await owners.close(conn)
+
+
+@pytest.mark.asyncio
+async def test_a_read_only_viewer_still_gets_the_plain_attach(tmp_path, monkeypatch, caplog):
+    """The owner checks ``session:control`` before it takes a key back: a read-only viewer's keyed resume is
+    ``permission_denied``, and it still gets main's ``session:read`` attach, binding nothing."""
+    from hermes_state_runtime import RuntimeStoreError
+    caplog.set_level(logging.DEBUG, logger='hermes_cli.gateway_connection')
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    await owners.boot('restarted')
+    owners.identity = {'user_id': 'owner', 'capabilities': ['session:read']}
+    conn = GatewayConnection(connect=owners.dial)
+    try:
+        store = GatewaySessionStore(conn)
+        cli = SimpleNamespace(_resumed=True, session_id=owners.keyed)
+        assert await asyncio.to_thread(store.open_session, cli, LAUNCH) == owners.keyed
+        assert any('permission_denied' in line for line in _plain_retries(caplog))
+        with pytest.raises(RuntimeStoreError, match='launch_credentials_unavailable'):
+            owners.key_of(owners.keyed)
     finally:
         await owners.close(conn)
