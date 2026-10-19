@@ -26,7 +26,13 @@ def _state(cli, store):
 
 
 class QueueOutcomeUnknown(GatewayClientError):
-    """The submit was sent but no answer came back (timeout, disconnect): the owner may hold it."""
+    """The submit was sent but no answer came back (timeout, disconnect): the owner may hold it.
+
+    No admission id came back, so nothing enters ``queued_inputs``. If the owner did queue it, the row
+    shows in ``/queue list`` (from the owner's published list) and runs once, but this CLI never adopts
+    its turn: the reply lands in the session's history, not painted live here. The user is told to
+    check ``/queue list`` instead of re-sending. This is rare (two lost answers in a row).
+    """
 
 
 def submit_queued(cli, store, text: str) -> str:

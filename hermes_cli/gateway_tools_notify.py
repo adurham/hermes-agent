@@ -149,7 +149,10 @@ def recover_queued(cli, store) -> None:
             state.missed.discard(admission)
             continue
         if status not in ("started", "terminal"):
-            continue  # unknown: the owner resolves it; nothing to paint yet
+            # unknown: the owner resolves it (``/discard`` or recovery settles it terminal, and the next
+            # read forgets or paints it). Until then it stays here and is re-read once per new pending
+            # list, never every tick; the row is rare and the read is one receipt.
+            continue
         adopted = {"admission_id": admission, "execution_generation": receipt.get("execution_generation"),
                    "recovered": True}
         if status == "terminal":
