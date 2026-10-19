@@ -29,7 +29,7 @@ import {
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
-import { patchUiState } from '../../uiStore.js'
+import { patchUiState, sessionCwd } from '../../uiStore.js'
 import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -675,18 +675,32 @@ export const coreCommands: SlashCommand[] = [
         }
 
         const [format = 'json', filename] = parts
+        // The user's folder, fixed now: a local session's cwd, else the launch HERMES_CWD (a remote
+        // session's folder names the gateway host's disk, not this one).
+        const remote = Boolean(process.env.HERMES_TUI_GATEWAY_URL?.trim())
+        const cwd = (remote ? process.env.HERMES_CWD : sessionCwd()) || process.cwd()
 
+        // The write is the user's accepted request: it runs even when another slash has started
+        // since (the stale-flight guard drops only the notice).
         return void ctx.gateway
           .rpc<SessionExportResponse>('session.export', { format, redact, session_id: ctx.sid })
-          .then(
-            ctx.guarded<SessionExportResponse>(r => {
-              try {
-                ctx.transcript.sys(t('slashCmd.core.save.saved', writeSessionExport(r, filename)))
-              } catch (e) {
-                ctx.transcript.sys(`${t('slashCmd.core.save.failed')}: ${e instanceof Error ? e.message : String(e)}`)
-              }
-            })
-          )
+          .then(r => {
+            if (!r) {
+              return
+            }
+
+            let notice: string
+
+            try {
+              notice = t('slashCmd.core.save.saved', writeSessionExport(r, filename, cwd))
+            } catch (e) {
+              notice = `${t('slashCmd.core.save.failed')}: ${e instanceof Error ? e.message : String(e)}`
+            }
+
+            if (!ctx.stale()) {
+              ctx.transcript.sys(notice)
+            }
+          })
           .catch(ctx.guardedErr)
       }
 
