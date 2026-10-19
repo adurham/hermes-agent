@@ -57,15 +57,3 @@ export interface CatalogTranslations {
   results: (count: number) => string
   back: string
 }
-
-export interface SkillDeepLinkTranslations {
-  installTitle: (name: string) => string
-  installDescription: string
-  installTo: string
-  thisComputer: string
-  installing: string
-  installComplete: (name: string) => string
-  destinationChanged: string
-  installed: string
-  source: string
-}

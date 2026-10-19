@@ -42,7 +42,8 @@ def _ephemeral_prompt(authority, policy, chat_id):
     resolve = getattr(authority.runner, '_get_system_prompt_for_channel', None)
     if not policy.ignore_user_config and resolve is not None:
         from gateway.config import Platform
-        configured = resolve(Platform.LOCAL, chat_id or '')
+        with policy.client_env_scope():
+            configured = resolve(Platform.LOCAL, chat_id or '')
     return '\n\n'.join(p for p in (configured, policy.skills_prompt) if p) or None
 
 
@@ -70,6 +71,8 @@ class StagedReceipt(dict):
     """A creation receipt plus owner memory ``commit_local_session`` publishes only from the
     transaction that creates the session (never persisted: the receipt itself is the dict)."""
     on_create: '_PrefillPublication | None' = None
+    # The request's own ``client_env`` (stage_local_session), for an overlapping create's retry check.
+    client_request: 'dict | None' = None
 
 
 class _PrefillPublication:
@@ -122,7 +125,8 @@ def _read_prefill(authority, policy):
     if not home.is_absolute():
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
-    path = _resolve_prefill_messages_file(policy.config(authority, secrets=False))
+    with policy.client_env_scope():  # HERMES_PREFILL_MESSAGES_FILE: a local session's client's
+        path = _resolve_prefill_messages_file(policy.config(authority, secrets=False))
     return _load_prefill_messages(path, home) or None
 
 

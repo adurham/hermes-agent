@@ -4,6 +4,8 @@ Source and supported launch settings are frozen per route, never process env.
 """
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from contextlib import contextmanager
 
@@ -12,6 +14,8 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 class LocalSessionAdapter(BasePlatformAdapter):
@@ -130,7 +134,7 @@ def authorize_local_source(runner, source):
     return adapter.authorize_source(source)
 
 
-def _bypass_policy(params, *, private_secrets):
+def _bypass_policy(params, *, private_secrets, client_local=False):
     """Frozen snapshot for --safe-mode / --ignore-user-config: code defaults plus the explicit
     launch options. The profile's config.yaml/.env are never read, so a malformed profile cannot
     block or shape the session; there is no default model to inherit, so one must be explicit."""
@@ -143,7 +147,8 @@ def _bypass_policy(params, *, private_secrets):
     defaults = copy.deepcopy(DEFAULT_CONFIG)
     if not isinstance(defaults.get('model'), dict):  # code default is the empty string
         defaults['model'] = {}
-    return build_policy(params, defaults, private_secrets=private_secrets, profile_terminal=False)
+    return build_policy(params, defaults, private_secrets=private_secrets, profile_terminal=False,
+                        client_local=client_local)
 
 
 def load_profile_config(home=None):
@@ -175,21 +180,67 @@ def profile_env_scope(home=None):
         reset_secret_scope(token)
 
 
-def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
+def project_plugins_warning(policy):
+    """The plain notice for a session whose client opted into project plugins (its forwarded
+    ``HERMES_ENABLE_PROJECT_PLUGINS``) in a folder that has some: the gateway never loads them."""
+    from pathlib import Path
+    from utils import is_truthy_value
+    # The client's folder is a path on this host only for a client the gateway proved local.
+    env = policy.client_env() if policy is not None and not policy.client_env_remote else None
+    folder = Path(policy.cwd) / '.hermes' / 'plugins' if env else None
+    if not env or not is_truthy_value(env.get('HERMES_ENABLE_PROJECT_PLUGINS')) or not folder.is_dir():
+        return None
+    try:
+        if not any(folder.iterdir()):
+            return None
+    except OSError:  # an unlistable folder skips the optional notice, never the session
+        return None
+    return (f'project plugins in {folder} are not loaded: the gateway that runs Hermes sessions does not '
+            'load ./.hermes/plugins, so HERMES_ENABLE_PROJECT_PLUGINS has no effect here.')
+
+
+def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
+                         client_local=False):
     """Stage, commit and publish a local session inline (synchronous callers)."""
     from gateway.session_local_recovery import restore_local_session
     from hermes_state_local import commit_local_session
     staged = stage_local_session(authority, actor, params, trusted_policy=trusted_policy,
-                                 trusted_secrets=trusted_secrets, skills_prompt=skills_prompt)
+                                 trusted_secrets=trusted_secrets, skills_prompt=skills_prompt,
+                                 client_local=client_local)
     if isinstance(staged, dict):
         commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
         staged = restore_local_session(authority, staged['session_id'])
     return staged
 
 
-def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None):
+def staged_creation_follows(authority, actor, request_id):
+    """Whether a retry of *request_id* may ask to follow the profile.
+
+    True when nothing is staged under that identity, or the staged request already follows.
+    False only when an older build committed the session without ``follow_profile_config`` and
+    stopped before its title. The next attempt reuses the identity, and a different request is
+    refused for good. The retry then carries the frozen request.
+    """
+    if not isinstance(request_id, str) or not request_id:
+        return True
+    from gateway.session_local_recovery import local_identity
+    from hermes_state_local import local_receipt
+    sid = local_identity(authority.profile_id, actor.subject, request_id)
+    if authority.db.get_session(sid) is None:
+        return True
+    try:
+        request = json.loads(local_receipt(authority.db, sid)['policy']['request_json'])
+    except (KeyError, TypeError, ValueError, RuntimeStoreError):
+        return True
+    return isinstance(request, dict) and request.get('follow_profile_config') is True
+
+
+def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
+                        client_local=False):
     """Everything before the creation commit: the existing session's ref on an exact retry, else the
-    receipt ``commit_local_session`` writes (the async RPC commits it off the owner loop)."""
+    receipt ``commit_local_session`` writes (the async RPC commits it off the owner loop).
+    ``client_local``: the gateway's own proof that the client is on this host (its connection redeemed a
+    ticket minted over the private control socket), never a value the client sends."""
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
@@ -202,7 +253,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     if trusted_policy is not None:
         policy = trusted_policy
     elif any(params.get(name) is True for name in BYPASS_FIELDS):
-        policy = _bypass_policy(params, private_secrets=private_secrets)
+        policy = _bypass_policy(params, private_secrets=private_secrets, client_local=client_local)
     else:
         from gateway.session_local_route import resolve_launch_route
         raw_model, sent = params.get('model'), params
@@ -210,7 +261,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             config = load_profile_config()
             params = resolve_launch_route(params, config)
         # A client's session.create is the one caller whose named folder may select the coding posture.
-        policy = build_policy(params, config, private_secrets=private_secrets, workspace_posture=True)
+        policy = build_policy(params, config, private_secrets=private_secrets, workspace_posture=True,
+                              client_local=client_local)
         if params is not sent:  # resolved, even to a model of the alias's own name
             # Owner-stamped provenance (not create fields): a remote client cannot re-resolve the typed
             # `-m` alias against its own home, so resume and an exact retry compare a repeat against the
@@ -237,8 +289,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         from hermes_state_local import local_receipt
         saved = local_receipt(authority.db, sid)
         original = restore_policy(saved['policy'])
-        from hermes_state_local import same_create_request
-        if not same_create_request(original.request_json, policy.request_json):
+        from hermes_state_local import same_create_retry
+        if not same_create_retry(saved['policy'], policy.request_json, params):
             raise RuntimeStoreError('invalid_params', field='request_id',
                                     detail='a resumed request_id must carry the same frozen request')
         import hmac
@@ -260,8 +312,12 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         raise RuntimeStoreError('invalid_params', field='skills',
                                 detail='the caller must render -s skills before minting the session')
     policy = replace(policy, skills_prompt=skills_prompt)
+    if warning := project_plugins_warning(policy):
+        logger.warning('session %s: %s', sid, warning)
+    client_request = {k: params[k] for k in ('client_env',) if k in params}
     policy = bind_launch_key(authority, sid, policy, params.get("api_key"), config_secrets=private_secrets,
-                             owner_key=client_key is None)  # an overlapping exact retry takes the held one
+                             owner_key=client_key is None,  # an overlapping exact retry takes the held one
+                             client_request=client_request)
     from gateway.session_local_recovery import local_source
     source = local_source(authority, sid, actor.subject)
     route = authority.runner.session_store._generate_session_key(source)
@@ -271,9 +327,13 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
     # Prefill is read now, at creation (main's CLI: at startup), and held only if this attempt commits.
     from gateway.session_worker_construct import stage_session_prefill
-    return stage_session_prefill(authority, policy, {
+    staged = stage_session_prefill(authority, policy, {
         'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
         'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})
+    # Owner memory, never stored: an overlapping create's commit judges this request's own map by the
+    # winner's committed rules, as a sequential retry is.
+    staged.client_request = client_request
+    return staged
 
 
 def publish_local_policy(authority, session_id):
@@ -359,6 +419,11 @@ def local_session_info(authority, ref):
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
+        from agent.session_client_env import NOT_LOCAL_WARNING
+        # Session-start notices main's TUI already renders as ``config_warning``.
+        notices = (project_plugins_warning(policy), NOT_LOCAL_WARNING if policy.client_env_remote else None)
+        if warning := ' '.join(filter(None, notices)):
+            info['config_warning'] = warning
     info.update(_classic_cli_fields(authority, ref, live, agent, policy))
     return info
 

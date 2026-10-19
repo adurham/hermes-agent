@@ -1,4 +1,4 @@
-import type { CatalogTranslations, SkillDeepLinkTranslations } from './types_catalog'
+import type { CatalogTranslations } from './types_catalog'
 
 export const enCatalog: CatalogTranslations = {
   add: 'Add',
@@ -58,16 +58,4 @@ export const enCatalog: CatalogTranslations = {
   installHint: 'Review the source before installing. Changes apply to new sessions.',
   results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
   back: 'Back to results'
-}
-
-export const enSkillDeepLink: SkillDeepLinkTranslations = {
-  installTitle: (name: string) => `Install “${name}”?`,
-  installDescription: 'This skill will be available in new sessions. Only install sources you trust.',
-  installTo: 'Install to',
-  thisComputer: 'This computer',
-  installing: 'Installing…',
-  installComplete: (name: string) => `“${name}” installed`,
-  destinationChanged: 'The destination changed. Close this dialog and open the install link again.',
-  installed: 'Installed',
-  source: 'Source'
 }
