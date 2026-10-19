@@ -2467,7 +2467,10 @@ jobs:
 
   stable-store:
     name: Submit the verified Store package
-    needs: [validate, stable-publish]
+    # Runs beside stable-publish: it materializes and digest-checks its own Store candidate
+    # from the admitted manifest, and the submission stays held (Manual) until the
+    # publication pass, so nothing here depends on stable-publish's output.
+    needs: [validate]
     if: inputs.release-phase == 'publish' && inputs.skip-store != true
     # The Store is not a release gate: a failed submission leaves the release publishable
     # and the summary names the Store package for a manual Partner Center upload.
