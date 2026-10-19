@@ -39,6 +39,12 @@ class GatewayGoalCommandsMixin:
             return t("gateway.goal.unavailable")
 
         def authorize_gate():
+            # A local session's owner is its admin: slash.exec admitted this command only after
+            # authorize_local_source and the session:control capability (T7). Messaging stays
+            # explicit-admin-only.
+            from gateway.session_local import authorize_local_source
+            if event.source is not None and authorize_local_source(self, event.source) is True:
+                return None
             if not self._resume_caller_is_admin(event.source):
                 return t("gateway.goal.gate_add_admin_only")
             return None
