@@ -445,6 +445,9 @@ gateway:
     state_no: "No"
     queued: "**Seguimientos en cola:** {count}"
     platforms: "**Plataformas conectadas:** {platforms}"
+  discard:
+    nothing: "Nada que descartar: este chat no tiene ningún turno perdido en un reinicio."
+    done: "🗑️ Se descartaron {count} turno(s) perdido(s); no se volvieron a ejecutar. Tus mensajes guardados se responderán ahora."
   stop:
     stopped_pending: "⚡ Detenido. El agente aún no había comenzado — puedes continuar esta sesión."
     stopped: "⚡ Detenido. Puedes continuar esta sesión."
@@ -1530,6 +1533,8 @@ slash:
     description: "Importar un archivo de perfil compartido como nuevo perfil"
   stop:
     description: "Terminar todos los procesos en segundo plano en ejecución"
+  discard:
+    description: "Descarta un turno perdido al reiniciar Hermes para que la cola de este chat continúe"
   pause:
     description: "Pausar todo el trabajo nuevo globalmente (parada de emergencia); '/pause off' reanuda"
   deny:

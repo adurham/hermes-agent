@@ -445,6 +445,9 @@ gateway:
     state_no: "No"
     queued: "**Follow-up in coda:** {count}"
     platforms: "**Piattaforme connesse:** {platforms}"
+  discard:
+    nothing: "Niente da scartare: questa chat non ha turni persi in un riavvio."
+    done: "🗑️ Scartati {count} turni persi; non sono stati rieseguiti. I tuoi messaggi salvati riceveranno ora risposta."
   stop:
     stopped_pending: "⚡ Fermato. L'agente non era ancora partito — puoi continuare questa sessione."
     stopped: "⚡ Fermato. Puoi continuare questa sessione."
@@ -1530,6 +1533,8 @@ slash:
     description: "Importa un archivio di profilo condiviso come nuovo profilo"
   stop:
     description: "Termina tutti i processi in background in esecuzione"
+  discard:
+    description: "Scarta un turno perso al riavvio di Hermes così la coda di questa chat riprende"
   pause:
     description: "Metti in pausa globalmente il nuovo lavoro (arresto di emergenza); '/pause off' riprende"
   deny:

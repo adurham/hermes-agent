@@ -112,6 +112,7 @@ canonical.queue.journalCleanupFailed: "girdi teslim edildi; günlük temizliği 
 canonical.queue.notSavedDraftKept: "girdi kaydedilmedi: {0} — taslak korundu"
 canonical.queue.notSavedQueueKept: "girdi kaydedilmedi: {0} — sıra korundu"
 canonical.queue.serverRow: "[{0}] {1}"
+canonical.queue.lostRow: "[duraklatıldı: yeniden başlatmada kayboldu · ↑ seç, Ctrl+X at] {0}"
 canonical.queue.statusInputNotSaved: "girdi kaydedilmedi"
 canonical.queue.unconfirmedPrefix: "[doğrulanmadı · Alt+K yeniden dene] "
 canonical.queue.unknownExecution: "bilinmeyen yürütme — yeniden denemeden önce atmak için Ctrl+X"

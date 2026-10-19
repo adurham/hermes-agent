@@ -112,6 +112,7 @@ canonical.queue.journalCleanupFailed: "input consegnato; pulizia del journal non
 canonical.queue.notSavedDraftKept: "input non salvato: {0} — bozza mantenuta"
 canonical.queue.notSavedQueueKept: "input non salvato: {0} — coda mantenuta"
 canonical.queue.serverRow: "[{0}] {1}"
+canonical.queue.lostRow: "[in pausa: perso al riavvio · ↑ seleziona, Ctrl+X scarta] {0}"
 canonical.queue.statusInputNotSaved: "input non salvato"
 canonical.queue.unconfirmedPrefix: "[non confermato · Alt+K riprova] "
 canonical.queue.unknownExecution: "esecuzione sconosciuta — Ctrl+X per eliminare prima di riprovare"

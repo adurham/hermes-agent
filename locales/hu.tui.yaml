@@ -112,6 +112,7 @@ canonical.queue.journalCleanupFailed: "bevitel kézbesítve; a napló takarítá
 canonical.queue.notSavedDraftKept: "bevitel nincs mentve: {0} — a piszkozat megmaradt"
 canonical.queue.notSavedQueueKept: "bevitel nincs mentve: {0} — a várólista megmaradt"
 canonical.queue.serverRow: "[{0}] {1}"
+canonical.queue.lostRow: "[szüneteltetve: újraindításkor elveszett · ↑ kijelöl, Ctrl+X elvet] {0}"
 canonical.queue.statusInputNotSaved: "bevitel nincs mentve"
 canonical.queue.unconfirmedPrefix: "[nincs megerősítve · Alt+K újra] "
 canonical.queue.unknownExecution: "ismeretlen végrehajtás — újrapróbálás előtt Ctrl+X az elvetéshez"

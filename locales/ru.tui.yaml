@@ -112,6 +112,7 @@ canonical.queue.journalCleanupFailed: "ввод доставлен; не уда�
 canonical.queue.notSavedDraftKept: "ввод не сохранён: {0} — черновик сохранён"
 canonical.queue.notSavedQueueKept: "ввод не сохранён: {0} — очередь сохранена"
 canonical.queue.serverRow: "[{0}] {1}"
+canonical.queue.lostRow: "[пауза: потерян при перезапуске · ↑ выбрать, Ctrl+X отбросить] {0}"
 canonical.queue.statusInputNotSaved: "ввод не сохранён"
 canonical.queue.unconfirmedPrefix: "[не подтверждено · Alt+K — повтор] "
 canonical.queue.unknownExecution: "неизвестное выполнение — Ctrl+X, чтобы сбросить перед повтором"

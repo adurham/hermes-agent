@@ -158,3 +158,25 @@ async def test_automation_fenced_unknown_in_this_owner_settles_on_the_drain(tmp_
         assert statuses[follower.admission_id] == ('terminal', 'completed')
     finally:
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_messaging_pause_notice_names_discard_and_discard_resumes_the_fifo(tmp_path, monkeypatch):
+    """Messaging: the paused notice says why and offers `/discard` in the chat; `/discard` there
+    resolves the person's lost turn through the same ``resolve_unknown`` and the follower runs."""
+    from gateway.session_ingress import pause_notice
+    from gateway.slash_commands_session import discard_lost_turns
+    executed = []
+    store, authority, head_id, _follower_id = await _lost_head_then_restart(tmp_path, monkeypatch, executed, _person_head)
+    try:
+        notice = pause_notice(authority, SessionRef('p', 's'), 'unknown_execution')
+        assert '/discard' in notice and 'restarted' in notice, notice
+        reply = await discard_lost_turns(authority, 's')
+        assert '1' in reply and 'discard' in reply.lower(), reply
+        live = authority.sessions['s']
+        await async_wait_until(lambda: live.task is not None and live.task.done(), what='drain finished')
+        assert executed == ['FOLLOWER']
+        assert _statuses(authority.db)[head_id] == ('terminal', 'interrupted')
+        assert 'nothing' in (await discard_lost_turns(authority, 's')).lower()
+    finally:
+        store.close_all_db_handles()

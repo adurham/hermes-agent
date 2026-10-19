@@ -449,6 +449,9 @@ gateway:
     state_no: "No"
     queued: "**Queued follow-ups:** {count}"
     platforms: "**Connected Platforms:** {platforms}"
+  discard:
+    nothing: "Nothing to discard: this chat has no turn lost in a restart."
+    done: "🗑️ Discarded {count} lost turn(s); they were not re-run. Your saved messages will be answered now."
   stop:
     stopped_pending: "⚡ Stopped. The agent hadn't started yet — you can continue this session."
     stopped: "⚡ Stopped. You can continue this session."
@@ -1601,6 +1604,8 @@ slash:
     description: "Import a shared profile archive as a new profile"
   stop:
     description: "Kill all running background processes"
+  discard:
+    description: "Drop a turn lost when Hermes restarted so this chat's queue runs again"
   pause:
     description: "Pause new work globally (emergency stop); '/pause off' resumes"
   deny:

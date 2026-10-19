@@ -445,6 +445,9 @@ gateway:
     state_no: "Nein"
     queued: "**Wartende Folgenachrichten:** {count}"
     platforms: "**Verbundene Plattformen:** {platforms}"
+  discard:
+    nothing: "Nichts zu verwerfen: In diesem Chat ging bei einem Neustart kein Turn verloren."
+    done: "🗑️ {count} verlorene(n) Turn(s) verworfen; sie wurden nicht erneut ausgeführt. Deine gespeicherten Nachrichten werden jetzt beantwortet."
   stop:
     stopped_pending: "⚡ Gestoppt. Der Agent hatte noch nicht begonnen — Sie können diese Sitzung fortsetzen."
     stopped: "⚡ Gestoppt. Sie können diese Sitzung fortsetzen."
@@ -1530,6 +1533,8 @@ slash:
     description: "Ein geteiltes Profilarchiv als neues Profil importieren"
   stop:
     description: "Alle laufenden Hintergrundprozesse beenden"
+  discard:
+    description: "Einen beim Neustart von Hermes verlorenen Turn verwerfen, damit die Warteschlange dieses Chats weiterläuft"
   pause:
     description: "Neue Arbeit global pausieren (Notstopp); '/pause off' setzt fort"
   deny:

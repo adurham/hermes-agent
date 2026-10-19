@@ -485,6 +485,9 @@ gateway:
     state_no: "Non"
     queued: "**Suivis en file :** {count}"
     platforms: "**Plateformes connectées :** {platforms}"
+  discard:
+    nothing: "Rien à ignorer : ce chat n'a aucun tour perdu lors d'un redémarrage."
+    done: "🗑️ {count} tour(s) perdu(s) ignoré(s) ; ils n'ont pas été relancés. Vos messages enregistrés vont maintenant recevoir une réponse."
   stop:
     stopped_pending: "⚡ Arrêté. L'agent n'avait pas encore commencé — vous pouvez continuer cette session."
     stopped: "⚡ Arrêté. Vous pouvez continuer cette session."
@@ -1782,6 +1785,8 @@ slash:
     description: "Importer une archive de profil partagée comme nouveau profil"
   stop:
     description: "Tuer tous les processus en arrière-plan en cours"
+  discard:
+    description: "Ignorer un tour perdu au redémarrage de Hermes pour que la file de ce chat reprenne"
   pause:
     description: "Suspendre tout nouveau travail globalement (arrêt d'urgence) ; '/pause off' reprend"
   deny:

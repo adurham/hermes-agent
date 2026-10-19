@@ -445,6 +445,9 @@ gateway:
     state_no: "否"
     queued: "**排隊中的後續：** {count}"
     platforms: "**已連線平台：** {platforms}"
+  discard:
+    nothing: "沒有可捨棄的內容：此聊天沒有在重新啟動時遺失的回合。"
+    done: "🗑️ 已捨棄 {count} 個遺失的回合；未重新執行。現在會回覆你已儲存的訊息。"
   stop:
     stopped_pending: "⚡ 已停止。代理尚未啟動 — 你可以繼續此工作階段。"
     stopped: "⚡ 已停止。你可以繼續此工作階段。"
@@ -1530,6 +1533,8 @@ slash:
     description: "將分享的設定檔封存檔匯入為新設定檔"
   stop:
     description: "終止所有執行中的背景程序"
+  discard:
+    description: "捨棄 Hermes 重新啟動時遺失的回合，讓此聊天的佇列繼續執行"
   pause:
     description: "全域暫停新工作（緊急停止）；'/pause off' 恢復"
   deny:

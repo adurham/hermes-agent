@@ -112,6 +112,7 @@ canonical.queue.journalCleanupFailed: "Eingabe zugestellt; Journal-Bereinigung f
 canonical.queue.notSavedDraftKept: "Eingabe nicht gespeichert: {0} — Entwurf beibehalten"
 canonical.queue.notSavedQueueKept: "Eingabe nicht gespeichert: {0} — Warteschlange beibehalten"
 canonical.queue.serverRow: "[{0}] {1}"
+canonical.queue.lostRow: "[pausiert: beim Neustart verloren · ↑ wählen, Ctrl+X verwerfen] {0}"
 canonical.queue.statusInputNotSaved: "Eingabe nicht gespeichert"
 canonical.queue.unconfirmedPrefix: "[unbestätigt · Alt+K wiederholen] "
 canonical.queue.unknownExecution: "unbekannte Ausführung — Ctrl+X zum Verwerfen vor erneutem Versuch"

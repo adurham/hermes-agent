@@ -445,6 +445,9 @@ gateway:
     state_no: "Nee"
     queued: "**Opgehoopte opvolge:** {count}"
     platforms: "**Verbinde Platforms:** {platforms}"
+  discard:
+    nothing: "Niks om weg te gooi nie: hierdie klets het geen beurt wat in 'n herbegin verlore is nie."
+    done: "🗑️ {count} verlore beurt(e) weggegooi; hulle is nie weer uitgevoer nie. Jou gestoorde boodskappe word nou beantwoord."
   stop:
     stopped_pending: "⚡ Gestop. Die agent het nog nie begin nie — jy kan met hierdie sessie voortgaan."
     stopped: "⚡ Gestop. Jy kan met hierdie sessie voortgaan."
@@ -1530,6 +1533,8 @@ slash:
     description: "Voer 'n gedeelde profielargief as 'n nuwe profiel in"
   stop:
     description: "Beëindig alle lopende agtergrondprosesse"
+  discard:
+    description: "Gooi 'n beurt weg wat verlore is toe Hermes herbegin het sodat hierdie klets se tou weer loop"
   pause:
     description: "Pouseer nuwe werk globaal (noodstop); '/pause off' hervat"
   deny:

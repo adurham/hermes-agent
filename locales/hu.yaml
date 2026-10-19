@@ -448,6 +448,9 @@ gateway:
     state_no: "Nem"
     queued: "**Sorban álló folytatások:** {count}"
     platforms: "**Csatlakoztatott platformok:** {platforms}"
+  discard:
+    nothing: "Nincs mit elvetni: ebben a csevegésben nem veszett el kör újraindításkor."
+    done: "🗑️ {count} elveszett kör elvetve; nem futottak újra. A mentett üzeneteidre most válasz érkezik."
   stop:
     stopped_pending: "⚡ Leállítva. Az ügynök még el sem kezdte — folytathatod ezt a munkamenetet."
     stopped: "⚡ Leállítva. Folytathatod ezt a munkamenetet."
@@ -1547,6 +1550,8 @@ slash:
     description: "Megosztott profilarchívum importálása új profilként"
   stop:
     description: "Minden futó háttérfolyamat leállítása"
+  discard:
+    description: "Egy Hermes újraindításakor elveszett kör elvetése, hogy a csevegés sora újra fusson"
   pause:
     description: "Új munka globális szüneteltetése (vészleállítás); a '/pause off' folytatja"
   deny:
