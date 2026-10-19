@@ -197,7 +197,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             await self._notify_unknown(session_id)
 
     async def _adopt(self, session_id, snapshot, resumes=None):
-        """Replace a session's projection with a fresh ``session.resume`` snapshot (reconnect, replay gap).
+        """Install a fresh ``session.resume`` snapshot as a session's projection: every install (create, load,
+        fork, a control's refresh, reconnect, replay gap) goes through here.
 
         Events before its watermark are skipped from here on, so the session state they would have carried
         is projected from the snapshot itself: the editor is never left showing Default while the owner
@@ -279,7 +280,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
                     "edit_approval_policy": "ask"}, **flags)
         session_id = snapshot["session_id"]
-        self._snapshots[session_id] = snapshot
+        await self._adopt(session_id, snapshot)
         if mcp_servers:
             self._editor_mcp[session_id] = {
                 "mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers]}
@@ -363,7 +364,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # capability, idle only), as the workspace move above, instead of refusing the thread.
             await self._rebind_editor_mcp(client, session_id, resume_params['editor'])
             snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
-        self._snapshots[session_id] = snapshot
+        await self._adopt(session_id, snapshot)
         if 'editor' in resume_params:
             self._editor_mcp[session_id] = resume_params['editor']
         from acp_adapter.server import _history_replay_updates
@@ -454,7 +455,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         child = result['branched_session_id']
         if self._moved(info, cwd):
             await self._move_workspace(client, child, cwd)
-        self._snapshots[child] = await client.rpc('session.resume', session_id=child)
+        await self._adopt(child, await client.rpc('session.resume', session_id=child))
         if payload or session_id in self._editor_mcp:
             self._editor_mcp[child] = payload or self._editor_mcp[session_id]
         self._mutations.acknowledge(session_id, 'branch', payload)
@@ -476,7 +477,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if result.get('status') == 'cancelled':
             # Declined: nothing was written; the editor's picker must not show the target as active.
             raise GatewayClientError('model_switch_cancelled')
-        self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        await self._adopt(session_id, await client.rpc('session.resume', session_id=session_id))
         self._mutations.acknowledge(session_id, 'model', payload)
         if result.get('status') == 'deferred' and self._conn:
             # A pick during a running turn lands for the next one (#139604); say so, as Desktop does.
@@ -515,7 +516,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                 await say(model_refusal_text(result, confirmed=True))
                 return
             if session_id in self._snapshots:
-                self._snapshots[session_id] = await client.rpc("session.resume", session_id=session_id)
+                await self._adopt(session_id, await client.rpc("session.resume", session_id=session_id))
             # Confirmed while a turn runs: stored again for the next boundary, said as such.
             await say(deferred_pick_text(result) if result.get("status") == "deferred"
                       else _model_text("Model switched to", result))
