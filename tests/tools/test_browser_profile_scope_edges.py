@@ -241,3 +241,82 @@ def test_another_profiles_connect_does_not_invalidate_this_profiles_new_session(
     with _profile_runtime_scope(a, hydrate_secrets=False):
         info = bt_session._get_session_info("task-a")
     assert sessions == {"task-a": info} and closed == []
+
+
+def test_a_browser_exec_that_routed_to_the_old_endpoint_during_a_connect_reloads_its_daemon(profiles, monkeypatch):
+    """Browser Use path (the default mode): ``browser_exec`` resolves the live endpoint into
+    ``BU_CDP_URL`` before the daemon is recorded. A ``/browser connect`` landing in between reaped
+    nothing, and the harness daemon (which latches ``BU_CDP_*`` at spawn) kept the old browser for every
+    later call. The real ``_browser_connect`` handler runs between routing and dispatch here."""
+    from tools import browser_use_cli as bu_cli
+    from tui_gateway import server
+
+    a, _b = profiles
+    monkeypatch.setattr(bu_cli, "_driven_daemons", {})
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
+    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda raw: raw)
+    monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
+    latched = {}  # like browser-harness: one daemon per identity latches BU_CDP_URL; --reload stops it
+
+    def run(cmd, code, env, timeout):
+        import subprocess
+        ident = (*(env.get(k, "") for k in bu_cli._HARNESS_DIR_KEYS), env.get("BU_NAME", "default"))
+        if cmd[-1] == "--reload":
+            latched.pop(ident, None)
+        else:
+            latched.setdefault(ident, env.get("BU_CDP_URL"))
+        return subprocess.CompletedProcess(cmd, 0, str(latched.get(ident)), "")
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run)
+    real_route = bu_cli._route_exec
+    connects = []
+
+    def route_then_connect(*args, **kw):
+        out = real_route(*args, **kw)  # BU_CDP_URL now holds the OLD endpoint
+        if not connects:
+            connects.append(server._browser_connect("r1", {"url": "http://127.0.0.1:9702"}))
+        return out
+    monkeypatch.setattr(bu_cli, "_route_exec", route_then_connect)
+
+    import json
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        bt_cdp.set_live_cdp_override("http://127.0.0.1:9701")
+        first = json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
+        assert connects[0]["result"]["connected"]
+        nxt = json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
+    assert first["output"] == nxt["output"] == "http://127.0.0.1:9702"
+
+
+def test_a_connect_that_lands_while_browser_exec_spawns_its_daemon_reloads_it(profiles, monkeypatch):
+    """The publish lands after routing, while the CLI spawns the daemon on the old endpoint: the daemon
+    is already recorded (connect's reap reloads it) and the post-dispatch generation check reloads it
+    too, so the next call respawns it on the new endpoint."""
+    import json
+    import subprocess
+    from tools import browser_use_cli as bu_cli
+    from tui_gateway import server
+
+    a, _b = profiles
+    monkeypatch.setattr(bu_cli, "_driven_daemons", {})
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
+    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda raw: raw)
+    monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
+    latched, connects = {}, []
+
+    def run(cmd, code, env, timeout):
+        ident = (*(env.get(k, "") for k in bu_cli._HARNESS_DIR_KEYS), env.get("BU_NAME", "default"))
+        if cmd[-1] == "--reload":
+            latched.pop(ident, None)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        latched.setdefault(ident, env.get("BU_CDP_URL"))
+        if not connects:  # mid-spawn: the daemon already latched the old endpoint
+            connects.append(server._browser_connect("r1", {"url": "http://127.0.0.1:9712"}))
+        return subprocess.CompletedProcess(cmd, 0, str(latched.get(ident)), "")
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", run)
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        bt_cdp.set_live_cdp_override("http://127.0.0.1:9711")
+        json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
+        assert connects[0]["result"]["connected"]
+        nxt = json.loads(bu_cli.browser_exec("print(1)", task_id="t1"))
+    assert nxt["output"] == "http://127.0.0.1:9712"

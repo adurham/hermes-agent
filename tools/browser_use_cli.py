@@ -780,6 +780,11 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
         daemons = sorted(key for key, home in _driven_daemons.items() if home_key in (None, home))
         for key in daemons:
             _driven_daemons.pop(key, None)
+    _reload_daemons(daemons)
+
+
+def _reload_daemons(daemons) -> None:
+    """``--reload`` each ``(*_HARNESS_DIR_KEYS values, BU_NAME)`` daemon with its own dirs."""
     cmd = _find_cli() if daemons else None
     if not cmd:
         return
@@ -789,6 +794,11 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
         target.update((k, v) for k, v in zip(_HARNESS_DIR_KEYS, dirs) if v)
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             _run_cli_killing_process_group([*cmd, "--reload"], "", {**target, "BU_NAME": name}, 15)
+
+
+def _live_generation() -> int:
+    from tools.browser_tool_cdp import live_cdp_generation
+    return _quiet(live_cdp_generation, 0, "live CDP generation lookup failed")
 
 
 def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,
@@ -802,6 +812,33 @@ def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, lo
     if note:
         _real_profile_fallback.setdefault(route_key, note)
     return route_err, local_sidecar or bool(env.pop(_LOCAL_FALLBACK_SENTINEL, None))
+
+
+def _route_exec_current(env: dict, session: str, task_id: Optional[str], local: bool,
+                        local_sidecar: bool, route_key: str) -> tuple[dict, Optional[str], bool, int]:
+    """``_route_exec`` on a copy of ``env``; returns ``(routed env, error, sidecar, generation)``.
+
+    A /browser connect that publishes while this call routes or spawns its daemon reaps nothing (the
+    daemon isn't recorded yet), and the daemon latches the endpoint resolved here: re-route (at most 3
+    attempts) when the profile published during routing; ``_reload_if_republished`` covers dispatch."""
+    for _attempt in range(3):
+        routed = dict(env)
+        generation = _live_generation()
+        route_err, sidecar = _route_exec(routed, session, task_id, local, local_sidecar, route_key)
+        if route_err or _live_generation() == generation:
+            break
+    return routed, route_err, sidecar, generation
+
+
+def _reload_if_republished(env: dict, generation: int) -> None:
+    """The profile published a new endpoint while this call's daemon spawned on the old one: stop it
+    so the next call respawns it on the current endpoint."""
+    if _live_generation() == generation:
+        return
+    daemon = (*(env.get(k, "") for k in _HARNESS_DIR_KEYS), env.get("BU_NAME", "default"))
+    with _driven_daemons_lock:
+        _driven_daemons.pop(daemon, None)
+    _reload_daemons([daemon])
 
 
 def _take_real_profile_note(route_key: str) -> dict:
@@ -841,7 +878,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err, local_sidecar = _route_exec(env, session, task_id, bool(local), local_sidecar, route_key)
+    env, route_err, local_sidecar, generation = _route_exec_current(
+        env, session, task_id, bool(local), local_sidecar, route_key)
     if route_err:
         return tool_error(route_err)
     if local_sidecar:
@@ -888,6 +926,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         dispatched = run_fenced({"features": {"local": True}}, dispatch)
     else:
         dispatched = dispatch()
+    _reload_if_republished(env, generation)
     if "proc" not in dispatched:
         if "error_result" in dispatched:
             return dispatched["error_result"]
