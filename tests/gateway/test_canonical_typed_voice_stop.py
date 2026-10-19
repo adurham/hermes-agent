@@ -50,6 +50,22 @@ async def test_typed_stop_phrase_ends_the_voice_chat_and_admits_nothing(voice_ow
 
 
 @pytest.mark.asyncio
+async def test_a_retried_stop_replays_voice_stopped_and_never_starts_a_turn(voice_owner):
+    """Its reply lost, Ink retries the SAME submission (Alt+K). Voice is already off by then, so
+    the stop-phrase check alone would admit ``stop`` as a turn: the request id answers it, also on
+    a fresh connection (a reconnect)."""
+    voice_owner.runner._voice_mode['s'] = 'voice_only'
+    with voice_owner.db:
+        first = await _call(_connection(voice_owner.authority), 'prompt.submit', text='stop', submission_id='r1')
+        retry = await _call(_connection(voice_owner.authority), 'prompt.submit', text='stop', submission_id='r1')
+        fresh = await _call(_connection(voice_owner.authority), 'prompt.submit', text='stop', submission_id='r2')
+    assert first.get('result') == {'voice_stopped': True}, first
+    assert retry.get('result') == {'voice_stopped': True}, retry
+    assert fresh['result']['status'] == 'queued', 'a new stop with voice off is an ordinary turn'
+    assert _ledger(voice_owner.db) == ['r2']
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('mode, text', [('off', 'stop'), ('voice_only', 'stop doing that')])
 async def test_other_text_or_voice_off_is_admitted_as_a_turn(voice_owner, mode, text):
     voice_owner.runner._voice_mode['s'] = mode
