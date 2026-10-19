@@ -1287,6 +1287,7 @@
   "userMessages.promptTimeout.vaultUnlockPrompt",
   "userMessages.rpc.notConnected",
   "userMessages.rpc.sessionNotFound",
+  "userMessages.rpc.shellBackendRefused",
   "userMessages.rpc.slashCrashed",
   "userMessages.rpc.slashTimedOut",
   "userMessages.rpc.timedOut",
