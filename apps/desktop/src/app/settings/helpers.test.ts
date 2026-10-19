@@ -123,6 +123,21 @@ describe('settings helpers', () => {
     expect(setConfigField({}, 'display.skin', 'ares')).toEqual({ display: { skin: 'ares' } })
   })
 
+  it('Reasoning Blocks reads a quoted local value as the gateway does', () => {
+    const shown = (value: unknown) =>
+      configFieldValue({ display: { show_reasoning: true, platforms: { cli: { show_reasoning: value } } } } as HermesConfigRecord, 'display.show_reasoning')
+
+    for (const off of ['false', 'False', '0', 'no', 'off', ' false ']) {
+      expect(shown(off)).toBe(false)
+    }
+
+    for (const on of ['true', '1', 'yes', 'on']) {
+      expect(shown(on)).toBe(true)
+    }
+
+    expect(configFieldValue({ display: { show_reasoning: 'false' } }, 'display.show_reasoning')).toBe(false)
+  })
+
   it('rejects prototype-polluting config paths', () => {
     const config: HermesConfigRecord = {}
 

@@ -263,12 +263,18 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
 // shows the local value, and a change writes both.
 const LOCAL_SHOW_REASONING = 'display.platforms.cli.show_reasoning'
 
-/** The value a Settings field shows. */
+/** The value a Settings field shows. A quoted Reasoning Blocks value reads as the gateway's `_norm_bool`. */
 export function configFieldValue(config: HermesConfigRecord, key: string): unknown {
-  return key === 'display.show_reasoning'
-    ? localShowReasoning((config as HermesConfig).display)
-    : getNested(config, key)
+  if (key !== 'display.show_reasoning') {
+    return getNested(config, key)
+  }
+
+  const value = localShowReasoning((config as HermesConfig).display)
+
+  return typeof value === 'string' ? GATEWAY_TRUTHY.has(value.trim().toLowerCase()) : value
 }
+
+const GATEWAY_TRUTHY = new Set(['true', '1', 'yes', 'on', 'raw', 'verbose'])
 
 /** The config after a Settings field edit. */
 export function setConfigField(config: HermesConfigRecord, key: string, value: unknown): HermesConfigRecord {
