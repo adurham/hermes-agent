@@ -558,7 +558,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def set_session_mode(self, mode_id, session_id, **kwargs):
         """Main's Default / Accept Edits / Don't Ask: the session's edit approval policy on the owner."""
         from acp.schema import SetSessionModeResponse
-        from acp_adapter.gateway_session_meta import MODE_TO_EDIT_APPROVAL_POLICY
+        from acp_adapter.modes import MODE_TO_EDIT_APPROVAL_POLICY
         if mode_id not in MODE_TO_EDIT_APPROVAL_POLICY:
             raise GatewayClientError("invalid_params")
         await self._set_edit_policy(self._held_session(session_id), MODE_TO_EDIT_APPROVAL_POLICY[mode_id])
@@ -568,7 +568,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         """Accepted so editors do not fail on their own config writes, as main did; only the edit
         approval policy has a meaning here, and it is the same owner setting the modes select."""
         from acp.schema import SetSessionConfigOptionResponse
-        from acp_adapter.gateway_session_meta import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_CONFIG_ID, EDIT_APPROVAL_POLICY_TO_MODE
         session_id = self._held_session(session_id)
         if config_id == EDIT_APPROVAL_POLICY_CONFIG_ID:
             if value not in EDIT_APPROVAL_POLICY_TO_MODE:
@@ -579,7 +579,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _set_edit_policy(self, session_id, policy):
         """The owner's ``edit_policy`` mutation (revision-fenced, idle sessions only, like a model pick);
         every surface attached to the session reads the committed policy from ``session.info``."""
-        from acp_adapter.gateway_session_meta import EDIT_APPROVAL_POLICY_TO_MODE
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
         client = await self._client()
         payload = {"policy": policy}
         self._unacked.pop(session_id, None)
@@ -1018,7 +1018,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
 
     async def _project_mode(self, sid, editor_id, payload):
         """Another surface's ``edit_policy`` change (its ``session.info``) as ``current_mode_update``."""
-        from acp_adapter.gateway_session_meta import EDIT_APPROVAL_POLICY_TO_MODE
+        from acp_adapter.modes import EDIT_APPROVAL_POLICY_TO_MODE
         mode = EDIT_APPROVAL_POLICY_TO_MODE.get(payload.get("edit_approval_policy"))
         if mode is None or self._modes.get(sid, mode) == mode:
             return
