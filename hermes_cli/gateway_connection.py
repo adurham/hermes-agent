@@ -36,6 +36,19 @@ class CallStopped(GatewayClientError):
     """The caller stopped waiting (:meth:`GatewayConnection.call_until`); the request was sent."""
 
 
+def _resume_plain(exc, session_id, typed):
+    """A keyed ``session.resume`` the owner refused with ``exc``: returns when the caller resumes plain,
+    else raises. Only a refusal in ``_KEY_NOT_TAKEN`` resumes plain (a keyed startup alias on a Desktop/TUI
+    session); any other is raised, not hidden by a keyless attach whose first turn fails. ``typed`` (a typed
+    ``--api-key`` the user resumes with) never resumes plain: ``admission_conflict`` is the thin client's
+    refusal."""
+    if typed and str(exc) == "admission_conflict":
+        raise GatewayClientError(RESUME_KEY_MISMATCH) from None
+    if typed or str(exc) not in _KEY_NOT_TAKEN:
+        raise exc
+    logger.debug("session.resume %s: launch key not taken (%s); resuming without it", session_id, exc)
+
+
 def lost_before(frame, epoch) -> bool:
     """``frame`` is a transport error from a connection older than ``epoch``: a reconnect replaced it,
     so it is no outcome of anything submitted on ``epoch``."""
@@ -254,15 +267,11 @@ class GatewayConnection:
         that resumed it. Resume each session this viewer had open; one gone meanwhile is dropped. Any
         other failure fails the reconnect: ready without the subscription, every prompt is refused on a
         live socket that never redials, while a failed redial is retried by the next call."""
-        loop = asyncio.get_running_loop()
-
-        def call(method, **params):  # :meth:`resume` runs on a worker thread; this loop carries its requests
-            return asyncio.run_coroutine_threadsafe(client.rpc(method, **params), loop).result()
         for session_id, state in list(self.states.items()):
             if state.subscription_id is None:
                 continue
             try:
-                state.adopt_snapshot(await asyncio.to_thread(self.resume, call, session_id))
+                state.adopt_snapshot(await self._resume(client, session_id))
             except GatewayClientError as exc:
                 if str(exc) not in _GONE:
                     raise
@@ -270,22 +279,27 @@ class GatewayConnection:
                 state.subscription_id = None
 
     def resume(self, call, session_id, *, typed=False):
-        """``session.resume`` through ``call`` (the store's attach; :meth:`_resubscribe`), re-supplying
-        :attr:`launch_api_key`. Only a refusal in ``_KEY_NOT_TAKEN`` resumes plain (a keyed startup alias on
-        a Desktop/TUI session); any other is raised, not hidden by a keyless attach whose first turn fails.
-        ``typed`` (a typed ``--api-key`` the user resumes with) never resumes plain: ``admission_conflict``
-        is the thin client's refusal. A reconnect passes False: nothing was typed there."""
+        """``session.resume`` through ``call`` (the store's attach), re-supplying :attr:`launch_api_key`;
+        a refusal of the keyed resume is :func:`_resume_plain`'s to decide. ``typed``: the user resumes with
+        a typed ``--api-key``."""
         key = self.launch_api_key
         if key:
             try:
                 return call("session.resume", session_id=session_id, api_key=key)
             except GatewayRPCError as exc:
-                if typed and str(exc) == "admission_conflict":
-                    raise GatewayClientError(RESUME_KEY_MISMATCH) from None
-                if typed or str(exc) not in _KEY_NOT_TAKEN:
-                    raise
-                logger.debug("session.resume %s: launch key not taken (%s); resuming without it", session_id, exc)
+                _resume_plain(exc, session_id, typed)
         return call("session.resume", session_id=session_id)
+
+    async def _resume(self, client, session_id):
+        """:meth:`resume` for :meth:`_resubscribe`, awaited on this loop so a cancelled reconnect cancels
+        its request. A reconnect types nothing: never ``typed``."""
+        key = self.launch_api_key
+        if key:
+            try:
+                return await client.rpc("session.resume", session_id=session_id, api_key=key)
+            except GatewayRPCError as exc:
+                _resume_plain(exc, session_id, typed=False)
+        return await client.rpc("session.resume", session_id=session_id)
 
     async def _pump(self, client):
         while True:
