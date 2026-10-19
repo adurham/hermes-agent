@@ -183,23 +183,27 @@ def _base_subprocess_env() -> dict:
 
 
 def _namespace_harness_daemons(env: dict) -> None:
-    """A served profile's harness daemons live in their own runtime dir. The harness names a daemon by
-    ``BU_NAME`` alone (unnamed calls are ``default``) and reuses any live one, so with one shared dir a
-    profile's exec drove another profile's browser. Outside a served-profile scope nothing changes."""
+    """A served profile's harness daemons live in their own runtime and tmp dirs. The harness names a
+    daemon by ``BU_NAME`` alone (unnamed calls are ``default``) and reuses any live one, so with one
+    shared dir a profile's exec drove another profile's browser; one shared tmp dir mixed their
+    screenshots and logs. Outside a served-profile scope nothing changes."""
     tag = _served_profile_tag()
     if not tag:
         return
-    base = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
-    if not base:  # browser-harness paths.home_dir() / "runtime", resolved against the child's env
-        root = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
-        if not root:
-            xdg = env.get("XDG_CONFIG_HOME")
-            root = str(Path(xdg) / "browser-harness") if xdg else str(
-                Path(env.get("HOME") or Path.home()) / ".config" / "browser-harness")
-        base = str(Path(root).expanduser() / "runtime")
-    runtime = str(Path(base) / f"p-{hashlib.sha256(tag.encode()).hexdigest()[:12]}")
+    root = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
+    if not root:  # browser-harness paths.home_dir(), resolved against the child's env
+        xdg = env.get("XDG_CONFIG_HOME")
+        root = str(Path(xdg) / "browser-harness") if xdg else str(
+            Path(env.get("HOME") or Path.home()) / ".config" / "browser-harness")
+    root = str(Path(root).expanduser())
+    leaf = f"p-{hashlib.sha256(tag.encode()).hexdigest()[:12]}"
+    base = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR") or str(Path(root) / "runtime")
+    runtime = str(Path(base) / leaf)
     env["BH_RUNTIME_DIR"] = _socket_fit_runtime_dir(runtime, base, tag)
     env["BH_RUNTIME_DIR_SHARED"] = "1"  # several BU_NAMEs share the dir: keep bu-<name> stems
+    # Screenshots, debug overlays and daemon logs (paths.tmp_dir): the profile's own, never shared.
+    env["BH_TMP_DIR"] = str(Path(env.get("BH_TMP_DIR") or str(Path(root) / "tmp")) / leaf)
+    env["BH_TMP_DIR_SHARED"] = "1"
 
 
 # browser_harness/_ipc.py: a shared runtime dir names a daemon socket ``<dir>/bu-<BU_NAME>.sock`` and
@@ -756,10 +760,10 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 # Harness daemons this process has driven. The daemon reads BU_CDP_* once, at start, and outlives
 # every call, so a backend swap (/browser connect|disconnect) that only changes the resolved endpoint
 # leaves later browser_exec calls in the old browser until these are stopped. Keyed by the daemon's
-# identity (its _HARNESS_DIR_KEYS values plus BU_NAME): a served profile's runtime dir is its own,
+# identity (its _HARNESS_DIR_KEYS values plus BU_NAME): a served profile's runtime and tmp dirs are its own,
 # so no other profile can take over the entry.
-_HARNESS_DIR_KEYS = ("BH_RUNTIME_DIR", "BH_RUNTIME_DIR_SHARED")
-_driven_daemons: dict[tuple[str, str, str], str] = {}  # (runtime dir, shared flag, BU_NAME) -> home
+_HARNESS_DIR_KEYS = ("BH_RUNTIME_DIR", "BH_RUNTIME_DIR_SHARED", "BH_TMP_DIR", "BH_TMP_DIR_SHARED")
+_driven_daemons: dict[tuple[str, ...], str] = {}  # (*_HARNESS_DIR_KEYS values, BU_NAME) -> home
 _driven_daemons_lock = threading.Lock()
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
 _exec_route_is_sidecar: dict[str, bool] = {}

@@ -133,3 +133,54 @@ def test_the_short_socket_dir_is_claimed_only_when_private_and_ours(tmp_path):
     link = tmp_path / "hbh-link"
     link.symlink_to(fresh)
     assert not bu_cli._claim_private_dir(str(link))
+
+
+# --- per-profile harness tmp dir (screenshots, debug overlays, daemon logs) ---------------------------
+
+
+def test_each_served_profile_gets_its_own_harness_tmp_dir(profiles, tmp_path):
+    """browser_harness/_ipc.py ``_TMP`` (paths.tmp_dir: BH_TMP_DIR, else <home>/tmp) holds ``shot.png``,
+    debug-click overlays and ``bu-<NAME>.log``; one shared dir let profile B read A's screenshots."""
+    from tools import browser_use_cli as bu_cli
+    a, b = profiles
+    seen = {}
+    for home in (a, b):
+        env = {"BH_HOME": str(tmp_path / "bh")}
+        with _profile_runtime_scope(home, hydrate_secrets=False):
+            bu_cli._namespace_harness_daemons(env)
+        assert env.get("BH_TMP_DIR_SHARED") == "1"  # several BU_NAMEs share it: keep bu-<name>.log stems
+        seen[home] = env.get("BH_TMP_DIR")
+    assert seen[a] and seen[b] and seen[a] != seen[b]
+    assert all(str(p).startswith(str(tmp_path / "bh" / "tmp")) for p in seen.values())
+    unscoped = {"BH_HOME": str(tmp_path / "bh")}
+    bu_cli._namespace_harness_daemons(unscoped)
+    assert unscoped == {"BH_HOME": str(tmp_path / "bh")}  # single-profile: unchanged
+
+
+def test_a_served_profile_under_an_inherited_tmp_dir_nests_inside_it(profiles, tmp_path):
+    from tools import browser_use_cli as bu_cli
+    a, _b = profiles
+    env = {"BH_TMP_DIR": str(tmp_path / "shared-tmp")}
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        bu_cli._namespace_harness_daemons(env)
+    assert env["BH_TMP_DIR"].startswith(str(tmp_path / "shared-tmp") + "/p-")
+    # The runtime dir still derives from the inherited BH_TMP_DIR (harness fallback), not the new one.
+    assert env["BH_RUNTIME_DIR"].startswith(str(tmp_path / "shared-tmp") + "/p-")
+
+
+def test_an_unscoped_shutdown_reload_reaches_the_daemon_with_its_own_tmp_dir(profiles, monkeypatch):
+    """The reaper/shutdown runs outside any profile scope; its ``--reload`` must still carry the
+    daemon's own tmp dir, or the harness writes that profile's log into the shared one."""
+    from tools import browser_use_cli as bu_cli
+    a, _b = profiles
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        env = {"HOME": "/home/u"}
+        bu_cli._namespace_harness_daemons(env)
+    key = (*(env.get(k, "") for k in bu_cli._HARNESS_DIR_KEYS), "s1")
+    monkeypatch.setattr(bu_cli, "_driven_daemons", {key: hermes_home_key(a)})
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
+    seen = []
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group", lambda cmd, code, e, t: seen.append(e))
+    bu_cli.stop_harness_daemons()
+    assert [(e["BH_TMP_DIR"], e["BH_TMP_DIR_SHARED"], e["BU_NAME"]) for e in seen] == [
+        (env["BH_TMP_DIR"], "1", "s1")]
