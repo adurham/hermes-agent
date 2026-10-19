@@ -230,7 +230,7 @@ class CLIStreamMixin:
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
-        from cli import ChatConsole, _accent_hex
+        from cli import ChatConsole, _accent_hex, _cprint
         from tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
             from gateway.warning_notifications import render_notification
@@ -238,11 +238,14 @@ class CLIStreamMixin:
                                 platform="cli", diagnostic=user_input.notification_category == "diagnostic")
             return
         modern = getattr(self, "_modern_layout", False)
-        if not modern:
+        if modern:
+            from hermes_cli.cli_modern_layout import separator
+            _cprint("\n" + separator(True))
+        else:
             ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
         if "\n" in text:
-            ChatConsole().print(("\n" if modern else "") + self._format_submitted_user_message_preview(text))
+            ChatConsole().print(self._format_submitted_user_message_preview(text))
         elif modern:
             from hermes_cli.cli_modern_layout import user_echo_markup
             ChatConsole().print(user_echo_markup(text, _accent_hex()))
@@ -309,11 +312,10 @@ class CLIStreamMixin:
         if not getattr(self, "_reasoning_box_opened", False):
             return
         if getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import thought_body, thought_line
+            from hermes_cli.cli_modern_layout import thought_rows
             text = getattr(self, "_reasoning_buf", "")
             started = getattr(self, "_reasoning_started_at", 0.0)
-            _cprint(thought_line(time.monotonic() - started if started else None, text))
-            for line in thought_body(text) if self.reasoning_full else []:
+            for line in thought_rows(time.monotonic() - started if started else None, text, self.reasoning_full):
                 _cprint(line)
             self._reasoning_buf, self._reasoning_box_opened = "", False
             if not getattr(self, "_stream_box_live", False):

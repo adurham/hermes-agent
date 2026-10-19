@@ -40,6 +40,10 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
     assert len(thought) == 1 and "Planning the change" in thought[0], wide
     assert "I will read calc.py first." not in "\n".join(wide)  # collapsed unless /reasoning full
     assert any("Added multiply to calc.py." in line for line in wide)
+    # Reasoning and the answer each open under a fixed-width bar (so it never re-wraps on resize).
+    rows = "\n".join(wide).split("\n")
+    assert rows[rows.index(thought[0]) - 1] == "─" * 40, rows
+    assert rows[next(i for i, r in enumerate(rows) if r.startswith("☤ Hermes")) - 1] == "─" * 40, rows
 
 
 @pytest.mark.parametrize("modern", [True, False])

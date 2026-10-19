@@ -67,17 +67,27 @@ def prompt_glyph() -> str:
 
 # ── transcript rows (printed into scrollback) ───────────────────────────────────────────────
 
+# Fixed width, not the terminal's: a 40-cell rule never re-wraps on resize (classic's user rule).
+_SEPARATOR_WIDTH = 40
+
+
+def separator(accent: bool) -> str:
+    """The bar above each user message and answer (accent) or reasoning block (dim)."""
+    color = _fg(_skin_hex("ui_accent", "#FFBF00")) if accent else _DIM
+    return f"{color}{'─' * _SEPARATOR_WIDTH}{_RST}"
+
+
 def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "") -> str:
-    """Rich markup for a submitted single-line user message: ``❯ text``, no surrounding rules."""
+    """Rich markup for a submitted single-line user message: ``❯ text``."""
     from rich.markup import escape
-    return f"\n[bold {accent_hex}]{escape(prompt_glyph())}[/] [bold]{escape(text)}[/]{ts_suffix}"
+    return f"[bold {accent_hex}]{escape(prompt_glyph())}[/] [bold]{escape(text)}[/]{ts_suffix}"
 
 
 def answer_label(timestamp: str = "") -> str:
-    """The line that opens an answer: the skin's brand glyph + name, replacing the framed header."""
+    """The rows that open an answer: the accent bar, then the skin's brand glyph + name."""
     glyph, name = _brand_glyph()
     stamp = f" {_DIM}{timestamp}{_RST}" if timestamp else ""
-    return f"\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
+    return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
 
 
 def thought_title(text: str) -> str:
@@ -100,6 +110,11 @@ def thought_line(seconds: float | None, text: str) -> str:
 def thought_body(text: str) -> list[str]:
     """Full reasoning under a ``│`` gutter, for ``/reasoning full``."""
     return [f"\x1b[2;3m│ {line}{_RST}" if line.strip() else "\x1b[2;3m│\x1b[0m" for line in text.strip().splitlines()]
+
+
+def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
+    """A reasoning block's scrollback rows: dim bar, collapsed line, and the body under ``full``."""
+    return [separator(False), thought_line(seconds, text), *(thought_body(text) if full else [])]
 
 
 def completed_tool_line(cli, function_name: str, args: dict | None, duration: float, result=None,

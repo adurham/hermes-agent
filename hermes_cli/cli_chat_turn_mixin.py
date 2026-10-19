@@ -630,9 +630,9 @@ class CLIChatTurnMixin:
         if self.show_reasoning and turn.result and not self._reasoning_shown_this_turn:
             reasoning = turn.result.get("last_reasoning")
             if reasoning and getattr(self, "_modern_layout", False):
-                from hermes_cli.cli_modern_layout import thought_body, thought_line
-                _cprint("\n" + thought_line(None, reasoning))
-                for line in thought_body(reasoning) if self.reasoning_full else []:
+                from hermes_cli.cli_modern_layout import thought_rows
+                _cprint("")
+                for line in thought_rows(None, reasoning, self.reasoning_full):
                     _cprint(line)
             elif reasoning:
                 w = self._scrollback_box_width()
