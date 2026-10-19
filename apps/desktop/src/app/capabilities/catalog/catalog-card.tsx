@@ -76,8 +76,8 @@ interface CatalogCardProps {
 
 const isEditorialArt = (entry: CatalogEntry) => Boolean(entry.imageUrl?.includes('official-art'))
 
-/** Every card shows its artwork; the hero paints its own. */
-const showsCardImage = (entry: CatalogEntry, variant: CatalogCardVariant) => variant !== 'hero' && Boolean(entry.imageUrl)
+/** Every card shows its artwork, the hero included (its slot is the right 42%, see catalog-discovery.css). */
+const showsCardImage = (entry: CatalogEntry) => Boolean(entry.imageUrl)
 
 function CatalogCardFooter({ entry, action, hero }: { entry: CatalogEntry; action: ReactNode; hero: boolean }) {
   return (
@@ -104,7 +104,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
       data-entry-id={entry.id}
       style={style}
     >
-      {showsCardImage(entry, variant) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl!} src={entry.imageUrl!} />}
+      {showsCardImage(entry) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl!} src={entry.imageUrl!} />}
       {variant !== 'default' && <div className="catalog-card-topline">
         <span className="min-w-0 truncate" title={entry.author || catalogLabel(entry.source)}>{entry.author || catalogLabel(entry.source)}</span>
         {variant !== 'hero' && <span className="relative shrink-0">{action}</span>}

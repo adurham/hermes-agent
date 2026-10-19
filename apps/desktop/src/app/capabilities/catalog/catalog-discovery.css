@@ -41,7 +41,8 @@
 [data-catalog-card][data-catalog-variant=hero] .catalog-card-copy { padding: 0; }
 [data-catalog-variant=hero] .catalog-card-footer { padding: 0; }
 [data-catalog-variant=hero] .catalog-card-footer > .catalog-hero-action { width: auto; margin-left: auto; }
-[data-catalog-variant=hero]:not([data-catalog-editorial-art]) .catalog-card-image { position: absolute; inset: 0 0 0 auto; width: 42%; height: 100%; object-fit: contain; z-index: -1; }
+[data-catalog-variant=hero]:not([data-catalog-editorial-art]) .catalog-card-image { position: absolute; inset: 0 0 0 auto; width: 42%; height: 100%; object-fit: cover; z-index: -1; mask-image: linear-gradient(to right, transparent, #000 45%); }
+[data-catalog-variant=hero]:has(.catalog-card-image) .catalog-card-footer { max-width: 58%; }
 [data-catalog-variant=hero] .catalog-card-copy { flex: none; max-width: 58%; }
 [data-catalog-variant=hero] .catalog-card-copy button > span { font-size: 2rem; }
 [data-catalog-variant=hero] .catalog-card-dates { margin-top: 0; }
