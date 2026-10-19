@@ -419,3 +419,24 @@ it('/config pages the owner\'s presentation config (config.get full), never slas
   expect(text).toContain('  skin: ares')
   expect(text).toContain('  record_key: ctrl+b')
 })
+
+it('/timestamps toggles display.timestamps on the owner (config.set) and the transcript at once (T10)', async () => {
+  const { request, slash, sys } = harness()
+
+  slash('/timestamps on')
+  await flush()
+  expect(getUiState().timestamps).toBe(true)
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'timestamps', value: 'on' })
+
+  slash('/ts')
+  await flush()
+  expect(getUiState().timestamps).toBe(false)
+  expect(request).toHaveBeenCalledWith('config.set', { key: 'timestamps', value: 'off' })
+
+  slash('/timestamps status')
+  await flush()
+  const notices = sys.mock.calls.map(([text]) => String(text))
+  expect(notices).toContain('timestamps off')
+  expect(notices.some(line => /not available/.test(line))).toBe(false)
+  expect(request.mock.calls.some(([method]) => method === 'slash.exec')).toBe(false)
+})

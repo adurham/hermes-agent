@@ -338,6 +338,32 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['ts'],
+    help: 'toggle [HH:MM] timestamps on transcript messages [on|off|status]',
+    name: 'timestamps',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const current = ctx.ui.timestamps
+
+      // T10: `display.timestamps` (the classic CLI's key) through the owner's config.set; the
+      // transcript repaints on the same frame, as /density does.
+      if (mode === 'status') {
+        return ctx.transcript.sys(`timestamps ${current ? 'on' : 'off'}`)
+      }
+
+      const next = flagFromArg(mode, current)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /timestamps [on|off|status]')
+      }
+
+      patchUiState({ timestamps: next })
+      ctx.transcript.sys(`timestamps ${next ? 'on' : 'off'}`)
+      saveDisplayPref(ctx, 'timestamps', next ? 'on' : 'off')
+    }
+  },
+
+  {
     help: 'show the presentation settings the gateway serves for this profile',
     name: 'config',
     run: (_arg, ctx, cmd) => {
