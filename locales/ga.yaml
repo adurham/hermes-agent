@@ -2372,6 +2372,11 @@ cli:
     usage_add: "Úsáid: /queue add <prompt>"
     gateway_refused: "Níor chuir an geata sa scuaine é: {error}. Níor cuireadh aon rud sa scuaine; seol arís é nuair a chríochnaíonn an seal."
     move_gateway_fifo: "Ritheann an geata leideanna sa scuaine san ord inar seoladh iad; cuir ceann in eagar nó bain é ina ionad."
+    remove_refused: "Níorbh fhéidir mír {index} a bhaint den scuaine: {error}"
+    edit_refused: "Níorbh fhéidir mír {index} den scuaine a chur in eagar: {error}"
+    already_started: "Tá mír {index} den scuaine tosaithe cheana; ritheann sí mar a seoladh í."
+    started_stopped: "Bhí mír {index} den scuaine tosaithe cheana; stop an geata í."
+    change_unknown: "Níor fhreagair an geata faoi mhír {index} den scuaine ({error}); seiceáil /queue list sula ndéanann tú iarracht arís."
   reload:
     env_reloaded: "Athlódáladh .env ({count} athróg nuashonraithe)"
   steer:

@@ -411,3 +411,76 @@ def test_a_queued_admission_another_client_cancelled_is_forgotten_not_painted():
         assert cli._pending_input.empty() and state.queued_inputs == {}
     finally:
         conn.close()
+
+
+def _queue_command(cli, fn, *args):
+    with patch("cli._cprint") as printed:
+        fn(*args)
+    return " ".join(str(c.args[0]) for c in printed.call_args_list)
+
+
+def _owned_cli():
+    from tests.hermes_cli.test_gateway_agent import SID
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli
+    conn, _client = _connected()
+    cli = _idle_cli(conn)
+    cli._agent_running = True
+    conn.state(SID).queued_inputs["adm-q"] = TEXT
+    cli._mutate_pending_input = lambda fn: ([], [])
+    return conn, cli
+
+
+@pytest.mark.parametrize("verb, args", [("_queue_remove", ("1",)), ("_queue_edit", ("1 new text",))])
+def test_a_refused_queue_rm_or_edit_says_what_was_refused(verb, args):
+    """Review N5-F4: an rm/edit the owner refuses (unsupported_control, ...) gets its own message, never
+    the submit refusal's "Nothing was queued; send it again"."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    conn, cli = _owned_cli()
+    try:
+        with patch("hermes_cli.gateway_queue.queued_rows", lambda c, s: [("adm-q", TEXT)]), \
+             patch("hermes_cli.gateway_queue.cancel", side_effect=GatewayRPCError("unsupported_control")), \
+             patch("hermes_cli.gateway_queue.replace", side_effect=GatewayRPCError("unsupported_control")):
+            out = _queue_command(cli, getattr(cli, verb), *args)
+        assert "Nothing was queued" not in out and "send it again" not in out, out
+        assert "queue item 1" in out.lower() and "unsupported_control" in out, out
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("verb, args", [("_queue_remove", ("1",)), ("_queue_edit", ("1 new text",))])
+def test_an_rm_or_edit_of_a_row_the_drain_already_started_says_it_started(verb, args):
+    """The drain claimed the row between the list and the verb (stale_generation): the user is told it
+    already started; its turn is still owed a paint."""
+    from hermes_cli.gateway_client import GatewayRPCError
+    from tests.hermes_cli.test_gateway_agent import SID
+    conn, cli = _owned_cli()
+    try:
+        with patch("hermes_cli.gateway_queue.queued_rows", lambda c, s: [("adm-q", TEXT)]), \
+             patch("hermes_cli.gateway_queue.cancel", side_effect=GatewayRPCError("stale_generation")), \
+             patch("hermes_cli.gateway_queue.replace", side_effect=GatewayRPCError("stale_generation")):
+            out = _queue_command(cli, getattr(cli, verb), *args)
+        assert "already started" in out, out
+        assert "adm-q" in conn.state(SID).queued_inputs
+    finally:
+        conn.close()
+
+
+def test_an_rm_racing_the_drain_claim_tells_the_user_the_gateway_stopped_it():
+    """Owner ``prompt.cancel`` interrupts a row the drain claimed between its read and the cancel commit and
+    answers a non-terminal receipt. That rm used to print nothing and forget the admission."""
+    from tests.hermes_cli.test_gateway_agent import SID
+    conn, cli = _owned_cli()
+    try:
+        real = cli._session_db.connection.call
+
+        def call(method, **params):
+            if method == "prompt.cancel":
+                return {"admission_id": "adm-q", "status": "started"}
+            return real(method, **params)
+        cli._session_db.connection.call = call
+        with patch("hermes_cli.gateway_queue.queued_rows", lambda c, s: [("adm-q", TEXT)]):
+            out = _queue_command(cli, cli._queue_remove, "1")
+        assert "already started" in out and "stopped" in out, out
+        assert "adm-q" in conn.state(SID).queued_inputs  # its interrupted turn is still painted
+    finally:
+        conn.close()

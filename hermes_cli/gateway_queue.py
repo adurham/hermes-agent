@@ -83,11 +83,24 @@ def published_queue(cli, store) -> list[str]:
     return [str(row.get("text") or "") for row in rows if row.get("status") == "queued"] + fresh
 
 
-def cancel(cli, store, admission: str) -> bool:
-    """Retire one queued admission; True when it no longer runs."""
-    receipt = store.call("prompt.cancel", session_id=cli.session_id, admission_id=admission)
-    _state(cli, store).queued_inputs.pop(admission, None)
-    return (receipt or {}).get("status") == "terminal"
+STARTED_REFUSALS = frozenset({"stale_generation", "admission_started"})
+
+
+def cancel(cli, store, admission: str) -> str:
+    """Retire one queued admission: ``"cancelled"`` when it never ran, ``"stopped"`` when the drain had
+    claimed it and the owner interrupted that run instead (``session_controls.cancel``), ``"started"``
+    when it already ran. A turn that ran is still owed a paint, so only a cancelled one leaves
+    ``queued_inputs``."""
+    receipt = store.call("prompt.cancel", session_id=cli.session_id, admission_id=admission) or {}
+    if receipt.get("status") == "terminal" and receipt.get("outcome") == "cancelled":
+        state = _state(cli, store)
+        state.queued_inputs.pop(admission, None)
+        state.missed.discard(admission)
+        return "cancelled"
+    _state(cli, store).missed.add(admission)  # the idle tick paints whatever ran
+    if receipt.get("status") == "started" or receipt.get("outcome") == "interrupted":
+        return "stopped"
+    return "started"  # it already ran to its end: nothing was stopped
 
 
 def replace(cli, store, admission: str, text: str) -> str | None:

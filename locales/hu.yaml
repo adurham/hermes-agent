@@ -2389,6 +2389,11 @@ cli:
     usage_add: "Használat: /queue add <prompt>"
     gateway_refused: "Az átjáró nem állította sorba: {error}. Semmi sem került sorba; küldd újra, amikor a kör véget ér."
     move_gateway_fifo: "Az átjáró a sorban álló promptokat küldési sorrendben futtatja; inkább szerkessz vagy távolíts el egyet."
+    remove_refused: "Nem sikerült eltávolítani a(z) {index}. sorelemet: {error}"
+    edit_refused: "Nem sikerült szerkeszteni a(z) {index}. sorelemet: {error}"
+    already_started: "A(z) {index}. sorelem már elindult; úgy fut, ahogy elküldték."
+    started_stopped: "A(z) {index}. sorelem már elindult; az átjáró leállította."
+    change_unknown: "Az átjáró nem válaszolt a(z) {index}. sorelemről ({error}); nézd meg a /queue list kimenetét, mielőtt újra próbálod."
   reload:
     env_reloaded: ".env újratöltve ({count} változó frissült)"
   steer:

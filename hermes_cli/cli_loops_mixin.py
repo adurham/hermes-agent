@@ -397,20 +397,28 @@ class CLILoopsMixin:
             tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
             _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
 
-    def _queue_gateway_call(self, verb, *args):
-        """One owner verb on a queued admission; its refusal is printed, never raised."""
+    def _queue_gateway_call(self, verb, index, *args):
+        """One owner verb on queued item ``index``; its refusal is printed (in its own words), never raised."""
         from cli import _cprint
         from hermes_cli import gateway_queue
+        from hermes_cli.gateway_client import GatewayRPCError
         try:
             return getattr(gateway_queue, verb)(self, self._gateway_queue_store(), *args)
-        except GatewayClientError as exc:
-            _cprint(f"  {t('cli.queue.gateway_refused', error=exc)}")
-            return None
+        except GatewayRPCError as exc:
+            if str(exc) in gateway_queue.STARTED_REFUSALS:  # the drain claimed it first: it runs as sent
+                _cprint(f"  {t('cli.queue.already_started', index=index)}")
+            else:
+                key = "cli.queue.edit_refused" if verb == "replace" else "cli.queue.remove_refused"
+                _cprint(f"  {t(key, index=index, error=exc)}")
+        except GatewayClientError as exc:  # no answer: the owner may have applied it
+            _cprint(f"  {t('cli.queue.change_unknown', index=index, error=exc)}")
+        return None
 
     def _queue_clear(self, rest: str) -> None:
         from cli import _cprint
         owned = [admission for admission, _ in self._queue_items() if admission]
-        cleared = sum(1 for admission in owned if self._queue_gateway_call("cancel", admission))
+        cleared = sum(1 for idx, admission in enumerate(owned, 1)
+                      if self._queue_gateway_call("cancel", idx, admission) == "cancelled")
         before, _ = self._mutate_pending_input(lambda items: [])
         cleared += len(before)
         key = "cli.queue.cleared_one" if cleared == 1 else "cli.queue.cleared_other"
@@ -427,8 +435,13 @@ class CLILoopsMixin:
         owned = sum(1 for admission, _ in items if admission)
         if 1 <= idx <= owned:
             admission, text = items[idx - 1]
-            if self._queue_gateway_call("cancel", admission):
+            verdict = self._queue_gateway_call("cancel", idx, admission)
+            if verdict == "cancelled":
                 _cprint(f"  {t('cli.queue.removed', index=idx, preview=_preview(str(text)))}")
+            elif verdict == "stopped":  # claimed between the list and the cancel: the owner interrupted it
+                _cprint(f"  {t('cli.queue.started_stopped', index=idx)}")
+            elif verdict == "started":
+                _cprint(f"  {t('cli.queue.already_started', index=idx)}")
             return
         local = idx - owned
         removed: list = []
@@ -454,7 +467,7 @@ class CLILoopsMixin:
         owned = sum(1 for admission, _ in items if admission)
         if 1 <= idx <= owned:
             # The owner admits the edit as a new admission at the back of its FIFO.
-            if self._queue_gateway_call("replace", items[idx - 1][0], new_text):
+            if self._queue_gateway_call("replace", idx, items[idx - 1][0], new_text):
                 _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
             return
         local = idx - owned

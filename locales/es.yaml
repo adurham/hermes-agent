@@ -2372,6 +2372,11 @@ cli:
     usage_add: "Uso: /queue add <prompt>"
     gateway_refused: "El gateway no lo encoló: {error}. No se encoló nada; envíalo de nuevo cuando termine el turno."
     move_gateway_fifo: "El gateway ejecuta los prompts en cola en el orden de envío; edita o elimina uno en su lugar."
+    remove_refused: "No se pudo quitar el elemento {index} de la cola: {error}"
+    edit_refused: "No se pudo editar el elemento {index} de la cola: {error}"
+    already_started: "El elemento {index} de la cola ya empezó; se ejecuta tal como se envió."
+    started_stopped: "El elemento {index} de la cola ya había empezado; el gateway lo detuvo."
+    change_unknown: "El gateway no respondió sobre el elemento {index} de la cola ({error}); revisa /queue list antes de reintentarlo."
   reload:
     env_reloaded: "Se recargó .env ({count} variable(s) actualizada(s))"
   steer:
