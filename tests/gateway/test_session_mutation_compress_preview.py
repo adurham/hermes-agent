@@ -221,3 +221,50 @@ async def test_a_compress_that_removes_nothing_reports_mains_no_changes_without_
         assert not db.list_meta_prefix('gateway.mutation.v1.'), 'a no-op left a mutation receipt'
     finally:
         await owner.close()
+
+
+@pytest.mark.asyncio
+async def test_no_op_compress_without_a_resident_agent_estimates_the_stored_prompt_and_tools(tmp_path, monkeypatch):
+    """T15: a cold session (no resident agent) prices main's "No changes" report like main's in-process
+    /compress: messages plus the system prompt and tool schemas the session sends (its stored prompt
+    and tools[] pin), not the messages alone."""
+    import json
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from agent.context_compressor import ContextCompressor
+    from agent.model_metadata import estimate_request_tokens_rough
+
+    monkeypatch.setattr(run, '_load_gateway_config', dict)
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+    monkeypatch.setattr(ContextCompressor, '__init__', lambda self, *a, **k: None)
+    monkeypatch.setattr(ContextCompressor, 'compress', lambda self, messages, **kw: messages)
+    runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None,
+                             _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db, epoch=epoch)
+    owner = AuthorityConnection(authority, object(), {'user_id': 'human'})
+    ref = create_local_session(authority, owner.actor, dict(request_id='cold', source='tui', cwd=str(tmp_path),
+                                                              model='frozen', toolsets=[]))
+    db.append_message(ref.session_id, 'user', 'hi')
+    db.append_message(ref.session_id, 'assistant', 'hello')
+    prompt = 'You are Hermes. ' * 400
+    tools = [{'type': 'function', 'function': {'name': 'read_file', 'description': 'Read a file. ' * 50,
+                                               'parameters': {'type': 'object', 'properties': {}}}}]
+    db.update_system_prompt(ref.session_id, prompt)
+    db.update_session_tool_names(ref.session_id, {'version': 'v', 'tools': tools})
+    messages = db.get_messages_as_conversation(ref.session_id)
+    expected = estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tools)
+    before = db.get_session(ref.session_id)
+    try:
+        reply = await owner.dispatch({'id': 1, 'method': 'session.mutate', 'params': {
+            'session_id': ref.session_id, 'request_id': 'noop', 'expected_revision': before['runtime_revision'],
+            'expected_generation': before['runtime_generation'], 'operation': 'compress', 'payload': {}}})
+        result = reply.get('result') or {}
+        assert result.get('status') == 'noop', reply
+        assert result['summary']['token_line'] == f'Approx request size: ~{expected:,} tokens (unchanged)', \
+            json.dumps(result['summary'])
+    finally:
+        await owner.close()

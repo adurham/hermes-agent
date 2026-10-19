@@ -86,7 +86,7 @@ async def prepare_compress(authority, live, payload, prepared):
     if compressed is None:
         # Nothing removable (a short session keeps every message): main's read-only
         # "No changes from compression" report, estimated like main's (system prompt + tools).
-        tokens = _request_tokens(resident, messages)
+        tokens = _request_tokens(resident, messages, authority.db.get_session(snapshot['target']))
         return {'status': 'noop', 'summary': summarize_manual_compression(
             messages, messages, tokens, tokens, compression_state=compressor)}
     summary = summarize_manual_compression(messages, compressed, estimate_request_tokens_rough(messages),
@@ -114,8 +114,20 @@ async def fire_post_compaction_hook(authority, prepared, result):
         logger.warning('post_compaction hook delivery failed', exc_info=True)
 
 
-def _request_tokens(agent, messages):
-    """Main's /compress request estimate: the agent's system prompt and tool schemas plus the messages."""
+def _request_tokens(agent, messages, row=None):
+    """Main's /compress request estimate: the agent's system prompt and tool schemas plus the messages.
+    No resident agent (a cold session): the prompt and tools[] pin the session row stores, which the
+    next agent restores and sends, so the figure matches what main's resident agent reported."""
+    import json
     from agent.model_metadata import estimate_request_tokens_rough
-    return estimate_request_tokens_rough(messages, system_prompt=getattr(agent, '_cached_system_prompt', '') or '',
-                                         tools=getattr(agent, 'tools', None) or None)
+    prompt = getattr(agent, '_cached_system_prompt', '') or ''
+    tools = getattr(agent, 'tools', None) or None
+    if agent is None and isinstance(row, dict):
+        prompt = row.get('system_prompt') or ''
+        try:
+            pin = json.loads(row.get('tool_names') or 'null')
+        except (TypeError, ValueError):
+            pin = None  # a pin hash whose row was swept resolves to itself
+        pinned = pin.get('tools') if isinstance(pin, dict) else None
+        tools = ([t for t in pinned if isinstance(t, dict)] or None) if isinstance(pinned, list) else None
+    return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tools)
