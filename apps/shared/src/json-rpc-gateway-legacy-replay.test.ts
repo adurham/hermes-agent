@@ -128,4 +128,36 @@ describe('reconnect replay against a legacy backend', () => {
     })
     client.close()
   })
+
+  it('detects a backend restart from the answer epoch without sending the process epoch', async () => {
+    const client = makeClient()
+    const first = client.connect('ws://x')
+    const firstSock = FakeWebSocket.instances.at(-1)!
+    firstSock.open()
+    await first
+    firstSock.serverFrame(ready('proc-1'))
+    firstSock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 97 } })
+    expect(client.getSeqWatermarks()).toEqual({ s1: 97 })
+
+    // Reconnect to a restarted serve: no gateway.ready yet, so the client still holds proc-1.
+    client.invalidate('drop')
+    const pending = client.connect('ws://x')
+    const sock = FakeWebSocket.instances.at(-1)!
+    sock.open()
+    await pending
+    await vi.waitFor(() => expect(sock.request('session.events.since')).toBeDefined())
+    const req = sock.request('session.events.since')!
+    expect(req.params).toEqual({ session_id: 's1', last_seen: 97 })
+
+    sock.serverFrame({
+      jsonrpc: '2.0', id: req.id,
+      result: { events: [], latest_seq: 0, truncated: false, count: 0, epoch: 'proc-2', open_requests: [] }
+    })
+
+    // The stale cursor is dropped, so new-process seqs are not swallowed as already seen.
+    await vi.waitFor(() => expect(client.getSeqWatermarks()).toEqual({}))
+    sock.serverFrame({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', session_id: 's1', seq: 3 } })
+    expect(client.getSeqWatermarks()).toEqual({ s1: 3 })
+    client.close()
+  })
 })

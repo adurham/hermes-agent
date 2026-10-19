@@ -46,6 +46,22 @@ def test_legacy_events_since_still_refuses_other_unknown_keys():
     assert problem is not None and "bogus" in problem
 
 
+def test_legacy_events_since_dispatch_refuses_other_unknown_keys():
+    # Through the production dispatch, not just the model: ``replay_epoch`` is the only new key.
+    from tui_gateway import server
+
+    response = server.handle_request(
+        {
+            "id": "r0",
+            "method": "session.events.since",
+            "params": {"session_id": "s1", "last_seen": 3, "replay_epoch": "proc-1", "bogus": 1},
+        }
+    )
+
+    assert "bogus" in response["error"]["message"], response
+    assert "replay_epoch" not in response["error"]["message"], response
+
+
 @pytest.mark.parametrize(
     "params",
     [
