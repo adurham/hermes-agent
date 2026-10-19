@@ -34,9 +34,9 @@ def test_connect_and_disconnect_are_the_sessions_profiles_alone(receipt, phase):
     """One served profile or several: connect publishes THIS profile's endpoint and reaps only its
     browsers; the operator's env endpoint and the other profile's own live connection stay."""
     url, key = f"http://127.0.0.1:{receipt['one:connect']['cdp_port']}", receipt['home_key']
-    # The other profile keeps its own live connection, or the operator's env (which outranks its
-    # browser.cdp_url, as before); never this profile's.
-    bee = 'http://127.0.0.1:9444' if phase == 'two' else 'http://127.0.0.1:9333'
+    # The other profile keeps its own live connection, or its own browser.cdp_url; never this
+    # profile's, and never the launch process's BROWSER_CDP_URL (that is this profile's env).
+    bee = 'http://127.0.0.1:9444' if phase == 'two' else 'ws://bee.invalid/devtools/browser/PROFILE-B'
     connect = receipt[f'{phase}:connect']
     assert connect['code'] is None and connect['result'] == {'connected': True, 'url': url}, connect
     assert connect['own'] == url and connect['reaps'] == [key, key], connect  # never 'ALL'
