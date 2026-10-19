@@ -1,6 +1,9 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
+import { fr } from '@/i18n/fr'
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
 import { toChatMessages } from '@/lib/chat-messages'
 import { resolveDesktopCommand } from '@/lib/desktop-slash-commands'
 import { $connection } from '@/store/session'
@@ -30,6 +33,8 @@ vi.mock('@/store/gateway', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   requestGatewayForAgent: vi.fn()
 }))
+
+const copy = en.promptNotices.desktopCommands
 
 type Responder = (method: string, params?: Record<string, unknown>) => unknown
 
@@ -191,7 +196,7 @@ describe('/rollback', () => {
     expect(text).toContain('KEPT ANSWER')
     expect(text).not.toContain('REMOVED QUESTION')
     expect(text).not.toContain('REMOVED ANSWER')
-    expect(text).toContain('Rewound 2 message(s)')
+    expect(text).toContain(copy.rewound('2'))
   })
 })
 
@@ -249,7 +254,7 @@ describe('/config', () => {
     expect(text).toContain('skin: mono')
     // An empty section (the live projection always carries `voice: {}`) prints no dangling header.
     expect(text).not.toContain('voice:')
-    expect(text).toContain('Settings')
+    expect(text).toContain(copy.configFooter)
   })
 
   it('renders the canonical projection in full', async () => {
@@ -413,7 +418,7 @@ describe('/save writes on the Electron side', () => {
     expect(saveTextFileAs).toHaveBeenCalledWith(
       expect.objectContaining({ content: '# transcript', defaultPath: 'notes.md' })
     )
-    expect(renderedText(handle)).toContain('/home/u/Documents/notes.md')
+    expect(renderedText(handle)).toContain(copy.savedTo('/home/u/Documents/notes.md'))
   })
 
   it('defaults to json and the owner filename, and reports a cancelled dialog', async () => {
@@ -431,7 +436,7 @@ describe('/save writes on the Electron side', () => {
 
     expect(callsOf(requestGateway, 'session.export')).toEqual([{ session_id: RUNTIME_SESSION_ID, format: 'json' }])
     expect(saveTextFileAs).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: 'hermes_session_s1.json' }))
-    expect(renderedText(handle)).toMatch(/not saved/i)
+    expect(renderedText(handle)).toContain(copy.saveCancelled)
   })
 
   it('falls back to the legacy host save only for a plain /save, and says where it wrote', async () => {
@@ -453,11 +458,11 @@ describe('/save writes on the Electron side', () => {
     await handle.submitText('/save json mine.json')
     expect(callsOf(requestGateway, 'session.save')).toEqual([])
     expect(renderedText(handle)).not.toContain('/gateway/saved/raw.json')
-    expect(renderedText(handle)).toMatch(/not saved/i)
+    expect(renderedText(handle)).toContain(copy.saveLegacyRefused)
 
     await handle.submitText('/save')
     expect(callsOf(requestGateway, 'session.save')).toEqual([{ session_id: RUNTIME_SESSION_ID }])
-    expect(renderedText(handle)).toContain('Saved on the gateway host: /gateway/saved/raw.json')
+    expect(renderedText(handle)).toContain(copy.savedOnHost('/gateway/saved/raw.json'))
   })
 
   it('rejects an unknown format without a gateway call', async () => {
@@ -467,7 +472,7 @@ describe('/save writes on the Electron side', () => {
     await handle.submitText('/save pdf')
 
     expect(callsOf(requestGateway, 'session.export')).toEqual([])
-    expect(renderedText(handle)).toMatch(/usage: \/save/i)
+    expect(renderedText(handle)).toContain(copy.saveUsage)
   })
 })
 
@@ -485,7 +490,7 @@ describe('/timestamps, /palette, /worktree, /snapshot', () => {
     await handle.submitText('/timestamps status')
 
     expect(requestGateway.mock.calls.filter(([m]) => m === 'slash.exec' || m === 'command.dispatch')).toEqual([])
-    expect(renderedText(handle)).toMatch(/timestamps: off/i)
+    expect(renderedText(handle)).toContain(copy.timestampsOff)
   })
 
   it('/timestamps is a window override that survives an ordinary config refresh', async () => {
@@ -534,7 +539,30 @@ describe('/export and /import (profile archives)', () => {
     await handle.submitText('/import')
 
     expect(callsOf(requestGateway, 'slash.exec')).toEqual([])
-    expect(renderedText(handle)).toMatch(/hermes profile export/)
-    expect(renderedText(handle)).toMatch(/hermes profile import/)
+    expect(renderedText(handle)).toContain(copy.exportRemote)
+    expect(renderedText(handle)).toContain(copy.importRemote)
+  })
+})
+
+describe('desktop command notices follow the app language', () => {
+  afterEach(() => setRuntimeI18nLocale('en'))
+
+  it('renders /timestamps, /rollback usage and /history in the active locale', async () => {
+    setRuntimeI18nLocale('fr')
+    const { $displayTimestamps } = await import('@/store/display-timestamps')
+    $displayTimestamps.set(false)
+    const handle = await mount(gateway(method => (method === 'session.resume' ? { messages: [] } : undefined)))
+
+    await handle.submitText('/timestamps status')
+    await handle.submitText('/rollback diff')
+    await handle.submitText('/history')
+
+    const text = renderedText(handle)
+    const fr_ = fr.promptNotices.desktopCommands
+    expect(fr_.timestampsOff).not.toBe(copy.timestampsOff)
+    expect(text).toContain(fr_.timestampsOff)
+    expect(text).toContain(fr_.rollbackUsage)
+    expect(text).toContain(fr_.historyEmpty)
+    expect(text).not.toContain(copy.timestampsOff)
   })
 })
