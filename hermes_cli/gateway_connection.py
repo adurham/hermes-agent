@@ -61,6 +61,11 @@ class SessionState:
         self.request_listeners: list = []
         # A gateway-admitted notification turn the idle CLI queued a header for (gateway_tools_notify).
         self.admitted_turn: dict | None = None
+        # The owner's pending admissions as last published (snapshot or ``session.info``), and the
+        # ``/queue`` inputs this viewer admitted there (``admission_id -> text``), so the turn the owner
+        # runs for one is painted like a typed turn (``gateway_tools_notify.queue_admitted_turn``).
+        self.pending: list = []
+        self.queued_inputs: dict = {}
         # ``session.replay_gap``s seen, and how many a re-attach covered: the owner retired this viewer's
         # subscription on overflow, so its frames stop until ``GatewayConnection.reattach``.
         self.gaps = self.attached_gaps = 0
@@ -71,6 +76,8 @@ class SessionState:
         self.subscription_id = snapshot.get("subscription_id", self.subscription_id)
         self.execution_generation = snapshot.get("execution_generation", self.execution_generation)
         self.messages = list(snapshot.get("messages") or [])
+        if isinstance(snapshot.get("pending"), list):
+            self.pending = list(snapshot["pending"])
         if self.info.get("title"):
             self.title = self.info["title"]
 
@@ -83,6 +90,8 @@ class SessionState:
     def apply_event(self, kind, payload):
         if kind in ("session.info", "session.updated") and isinstance(payload, dict):
             self.info.update({k: v for k, v in payload.items() if k != "session_id"})
+            if isinstance(payload.get("pending"), list):
+                self.pending = list(payload["pending"])
             if payload.get("title"):
                 self.title = payload["title"]
         elif kind == "todo.updated" and isinstance(payload, dict):

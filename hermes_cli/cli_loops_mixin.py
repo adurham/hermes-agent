@@ -10,6 +10,7 @@ import threading
 import time
 
 from agent.i18n import t
+from hermes_cli.gateway_client import GatewayClientError
 from rich.markup import escape as _escape
 
 
@@ -352,29 +353,68 @@ class CLILoopsMixin:
                 q.not_empty.notify_all()
         return before, after
 
+    def _gateway_queue_store(self):
+        """The gateway session store when this CLI is a viewer of the gateway's session, else None."""
+        from hermes_cli.gateway_tools_notify import gateway_store
+        return gateway_store(self) if getattr(self, "session_id", None) else None
+
+    def _queue_items(self) -> list:
+        """``[(admission_id | None, item)]``: the owner's queued admissions (run first, in its FIFO
+        order), then the turns still waiting in ``_pending_input``."""
+        items: list = []
+        store = self._gateway_queue_store()
+        if store is not None:
+            from hermes_cli import gateway_queue
+            items = list(gateway_queue.queued_rows(self, store))
+        return items + [(None, item) for item in self._pending_input_items()]
+
     def _queue_enqueue(self, text: str) -> None:
         from cli import _cprint
         payload = self._expand_paste_references(text)
-        self._pending_input.put(payload)
+        store = self._gateway_queue_store() if self._agent_running else None
+        if store is not None:
+            # #134889 N5: the gateway's durable FIFO holds it (committed at accept, kept across an owner
+            # restart, run once after the current turn), never this process.
+            from hermes_cli import gateway_queue
+            try:
+                gateway_queue.submit_queued(self, store, payload)
+            except GatewayClientError as exc:  # the owner refused or is gone: say so, nothing is held here
+                _cprint(f"  {t('cli.queue.gateway_refused', error=exc)}")
+                return
+        else:
+            self._pending_input.put(payload)
         key = "cli.queue.queued_next_turn" if self._agent_running else "cli.queue.queued"
         _cprint(f"  {t(key, preview=_preview(payload))}")
 
     def _queue_list(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
-        items = self._pending_input_items()
+        items = self._queue_items()
         if not items:
             _cprint(f"  {t('cli.queue.empty')}" + ("" if rest else "  " + _queue_usage()))
             return
         _cprint(f"  {t('cli.queue.pending_header', count=len(items))}")
-        for idx, item in enumerate(items, 1):
+        for idx, (_, item) in enumerate(items, 1):
             tag = " [voice]" if isinstance(item, _VoiceInputMessage) else ""
             _cprint(f"    {idx}. {_preview(str(item).replace(chr(10), ' '))}{tag}")
 
+    def _queue_gateway_call(self, verb, *args):
+        """One owner verb on a queued admission; its refusal is printed, never raised."""
+        from cli import _cprint
+        from hermes_cli import gateway_queue
+        try:
+            return getattr(gateway_queue, verb)(self, self._gateway_queue_store(), *args)
+        except GatewayClientError as exc:
+            _cprint(f"  {t('cli.queue.gateway_refused', error=exc)}")
+            return None
+
     def _queue_clear(self, rest: str) -> None:
         from cli import _cprint
+        owned = [admission for admission, _ in self._queue_items() if admission]
+        cleared = sum(1 for admission in owned if self._queue_gateway_call("cancel", admission))
         before, _ = self._mutate_pending_input(lambda items: [])
-        key = "cli.queue.cleared_one" if len(before) == 1 else "cli.queue.cleared_other"
-        _cprint(f"  {t(key, count=len(before))}")
+        cleared += len(before)
+        key = "cli.queue.cleared_one" if cleared == 1 else "cli.queue.cleared_other"
+        _cprint(f"  {t(key, count=cleared)}")
 
     def _queue_remove(self, rest: str) -> None:
         from cli import _cprint
@@ -383,13 +423,21 @@ class CLILoopsMixin:
         if idx is None:
             _cprint(f"  {t('cli.queue.usage_remove')}")
             return
+        items = self._queue_items()
+        owned = sum(1 for admission, _ in items if admission)
+        if 1 <= idx <= owned:
+            admission, text = items[idx - 1]
+            if self._queue_gateway_call("cancel", admission):
+                _cprint(f"  {t('cli.queue.removed', index=idx, preview=_preview(str(text)))}")
+            return
+        local = idx - owned
         removed: list = []
         before, _ = self._mutate_pending_input(
-            lambda items: (removed.append(items.pop(idx - 1)) or items) if 1 <= idx <= len(items) else items)
+            lambda items: (removed.append(items.pop(local - 1)) or items) if 1 <= local <= len(items) else items)
         if removed:
             _cprint(f"  {t('cli.queue.removed', index=idx, preview=_preview(str(removed[0])))}")
         else:
-            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=len(before))}")
+            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=owned + len(before))}")
 
     def _queue_edit(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
@@ -402,18 +450,26 @@ class CLILoopsMixin:
             return
         new_prompt = bits[1]
         new_text = self._expand_paste_references(new_prompt.strip())
+        items = self._queue_items()
+        owned = sum(1 for admission, _ in items if admission)
+        if 1 <= idx <= owned:
+            # The owner admits the edit as a new admission at the back of its FIFO.
+            if self._queue_gateway_call("replace", items[idx - 1][0], new_text):
+                _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
+            return
+        local = idx - owned
 
         def _edit(items: list) -> list:
-            if 1 <= idx <= len(items):
+            if 1 <= local <= len(items):
                 # A voice-queued item keeps its sentinel so the concise voice-response
                 # prefix still applies (#65827).
-                voice = isinstance(items[idx - 1], _VoiceInputMessage)
-                items[idx - 1] = _VoiceInputMessage(new_text) if voice else new_text
+                voice = isinstance(items[local - 1], _VoiceInputMessage)
+                items[local - 1] = _VoiceInputMessage(new_text) if voice else new_text
             return items
 
         before, after = self._mutate_pending_input(_edit)
         if before == after:
-            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=len(before))}")
+            _cprint(f"  {t('cli.queue.item_not_found', index=idx, size=owned + len(before))}")
         else:
             _cprint(f"  {t('cli.queue.updated', index=idx, preview=_preview(new_text))}")
 
@@ -424,6 +480,12 @@ class CLILoopsMixin:
         if src is None or dst is None:
             _cprint(f"  {t('cli.queue.usage_move')}")
             return
+        owned = sum(1 for admission, _ in self._queue_items() if admission)
+        if owned and min(src, dst) <= owned and src != dst:
+            # The owner's FIFO runs admissions in the order they were sent; it has no reorder verb.
+            _cprint(f"  {t('cli.queue.move_gateway_fifo')}")
+            return
+        src, dst = src - owned, dst - owned
 
         def _move(items: list) -> list:
             if 1 <= src <= len(items) and 1 <= dst <= len(items):
@@ -432,9 +494,9 @@ class CLILoopsMixin:
 
         before, after = self._mutate_pending_input(_move)
         if before == after and src != dst:
-            _cprint(f"  {t('cli.queue.move_out_of_range', size=len(before))}")
+            _cprint(f"  {t('cli.queue.move_out_of_range', size=owned + len(before))}")
         else:
-            _cprint(f"  {t('cli.queue.moved', source=src, destination=dst)}")
+            _cprint(f"  {t('cli.queue.moved', source=src + owned, destination=dst + owned)}")
 
     def _cmd_queue(self, cmd_original: str):
         """``/queue <prompt>`` enqueues; a leading management verb whose arguments fit

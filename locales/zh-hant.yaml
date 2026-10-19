@@ -2370,6 +2370,8 @@ cli:
     move_out_of_range: "佇列移動超出範圍。目前佇列長度：{size}"
     moved: "已將佇列項目 {source} 移至 {destination}。"
     usage_add: "用法：/queue add <prompt>"
+    gateway_refused: "閘道未將其加入佇列：{error}。未加入任何內容；請在本輪結束後重新傳送。"
+    move_gateway_fifo: "閘道依傳送順序執行佇列中的提示；請改為編輯或刪除其中一則。"
   reload:
     env_reloaded: "已重新載入 .env（更新了 {count} 個變數）"
   steer:

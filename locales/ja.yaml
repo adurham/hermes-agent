@@ -2370,6 +2370,8 @@ cli:
     move_out_of_range: "キューの移動先が範囲外です。現在のサイズ: {size}"
     moved: "キュー項目 {source} を {destination} に移動しました。"
     usage_add: "使い方: /queue add <prompt>"
+    gateway_refused: "ゲートウェイはキューに追加しませんでした: {error}。何も追加されていません。ターン終了後に再送してください。"
+    move_gateway_fifo: "ゲートウェイはキュー内のプロンプトを送信順に実行します。代わりに編集または削除してください。"
   reload:
     env_reloaded: ".env を再読み込みしました（{count} 件の変数を更新）"
   steer:

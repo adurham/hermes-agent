@@ -2370,6 +2370,8 @@ cli:
     move_out_of_range: "النقل خارج نطاق قائمة الانتظار. الحجم الحالي: {size}"
     moved: "نُقل عنصر قائمة الانتظار من {source} إلى {destination}."
     usage_add: "الاستخدام: /queue add <prompt>"
+    gateway_refused: "لم تضعه البوابة في الطابور: {error}. لم يُضف شيء؛ أرسله مرة أخرى عند انتهاء الدور."
+    move_gateway_fifo: "تشغّل البوابة المطالبات في الطابور بترتيب إرسالها؛ عدّل واحدة أو احذفها بدلاً من ذلك."
   reload:
     env_reloaded: "أُعيد تحميل .env (تم تحديث {count} متغيّر)"
   steer:

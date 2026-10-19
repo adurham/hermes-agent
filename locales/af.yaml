@@ -2370,6 +2370,8 @@ cli:
     move_out_of_range: "Tou-verplasing buite bereik. Huidige grootte: {size}"
     moved: "Tou-item {source} na {destination} verplaas."
     usage_add: "Gebruik: /queue add <prompt>"
+    gateway_refused: "Die gateway het dit nie in die tou geplaas nie: {error}. Niks is in die tou geplaas nie; stuur dit weer wanneer die beurt eindig."
+    move_gateway_fifo: "Die gateway voer toustaande prompts uit in die volgorde waarin dit gestuur is; wysig of verwyder eerder een."
   reload:
     env_reloaded: ".env herlaai ({count} veranderlike(s) opgedateer)"
   steer:

@@ -2370,6 +2370,8 @@ cli:
     move_out_of_range: "Kuyruk taşıma aralık dışında. Geçerli boyut: {size}"
     moved: "Kuyruk öğesi {source}, {destination} konumuna taşındı."
     usage_add: "Kullanım: /queue add <prompt>"
+    gateway_refused: "Ağ geçidi bunu kuyruğa almadı: {error}. Hiçbir şey kuyruğa alınmadı; tur bitince yeniden gönderin."
+    move_gateway_fifo: "Ağ geçidi kuyruktaki istemleri gönderilme sırasıyla çalıştırır; bunun yerine birini düzenleyin veya kaldırın."
   reload:
     env_reloaded: ".env yeniden yüklendi ({count} değişken güncellendi)"
   steer:

@@ -2370,6 +2370,8 @@ cli:
     move_out_of_range: "Bogadh scuaine as raon. Méid reatha: {size}"
     moved: "Bogadh mír scuaine {source} go {destination}."
     usage_add: "Úsáid: /queue add <prompt>"
+    gateway_refused: "Níor chuir an geata sa scuaine é: {error}. Níor cuireadh aon rud sa scuaine; seol arís é nuair a chríochnaíonn an seal."
+    move_gateway_fifo: "Ritheann an geata leideanna sa scuaine san ord inar seoladh iad; cuir ceann in eagar nó bain é ina ionad."
   reload:
     env_reloaded: "Athlódáladh .env ({count} athróg nuashonraithe)"
   steer:

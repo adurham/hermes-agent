@@ -2370,6 +2370,8 @@ cli:
     move_out_of_range: "Spostamento fuori dai limiti della coda. Dimensione attuale: {size}"
     moved: "Elemento {source} della coda spostato in posizione {destination}."
     usage_add: "Uso: /queue add <prompt>"
+    gateway_refused: "Il gateway non l'ha accodato: {error}. Nulla è stato accodato; invialo di nuovo a fine turno."
+    move_gateway_fifo: "Il gateway esegue i prompt in coda nell'ordine di invio; modificane o rimuovine uno invece."
   reload:
     env_reloaded: "Ricaricato .env (variabili aggiornate: {count})"
   steer:

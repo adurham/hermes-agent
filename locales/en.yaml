@@ -2470,6 +2470,8 @@ cli:
     move_out_of_range: "Queue move out of range. Current size: {size}"
     moved: "Moved queue item {source} to {destination}."
     usage_add: "Usage: /queue add <prompt>"
+    gateway_refused: "The gateway did not queue it: {error}. Nothing was queued; send it again when the turn ends."
+    move_gateway_fifo: "The gateway runs queued prompts in the order they were sent; edit or remove one instead."
   reload:
     env_reloaded: "Reloaded .env ({count} var(s) updated)"
   steer:

@@ -66,6 +66,15 @@ def queue_admitted_turn(cli, store) -> None:
             continue
         if params.get("type") != "message.start" or not params.get("admission_id"):
             continue
+        queued_text = state.queued_inputs.pop(params["admission_id"], None)
+        if queued_text is not None:
+            # A ``/queue`` prompt this viewer admitted (#134889 N5): the owner runs it now, and main's
+            # input path paints and pumps it as a typed turn. Literal: it is a prompt, never a command.
+            from cli import _SeededQueryMessage
+            state.admitted_turn = {"admission_id": params["admission_id"], "text": queued_text,
+                                   "execution_generation": params.get("execution_generation")}
+            _put_first(cli._pending_input, _SeededQueryMessage(queued_text))
+            return
         card = _card(params)
         if card is None:
             continue

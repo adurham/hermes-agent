@@ -2387,6 +2387,8 @@ cli:
     move_out_of_range: "A mozgatás kívül esik a soron. Jelenlegi méret: {size}"
     moved: "A(z) {source}. sorelem áthelyezve ide: {destination}."
     usage_add: "Használat: /queue add <prompt>"
+    gateway_refused: "Az átjáró nem állította sorba: {error}. Semmi sem került sorba; küldd újra, amikor a kör véget ér."
+    move_gateway_fifo: "Az átjáró a sorban álló promptokat küldési sorrendben futtatja; inkább szerkessz vagy távolíts el egyet."
   reload:
     env_reloaded: ".env újratöltve ({count} változó frissült)"
   steer:

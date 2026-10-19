@@ -2370,6 +2370,8 @@ cli:
     move_out_of_range: "Verschiebung außerhalb der Warteschlange. Aktuelle Größe: {size}"
     moved: "Warteschlangeneintrag {source} nach {destination} verschoben."
     usage_add: "Verwendung: /queue add <prompt>"
+    gateway_refused: "Das Gateway hat es nicht eingereiht: {error}. Nichts wurde eingereiht; sende es erneut, wenn der Zug endet."
+    move_gateway_fifo: "Das Gateway führt eingereihte Prompts in Sendereihenfolge aus; bearbeite oder entferne stattdessen einen."
   reload:
     env_reloaded: ".env neu geladen ({count} Variable(n) aktualisiert)"
   steer:
