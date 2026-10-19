@@ -225,3 +225,42 @@ async def test_captured_completed_automation_result_gets_no_restart_notice(tmp_p
         assert not [m for m in db.get_messages('s') if m.get('display_kind') == 'failed_turn']
     finally:
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_lost_automation_worker_settles_on_its_own_exit_and_runs_the_queued_follower(tmp_path, monkeypatch):
+    """Review #141357 F2: a managed worker lost mid-turn fences its automation head ``unknown`` and
+    raises ManagedExecutionUnknown. That same drain settles it and runs the follower already queued,
+    without waiting for an unrelated wake."""
+    from gateway.session_managed_worker import ManagedExecutionUnknown
+    from gateway.session_settlement_recovery import recover_failed_settlement
+    store, runner = _runner(tmp_path, monkeypatch, [])
+    db = store._db
+    db.create_session('s', source='telegram')
+    authority = await initialize_session_authority(runner, profile_id='p', instance_id='owner-1')
+    authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='gw10'), 's')
+    ref = SessionRef('p', 's')
+    actor = AuthorityConnection(authority, Peer(), {'user_id': 'human'}).actor
+    ran = []
+    try:
+        authority._schedule = lambda ref: None
+        head_id = await _automation_head(authority, actor, ref)
+        follower = await authority.submit(actor, Submission('follower', ref, {'text': 'FOLLOWER'}, 'queue'))
+
+        async def execute(owner, ref, row):
+            if row['admission_id'] == head_id:
+                await recover_failed_settlement(owner, row)
+                raise ManagedExecutionUnknown('managed_worker_unknown')
+            ran.append(row['payload']['text'])
+            return 'ACK'
+        monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+        del authority._schedule
+        authority._schedule(ref)
+        live = authority.sessions['s']
+        await async_wait_until(lambda: live.task is not None and live.task.done(), what='drain finished')
+        assert ran == ['FOLLOWER']
+        statuses = _statuses(db)
+        assert statuses[head_id] == ('terminal', 'interrupted')
+        assert statuses[follower.admission_id][0] == 'terminal'
+    finally:
+        store.close_all_db_handles()

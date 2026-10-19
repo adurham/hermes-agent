@@ -1120,7 +1120,8 @@ class SessionAuthority:
 
     async def _execute_claimed(self, ref, live, row):
         """Run the claimed admission: ``(response, outcome)``. The executing stamp clears the moment
-        execution returns; a lost managed worker pauses the FIFO and re-raises ManagedExecutionUnknown."""
+        execution returns; a lost managed worker settles an automation turn (``settled_unknown``) or pauses
+        the FIFO and re-raises ManagedExecutionUnknown."""
         from gateway.session_finite import execute_finite_admission
         from gateway.session_managed_worker import ManagedExecutionUnknown
         try:
@@ -1135,6 +1136,11 @@ class SessionAuthority:
             self.pending_stops.pop(ref.session_id, None)
             self.pending_steers.pop(ref.session_id, None)
             self.adopted.pop(ref.session_id, None)
+            # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10),
+            # so the followers already queued run in this drain; a person's turn still pauses.
+            from gateway.session_unattended_unknown import settle_unattended_unknown
+            if await settle_unattended_unknown(self, ref):
+                return None, 'settled_unknown'
             self._pause(ref, 'unknown_execution')
             raise
         except Exception:
@@ -1175,6 +1181,9 @@ class SessionAuthority:
             admission_id = row['admission_id']
             try:
                 response, outcome = await self._execute_claimed(ref, live, row)
+                if outcome == 'settled_unknown':
+                    self.deferred_resets.pop(live.route, None)  # no settlement follows, as below
+                    continue
             except BaseException as exc:
                 # No settlement follows (a lost managed worker, a cancelled drain): the turn is never
                 # replayed, so its deferred reset is dropped (the next turn re-detects the overflow),
