@@ -12,6 +12,7 @@ from agent import secret_scope
 from gateway.run import _profile_runtime_scope
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools import browser_tool_cdp as bt_cdp
+from tools.browser_use_cli import _claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
 
 
 @pytest.fixture
@@ -100,12 +101,13 @@ def test_a_served_profiles_harness_socket_fits_macos_sun_path_on_a_default_home(
 
 
 @pytest.mark.platforms("macos")
-def test_on_macos_a_served_profile_binds_a_64_char_session_socket(profiles, tmp_path):
+def test_on_macos_a_served_profile_binds_a_64_char_session_socket(profiles, tmp_path, monkeypatch):
     """Real branch: the dir is claimed under the real short root and a 64-character name binds."""
     import os
     import socket
     from tools import browser_use_cli as bu_cli
     a, _b = profiles
+    monkeypatch.setattr(bu_cli, "_claim_private_dir", _REAL_CLAIM)  # the real claim, real short root
     env = {"HOME": str(tmp_path / ("u" * 40))}
     with _profile_runtime_scope(a, hydrate_secrets=False):
         bu_cli._namespace_harness_daemons(env)
@@ -120,19 +122,73 @@ def test_on_macos_a_served_profile_binds_a_64_char_session_socket(profiles, tmp_
             os.unlink(path)
 
 
+def _kernel_accepts_sun_path(path: str) -> bool:
+    """Ask the kernel ABI whether ``path`` fits ``sun_path``: an unbound dir gives ENOENT, an overlong
+    path gives "AF_UNIX path too long" before any filesystem access."""
+    import socket
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.bind(path)
+    except OSError as e:
+        return "too long" not in str(e)
+    else:
+        import os
+        os.unlink(path)
+        return True
+    finally:
+        s.close()
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("user_home", ["/home/teknium", "/home/alexander.smith"])
+def test_on_linux_a_served_profiles_64_char_session_socket_fits_sun_path(profiles, monkeypatch, user_home):
+    """Linux ``sun_path`` is 108 bytes (107 + NUL). ``~/.config/browser-harness/runtime/p-<hash>`` left
+    room for 38-character names at /home/teknium and 30 at /home/alexander.smith, while BU_NAME may be
+    64. The served profile gets the same private short dir as on macOS (claim stubbed: no temp-root
+    write); the kernel judges the length of the exact path the installed harness binds."""
+    import os
+    from tools import browser_use_cli as bu_cli
+    a, _b = profiles
+    claimed = []
+    monkeypatch.setattr(bu_cli, "_claim_private_dir", lambda path: claimed.append(path) or True)
+    env = {"HOME": user_home}
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        bu_cli._namespace_harness_daemons(env)
+    sock = f"{env['BH_RUNTIME_DIR']}/bu-{_LONGEST_NAME}.sock"
+    assert claimed == [env["BH_RUNTIME_DIR"]]
+    assert _sock_len(env["BH_RUNTIME_DIR"]) <= 107 and _kernel_accepts_sun_path(sock), sock
+    assert os.path.basename(env["BH_RUNTIME_DIR"]).startswith("hbh-")
+
+
+@pytest.mark.platforms("linux")
+def test_on_linux_a_runtime_dir_that_already_fits_is_kept_and_an_unclaimable_one_stays_long(profiles, monkeypatch):
+    from tools import browser_use_cli as bu_cli
+    a, _b = profiles
+    claimed = []
+    monkeypatch.setattr(bu_cli, "_claim_private_dir", lambda path: claimed.append(path) or True)
+    env = {"BH_HOME": "/b"}
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        bu_cli._namespace_harness_daemons(env)
+    assert env["BH_RUNTIME_DIR"].startswith("/b/runtime/p-") and claimed == []
+    monkeypatch.setattr(bu_cli, "_claim_private_dir", lambda path: False)  # squatted / not ours
+    env = {"HOME": "/home/teknium"}
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        bu_cli._namespace_harness_daemons(env)
+    assert env["BH_RUNTIME_DIR"].startswith("/home/teknium/.config/browser-harness/runtime/p-")
+
+
 def test_the_short_socket_dir_is_claimed_only_when_private_and_ours(tmp_path):
     """The short dir sits in a world-writable root: a symlink or another user's/open dir is refused."""
-    from tools import browser_use_cli as bu_cli
     fresh = tmp_path / "hbh-fresh"
-    assert bu_cli._claim_private_dir(str(fresh)) and (fresh.stat().st_mode & 0o777) == 0o700
-    assert bu_cli._claim_private_dir(str(fresh))  # ours, 0700: reused
+    assert _REAL_CLAIM(str(fresh)) and (fresh.stat().st_mode & 0o777) == 0o700
+    assert _REAL_CLAIM(str(fresh))  # ours, 0700: reused
     open_dir = tmp_path / "hbh-open"
     open_dir.mkdir(mode=0o755)
     open_dir.chmod(0o755)
-    assert not bu_cli._claim_private_dir(str(open_dir))
+    assert not _REAL_CLAIM(str(open_dir))
     link = tmp_path / "hbh-link"
     link.symlink_to(fresh)
-    assert not bu_cli._claim_private_dir(str(link))
+    assert not _REAL_CLAIM(str(link))
 
 
 # --- per-profile harness tmp dir (screenshots, debug overlays, daemon logs) ---------------------------

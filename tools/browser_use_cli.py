@@ -207,23 +207,40 @@ def _namespace_harness_daemons(env: dict) -> None:
 
 
 # browser_harness/_ipc.py: a shared runtime dir names a daemon socket ``<dir>/bu-<BU_NAME>.sock`` and
-# BU_NAME may be 64 characters, so the dir gets the macOS sun_path (104 bytes with the NUL) minus 72.
+# BU_NAME may be 64 characters, so the dir gets sun_path (macOS 104 bytes, Linux 108, with the NUL)
+# minus 72.
 _MACOS_SOCKET_DIR_BUDGET = 103 - len("/bu-.sock") - 64
+_LINUX_SOCKET_DIR_BUDGET = 107 - len("/bu-.sock") - 64
+
+
+def _socket_dir_budget() -> Optional[int]:
+    """The runtime-dir byte budget on platforms where the harness binds AF_UNIX sockets, else None."""
+    if sys.platform == "darwin":
+        return _MACOS_SOCKET_DIR_BUDGET
+    if sys.platform.startswith("linux"):
+        return _LINUX_SOCKET_DIR_BUDGET
+    return None  # Windows: the harness serves over loopback TCP (port files), no sun_path
 
 
 def _socket_fit_runtime_dir(runtime: str, base: str, tag: str) -> str:
-    """``runtime`` unless it is too long for a 64-character session's socket on macOS, where
-    ``~/.config/browser-harness/runtime`` alone already exceeds the budget. There the served profile
-    gets a private dir under the short temp root (``/private/tmp/hbh-<12 hex>``, 29 bytes), keyed by
-    uid, root and profile; if it can't be claimed safely the long path stays (shorter names only)."""
-    if sys.platform != "darwin" or len(runtime.encode()) <= _MACOS_SOCKET_DIR_BUDGET:
+    """``runtime`` unless it is too long for a 64-character session's socket (macOS: the default
+    ``~/.config/browser-harness/runtime`` alone exceeds it; Linux: anything past a 34-byte dir). Then
+    the served profile gets a private dir under the short socket temp root (``hbh-<12 hex>``), keyed by
+    uid, root and profile; if none fits or can be claimed safely the long path stays (shorter names
+    only)."""
+    budget = _socket_dir_budget()
+    if budget is None or len(runtime.encode()) <= budget:
         return runtime
     from hermes_constants import socket_safe_tmpdir
     getuid = getattr(os, "getuid", lambda: 0)
     digest = hashlib.sha256(f"{getuid()}\0{base}\0{tag}".encode()).hexdigest()[:12]
-    short = os.path.join(os.path.realpath(socket_safe_tmpdir()), f"hbh-{digest}")
-    if len(short.encode()) <= _MACOS_SOCKET_DIR_BUDGET and _claim_private_dir(short):
-        return short
+    # socket_safe_tmpdir() caps the root at 50 bytes for Chrome's longer socket names; ours needs a
+    # root of at most 17, which a Hermes scratch TMPDIR exceeds, so the sticky system root follows.
+    roots = dict.fromkeys(os.path.realpath(r) for r in (socket_safe_tmpdir(), "/tmp"))  # no-tmp: ok — AF_UNIX sun_path budget; dir claimed 0700 and ownership-checked
+    for root in roots:
+        short = os.path.join(root, f"hbh-{digest}")
+        if len(short.encode()) <= budget and _claim_private_dir(short):
+            return short
     return runtime
 
 
