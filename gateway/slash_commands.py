@@ -1055,7 +1055,11 @@ class GatewaySlashCommandsMixin(
             return t("gateway.footer.usage")
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
-            _write_raw_config_leaf(config_path, ("display", "runtime_footer", "enabled"), new_state)
+            # The per-platform key, as /reasoning show|hide saves: every local surface reads the
+            # ``cli`` key (gateway.display_config.local_display_config), so the setting holds
+            # wherever it was set without a second, global key (T7).
+            _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "runtime_footer", "enabled"),
+                                   new_state)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)
