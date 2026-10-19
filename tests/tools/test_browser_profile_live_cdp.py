@@ -71,3 +71,50 @@ def test_reaping_one_profile_leaves_the_other_profiles_browser_and_supervisor(pr
     lifecycle.cleanup_profile_browsers(key_a)
     assert sorted(closed) == ["ta", "ta::local"] and list(sessions) == ["tb"]
     assert sorted(stopped) == ["ta", "vault-a"] and list(SUPERVISOR_REGISTRY._by_task) == ["tb"]
+
+
+def test_each_profile_drives_and_reaps_its_own_harness_daemon(profiles, monkeypatch, tmp_path):
+    """The harness names a daemon by BU_NAME alone (unnamed exec: ``default``) and reuses a live one, so
+    with one shared runtime dir B's exec drove A's connected browser and A's reap stopped B's daemon."""
+    import json
+    import stat
+    from tools import browser_use_cli as bu_cli
+
+    a, b = profiles
+    shared = tmp_path / "harness-runtime"
+    cli = tmp_path / "browser-harness"  # one daemon per (runtime dir, BU_NAME) latches its first endpoint
+    cli.write_text(f'''#!/bin/sh
+dir="${{BH_RUNTIME_DIR:-{shared}}}"; mkdir -p "$dir"; latch="$dir/bu-${{BU_NAME:-default}}"
+if [ "${{1:-}}" = "--reload" ]; then rm -f "$latch"; exit 0; fi
+cat > /dev/null
+[ -f "$latch" ] || echo "$BU_CDP_URL" > "$latch"
+cat "$latch"
+''')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setenv("BH_RUNTIME_DIR", str(shared))
+    monkeypatch.setattr(bu_cli, "_find_cli", lambda: [str(cli)])
+    monkeypatch.setattr(bu_cli, "_driven_daemons", {})
+    monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
+    monkeypatch.setattr(bt_cdp, "_resolve_cdp_override", lambda url: url)
+
+    def drive(home, url=None):
+        with _profile_runtime_scope(home, hydrate_secrets=False):
+            if url:
+                bt_cdp.set_live_cdp_override(url)
+            return json.loads(bu_cli.browser_exec("print(1)", task_id="t"))["output"].strip()
+
+    assert drive(a, "http://127.0.0.1:9301") == "http://127.0.0.1:9301"
+    assert drive(b, "http://127.0.0.1:9302") == "http://127.0.0.1:9302"  # B's own daemon, not A's
+    assert drive(a) == "http://127.0.0.1:9301"
+    reloads = []
+    real_run = bu_cli._run_cli_killing_process_group
+    monkeypatch.setattr(bu_cli, "_run_cli_killing_process_group",
+                        lambda cmd, code, env, timeout: reloads.append(env.get("BH_RUNTIME_DIR"))
+                        or real_run(cmd, code, env, timeout))
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        lifecycle.cleanup_profile_browsers(hermes_home_key(a))
+        bt_cdp.set_live_cdp_override("http://127.0.0.1:9311")
+    assert len(reloads) == 1  # A's reap stops exactly A's daemon
+    assert [home for home in bu_cli._driven_daemons.values()] == [hermes_home_key(b)]
+    assert drive(b) == "http://127.0.0.1:9302"  # B's daemon survived A's reap
+    assert drive(a) == "http://127.0.0.1:9311"  # A respawned on its new endpoint
