@@ -34,9 +34,8 @@ def layout_from_config(display: dict) -> bool:
 
 
 def busy_input_mode_from_config(display: dict) -> str:
-    """``display.busy_input_mode`` when set; unset steers in this layout and interrupts in classic."""
-    mode = (display or {}).get("busy_input_mode") or ("steer" if layout_from_config(display) else "interrupt")
-    return str(mode).strip().lower()
+    """``display.busy_input_mode``; unset interrupts in both layouts (Tab still queues in this one)."""
+    return str((display or {}).get("busy_input_mode") or "interrupt").strip().lower()
 
 
 def _skin_hex(key: str, fallback: str) -> str:
@@ -100,21 +99,30 @@ def thought_title(text: str) -> str:
 
 
 def thought_line(seconds: float | None, text: str) -> str:
-    """``∴ Thought for 3s · Planning the change`` (dim italic), the collapsed reasoning row."""
+    """``∴ Thought for 3s · Planning the change`` (dim italic), closing a reasoning block."""
     title = thought_title(text)
     took = t("cli.modern.thought_for", seconds=f"{max(seconds or 0.0, 0.0):.0f}") if seconds else t("cli.modern.thought")
     body = f"{took} · {title}" if title else took
     return f"\x1b[2;3m∴ {body}{_RST}"
 
 
-def thought_body(text: str) -> list[str]:
-    """Full reasoning under a ``│`` gutter, for ``/reasoning full``."""
-    return [f"\x1b[2;3m│ {line}{_RST}" if line.strip() else "\x1b[2;3m│\x1b[0m" for line in text.strip().splitlines()]
+_REASONING_PREVIEW_LINES = 10  # classic's post-hoc reasoning box shows this many unless /reasoning full
+
+
+def reasoning_text_line(line: str) -> str:
+    """One streamed reasoning line: dim, no frame (the dim bar above opens the block)."""
+    return f"{_DIM}{line}{_RST}"
 
 
 def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
-    """A reasoning block's scrollback rows: dim bar, collapsed line, and the body under ``full``."""
-    return [separator(False), thought_line(seconds, text), *(thought_body(text) if full else [])]
+    """A reasoning block printed after the fact (no live stream): dim bar, its text (first 10
+    lines unless ``full``, as classic), then the ``∴ Thought for 3s`` summary."""
+    lines = (text or "").strip().splitlines()
+    shown = lines if full or len(lines) <= _REASONING_PREVIEW_LINES else lines[:_REASONING_PREVIEW_LINES]
+    rows = [separator(False), *(reasoning_text_line(line) for line in shown)]
+    if len(shown) < len(lines):
+        rows.append(f"{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - len(shown))}{_RST}")
+    return [*rows, thought_line(seconds, text)]
 
 
 def completed_tool_line(cli, function_name: str, args: dict | None, duration: float, result=None,
@@ -206,19 +214,11 @@ def _cwd_label() -> str:
 
 
 def activity_text(cli) -> str:
-    """What the agent is doing, without the kaomoji face or per-tool emoji."""
+    """What the agent is doing: the classic spinner's text (kaomoji face or tool emoji included)."""
     if getattr(cli, "_command_running", False):
         return str(getattr(cli, "_command_status", "") or "")
     text = str(getattr(cli, "_spinner_text", "") or "").strip()
-    if not text:
-        return t("cli.modern.working") if getattr(cli, "_agent_running", False) else ""
-    if text.endswith("...") and " " in text:  # "(⊙_⊙) pondering..." → "Pondering…"
-        verb = text.rsplit(" ", 1)[-1].rstrip(".")
-        return f"{verb[:1].upper()}{verb[1:]}…"
-    head, _, rest = text.partition(" ")
-    if rest and head and not any(ch.isalnum() for ch in head):  # drop the emoji token
-        return rest
-    return text
+    return text or (t("cli.modern.working") if getattr(cli, "_agent_running", False) else "")
 
 
 def _turn_elapsed(cli) -> str:
@@ -256,9 +256,10 @@ def top_rule_fragments(cli) -> list:
     if busy:
         frame = _SPIN[int(time.monotonic() * 10) % len(_SPIN)]
         left = [(rule, "── "), (accent, frame + " "), ("", activity_text(cli))]
-        elapsed = _turn_elapsed(cli)
-        if elapsed:
-            left.append(("class:status-bar-dim bg:default", f" · {elapsed}"))
+        # Classic's spinner suffix: turn time and the streamed-token count (``↓ 547 tok``).
+        for extra in (_turn_elapsed(cli), cli._spinner_token_flow()):
+            if extra:
+                left.append(("class:status-bar-dim bg:default", f" · {extra}"))
         left.append((rule, " "))
     title = cli._get_status_bar_session_title()
     right = [(rule, " "), (f"fg:{_skin_hex('ui_label', '#DAA520')}", title), (rule, " ─")] if title else []
@@ -298,27 +299,27 @@ def _render_safely(render, cli) -> list:
         return [("", f" {getattr(cli, 'model', '') or 'Hermes'}")]
 
 
-# Live-state badges the classic bar shows, minus its throughput/clock fields: what changes per turn.
-_DEFAULT_FIELDS = frozenset({"model", "context_pct", "compressions", "bg_tasks", "bg_processes", "bg_subagents",
-                             "goal", "focus", "yolo", "stash", "battery"})
-
-
 def _status_line_fragments(cli) -> list:
+    """The classic bar's segments (same fields, same width tiers, same ``display.status_bar.fields``
+    filter), then cwd (branch) and the live key hints when there is room."""
     width = max(10, cli._get_tui_terminal_width())
     dim, strong = "class:status-bar-dim", "class:status-bar-strong"
     snapshot = cli._get_status_bar_snapshot()
     field_set = cli._get_status_bar_field_set()
-    fields = _DEFAULT_FIELDS if field_set is None else field_set
+
+    def _on(name):
+        return field_set is None or name in field_set
+
     left: list = []
-    for seg in cli._status_bar_segments(snapshot, width, fields, cli._is_session_yolo_active(), styled=True):
+    for seg in cli._status_bar_segments(snapshot, width, field_set, cli._is_session_yolo_active(), styled=True):
         if left:
             left.append((dim, " · "))
         left.extend(seg)
-    stash = cli._prompt_stash.indicator() if "stash" in fields and hasattr(cli, "_prompt_stash") else ""
+    stash = cli._prompt_stash.indicator() if _on("stash") and hasattr(cli, "_prompt_stash") else ""
     if stash:  # a parked draft is never silently forgotten
         left += [(dim, " · "), (strong, stash)]
     battery = snapshot.get("battery_label") or ""  # only set while /battery is on
-    if battery and "battery" in fields:
+    if battery and _on("battery"):
         left[0:0] = [("", " "), (cli._battery_status_style(snapshot.get("battery_category", "dim")), battery),
                      (dim, " ·")]
     vim = cli._vim_mode_label()

@@ -36,14 +36,16 @@ def test_glyph_layout_scrollback_is_width_independent(monkeypatch, modern):
         assert boxed and narrow != wide
         return
     assert narrow == wide and not boxed, wide
-    thought = [line for line in wide if line.startswith("∴")]
-    assert len(thought) == 1 and "Planning the change" in thought[0], wide
-    assert "I will read calc.py first." not in "\n".join(wide)  # collapsed unless /reasoning full
-    assert any("Added multiply to calc.py." in line for line in wide)
-    # Reasoning and the answer each open under a fixed-width bar (so it never re-wraps on resize).
     rows = "\n".join(wide).split("\n")
-    assert rows[rows.index(thought[0]) - 1] == "─" * 40, rows
+    thought = [line for line in rows if line.startswith("∴")]
+    assert len(thought) == 1 and "Planning the change" in thought[0], rows
+    # Reasoning streams in full like classic, under a fixed-width dim bar (never re-wraps on resize)
+    # and closed by the ∴ summary; the answer opens under its own bar.
+    start = rows.index("**Planning the change**")
+    assert rows[start - 1] == "─" * 40 and rows[start + 1] == "I will read calc.py first.", rows
+    assert rows[start + 2] == thought[0], rows
     assert rows[next(i for i, r in enumerate(rows) if r.startswith("☤ Hermes")) - 1] == "─" * 40, rows
+    assert any("Added multiply to calc.py." in line for line in rows)
 
 
 @pytest.mark.parametrize("modern", [True, False])
@@ -72,7 +74,7 @@ def test_panel_rows_never_carry_a_newline():
 
 
 @pytest.mark.parametrize("display, modern, busy", [
-    ({}, True, "steer"),
+    ({}, True, "interrupt"),
     ({"cli_layout": "classic"}, False, "interrupt"),
     ({"busy_input_mode": "queue"}, True, "queue"),
     ({"cli_layout": "classic", "busy_input_mode": "steer"}, False, "steer"),
@@ -90,3 +92,27 @@ def test_layout_and_busy_default_through_the_config_loader(tmp_path, monkeypatch
     loaded = cli.load_cli_config()["display"]
     assert layout_from_config(loaded) is modern
     assert busy_input_mode_from_config(loaded) == busy
+
+
+def test_status_line_keeps_every_classic_status_bar_field(monkeypatch):
+    """The glyph footer renders the classic bar's segments: nothing (tps, cache, latency, context
+    detail, duration...) is dropped by a layout-private default subset."""
+    from cli import HermesCLI
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli._status_bar_visible = True, True
+    snapshot = {"model_short": "m", "duration": "6h 43m", "context_percent": 7, "context_length": 1_000_000,
+                "context_tokens": 73_200, "context_estimated": True, "avg_latency_label": "9.0s",
+                "avg_velocity_label": "61 t/s", "cache_hit_rate": 28.9, "cache_read_tokens": 1, "prompt_tokens": 1,
+                "active_background_subagents": 3, "prompt_elapsed": "⏱ 10s"}
+    monkeypatch.setattr(HermesCLI, "_get_status_bar_snapshot", lambda self: snapshot)
+    monkeypatch.setattr(HermesCLI, "_get_tui_terminal_width", lambda self: 400)
+    monkeypatch.setattr(HermesCLI, "_get_status_bar_field_set", lambda self: None)
+    monkeypatch.setattr(HermesCLI, "_is_session_yolo_active", lambda self: False)
+    monkeypatch.setattr(HermesCLI, "_vim_mode_label", lambda self: "")
+    monkeypatch.setattr(HermesCLI, "_cache_hit_rate", lambda self, snap, precision=1: (28.9, "◎ 28.9%"))
+    monkeypatch.setattr("hermes_cli.cli_modern_layout.hint_pairs", lambda cli: [])
+    monkeypatch.setattr("hermes_cli.cli_modern_layout._cwd_label", lambda: "~")
+    line = "".join(text for _, text in cli._get_status_bar_fragments())
+    for piece in ("73.2K/1M", "7%", "◎ 28.9%", "◷ 9.0s", "↑ 61 t/s", "⛓ 3", "6h 43m", "⏱ 10s"):
+        assert piece in line, (piece, line)

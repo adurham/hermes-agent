@@ -191,14 +191,14 @@ acknowledge it before continuing. Do not resend the queued input.
 Added multiply; pytest isn't installed here, so I ran the tests directly: 2 passed.
 ─ 15.0s · edited 1 file +4 -0 · read 2 files · 8:27 AM
 ── ⠹ Running tests · 14s ─────────────────────────── Add multiply to calc.py ─
-❯ type to steer this turn · Tab queues it for after
+❯ type to redirect this turn · Tab queues it for after
 ──────────────────────────────────────────────────────────────────────────────
- gpt-5-mini · ctx [░░░░░░░░] 4% · ~/project (main)     enter steer · tab queue · ctrl+c stop
+ gpt-5-mini · ctx [░░░░░░░░] 4% · ~/project (main)     enter interrupt · tab queue · ctrl+c stop
 ```
 
-- `❯` your message, `∴` a reasoning step collapsed to its title and duration (`/reasoning full` prints the text under a `│` gutter), `●` a finished tool call (`✗` in red when it failed, with its exit code), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
-- The composer's top rule carries the live activity (spinner, what's running, elapsed time) on the left and the session title on the right; no spinner row is printed into the scrollback.
-- The status line sits under the composer: model, context gauge, and working directory (with git branch) on the left; the keys that do something right now on the right.
+- A 40-column bar opens each user message and answer (accent) and each reasoning block (dim); reasoning streams live as in classic and ends with a `∴ Thought for 3s · <title>` line. `❯` your message, `●` a finished tool call (`✗` in red when it failed, with its exit code), `│` an edit's diff under its row, `☤` the answer, and `─` the turn's summary line.
+- The composer's top rule carries the live activity (spinner, what's running, elapsed time, streamed tokens) on the left and the session title on the right; no spinner row is printed into the scrollback.
+- The status line sits under the composer: the same fields as the classic status bar (model, context, cache hit, latency, tokens/s, background work, goal, duration, YOLO…) plus the working directory (with git branch) on the left; the keys that do something right now on the right.
 - The welcome banner is the same in both layouts.
 
 Set `display.cli_layout: classic` to keep the boxed reasoning and answer panels and the status bar above the input.
@@ -265,7 +265,7 @@ On macOS, `F6`/`F7` mean the physical function keys, not the media/system contro
 | `Ctrl+R` / `F7` | Toggle the live work dock between its multi-row preview and a single summary line without moving composer focus. `Ctrl+R` is the reliable fallback when macOS reserves the function-key row. Besides subagents and background processes, the dock shows a standing `/goal` (active, parked or paused, with turns used) on its top row and the prompts waiting in `/queue` on its bottom rows. |
 | `Ctrl+D` | Exit (on an empty prompt; with text it deletes under the cursor). While the gateway runs a turn, it exits and leaves the turn running: the gateway finishes it, ends the session afterwards, and `hermes --resume` shows the reply. A turn that asks a question (approval or clarify) meanwhile waits for its timeout or for you to resume. Use `Ctrl+C` to stop the turn instead. |
 | `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
-| `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands. While the agent is working in the `modern` layout, `Tab` on a typed message queues it for the next turn instead of steering |
+| `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands. While the agent is working in the `modern` layout, `Tab` on a typed message queues it for the next turn |
 | `!<command>` | **Shell mode** — run a shell command yourself without spending a model turn (e.g. `!git status`, `!pytest -x`). See below. |
 
 **Multiline paste preview.** When you paste a multi-line block, the CLI echoes a compact single-line preview (`[pasted: 47 lines, 1,842 chars — press Enter to send]`) instead of dumping the whole payload into the scrollback. The full content is still what gets sent; this is just display polish.
@@ -460,14 +460,14 @@ The `display.busy_input_mode` config key controls what happens when you press En
 
 | Mode | Behavior |
 |------|----------|
-| `"interrupt"` (default for `display.cli_layout: classic`) | Your message redirects the active turn. Model generation restarts with displayed reasoning and completed work preserved. A running foreground terminal command is moved to the background (not killed — you get a completion notification) so your message is read immediately; other running tools finish first |
+| `"interrupt"` (default) | Your message redirects the active turn. Model generation restarts with displayed reasoning and completed work preserved. A running foreground terminal command is moved to the background (not killed — you get a completion notification) so your message is read immediately; other running tools finish first |
 | `"queue"` | Your message is queued as the next turn after the agent finishes. The queue lives on the gateway (crash-durable, visible to every attached client). |
-| `"steer"` (default for `display.cli_layout: modern`) | Your message is injected into the current run via `/steer`, arriving at the agent after the next tool call — no interrupt, no new turn. `Tab` queues instead |
+| `"steer"` | Your message is injected into the current run via `/steer`, arriving at the agent after the next tool call — no interrupt, no new turn |
 
 ```yaml
 # ~/.hermes/config.yaml
 display:
-  busy_input_mode: "steer"   # or "queue" or "interrupt"; unset follows display.cli_layout
+  busy_input_mode: "steer"   # or "queue" or "interrupt" (default)
 ```
 
 `"queue"` mode prepares a separate follow-up turn. `"steer"` always waits for the next tool-result boundary. The default `"interrupt"` mode responds sooner during model generation while avoiding cancellation of a running tool; a long foreground `terminal` command (a build, a poller) is handed to the background so the agent sees your message right away instead of after the command exits. Use `/stop` when you want to cancel the turn and its foreground work. Unknown values fall back to `"interrupt"`.

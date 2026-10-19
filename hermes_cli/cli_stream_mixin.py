@@ -266,9 +266,20 @@ class CLIStreamMixin:
         if getattr(self, "_stream_box_opened", False):
             return
         if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import reasoning_text_line, separator
             if not getattr(self, "_reasoning_box_opened", False):
-                self._reasoning_box_opened, self._reasoning_started_at, self._reasoning_buf = True, time.monotonic(), ""
+                self._reasoning_box_opened, self._reasoning_started_at = True, time.monotonic()
+                self._reasoning_buf, self._reasoning_full_text = "", ""
+                _cprint("\n" + separator(False))
+            self._reasoning_full_text = getattr(self, "_reasoning_full_text", "") + text
             self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
+            # Live, as classic: complete lines now, long partial lines force-flushed.
+            while "\n" in self._reasoning_buf:
+                line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+                _cprint(reasoning_text_line(line))
+            if len(self._reasoning_buf) > 80:
+                _cprint(reasoning_text_line(self._reasoning_buf))
+                self._reasoning_buf = ""
             return
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
@@ -312,12 +323,13 @@ class CLIStreamMixin:
         if not getattr(self, "_reasoning_box_opened", False):
             return
         if getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import thought_rows
-            text = getattr(self, "_reasoning_buf", "")
+            from hermes_cli.cli_modern_layout import reasoning_text_line, thought_line
+            if getattr(self, "_reasoning_buf", ""):
+                _cprint(reasoning_text_line(self._reasoning_buf))
             started = getattr(self, "_reasoning_started_at", 0.0)
-            for line in thought_rows(time.monotonic() - started if started else None, text, self.reasoning_full):
-                _cprint(line)
-            self._reasoning_buf, self._reasoning_box_opened = "", False
+            _cprint(thought_line(time.monotonic() - started if started else None,
+                                 getattr(self, "_reasoning_full_text", "")))
+            self._reasoning_buf, self._reasoning_full_text, self._reasoning_box_opened = "", "", False
             if not getattr(self, "_stream_box_live", False):
                 self._release_held_status_lines()
             return
