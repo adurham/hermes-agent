@@ -201,3 +201,95 @@ async def test_a_read_only_viewer_still_gets_the_plain_attach(tmp_path, monkeypa
             owners.key_of(owners.keyed)
     finally:
         await owners.close(conn)
+
+
+def _typed(session_id, key):
+    """``hermes --resume <id> --api-key <key>``: the key the user typed (``HermesCLI._typed_api_key``)."""
+    return SimpleNamespace(_resumed=True, session_id=session_id, _typed_api_key=key)
+
+
+@pytest.mark.asyncio
+async def test_resume_with_a_different_explicit_key_is_refused_not_dropped(tmp_path, monkeypatch):
+    """Review probe (#141481, CLI-34): a typed ``--api-key`` the session was not launched with is refused with
+    the thin client's words, never attached plain on the session's own key. Same owner life: K1 still held."""
+    from hermes_cli.gateway_client import RESUME_KEY_MISMATCH
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    conn = GatewayConnection(connect=owners.dial)
+    try:
+        store = GatewaySessionStore(conn)
+        wrong = {**LAUNCH, 'api_key': 'A-DIFFERENT-KEY'}
+        with pytest.raises(GatewayClientError) as refused:
+            await asyncio.to_thread(store.open_session, _typed(owners.keyed, 'A-DIFFERENT-KEY'), wrong)
+        assert str(refused.value) == RESUME_KEY_MISMATCH
+        assert owners.keyed not in store.snapshots  # nothing attached
+        # A typed key on a session launched without one: the same refusal (the thin client's too).
+        with pytest.raises(GatewayClientError, match='must be the key this session was launched with'):
+            await asyncio.to_thread(store.open_session, _typed(owners.plain, RAW), LAUNCH)
+        # The right typed key still resumes (after a restart: test_resume_after_a_restart_resupplies_the_launch_key).
+        assert await asyncio.to_thread(store.open_session, _typed(owners.keyed, RAW), LAUNCH) == owners.keyed
+    finally:
+        assert owners.key_of(owners.keyed) == RAW  # the session runs on K1 regardless
+        await owners.close(conn)
+
+
+@pytest.mark.asyncio
+async def test_a_keyed_alias_still_opens_a_keyless_session(tmp_path, monkeypatch, caplog):
+    """The key came from a keyed startup alias (nothing typed): ``-c`` / ``--resume`` of a session launched
+    without a key keeps the plain-resume fallback, and a reconnect resubscribes it plain too."""
+    caplog.set_level(logging.DEBUG, logger='hermes_cli.gateway_connection')
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    conn = GatewayConnection(connect=owners.dial)
+    try:
+        store = GatewaySessionStore(conn)
+        alias = SimpleNamespace(_resumed=True, session_id=owners.plain, _typed_api_key=None)
+        launch = {**LAUNCH, 'base_url': None}  # a changed --base-url on resume is refused on its own
+        assert await asyncio.to_thread(store.open_session, alias, launch) == owners.plain
+        assert conn.launch_api_key == RAW and not conn.launch_api_key_typed
+        assert any('admission_conflict' in line for line in _plain_retries(caplog))
+        before = conn.states[owners.plain].subscription_id
+        await owners.hang_up(conn)
+        await owners.boot('restarted')
+        await asyncio.to_thread(conn.start, 10)
+        assert conn.states[owners.plain].subscription_id not in (None, before)
+    finally:
+        await owners.close(conn)
+
+
+@pytest.mark.asyncio
+async def test_a_typed_key_reconnect_keeps_the_fallback(tmp_path, monkeypatch):
+    """A reconnect types nothing: a typed-key CLI that also viewed a keyless session resubscribes it plain."""
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    conn = GatewayConnection(connect=owners.dial)
+    try:
+        store = GatewaySessionStore(conn)
+        await asyncio.to_thread(store.open_session, _typed(owners.keyed, RAW), LAUNCH)
+        assert conn.launch_api_key_typed
+        await asyncio.to_thread(conn.resume, store.call, owners.plain)  # e.g. a session.resume a view made plain
+        conn.state(owners.plain).subscription_id = 'viewed'
+        await owners.hang_up(conn)
+        await owners.boot('restarted')
+        await asyncio.to_thread(conn.start, 10)
+        assert owners.key_of(owners.keyed) == RAW
+        assert conn.states[owners.plain].subscription_id not in (None, 'viewed')
+    finally:
+        await owners.close(conn)
+
+
+@pytest.mark.asyncio
+async def test_slash_resume_with_a_typed_key_is_refused_and_does_not_switch(tmp_path, monkeypatch):
+    """``/resume <keyless session>`` in a ``--api-key`` CLI: the refusal is printed and nothing switches
+    (``_gateway_owned_id`` returns None); a refused attach of any other kind keeps main's path."""
+    from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id
+    from hermes_cli.gateway_client import RESUME_KEY_MISMATCH
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    conn = GatewayConnection(connect=owners.dial)
+    try:
+        store = GatewaySessionStore(conn)
+        await asyncio.to_thread(store.open_session, _typed(owners.keyed, RAW), LAUNCH)
+        printed = []
+        assert await asyncio.to_thread(_gateway_owned_id, store, owners.plain, printed.append) is None
+        assert printed == [f'  {RESUME_KEY_MISMATCH}']
+        assert await asyncio.to_thread(_gateway_owned_id, store, owners.plain) == owners.plain  # no printer: as main
+        assert await asyncio.to_thread(_gateway_owned_id, store, 'missing-id', printed.append) == 'missing-id'
+    finally:
+        await owners.close(conn)

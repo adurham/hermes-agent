@@ -127,14 +127,15 @@ class GatewaySessionStore:
         not take the key (a keyed startup alias resuming a Desktop/TUI session) attaches as is."""
         if session_id in self.snapshots:
             return self.snapshots[session_id]
-        snapshot = self.connection.resume(self.call, session_id)
+        snapshot = self.connection.resume(self.call, session_id, typed=self.connection.launch_api_key_typed)
         self._adopt(snapshot)
         return snapshot
 
     def open_session(self, cli, launch=None):
         """Create (or resume) the gateway session for this CLI and adopt its id. A resume target the
         gateway does not know is left as is: main's own "Session not found" path reports it."""
-        self.connection.launch_api_key = (launch or {}).get("api_key") or None
+        key = self.connection.launch_api_key = (launch or {}).get("api_key") or None
+        self.connection.launch_api_key_typed = key is not None and key == getattr(cli, "_typed_api_key", None)
         if getattr(cli, "_resumed", False):
             try:
                 snapshot = self.attach(cli.session_id)

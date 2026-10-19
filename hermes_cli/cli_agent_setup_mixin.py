@@ -113,18 +113,24 @@ def _compression_descendant(session_db, session_id):
     return resolved_id if resolved_id and resolved_id != session_id else None
 
 
-def _gateway_owned_id(session_db, session_id):
+def _gateway_owned_id(session_db, session_id, refused=None):
     """The id the gateway answers for physical row *session_id*: ``session.resume``'s
     ``stored_session_id``. A canonical local compression segment holds the transcript, but its creation
     receipt lives on the conversation's logical owner, which every turn and mutation must name (as Ink
-    and ``session.resume`` do). Unchanged off the gateway store or when the resume is refused."""
+    and ``session.resume`` do). Unchanged off the gateway store or when the resume is refused, except a
+    typed ``--api-key`` the session does not take, when ``refused`` (``/resume``) prints it and None is
+    returned (nothing switches)."""
+    from hermes_cli.gateway_client import RESUME_KEY_MISMATCH
     from hermes_cli.gateway_session_store import GatewaySessionStore
     if not isinstance(session_db, GatewaySessionStore):
         return session_id
     try:
         return session_db.attach(session_id).get("stored_session_id") or session_id
-    except Exception:  # health: allow BLE001 -- a refused attach leaves main's own resume path to report it
-        return session_id
+    except Exception as exc:  # health: allow BLE001 -- a refused attach leaves main's own resume path to report it
+        if refused is None or str(exc) != RESUME_KEY_MISMATCH:
+            return session_id
+        refused(f"  {exc}")
+        return None
 
 
 def _user_display_text(content) -> str:

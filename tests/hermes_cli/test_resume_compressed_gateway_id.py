@@ -63,7 +63,7 @@ def _gateway_store(loop, authority, tmp_path):
     from hermes_cli.gateway_session_store import GatewaySessionStore
     from hermes_state import SessionDB
     states = {}
-    connection = types.SimpleNamespace(final=False, launch_api_key=None,
+    connection = types.SimpleNamespace(final=False, launch_api_key=None, launch_api_key_typed=False,
                                        state=lambda sid: states.setdefault(sid, SessionState(sid)))
     connection.resume = types.MethodType(GatewayConnection.resume, connection)  # the store's attach helper
     gateway = AuthorityConnection(authority, object(), {

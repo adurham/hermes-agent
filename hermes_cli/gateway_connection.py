@@ -16,7 +16,7 @@ import queue
 import threading
 import time
 
-from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, RESUME_KEY_MISMATCH, GatewayClientError, GatewayRPCError
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,9 @@ class GatewayConnection:
         # This CLI's launch-only key (``--api-key`` or a keyed startup alias), set by the session store:
         # an owner restart revokes it, so every resume re-supplies it (the owner's ``rebind_launch_key``).
         self.launch_api_key = None
+        # True when that key is the typed ``--api-key`` (not a keyed startup alias's): a resume the owner
+        # will not bind it to is refused as the thin client refuses it, never attached plain.
+        self.launch_api_key_typed = False
 
     @classmethod
     def shared(cls):
@@ -266,16 +269,20 @@ class GatewayConnection:
                 logger.debug("session.resume %s after reconnect: %s", session_id, exc)
                 state.subscription_id = None
 
-    def resume(self, call, session_id):
+    def resume(self, call, session_id, *, typed=False):
         """``session.resume`` through ``call`` (the store's attach; :meth:`_resubscribe`), re-supplying
         :attr:`launch_api_key`. Only a refusal in ``_KEY_NOT_TAKEN`` resumes plain (a keyed startup alias on
-        a Desktop/TUI session); any other is raised, not hidden by a keyless attach whose first turn fails."""
+        a Desktop/TUI session); any other is raised, not hidden by a keyless attach whose first turn fails.
+        ``typed`` (a typed ``--api-key`` the user resumes with) never resumes plain: ``admission_conflict``
+        is the thin client's refusal. A reconnect passes False: nothing was typed there."""
         key = self.launch_api_key
         if key:
             try:
                 return call("session.resume", session_id=session_id, api_key=key)
             except GatewayRPCError as exc:
-                if str(exc) not in _KEY_NOT_TAKEN:
+                if typed and str(exc) == "admission_conflict":
+                    raise GatewayClientError(RESUME_KEY_MISMATCH) from None
+                if typed or str(exc) not in _KEY_NOT_TAKEN:
                     raise
                 logger.debug("session.resume %s: launch key not taken (%s); resuming without it", session_id, exc)
         return call("session.resume", session_id=session_id)
