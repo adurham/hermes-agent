@@ -9,7 +9,14 @@ vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterT
 import type { GatewayEventName } from '@hermes/shared'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $messagingSessions, $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds } from '@/store/session'
+import {
+  $lastReadAtBySessionId,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  $unreadFinishedSessionIds,
+  setSelectedStoredSessionId
+} from '@/store/session'
 import { $sessionStates, publishSessionState } from '@/store/session-states'
 import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -73,6 +80,7 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     $selectedStoredSessionId.set(null)
     $unreadFinishedSessionIds.set([])
     $unreadFinishedMarkers.set({})
+    $lastReadAtBySessionId.set({})
     $activeGatewayProfile.set('default')
   })
 
@@ -148,6 +156,17 @@ describe('unread dot for a messaging turn Desktop sent', () => {
     noteDesktopAdmission('beta-turn')
     complete('beta-turn', 'shared', 'beta')
     expect($unreadFinishedSessionIds.get()).toContain('shared')
+    expect($unreadFinishedMarkers.get()).toEqual({ beta: ['shared'] })
+  })
+
+  it('does not light a held completion the user read before its receipt landed', () => {
+    complete('late-receipt')
+    // Opened and left again while the receipt was in flight.
+    setSelectedStoredSessionId('tg-1')
+    setSelectedStoredSessionId(null)
+    admit('late-receipt')
+    expect($unreadFinishedSessionIds.get()).not.toContain('tg-1')
+    expect($unreadFinishedMarkers.get()).toEqual({})
   })
 
   it('marks the listed segment of a compressed conversation', () => {
