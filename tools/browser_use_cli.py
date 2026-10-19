@@ -197,8 +197,50 @@ def _namespace_harness_daemons(env: dict) -> None:
             root = str(Path(xdg) / "browser-harness") if xdg else str(
                 Path(env.get("HOME") or Path.home()) / ".config" / "browser-harness")
         base = str(Path(root).expanduser() / "runtime")
-    env["BH_RUNTIME_DIR"] = str(Path(base) / f"p-{hashlib.sha256(tag.encode()).hexdigest()[:12]}")
+    runtime = str(Path(base) / f"p-{hashlib.sha256(tag.encode()).hexdigest()[:12]}")
+    env["BH_RUNTIME_DIR"] = _socket_fit_runtime_dir(runtime, base, tag)
     env["BH_RUNTIME_DIR_SHARED"] = "1"  # several BU_NAMEs share the dir: keep bu-<name> stems
+
+
+# browser_harness/_ipc.py: a shared runtime dir names a daemon socket ``<dir>/bu-<BU_NAME>.sock`` and
+# BU_NAME may be 64 characters, so the dir gets the macOS sun_path (104 bytes with the NUL) minus 72.
+_MACOS_SOCKET_DIR_BUDGET = 103 - len("/bu-.sock") - 64
+
+
+def _socket_fit_runtime_dir(runtime: str, base: str, tag: str) -> str:
+    """``runtime`` unless it is too long for a 64-character session's socket on macOS, where
+    ``~/.config/browser-harness/runtime`` alone already exceeds the budget. There the served profile
+    gets a private dir under the short temp root (``/private/tmp/hbh-<12 hex>``, 29 bytes), keyed by
+    uid, root and profile; if it can't be claimed safely the long path stays (shorter names only)."""
+    if sys.platform != "darwin" or len(runtime.encode()) <= _MACOS_SOCKET_DIR_BUDGET:
+        return runtime
+    from hermes_constants import socket_safe_tmpdir
+    getuid = getattr(os, "getuid", lambda: 0)
+    digest = hashlib.sha256(f"{getuid()}\0{base}\0{tag}".encode()).hexdigest()[:12]
+    short = os.path.join(os.path.realpath(socket_safe_tmpdir()), f"hbh-{digest}")
+    if len(short.encode()) <= _MACOS_SOCKET_DIR_BUDGET and _claim_private_dir(short):
+        return short
+    return runtime
+
+
+def _claim_private_dir(path: str) -> bool:
+    """Create ``path`` 0700, or accept an existing one only when it is a real directory (not a
+    symlink) owned by this uid and closed to group/other: the temp root is world-writable, and the
+    harness resolves symlinks and only chmods a dir it created itself."""
+    import stat
+    try:
+        os.mkdir(path, 0o700)
+        return True
+    except FileExistsError:
+        pass
+    except OSError:
+        return False
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return (stat.S_ISDIR(st.st_mode) and st.st_uid == getattr(os, "getuid", lambda: -1)()
+            and not st.st_mode & 0o077)
 
 
 def _floor_subprocess_path(path: str) -> str:
