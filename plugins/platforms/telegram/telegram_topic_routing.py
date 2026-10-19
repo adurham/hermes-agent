@@ -23,15 +23,24 @@ logger = logging.getLogger("plugins.platforms.telegram.adapter")
 class TelegramTopicRoutingMixin:
     """Topic-creation bookkeeping for ``TelegramAdapter`` (relies on its ``_chat_type_str``/``_chat_id_str``)."""
 
-    # A thread-less message from the creator adopts the new topic while it arrives within this many
+    # A thread-less message from the creator adopts the new topic while it was SENT within this many
     # seconds of the creation or of the previous adopted message (the client sends the opener
     # ~0.2-1 s after the creation; a split long text or an album follows within the same second).
+    # Measured on Telegram's ``Message.date`` stamps, never on handler time: per-chat FIFO holds a
+    # follow-up behind the previous handler (a photo download, STT), and it must not age out there.
     _NEW_TOPIC_FOLLOW_SECONDS = 5.0
     _NEW_TOPIC_OPENER_MAX_PENDING = 256
+    # Memory bound only (local clock), far above any handler backlog; adoption never reads it.
+    _NEW_TOPIC_RECORD_TTL_SECONDS = 600.0
 
     @staticmethod
     def _creator_key(message) -> str:
         return str(getattr(getattr(message, "from_user", None), "id", ""))
+
+    @staticmethod
+    def _sent_at(message) -> Optional[float]:
+        date = getattr(message, "date", None)
+        return date.timestamp() if hasattr(date, "timestamp") else None
 
     async def _handle_forum_topic_created(self, update: Any, context: Any) -> None:
         """Record an authorized, non-bot private-chat topic creation (#136567).
@@ -47,24 +56,25 @@ class TelegramTopicRoutingMixin:
             return
         thread_id = getattr(message, "message_thread_id", None)
         sender = getattr(message, "from_user", None)
-        if thread_id is None or sender is None or getattr(sender, "is_bot", False) is True:
+        sent_at = self._sent_at(message)
+        if thread_id is None or sent_at is None or sender is None or getattr(sender, "is_bot", False) is True:
             return
         if not self._is_user_authorized_from_message(message):
             return
         pending = self.__dict__.setdefault("_pending_created_topics", {})
         now = time.monotonic()
-        for key in [k for k, (_t, stamp) in pending.items() if now - stamp > self._NEW_TOPIC_FOLLOW_SECONDS]:
+        for key in [k for k, rec in pending.items() if now - rec[2] > self._NEW_TOPIC_RECORD_TTL_SECONDS]:
             del pending[key]
         while len(pending) >= self._NEW_TOPIC_OPENER_MAX_PENDING:
-            del pending[min(pending, key=lambda k: pending[k][1])]
+            del pending[min(pending, key=lambda k: pending[k][2])]
         chat_id = self._chat_id_str(message)
-        pending[(chat_id, self._creator_key(message))] = (str(thread_id), now)
+        pending[(chat_id, self._creator_key(message))] = (str(thread_id), sent_at, now)
         logger.debug("[%s] Recorded new Telegram topic %s (chat=%s)", self.name, thread_id, chat_id)
 
     def _adopt_created_topic_thread(self, message: Any, chat_type: str, thread_id: Optional[str]) -> Optional[str]:
         """Thread id of the topic this sender just created, for its thread-less follow-up messages.
 
-        A threaded message (the topic now routes normally) or a gap longer than
+        A threaded message (the topic now routes normally) or a send gap longer than
         ``_NEW_TOPIC_FOLLOW_SECONDS`` ends the follow; each adoption extends it, so every chunk of a
         split opener lands in the same topic.
         """
@@ -76,11 +86,11 @@ class TelegramTopicRoutingMixin:
         record = pending.pop(key, None)
         if record is None or thread_id is not None or getattr(message, "message_thread_id", None) is not None:
             return thread_id
-        created_thread_id, stamp = record
-        now = time.monotonic()
-        if now - stamp > self._NEW_TOPIC_FOLLOW_SECONDS:
+        created_thread_id, last_sent_at, _recorded = record
+        sent_at = self._sent_at(message)
+        if sent_at is None or sent_at - last_sent_at > self._NEW_TOPIC_FOLLOW_SECONDS:
             return thread_id
-        pending[key] = (created_thread_id, now)
+        pending[key] = (created_thread_id, max(sent_at, last_sent_at), time.monotonic())
         logger.info("[%s] Thread-less message %s adopted by new Telegram topic %s (chat=%s)",
                     self.name, getattr(message, "message_id", "?"), created_thread_id, key[0])
         return created_thread_id
