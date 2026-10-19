@@ -302,3 +302,23 @@ def test_restart_after_a_pending_redirect_still_gets_the_restart_notice():
         assert notice == RESTART_INTERRUPT_NOTICE, (agent._interrupt_message, notice)
     finally:
         set_interrupt(False)
+
+
+@pytest.mark.parametrize('cause', ['Gateway restarting', 'Gateway shutting down'])
+@pytest.mark.parametrize('row', [
+    {'principal_id': 'cron-owner', 'payload': {'text': 'job'}},
+    {'principal_id': 'automation:agent:main:telegram:dm:x', 'payload': {'text': 'done'}},
+    {'principal_id': 'person', 'payload': {'text': 'hook', 'native_text_v1': {'webhook_delivery': {}}}},
+])
+def test_automation_turn_the_owner_stop_interrupted_is_never_asked_to_resend(cause, row):
+    """#134889 GW-20: nobody sent an unattended turn, so the owner-stop notice is the neutral
+    automation copy (GW-10's rule), never "Send your message again"."""
+    from agent.turn_failure_copy import AUTOMATION_INTERRUPTED_NOTICE
+    stream = _Stream()
+    live = SimpleNamespace(controls=SimpleNamespace(snapshot=lambda *a: None), event_stream=stream)
+    _publish_completion(SimpleNamespace(runner=None), live, SimpleNamespace(session_id='s'),
+                        {'admission_id': 'adm-1', 'request_id': 'sub-1', **row},
+                        {'outcome': 'interrupted'}, '', _cause(cause))
+    (frame,) = stream.frames
+    assert frame['warning'] == AUTOMATION_INTERRUPTED_NOTICE
+    assert 'again' not in frame['warning'].replace('not run again', '')
