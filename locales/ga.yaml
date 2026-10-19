@@ -3009,6 +3009,10 @@ cli:
       usage_disconnect: "disconnect   Fill ar inneall brabhsálaí réamhshocraithe"
       usage_status: "status       Taispeáin mód reatha an bhrabhsálaí"
       usage_use: "use [off]    Athraigh go mód Browser Use (CLI 3.0) / ar ais go huirlisí ionsuite"
+      remote_gateway: "Bainistíonn /browser connect agus /browser disconnect brabhsálaí Chromium ar óstach an gheata — ar fáil ach amháin le geata áitiúil."
+      checking: "Ag seiceáil dífhabhtú cianda an bhrabhsálaí Chromium ag {url}..."
+      new_sessions_only: "Baineann sé le seisiúin nua — coinníonn an ceann seo a uirlisí reatha (/new chun ceann a thosú)."
+      status_gateway_default: "🌐 Brabhsálaí: inneall réamhshocraithe brabhsálaí an gheata (gan nasc beo CDP)"
     heartbeat:
       label: "Buillí croí"
       paused: "⏸ Buille croí curtha ar sos: {prompt}"

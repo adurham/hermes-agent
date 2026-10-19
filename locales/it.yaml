@@ -3009,6 +3009,10 @@ cli:
       usage_disconnect: "disconnect   Torna al backend browser predefinito"
       usage_status: "status       Mostra la modalità browser attuale"
       usage_use: "use [off]    Passa alla modalità Browser Use (CLI 3.0) / torna agli strumenti integrati"
+      remote_gateway: "/browser connect e /browser disconnect gestiscono un browser Chromium sull'host del gateway — disponibile solo con un gateway locale."
+      checking: "Verifica del debug remoto del browser Chromium su {url}..."
+      new_sessions_only: "Si applica alle nuove sessioni — questa mantiene gli strumenti attuali (/new per avviarne una)."
+      status_gateway_default: "🌐 Browser: backend browser predefinito del gateway (nessuna connessione CDP attiva)"
     heartbeat:
       label: "Heartbeat"
       paused: "⏸ Heartbeat in pausa: {prompt}"

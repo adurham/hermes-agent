@@ -1,6 +1,8 @@
-"""/browser connect|disconnect from one TUI or Desktop chat never rewrites the shared owner's
-process-wide CDP endpoint or reaps other chats' browsers (dokterdok N25); /browser status and
-/browser use still answer. One row per browser.manage action reaching the legacy fallback."""
+"""/browser connect|disconnect through the real WS legacy fallback (dokterdok N25, #134889 CLI-9).
+
+An owner serving ONE profile runs them: every chat on it is that profile's, and Ink, Desktop and the
+classic CLI all send /browser here. An owner serving SEVERAL profiles refuses them by name, so a
+browser one profile connects never reaches another profile's sessions; status still answers."""
 import json
 from pathlib import Path
 import subprocess
@@ -29,12 +31,21 @@ def receipt(tmp_path_factory):
     return json.loads((home / 'receipt.json').read_text())
 
 
-@pytest.mark.parametrize('action,refused', [
-    ('connect', True), ('disconnect', True), ('status', False), ('missing', False)])
-def test_browser_manage_on_the_shared_owner_keeps_process_wide_cdp(receipt, action, refused):
-    row = receipt[action]
+@pytest.mark.parametrize('action', ['connect', 'disconnect', 'status', 'missing'])
+def test_several_served_profiles_keep_the_process_wide_cdp(receipt, action):
+    row = receipt['two:' + action]
     assert row['cdp'] == _OTHER_CHAT and row['reaps'] == 0, row  # nothing process-wide changed
-    if refused:
+    if action in ('connect', 'disconnect'):
         assert row['code'] == 4030 and row['result'] is None, row  # refused in words, not -32601
+        assert 'several profiles' in row['message'], row
     else:
         assert row['code'] is None and row['result']['url'] == _OTHER_CHAT, row
+
+
+def test_one_served_profile_connects_and_disconnects_the_gateways_browser(receipt):
+    connect = receipt['one:connect']
+    assert connect['code'] is None and connect['result']['connected'] is True, connect
+    assert connect['cdp'] == f"http://127.0.0.1:{connect['cdp_port']}" and connect['reaps'] > 0, connect
+    disconnect = receipt['one:disconnect']
+    assert disconnect['code'] is None and disconnect['cdp'] is None, disconnect
+    assert receipt['one:status']['result']['connected'] is False

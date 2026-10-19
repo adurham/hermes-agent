@@ -3009,6 +3009,10 @@ cli:
       usage_disconnect: "disconnect   Повернутися до бекенду браузера за замовчуванням"
       usage_status: "status       Показати поточний режим браузера"
       usage_use: "use [off]    Перемкнутися в режим Browser Use (CLI 3.0) / назад до вбудованих інструментів"
+      remote_gateway: "/browser connect і /browser disconnect керують браузером Chromium на хості шлюзу — доступно лише з локальним шлюзом."
+      checking: "Перевірка віддаленого налагодження браузера Chromium за адресою {url}..."
+      new_sessions_only: "Застосовується до нових сеансів — цей зберігає поточні інструменти (/new, щоб почати новий)."
+      status_gateway_default: "🌐 Браузер: типовий браузер шлюзу (немає активного CDP-з'єднання)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat призупинено: {prompt}"

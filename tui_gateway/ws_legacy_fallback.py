@@ -47,11 +47,29 @@ _PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "
 # Process-global ACTIONS of a verb whose other actions are fine on the shared owner (the gate above is
 # method-level, and refusing the whole verb turns its safe actions into the client's -32601 version-skew
 # notice). ``browser.manage`` connect/disconnect reap every task's browser and rewrite the process-wide
-# ``BROWSER_CDP_URL`` that every chat's and served profile's browser tools read first (dokterdok N25);
-# ``status`` and ``use`` (the profile's ``browser.backend``) stay. A missing action means ``status``.
+# ``BROWSER_CDP_URL`` that every chat's browser tools read first (dokterdok N25); ``status`` and ``use``
+# (the profile's ``browser.backend``) stay. A missing action means ``status``.
+#
+# CLI-9 (#134889): on an owner serving ONE profile those chats are all that profile's, so the live
+# connect is the user's own choice and runs (Ink, Desktop and the classic CLI all send it here). On an
+# owner serving several profiles it would reach another profile's sessions, and the browser state has
+# no per-profile scope yet (``cleanup_all_browsers`` reaps every task's browser): refused by name.
 _PROCESS_GLOBAL_ACTIONS = {"browser.manage": ({"connect", "disconnect"}, (
-    "/browser connect and /browser disconnect would switch the browser for every chat on this shared "
-    "gateway. Set browser.cdp_url in config.yaml instead, or use the classic CLI (hermes --cli)."))}
+    "/browser connect and /browser disconnect are unavailable on a gateway serving several profiles: "
+    "the live browser connection is shared by every profile's chats. Set browser.cdp_url in this "
+    "profile's config.yaml instead."))}
+
+
+def _serves_several_profiles() -> bool:
+    """Whether this owner serves more than one profile (the running gateway's authority registry);
+    without a registered runner, whether the process multiplexes at all (fail closed)."""
+    from gateway import run_api
+    runner = getattr(run_api, "_ACTIVE_RUNNER", None)
+    if runner is not None and getattr(runner, "session_authorities", None) is not None:
+        from gateway.session_authorities import serving_authorities
+        return len(serving_authorities(runner)) > 1
+    from agent.secret_scope import is_multiplex_active
+    return is_multiplex_active()
 
 
 def legacy_fallback_allowed(actor: Any, method: str) -> bool:
@@ -142,7 +160,7 @@ def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict 
     """Run ``server.dispatch`` with the ticket's profile home bound (call from a worker thread;
     the pool path copies this context, so long handlers see it too)."""
     actions, refusal = _PROCESS_GLOBAL_ACTIONS.get(req.get("method"), ((), ""))
-    if (req.get("params") or {}).get("action", "status") in actions:
+    if (req.get("params") or {}).get("action", "status") in actions and _serves_several_profiles():
         return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4030, "message": refusal}}
     try:
         home = _foreign_profile_home(server, getattr(actor, "profile_id", None))

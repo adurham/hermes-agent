@@ -3009,6 +3009,10 @@ cli:
       usage_disconnect: "disconnect   Varsayılan tarayıcı arka ucuna geri döner"
       usage_status: "status       Geçerli tarayıcı modunu gösterir"
       usage_use: "use [off]    Browser Use moduna (CLI 3.0) geçer / yerleşik araçlara döner"
+      remote_gateway: "/browser connect ve /browser disconnect ağ geçidi ana makinesindeki bir Chromium tarayıcısını yönetir — yalnızca yerel ağ geçidine bağlıyken kullanılabilir."
+      checking: "{url} adresinde Chromium tarayıcısı uzaktan hata ayıklaması denetleniyor..."
+      new_sessions_only: "Yeni oturumlara uygulanır — bu oturum mevcut araçlarını korur (/new ile yeni başlatın)."
+      status_gateway_default: "🌐 Tarayıcı: ağ geçidinin varsayılan tarayıcı arka ucu (canlı CDP bağlantısı yok)"
     heartbeat:
       label: "Heartbeat'ler"
       paused: "⏸ Heartbeat duraklatıldı: {prompt}"

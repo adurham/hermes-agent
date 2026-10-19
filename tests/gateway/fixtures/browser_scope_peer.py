@@ -45,13 +45,26 @@ async def probe():
         ticket = mint_ticket(user_id='owner', provider='fixture')
         async with connect(api.api_origin.replace('http:', 'ws:') + '/api/ws?ticket=' + ticket) as ws:
             sid = (await rpc(ws, 'session.create', request_id='browser', source='tui', toolsets=[]))['result']['session_id']
-            for action, extra in [('connect', {'url': f'http://127.0.0.1:{cdp.server_port}'}),
-                                  ('disconnect', {}), ('status', {}), (None, {})]:
-                params = {'session_id': sid, **extra, **({'action': action} if action else {})}
-                reply = await rpc(ws, 'browser.manage', **params)
-                receipt[action or 'missing'] = {
-                    'code': reply.get('error', {}).get('code'), 'result': reply.get('result'),
-                    'cdp': os.environ.get('BROWSER_CDP_URL'), 'reaps': len(reaps)}
+            # CLI-9: phase 1 serves ONE profile (its chats are all this profile's), phase 2 TWO.
+            real = runner.session_authorities if hasattr(runner, 'session_authorities') else None
+            for phase, serving in (('one', None), ('two', 2)):
+                if serving:
+                    import types
+                    other = types.SimpleNamespace(profile_id=str(home / 'profiles' / 'bee'), retiring=False)
+                    runner.session_authorities = types.SimpleNamespace(
+                        serving=lambda: [runner.session_authority, other])
+                os.environ['BROWSER_CDP_URL'] = 'http://127.0.0.1:9333'  # another chat is driving this browser
+                reaps.clear()
+                for action, extra in [('connect', {'url': f'http://127.0.0.1:{cdp.server_port}'}),
+                                      ('disconnect', {}), ('status', {}), (None, {})]:
+                    params = {'session_id': sid, **extra, **({'action': action} if action else {})}
+                    reply = await rpc(ws, 'browser.manage', **params)
+                    receipt[f"{phase}:{action or 'missing'}"] = {
+                        'code': reply.get('error', {}).get('code'), 'result': reply.get('result'),
+                        'message': reply.get('error', {}).get('message'),
+                        'cdp': os.environ.get('BROWSER_CDP_URL'), 'reaps': len(reaps),
+                        'cdp_port': cdp.server_port}
+            runner.session_authorities = real
     finally:
         cdp.shutdown()
         await stop_gateway_api(api)
