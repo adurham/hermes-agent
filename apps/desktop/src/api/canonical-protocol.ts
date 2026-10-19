@@ -246,12 +246,16 @@ export class CanonicalDesktopProtocol {
     // failure carries no reason; its outcome is unknown and the token stays for the exact retry.
     if (typeof reason === 'string') { this.settleModelConfirmation(params) }
 
+    // Any typed refusal of a rewind wrote nothing. A derived /undo or /retry is retained by operation
+    // alone, so keeping the refused request would resend it for every later /undo instead of deriving.
+    if (typeof reason === 'string' && params.operation === 'rewind') { this.forgetMutation(params) }
+
     // A typed busy refusal of a rewind or a move wrote nothing either; the retry is a new request at the new revision.
     if (reason !== 'revision_conflict' && reason !== 'stale_generation' && !(reason === 'session_busy' && ['rewind', 'workspace'].includes(params.operation as string))) { return }
 
     // A confirmed fence refusal did not mutate. Ambiguous transport failures keep
     // the original revision/id so a retry cannot overwrite another user's edit.
-    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    this.forgetMutation(params)
     // The owner names its current fences on the refusal: adopt them so the next attempt presents them.
     const data = (error as { data?: { revision?: unknown; execution_generation?: unknown } })?.data
     const owner = canonicalSessionKey(params.session_id, params.profile)
@@ -321,6 +325,11 @@ export class CanonicalDesktopProtocol {
     // Routing belongs to the envelope, independently of the canonical payload.
     // Creation applies its own default-profile normalization.
     return method !== 'session.create' && params.profile !== undefined ? { ...prepared, profile: params.profile } : prepared
+  }
+
+  // Drop the retained request the owner answered: its outcome is known, so no retry may resend it.
+  private forgetMutation(params: Record<string, unknown>) {
+    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
   }
 
   // Only a session's very next control may retry an ambiguous one: any other verb retires the rest.
@@ -628,7 +637,7 @@ export class CanonicalDesktopProtocol {
   private mutationReceipt(method: string, params: Record<string, unknown>, value: any): any {
     if (value.session_id !== params.session_id) { throw new Error('Metadata receipt destination mismatch') }
 
-    for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
+    this.forgetMutation(params)
     this.settleModelConfirmation(params)
     this.retireSupersededMutations(params, value.revision)
 

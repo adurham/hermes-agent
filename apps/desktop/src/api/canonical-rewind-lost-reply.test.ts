@@ -73,3 +73,14 @@ test('an explicit rewind (edit, regenerate, restore) stays keyed by its own targ
   expect(other.request_id).not.toBe(lost.request_id)
   expect(other).toMatchObject({ payload: { target_message_id: 3 } })
 })
+
+test('an owner refusal that names a reason lets the next /undo derive again', () => {
+  const protocol = primed()
+  const refused = protocol.prepare('session.rewind', derived(5))
+  protocol.failure(refused, { data: { reason: 'invalid_params', field: 'target_message_id' } })
+
+  const next = protocol.prepare('session.rewind', derived(3))
+
+  expect(next.request_id).not.toBe(refused.request_id)
+  expect(next).toMatchObject({ payload: { target_message_id: 3 }, expected_revision: 7 })
+})
