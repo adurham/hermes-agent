@@ -251,6 +251,35 @@ describe('/config', () => {
     expect(text).not.toContain('voice:')
     expect(text).toContain('Settings')
   })
+
+  it('never prints credentials or provider sections, whichever server answered', async () => {
+    // A standalone `hermes serve` answers config.get key=full with the raw effective config.
+    const requestGateway = gateway(method =>
+      method === 'config.get'
+        ? {
+            config: {
+              model: { default: 'm', api_key: 'sk-PROBE-SECRET' },
+              providers: { p: { api_key: 'sk-PROBE-SECRET' } },
+              custom_providers: [{ name: 'c', api_key: 'sk-PROBE-SECRET' }],
+              mcp_servers: { s: { env: { X: 'sk-PROBE-SECRET' } } },
+              display: { skin: 'mono' },
+              tools: { web: { api_key: 'sk-PROBE-SECRET', bearer_token: 'sk-PROBE-SECRET', backend: 'x' } },
+              auth: { password: 'sk-PROBE-SECRET', client_secret: 'sk-PROBE-SECRET' }
+            }
+          }
+        : undefined
+    )
+
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/config')
+
+    const text = renderedText(handle)
+    expect(text).toContain('skin: mono')
+    expect(text).toContain('backend: x')
+    expect(text).not.toContain('sk-PROBE-SECRET')
+    expect(text).not.toMatch(/^\s*(model|providers|custom_providers|mcp_servers):/m)
+  })
 })
 
 describe('/history', () => {

@@ -199,17 +199,33 @@ function formatAgents(subagents: SubagentRow[], processes: ProcessRow[]): string
   return lines.join('\n')
 }
 
+// A standalone `hermes serve` answers config.get key=full with the raw effective config, so the
+// renderer drops credentials and provider/MCP sections itself rather than trusting the server.
+const CONFIG_HIDDEN_SECTIONS = new Set(['custom_providers', 'mcp_servers', 'model', 'providers'])
+const CONFIG_SECRET_KEY = /api_?key|secret|password|(^|_)tokens?$/i
+
+const hiddenConfigKey = (key: string, top: boolean) =>
+  CONFIG_SECRET_KEY.test(key) || (top && CONFIG_HIDDEN_SECTIONS.has(key))
+
 function yamlLines(value: unknown, indent = ''): string[] {
   if (value === null || typeof value !== 'object') {
     return [`${indent}${String(value)}`]
   }
 
   return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
-    child !== null && typeof child === 'object' && !Array.isArray(child)
-      ? Object.keys(child).length
-        ? [`${indent}${key}:`, ...yamlLines(child, `${indent}  `)]
-        : []
-      : [`${indent}${key}: ${Array.isArray(child) ? JSON.stringify(child) : String(child)}`]
+    hiddenConfigKey(key, !indent)
+      ? []
+      : child !== null && typeof child === 'object' && !Array.isArray(child)
+        ? Object.keys(child).length
+          ? [`${indent}${key}:`, ...yamlLines(child, `${indent}  `)]
+          : []
+        : [
+            `${indent}${key}: ${
+              Array.isArray(child)
+                ? JSON.stringify(child, (k, v) => (k && CONFIG_SECRET_KEY.test(k) ? undefined : v))
+                : String(child)
+            }`
+          ]
   )
 }
 
