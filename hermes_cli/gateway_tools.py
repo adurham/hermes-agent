@@ -56,6 +56,7 @@ class GatewayProcessView:
         self._subagents_seen = 0.0
         self._subagents_lock = threading.Lock()
         self._tail = None
+        self._subagents_watch_until = 0.0
 
     @property
     def session_id(self):
@@ -134,11 +135,19 @@ class GatewayProcessView:
         return value if isinstance(value, int) else 0
 
     # -- the subagent registry main's Ctrl+T monitor and dock read ---------------------------
+    def watch_subagents(self, seconds=_RETAIN_SECONDS):
+        """Poll ``subagent.list`` for a while even with no turn running: an off-turn spawn
+        (``/review``) moves neither ``busy`` nor the usage count the gate below reads."""
+        self._subagents_watch_until = time.time() + seconds
+        self._subagents_polled = 0.0
+
     def subagent_rows(self, *, busy):
         """The session's live children (``subagent.list``). Asks at most once a second, and only
-        while a turn runs (``busy``), children were listed last time, or the gateway counts some."""
+        while a turn runs (``busy``), children were listed last time, the gateway counts some, or
+        an off-turn spawn asked to be watched."""
         now = time.time()
-        wanted = busy or self.subagents or self.active_delegations()
+        wanted = (busy or self.subagents or now < self._subagents_watch_until
+                  or self.active_delegations())
         if wanted and now - self._subagents_polled >= _POLL_SECONDS and self._subagents_lock.acquire(blocking=False):
             try:
                 self._subagents_polled = now
