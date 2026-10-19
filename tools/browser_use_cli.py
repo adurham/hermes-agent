@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -693,7 +693,7 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
 # BU_NAMEs whose harness daemon this process has driven. The daemon reads BU_CDP_* once, at start, and
 # outlives every call, so a backend swap (/browser connect|disconnect) that only changes the resolved
 # endpoint leaves later browser_exec calls in the old browser until these are stopped.
-_driven_daemons: set = set()
+_driven_daemons: dict[str, str] = {}  # BU_NAME -> profile home that drove it
 _driven_daemons_lock = threading.Lock()
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
 _exec_route_is_sidecar: dict[str, bool] = {}
@@ -702,12 +702,14 @@ _real_profile_fallback: dict[str, str] = {}
 _real_profile_note_delivered: set = set()
 
 
-def stop_harness_daemons() -> None:
-    """Stop every harness daemon this process drove, through the harness's own identity-checked
-    ``--reload``; the next browser_exec respawns one on the endpoint it resolves then."""
+def stop_harness_daemons(home_key: Optional[str] = None) -> None:
+    """Stop every harness daemon this process drove (only ``home_key``'s when given), through the
+    harness's own identity-checked ``--reload``; the next browser_exec respawns one on the endpoint
+    it resolves then."""
     with _driven_daemons_lock:
-        names = sorted(_driven_daemons)
-        _driven_daemons.clear()
+        names = sorted(name for name, home in _driven_daemons.items() if home_key in (None, home))
+        for name in names:
+            _driven_daemons.pop(name, None)
     cmd = _find_cli() if names else None
     if not cmd:
         return
@@ -796,7 +798,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
         with _driven_daemons_lock:
-            _driven_daemons.add(env.get("BU_NAME", "default"))
+            _driven_daemons[env.get("BU_NAME", "default")] = hermes_home_key()
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
