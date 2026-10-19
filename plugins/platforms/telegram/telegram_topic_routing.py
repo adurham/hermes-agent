@@ -39,6 +39,7 @@ class TelegramTopicRoutingMixin:
 
     @staticmethod
     def _sent_at(message) -> Optional[float]:
+        """Telegram's send stamp (whole seconds); an edit keeps its message's original ``date``."""
         date = getattr(message, "date", None)
         return date.timestamp() if hasattr(date, "timestamp") else None
 
@@ -83,14 +84,19 @@ class TelegramTopicRoutingMixin:
         if chat_type != "dm" or not pending:
             return thread_id
         key = (self._chat_id_str(message), self._creator_key(message))
-        record = pending.pop(key, None)
-        if record is None or thread_id is not None or getattr(message, "message_thread_id", None) is not None:
+        record = pending.get(key)
+        sent_at = self._sent_at(message)
+        # An edit of a message sent before the creation stays where that message lived and leaves
+        # the record for the real opener.
+        if record is None or sent_at is None or sent_at < record[1]:
+            return thread_id
+        del pending[key]
+        if thread_id is not None or getattr(message, "message_thread_id", None) is not None:
             return thread_id
         created_thread_id, last_sent_at, _recorded = record
-        sent_at = self._sent_at(message)
-        if sent_at is None or sent_at - last_sent_at > self._NEW_TOPIC_FOLLOW_SECONDS:
+        if sent_at - last_sent_at > self._NEW_TOPIC_FOLLOW_SECONDS:
             return thread_id
-        pending[key] = (created_thread_id, max(sent_at, last_sent_at), time.monotonic())
+        pending[key] = (created_thread_id, sent_at, time.monotonic())
         logger.info("[%s] Thread-less message %s adopted by new Telegram topic %s (chat=%s)",
                     self.name, getattr(message, "message_id", "?"), created_thread_id, key[0])
         return created_thread_id

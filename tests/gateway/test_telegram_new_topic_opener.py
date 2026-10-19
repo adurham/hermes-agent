@@ -24,12 +24,13 @@ T0 = datetime(2026, 10, 14, 13, 21, 2, tzinfo=UTC)
 WINDOW = routing.TelegramTopicRoutingMixin._NEW_TOPIC_FOLLOW_SECONDS
 
 
-def _msg(message_id, sent, *, thread_id=None, created=False, user_id=USER, chat_id=CHAT, text="hi"):
+def _msg(message_id, sent, *, thread_id=None, created=False, user_id=USER, chat_id=CHAT, text="hi", edited=None):
     chat = SimpleNamespace(id=chat_id, type="private", title=None, full_name="T")
     return SimpleNamespace(
         chat=chat, from_user=SimpleNamespace(id=user_id, full_name="T", is_bot=False),
         text=None if created else text, message_thread_id=thread_id, is_topic_message=thread_id is not None,
         message_id=message_id, reply_to_message=None, date=T0 + timedelta(seconds=sent),
+        edit_date=None if edited is None else T0 + timedelta(seconds=edited),
         forum_topic_created=SimpleNamespace(name="New topic") if created else None)
 
 
@@ -71,6 +72,8 @@ async def test_creation_is_not_adopted_late_or_by_others(adapter):
     await _create(adapter, 10)
     assert _thread(adapter, _msg(11, 0.1, user_id=7)) is None  # another sender
     assert _thread(adapter, _msg(12, 0.1, chat_id=222)) is None  # another chat
+    # An edit of a lobby message sent before the creation stays where that message lived.
+    assert _thread(adapter, _msg(5, -60, edited=1.0)) is None
     assert _thread(adapter, _msg(13, WINDOW + 1)) is None  # a lobby message sent well after the creation
     await _create(adapter, 20, user_id=7)  # creation by a user the adapter would reject
     assert not adapter._pending_created_topics
