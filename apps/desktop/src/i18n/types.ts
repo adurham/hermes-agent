@@ -1918,10 +1918,6 @@ catalog: CatalogTranslations
         unsupported_gpu: string
         unknown: string
       }
-      catalogTitle: string
-      catalogBrowse: string
-      catalogHide: string
-      catalogHint: string
       alreadyInstalled: (name: string) => string
       catalogProvenance: (sha: string) => string
       pinnedProvenance: (sha: string) => string
