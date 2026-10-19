@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "Cola · {count} en cola · /queue list{controls}"
     more_queued: "+{count} más"
     transcript_unavailable: "La transcripción en vivo aún no está disponible."
+    control_pending: "Enviando…"
     steer_prompt: "Redirigir: "
     roster_empty: "No hay subagentes activos ni procesos en segundo plano. Los resultados llegan a la conversación."
     entry_gone: "Esta entrada ya no está activa."

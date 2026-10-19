@@ -2346,6 +2346,7 @@ cli:
     queue_heading: "Queue · {count} queued · /queue list{controls}"
     more_queued: "+{count} more"
     transcript_unavailable: "Live transcript not available yet."
+    control_pending: "Sending…"
     steer_prompt: "Steer: "
     roster_empty: "No live subagents or background processes. Results arrive in the conversation."
     entry_gone: "This entry is no longer live."

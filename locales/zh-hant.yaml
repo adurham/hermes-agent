@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "佇列 · {count} 個排隊中 · /queue list{controls}"
     more_queued: "還有 {count} 個"
     transcript_unavailable: "即時逐字稿尚未可用。"
+    control_pending: "傳送中…"
     steer_prompt: "引導："
     roster_empty: "沒有進行中的子代理或背景程序。結果會出現在對話中。"
     entry_gone: "此項目已不再進行中。"

@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "队列 · {count} 个排队中 · /queue list{controls}"
     more_queued: "+{count} 个"
     transcript_unavailable: "实时记录尚不可用。"
+    control_pending: "发送中…"
     steer_prompt: "引导："
     roster_empty: "没有运行中的子代理或后台进程。结果会出现在对话中。"
     entry_gone: "此条目已不再运行。"

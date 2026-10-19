@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "قائمة الانتظار · {count} في الانتظار · /queue list{controls}"
     more_queued: "+{count} أخرى"
     transcript_unavailable: "النص المباشر غير متاح بعد."
+    control_pending: "جارٍ الإرسال…"
     steer_prompt: "توجيه: "
     roster_empty: "لا وكلاء فرعيين نشطين ولا عمليات في الخلفية. تصل النتائج في المحادثة."
     entry_gone: "هذا العنصر لم يعد نشطًا."

@@ -84,7 +84,7 @@ def test_monitor_lists_tails_and_controls_the_gateway_sessions_children(gateway)
     monitor.detail = True  # the open detail view: the spinner thread's tick fetches its tail
     client.tail_text = "step 1\r\n\x1b[2Jstep 2\n"  # a child's terminal control codes
     monitor.tick()
-    assert cli_subagent_monitor.subagent_tail(monitor.selected) == "step 1\n[2Jstep 2\n"  # stripped
+    assert cli_subagent_monitor.subagent_tail(monitor, monitor.selected) == "step 1\n[2Jstep 2\n"  # stripped
 
     assert "note" in monitor.control("steer", "Focus on the tokenizer")
     assert client.steered == ["Focus on the tokenizer"]

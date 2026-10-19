@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "Scuaine · {count} i scuaine · /queue list{controls}"
     more_queued: "+{count} eile"
     transcript_unavailable: "Níl an traschríbhinn bheo ar fáil fós."
+    control_pending: "Á sheoladh…"
     steer_prompt: "Stiúir: "
     roster_empty: "Níl aon fho-ghníomhairí beo ná próisis chúlra ann. Tagann na torthaí isteach sa chomhrá."
     entry_gone: "Níl an iontráil seo beo a thuilleadh."

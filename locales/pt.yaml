@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "Fila · {count} na fila · /queue list{controls}"
     more_queued: "+{count} mais"
     transcript_unavailable: "Transcrição ao vivo ainda não disponível."
+    control_pending: "Enviando…"
     steer_prompt: "Redirecionar: "
     roster_empty: "Nenhum subagente ativo nem processo em segundo plano. Os resultados chegam na conversa."
     entry_gone: "Esta entrada não está mais ativa."

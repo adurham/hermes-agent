@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "Coda · {count} in coda · /queue list{controls}"
     more_queued: "+{count} altri"
     transcript_unavailable: "Trascrizione in tempo reale non ancora disponibile."
+    control_pending: "Invio in corso…"
     steer_prompt: "Indirizza: "
     roster_empty: "Nessun subagente attivo né processo in background. I risultati arrivano nella conversazione."
     entry_gone: "Questa voce non è più attiva."

@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "Очередь · в очереди: {count} · /queue list{controls}"
     more_queued: "+{count} ещё"
     transcript_unavailable: "Живой транскрипт пока недоступен."
+    control_pending: "Отправка…"
     steer_prompt: "Корректировка: "
     roster_empty: "Нет активных подагентов или фоновых процессов. Результаты появятся в разговоре."
     entry_gone: "Эта запись больше не активна."

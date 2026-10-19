@@ -2264,6 +2264,7 @@ cli:
     queue_heading: "Sor · {count} sorban · /queue list{controls}"
     more_queued: "+{count} további"
     transcript_unavailable: "Élő átirat még nem érhető el."
+    control_pending: "Küldés…"
     steer_prompt: "Irányítás: "
     roster_empty: "Nincs élő alügynök vagy háttérfolyamat. Az eredmények a beszélgetésben érkeznek."
     entry_gone: "Ez a bejegyzés már nem élő."

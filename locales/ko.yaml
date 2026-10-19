@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "대기열 · {count}개 대기 중 · /queue list{controls}"
     more_queued: "+{count}개 더"
     transcript_unavailable: "실시간 기록을 아직 볼 수 없어요."
+    control_pending: "보내는 중…"
     steer_prompt: "조정: "
     roster_empty: "진행 중인 서브에이전트나 백그라운드 프로세스가 없어요. 결과는 대화에 도착해요."
     entry_gone: "이 항목은 더 이상 진행 중이 아니에요."

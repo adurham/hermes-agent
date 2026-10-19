@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "Черга · {count} у черзі · /queue list{controls}"
     more_queued: "+{count} ще"
     transcript_unavailable: "Транскрипт у реальному часі ще недоступний."
+    control_pending: "Надсилання…"
     steer_prompt: "Скерувати: "
     roster_empty: "Немає активних субагентів чи фонових процесів. Результати з'являться в розмові."
     entry_gone: "Цей запис більше не активний."

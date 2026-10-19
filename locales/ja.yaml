@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "キュー · {count} 件キュー待ち · /queue list{controls}"
     more_queued: "+{count} 件"
     transcript_unavailable: "ライブトランスクリプトはまだ利用できません。"
+    control_pending: "送信中…"
     steer_prompt: "ステア: "
     roster_empty: "稼働中のサブエージェントやバックグラウンドプロセスはありません。結果は会話内に届きます。"
     entry_gone: "この項目はすでに終了しています。"

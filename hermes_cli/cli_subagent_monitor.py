@@ -66,28 +66,23 @@ class SubagentMonitor:
         row = self.selected
         return row if row and row.get('kind') == 'process' else None
 
-    def _subagent_rows(self):
-        """``(rows, activity)``: the session's live children and their lifecycle records. Rewired, the
-        children run in the gateway, so both come from its ``subagent.list`` (CLI-12)."""
-        from hermes_cli.gateway_tools import process_view
+    def subagents(self):
+        """The subagent backend: the gateway session's view when its children run there (CLI-12),
+        else this process's own registry; both answer the same ``subagent_*`` calls."""
+        from hermes_cli.gateway_tools import LocalSubagents, process_view
         view = process_view()
         if view is not None:
-            rows = view.subagent_rows(busy=bool(getattr(self.cli, '_agent_running', False)))
-            return rows, {r['subagent_id']: r for r in rows}
-        from tools.delegate_tool_registry import _list_payload, list_active_subagents
-        parent = getattr(self.cli, 'agent', None)
-        entries = _list_payload(parent)['subagents'] if parent is not None else []
-        # The scoped control-plane snapshot supplies authority and transcript paths;
-        # its matching public lifecycle record supplies the latest observed tool.
-        return entries, ({r['subagent_id']: r for r in list_active_subagents()} if entries else {})
+            return view
+        if getattr(self, '_local', None) is None:
+            self._local = LocalSubagents(self.cli)
+        return self._local
 
     def refresh(self, now=None):
         now = time.time() if now is None else now
-        entries, activity = self._subagent_rows()
+        entries = self.subagents().subagent_rows(busy=bool(getattr(self.cli, '_agent_running', False)))
         for row in entries:
-            live = activity.get(row['subagent_id'], {})
-            row['elapsed'] = max(0, int(now - (live.get('started_at') or now)))
-            row['last_tool'] = live.get('last_tool') or ''
+            row['elapsed'] = max(0, int(now - (row.get('started_at') or now)))
+            row['last_tool'] = row.get('last_tool') or ''
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
         processes = procs.process_rows(now)
@@ -138,12 +133,12 @@ class SubagentMonitor:
     def _poll_tail(self):
         """Off the render path (the spinner thread's tick): refresh the gateway tail the open detail
         view paints from the cache. True when the text changed."""
-        from hermes_cli.gateway_tools import process_view
-        row, view = self.selected, process_view()
-        if not self.detail or view is None or row is None or row.get('kind') == 'process':
+        row = self.selected
+        if not self.detail or row is None or row.get('kind') == 'process':
             return False
-        before = view.subagent_tail(row['subagent_id'])
-        return view.subagent_tail(row['subagent_id'], fetch=True) != before
+        backend = self.subagents()
+        before = backend.subagent_tail(row['subagent_id'])
+        return backend.subagent_tail(row['subagent_id'], fetch=True) != before
 
     def select(self, delta):
         roster = self.roster
@@ -157,12 +152,7 @@ class SubagentMonitor:
             if action != 'stop':
                 return {'error': t('cli.subagents.cannot_steer_process')}
             return procs.kill(target)
-        from hermes_cli.gateway_tools import process_view
-        view = process_view()
-        if view is not None:
-            return view.subagent_control(action, target, message)
-        from tools.delegate_tool_registry import _handle_control_action
-        return json.loads(_handle_control_action(action, target, message, getattr(self.cli, 'agent', None)))
+        return self.subagents().subagent_control(action, target, message)
 
     def _counts(self, *, session=True):
         """Count fragment: ``2 live``, ``1 proc``, ``2 live · 3 procs``; the collapsed heading
@@ -290,15 +280,10 @@ def read_tail(path):
         return t('cli.subagents.transcript_unavailable')
 
 
-def subagent_tail(row):
-    """The child's transcript tail: the gateway's ``subagent.tail`` when it runs the child (fetched and
-    filtered by the monitor's tick, never here: the detail view calls this every frame), else the
-    transcript file this process wrote."""
-    from hermes_cli.gateway_tools import process_view
-    view = process_view()
-    if view is None:
-        return read_tail(row.get('live_transcript'))
-    text = view.subagent_tail(row['subagent_id'])
+def subagent_tail(monitor, row):
+    """The child's transcript tail from the monitor's backend (the gateway's is fetched and filtered by
+    the monitor's tick, never here: the detail view calls this every frame)."""
+    text = monitor.subagents().subagent_tail(row['subagent_id'])
     return t('cli.subagents.transcript_unavailable') if text is None else text
 
 
@@ -354,7 +339,7 @@ def build_monitor_application(monitor, **kwargs):
         elif row.get('kind') == 'process':
             text = procs.process_tail(row['id'])
         else:
-            text = subagent_tail(row)
+            text = subagent_tail(monitor, row)
         if text != tail.text:
             following = tail.buffer.cursor_position == len(tail.text)
             position = tail.buffer.cursor_position
@@ -383,6 +368,23 @@ def build_monitor_application(monitor, **kwargs):
                     else t('cli.subagents.footer_roster_compact'))
         steer = '' if process else t('cli.subagents.footer_steer_key_long')
         return t('cli.subagents.footer_detail' if monitor.detail else 'cli.subagents.footer_roster', steer=steer)
+
+    def run_control(action, message, target):
+        """Steer/stop off the UI loop: a stalled gateway call (up to its timeout) must not freeze the
+        monitor's repaint, Esc or Ctrl+C. The answer lands in the notice line when it arrives."""
+        import asyncio
+        state['notice'] = t('cli.subagents.control_pending')
+
+        def done(future):
+            try:
+                result = future.result()
+            except Exception as exc:  # health: allow BLE001 -- a control failure is shown, never raised into the UI loop
+                result = {'error': str(exc)}
+            state['notice'] = result.get('error') or result.get('note') or str(result)
+            app.invalidate()
+
+        asyncio.get_running_loop().run_in_executor(
+            None, lambda: monitor.control(action, message, target=target)).add_done_callback(done)
 
     kb = KeyBindings()
     normal = Condition(lambda: not state['steering'] and not state['confirm'])
@@ -415,8 +417,7 @@ def build_monitor_application(monitor, **kwargs):
     def send_steer(event):
         if not steer.text.strip():
             return
-        result = monitor.control('steer', steer.text, target=state['target'])
-        state['notice'] = result.get('error') or result.get('note') or str(result)
+        run_control('steer', steer.text, state['target'])
         steer.text = ''
         state['steering'] = False
         app.layout.focus(tail if monitor.detail else roster)
@@ -429,8 +430,7 @@ def build_monitor_application(monitor, **kwargs):
 
     @kb.add('y', filter=Condition(lambda: state['confirm']))
     def confirm(event):
-        result = monitor.control('stop', target=state['target'])
-        state['notice'] = result.get('error') or result.get('note') or str(result)
+        run_control('stop', None, state['target'])
         state['confirm'] = False
 
     @kb.add('escape', eager=True)

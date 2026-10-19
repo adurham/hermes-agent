@@ -2247,6 +2247,7 @@ cli:
     queue_heading: "Kuyruk · {count} sırada · /queue list{controls}"
     more_queued: "+{count} tane daha"
     transcript_unavailable: "Canlı transkript henüz kullanılamıyor."
+    control_pending: "Gönderiliyor…"
     steer_prompt: "Yönlendir: "
     roster_empty: "Canlı alt ajan veya arka plan süreci yok. Sonuçlar konuşmaya gelir."
     entry_gone: "Bu kayıt artık canlı değil."
