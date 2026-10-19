@@ -18,11 +18,20 @@ from acp.schema import (
 
 logger = logging.getLogger(__name__)
 
-# The gateway honours one editor edit policy, ``ask`` (``gateway/session_local_editor.py``), and has
-# no verb that changes it on a live session, so main's Accept Edits / Don't Ask are not offered.
+# Main's ACP modes (``acp_adapter/server.py`` ``_MODES``): mode id -> (edit approval policy, name,
+# description). The policy is the session's own on the owner (``session.mutate edit_policy``), enforced
+# where the edit runs (``gateway/session_local_editor.py``); sensitive paths always ask.
 DEFAULT_MODE = "default"
 DEFAULT_EDIT_APPROVAL_POLICY = "ask"
 EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
+MODES: dict[str, tuple[str, str, str]] = {
+    "default": ("ask", "Default", "Ask before edits."),
+    "accept_edits": ("workspace_session", "Accept Edits",
+                     "Auto-allow workspace and temp-dir edits; still asks for sensitive paths."),
+    "dont_ask": ("session", "Don't Ask", "Auto-allow file edits for this session except sensitive paths."),
+}
+MODE_TO_EDIT_APPROVAL_POLICY = {mode: spec[0] for mode, spec in MODES.items()}
+EDIT_APPROVAL_POLICY_TO_MODE = {spec[0]: mode for mode, spec in MODES.items()}
 
 # Advertised name -> (description, input hint). ``prompt`` serves each through a gateway verb
 # (``acp_adapter/gateway_commands.py``); ``/reset`` is the registry's alias of ``/new``.
@@ -59,9 +68,15 @@ def help_text() -> str:
     return "\n".join(lines)
 
 
-def session_modes() -> SessionModeState:
-    return SessionModeState(current_mode_id=DEFAULT_MODE, available_modes=[
-        SessionMode(id=DEFAULT_MODE, name="Default", description="Ask before edits.")])
+def current_mode(info: dict) -> str:
+    """The mode of the session's edit approval policy (``session.info``); an owner without the field asks."""
+    return EDIT_APPROVAL_POLICY_TO_MODE.get(info.get("edit_approval_policy") or DEFAULT_EDIT_APPROVAL_POLICY,
+                                            DEFAULT_MODE)
+
+
+def session_modes(info: dict | None = None) -> SessionModeState:
+    return SessionModeState(current_mode_id=current_mode(info or {}), available_modes=[
+        SessionMode(id=mode, name=name, description=description) for mode, (_p, name, description) in MODES.items()])
 
 
 def model_state(info: dict) -> SessionModelState | None:
