@@ -918,7 +918,7 @@ gateway:
         dm_topic_auto_transfer: true   # default: false
 ```
 
-With it on, a plain message in the root DM makes Hermes create a new topic (named "Hermes Chat" until the auto-title renames it), start a new session there, and post the reply inside that topic. Slash commands typed in the root DM stay lobby commands and never create a topic. If creating the topic fails (for example Threaded Mode was switched off in BotFather), Hermes falls back to the default behaviour and answers in your most recently active topic. The key only matters while `/topic` mode is on.
+With it on, a plain message in the root DM makes Hermes create a new topic (named "Hermes Chat" until the auto-title renames it), start a new session there, and post the reply inside that topic. Slash commands typed in the root DM stay lobby commands and never create a topic. If creating the topic fails (for example Threaded Mode was switched off in BotFather), Hermes falls back to the default behaviour and answers in your most recently active topic. The key only matters while `/topic` mode is on. The top-level `telegram.extra.dm_topic_auto_transfer` key (shown in Desktop Settings) works too.
 
 ### Auto-renamed topics
 
