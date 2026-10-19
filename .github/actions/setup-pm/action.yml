@@ -21,7 +21,10 @@ inputs:
     default: 'true'
   save-tools-cache:
     description: Save the verified PM tools on success. Set false for restore-only jobs.
-    default: 'true'
+    # The key hashes pm/** and this action, so every push to a PR touching
+    # them wrote a fresh ~100-170 MB store only that PR could restore. PRs
+    # restore main's store and never write their own.
+    default: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
   cache-python:
     description: Cache uv downloads and built wheels; never cache the dependency environment.
     default: 'true'
