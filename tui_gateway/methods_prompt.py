@@ -753,6 +753,8 @@ def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
                         session.get("session_key") or sid, exc, exc_info=True)
             why = str(exc) if isinstance(exc, owner_forward.OwnerUnavailable) else "the gateway refused it"
         else:
+            if receipt.get("voice_stopped") is True:
+                return _ok(rid, {"voice_stopped": True})  # the owner ended its voice chat; nothing queued
             return _ok(rid, {"status": "queued", "admission_id": receipt.get("admission_id"),
                              "forwarded": True})
     return _err(rid, 4090, "The gateway is running a turn in this chat and " + why

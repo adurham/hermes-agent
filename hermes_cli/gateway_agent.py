@@ -727,6 +727,8 @@ class GatewayAgent:
                                     failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:
                 return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
+            if (receipt or {}).get("voice_stopped") is True:
+                return self._voice_stopped(history)
         self._epoch = getattr(self.connection, "epoch", None)
         turn.admission = self._admission = (receipt or {}).get("admission_id")
         if receipt and receipt.get("execution_generation") is not None:
@@ -1109,6 +1111,15 @@ class GatewayAgent:
         if isinstance(staged, dict):
             return staged
         return {"role": "user", "content": user_message}
+
+    def _voice_stopped(self, history):
+        """TUI-26: the owner took a bare stop phrase typed into this LOCAL session's voice chat (turned
+        on by another viewer) as the end of that chat and admitted nothing, so no ``message.complete``
+        will come. The turn ends at once with main's typed-stop notice; the history is unchanged."""
+        from agent.i18n import t
+        self._give_back_turn_route()  # nothing was admitted: a ``/model --once`` pick is still owed
+        self._emit_print(t("cli.voice.stop_phrase_typed"))
+        return {**_RESULT_DEFAULTS, "messages": list(history), "voice_stopped": True, "session_id": self.session_id}
 
     def _failed(self, history, user_message, error, *, failure_reason=None, retryable=False):
         """``failure_reason="gateway_connection"``: the CLI shows ``error`` as written instead of

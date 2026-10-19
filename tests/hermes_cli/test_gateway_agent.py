@@ -922,3 +922,39 @@ def test_ctrl_c_during_the_first_api_call_keeps_mains_estimate_marker(make_agent
     anchor = agent._turn_base_usage_anchor
     assert anchor["base_count"] == 2  # the unanswered ask is the estimated delta: main's `~`
     assert anchored_context_tokens(agent._session_messages, anchor, charge_stale_thinking=False) == 700
+
+
+def test_a_voice_stopped_reply_returns_without_waiting_for_a_turn():
+    """TUI-26: the owner answers a typed stop phrase in a LOCAL voice chat (turned on by another
+    viewer) with ``{voice_stopped: true}`` and admits nothing, so no ``message.complete`` will ever
+    come: the classic CLI returns at once with the stop notice instead of pumping forever."""
+    from agent.i18n import t
+
+    class Client(FakeClient):
+        async def rpc(self, method, *, _timeout=None, **params):
+            if method == "prompt.submit":
+                self.calls.append((method, params))
+                return {"voice_stopped": True}
+            return await super().rpc(method, _timeout=_timeout, **params)
+
+    client = Client([])
+    conn = GatewayConnection(connect=connect_with(client))
+    conn.start(5)
+    conn.state(SID)
+    try:
+        printed = []
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        agent._print_fn = printed.append
+        done = {}
+        worker = threading.Thread(target=lambda: done.setdefault("r", agent.run_conversation(
+            "stop", conversation_history=[{"role": "user", "content": "hi"}])), daemon=True)
+        worker.start()
+        worker.join(8)
+        assert not worker.is_alive(), "run_conversation hung waiting for a turn that was never admitted"
+        result = done["r"]
+        assert result["voice_stopped"] is True and not result["failed"] and result["final_response"] == ""
+        assert result["messages"] == [{"role": "user", "content": "hi"}], "nothing was admitted"
+        assert "prompt.receipt" not in [m for m, _ in client.calls]
+        assert any(t("cli.voice.stop_phrase_typed") in line for line in printed), printed
+    finally:
+        conn.close()
