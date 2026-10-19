@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 import logging
 import re
@@ -165,17 +164,17 @@ class GatewayTopicThreadsMixin:
             logger.debug("telegram topic binding refresh failed (%s)", reason, exc_info=True)
 
     def _recover_telegram_topic_thread_id(self, source: SessionSource) -> Optional[str]:
+        """Adapter-ingress recovery hook (sync, called off-loop before session keying): lobby recovery,
+        except when ``dm_topic_auto_transfer`` is on — then the root-DM source is left alone so
+        ``_transfer_telegram_root_dm`` can open a fresh topic (and fall back to this recovery itself)."""
+        if self._telegram_topic_auto_transfer_enabled(source):
+            return None
+        return self._recover_telegram_lobby_thread_id(source)
+
+    def _recover_telegram_lobby_thread_id(self, source: SessionSource) -> Optional[str]:
         """Pin lobby-shaped topic-mode DM replies (missing ``message_thread_id`` or General) to the
         user's most-recent bound topic. Never rewrite a non-lobby, unbound thread id: a brand-new DM
         topic is also "unknown" until its first message is recorded. None = leave the source alone."""
-        # The adapter invokes this synchronous hook before the async runner can
-        # create a topic. Preserve the lobby source until that attempt finishes.
-        if self._telegram_topic_auto_transfer_enabled(source):
-            return None
-        return self._recover_telegram_topic_thread_id_after_auto_transfer(source)
-
-    def _recover_telegram_topic_thread_id_after_auto_transfer(self, source: SessionSource) -> Optional[str]:
-        """Apply lobby recovery after an auto-transfer creation attempt has failed."""
         if (
             not self._is_telegram_dm(source) or not source.chat_id or not source.user_id
             or not self._telegram_topic_mode_enabled(source)
@@ -200,44 +199,42 @@ class GatewayTopicThreadsMixin:
                 return recovered if recovered and recovered != inbound else None
         return None
 
-    def _telegram_topic_auto_transfer_enabled(self, source: SessionSource) -> bool:
-        """Whether a root-DM message should start a freshly created topic lane.
-
-        This is intentionally opt-in: topic mode normally treats the root DM as a
-        lobby and recovers it to the most recently active topic.
-        """
-        if not self._is_telegram_topic_root_lobby(source):
-            return False
+    def _telegram_dm_topic_auto_transfer_configured(self) -> bool:
+        """``gateway.platforms.telegram.extra.dm_topic_auto_transfer``; default False. Off keeps the
+        v0.22 lobby recovery (#136567). Config only: no state.db read, safe on the event loop."""
         config = getattr(self, "config", None)
         platforms = getattr(config, "platforms", None) if config is not None else None
         platform_cfg = platforms.get(Platform.TELEGRAM) if platforms else None
-        extra = getattr(platform_cfg, "extra", None) or {}
-        return is_truthy_value(extra.get("dm_topic_auto_transfer"))
+        return is_truthy_value((getattr(platform_cfg, "extra", None) or {}).get("dm_topic_auto_transfer"))
 
-    async def _maybe_auto_transfer_telegram_topic(self, source: SessionSource) -> Optional[SessionSource]:
-        """Create a topic lane for an opted-in root-DM message, or return ``None``.
+    def _telegram_topic_auto_transfer_enabled(self, source: SessionSource) -> bool:
+        """The key is on and ``source`` is a ``/topic``-mode root DM (reads state.db: call off-loop)."""
+        return self._telegram_dm_topic_auto_transfer_configured() and self._is_telegram_topic_root_lobby(source)
 
-        Failure is deliberately fail-open: callers retain the lobby source and
-        apply the established last-bound-topic recovery rule.
+    async def _transfer_telegram_root_dm(self, source: SessionSource) -> Optional[tuple[str, bool]]:
+        """Adapter-ingress transfer hook for an opted-in root-DM message (#139136).
+
+        ``(thread_id, True)``: a fresh topic was created and the turn runs there. ``(thread_id, False)``:
+        creating it failed, so the message falls back to lobby recovery (the last bound topic).
+        ``None``: not applicable (key off, not a topic-mode root DM) or nothing to recover to.
         """
-        if not self._telegram_topic_auto_transfer_enabled(source) or not source.chat_id:
+        if (not source.chat_id or not self._telegram_dm_topic_auto_transfer_configured()
+                or not await asyncio.to_thread(self._is_telegram_topic_root_lobby, source)):
             return None
         adapter = self._delivery_adapter_for(source)
         create_topic = getattr(adapter, "_create_dm_topic", None) if adapter is not None else None
-        if not callable(create_topic):
-            return None
-        try:
-            thread_id = await create_topic(int(source.chat_id), t("gateway.topic.default_title"))
-        except (TypeError, ValueError):
-            return None
-        except Exception:
-            logger.debug("Failed to auto-transfer Telegram root DM into a new topic", exc_info=True)
-            return None
-        if not thread_id:
-            return None
-        # A root-DM message cannot be the reply anchor inside the newly created
-        # topic. Delivery uses direct_messages_topic_id for this first reply.
-        return dataclasses.replace(source, thread_id=str(thread_id), message_id=None)
+        thread_id = None
+        if callable(create_topic):
+            try:
+                thread_id = await create_topic(int(source.chat_id), t("gateway.topic.default_title"))
+            except Exception:
+                logger.debug("Failed to auto-transfer Telegram root DM into a new topic", exc_info=True)
+        if thread_id:
+            logger.info("telegram topic auto-transfer: chat=%s user=%s root -> new topic %s",
+                        source.chat_id, source.user_id, thread_id)
+            return str(thread_id), True
+        recovered = await asyncio.to_thread(self._recover_telegram_lobby_thread_id, source)
+        return (recovered, False) if recovered else None
 
     # ── Telegram topic mode: /topic activation helpers ──────────────────────────────────────
 

@@ -294,15 +294,9 @@ class GatewayTurnPrepareMixin:
         # cross-topic Reply doesn't fragment the conversation.
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
-        transferred = await self._maybe_auto_transfer_telegram_topic(source) if not expected_session_key else None
-        if transferred is not None:
-            source = transferred
-            event.source = source
-            event_metadata["telegram_dm_topic_auto_transferred"] = True
-            event.metadata = event_metadata
-        recovered = (await asyncio.to_thread(
-            self._recover_telegram_topic_thread_id_after_auto_transfer, source,
-        )
+        # Plain lobby recovery here even with ``dm_topic_auto_transfer`` on: the opt-in topic transfer
+        # already ran at adapter ingress (``_auto_transfer_telegram_topic``), before session keying.
+        recovered = (await asyncio.to_thread(self._recover_telegram_lobby_thread_id, source)
                      if not expected_session_key else None)
         if recovered is not None:
             logger.info(
