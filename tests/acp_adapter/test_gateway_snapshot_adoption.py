@@ -64,9 +64,9 @@ async def test_a_mode_change_queued_behind_a_new_watermark_still_repaints_the_ed
     # The owner's session.info for the other viewer's change (seq 11) is delivered after the resume.
     await gateway.events.put({'params': {'session_id': 's', 'type': 'session.info', 'replay_epoch': 'e', 'seq': 11,
                                          'payload': dict(OWNER)}})
-    pump = asyncio.create_task(agent._events())
-    await asyncio.sleep(0.1)
-    pump.cancel()
+    await gateway.events.put(EOFError('end of the test stream'))  # the pump records it and stops
+    await asyncio.wait_for(agent._events(), 5)
+    assert isinstance(agent._failure, EOFError)
     modes = [c.kwargs['update'].current_mode_id for c in agent._conn.session_update.await_args_list
              if getattr(c.kwargs['update'], 'session_update', None) == 'current_mode_update']
     assert agent._snapshots['s']['last_sequence'] == 12
