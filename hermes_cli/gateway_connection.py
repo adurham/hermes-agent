@@ -157,8 +157,8 @@ class GatewayConnection:
         # This CLI's launch-only key (``--api-key`` or a keyed startup alias), set by the session store:
         # an owner restart revokes it, so every resume re-supplies it (the owner's ``rebind_launch_key``).
         self.launch_api_key = None
-        # True when that key is the typed ``--api-key`` (not a keyed startup alias's): a resume the owner
-        # will not bind it to is refused as the thin client refuses it, never attached plain.
+        # True when that key is the typed ``--api-key`` (not a keyed startup alias's): a startup resume the
+        # owner will not bind it to is refused as the thin client refuses it, never attached plain.
         self.launch_api_key_typed = False
 
     @classmethod

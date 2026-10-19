@@ -276,20 +276,56 @@ async def test_a_typed_key_reconnect_keeps_the_fallback(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_slash_resume_with_a_typed_key_is_refused_and_does_not_switch(tmp_path, monkeypatch):
-    """``/resume <keyless session>`` in a ``--api-key`` CLI: the refusal is printed and nothing switches
-    (``_gateway_owned_id`` returns None); a refused attach of any other kind keeps main's path."""
-    from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id
-    from hermes_cli.gateway_client import RESUME_KEY_MISMATCH
+async def test_slash_resume_in_a_typed_key_cli_switches_to_a_keyless_session_on_its_own_route(
+        tmp_path, monkeypatch):
+    """Review (#141481, CLI-34): only the startup resume holds a typed ``--api-key``. ``/resume <keyless
+    session>`` in a ``--api-key`` CLI switches to it as on main, and the owner does not bind the key to it:
+    the session keeps its own frozen route."""
+    from unittest.mock import patch
+    from cli import HermesCLI
+    from hermes_state import SessionDB
     owners = await _Owners().start(tmp_path, monkeypatch)
     conn = GatewayConnection(connect=owners.dial)
     try:
         store = GatewaySessionStore(conn)
-        await asyncio.to_thread(store.open_session, _typed(owners.keyed, RAW), LAUNCH)
+        store._reader = SessionDB(db_path=owners.store._db.db_path, read_only=True)  # the CLI's state.db reads
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._session_db, cli._resumed, cli.session_id, cli._typed_api_key = store, True, owners.keyed, RAW
+        cli.agent, cli.conversation_history, cli._pending_resume_sessions = None, [], None
+        cli._restore_session_cwd = cli._restore_session_yolo = cli._restore_session_model = lambda *a, **k: None
+        await asyncio.to_thread(store.open_session, cli, LAUNCH)  # hermes --resume <keyed> --api-key K
         printed = []
-        assert await asyncio.to_thread(_gateway_owned_id, store, owners.plain, printed.append) is None
-        assert printed == [f'  {RESUME_KEY_MISMATCH}']
-        assert await asyncio.to_thread(_gateway_owned_id, store, owners.plain) == owners.plain  # no printer: as main
-        assert await asyncio.to_thread(_gateway_owned_id, store, 'missing-id', printed.append) == 'missing-id'
+        with patch('hermes_cli.main._resolve_session_by_name_or_id', return_value=None), \
+                patch('cli._cprint', printed.append):
+            await asyncio.to_thread(cli._handle_resume_command, f'/resume {owners.plain}')
+        assert cli.session_id == owners.plain, printed
+        assert store.current['stored_session_id'] == owners.plain
+        assert owners.key_of(owners.plain) is None  # not rebound to K
+    finally:
+        await owners.close(conn)
+
+
+@pytest.mark.asyncio
+async def test_branch_after_new_in_a_typed_key_cli_switches_to_the_child(tmp_path, monkeypatch):
+    """Review probe (#141481, CLI-34): ``/new`` in a ``--api-key`` CLI opens a session on the profile's default
+    route, without the key, and ``/branch`` of it attaches the child the owner just made with the plain
+    fallback. Held to the typed key, the attach raised the ``--api-key`` mismatch after the owner had
+    committed the child: the CLI stayed on the parent, and each retry made another child."""
+    from datetime import datetime
+    from gateway import run
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    monkeypatch.setattr(run, '_load_gateway_config', lambda *a, **k: {'platform_toolsets': {'cli': []}, 'model': 'm'})
+    conn = GatewayConnection(connect=owners.dial)
+    try:
+        store = GatewaySessionStore(conn)
+        cli = _typed(owners.keyed, RAW)
+        cli._session_db, cli._gateway_session_open = store, True
+        await asyncio.to_thread(store.open_session, cli, LAUNCH)
+        fresh = await asyncio.to_thread(CLIInitMixin._new_session_id, cli, datetime.now())  # /new
+        assert owners.key_of(fresh) is None
+        owners.store._db.append_message(fresh, role='user', content='hello')
+        child = await asyncio.to_thread(CLIInitMixin._new_session_id, cli, datetime.now(), branch_of=fresh)  # /branch
+        assert child != fresh and store.current['stored_session_id'] == child
     finally:
         await owners.close(conn)

@@ -121,13 +121,15 @@ class GatewaySessionStore:
         self.connection.state(sid).adopt_snapshot(snapshot)
         return sid
 
-    def attach(self, session_id):
+    def attach(self, session_id, *, typed=False):
         """``session.resume`` once per session id this viewer uses (idempotent), carrying this CLI's launch
         key as the thin client does (``GatewayConnection.resume``, the reconnect's too). A session that does
-        not take the key (a keyed startup alias resuming a Desktop/TUI session) attaches as is."""
+        not take the key (a keyed startup alias resuming a Desktop/TUI session) attaches as is. ``typed``
+        (only :meth:`open_session`'s startup resume, where the user typed ``--api-key`` for that session)
+        refuses it instead, as the thin client does."""
         if session_id in self.snapshots:
             return self.snapshots[session_id]
-        snapshot = self.connection.resume(self.call, session_id, typed=self.connection.launch_api_key_typed)
+        snapshot = self.connection.resume(self.call, session_id, typed=typed)
         self._adopt(snapshot)
         return snapshot
 
@@ -138,7 +140,7 @@ class GatewaySessionStore:
         self.connection.launch_api_key_typed = key is not None and key == getattr(cli, "_typed_api_key", None)
         if getattr(cli, "_resumed", False):
             try:
-                snapshot = self.attach(cli.session_id)
+                snapshot = self.attach(cli.session_id, typed=self.connection.launch_api_key_typed)
             except GatewayClientError as exc:
                 if str(exc) in {"not_found", "permission_denied"}:
                     return None

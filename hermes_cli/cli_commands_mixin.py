@@ -975,9 +975,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from hermes_cli.kanban_resume_guard import kanban_resume_refusal
         if (kanban_refusal := kanban_resume_refusal(self._session_db, target_id)):
             return _cp(f"  {kanban_refusal}")
-        read_id, target_id = target_id, _gateway_owned_id(self._session_db, target_id, _cp)  # the receipt owner
-        if target_id is None or target_id == self.session_id:  # None: a typed --api-key it refused (printed)
-            return _cp(f"  {_t('resume.already_on')}") if target_id else None
+        read_id, target_id = target_id, _gateway_owned_id(self._session_db, target_id)  # the receipt owner
+        if target_id == self.session_id:
+            return _cp(f"  {_t('resume.already_on')}")
         old_session_id = self.session_id
         _end_current_session(self, "resumed_other")
         self.session_id, self._resumed, self._pending_title = target_id, True, None
