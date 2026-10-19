@@ -161,8 +161,12 @@ def _provider_resolution_config(authority, config, bypass=False):
     resolved = dict(config)
     frozen_providers, current_providers = config.get('providers'), current.get('providers')
     if isinstance(frozen_providers, dict) or isinstance(current_providers, dict):
-        resolved['providers'] = {**(frozen_providers if isinstance(frozen_providers, dict) else {}),
-                                 **(current_providers if isinstance(current_providers, dict) else {})}
+        current_providers = current_providers if isinstance(current_providers, dict) else {}
+        slugs = {_provider_key_slug(key) for key in current_providers}
+        # A respelled key is the same provider: the profile's spelling replaces the frozen one.
+        resolved['providers'] = {**{key: entry for key, entry in (
+            frozen_providers if isinstance(frozen_providers, dict) else {}).items()
+            if _provider_key_slug(key) not in slugs}, **current_providers}
     frozen_custom, current_custom = config.get('custom_providers'), current.get('custom_providers')
     if isinstance(frozen_custom, list) or isinstance(current_custom, list):
         current_custom = list(current_custom) if isinstance(current_custom, list) else []
@@ -213,7 +217,10 @@ def _freeze_selected_provider(config, frozen, provider):
     copied = deepcopy(entries[index])
     retired, moved = {(section, index)}, {}
     if section == 'providers':
-        frozen[section] = {**(frozen.get(section) if isinstance(frozen.get(section), dict) else {}), index: copied}
+        previous = frozen.get(section) if isinstance(frozen.get(section), dict) else {}
+        stale = {key for key in previous if _provider_key_slug(key) == _provider_key_slug(index)}
+        frozen[section] = {**{k: v for k, v in previous.items() if k not in stale}, index: copied}
+        retired |= {(section, key) for key in stale}
     else:
         frozen_entries = list(frozen.get(section) or [])
         name = _custom_provider_name(copied)
@@ -234,6 +241,12 @@ def _freeze_selected_provider(config, frozen, provider):
     secrets = {}
     _extract_config_secrets(frozen[section][index], secrets, (section, index))
     return secrets, retired, moved
+
+
+def _provider_key_slug(key):
+    """A ``providers:`` key's canonical identity: ``Review Prov`` and ``review-prov`` are one."""
+    from hermes_cli.providers import custom_provider_slug
+    return custom_provider_slug('', str(key))
 
 
 def _alias_credential(authority, result):

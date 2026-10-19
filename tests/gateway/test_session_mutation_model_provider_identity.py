@@ -1,5 +1,5 @@
 """A model pick freezes only the picked provider: an unrelated legacy entry it displaces keeps its
-own secret (real policy/resolver, warm and cold)."""
+own secret, and a respelled ``providers:`` key replaces its stale spelling (real policy/resolver)."""
 from copy import deepcopy
 from dataclasses import asdict
 import json
@@ -56,3 +56,18 @@ async def test_displaced_unchanged_legacy_entry_keeps_its_key(tmp_path, monkeypa
     assert _entry(warm_cfg, 'x-prov')['api_key'] == 'x-review-key'
     assert _entry(cold_cfg, 'x-prov')['api_key'] == 'x-review-key'
 
+
+@pytest.mark.asyncio
+async def test_respelled_providers_key_replaces_the_stale_spelling(tmp_path, monkeypatch):
+    """Frozen ``providers: {'Review Prov': A}``, profile now ``{'review-prov': B}``: the pick runs B
+    and the stale spelling (and its secret) is gone from the frozen session."""
+    before = {'model': {'provider': 'review-prov', 'default': 'original'},
+              'providers': {'Review Prov': {'base_url': 'http://127.0.0.1:9/a', 'api_key': 'a-review-key',
+                                            'models': {'switched': {}}}}}
+    after = {**before, 'providers': {'review-prov': {'base_url': 'http://127.0.0.1:9/b',
+                                                     'api_key': 'b-review-key', 'models': {'switched': {}}}}}
+    warm_cfg, warm, cold_cfg, cold, frozen = await _pick(tmp_path, monkeypatch, before, after, 'review-prov')
+    assert (warm['base_url'], warm['api_key']) == ('http://127.0.0.1:9/b', 'b-review-key')
+    assert (cold['base_url'], cold['api_key']) == ('http://127.0.0.1:9/b', 'b-review-key')
+    assert list(frozen['providers']) == ['review-prov']
+    assert list(warm_cfg['providers']) == list(cold_cfg['providers']) == ['review-prov']
