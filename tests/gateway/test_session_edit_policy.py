@@ -92,6 +92,35 @@ async def test_edit_policy_is_a_durable_session_setting_every_viewer_reads(tmp_p
         store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+async def test_a_branch_of_a_dont_ask_session_starts_at_ask(tmp_path, monkeypatch):
+    """A branch/fork starts at Default, as main's ``fork_session`` did; the parent keeps its policy."""
+    from gateway import run
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    db = store._db
+    owner = await initialize_session_authority(_runner(store), profile_id='owned', instance_id='fork')
+    editor = AuthorityConnection(owner, object(), {'user_id': 'human'})
+    try:
+        created = await editor.dispatch({'id': 1, 'method': 'session.create', 'params': {
+            'request_id': 'acp', 'source': 'acp', 'cwd': str(tmp_path), 'model': 'frozen',
+            'editor': {'mcp_servers': []}}})
+        sid = created['result']['session_id']
+        applied = await editor.dispatch(_mutation(db, sid, 'm1', {'policy': 'session'}))
+        assert applied['result']['edit_approval_policy'] == 'session', applied
+        branched = await editor.dispatch(_mutation(db, sid, 'b1', {}, operation='branch'))
+        child = branched['result']['branched_session_id']
+        assert (await _info(editor, child))['edit_approval_policy'] == 'ask'
+        assert (await _info(editor, sid))['edit_approval_policy'] == 'session'
+    finally:
+        await editor.close()
+        store.close_all_db_handles()
+
+
 def test_a_policy_stored_before_the_field_restores_as_ask_with_its_identity_unchanged(tmp_path):
     """A receipt main minted has no ``edit_approval_policy``: it restores as ``ask`` and its credential
     reference (a whole-policy hash) still matches, so no stored session loses its launch secrets."""
