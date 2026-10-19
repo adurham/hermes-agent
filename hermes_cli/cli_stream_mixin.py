@@ -245,10 +245,11 @@ class CLIStreamMixin:
             ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
         if "\n" in text:
-            ChatConsole().print(self._format_submitted_user_message_preview(text))
+            # soft_wrap in the glyph layout: the terminal wraps a long prompt, so a resize re-flows it.
+            ChatConsole().print(self._format_submitted_user_message_preview(text), soft_wrap=modern)
         elif modern:
             from hermes_cli.cli_modern_layout import user_echo_markup
-            ChatConsole().print(user_echo_markup(text, _accent_hex()))
+            ChatConsole().print(user_echo_markup(text, _accent_hex()), soft_wrap=True)
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 

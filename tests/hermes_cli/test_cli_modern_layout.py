@@ -116,3 +116,51 @@ def test_status_line_keeps_every_classic_status_bar_field(monkeypatch):
     line = "".join(text for _, text in cli._get_status_bar_fragments())
     for piece in ("73.2K/1M", "7%", "◎ 28.9%", "◷ 9.0s", "↑ 61 t/s", "⛓ 3", "6h 43m", "⏱ 10s"):
         assert piece in line, (piece, line)
+
+
+@pytest.mark.parametrize("prompt", ["_connection_state", "_secret_state", "_sudo_state", "_clarify_state"])
+def test_tab_never_queues_what_a_prompt_owns(prompt):
+    """A connection form's masked field (or any prompt) owns the composer while a turn runs: Tab must
+    not queue its text as a chat message, which would print and save a secret in plain text."""
+    from types import SimpleNamespace
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.application.current import set_app
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+    from prompt_toolkit.layout import BufferControl, Layout, Window
+    from hermes_cli.cli_modern_layout import modern_input_rules
+
+    cli = SimpleNamespace(_agent_running=True, _tui_input_rule_height=lambda pos: 1)
+    kb = KeyBindings()
+    modern_input_rules(cli, kb)
+    tab = next(b for b in kb.bindings if b.keys == (Keys.ControlI,))
+    buf = Buffer(document=None)
+    buf.text = "REVIEW_CANARY_NOT_A_CREDENTIAL"
+    app = Application(layout=Layout(Window(BufferControl(buffer=buf))))
+    with set_app(app):
+        assert tab.filter()  # control: a plain busy composer does queue on Tab
+        setattr(cli, prompt, {"phase": "form"})
+        assert not tab.filter(), prompt
+
+
+def test_long_user_message_soft_wraps_so_a_resize_reflows_it(monkeypatch):
+    """The glyph layout's echo of a long prompt is one logical line per source line: the terminal
+    wraps it, so widening the window re-flows it instead of keeping old-width breaks."""
+    from cli import HermesCLI
+    import cli as climod
+    import shutil
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout, cli.show_timestamps = True, False
+    long_line = "word " * 60
+    for text in (long_line.strip(), f"{long_line.strip()}\nsecond line"):
+        out = {}
+        for width in (60, 140):
+            emitted: list[str] = []
+            monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(_plain(s)))
+            monkeypatch.setattr(shutil, "get_terminal_size", lambda *_a, w=width: __import__("os").terminal_size((w, 40)))
+            cli._print_user_message_preview(text)
+            out[width] = [line for line in "\n".join(emitted).split("\n") if line.strip()]
+        assert out[60] == out[140], out
+        assert any(line.rstrip().endswith("word") and line.count("word") == 60 for line in out[60]), out[60]
