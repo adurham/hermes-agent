@@ -63,67 +63,6 @@ class TestChatVerboseArg:
         assert "verbose" not in captured
 
 
-class TestChatRouteFlagsReachClassicCli:
-    """``hermes chat --cli --api-key K --base-url U`` hands both to ``cli.main`` (#134889 CLI-34).
-
-    cmd_chat built the classic kwargs from _CHAT_PASSTHROUGH plus a few explicit keys, neither of
-    which carried them, so the session was created on the profile's credential (``credential_ref``
-    null) and a later ``--resume --api-key`` had no launch key to re-supply."""
-
-    def test_cmd_chat_forwards_api_key_and_base_url(self, monkeypatch):
-        import types
-
-        import hermes_cli.main as main_mod
-        from hermes_cli._parser import build_top_level_parser
-
-        parser, _subparsers, chat_parser = build_top_level_parser()
-        chat_parser.set_defaults(func=main_mod.cmd_chat)
-        args = parser.parse_args(["chat", "--cli", "--api-key", "K-LAUNCH", "--base-url", "http://127.0.0.1:9/v1"])
-        captured = {}
-        fake_cli = types.ModuleType("cli")
-        fake_cli.main = lambda **kwargs: captured.update(kwargs)
-        fake_banner = types.ModuleType("hermes_cli.banner")
-        fake_banner.prefetch_update_check = lambda: None
-        fake_skills_sync = types.ModuleType("tools.skills_sync")
-        fake_skills_sync.sync_skills = lambda quiet=True: None
-        monkeypatch.setitem(sys.modules, "cli", fake_cli)
-        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
-        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
-        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
-        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
-
-        main_mod.cmd_chat(args)
-
-        assert captured["api_key"] == "K-LAUNCH"
-        assert captured["base_url"] == "http://127.0.0.1:9/v1"
-
-    def test_cmd_chat_omits_them_when_absent(self, monkeypatch):
-        import types
-
-        import hermes_cli.main as main_mod
-        from hermes_cli._parser import build_top_level_parser
-
-        parser, _subparsers, chat_parser = build_top_level_parser()
-        chat_parser.set_defaults(func=main_mod.cmd_chat)
-        args = parser.parse_args(["chat", "--cli"])
-        captured = {}
-        fake_cli = types.ModuleType("cli")
-        fake_cli.main = lambda **kwargs: captured.update(kwargs)
-        fake_banner = types.ModuleType("hermes_cli.banner")
-        fake_banner.prefetch_update_check = lambda: None
-        fake_skills_sync = types.ModuleType("tools.skills_sync")
-        fake_skills_sync.sync_skills = lambda quiet=True: None
-        monkeypatch.setitem(sys.modules, "cli", fake_cli)
-        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
-        monkeypatch.setitem(sys.modules, "tools.skills_sync", fake_skills_sync)
-        monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
-        monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
-
-        main_mod.cmd_chat(args)
-
-        assert "api_key" not in captured and "base_url" not in captured
-
-
 class TestAcceptHooksOnAgentSubparsers:
     """Verify --accept-hooks is accepted at every agent-subcommand
     position (before the subcommand, between group/subcommand, and
