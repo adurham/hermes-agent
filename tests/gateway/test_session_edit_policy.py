@@ -121,6 +121,33 @@ async def test_a_branch_of_a_dont_ask_session_starts_at_ask(tmp_path, monkeypatc
         store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+async def test_a_prepared_branch_stamps_its_secret_reference_with_the_childs_ask_policy(tmp_path, monkeypatch):
+    """The prepared fork's durable config-secret reference hashes the policy the child is stored with
+    (``ask``), never the parent's Don't Ask."""
+    from dataclasses import asdict
+    import hermes_state_local
+    from gateway import session_local_mcp, session_policy_credentials as creds
+    from gateway.session_policy import build_policy
+    parent = replace(build_policy({'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture'}, {}),
+                     edit_approval_policy='session', editor_mcp_json='{"scope": "p"}',
+                     config_secret_ref=creds.PREFIX + '{}')
+    saved = {'policy': asdict(parent), 'profile_id': 'owned', 'principal_id': 'human'}
+    monkeypatch.setattr(hermes_state_local, 'local_receipt', lambda db, sid: saved)
+    monkeypatch.setattr(session_local_mcp, 'rebind_editor_mcp', lambda a, child, policy, servers: (policy, False))
+    monkeypatch.setattr(creds, 'recover_config_secrets', lambda *a, **k: {})
+    hashed = []
+    monkeypatch.setattr(creds, 'config_reference', lambda a, child, policy, secrets: hashed.append(policy) or 'ref')
+
+    async def gate():
+        return {'snapshot': {}}
+    authority = SimpleNamespace(db=None, _local_editor_mcp={'p': []})
+    prepared, _ = await session_local_mcp.prepare_branch_editor(
+        authority, SimpleNamespace(session_id='parent'), [], gate)
+    assert prepared['config_secret_ref'] == 'ref'
+    assert [p.edit_approval_policy for p in hashed] == ['ask']
+
+
 def test_a_policy_stored_before_the_field_restores_as_ask_with_its_identity_unchanged(tmp_path):
     """A receipt main minted has no ``edit_approval_policy``: it restores as ``ask`` and its credential
     reference (a whole-policy hash) still matches, so no stored session loses its launch secrets."""
