@@ -49,6 +49,7 @@ import {
   setSessionStalled
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
+import { noteLiveSessionSource } from '@/store/session-unread'
 import {
   clearActiveSessionTodos,
   clearSessionTodos,
@@ -789,6 +790,7 @@ export function rehydrateLiveSessionStatuses(
     }
 
     seen.add(runtimeSessionId)
+    noteLiveSessionSource(storedSessionId, session.source)
 
     if (working) {
       workingStoredIds.add(storedSessionId)

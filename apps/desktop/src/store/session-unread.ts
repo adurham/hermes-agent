@@ -324,10 +324,23 @@ function resolveOwnedRow(storedSessionId: string, profile?: string): SessionInfo
     : resolveLoadedRow(storedSessionId)
 }
 
+/** Sources the live poll reported, by stored id: a messaging turn can settle before its row loads. */
+const liveSources = new Map<string, string>()
+
+/** `session.active_list` named `storedSessionId`'s source. */
+export function noteLiveSessionSource(storedSessionId: string, source: null | string | undefined) {
+  if (source) {
+    liveSources.set(storedSessionId, source)
+    trimOldest(liveSources)
+  }
+}
+
 /** A messaging conversation delivers its completion to its own platform; a
  *  Desktop observer is not an unread recipient of it at the busy-to-idle edge. */
 export function isMessagingCompletion(storedSessionId: string, profile?: string): boolean {
-  return isMessagingSource(resolveOwnedRow(storedSessionId, profile)?.source)
+  const row = resolveOwnedRow(storedSessionId, profile)
+
+  return isMessagingSource(row ? row.source : liveSources.get(storedSessionId))
 }
 
 /** UNREAD WRITER — the live busy→idle edge (session-states.ts) and any surface
