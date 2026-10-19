@@ -1,0 +1,30 @@
+name: godot-studio
+repo: https://github.com/Foolafroos/godot-studio
+sha: 33008fc12fb74e4871a7fa781be6c5d5b4b5d347
+description: >-
+  Headless Godot 4 workflows for the agent game studio — godot_headless_check
+  (script/resource validation via godot --headless, no editor needed),
+  godot_export (CI builds from named export presets, e.g. a Web build a
+  playtester agent can load), godot_setup (read-only install-state report for
+  Godot/godot-ai/uv with the exact registration path). Complements the
+  hi-godot/godot-ai MCP editor bridge by covering the verification and export
+  leg of the loop; bundles the godot-studio skill teaching edit → verify →
+  export → playtest. Tools register only when a Godot 4 binary is present
+  (check_fn). Disclosure — runs shell commands (godot --headless against the
+  caller-targeted project; read-only hermes mcp list in godot_setup); no
+  network calls, no credentials, no telemetry, no background processes;
+  exports write only to the caller-supplied output path.
+maintainer: Foolafroos
+tier: community
+category: tools
+docs_url: https://github.com/Foolafroos/godot-studio#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - godot_headless_check
+    - godot_export
+    - godot_setup
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
