@@ -39,8 +39,8 @@ def submit_queued(cli, store, text: str) -> str:
 def queued_rows(cli, store) -> list[tuple[str, str]]:
     """``[(admission_id, text)]`` still queued in the owner's FIFO, in run order.
 
-    This viewer's own admissions are read back with ``prompt.receipt`` (one it finds started or gone
-    is forgotten); other viewers' queued rows come from the last pending list the owner published.
+    This viewer's own admissions are read back with ``prompt.receipt`` (one it finds started or settled
+    is left for the idle tick to paint); other viewers' queued rows come from the last pending list the owner published.
     """
     state = _state(cli, store)
     rows: dict[str, tuple[int, str]] = {}
@@ -57,9 +57,10 @@ def queued_rows(cli, store) -> list[tuple[str, str]]:
         if receipt.get("status") == "queued":
             rows[admission] = (int(receipt.get("sequence") or 0), text)
         else:
+            # Started or settled: no longer queued, but its turn may not be painted yet. The idle tick
+            # paints it (``gateway_tools_notify.recover_queued``); listing never erases that.
             rows.pop(admission, None)
-            if receipt.get("status") != "started":  # a started one is adopted by the idle tick
-                state.queued_inputs.pop(admission, None)
+            state.missed.add(admission)
     return [(admission, text) for admission, (_, text) in sorted(rows.items(), key=lambda kv: kv[1][0])]
 
 

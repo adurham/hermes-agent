@@ -295,3 +295,28 @@ def test_a_queued_admission_another_client_cancelled_is_forgotten_not_painted():
         assert cli._pending_input.empty() and state.queued_inputs == {}
     finally:
         conn.close()
+
+
+def test_queue_list_never_erases_a_finished_queued_turn_this_viewer_has_not_painted():
+    """Greptile P1 (gateway_queue.py:62): a fast queued turn settles while this CLI is still busy.
+    ``/queue list`` reads its receipt as terminal; that must not drop the tracking the idle tick needs
+    to paint the turn whose frames are still buffered."""
+    from hermes_cli import gateway_queue
+    from tests.hermes_cli.test_gateway_agent import SID, frame
+    from tests.hermes_cli.test_gateway_tools_notify import _connected, _idle_cli, _play
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        conn.state(SID).queued_inputs["adm-q"] = TEXT
+        _play(conn, client, [frame("message.start", {}, admission="adm-q"),
+                             frame("message.delta", {"text": "fast"}, admission="adm-q"),
+                             frame("message.complete", {"text": "fast", "status": "complete"}, admission="adm-q")])
+        assert gateway_queue.queued_rows(cli, cli._session_db) == []  # receipt: terminal, not queued
+        cli._drain_process_notifications("cli-idle")
+        result = _run_adopted(cli, conn)
+        assert "prompt.submit" not in [m for m, _ in client.calls]
+        assert result["final_response"] == "fast"
+        assert conn.state(SID).queued_inputs == {}
+    finally:
+        conn.close()
+
