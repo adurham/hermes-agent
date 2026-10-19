@@ -5,6 +5,7 @@ import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { hotkeys } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
+  ConfigFullResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
   SessionSaveResponse,
@@ -38,6 +39,14 @@ const saveDisplayPref = (ctx: SlashRunCtx, key: string, value: string) => {
 
   ctx.gateway.rpc<ConfigSetResponse>('config.set', { key, value, ...session }).catch(() => {})
 }
+
+/** `/config`: the projection as indented `key: value` lines (YAML-shaped, like the classic CLI). */
+const configLines = (value: Record<string, unknown>, indent: string): string[] =>
+  Object.entries(value).flatMap(([key, v]) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? [`${indent}${key}:`, ...configLines(v as Record<string, unknown>, `${indent}  `)]
+      : [`${indent}${key}: ${Array.isArray(v) ? JSON.stringify(v) : String(v)}`]
+  )
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -323,6 +332,34 @@ export const coreCommands: SlashCommand[] = [
       patchUiState({ compact: next })
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.density.state', next ? 'on' : 'off')))
       saveDisplayPref(ctx, 'density', next ? 'on' : 'off')
+    }
+  },
+
+  {
+    help: 'show the presentation settings the gateway serves for this profile',
+    name: 'config',
+    run: (_arg, ctx, cmd) => {
+      // Main's sidecar ran the classic CLI's /config in its slash worker; keep that there.
+      if (!ctx.gateway.gw?.isCanonical) {
+        return void ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(r => !ctx.stale() && ctx.transcript.page(r?.output || '{}', 'Config'))
+          .catch(ctx.guardedErr)
+      }
+
+      // T10: the owner's config.get `full` is the redacted presentation projection (display,
+      // approvals, voice keybinding) — never provider/MCP/terminal config, which can hold secrets.
+      // The client renders it; the classic CLI's full dump stays `hermes config`.
+      ctx.gateway
+        .rpc<ConfigFullResponse>('config.get', { key: 'full', ...(ctx.sid ? { session_id: ctx.sid } : {}) })
+        .then(
+          ctx.guarded<ConfigFullResponse>(r => {
+            const lines = configLines(r.config ?? {}, '')
+
+            ctx.transcript.page(lines.length ? lines.join('\n') : '{}', 'Config')
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

@@ -67,10 +67,24 @@ function harness() {
       }
     }
 
+    if (method === 'reload.mcp') {
+      return params.confirm
+        ? { status: 'reloaded', message: 'MCP servers reconciled (no server changes)' }
+        : { status: 'confirm_required', message: 'Reloading MCP refreshes every chat of this profile.' }
+    }
+
+    if (method === 'process.stop') {
+      return { killed: 0 }
+    }
+
     if (method === 'slash.exec' && /^voice( |$)/.test(params.command)) {
       voiceMode = params.command === 'voice on' ? 'voice_only' : params.command === 'voice off' ? 'off' : voiceMode
 
       return { type: 'exec', output: `voice: ${voiceMode}` }
+    }
+
+    if (method === 'config.get' && params.key === 'full') {
+      return { config: { display: { skin: 'ares', streaming: true }, voice: { record_key: 'ctrl+b' } } }
     }
 
     if (method === 'config.get' && params.key === 'voice') {
@@ -258,29 +272,27 @@ it('/status reads through the gateway', async () => {
   expect(request.mock.calls.map(([method]) => method)).not.toContain('session.status')
 })
 
-it('/stop is session-scoped; process-global /reload-mcp refuses on the shared gateway', async () => {
+it('/stop is session-scoped; /reload-mcp runs the owner\'s session-scoped reload.mcp (T10)', async () => {
   const { request, slash, sys } = harness()
 
-  for (const cmd of ['/stop', '/reload-mcp now']) {
+  for (const cmd of ['/stop', '/reload-mcp', '/reload-mcp now', '/reload-mcp always']) {
     slash(cmd)
+    await flush()
   }
-
-  await flush()
 
   // dokterdok N2: a sessionless process.stop was the owner-wide kill_all.
   expect(request).toHaveBeenCalledWith('process.stop', { session_id: 'owner' })
-
-  const methods = request.mock.calls.map(([method]) => method)
-
-  for (const method of ['reload.mcp']) {
-    expect(methods).not.toContain(method)
-  }
+  // The owner's reload reconciles only this profile's servers; `always` has no owner-side
+  // opt-out (the owner always asks), so it confirms once like `now`.
+  expect(request).toHaveBeenCalledWith('reload.mcp', { session_id: 'owner' })
+  expect(request.mock.calls.filter(([m, p]) => m === 'reload.mcp' && p.confirm === true)).toHaveLength(2)
+  expect(request.mock.calls.every(([m, p]) => m !== 'reload.mcp' || !('always' in p))).toBe(true)
 
   const notices = sys.mock.calls.map(([text]) => String(text))
 
-  for (const name of ['reload-mcp']) {
-    expect(notices).toContain(`/${name} is not available on the shared gateway yet`)
-  }
+  expect(notices.some(line => /not available/.test(line))).toBe(false)
+  expect(notices).toContain('Reloading MCP refreshes every chat of this profile.')
+  expect(notices).toContain('MCP servers reconciled (no server changes)')
 })
 
 it('/reasoning --global is the owner\'s /reasoning handler behind config.set; /skin reads still work', async () => {
@@ -390,4 +402,20 @@ it('session /reasoning <level> is the owner\'s fenced reasoning mutation (B14); 
   expect(notices.some(line => /high/.test(line))).toBe(true)
   expect(notices.some(line => /not available/.test(line))).toBe(false)
   expect(getUiState().showReasoning).toBe(true)
+})
+
+it('/config pages the owner\'s presentation config (config.get full), never slash.exec (T10)', async () => {
+  const { page, request, slash, sys } = harness()
+
+  slash('/config')
+  await flush()
+
+  expect(request).toHaveBeenCalledWith('config.get', { key: 'full', session_id: 'owner' })
+  expect(request.mock.calls.some(([method]) => method === 'slash.exec')).toBe(false)
+  expect(sys.mock.calls.map(([text]) => String(text)).some(line => /not available|unsupported/.test(line))).toBe(false)
+  const [text, title] = page.mock.calls[0]!
+  expect(title).toBe('Config')
+  expect(text).toContain('display:')
+  expect(text).toContain('  skin: ares')
+  expect(text).toContain('  record_key: ctrl+b')
 })

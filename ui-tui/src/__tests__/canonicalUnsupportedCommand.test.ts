@@ -16,7 +16,7 @@ beforeEach(() => {
 })
 
 it.each([
-  ['/config', 'config'],
+  ['/snapshot', 'snapshot'],
   ['/plugins enable foo', 'plugins'],
   ['/pet toggle', 'pet']
 ])('%s refused by the shared gateway names the command', async (cmd, name) => {
