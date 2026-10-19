@@ -1,4 +1,4 @@
-import { toChatMessages } from '@/lib/chat-messages'
+import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { openCommandPalette } from '@/store/command-palette'
 import { $displayTimestamps } from '@/store/display-timestamps'
@@ -213,48 +213,19 @@ function yamlLines(value: unknown, indent = ''): string[] {
   )
 }
 
-function contentText(content: unknown): string {
-  if (typeof content === 'string') {
-    return content
-  }
+/** `/history` text from the same public projection the transcript renders (archived turns shown,
+ *  hidden/model-only rows skipped, display_content preferred). */
+export function formatHistory(rows: SessionMessage[]): string {
+  const turns = toChatMessages(rows).flatMap(message => {
+    const text = chatMessageText(message).trim()
 
-  if (Array.isArray(content)) {
-    return content
-      .map(part =>
-        part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string'
-          ? (part as { text: string }).text
-          : ''
-      )
-      .filter(Boolean)
-      .join(' ')
-  }
-
-  return ''
-}
-
-interface HistoryRow {
-  archived?: unknown
-  content?: unknown
-  display_kind?: unknown
-  role?: unknown
-  text?: unknown
-}
-
-export function formatHistory(rows: HistoryRow[]): string {
-  const turns = rows.flatMap(row => {
-    if (row.archived || (row.role !== 'user' && row.role !== 'assistant')) {
-      return []
-    }
-
-    const text = (contentText(row.content) || (typeof row.text === 'string' ? row.text : '')).trim()
-
-    if (!text) {
+    if (message.hidden || !text || (message.role !== 'user' && message.role !== 'assistant')) {
       return []
     }
 
     const clipped = text.length > HISTORY_PREVIEW ? `${text.slice(0, HISTORY_PREVIEW)}…` : text
 
-    return [`${row.role === 'user' ? 'You' : 'Hermes'}: ${clipped}`]
+    return [`${message.role === 'user' ? 'You' : 'Hermes'}: ${clipped}`]
   })
 
   return turns.length ? [`Conversation history (${turns.length} messages):`, ...turns].join('\n') : 'No messages yet.'

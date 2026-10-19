@@ -8,6 +8,7 @@ import { dropSessionState } from '@/store/session-states'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './index-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
+import { formatHistory } from './slash-desktop-commands'
 
 // T11 (#134889): Desktop commands the shared gateway refused as `slash.exec`, or that Desktop never
 // offered, run on the owner's existing verbs instead.
@@ -272,6 +273,22 @@ describe('/history', () => {
     expect(text).toContain('You: first question')
     expect(text).toContain('Hermes: first answer')
     expect(text).not.toContain('tool noise')
+  })
+
+  it('uses the transcript projection: archived turns shown, hidden rows skipped, display_content preferred', () => {
+    const history = formatHistory([
+      { role: 'user', content: 'ARCHIVED QUESTION', archived: true, row_id: 1 },
+      { role: 'assistant', content: 'ARCHIVED ANSWER', archived: true, row_id: 2 },
+      { role: 'user', content: 'MODEL ONLY HEARTBEAT', display_kind: 'hidden', row_id: 3 },
+      { role: 'user', content: 'MODEL ONLY SKILL BODY', display_content: '/skill question', row_id: 4 },
+      { role: 'assistant', content: 'VISIBLE ANSWER', row_id: 5 }
+    ] as never)
+
+    expect(history).toContain('You: ARCHIVED QUESTION')
+    expect(history).toContain('Hermes: ARCHIVED ANSWER')
+    expect(history).toContain('You: /skill question')
+    expect(history).toContain('Hermes: VISIBLE ANSWER')
+    expect(history).not.toContain('MODEL ONLY')
   })
 })
 
