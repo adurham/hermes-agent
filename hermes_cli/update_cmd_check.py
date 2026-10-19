@@ -102,14 +102,15 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         print(f"✓ No newer release: {target.label}.")
     elif _uc()._capture_head_sha(git_cmd, root) == target.commit:
         print(f"✓ Up to date with the latest release ({target.label}).")
+    elif _refuses(git_cmd, root, target.commit):
+        # Before the rollback branch: a release this checkout contains is held too, not moved back to.
+        print(f"→ Holding at this build: {target.label} predates the gateway runtime your sessions use.")
+        print("  `hermes update` stays on this build; the next release that includes the runtime"
+              " installs normally (`hermes update --set-channel main` follows every commit).")
     elif _git(git_cmd, root, ["merge-base", "--is-ancestor", target.commit, "HEAD"]).returncode == 0:
         print(f"→ This checkout is newer than the selected release: {target.label}.")
         print("  `hermes update` moves it back to that release"
               " (`hermes update --set-channel main` follows every commit).")
-    elif _refuses(git_cmd, root, target.commit):
-        print(f"→ Holding at this build: {target.label} predates the gateway runtime your sessions use.")
-        print("  `hermes update` will not move back to it; the next stable release that includes the"
-              " runtime installs normally (`hermes update --set-channel main` follows every commit).")
     else:
         print(f"→ Selected release available: {target.label}")
         print("  Run `hermes update` to install it.")

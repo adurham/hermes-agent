@@ -300,6 +300,16 @@ def _update_refuses(co: _Checkout, target: str, home: Path) -> bool:
     return would_refuse(co.root, target, home, git=git)
 
 
+def _hold_refused_release(result: dict, co: _Checkout, home: Path) -> None:
+    """Hold an offered release `hermes update` refuses (it predates the gateway runtime these session
+    stores use). Covers releases off this checkout's history too, which the ancestry-only rollback
+    test cannot see. Runs on cached offers as well: the stores gain runtime history between checks,
+    and a release object the checkout has not fetched yet proves nothing until the update fetches it."""
+    target = result.get("targetSha")
+    if result.get("updateAvailable") and target and _update_refuses(co, target, home):
+        result.update(updateAvailable=False, behind=0, held="downgrade")
+
+
 def _resolve_channel(result: dict, channel: str, co: _Checkout, home: Path, *, forward_only: bool = False):
     """Resolve a release channel's target into ``result``; the SourceTarget, or None on error.
 
@@ -325,11 +335,7 @@ def _resolve_channel(result: dict, channel: str, co: _Checkout, home: Path, *, f
         # not a new update. Local ancestry only; an unknown relation stays an update.
         result["rollback"] = bool(co.head and co.head != target and not co.embedded and _git_ok(
             ["merge-base", "--is-ancestor", target, co.head], cwd=co.root, git=co.git))
-        if result["updateAvailable"] and _update_refuses(co, target, home):
-            # `hermes update` refuses this release (it predates the gateway runtime these session
-            # stores use), so it is held, not offered. Covers releases off this checkout's history
-            # too, which the ancestry-only rollback test cannot see.
-            result.update(updateAvailable=False, behind=0, held="downgrade")
+        _hold_refused_release(result, co, home)
         if source_target.retired:
             result["retirement"] = {"destination": source_target.channel, "sourceOnly": True}
     return source_target
@@ -460,7 +466,10 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     now = time.time()
     cached = None if force else _cached_status(cache_file, identity, now)
     if cached is not None:
-        return {**cached, "dirty": co.dirty, "currentBranch": co.current_branch}
+        cached = {**cached, "dirty": co.dirty, "currentBranch": co.current_branch}
+        if cached.get("channel"):
+            _hold_refused_release(cached, co, home)
+        return cached
     result["fetchedAt"] = int(now * 1000)
     source_target = None
     if not _is_full_sha(co.head):

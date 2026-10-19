@@ -625,3 +625,9 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(installation, tm
     assert status["rollback"] is False  # off-history: the ancestry test alone cannot see it
     assert status["updateAvailable"] is not ledgered
     assert status.get("held") == ("downgrade" if ledgered else None)
+
+    if not ledgered:
+        # The first runtime turn lands after an offer was cached: the next passive check holds it.
+        _ledgered_store(home)
+        cached = check_for_updates(install_root=root, home=home, channel="stable")
+        assert cached["updateAvailable"] is False and cached.get("held") == "downgrade", cached

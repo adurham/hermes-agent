@@ -337,6 +337,11 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
     payload["behind"] = behind
     if behind is None:
         payload["message"] = "Couldn't reach the update source — try again later."
+    elif behind == 0 and status.get("held"):
+        version = status.get("sourceVersion")
+        payload.update(held=status["held"], source_version=version,
+                       message=f"This build is newer than stable release v{version}, which predates the gateway "
+                               "runtime its sessions use. It stays on this build until a newer release ships.")
     elif behind == 0:
         payload["message"] = "You're on the latest version."
     else:

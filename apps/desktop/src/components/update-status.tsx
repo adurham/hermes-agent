@@ -172,12 +172,12 @@ function currentLine(
   latestRelease?: (version: string) => string,
   held?: (version: string) => string
 ): string {
-  if (target === 'backend') {
-    return u.latestBodyBackend
-  }
-
   if (held && status.held && status.sourceVersion) {
     return held(`v${status.sourceVersion}`)
+  }
+
+  if (target === 'backend') {
+    return u.latestBodyBackend
   }
 
   // Stable pins to a release; name it. A checkout ahead of it (forward-only) is newer
