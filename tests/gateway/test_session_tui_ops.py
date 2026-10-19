@@ -33,6 +33,37 @@ def test_session_save_exports_the_stored_transcript_under_the_profile_home(tmp_p
 
 
 @pytest.mark.platforms("linux")
+def test_session_export_returns_the_rendered_transcript_for_the_client_to_write(tmp_path):
+    """T10/T11: ``session.export`` hands the client the rendered ``/save`` transcript; the gateway
+    writes nothing, so a remote Desktop and a local Ink save to the user's own disk."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='exp', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='first',
+                          text='EXPORT_ME sk-ant-api03-' + 'a' * 40)
+                await settled(home)
+                saved = home / 'sessions' / 'saved'
+                before = sorted(saved.iterdir()) if saved.exists() else []
+                as_json = (await rpc(ws, 'session.export', session_id=sid))['result']
+                assert as_json['format'] == 'json' and as_json['filename'].endswith('.json'), as_json
+                contents = [m.get('content') for m in json.loads(as_json['content'])['messages']]
+                assert any('EXPORT_ME' in (c or '') for c in contents), contents
+                md = (await rpc(ws, 'session.export', session_id=sid, format='markdown', redact=True))['result']
+                assert md['format'] == 'md' and md['filename'].endswith('.md')
+                assert 'EXPORT_ME' in md['content'] and 'a' * 40 not in md['content']
+                html = (await rpc(ws, 'session.export', session_id=sid, format='html'))['result']
+                assert html['content'].lstrip().lower().startswith('<!doctype html')
+                assert (sorted(saved.iterdir()) if saved.exists() else []) == before  # nothing written
+                for params, reason in [({'session_id': sid, 'format': 'pdf'}, 'invalid_params'),
+                                       ({'session_id': sid, 'redact': 'yes'}, 'invalid_params'),
+                                       ({'session_id': sid, 'profile': 'foreign'}, 'profile_mismatch'),
+                                       ({}, 'invalid_params')]:
+                    assert (await rpc(ws, 'session.export', **params))['error']['message'] == reason, params
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
 def test_reload_env_rereads_the_profile_dotenv_for_a_controlled_session(tmp_path):
     with owner(tmp_path) as (home, _peer, desc):
         async def probe():
