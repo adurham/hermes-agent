@@ -22,6 +22,10 @@ _voice_wake_owner: Optional[Transport] = None
 # The transport that started the capture. A shared-owner (canonical) session is not in this process's
 # ``_sessions``, so ``write_json`` cannot route its voice events by sid; they go to this caller instead.
 _voice_event_transport: Optional[Transport] = None
+# The session whose push-to-talk capture is live, and a generation that invalidates its callbacks
+# when that session's voice mode goes off (a late transcript must not land after /voice off).
+_voice_capture_sid: str = ""
+_voice_capture_gen = 0
 
 
 def _caller_transport():
@@ -61,6 +65,42 @@ def _session_voice_enabled(session_id) -> bool:
     except ImportError:
         held = None
     return _voice_mode_enabled() if held is None else held
+
+
+def _set_session_voice_off(session_id) -> bool:
+    """Turn a shared-owner session's own voice mode off (spoken stop, no-speech limit); False when
+    no owner in this process holds it (the sidecar's env flag is the state)."""
+    try:
+        from gateway.session_config import set_local_voice_mode
+        return set_local_voice_mode(session_id, "off") is True
+    except ImportError:
+        return False
+
+
+def _stop_session_voice_capture(session_id) -> None:
+    """End *session_id*'s live capture (not another session's) and drop its late text callbacks."""
+    global _voice_capture_gen
+    with _voice_sid_lock:
+        if not session_id or session_id != _voice_capture_sid:
+            return
+        _voice_capture_gen += 1
+    with contextlib.suppress(Exception):
+        from hermes_cli.voice import stop_continuous
+        stop_continuous()
+    _resume_voice_wake()
+
+
+def _voice_capture_callback(fn):
+    """*fn* while the capture it was registered for is still current; a no-op once invalidated."""
+    with _voice_sid_lock:
+        gen = _voice_capture_gen
+
+    def call(*args):
+        with _voice_sid_lock:
+            current = gen == _voice_capture_gen
+        if current:
+            fn(*args)
+    return call
 
 
 def _voice_tts_enabled() -> bool:
@@ -721,7 +761,13 @@ def _vr_on_stop_phrase(t):
     # A SPOKEN bare stop phrase: end the chat like /voice off and emit a distinct signal so
     # clients end the conversation instead of treating it as a no-speech timeout.
     _end_voice_chat(stop_loop=False, stop_tts=True)
+    _set_session_voice_off(_voice_capture_sid)
     _vr_transcript({"stop_phrase": True, "text": t})
+
+
+def _vr_on_silent_limit():
+    _set_session_voice_off(_voice_capture_sid)
+    _vr_transcript({"no_speech_limit": True})
 
 
 def _vr_on_status(state):
@@ -743,12 +789,14 @@ def _(rid, params: dict) -> dict:
     if wake_owner is not None and wake_owner is not transport:
         return _ok(rid, {"status": "busy", "reason": "wake_owned"})
     try:
-        global _voice_event_sid, _voice_event_transport, _voice_wake_owner
+        global _voice_event_sid, _voice_event_transport, _voice_wake_owner, _voice_capture_sid
         if action == "start" and not _session_voice_enabled(params.get("session_id")):
             return _err(rid, 4015, "voice mode is off — enable with /voice on")
         with _voice_sid_lock:
             _voice_event_sid = params.get("session_id") or _voice_event_sid
             _voice_event_transport = transport
+            if action == "start":
+                _voice_capture_sid = params.get("session_id") or ""
         if action == "stop":
             from hermes_cli.voice import stop_continuous
             stop_continuous(force_transcribe=True)
@@ -780,13 +828,15 @@ def _(rid, params: dict) -> dict:
         if wake_paused:
             with _voice_sid_lock:
                 _voice_wake_owner = transport
+        live = _voice_capture_callback
         started = start_continuous(
-            on_transcript=lambda t: _vr_transcript({"text": t}), on_status=_vr_on_status,
-            on_silent_limit=lambda: _vr_transcript({"no_speech_limit": True}),
+            on_transcript=live(lambda t: _vr_transcript({"text": t})), on_status=_vr_on_status,
+            on_silent_limit=live(_vr_on_silent_limit),
             silence_threshold=_voice_cfg_number(voice_cfg.get("silence_threshold"), 200),
             silence_duration=_voice_cfg_number(voice_cfg.get("silence_duration"), 3.0),
             auto_restart=False, max_recording_seconds=max_rec if max_rec > 0 else 0.0,
-            on_stop_phrase=_vr_on_stop_phrase, on_partial=lambda t: _voice_emit("voice.partial", {"text": t}))
+            on_stop_phrase=live(_vr_on_stop_phrase),
+            on_partial=live(lambda t: _voice_emit("voice.partial", {"text": t})))
         if started is False:
             _resume_voice_wake()
         return _ok(rid, {"status": "busy" if started is False else "recording"})
