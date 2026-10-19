@@ -1,8 +1,8 @@
 """A background provider call that never returns pins its mem-sync worker thread forever (Python cannot
-stop a thread). MemoryManagers are rebuilt per agent, so without a process-wide view every fresh manager
-started one more call against the hung backend and pinned one more thread. Calls for a provider are now
-skipped once _MAX_STUCK_CALLS calls that started after its last success are stuck past the stall threshold,
-with one half-open probe per interval and a hard cap on calls in flight."""
+stop a thread), and MemoryManagers are rebuilt per agent. The process-wide gate skips calls once
+_MAX_STUCK_CALLS calls that started after the provider's last success are stuck, admits one half-open
+probe per interval while closed, and caps calls in flight, so a wedged backend pins a bounded number of
+threads and a recovered one keeps its memory."""
 import threading
 
 import pytest
@@ -168,7 +168,7 @@ def test_new_outage_warns_on_its_first_skip_even_with_an_orphan_alive(caplog):
 
 def _orphan_then_recover(orphans):
     """Each outage leaves one call that never returns, then the backend recovers for one turn."""
-    for _ in range(4):
+    for _ in range(mm._MAX_STUCK_CALLS):
         orphans.append(_hang_one_call())
         recovered = _HangingProvider()
         recovered.hang_next = False
@@ -207,8 +207,10 @@ def test_closed_gate_admits_a_half_open_probe_that_reopens_it(monkeypatch):
         _skip(_manager(healthy), "closed")
         assert healthy.sync_calls == 0  # gate closed, probe interval not yet reached
         monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 0.0)
-        for turn in ("probe", "after the probe"):
-            _skip(_manager(healthy), turn)
+        _skip(_manager(healthy), "probe")
+        assert healthy.sync_calls == 1
+        monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)  # no further probe: only a reopened gate admits
+        _skip(_manager(healthy), "after the probe")
         assert healthy.sync_calls == 2
     finally:
         for _, provider in hung:

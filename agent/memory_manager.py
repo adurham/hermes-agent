@@ -157,8 +157,8 @@ class _StuckCallGate:
         self.closed_at: dict[tuple[str, str], float] = {}  # gate closed / last probe admitted
         self.skips: dict[tuple[str, str], int] = {}
 
-    def enter(self, key: tuple[str, str], token: object, timeout: float) -> tuple[bool, int]:
-        """Register ``token`` and return ``(True, 0)``, or ``(False, stuck)`` when the call is skipped."""
+    def enter(self, key: tuple[str, str], token: object, timeout: float) -> Optional[tuple[int, int, int]]:
+        """Register ``token`` and return None, or ``(stuck, in_flight, skips)`` when the call is skipped."""
         now = time.monotonic()
         with self.lock:
             calls = self.calls.setdefault(key, {})
@@ -174,13 +174,12 @@ class _StuckCallGate:
                 if admit:
                     self.closed_at[key] = now
             if not admit:
-                if not calls:
-                    del self.calls[key]
-                return False, stuck
+                skips = self.skips[key] = self.skips.get(key, 0) + 1
+                return stuck, len(calls), skips
             # A later outage warns on its first skip, even if an orphan keeps the key alive.
             self.skips.pop(key, None)
             calls[token] = (now, now + timeout)
-            return True, 0
+            return None
 
     def leave(self, key: tuple[str, str], token: object, *, ok: bool) -> None:
         with self.lock:
@@ -194,11 +193,6 @@ class _StuckCallGate:
             for state in (self.calls, self.last_ok, self.closed_at, self.skips):
                 state.pop(key, None)
 
-    def count_skip(self, key: tuple[str, str]) -> int:
-        with self.lock:
-            skips = self.skips[key] = self.skips.get(key, 0) + 1
-            return skips
-
 
 class MemoryManager:
     """Builtin provider (always first) plus at most one external provider.
@@ -207,10 +201,9 @@ class MemoryManager:
     swallows per-provider exceptions.
     """
 
-    # Process-wide admission for external prefetch threads (#134392) and for background
-    # sync_turn / queue_prefetch calls on the mem-sync worker. The home is part of the key because one
-    # gateway process can serve several profiles, each with its own config and credentials for a
-    # same-named provider: one profile's hung backend must not silence another's memory.
+    # External prefetch threads (#134392) and background sync_turn / queue_prefetch calls. The home is
+    # part of the key because one gateway process can serve several profiles, each with its own config
+    # and credentials for a same-named provider: one profile's hung backend must not silence another's.
     _PREFETCH_GATE = _StuckCallGate()
     _BACKGROUND_GATE = _StuckCallGate()
 
@@ -381,10 +374,10 @@ class MemoryManager:
                 self._PREFETCH_GATE.leave(key, thread, ok="error" not in result_box)
 
         thread = spawn_context_thread(_run, name=f"memory-prefetch-{provider.name}")
-        admitted, stuck = self._PREFETCH_GATE.enter(key, thread, self._external_prefetch_timeout)
-        if not admitted:
-            logger.debug("Memory provider '%s' prefetch has %d stuck calls; skipping this turn",
-                         provider.name, stuck)
+        skipped = self._PREFETCH_GATE.enter(key, thread, self._external_prefetch_timeout)
+        if skipped:
+            logger.debug("Memory provider '%s' prefetch skipped (%d stuck, %d in flight)",
+                         provider.name, *skipped[:2])
             return ""
         try:
             thread.start()
@@ -397,8 +390,8 @@ class MemoryManager:
         if thread.is_alive():
             logger.warning(
                 "Memory provider '%s' prefetch timed out after %.1fs; the call keeps running in the "
-                "background (the provider is skipped once %d such calls are stuck)", provider.name,
-                self._external_prefetch_timeout, _MAX_STUCK_CALLS,
+                "background (later turns may skip it while the provider stays stuck)", provider.name,
+                self._external_prefetch_timeout,
             )
             return ""
 
@@ -527,14 +520,14 @@ class MemoryManager:
             return
         key = self._registry_key(provider)
         token = object()
-        admitted, stuck = self._BACKGROUND_GATE.enter(key, token, _BACKGROUND_CALL_STALL_S)
-        if not admitted:
-            skips = self._BACKGROUND_GATE.count_skip(key)
+        skipped = self._BACKGROUND_GATE.enter(key, token, _BACKGROUND_CALL_STALL_S)
+        if skipped:
+            stuck, in_flight, skips = skipped
             if skips == 1 or skips % 100 == 0:
                 logger.warning(
-                    "Memory provider '%s' has %d background calls stuck for over %.0fs; skipping its "
-                    "sync/prefetch until it recovers (%d skipped)", provider.name, stuck,
-                    _BACKGROUND_CALL_STALL_S, skips,
+                    "Memory provider '%s' has %d background calls stuck for over %.0fs (%d in flight); "
+                    "skipping its sync/prefetch until it recovers (%d skipped)", provider.name, stuck,
+                    _BACKGROUND_CALL_STALL_S, in_flight, skips,
                 )
             return
         ok = False
