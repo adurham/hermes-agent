@@ -181,6 +181,24 @@ async def test_a_mode_pick_during_a_turn_is_refused_with_the_reason(pick):
     assert agent._modes['s'] == 'default'
 
 
+@pytest.mark.asyncio
+async def test_a_mode_pick_behind_a_lost_turn_says_to_resolve_it_not_to_wait():
+    """unknown_execution: no turn is running, so "after this turn" would never come true."""
+    from hermes_cli.gateway_client import GatewayRPCError
+
+    async def rpc(method, **params):
+        if method == 'session.resume':
+            return {'revision': 3, 'execution_generation': 7}
+        raise GatewayRPCError('unknown_execution')
+
+    agent = _agent(rpc)
+    agent._snapshots['s']['pending'] = [{'admission_id': 'lost-1', 'status': 'unknown'}]
+    with pytest.raises(acp.RequestError) as refused:
+        await agent.set_session_mode('dont_ask', 's')
+    text = str(refused.value.data or refused.value)
+    assert 'after this turn' not in text and '/discard lost-1' in text, text
+
+
 def _context_shown(agent):
     return [(call.kwargs['update'].size, call.kwargs['update'].used)
             for call in agent._conn.session_update.await_args_list
