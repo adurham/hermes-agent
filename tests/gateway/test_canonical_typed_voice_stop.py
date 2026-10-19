@@ -13,12 +13,16 @@ from tests.gateway.test_session_authority_cancel_settlement import _authority
 def voice_owner(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from gateway.config import Platform
     from tui_gateway import server
-    db, authority = _authority(tmp_path, monkeypatch)
+    db, authority = _authority(tmp_path, monkeypatch, platform=Platform.LOCAL)  # TUI-26 is the local voice chat
     # The owner's voice mode is keyed by the session's source (``_voice_key_for_source``). Ending the
     # LOCAL push-to-talk capture is ``set_local_voice_mode``'s job, pinned in
     # tests/tui_gateway/test_canonical_voice_mode_writers.py.
     authority.sessions['s'].source.chat_id = 's'
+    # A LOCAL session belongs to its launching user: the viewer ``_connection`` attaches as.
+    from gateway.session_identity import authenticated_subject
+    authority.sessions['s'].source.user_id = authenticated_subject({'user_id': 'human'})
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)  # admit only; never run a turn
     runner = authority.runner
     runner._voice_mode = {}
@@ -65,6 +69,20 @@ async def test_a_stranger_cannot_end_the_voice_chat(voice_owner):
         reply = await _call(conn, 'prompt.submit', text='stop', submission_id='r1')
     assert reply['error']['data']['reason'] == 'permission_denied', reply
     assert voice_owner.runner._voice_mode['s'] == 'voice_only'
+
+
+@pytest.mark.asyncio
+async def test_a_messaging_lane_viewer_typing_stop_is_admitted_untouched(voice_owner):
+    """TUI-26 is the LOCAL voice chat: a Telegram lane whose chat ran ``/voice on``, viewed from
+    Desktop or Ink, keeps its voice mode and gets the typed text admitted as a turn."""
+    from gateway.config import Platform
+    voice_owner.authority.sessions['s'].source.platform = Platform.TELEGRAM
+    voice_owner.runner._voice_mode['s'] = 'voice_only'
+    with voice_owner.db:
+        reply = await _call(_connection(voice_owner.authority), 'prompt.submit', text='stop', submission_id='r1')
+    assert reply.get('result', {}).get('status') == 'queued', reply
+    assert voice_owner.runner._voice_mode['s'] == 'voice_only'
+    assert _ledger(voice_owner.db) == ['r1']
 
 
 def test_the_canonical_contract_declares_the_voice_stopped_reply():

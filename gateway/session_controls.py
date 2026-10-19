@@ -700,13 +700,19 @@ class AuthorityConnection:
     async def _typed_voice_stop(self, ref, params):
         """TUI-26: a bare stop phrase typed while the session's voice chat is on ends the chat
         (the sidecar's ``methods_prompt._consume_typed_stop_phrase``, its typed twin of the spoken
-        stop) and is never admitted. Only a submitter attached to the session may end it."""
+        stop) and is never admitted. Only a submitter attached to the session may end it, and only
+        on a LOCAL session: a messaging lane's own ``/voice`` mode belongs to that chat, so a
+        viewer's typed text there is admitted untouched."""
         text = params.get('text')
         if not isinstance(text, str):
             return False
         if ref.session_id not in self.subscriptions:
             return False  # submission() refuses it as permission_denied
         self.authority.authorize(self.actor, ref, 'session:submit')
+        live = self.authority.sessions.get(ref.session_id)
+        source = getattr(live, 'source', None)
+        if source is None or source.platform != Platform.LOCAL:
+            return False
         from gateway.session_config import local_voice_enabled
         if not local_voice_enabled(ref.session_id):
             return False
