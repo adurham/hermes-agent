@@ -1267,6 +1267,18 @@ class GatewaySlashCommandsMixin(
                                       collect_debug_report, upload_to_pastebin)
         from hermes_cli.debug_redaction import redact_debug_support_text
 
+        if (getattr(event.source, "platform", None) == Platform.LOCAL
+                and "local" in {w.lower() for w in (event.get_command_args() or "").split()}):
+            # A local session's `/debug local` (main's CLI form) asks for the report on this machine:
+            # return the redacted report for the client to show, with no network call at all (not
+            # even the expired-paste sweep). Uploading stays on the explicit `/debug` form (T7).
+            from hermes_cli.debug import collect_share_bundle
+
+            def _collect_local():
+                return collect_share_bundle(log_lines=200)["report"]
+
+            return await self._run_in_executor_with_context(_collect_local)
+
         def _collect_and_upload():  # blocking I/O (dump capture, log reads, uploads) -> thread
             _best_effort_sweep_expired_pastes()
             report = collect_debug_report(log_lines=200, dump_text=_capture_dump())
