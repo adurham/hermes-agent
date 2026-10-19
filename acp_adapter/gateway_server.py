@@ -583,7 +583,17 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         client = await self._client()
         payload = {"policy": policy}
         self._unacked.pop(session_id, None)
-        await self._mutations.apply(client, session_id, "edit_policy", payload)
+        try:
+            await self._mutations.apply(client, session_id, "edit_policy", payload)
+        except GatewayClientError as exc:
+            if str(exc) not in {"session_busy", "unknown_execution"}:
+                raise
+            # A turn is running: named in the transcript (as a deferred model pick is) and the reply.
+            text = "Mode changes apply when the session is idle; try again after this turn."
+            if self._conn:
+                await self._conn.session_update(session_id=self._editor_id(session_id),
+                                                update=acp.update_agent_message_text(text + "\n"))
+            raise acp.RequestError(-32603, text) from exc
         self._mutations.acknowledge(session_id, "edit_policy", payload)
         self._modes[session_id] = EDIT_APPROVAL_POLICY_TO_MODE[policy]
 

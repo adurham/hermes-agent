@@ -138,6 +138,29 @@ async def test_modes_and_the_config_option_set_the_owners_edit_policy():
     assert sent == []
 
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pick', [lambda a: a.set_session_mode('dont_ask', 's'),
+                                  lambda a: a.set_config_option('edit_approval_policy', 's', 'session')])
+async def test_a_mode_pick_during_a_turn_is_refused_with_the_reason(pick):
+    """The owner changes the edit policy on an idle session only; the editor is told why, by name."""
+    from hermes_cli.gateway_client import GatewayRPCError
+
+    async def rpc(method, **params):
+        if method == 'session.resume':
+            return {'revision': 3, 'execution_generation': 7}
+        raise GatewayRPCError('session_busy')
+
+    agent = _agent(rpc)
+    agent._modes['s'] = 'default'
+    with pytest.raises(acp.RequestError) as refused:
+        await pick(agent)
+    assert 'idle' in str(refused.value.data or refused.value), refused.value
+    shown = [call.kwargs['update'] for call in agent._conn.session_update.await_args_list]
+    assert any('idle' in getattr(getattr(u, 'content', None), 'text', '') for u in shown), shown
+    assert agent._modes['s'] == 'default'
+
+
 def _context_shown(agent):
     return [(call.kwargs['update'].size, call.kwargs['update'].used)
             for call in agent._conn.session_update.await_args_list
