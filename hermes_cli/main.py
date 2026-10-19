@@ -1765,7 +1765,7 @@ def cmd_chat(args):
     safe_mode = getattr(args, "safe_mode", False)
     kwargs = {
         "model": args.model,
-        "reasoning": getattr(args, "reasoning", None),
+        **{k: getattr(args, k, None) for k in ("reasoning", "api_key", "base_url")},  # TUI refuses the last two
         "toolsets": args.toolsets,
         "query": args.query,
         "oneshot": bool(getattr(args, "oneshot_exit", False)),
