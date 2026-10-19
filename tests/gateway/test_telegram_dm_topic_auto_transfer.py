@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tests.gateway.conftest import _ensure_telegram_mock
+from tests.waiting import async_wait_until
 
 _ensure_telegram_mock()
 
@@ -86,15 +87,11 @@ async def _deliver_root_dm(adapter: TelegramAdapter, text: str = "plan the migra
     else:
         adapter._text_batch_delay_seconds = adapter._text_batch_split_delay_seconds = 0.0
         adapter._enqueue_text_event(event)
-        for _ in range(200):
-            if not adapter._pending_text_batches and adapter._session_tasks:
-                break
-            await asyncio.sleep(0.01)
-    for _ in range(200):
-        tasks = [t for t in adapter._session_tasks.values() if not t.done()]
-        if not tasks and adapter._bot.send_message.await_count:
-            break
-        await asyncio.sleep(0.01)
+        await async_wait_until(lambda: not adapter._pending_text_batches and adapter._session_tasks,
+                               what="text batch flushed into a session task")
+    await async_wait_until(
+        lambda: adapter._bot.send_message.await_count and all(t.done() for t in adapter._session_tasks.values()),
+        what="session tasks done and a reply sent")
     await asyncio.gather(*adapter._session_tasks.values(), return_exceptions=True)
     return event
 
@@ -179,8 +176,6 @@ def test_top_level_telegram_yaml_key_reaches_extra(monkeypatch):
 @pytest.mark.parametrize("launch,secondary", [(False, True), (True, False), (False, False), (True, True)])
 async def test_receiving_secondary_bot_controls_opt_in(tmp_path, monkeypatch, launch, secondary):
     """Multiplexed: the bot that RECEIVED the root DM owns ``dm_topic_auto_transfer``, not the launch bot."""
-    from tests.waiting import async_wait_until
-
     runner, primary, db, _runs = _rig(tmp_path, monkeypatch, extra={"dm_topic_auto_transfer": launch})
     runner.config.multiplex_profiles = True
     runner._primary_profile_name = "default"
