@@ -8,7 +8,9 @@ vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterT
 
 import type { GatewayEventName } from '@hermes/shared'
 
+import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $lastReadAtBySessionId,
   $messagingSessions,
@@ -18,8 +20,6 @@ import {
   setSelectedStoredSessionId
 } from '@/store/session'
 import { $sessionStates, publishSessionState } from '@/store/session-states'
-import { CanonicalDesktopProtocol } from '@/api/canonical-protocol'
-import { $activeGatewayProfile } from '@/store/profile'
 import { $unreadFinishedMarkers, noteDesktopAdmission } from '@/store/session-unread'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -93,11 +93,15 @@ describe('unread dot for a messaging turn Desktop sent', () => {
 
   // A receipt as the canonical client sees it, whichever surface sent the prompt.
   const admit = (admission: string, status = 'queued') =>
-    new CanonicalDesktopProtocol().result('prompt.submit', { session_id: 'tg-1', submission_id: admission }, {
-      admission_id: admission,
-      ref: { session_id: 'tg-1' },
-      status
-    })
+    new CanonicalDesktopProtocol().result(
+      'prompt.submit',
+      { session_id: 'tg-1', submission_id: admission },
+      {
+        admission_id: admission,
+        ref: { session_id: 'tg-1' },
+        status
+      }
+    )
 
   it('lights on the stamped completion of a turn Desktop submitted, once', () => {
     noteDesktopAdmission('desktop-turn')

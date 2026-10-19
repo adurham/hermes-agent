@@ -48,8 +48,8 @@ import {
   setLiveTurnBackend,
   setSessionStalled
 } from '@/store/session-states'
-import { loadArchivedSessions } from '@/store/sidebar-archive'
 import { noteLiveSessionSource } from '@/store/session-unread'
+import { loadArchivedSessions } from '@/store/sidebar-archive'
 import {
   clearActiveSessionTodos,
   clearSessionTodos,
