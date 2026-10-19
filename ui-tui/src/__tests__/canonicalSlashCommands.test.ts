@@ -14,6 +14,28 @@ const LEGACY = ['session.title', 'session.undo', 'session.usage', 'slash.exec', 
 function harness() {
   let voiceMode = 'off'
 
+  // T9/T10 owner verbs, one answer per method (kept out of the request ladder below).
+  const ownerVerb = (method: string, params: any): unknown => {
+    const answers: Record<string, () => unknown> = {
+      'config.get:full': () => ({ config: { display: { skin: 'ares', streaming: true }, voice: { record_key: 'ctrl+b' } } }),
+      'config.get:voice': () => ({ value: voiceMode }),
+      'process.stop': () => ({ killed: 0 }),
+      'reload.mcp': () =>
+        params.confirm
+          ? { message: 'MCP servers reconciled (no server changes)', status: 'reloaded' }
+          : { message: 'Reloading MCP refreshes every chat of this profile.', status: 'confirm_required' },
+      'slash.exec:voice': () => {
+        voiceMode = params.command === 'voice on' ? 'voice_only' : params.command === 'voice off' ? 'off' : voiceMode
+
+        return { output: `voice: ${voiceMode}`, type: 'exec' }
+      }
+    }
+
+    const sub = method === 'config.get' ? params.key : method === 'slash.exec' ? String(params.command).split(' ')[0] : ''
+
+    return (answers[sub ? `${method}:${sub}` : method] ?? (() => undefined))()
+  }
+
   const messages = [
     { role: 'user', content: 'first', row_id: 11 },
     { role: 'assistant', content: 'a1', row_id: 12 },
@@ -67,28 +89,10 @@ function harness() {
       }
     }
 
-    if (method === 'reload.mcp') {
-      return params.confirm
-        ? { status: 'reloaded', message: 'MCP servers reconciled (no server changes)' }
-        : { status: 'confirm_required', message: 'Reloading MCP refreshes every chat of this profile.' }
-    }
+    const owned = ownerVerb(method, params)
 
-    if (method === 'process.stop') {
-      return { killed: 0 }
-    }
-
-    if (method === 'slash.exec' && /^voice( |$)/.test(params.command)) {
-      voiceMode = params.command === 'voice on' ? 'voice_only' : params.command === 'voice off' ? 'off' : voiceMode
-
-      return { type: 'exec', output: `voice: ${voiceMode}` }
-    }
-
-    if (method === 'config.get' && params.key === 'full') {
-      return { config: { display: { skin: 'ares', streaming: true }, voice: { record_key: 'ctrl+b' } } }
-    }
-
-    if (method === 'config.get' && params.key === 'voice') {
-      return { value: voiceMode }
+    if (owned !== undefined) {
+      return owned
     }
 
     if (method === 'config.get') {
