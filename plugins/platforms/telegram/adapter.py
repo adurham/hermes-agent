@@ -627,6 +627,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         self._pending_photo_batch_tasks: dict[str, asyncio.Task] = {}
         self._media_group_events: dict[str, MessageEvent] = {}
         self._media_group_tasks: dict[str, asyncio.Task] = {}
+        # Flushes past their pop, by (family, key): a newer chunk must not cancel them (teardown still does).
+        self._committed_flush_tasks: dict[tuple[str, str], asyncio.Task] = {}
         # Aggregate client-side splits of long messages into one MessageEvent; bounds are conservative
         # for Telegram's ~1 edit/s flood envelope.
         self._text_batch_delay_seconds = self._env_float_clamped(
@@ -3295,6 +3297,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         pending_tasks = self._collect_live_tasks(
             [
                 *self._media_group_tasks.values(), *self._pending_photo_batch_tasks.values(), *self._pending_text_batch_tasks.values(),
+                *getattr(self, "_committed_flush_tasks", {}).values(),
                 getattr(self, "_polling_error_task", None), getattr(self, "_polling_progress_verifier_task", None),
                 # Hold-queue redispatch must be cancellable+awaitable on teardown too.
                 getattr(self, "_held_inbound_redispatch_task", None),
@@ -6554,6 +6557,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         """Shared delayed-flush body: sleep, pop, hold if teardown started, else dispatch. A cancel after
         the pop but before durable dispatch re-holds the event (never lose it)."""
         current_task = asyncio.current_task()
+        committed = self.__dict__.setdefault("_committed_flush_tasks", {})
         event = None
         try:
             await asyncio.sleep(delay)
@@ -6565,6 +6569,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             event = pending.pop(key, None)
             if not event:
                 return
+            # Committed: leave the per-key slot so a newer chunk re-arms without cancelling this
+            # dispatch mid-flight (e.g. during a root-DM createForumTopic, whose ID would be lost).
+            tasks.pop(key, None)
+            prior = committed.get((where, key))
+            committed[(where, key)] = current_task
+            if prior is not None and not prior.done():
+                await asyncio.wait({prior})  # dispatch in order, after the earlier batch settles
             if self._should_drop_delayed_delivery():
                 self._hold_inbound_event(event, where=f"{where}-flush")
                 event = None
@@ -6578,6 +6589,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 self._hold_inbound_event(event, where=f"{where}-flush-cancelled")
             raise
         finally:
+            if committed.get((where, key)) is current_task:
+                committed.pop((where, key), None)
             if tasks.get(key) is current_task:
                 tasks.pop(key, None)
 

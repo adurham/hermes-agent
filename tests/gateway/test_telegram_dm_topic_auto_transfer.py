@@ -234,3 +234,37 @@ async def test_new_topic_reply_anchor_survives_native_codec(tmp_path, monkeypatc
     # The default (None) override stays out of the envelope, so older retries keep their fingerprint.
     plain = MessageEvent(text="x", source=_make_source(), message_id="4243")
     assert "reply_anchor_override" not in snapshot_native(runner, plain)["native_text_v1"]["event"]
+
+
+@pytest.mark.asyncio
+async def test_second_root_dm_does_not_cancel_an_in_flight_topic_transfer(tmp_path, monkeypatch):
+    """A second root-DM chunk arriving while ``createForumTopic`` for the first is still in flight must
+    not cancel the committed flush: the first message keeps its topic (no hold + replay into a second
+    topic) and every created topic receives its message."""
+    _runner, adapter, db, runs = _rig(tmp_path, monkeypatch, extra={"dm_topic_auto_transfer": True})
+    adapter._text_batch_delay_seconds = adapter._text_batch_split_delay_seconds = 0.0
+    release = asyncio.Event()
+    ids = iter(range(NEW_TOPIC_ID, NEW_TOPIC_ID + 10))
+
+    async def paused_create(**_kwargs):
+        await release.wait()
+        return SimpleNamespace(message_thread_id=next(ids))
+
+    adapter._bot.create_forum_topic = AsyncMock(side_effect=paused_create)
+    first = MessageEvent(text="plan the migration", source=_make_source(thread_id=None), message_id="4242")
+    second = MessageEvent(text="and the rollback", source=_make_source(thread_id=None), message_id="4243")
+    adapter._enqueue_text_event(first)
+    await async_wait_until(lambda: adapter._bot.create_forum_topic.await_count == 1, what="first create in flight")
+    adapter._enqueue_text_event(second)
+    await async_wait_until(lambda: not adapter._pending_text_batches, what="second chunk's flush popped it")
+    release.set()
+    await async_wait_until(lambda: len(runs) >= 2 and not adapter._pending_text_batches
+                           and all(t.done() for t in adapter._session_tasks.values()), what="both turns ran")
+    await asyncio.gather(*adapter._session_tasks.values(), return_exceptions=True)
+    db.close()
+    assert not getattr(adapter, "_held_inbound_events", None), "the first message was held for replay"
+    created = adapter._bot.create_forum_topic.await_count
+    assert first.source.thread_id == str(NEW_TOPIC_ID)
+    landed = {first.source.thread_id, second.source.thread_id}
+    assert landed == {str(NEW_TOPIC_ID + i) for i in range(created)}, "a created topic was left empty"
+    assert len(runs) == 2
