@@ -8,6 +8,7 @@ import type {
   ConfigFullResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionExportResponse,
   SessionSaveResponse,
   SessionStatusResponse,
   SessionSteerResponse,
@@ -19,6 +20,7 @@ import type {
 import { t } from '../../../i18n/runtime.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
+import { writeSessionExport } from '../../../lib/sessionExport.js'
 import {
   configureDetectedTerminalKeybindings,
   configureTerminalKeybindings,
@@ -622,7 +624,7 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'save the current transcript to JSON',
     name: 'save',
-    run: (_arg, ctx) => {
+    run: (arg, ctx) => {
       const hasConversation = ctx.local
         .getHistoryItems()
         .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
@@ -633,6 +635,33 @@ export const coreCommands: SlashCommand[] = [
 
       if (!ctx.sid) {
         return ctx.transcript.sys(t('slashCmd.core.save.noActiveSession'))
+      }
+
+      // T10: the shared owner renders the transcript (session.export) and Ink writes the file on
+      // the user's machine, as the classic CLI's `/save [json|md|html] [filename] [redact]` did.
+      // The same verb serves a remote Desktop, where the gateway's disk is not the user's.
+      if (ctx.gateway.gw?.isCanonical) {
+        const parts = arg.trim().split(/\s+/).filter(Boolean)
+        const redact = /^-{0,2}redact$/i.test(parts.at(-1) ?? '')
+
+        if (redact) {
+          parts.pop()
+        }
+
+        const [format = 'json', filename] = parts
+
+        return void ctx.gateway
+          .rpc<SessionExportResponse>('session.export', { format, redact, session_id: ctx.sid })
+          .then(
+            ctx.guarded<SessionExportResponse>(r => {
+              try {
+                ctx.transcript.sys(t('slashCmd.core.save.saved', writeSessionExport(r, filename)))
+              } catch (e) {
+                ctx.transcript.sys(`${t('slashCmd.core.save.failed')}: ${e instanceof Error ? e.message : String(e)}`)
+              }
+            })
+          )
+          .catch(ctx.guardedErr)
       }
 
       ctx.gateway

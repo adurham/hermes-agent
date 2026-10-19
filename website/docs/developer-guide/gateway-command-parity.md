@@ -103,7 +103,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/retry` | refused | HermesCLI._cmd_retry | canonical route | action: retry | session.mutate rewind + resubmit |  |
 | `/review` | control | HermesCLI._handle_review_command | slash.exec | slash.exec | slash.exec |  |
 | `/rollback` | refused | HermesCLI._handle_rollback_command | rollback.diff, rollback.list, rollback.restore | slash.exec: refused | slash.exec: refused | restores filesystem checkpoints |
-| `/save` | refused | HermesCLI.save_conversation | session.save | rpc session.save | slash.exec: refused | writes an export file on the gateway host |
+| `/save` | refused | HermesCLI.save_conversation | canonical route | rpc session.save | slash.exec: refused | writes an export file on the gateway host |
 | `/sessions` | refused | HermesCLI._handle_sessions_command | local | picker: session | slash.exec: refused | messaging origin-scoped listing (`/sessions all` needs a messaging admin) |
 | `/sethome` (/set-home) | refused | messaging-only: unknown command | slash.exec: refused | unavailable: terminal | slash.exec: refused | messaging-only |
 | `/skills` | read (bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused) | HermesCLI._cmd_skills | slash.exec; sidecar: skills.manage | slash.exec | slash.exec | client-local (cli_only) |
