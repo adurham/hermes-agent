@@ -70,7 +70,7 @@ async def prepare_model(authority, live, payload, prepared):
         return refusal
     frozen = old.config()
     # The committed selection freezes the ONE picked endpoint (its key stays a private secret).
-    provider_secrets = {} if old.follows_profile else _freeze_selected_provider(
+    provider_secrets, retired = ({}, ()) if old.follows_profile else _freeze_selected_provider(
         resolution, frozen, result.target_provider)
     if old.follows_profile:
         # A following session switches FROM the profile's current route: measured from its creation
@@ -119,6 +119,9 @@ async def prepare_model(authority, live, payload, prepared):
     # Creation identity (request_json) remains immutable; runtime selection lives in the policy.
     policy = replace(old, model=result.new_model, config_json=json.dumps(frozen))
     secrets = recover_config_secrets(authority, old) if old.config_secret_ref else {}
+    # The picked entry's private subtree is replaced whole: a key or header its current declaration
+    # withdrew must not follow it to the new endpoint.
+    secrets = {path: value for path, value in secrets.items() if path[:2] not in retired}
     secrets.update(provider_secrets)
     # A cleared field's private value must not be re-hydrated into the new route by config().
     secrets = {path: value for path, value in secrets.items()
@@ -182,18 +185,20 @@ def _freeze_selected_provider(config, frozen, provider):
     """Copy only the picked named provider's declaration into the frozen session route.
 
     The next turn resolves from the session's own configuration, not a later profile edit. Private
-    fields move to the policy's secret store, as policy creation does; nothing else moves.
+    fields move to the policy's secret store, as policy creation does; nothing else moves. Returns
+    ``(secrets, retired)``: the entry's private values and the ``(section, key)`` whose previous
+    private subtree they replace.
     """
     from copy import deepcopy
     from gateway.session_policy import _extract_config_secrets
     from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
     path = named_custom_provider_config_path(provider, config)
     if path is None:
-        return {}
+        return {}, ()
     section, index = path
     entries = config.get(section)
     if not isinstance(entries, (dict, list)) or not isinstance(entries[index], dict):
-        return {}
+        return {}, ()
     copied = deepcopy(entries[index])
     if section == 'providers':
         frozen[section] = {**(frozen.get(section) if isinstance(frozen.get(section), dict) else {}), index: copied}
@@ -211,7 +216,7 @@ def _freeze_selected_provider(config, frozen, provider):
         frozen[section] = frozen_entries
     secrets = {}
     _extract_config_secrets(frozen[section][index], secrets, (section, index))
-    return secrets
+    return secrets, {(section, index)}
 
 
 def _alias_credential(authority, result):
