@@ -525,6 +525,76 @@ def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_p
 
 
 
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('stopper', ['shutdown', 'user'])
+def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_path, monkeypatch, stopper):
+    """#134889 GW-22 review (GW-B): ``managed_turn_text`` (``@`` expansion; it may fetch the model's
+    context length) runs before the worker exists. A gateway shutdown Stop there is latched for the
+    generation, so no worker is spawned and the turn settles interrupted with the restart cause. A
+    user's Stop there is honoured too and leaves no cause. Real authority and SQLite; only the
+    expansion is slowed and Popen is observed."""
+    import subprocess
+
+    from gateway import session_context_refs
+    from gateway import session_managed_worker as managed
+    from gateway.run_runtime import stop_authority_turns
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_policy import build_policy
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from tests.gateway.restart_test_helpers import make_restart_runner
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    runner, _adapter = make_restart_runner()
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
+    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    ref = SessionRef('owned', 's')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    expanding, release, spawned = threading.Event(), threading.Event(), []
+
+    async def slow_expansion(authority, row, policy):  # stands in for a slow context-length lookup
+        expanding.set()
+        await asyncio.to_thread(release.wait, 30)
+        return None, None
+    monkeypatch.setattr(session_context_refs, 'managed_turn_text', slow_expansion)
+
+    class Child(subprocess.Popen):
+        def __init__(self, args, **kw):
+            spawned.append(True)
+            super().__init__([sys.executable, '-c', STOPPABLE_CHILD], **kw)
+    monkeypatch.setattr(managed.subprocess, 'Popen', Child)
+    policy = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {}, profile_terminal=False)
+
+    async def scenario():
+        await authority.submit(actor, Submission('turn', ref, {'text': 'look at @file:x'}, 'queue'))
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority._stamp_claim(ref, live, row)
+        task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
+        await asyncio.to_thread(expanding.wait, 30)
+        if stopper == 'shutdown':
+            assert stop_authority_turns(authority, reason='Gateway shutting down') == 1
+        else:
+            await authority.interrupt(actor, ref, row['generation'])
+        release.set()
+        async with asyncio.timeout(30):
+            return row, await task
+
+    with db:
+        row, response = asyncio.run(scenario())
+    result = authority.pending_results[row['admission_id']]['result']
+    assert response == '' and spawned == [] and result['interrupted']
+    if stopper == 'shutdown':
+        assert result['interrupt_message'] == 'Gateway shutting down'
+    else:
+        assert 'interrupt_message' not in result
+    assert 's' not in authority._managed_spawning and 's' not in authority.pending_stops
+
+
 def test_a_user_stop_first_keeps_no_shutdown_cause_before_spawn():
     """A user's Stop latched for the pending generation came first: shutdown records no cause."""
     from gateway.run_runtime import stop_authority_turns

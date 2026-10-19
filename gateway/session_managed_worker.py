@@ -521,14 +521,35 @@ def _compression_ancestors(db, session_id):
     return ancestors[::-1]
 
 
-async def _spawn_registered_worker(authority, ref, row):
-    """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
-    interrupted result is already recorded). Until registration a gateway stop has nothing to
-    signal, so the generation is marked spawning and the stop latches instead (#134889 GW-22)."""
+def _mark_spawning(authority, ref, row):
+    """Mark the generation pre-worker: until the worker registers, a gateway stop has nothing to
+    signal, so it latches for this generation instead (#134889 GW-22). Set before ``@`` expansion,
+    which may await the network, so a Stop there is never lost."""
     spawning = getattr(authority, '_managed_spawning', None)
     if spawning is None:
         spawning = authority._managed_spawning = {}
-    spawning[ref.session_id] = generation = row.get('generation')
+    spawning[ref.session_id] = row.get('generation')
+    return spawning
+
+
+def _stopped_before_spawn(authority, ref, row):
+    """A Stop latched for this generation while it had no worker (a gateway stop during ``@``
+    expansion, or a user's Stop): consume it and record the interrupted result, never spawning."""
+    generation = row.get('generation')
+    stops = getattr(authority, 'pending_stops', {})
+    if generation is None or stops.get(ref.session_id) != generation:
+        return False
+    del stops[ref.session_id]
+    authority._managed_spawning.pop(ref.session_id, None)
+    _interrupted_before_bootstrap(authority, row, _latched_stop_cause(authority, ref.session_id, generation))
+    return True
+
+
+async def _spawn_registered_worker(authority, ref, row):
+    """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
+    interrupted result is already recorded). The generation stays marked spawning until registration."""
+    spawning = _mark_spawning(authority, ref, row)
+    generation = row.get('generation')
     try:
         env = await asyncio.to_thread(_worker_env, authority)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
@@ -562,10 +583,18 @@ async def execute_managed(authority, ref, row, policy):
     from gateway.run_turn_progress import publish_worker_tool_event
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
     from gateway.session_context_refs import managed_turn_text, refused_turn_result
-    text, refusal = await managed_turn_text(authority, row, policy)
+    _mark_spawning(authority, ref, row)
+    try:
+        text, refusal = await managed_turn_text(authority, row, policy)
+    except BaseException:
+        authority._managed_spawning.pop(ref.session_id, None)
+        raise
     if refusal is not None:
+        authority._managed_spawning.pop(ref.session_id, None)
         authority.pending_results[row['admission_id']] = {'result': refused_turn_result(row, refusal), 'usage': {}}
         return refusal
+    if _stopped_before_spawn(authority, ref, row):
+        return ''
     spawned = await _spawn_registered_worker(authority, ref, row)
     if spawned is None:
         return ''
