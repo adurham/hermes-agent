@@ -3,7 +3,7 @@ import { statSync } from 'node:fs'
 import path from 'node:path'
 
 import type { GatewayTicketPurpose } from './local-gateway'
-import { hiddenWindowsChildOptions } from './windows-child-options'
+import { hiddenWindowsChildOptions, windowsShellCommand } from './windows-child-options'
 
 interface TicketEndpoint {
   profile_id: string
@@ -176,7 +176,9 @@ function launcherRuntimePython(backend: ResolvedTicketBackend & { root: string }
   return new Promise((resolve, reject) => {
     const fail = (detail: string) => reject(new Error(`Gateway ticket bootstrap could not resolve the installed Hermes Python runtime: ${detail}`))
 
-    const child = spawn(backend.command, ['--print-runtime-command'], hiddenWindowsChildOptions({
+    // A .cmd override is a shell backend: quote it as the backend spawn does, or cmd.exe
+    // splits a launcher path with a space at the first one (#74064).
+    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), ['--print-runtime-command'], hiddenWindowsChildOptions({
       cwd: backend.root, env: { ...process.env, ...backend.env }, shell: Boolean(backend.shell), stdio: ['ignore', 'pipe', 'ignore']
     }))
 
