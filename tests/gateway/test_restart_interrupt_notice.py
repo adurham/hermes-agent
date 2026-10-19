@@ -395,3 +395,80 @@ def test_automation_turn_transcript_notice_is_the_neutral_copy(tmp_path):
     db, *_ = _settle_on_real_store(tmp_path, 'Gateway restarting', principal='cron-owner')
     with db:
         assert _notices(db) == [AUTOMATION_INTERRUPTED_NOTICE]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('ending', ['spawned', 'cancelled'])
+def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_path, monkeypatch, ending):
+    """#134889 GW-22: the gateway's stop lands while the managed worker is still being spawned
+    (no worker to signal yet). The authority latches the cause for that generation, so the
+    pre-bootstrap interrupted result carries it: the spawned child is stopped before it is ever
+    bootstrapped, or the cancelled spawn settles with the cause. Real child, real SQLite."""
+    import subprocess
+
+    from gateway import session_managed_worker as managed
+    from gateway.run_runtime import stop_authority_turns
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_policy import build_policy
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from tests.gateway.restart_test_helpers import make_restart_runner
+    from tests.waiting import async_wait_until
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    runner, _adapter = make_restart_runner()
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
+    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    ref = SessionRef('owned', 's')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    spawning, release, bootstrapped = threading.Event(), threading.Event(), []
+
+    class Child(subprocess.Popen):
+        def __init__(self, args, **kw):
+            spawning.set()
+            release.wait(30)
+            super().__init__([sys.executable, '-c', STOPPABLE_CHILD], **kw)
+    monkeypatch.setattr(managed.subprocess, 'Popen', Child)
+    monkeypatch.setattr(managed, '_bootstrap', lambda *a: bootstrapped.append(a) or pytest.fail('bootstrapped'))
+    policy = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {}, profile_terminal=False)
+
+    async def scenario():
+        await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority._stamp_claim(ref, live, row)
+        task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
+        await asyncio.to_thread(spawning.wait, 30)
+        assert stop_authority_turns(authority, reason='Gateway restarting') == 1
+        if ending == 'cancelled':
+            task.cancel()
+        release.set()
+        async with asyncio.timeout(20):
+            await async_wait_until(task.done, timeout=20, what='the stopped turn to end')
+        return row, await task
+
+    with db:
+        row, response = asyncio.run(scenario())
+    result = authority.pending_results[row['admission_id']]['result']
+    assert response == '' and not bootstrapped
+    assert result['interrupted'] and result['interrupt_message'] == 'Gateway restarting'
+
+
+def test_a_user_stop_first_keeps_no_shutdown_cause_before_spawn():
+    """A user's Stop latched for the pending generation came first: shutdown records no cause."""
+    from gateway.run_runtime import stop_authority_turns
+    live = SimpleNamespace(event_stream=SimpleNamespace(execution={'execution_generation': 4}))
+    authority = SimpleNamespace(_managed_workers={}, _managed_spawning={'s': 4}, sessions={'s': live},
+                                pending_stops={'s': 4}, pending_stop_causes={})
+    assert stop_authority_turns(authority, reason='Gateway restarting') == 1
+    assert authority.pending_stop_causes == {} and authority.pending_stops == {'s': 4}
+    authority.pending_stops = {}
+    stop_authority_turns(authority)  # no reason (profile retire): latches the Stop, never a cause
+    assert authority.pending_stop_causes == {} and authority.pending_stops == {'s': 4}
+    authority.pending_stops = {}
+    assert stop_authority_turns(authority, reason='Gateway shutting down') == 1
+    assert authority.pending_stop_causes == {'s': (4, 'Gateway shutting down')}

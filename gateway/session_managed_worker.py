@@ -454,6 +454,13 @@ def _interrupted_before_bootstrap(authority, row, cause=None):
     return ''
 
 
+def _latched_stop_cause(authority, session_id, generation):
+    """The gateway restart/shutdown cause latched for this generation before its worker existed
+    (``run_runtime._stop_spawning_managed``), consumed once; None for a user's Stop."""
+    latched = getattr(authority, 'pending_stop_causes', {}).pop(session_id, None)
+    return latched[1] if latched and latched[0] == generation else None
+
+
 def _with_stop_cause(accepted, worker):
     """The wire result carries no interruption cause; the owner recorded which stop it sent."""
     if accepted.get('interrupted') and worker.stop_cause:
@@ -514,14 +521,14 @@ def _compression_ancestors(db, session_id):
     return ancestors[::-1]
 
 
-async def execute_managed(authority, ref, row, policy):
-    from gateway.run_turn_progress import publish_worker_tool_event
-    # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
-    from gateway.session_context_refs import managed_turn_text, refused_turn_result
-    text, refusal = await managed_turn_text(authority, row, policy)
-    if refusal is not None:
-        authority.pending_results[row['admission_id']] = {'result': refused_turn_result(row, refusal), 'usage': {}}
-        return refusal
+async def _spawn_registered_worker(authority, ref, row):
+    """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
+    interrupted result is already recorded). Until registration a gateway stop has nothing to
+    signal, so the generation is marked spawning and the stop latches instead (#134889 GW-22)."""
+    spawning = getattr(authority, '_managed_spawning', None)
+    if spawning is None:
+        spawning = authority._managed_spawning = {}
+    spawning[ref.session_id] = generation = row.get('generation')
     try:
         env = await asyncio.to_thread(_worker_env, authority)
         cwd = (await asyncio.to_thread(Path(__file__).resolve)).parents[1]
@@ -533,7 +540,12 @@ async def execute_managed(authority, ref, row, policy):
             stderr=subprocess.DEVNULL if log_path is None else subprocess.PIPE, **WORKER_POPEN)
     except asyncio.CancelledError:
         # acquire_process owns late-child cleanup; no bootstrap or reservation was sent.
-        return _interrupted_before_bootstrap(authority, row)
+        spawning.pop(ref.session_id, None)
+        _interrupted_before_bootstrap(authority, row, _latched_stop_cause(authority, ref.session_id, generation))
+        return None
+    except BaseException:
+        spawning.pop(ref.session_id, None)
+        raise
     worker = ManagedWorker(process)
     if log_path is not None:
         worker.drain_stderr(log_path)
@@ -541,6 +553,24 @@ async def execute_managed(authority, ref, row, policy):
     if workers is None:
         workers = authority._managed_workers = {}
     workers[ref.session_id] = worker
+    spawning.pop(ref.session_id, None)
+    worker.stop_cause = _latched_stop_cause(authority, ref.session_id, generation)
+    return worker, process
+
+
+async def execute_managed(authority, ref, row, policy):
+    from gateway.run_turn_progress import publish_worker_tool_event
+    # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
+    from gateway.session_context_refs import managed_turn_text, refused_turn_result
+    text, refusal = await managed_turn_text(authority, row, policy)
+    if refusal is not None:
+        authority.pending_results[row['admission_id']] = {'result': refused_turn_result(row, refusal), 'usage': {}}
+        return refusal
+    spawned = await _spawn_registered_worker(authority, ref, row)
+    if spawned is None:
+        return ''
+    worker, process = spawned
+    workers = authority._managed_workers
     # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
     # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
     authority.adopt_agent(ref.session_id, row['generation'], worker)
