@@ -320,9 +320,16 @@ def test_native_cache_is_stable_without_a_developer_environment(tmp_path, monkey
         stdout = vswhere if Path(command[0]) == installer / "vswhere.exe" else "rustc 1.98.0"
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
+    # Release builds hand the provider's OpenSSL in (vcpkg's static libs on arm64, where
+    # identity without it is deliberately incomplete); supply one so both arches agree.
+    openssl = tmp_path / "openssl"
+    for name in ("include/openssl/opensslv.h", "lib/libcrypto.lib"):
+        (openssl / name).parent.mkdir(parents=True, exist_ok=True)
+        (openssl / name).write_bytes(name.encode())
+
     desktop_toolchain.platform.platform()
     monkeypatch.setattr(desktop_toolchain.subprocess, "run", probe)
-    cache, env = tmp_path / "cache", {"PATH": os.defpath}
+    cache, env = tmp_path / "cache", {"PATH": os.defpath, "OPENSSL_DIR": str(openssl)}
     first = desktop_toolchain.native_cache_path(cache, env)
     assert desktop_toolchain.native_cache_path(cache, env) == first
     version_file.write_text("14.45.0\n", encoding="utf-8")
