@@ -1055,11 +1055,12 @@ class GatewaySlashCommandsMixin(
             return t("gateway.footer.usage")
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
-            # The per-platform key, as /reasoning show|hide saves: every local surface reads the
-            # ``cli`` key (gateway.display_config.local_display_config), so the setting holds
-            # wherever it was set without a second, global key (T7).
-            _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "runtime_footer", "enabled"),
-                                   new_state)
+            # A local session writes the ``cli`` key, as /reasoning show|hide saves: every local
+            # surface reads it (gateway.display_config.local_display_config), so the setting holds
+            # wherever it was set (T7). A chat's /footer keeps the global key it always wrote.
+            leaf = (("display", "platforms", platform_key) if event.source.platform == Platform.LOCAL
+                    else ("display",)) + ("runtime_footer", "enabled")
+            _write_raw_config_leaf(config_path, leaf, new_state)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)

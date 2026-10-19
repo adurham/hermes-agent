@@ -134,3 +134,28 @@ def test_classic_cli_reasoning_hide_saves_the_local_key(monkeypatch):
     cli._handle_reasoning_command('/reasoning hide')
     assert saved == {'display.platforms.cli.show_reasoning': False}
     assert cli.show_reasoning is False
+
+
+@pytest.mark.parametrize(('platform', 'path'), [
+    ('telegram', ('display', 'runtime_footer', 'enabled')),  # a chat's /footer stays global
+    ('local', ('display', 'platforms', 'cli', 'runtime_footer', 'enabled')),  # local: the cli key
+])
+def test_footer_writes_global_from_chat_and_cli_key_locally(tmp_path, monkeypatch, platform, path):
+    from gateway import run
+    from gateway.config import Platform
+    from gateway.platforms.base import MessageEvent
+    from gateway.session import SessionSource
+    from hermes_cli.config import read_user_config_raw
+
+    (tmp_path / 'config.yaml').write_text(json.dumps({'display': {'runtime_footer': {'enabled': False}}}))
+    monkeypatch.setattr(run, '_gateway_config_home', lambda: tmp_path)
+    runner = object.__new__(run.GatewayRunner)
+    source = SessionSource(platform=Platform(platform), chat_id='c1', user_id='u1', chat_type='dm')
+    asyncio.run(runner._handle_footer_command(MessageEvent(text='/footer on', source=source)))
+    saved = read_user_config_raw(tmp_path / 'config.yaml')
+    node = saved
+    for part in path:
+        node = node[part]
+    assert node is True, saved
+    if platform == 'telegram':
+        assert 'platforms' not in saved['display'], saved
