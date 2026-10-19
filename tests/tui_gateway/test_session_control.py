@@ -444,7 +444,7 @@ class TestUpdatePublication:
             assert stalled.wait(5)
             fast = threading.Thread(target=server._publish_session_control_snapshot, args=(other_sid, other))
             fast.start()
-            fast.join(1)
+            fast.join(2)  # >= 2 s per tests/AGENTS.md; below the stalled writer's 5 s wait
             assert not fast.is_alive(), "another session's stalled write blocked this publish"
             assert emitted == [other_sid]
         finally:
