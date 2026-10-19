@@ -1,0 +1,34 @@
+name: hermes-vpn
+repo: https://github.com/Maytrella007/Hermes-VPN
+sha: b832928376f73d5fcd86628296dae33f9186bdb5
+description: "Named network exits for the agent's browser: ask it to browse from another country and it switches, then verifies by reading back the address the far end actually saw, never trusting a label. Any VPN, WireGuard config or proxy works as a local exit; gluetun containers are discovered automatically and one can be brought up on demand. VPN credentials never reach the agent, the chat or the model. Disclosure -- a root-owned helper, installed out of band by the user through a narrow exact-path sudoers rule, is the only thing that reads the credentials and writes them to a root-only file (the agent names a country, never the key); manages gluetun Docker containers, bringing exits up and down; registers a tool_execution middleware that holds browser_* calls when no verified exit is up (the kill switch, and optional cross-provider failover); verifies exits by calling public IP-geolocation services (ipinfo, ifconfig.co, ip2location, cloudflare); Tor mode turns off Hermes's own internal-address check for that session so onion names can resolve; with --from-ref it resolves a WireGuard config from pass/gopass or a host file, host-side and never returned to the model; and it reads one internal Hermes symbol (hermes_cli.profiles.current_profile_name), guarded by try/except with a HERMES_HOME fallback."
+maintainer: Maytrella007
+tier: community
+category: web
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Maytrella007/Hermes-VPN#readme
+version: "0.2.0"
+platforms:
+  - linux
+readme: true
+capabilities:
+  provides_tools:
+    - net_exits
+    - net_use
+    - net_where
+    - net_harden
+    - net_places
+    - net_lock
+    - net_failover
+    - net_tor_connect
+    - net_new_circuit
+    - net_doctor
+    - net_providers
+    - net_provider_setup
+    - net_add_provider
+    - net_open
+    - net_close
+  provides_hooks: []
+  provides_middleware:
+    - tool_execution
+  requires_env: []
