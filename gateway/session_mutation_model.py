@@ -70,7 +70,7 @@ async def prepare_model(authority, live, payload, prepared):
         return refusal
     frozen = old.config()
     # The committed selection freezes the ONE picked endpoint (its key stays a private secret).
-    provider_secrets, retired = ({}, ()) if old.follows_profile else _freeze_selected_provider(
+    provider_secrets, retired, moved = ({}, (), {}) if old.follows_profile else _freeze_selected_provider(
         resolution, frozen, result.target_provider)
     if old.follows_profile:
         # A following session switches FROM the profile's current route: measured from its creation
@@ -121,6 +121,8 @@ async def prepare_model(authority, live, payload, prepared):
     secrets = recover_config_secrets(authority, old) if old.config_secret_ref else {}
     # The picked entry's private subtree is replaced whole: a key or header its current declaration
     # withdrew must not follow it to the new endpoint.
+    # An unrelated entry the pick displaced carries its own secrets to its new index.
+    secrets = {moved.get(path[:2], path[:2]) + path[2:]: value for path, value in secrets.items()}
     secrets = {path: value for path, value in secrets.items() if path[:2] not in retired}
     secrets.update(provider_secrets)
     # A cleared field's private value must not be re-hydrated into the new route by config().
@@ -194,21 +196,22 @@ def _freeze_selected_provider(config, frozen, provider):
     The next turn resolves from the session's own configuration, not a later profile edit. Private
     fields move to the policy's secret store, as policy creation does; nothing else moves. Returns
     ``(secrets, retired)``: the entry's private values and every ``(section, key)`` whose previous
-    private subtree they replace. A legacy entry from the profile is frozen at its profile index (the
-    path cold recovery re-reads); an equivalent earlier spelling is blanked, never left to win.
+    private subtree they replace, plus ``moved``: ``{old (section, index): new}`` for an unrelated entry
+    the pick displaced. A legacy entry from the profile is frozen at its profile index (the path cold
+    recovery re-reads); an equivalent earlier spelling is blanked, never left to win.
     """
     from copy import deepcopy
     from gateway.session_policy import _extract_config_secrets
     from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
     path = named_custom_provider_config_path(provider, config)
     if path is None:
-        return {}, ()
+        return {}, (), {}
     section, index = path
     entries = config.get(section)
     if not isinstance(entries, (dict, list)) or not isinstance(entries[index], dict):
-        return {}, ()
+        return {}, (), {}
     copied = deepcopy(entries[index])
-    retired = {(section, index)}
+    retired, moved = {(section, index)}, {}
     if section == 'providers':
         frozen[section] = {**(frozen.get(section) if isinstance(frozen.get(section), dict) else {}), index: copied}
     else:
@@ -221,7 +224,8 @@ def _freeze_selected_provider(config, frozen, provider):
         frozen_entries += [{}] * (index + 1 - len(frozen_entries))
         displaced = frozen_entries[index]
         if isinstance(displaced, dict) and displaced and _custom_provider_name(displaced) != name:
-            frozen_entries.append(displaced)  # still resolvable by name; its index-bound secrets retire
+            moved[(section, index)] = (section, len(frozen_entries))
+            frozen_entries.append(displaced)  # still resolvable by name, with its own secrets
         for i in same:
             frozen_entries[i] = {}
         frozen_entries[index] = copied
@@ -229,7 +233,7 @@ def _freeze_selected_provider(config, frozen, provider):
         frozen[section] = frozen_entries
     secrets = {}
     _extract_config_secrets(frozen[section][index], secrets, (section, index))
-    return secrets, retired
+    return secrets, retired, moved
 
 
 def _alias_credential(authority, result):
