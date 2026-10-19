@@ -579,13 +579,18 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             raise GatewayClientError("not_found")
         if self._has_unknown(session_id) and await self._refresh_unknown_for_prompt(session_id):
             return PromptResponse(stop_reason='cancelled')
+        if self._has_unknown(session_id):
+            # Only a text-only /discard passes a lost turn, recognised BEFORE staging: a refused
+            # prompt must not write its media or retire the editor's retained retry identity.
+            from acp_adapter.content import _content_blocks_to_openai_user_content
+            content = _content_blocks_to_openai_user_content(prompt)
+            if not isinstance(content, str) or _slash_command(content) != 'discard':
+                raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         prepared = await self._prepare_submit(session_id, prompt)
         if prepared is None:
             return PromptResponse(stop_reason='cancelled')
         retry_key, input_id, staged = prepared
         text, attachments = staged
-        if self._has_unknown(session_id) and (attachments or _slash_command(text) != 'discard'):
-            raise GatewayClientError(self._unknown_recovery(session_id, submitted=False))
         answered, text = await self._run_slash(held_id, session_id, text) if not attachments else (False, text)
         if answered:
             return PromptResponse(stop_reason='end_turn')
