@@ -716,6 +716,7 @@ interface LiveSessionStatusItem {
   id?: string
   last_active?: number
   session_key?: string
+  source?: null | string
   status?: 'idle' | 'starting' | 'waiting' | 'working'
 }
 

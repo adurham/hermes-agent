@@ -60,6 +60,16 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     expect($unreadFinishedSessionIds.get()).toEqual(['stored-b'])
   })
 
+  it('stays dark for a messaging turn that settles before its messaging row loads', () => {
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-tg', session_key: 'stored-tg', source: 'telegram', status: 'working' }]
+    })
+
+    rehydrateLiveSessionStatuses({ sessions: [] })
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
   // A turn that started just before the socket dropped was never polled, so
   // "seen live last poll" cannot gate its confirmation: the reconcile parked it,
   // and the first fresh snapshot that does not report it working is the
