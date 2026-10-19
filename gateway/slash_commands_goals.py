@@ -172,9 +172,16 @@ class GatewayGoalCommandsMixin:
         snapshot of the cached AIAgent's conversation (live session and prompt cache untouched)."""
         args = (event.get_command_args() or "").strip()
         _quick_key, agent, error = self._idle_cached_agent_or_error(event, "refine")
+        snapshot = list(getattr(agent, "_session_messages", None) or [])
+        if not snapshot and _quick_key and _quick_key not in self._running_agents:
+            # A local session's conversation is its stored transcript, not the cached agent: /moa
+            # (and its settle) drop that agent, so /refine reads the session itself (T7).
+            from gateway.session_refine import refine_local_session
+            local = await refine_local_session(self, event.source, args)
+            if local is not None:
+                return local
         if error:
             return error
-        snapshot = list(getattr(agent, "_session_messages", None) or [])
         if not snapshot:
             return t("gateway.refine.empty")
         try:
