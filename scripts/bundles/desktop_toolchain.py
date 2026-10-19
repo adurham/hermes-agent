@@ -51,6 +51,9 @@ def bootstrap_environment(source: Path, work: Path, cache: Path,
         "XDG_CONFIG_HOME": str(home / "config"), "XDG_CACHE_HOME": str(home / "cache"),
         "XDG_DATA_HOME": str(home / "data"), "XDG_STATE_HOME": str(home / "state"),
         "UV_CACHE_DIR": str(cache / "python/runtime"),
+        # vcpkg's default binary cache is under LOCALAPPDATA, which moved into the
+        # job-local home above; keep its archives in the transported native domain.
+        "VCPKG_DEFAULT_BINARY_CACHE": str(cache / "native/vcpkg-archives"),
         "npm_config_cache": str(cache / "npm"),
         "npm_config_userconfig": os.devnull,
         "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
@@ -122,6 +125,23 @@ def prepare_tools(source: Path, work: Path, cache: Path,
     return binaries["python"], binaries["node"], prepared
 
 
+def _msvc_identity() -> dict[str, str] | None:
+    """The newest VC toolset vswhere reports, with its default tools version."""
+    vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                   "Microsoft Visual Studio/Installer/vswhere.exe")
+    try:
+        result = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires",
+                                 "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-format", "json"],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=30, stdin=subprocess.DEVNULL, check=False)
+        instance = json.loads(result.stdout or "[]")[0]
+        tools = Path(instance["installationPath"], "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt")
+        return {"installationVersion": instance["installationVersion"],
+                "VCToolsVersion": tools.read_text(encoding="utf-8").strip()}
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError, KeyError):
+        return None
+
+
 def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
     """Partition built wheels by observed native inputs, not just the OS label.
 
@@ -140,8 +160,15 @@ def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
                 "libc": platform.libc_ver(), "inputs": selected, "probes": [], "openssl": {}}
     commands = [["rustc", "-vV"]]
     if target.startswith("win32"):
-        commands.append(["cl", "/Bv"])
-        complete = bool(env.get("WindowsSDKVersion") and env.get("VCToolsVersion"))
+        if env.get("VCToolsVersion"):
+            commands.append(["cl", "/Bv"])
+            complete = bool(env.get("WindowsSDKVersion"))
+        else:
+            # No developer environment (win32-x64 builds never run VsDevCmd): rustc's cc
+            # crate finds MSVC through vswhere, so identify the toolchain the same way.
+            msvc = _msvc_identity()
+            identity["msvc"] = msvc
+            complete = msvc is not None
     else:
         commands.extend([[env.get("CC") or "cc", "--version"], [env.get("CXX") or "c++", "--version"]])
         complete = True

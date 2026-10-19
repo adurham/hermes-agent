@@ -295,3 +295,28 @@ def test_native_cache_leaves_room_for_sdist_compiler_outputs(tmp_path, monkeypat
                   / f"build/temp.{architecture}-cpython-314/Release/src/SKP_SILK_SRC"
                   / "SKP_Silk_NLSF_VQ_rate_distortion_FIX.obj")
         assert len(str(output)) < 260, str(output)
+
+
+@pytest.mark.platforms("windows")
+def test_native_cache_is_stable_without_a_developer_environment(tmp_path, monkeypatch):
+    """win32-x64 never runs VsDevCmd, so VCToolsVersion is unset there. Its built
+    wheels must still land in one partition per toolchain, not a fresh one per run."""
+    from scripts.bundles import desktop_toolchain
+
+    install = tmp_path / "vs"
+    version_file = install / "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"
+    version_file.parent.mkdir(parents=True)
+    version_file.write_text("14.44.35207\n", encoding="utf-8")
+    vswhere = json.dumps([{"installationPath": str(install), "installationVersion": "17.14.1"}])
+
+    def probe(command, **kwargs):
+        stdout = vswhere if command[0].endswith("vswhere.exe") else "rustc 1.98.0"
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    desktop_toolchain.platform.platform()
+    monkeypatch.setattr(desktop_toolchain.subprocess, "run", probe)
+    cache, env = tmp_path / "cache", {"PATH": os.defpath}
+    first = desktop_toolchain.native_cache_path(cache, env)
+    assert desktop_toolchain.native_cache_path(cache, env) == first
+    version_file.write_text("14.45.0\n", encoding="utf-8")
+    assert desktop_toolchain.native_cache_path(cache, env) != first
