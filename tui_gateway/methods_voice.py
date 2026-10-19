@@ -93,9 +93,9 @@ def _stop_session_voice_capture(session_id) -> None:
 def _capture_live() -> bool:
     try:
         from hermes_cli.voice import is_continuous_active
-        return bool(is_continuous_active())
-    except Exception:
+    except ImportError:  # an older voice wrapper without the probe
         return False
+    return bool(is_continuous_active())
 
 
 def _voice_capture_callback(fn):
