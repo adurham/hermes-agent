@@ -457,6 +457,7 @@ class TestMemoryManager:
         import agent.memory_manager as mm
 
         monkeypatch.setattr(mm, "_MAX_STUCK_CALLS", 1)  # the gate closes on the first stuck call
+        monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)
         mgr = MemoryManager(external_prefetch_timeout=0.01)
         builtin = FakeMemoryProvider("builtin")
         builtin._prefetch_result = "builtin memory"
@@ -485,16 +486,16 @@ class TestMemoryManager:
         external.release.set()
 
         deadline = time.monotonic() + 1.0
-        while (mgr._home_key, external.name) in mgr._EXTERNAL_PREFETCH_THREADS and time.monotonic() < deadline:
+        while (mgr._home_key, external.name) in mgr._PREFETCH_GATE.calls and time.monotonic() < deadline:
             time.sleep(0.01)
 
         result = mgr.prefetch_all("query 3")
 
         assert result == "builtin memory\n\nlate external memory"
         assert external.prefetch_queries == ["query", "query 3"]
-        assert (mgr._home_key, external.name) not in mgr._EXTERNAL_PREFETCH_THREADS
+        assert (mgr._home_key, external.name) not in mgr._PREFETCH_GATE.calls
 
-    def test_stuck_prefetch_thread_is_shared_across_managers(self, tmp_path):
+    def test_stuck_prefetch_thread_is_shared_across_managers(self, tmp_path, monkeypatch):
         """#134392: a new MemoryManager is built per agent init, so the in-flight
         registry must be process-wide — fresh managers against a wedged provider keep at
         most ``_MAX_STUCK_CALLS`` live ``memory-prefetch-*`` threads, not one per manager. It
@@ -503,6 +504,7 @@ class TestMemoryManager:
         import agent.memory_manager as mm
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
+        monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)
         stuck = mm._MAX_STUCK_CALLS
         external = BlockingPrefetchProvider("cross-manager-stuck")
         try:
@@ -534,7 +536,7 @@ class TestMemoryManager:
             for thread in live:
                 thread.join(timeout=2.0)
                 assert not thread.is_alive()
-            assert (mgr._home_key, external.name) not in MemoryManager._EXTERNAL_PREFETCH_THREADS
+            assert (mgr._home_key, external.name) not in MemoryManager._PREFETCH_GATE.calls
             mgr = MemoryManager(external_prefetch_timeout=1.0)
             mgr.add_provider(external)
             mgr._prefetch_provider(external, "after", session_id="s-after")
@@ -560,12 +562,40 @@ class TestMemoryManager:
         finally:
             orphan.release.set()
 
+    def test_prefetch_orphans_from_past_outages_do_not_blank_recall(self, monkeypatch):
+        """Four separate blips, each leaving one prefetch that never returns and each followed by a
+        successful recall, must not turn recall off: orphans older than the last success don't count."""
+        import agent.memory_manager as mm
+
+        monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)
+        healthy = FakeMemoryProvider("past-outages")
+        healthy._prefetch_result = "recalled"
+        orphans = []
+        try:
+            for i in range(mm._MAX_STUCK_CALLS):
+                orphan = BlockingPrefetchProvider("past-outages")
+                orphans.append(orphan)
+                stuck_mgr = MemoryManager(external_prefetch_timeout=0.01)
+                stuck_mgr.add_provider(orphan)
+                stuck_mgr._prefetch_provider(orphan, "q", session_id=f"blip{i}")
+                assert orphan.started.wait(timeout=2.0)
+                mgr = MemoryManager(external_prefetch_timeout=5.0)
+                mgr.add_provider(healthy)
+                assert mgr._prefetch_provider(healthy, "q", session_id=f"recovered{i}") == "recalled"
+            fresh = MemoryManager(external_prefetch_timeout=5.0)
+            fresh.add_provider(healthy)
+            assert fresh._prefetch_provider(healthy, "q", session_id="after") == "recalled"
+        finally:
+            for orphan in orphans:
+                orphan.release.set()
+
     def test_registry_is_keyed_by_the_home_providers_were_bound_to(self, tmp_path, monkeypatch):
         """Two managers built in one ambient home but initialized for profiles A and B: A's stuck
         prefetch must not gate B, whose providers belong to another profile."""
         import agent.memory_manager as mm
 
         monkeypatch.setattr(mm, "_MAX_STUCK_CALLS", 1)
+        monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)
         stuck, other = BlockingPrefetchProvider("bound-home"), FakeMemoryProvider("bound-home")
         other._prefetch_result = "profile b memory"
         mgr_a = MemoryManager(external_prefetch_timeout=0.01)

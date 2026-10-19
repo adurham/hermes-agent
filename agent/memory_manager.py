@@ -44,11 +44,17 @@ _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 # stuck. Well above the shutdown drain bound and the prefetch timeout so a slow-but-healthy backend
 # is never counted.
 _BACKGROUND_CALL_STALL_S = 30.0
-# Overdue calls per (home, provider) at which new calls stop being admitted. Python cannot stop a
-# thread, so each stuck call pins one until it returns; tolerating more than one keeps a recovered
-# backend (one orphaned socket, a healthy replacement connection) usable. Calls not yet overdue are
-# not counted (healthy concurrent sessions must run), so a burst inside one stall window can add more.
+# Admission for external provider calls per (home, provider); see _StuckCallGate. Python cannot stop a
+# thread, so every stuck call pins one until it returns. New calls stop once this many calls that started
+# after the provider's last successful return are overdue; older orphans belong to an outage it has
+# since recovered from.
 _MAX_STUCK_CALLS = 4
+# While the gate is closed, one call per interval goes through, so a recovered backend proves itself
+# without waiting for an orphan to return.
+_PROBE_INTERVAL_S = 60.0
+# Hard cap on calls in flight per (home, provider), orphans included: failed probes pin one more thread
+# each, so admission (probes too) stops here and a backend that stays wedged pins a bounded number.
+_MAX_INFLIGHT_CALLS = 16
 
 
 # -- Signature introspection (providers are duck-typed; call shapes vary) -----
@@ -133,21 +139,65 @@ def _redact_messages_for_egress(messages: Optional[list[Any]]) -> Optional[list[
     return None if messages is None else list(_redact_for_provider(messages))
 
 
-def _stuck_calls(inflight: dict[Any, float], cutoff: float) -> int:
-    """How many registered calls have a timestamp before ``cutoff`` (a deadline vs now, or a start time
-    vs now minus the stall threshold)."""
-    return sum(cutoff > stamp for stamp in inflight.values())
+class _StuckCallGate:
+    """Process-wide admission for one kind of external provider call, keyed by (Hermes home, provider).
 
+    A new MemoryManager is built per agent, so a per-instance view would let every fresh manager start
+    one more call against a hung backend and pin one more thread. Shared, the gate closes once
+    _MAX_STUCK_CALLS calls that started after the key's last successful return are past their deadline,
+    admits one half-open probe per _PROBE_INTERVAL_S while closed, and never lets more than
+    _MAX_INFLIGHT_CALLS be in flight. Calls not yet overdue are not counted, so healthy concurrent
+    sessions run side by side. Each call removes only its own entry.
+    """
 
-def _forget_inflight(registry: dict, key: tuple[str, str], token: object) -> bool:
-    """Drop one call's entry from a process-wide in-flight registry (caller holds its lock); the key goes
-    with its last entry. True when the key is now clear."""
-    inflight = registry.get(key)
-    if inflight is not None:
-        inflight.pop(token, None)
-        if not inflight:
-            registry.pop(key, None)
-    return key not in registry
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.calls: dict[tuple[str, str], dict[object, tuple[float, float]]] = {}  # token -> (start, deadline)
+        self.last_ok: dict[tuple[str, str], float] = {}
+        self.closed_at: dict[tuple[str, str], float] = {}  # gate closed / last probe admitted
+        self.skips: dict[tuple[str, str], int] = {}
+
+    def enter(self, key: tuple[str, str], token: object, timeout: float) -> tuple[bool, int]:
+        """Register ``token`` and return ``(True, 0)``, or ``(False, stuck)`` when the call is skipped."""
+        now = time.monotonic()
+        with self.lock:
+            calls = self.calls.setdefault(key, {})
+            last_ok = self.last_ok.get(key, float("-inf"))
+            stuck = sum(start > last_ok and now > deadline for start, deadline in calls.values())
+            if len(calls) >= _MAX_INFLIGHT_CALLS:
+                admit = False
+            elif stuck < _MAX_STUCK_CALLS:
+                admit = True
+                self.closed_at.pop(key, None)
+            else:
+                admit = now - self.closed_at.setdefault(key, now) >= _PROBE_INTERVAL_S
+                if admit:
+                    self.closed_at[key] = now
+            if not admit:
+                if not calls:
+                    del self.calls[key]
+                return False, stuck
+            # A later outage warns on its first skip, even if an orphan keeps the key alive.
+            self.skips.pop(key, None)
+            calls[token] = (now, now + timeout)
+            return True, 0
+
+    def leave(self, key: tuple[str, str], token: object, *, ok: bool) -> None:
+        with self.lock:
+            calls = self.calls.get(key)
+            if calls is None or calls.pop(token, None) is None:
+                return
+            if calls:
+                if ok:
+                    self.last_ok[key] = time.monotonic()
+                return
+            for state in (self.calls, self.last_ok, self.closed_at, self.skips):
+                state.pop(key, None)
+
+    def count_skip(self, key: tuple[str, str]) -> int:
+        with self.lock:
+            skips = self.skips[key] = self.skips.get(key, 0) + 1
+            return skips
 
 
 class MemoryManager:
@@ -157,25 +207,12 @@ class MemoryManager:
     swallows per-provider exceptions.
     """
 
-    # Process-wide registry of in-flight external prefetch threads and their deadlines, keyed by
-    # (Hermes home, provider name). A new MemoryManager is built per agent init, so a
-    # per-instance registry would let every fresh manager spawn one more stuck thread
-    # against the same provider (#134392); shared, once _MAX_STUCK_CALLS calls for the key are
-    # past their deadline, new spawns from every manager are suppressed until one returns. Healthy concurrent prefetches from
-    # different sessions still run side by side, and each thread removes only its own
-    # entry. The home is part of the key because one gateway process can serve several
-    # profiles, each with its own config and credentials for a same-named provider: one
-    # profile's hung backend must not silence another's recall.
-    _EXTERNAL_PREFETCH_THREADS: dict[tuple[str, str], dict[threading.Thread, float]] = {}
-    _EXTERNAL_PREFETCH_LOCK = threading.Lock()
-    # Same idea for background writes: start times of in-flight sync_turn / queue_prefetch calls per
-    # (Hermes home, provider name). Python cannot stop a thread, so a call that never returns pins its
-    # mem-sync worker for the process lifetime; managers are rebuilt per agent, so without a shared
-    # view every fresh manager would start one more call against the hung backend and pin one more
-    # thread. Calls are skipped once _MAX_STUCK_CALLS for the key are stuck past _BACKGROUND_CALL_STALL_S.
-    _BACKGROUND_CALLS: dict[tuple[str, str], dict[object, float]] = {}
-    _BACKGROUND_SKIPS: dict[tuple[str, str], int] = {}
-    _BACKGROUND_CALLS_LOCK = threading.Lock()
+    # Process-wide admission for external prefetch threads (#134392) and for background
+    # sync_turn / queue_prefetch calls on the mem-sync worker. The home is part of the key because one
+    # gateway process can serve several profiles, each with its own config and credentials for a
+    # same-named provider: one profile's hung backend must not silence another's memory.
+    _PREFETCH_GATE = _StuckCallGate()
+    _BACKGROUND_GATE = _StuckCallGate()
 
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: list[MemoryProvider] = []
@@ -327,8 +364,7 @@ class MemoryManager:
 
     def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> str:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
-        call keeps running on its daemon thread; once _MAX_STUCK_CALLS are stuck the provider is skipped
-        on later turns until one returns."""
+        call keeps running on its daemon thread; _PREFETCH_GATE decides whether later turns call again."""
         if provider.name == "builtin":
             return provider.prefetch(query, session_id=session_id)
 
@@ -342,34 +378,26 @@ class MemoryManager:
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 result_box["error"] = exc
             finally:
-                # Every call removes its own entry when it returns, so the registry never pins
-                # a finished thread and one call's return never forgets another stuck one.
-                with self._EXTERNAL_PREFETCH_LOCK:
-                    _forget_inflight(self._EXTERNAL_PREFETCH_THREADS, key, thread)
+                self._PREFETCH_GATE.leave(key, thread, ok="error" not in result_box)
 
         thread = spawn_context_thread(_run, name=f"memory-prefetch-{provider.name}")
-        with self._EXTERNAL_PREFETCH_LOCK:
-            inflight = self._EXTERNAL_PREFETCH_THREADS.setdefault(key, {})
-            now = time.monotonic()
-            stuck = _stuck_calls(inflight, now)
-            if stuck >= _MAX_STUCK_CALLS:
-                logger.debug("Memory provider '%s' prefetch has %d stuck calls; skipping this turn",
-                             provider.name, stuck)
-                return ""
-            inflight[thread] = now + self._external_prefetch_timeout
-            try:
-                thread.start()
-            except RuntimeError:
-                # Never started, so its finally never runs: drop the entry or it would gate the
-                # provider forever once its deadline passes.
-                _forget_inflight(self._EXTERNAL_PREFETCH_THREADS, key, thread)
-                raise
+        admitted, stuck = self._PREFETCH_GATE.enter(key, thread, self._external_prefetch_timeout)
+        if not admitted:
+            logger.debug("Memory provider '%s' prefetch has %d stuck calls; skipping this turn",
+                         provider.name, stuck)
+            return ""
+        try:
+            thread.start()
+        except RuntimeError:
+            # Never started, so its finally never runs: drop the entry or it would count forever.
+            self._PREFETCH_GATE.leave(key, thread, ok=False)
+            raise
 
         thread.join(self._external_prefetch_timeout)
         if thread.is_alive():
             logger.warning(
                 "Memory provider '%s' prefetch timed out after %.1fs; the call keeps running in the "
-                "background (the provider is skipped once %d are stuck)", provider.name,
+                "background (the provider is skipped once %d such calls are stuck)", provider.name,
                 self._external_prefetch_timeout, _MAX_STUCK_CALLS,
             )
             return ""
@@ -491,36 +519,30 @@ class MemoryManager:
             logger.debug("Inline memory background task failed: %s", e)
 
     def _call_unless_stalled(self, provider: MemoryProvider, call: Callable[[], Any]) -> None:
-        """Run a background provider call unless _MAX_STUCK_CALLS earlier ones for the same provider (any
-        manager in this process) are stuck; skipping costs that turn's write/prefetch but stops a wedged
-        backend from pinning one more thread per fresh manager. The builtin provider is never gated."""
+        """Run a background provider call unless _BACKGROUND_GATE skips it (the provider has stuck calls);
+        skipping costs that turn's write/prefetch but stops a wedged backend from pinning one more
+        thread per fresh manager. The builtin provider is never gated."""
         if provider.name == "builtin":
             call()
             return
         key = self._registry_key(provider)
         token = object()
-        now = time.monotonic()
-        with self._BACKGROUND_CALLS_LOCK:
-            calls = self._BACKGROUND_CALLS.setdefault(key, {})
-            stuck = _stuck_calls(calls, now - _BACKGROUND_CALL_STALL_S)
-            if stuck >= _MAX_STUCK_CALLS:
-                skips = self._BACKGROUND_SKIPS[key] = self._BACKGROUND_SKIPS.get(key, 0) + 1
-                if skips == 1 or skips % 100 == 0:
-                    logger.warning(
-                        "Memory provider '%s' has %d background calls stuck for over %.0fs; skipping its "
-                        "sync/prefetch until one returns (%d skipped)", provider.name, stuck,
-                        _BACKGROUND_CALL_STALL_S, skips,
-                    )
-                return
-            # Admitted: a later outage warns on its first skip, even if an orphan keeps the key alive.
-            self._BACKGROUND_SKIPS.pop(key, None)
-            calls[token] = now
+        admitted, stuck = self._BACKGROUND_GATE.enter(key, token, _BACKGROUND_CALL_STALL_S)
+        if not admitted:
+            skips = self._BACKGROUND_GATE.count_skip(key)
+            if skips == 1 or skips % 100 == 0:
+                logger.warning(
+                    "Memory provider '%s' has %d background calls stuck for over %.0fs; skipping its "
+                    "sync/prefetch until it recovers (%d skipped)", provider.name, stuck,
+                    _BACKGROUND_CALL_STALL_S, skips,
+                )
+            return
+        ok = False
         try:
             call()
+            ok = True
         finally:
-            with self._BACKGROUND_CALLS_LOCK:
-                if _forget_inflight(self._BACKGROUND_CALLS, key, token):
-                    self._BACKGROUND_SKIPS.pop(key, None)
+            self._BACKGROUND_GATE.leave(key, token, ok=ok)
 
     def _registry_key(self, provider: MemoryProvider) -> tuple[str, str]:
         """Process-wide registry key: the home the providers were bound to (``initialize_all``, which may

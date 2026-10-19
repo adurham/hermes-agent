@@ -1,7 +1,8 @@
 """A background provider call that never returns pins its mem-sync worker thread forever (Python cannot
 stop a thread). MemoryManagers are rebuilt per agent, so without a process-wide view every fresh manager
 started one more call against the hung backend and pinned one more thread. Calls for a provider are now
-skipped once _MAX_STUCK_CALLS earlier calls for it are stuck past the stall threshold."""
+skipped once _MAX_STUCK_CALLS calls that started after its last success are stuck past the stall threshold,
+with one half-open probe per interval and a hard cap on calls in flight."""
 import threading
 
 import pytest
@@ -51,14 +52,21 @@ class _HangingProvider(MemoryProvider):
             self.release.wait(10)
 
 
+_GATE = MemoryManager._BACKGROUND_GATE
+
+
+def _clear_gate():
+    for state in (_GATE.calls, _GATE.last_ok, _GATE.closed_at, _GATE.skips):
+        state.clear()
+
+
 @pytest.fixture(autouse=True)
 def _short_stall(monkeypatch):
     monkeypatch.setattr(mm, "_BACKGROUND_CALL_STALL_S", 0.0)
-    MemoryManager._BACKGROUND_CALLS.clear()
-    MemoryManager._BACKGROUND_SKIPS.clear()
+    monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 1e9)  # no half-open probe unless a test asks for one
+    _clear_gate()
     yield
-    MemoryManager._BACKGROUND_CALLS.clear()
-    MemoryManager._BACKGROUND_SKIPS.clear()
+    _clear_gate()
 
 
 def _manager(provider):
@@ -102,8 +110,8 @@ def test_sustained_wedge_pins_at_most_max_stuck_threads():
 
     key = hung[0][0]._registry_key(hung[0][1])
     try:
-        assert MemoryManager._BACKGROUND_SKIPS[key] == 10
-        assert len(MemoryManager._BACKGROUND_CALLS[key]) == mm._MAX_STUCK_CALLS
+        assert _GATE.skips[key] == 10
+        assert len(_GATE.calls[key]) == mm._MAX_STUCK_CALLS
         # Idle workers of shut-down executors exit asynchronously.
         wait_until(lambda: len(_mem_sync_threads()) <= before, timeout=5, what="idle mem-sync workers to exit")
     finally:
@@ -111,7 +119,7 @@ def test_sustained_wedge_pins_at_most_max_stuck_threads():
             provider.release.set()
     for mgr, _ in hung:
         assert mgr.flush_pending(timeout=5)
-    assert key not in MemoryManager._BACKGROUND_CALLS
+    assert key not in _GATE.calls
     for mgr, _ in hung:
         mgr.shutdown_all()
 
@@ -136,22 +144,93 @@ def test_healthy_replacement_still_writes_behind_an_orphaned_call():
 
 
 def test_new_outage_warns_on_its_first_skip_even_with_an_orphan_alive(caplog):
-    """An orphan keeps the key alive after the gate reopens; the next outage must still warn on
+    """Orphans keep the key alive after the gate reopens; the next outage must still warn on
     its first skip instead of waiting for the 100th."""
     hung = [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]
     key = hung[0][0]._registry_key(hung[0][1])
     try:
         _skip(_manager(_HangingProvider()), "skipped")
-        assert MemoryManager._BACKGROUND_SKIPS[key] == 1
+        assert _GATE.skips[key] == 1
         hung[-1][1].release.set()  # one returns: the gate reopens, three orphans keep the key alive
         assert hung[-1][0].flush_pending(timeout=5)
-        reopened, healthy = _hang_one_call()  # admitted, then it wedges too: a new outage
-        hung.append((reopened, healthy))
+        hung += [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]  # a new outage
         caplog.clear()
         with caplog.at_level("WARNING", logger="agent.memory_manager"):
             _skip(_manager(_HangingProvider()), "skipped again")
-        assert MemoryManager._BACKGROUND_SKIPS[key] == 1
+        assert _GATE.skips[key] == 1
         assert "background calls stuck" in caplog.text
+    finally:
+        for _, provider in hung:
+            provider.release.set()
+    for mgr, _ in hung:
+        mgr.shutdown_all()
+
+
+def _orphan_then_recover(orphans):
+    """Each outage leaves one call that never returns, then the backend recovers for one turn."""
+    for _ in range(4):
+        orphans.append(_hang_one_call())
+        recovered = _HangingProvider()
+        recovered.hang_next = False
+        _skip(_manager(recovered), "recovered")
+
+
+def test_orphans_from_past_outages_do_not_close_the_gate():
+    """Four separate blips over the process lifetime, each followed by recovery, must not turn the
+    provider off: a stuck call that started before the last success no longer counts."""
+    orphans = []
+    healthy = _HangingProvider()
+    healthy.hang_next = False
+    try:
+        _orphan_then_recover(orphans)
+        for _ in range(3):
+            fresh = _manager(healthy)
+            fresh.sync_all("again", "reply")
+            fresh.queue_prefetch_all("query")
+            assert fresh.flush_pending(timeout=5)
+            fresh.shutdown_all()
+        assert (healthy.sync_calls, healthy.prefetch_calls) == (3, 3)
+    finally:
+        for _, provider in orphans:
+            provider.release.set()
+    for mgr, _ in orphans:
+        mgr.shutdown_all()
+
+
+def test_closed_gate_admits_a_half_open_probe_that_reopens_it(monkeypatch):
+    """With the gate closed by calls that never return, one probe per interval goes through; once a
+    probe succeeds (the backend recovered) every later call is admitted again."""
+    hung = [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]
+    healthy = _HangingProvider()
+    healthy.hang_next = False
+    try:
+        _skip(_manager(healthy), "closed")
+        assert healthy.sync_calls == 0  # gate closed, probe interval not yet reached
+        monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 0.0)
+        for turn in ("probe", "after the probe"):
+            _skip(_manager(healthy), turn)
+        assert healthy.sync_calls == 2
+    finally:
+        for _, provider in hung:
+            provider.release.set()
+    for mgr, _ in hung:
+        mgr.shutdown_all()
+
+
+def test_sustained_wedge_with_probes_never_exceeds_the_inflight_cap(monkeypatch):
+    """Every failed probe pins one more thread; at the cap, probing stops, so a backend that stays
+    wedged pins a bounded number of threads however long it lasts."""
+    monkeypatch.setattr(mm, "_PROBE_INTERVAL_S", 0.0)
+    monkeypatch.setattr(mm, "_MAX_INFLIGHT_CALLS", mm._MAX_STUCK_CALLS + 2)
+    hung = [_hang_one_call() for _ in range(mm._MAX_STUCK_CALLS)]
+    key = hung[0][0]._registry_key(hung[0][1])
+    try:
+        for _ in range(2):  # two probes admitted, and they wedge too
+            hung.append(_hang_one_call())
+        for turn in range(5):
+            _skip(_manager(_HangingProvider()), f"capped {turn}")
+        assert len(_GATE.calls[key]) == mm._MAX_INFLIGHT_CALLS
+        assert _GATE.skips[key] == 5
     finally:
         for _, provider in hung:
             provider.release.set()
