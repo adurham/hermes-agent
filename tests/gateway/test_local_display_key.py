@@ -93,6 +93,23 @@ def test_launch_default_reads_the_local_key():
     assert launch_shows_reasoning(_Policy({'show_reasoning': False}), None) is False
 
 
+def test_quoted_local_false_stays_off():
+    """A quoted ``"false"`` under the local key is off on every surface, not a truthy string."""
+    from gateway.display_config import local_display_config
+    from gateway.local_viewer_events import launch_shows_reasoning
+
+    display = {'show_reasoning': False, 'platforms': {'cli': {'show_reasoning': 'false'}}}
+
+    class _Policy:
+        source = 'tui'
+
+        def config(self, _authority, secrets=False):
+            return {'display': display}
+
+    assert local_display_config(display)['show_reasoning'] is False
+    assert launch_shows_reasoning(_Policy(), None) is False
+
+
 def test_classic_cli_display_reads_the_local_key():
     from gateway.display_config import local_display_config
 

@@ -226,5 +226,5 @@ def local_display_config(display: Any) -> dict[str, Any]:
             continue
         if isinstance(value, dict) and isinstance(display.get(key), dict):
             value = {**display[key], **value}
-        display[key] = value
+        display[key] = _normalise(key, value)
     return display
