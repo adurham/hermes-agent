@@ -43,10 +43,11 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
-# A turn no person sent (a cron run, a process completion) lost across a gateway restart: it
-# settles interrupted and is never re-run, so nobody is asked to resend it (#134889 GW-10).
+# A turn no person sent (a cron run, a process completion, a webhook delivery) lost across a gateway
+# restart, or fenced inside the running owner (a lost managed worker): it settles interrupted and is
+# never re-run, so nobody is asked to resend it (#134889 GW-10). Neutral: not every path restarted.
 AUTOMATION_INTERRUPTED_NOTICE = (
-    "An automated delivery was interrupted when Hermes restarted and was not run again. Some "
+    "An automated delivery was interrupted and was not run again. Some "
     "actions may already have run; verify their effects."
 )
 # ``messages.display_kind`` of that row: display-only (stripped before every provider request),

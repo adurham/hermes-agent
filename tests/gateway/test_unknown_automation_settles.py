@@ -167,6 +167,9 @@ async def test_automation_fenced_unknown_in_this_owner_settles_on_the_drain(tmp_
         statuses = _statuses(db)
         assert statuses[head_id] == ('terminal', 'interrupted')
         assert statuses[follower.admission_id] == ('terminal', 'completed')
+        # Nothing restarted on this path: the notice must not claim a restart (review #141357).
+        notices = [m['content'] for m in db.get_messages('s') if m.get('display_kind') == 'failed_turn']
+        assert notices and all('restart' not in n.lower() for n in notices), notices
     finally:
         store.close_all_db_handles()
 
