@@ -12,7 +12,8 @@ from agent import secret_scope
 from gateway.run import _profile_runtime_scope
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools import browser_tool_cdp as bt_cdp
-from tools.browser_use_cli import _claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
+from tools import browser_harness_dirs as harness_dirs
+from tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
 
 
 @pytest.fixture
@@ -78,26 +79,22 @@ def test_installed_harness_names_a_shared_dir_socket_bu_name_sock(tmp_path):
     assert out == f"{rt.resolve()}/bu-{_LONGEST_NAME}.sock"
 
 
-def test_a_served_profiles_harness_socket_fits_macos_sun_path_on_a_default_home(profiles, monkeypatch):
-    """macOS ``sun_path`` is 104 bytes (103 + NUL). Under ``~/.config/browser-harness/runtime/p-<hash>``
-    a served profile's socket left room for only ~31-character session names on a 9-letter account."""
-    import os
-    import sys
-    from tools import browser_use_cli as bu_cli
-    a, _b = profiles
-    real = os.path.realpath
-    # os-marker: ok — computed length on a fixed macOS-shaped HOME; the real branch runs in the macOS test below
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr(os.path, "realpath",  # no-tmp: ok — macOS resolves the /tmp alias
-                        lambda p, *args, **kw: "/private/tmp" if p == "/tmp" else real(p, *args, **kw))
-    claimed = []
-    monkeypatch.setattr(bu_cli, "_claim_private_dir", lambda path: claimed.append(path) or True, raising=False)
-    env = {"HOME": "/Users/alexander"}
-    with _profile_runtime_scope(a, hydrate_secrets=False):
-        bu_cli._namespace_harness_daemons(env)
-    assert env["BH_RUNTIME_DIR_SHARED"] == "1"
-    assert _sock_len(env["BH_RUNTIME_DIR"]) <= 103, env["BH_RUNTIME_DIR"]
-    assert claimed == [env["BH_RUNTIME_DIR"]]
+@pytest.mark.parametrize(("platform", "budget"), [("darwin", 103 - 73), ("linux", 107 - 73), ("win32", None)])
+def test_the_socket_dir_budget_is_sun_path_minus_a_64_char_session_socket(platform, budget):
+    """macOS ``sun_path`` is 104 bytes (103 + NUL), Linux 108; Windows serves over loopback TCP."""
+    assert harness_dirs.socket_dir_budget(platform) == budget
+
+
+def test_a_default_macos_home_does_not_fit_and_the_short_temp_dir_does():
+    """Pure length rule with macOS data (no host platform involved): under
+    ``~/.config/browser-harness/runtime/p-<hash>`` a 9-letter account left room for ~31-character
+    session names; ``/private/tmp/hbh-<12 hex>`` fits a 64-character one."""
+    budget = harness_dirs.socket_dir_budget("darwin")
+    home = "/Users/alexander/.config/browser-harness/runtime/p-0123456789ab"
+    short = "/private/tmp/hbh-0123456789ab"  # no-tmp: ok — a macOS path as data, nothing is written
+    assert not harness_dirs.fits_socket_budget(home, budget)
+    assert harness_dirs.fits_socket_budget(short, budget) and _sock_len(short) <= 103
+    assert harness_dirs.fits_socket_budget("x" * 500, None)  # no sun_path limit
 
 
 @pytest.mark.platforms("macos")
@@ -107,10 +104,10 @@ def test_on_macos_a_served_profile_binds_a_64_char_session_socket(profiles, tmp_
     import socket
     from tools import browser_use_cli as bu_cli
     a, _b = profiles
-    monkeypatch.setattr(bu_cli, "_claim_private_dir", _REAL_CLAIM)  # the real claim, real short root
+    monkeypatch.setattr(harness_dirs, "claim_private_dir", _REAL_CLAIM)  # the real claim, real short root
     env = {"HOME": str(tmp_path / ("u" * 40))}
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bu_cli._namespace_harness_daemons(env)
+        harness_dirs.namespace_harness_dirs(env, bu_cli._served_profile_tag())
     path = f"{os.path.realpath(env['BH_RUNTIME_DIR'])}/bu-{_LONGEST_NAME}.sock"
     assert len(path.encode()) <= 103
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -150,10 +147,10 @@ def test_on_linux_a_served_profiles_64_char_session_socket_fits_sun_path(profile
     from tools import browser_use_cli as bu_cli
     a, _b = profiles
     claimed = []
-    monkeypatch.setattr(bu_cli, "_claim_private_dir", lambda path: claimed.append(path) or True)
+    monkeypatch.setattr(harness_dirs, "claim_private_dir", lambda path: claimed.append(path) or True)
     env = {"HOME": user_home}
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bu_cli._namespace_harness_daemons(env)
+        harness_dirs.namespace_harness_dirs(env, bu_cli._served_profile_tag())
     sock = f"{env['BH_RUNTIME_DIR']}/bu-{_LONGEST_NAME}.sock"
     assert claimed == [env["BH_RUNTIME_DIR"]]
     assert _sock_len(env["BH_RUNTIME_DIR"]) <= 107 and _kernel_accepts_sun_path(sock), sock
@@ -165,16 +162,45 @@ def test_on_linux_a_runtime_dir_that_already_fits_is_kept_and_an_unclaimable_one
     from tools import browser_use_cli as bu_cli
     a, _b = profiles
     claimed = []
-    monkeypatch.setattr(bu_cli, "_claim_private_dir", lambda path: claimed.append(path) or True)
+    monkeypatch.setattr(harness_dirs, "claim_private_dir", lambda path: claimed.append(path) or True)
     env = {"BH_HOME": "/b"}
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bu_cli._namespace_harness_daemons(env)
+        harness_dirs.namespace_harness_dirs(env, bu_cli._served_profile_tag())
     assert env["BH_RUNTIME_DIR"].startswith("/b/runtime/p-") and claimed == []
-    monkeypatch.setattr(bu_cli, "_claim_private_dir", lambda path: False)  # squatted / not ours
+    monkeypatch.setattr(harness_dirs, "claim_private_dir", lambda path: False)  # squatted / not ours
     env = {"HOME": "/home/teknium"}
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bu_cli._namespace_harness_daemons(env)
+        harness_dirs.namespace_harness_dirs(env, bu_cli._served_profile_tag())
     assert env["BH_RUNTIME_DIR"].startswith("/home/teknium/.config/browser-harness/runtime/p-")
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("via", ["relative", "symlink"])
+def test_on_linux_a_short_spelling_of_a_long_runtime_dir_is_measured_resolved(profiles, monkeypatch, tmp_path, via):
+    """The harness binds ``Path(BH_RUNTIME_DIR).expanduser().resolve()``: a short relative or symlinked
+    spelling of a deep dir still gives an overlong socket, so the length is judged on the resolved path."""
+    import os
+    from tools import browser_use_cli as bu_cli
+    a, _b = profiles
+    deep = tmp_path / ("d" * 60)
+    deep.mkdir()
+    if via == "relative":  # BH_RUNTIME_DIR=rt from a deep working directory
+        monkeypatch.chdir(deep)
+        base = "rt"
+    else:  # a short symlink to a deep dir
+        link = tmp_path / "l"
+        link.symlink_to(deep)
+        monkeypatch.chdir(tmp_path)
+        base = "l"
+    claimed = []
+    monkeypatch.setattr(harness_dirs, "claim_private_dir", lambda path: claimed.append(path) or True)
+    env = {"BH_RUNTIME_DIR": base}
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        harness_dirs.namespace_harness_dirs(env, bu_cli._served_profile_tag())
+    resolved = os.path.realpath(env["BH_RUNTIME_DIR"])
+    assert _sock_len(resolved) <= 107, resolved
+    assert _kernel_accepts_sun_path(f"{resolved}/bu-{_LONGEST_NAME}.sock")
+    assert claimed == [env["BH_RUNTIME_DIR"]]
 
 
 def test_the_short_socket_dir_is_claimed_only_when_private_and_ours(tmp_path):
@@ -203,13 +229,13 @@ def test_each_served_profile_gets_its_own_harness_tmp_dir(profiles, tmp_path):
     for home in (a, b):
         env = {"BH_HOME": str(tmp_path / "bh")}
         with _profile_runtime_scope(home, hydrate_secrets=False):
-            bu_cli._namespace_harness_daemons(env)
+            harness_dirs.namespace_harness_dirs(env, bu_cli._served_profile_tag())
         assert env.get("BH_TMP_DIR_SHARED") == "1"  # several BU_NAMEs share it: keep bu-<name>.log stems
         seen[home] = env.get("BH_TMP_DIR")
     assert seen[a] and seen[b] and seen[a] != seen[b]
     assert all(str(p).startswith(str(tmp_path / "bh" / "tmp")) for p in seen.values())
     unscoped = {"BH_HOME": str(tmp_path / "bh")}
-    bu_cli._namespace_harness_daemons(unscoped)
+    harness_dirs.namespace_harness_dirs(unscoped, bu_cli._served_profile_tag())
     assert unscoped == {"BH_HOME": str(tmp_path / "bh")}  # single-profile: unchanged
 
 
@@ -218,7 +244,7 @@ def test_a_served_profile_under_an_inherited_tmp_dir_nests_inside_it(profiles, t
     a, _b = profiles
     env = {"BH_TMP_DIR": str(tmp_path / "shared-tmp")}
     with _profile_runtime_scope(a, hydrate_secrets=False):
-        bu_cli._namespace_harness_daemons(env)
+        harness_dirs.namespace_harness_dirs(env, bu_cli._served_profile_tag())
     assert env["BH_TMP_DIR"].startswith(str(tmp_path / "shared-tmp") + "/p-")
     # The runtime dir still derives from the inherited BH_TMP_DIR (harness fallback), not the new one.
     assert env["BH_RUNTIME_DIR"].startswith(str(tmp_path / "shared-tmp") + "/p-")
@@ -231,8 +257,8 @@ def test_an_unscoped_shutdown_reload_reaches_the_daemon_with_its_own_tmp_dir(pro
     a, _b = profiles
     with _profile_runtime_scope(a, hydrate_secrets=False):
         env = {"HOME": "/home/u"}
-        bu_cli._namespace_harness_daemons(env)
-    key = (*(env.get(k, "") for k in bu_cli._HARNESS_DIR_KEYS), "s1")
+        harness_dirs.namespace_harness_dirs(env, bu_cli._served_profile_tag())
+    key = harness_dirs.daemon_identity({**env, "BU_NAME": "s1"})
     monkeypatch.setattr(bu_cli, "_driven_daemons", {key: hermes_home_key(a)})
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-harness"])
     seen = []
@@ -359,7 +385,7 @@ def test_a_browser_exec_that_routed_to_the_old_endpoint_during_a_connect_reloads
 
     def run(cmd, code, env, timeout):
         import subprocess
-        ident = (*(env.get(k, "") for k in bu_cli._HARNESS_DIR_KEYS), env.get("BU_NAME", "default"))
+        ident = harness_dirs.daemon_identity(env)
         if cmd[-1] == "--reload":
             latched.pop(ident, None)
         else:
@@ -403,7 +429,7 @@ def test_a_connect_that_lands_while_browser_exec_spawns_its_daemon_reloads_it(pr
     latched, connects = {}, []
 
     def run(cmd, code, env, timeout):
-        ident = (*(env.get(k, "") for k in bu_cli._HARNESS_DIR_KEYS), env.get("BU_NAME", "default"))
+        ident = harness_dirs.daemon_identity(env)
         if cmd[-1] == "--reload":
             latched.pop(ident, None)
             return subprocess.CompletedProcess(cmd, 0, "", "")

@@ -41,11 +41,11 @@ def _no_shared_temp_socket_dirs():
     in the shared temp root (sun_path budget). Unit tests never claim one there: fake CLIs would
     leave latch files behind. The dir keeps its long path; tests of the claim restore the real one."""
     try:
-        import tools.browser_use_cli as bu_cli
+        import tools.browser_harness_dirs as harness_dirs
     except Exception:
         yield
         return
-    with patch.object(bu_cli, "_claim_private_dir", lambda path: False):
+    with patch.object(harness_dirs, "claim_private_dir", lambda path: False):
         yield
 
 
