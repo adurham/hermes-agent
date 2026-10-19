@@ -24,8 +24,12 @@ class _Mic:
         self.active, self.stops, self.callbacks = False, 0, {}
 
     def start_continuous(self, **kw):
-        self.active, self.callbacks = True, kw
+        if not self.active:  # the real wrapper keeps the live capture's callbacks: a no-op True
+            self.active, self.callbacks = True, kw
         return True
+
+    def is_continuous_active(self):
+        return self.active
 
     def stop_continuous(self, **kw):
         self.active = False
@@ -131,3 +135,29 @@ def test_no_speech_limit_turns_the_owner_mode_off(owner):
     assert owner.runner._voice_mode["owner"] == "off"
     assert _transcripts(owner.sink)[-1]["no_speech_limit"] is True
 
+
+
+def test_a_second_sessions_start_is_refused_while_another_captures(owner):
+    owner.slash("owner", "on")
+    owner.slash("other", "on")
+    owner.rpc("voice.record", action="start", session_id="owner")
+    refused = owner.rpc("voice.record", action="start", session_id="other")
+    assert refused["error"]["code"] == 4016 and "another session" in refused["error"]["message"]
+    owner.slash("other", "off")
+    assert owner.mic.active is True
+    owner.mic.callbacks["on_transcript"]("A_TEXT")
+    frames = [f["params"] for f in owner.sink.frames if f.get("params", {}).get("type") == "voice.transcript"]
+    assert [f["session_id"] for f in frames] == ["owner"]
+    owner.slash("owner", "off")
+    assert owner.mic.active is False
+    owner.mic.callbacks["on_transcript"]("A_AFTER_OFF")
+    assert len(_transcripts(owner.sink)) == 1
+
+
+def test_another_session_may_start_once_the_capture_ended(owner):
+    owner.slash("owner", "on")
+    owner.slash("other", "on")
+    owner.rpc("voice.record", action="start", session_id="owner")
+    owner.mic.active = False
+    assert owner.rpc("voice.record", action="start", session_id="other")["result"]["status"] == "recording"
+    assert server._voice_capture_sid == "other"

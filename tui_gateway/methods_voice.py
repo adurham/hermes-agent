@@ -90,6 +90,14 @@ def _stop_session_voice_capture(session_id) -> None:
     _resume_voice_wake()
 
 
+def _capture_live() -> bool:
+    try:
+        from hermes_cli.voice import is_continuous_active
+        return bool(is_continuous_active())
+    except Exception:
+        return False
+
+
 def _voice_capture_callback(fn):
     """*fn* while the capture it was registered for is still current; a no-op once invalidated."""
     with _voice_sid_lock:
@@ -792,11 +800,12 @@ def _(rid, params: dict) -> dict:
         global _voice_event_sid, _voice_event_transport, _voice_wake_owner, _voice_capture_sid
         if action == "start" and not _session_voice_enabled(params.get("session_id")):
             return _err(rid, 4015, "voice mode is off — enable with /voice on")
+        sid = params.get("session_id") or ""
+        if _voice_capture_sid and sid != _voice_capture_sid and _capture_live():
+            return _err(rid, 4016, "voice capture is busy in another session")
         with _voice_sid_lock:
-            _voice_event_sid = params.get("session_id") or _voice_event_sid
+            _voice_event_sid = sid or _voice_event_sid
             _voice_event_transport = transport
-            if action == "start":
-                _voice_capture_sid = params.get("session_id") or ""
         if action == "stop":
             from hermes_cli.voice import stop_continuous
             stop_continuous(force_transcribe=True)
@@ -839,6 +848,9 @@ def _(rid, params: dict) -> dict:
             on_partial=live(lambda t: _voice_emit("voice.partial", {"text": t})))
         if started is False:
             _resume_voice_wake()
+        else:
+            with _voice_sid_lock:
+                _voice_capture_sid = sid
         return _ok(rid, {"status": "busy" if started is False else "recording"})
     except Exception as e:
         if wake_paused or action == "stop":
