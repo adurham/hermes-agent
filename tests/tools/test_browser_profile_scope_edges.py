@@ -184,3 +184,60 @@ def test_an_unscoped_shutdown_reload_reaches_the_daemon_with_its_own_tmp_dir(pro
     bu_cli.stop_harness_daemons()
     assert [(e["BH_TMP_DIR"], e["BH_TMP_DIR_SHARED"], e["BU_NAME"]) for e in seen] == [
         (env["BH_TMP_DIR"], "1", "s1")]
+
+
+# --- reap/publish race within one profile -----------------------------------------------------------
+
+
+def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not_kept(profiles, monkeypatch):
+    """``/browser connect`` reaps, publishes the new endpoint, then reaps again. A tool call that
+    resolved the OLD endpoint before the publish but inserted its session after the second reap kept
+    driving the old browser. The real ``_browser_connect`` handler runs mid-creation here."""
+    from tools import browser_tool, browser_tool_lifecycle as lifecycle, browser_tool_session as bt_session
+    from tui_gateway import server  # binds methods_browser helpers onto server globals
+
+    a, _b = profiles
+    sessions = {}
+    monkeypatch.setattr(browser_tool, "_active_sessions", sessions)
+    monkeypatch.setattr(lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(server, "_cdp_http_reachable", lambda parsed, timeout=2.0: True)
+    closed = []
+    monkeypatch.setattr(lifecycle, "_cleanup_single_browser_session",
+                        lambda task_id: closed.append(sessions.pop(task_id, {}).get("cdp_url")))
+    created = []
+
+    def create(task_id, local):
+        url = bt_cdp._get_cdp_override_raw()  # resolved before the connect publishes
+        if not created:
+            assert server._browser_connect("r1", {"url": "http://127.0.0.1:9502"})["result"]["connected"]
+        created.append(url)
+        return {"session_name": f"s{len(created)}", "cdp_url": url}
+    monkeypatch.setattr(bt_session, "_create_session_for_key", create)
+
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        bt_cdp.set_live_cdp_override("http://127.0.0.1:9501")
+        info = bt_session._get_session_info("task-a")
+    assert info["cdp_url"] == "http://127.0.0.1:9502"
+    assert sessions["task-a"] is info
+    assert closed == ["http://127.0.0.1:9501"]
+
+
+def test_another_profiles_connect_does_not_invalidate_this_profiles_new_session(profiles, monkeypatch):
+    from tools import browser_tool, browser_tool_lifecycle as lifecycle, browser_tool_session as bt_session
+    a, b = profiles
+    sessions = {}
+    monkeypatch.setattr(browser_tool, "_active_sessions", sessions)
+    monkeypatch.setattr(lifecycle, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(bt_cdp, "_ensure_cdp_supervisor", lambda key: None)
+    closed = []
+    monkeypatch.setattr(lifecycle, "_cleanup_single_browser_session", closed.append)
+
+    def create(task_id, local):
+        with _profile_runtime_scope(b, hydrate_secrets=False):
+            bt_cdp.set_live_cdp_override("http://127.0.0.1:9601")
+        return {"session_name": "s", "cdp_url": "x"}
+    monkeypatch.setattr(bt_session, "_create_session_for_key", create)
+    with _profile_runtime_scope(a, hydrate_secrets=False):
+        info = bt_session._get_session_info("task-a")
+    assert sessions == {"task-a": info} and closed == []
