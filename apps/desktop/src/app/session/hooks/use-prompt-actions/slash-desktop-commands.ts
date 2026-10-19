@@ -1,8 +1,12 @@
+import { toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { openCommandPalette } from '@/store/command-palette'
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
 import { $connection } from '@/store/session'
+import type { SessionMessage } from '@/types/hermes'
+
+import type { ClientSessionState } from '../../../types'
 
 import type { GatewayRequest } from './utils'
 
@@ -16,10 +20,16 @@ import type { GatewayRequest } from './utils'
 interface SlashOutput {
   render: (text: string) => void
   sessionId: string
+  storedSessionId?: null | string
 }
 
 export interface DesktopReadCommandEnv<C extends { arg: string }> {
   requestGateway: GatewayRequest
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: null | string
+  ) => ClientSessionState
   withSlashOutput: (ctx: C) => Promise<null | SlashOutput>
 }
 
@@ -251,7 +261,7 @@ export function formatHistory(rows: HistoryRow[]): string {
 }
 
 export function desktopReadCommandHandlers<C extends { arg: string }>(env: DesktopReadCommandEnv<C>) {
-  const { requestGateway } = env
+  const { requestGateway, updateSessionState } = env
 
   return {
     rollback: async (ctx: C) => {
@@ -280,7 +290,27 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
           return out.render([diff?.stat, diff?.diff].filter(Boolean).join('\n') || 'No changes since that checkpoint.')
         }
 
-        out.render(formatRestore(result as RestoreResult | null))
+        const restore = result as RestoreResult | null
+        let text = formatRestore(restore)
+
+        // A whole-tree restore also rewound the conversation on the owner: reload the target
+        // session's transcript so the removed turns leave the screen. File-only restores keep it.
+        if (restore?.success && restore.history_removed && !request.params.file_path) {
+          try {
+            const snapshot = await requestGateway<{ messages?: SessionMessage[] }>('session.resume', {
+              session_id: out.sessionId
+            })
+
+            if (Array.isArray(snapshot?.messages)) {
+              const messages = toChatMessages(snapshot.messages)
+              updateSessionState(out.sessionId, state => ({ ...state, messages }), out.storedSessionId)
+            }
+          } catch {
+            text += '\nReopen this chat to see the rewound conversation.'
+          }
+        }
+
+        out.render(text)
       } catch (err) {
         out.render(errorText(err))
       }
@@ -450,7 +480,7 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
       }
 
       try {
-        const snapshot = await requestGateway<{ messages?: HistoryRow[] }>('session.resume', {
+        const snapshot = await requestGateway<{ messages?: SessionMessage[] }>('session.resume', {
           session_id: out.sessionId
         })
 

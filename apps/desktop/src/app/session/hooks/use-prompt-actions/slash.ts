@@ -643,7 +643,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           updateSessionState,
           withSlashOutput
         }),
-        ...desktopReadCommandHandlers<SlashActionCtx>({ requestGateway, withSlashOutput }),
+        ...desktopReadCommandHandlers<SlashActionCtx>({ requestGateway, updateSessionState, withSlashOutput }),
         new: async () => {
           prepareDefaultNewSession()
           startFreshSessionDraft()

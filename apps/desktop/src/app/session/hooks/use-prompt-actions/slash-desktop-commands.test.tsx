@@ -1,6 +1,7 @@
 import { cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { toChatMessages } from '@/lib/chat-messages'
 import { resolveDesktopCommand } from '@/lib/desktop-slash-commands'
 import { $connection } from '@/store/session'
 import { dropSessionState } from '@/store/session-states'
@@ -31,10 +32,15 @@ function gateway(respond: Responder) {
   return vi.fn(async (method: string, params?: Record<string, unknown>) => (respond(method, params) ?? {}) as never)
 }
 
-async function mount(requestGateway: ReturnType<typeof gateway>) {
+async function mount(requestGateway: ReturnType<typeof gateway>, seedMessages?: unknown[]) {
   let handle: HarnessHandle | null = null
   await actRender(
-    <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    <Harness
+      onReady={h => (handle = h)}
+      refreshSessions={async () => undefined}
+      requestGateway={requestGateway}
+      seedMessages={seedMessages}
+    />
   )
 
   return handle!
@@ -146,6 +152,41 @@ describe('/rollback', () => {
     const text = renderedText(handle)
     expect(text).toContain('Invalid checkpoint number')
     expect(text).toContain('+new')
+  })
+
+  it('reloads the transcript after a restore that rewound history, but not after a file-only restore', async () => {
+    const rows = [
+      { role: 'user', content: 'KEPT QUESTION', row_id: 1 },
+      { role: 'assistant', content: 'KEPT ANSWER', row_id: 2 },
+      { role: 'user', content: 'REMOVED QUESTION', row_id: 3 },
+      { role: 'assistant', content: 'REMOVED ANSWER', row_id: 4 }
+    ]
+
+    const requestGateway = gateway((method, params) => {
+      if (method === 'rollback.restore') {
+        return params?.file_path
+          ? { success: true, restored_to: 'bbbb2222' }
+          : { success: true, restored_to: 'aaaa1111', history_removed: 2 }
+      }
+
+      if (method === 'session.resume') {
+        return { messages: rows.slice(0, 2) }
+      }
+    })
+
+    const handle = await mount(requestGateway, toChatMessages(rows as never))
+
+    await handle.submitText('/rollback 1 src/app.py')
+    expect(callsOf(requestGateway, 'session.resume')).toEqual([])
+    expect(renderedText(handle)).toContain('REMOVED QUESTION')
+
+    await handle.submitText('/rollback 1')
+    expect(callsOf(requestGateway, 'session.resume')).toEqual([{ session_id: RUNTIME_SESSION_ID }])
+    const text = renderedText(handle)
+    expect(text).toContain('KEPT ANSWER')
+    expect(text).not.toContain('REMOVED QUESTION')
+    expect(text).not.toContain('REMOVED ANSWER')
+    expect(text).toContain('Rewound 2 message(s)')
   })
 })
 
