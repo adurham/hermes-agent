@@ -19,6 +19,7 @@
       "autonomous-ai-agents/claude-code"
     ],
     "plugins": [
+      "claude-subscription-directsdk",
       "hermes-memory-wiki",
       "blender",
       "touchdesigner",
