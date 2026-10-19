@@ -75,6 +75,18 @@ def _loud(fn, log_msg, error_prefix, *log_args):
         return None, tool_error(f"{error_prefix}: {e}", success=False)
 
 
+def _is_worker_store(db) -> bool:
+    """True for the managed-worker facade (``RuntimeSessionStore``), which has no FTS read API.
+
+    A worker's agent is built with that store as its ``session_db``; recall reads the profile's
+    state DB directly instead of going through the owner RPC (see ``session_search``)."""
+    try:
+        from agent.runtime_session_store import RuntimeSessionStore
+    except ImportError:  # pragma: no cover - tools-only install without the worker package
+        return False
+    return isinstance(db, RuntimeSessionStore)
+
+
 def _format_timestamp(ts: float | str | None) -> str:
     """Unix timestamp -> readable date; ISO strings pass through; "unknown" for None."""
     if ts is None:
@@ -626,6 +638,13 @@ def session_search(query: str = "", role_filter: str | None = None, limit: int =
     if profile_db is not None:
         db, current_session_id = profile_db, None
         owned_dbs.append(profile_db)
+    # A managed worker's handle is a RuntimeSessionStore: it mirrors the owner's write and lineage
+    # surface, not the FTS read API, and every read is an owner RPC. Handing it here made recall in a
+    # worker fail with `'RuntimeSessionStore' object has no attribute 'search_messages'` (#141705), so
+    # recall opens its own read-only handle — the same one the no-db path below uses.
+    if _is_worker_store(db):
+        logging.debug("session_search: reading a read-only handle instead of the worker's store")
+        db = None
     if db is None:
         db = _quiet(
             lambda: SessionDB(db_path=get_hermes_home() / "state.db", read_only=True),
