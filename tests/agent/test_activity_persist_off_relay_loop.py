@@ -43,7 +43,7 @@ class _OwnerReplies:
             self.on_loop.append(False)
         frame = json.loads(message)
         self.persisted.append(frame["params"]["operation"])
-        self._reply = {"jsonrpc": "2.0", "id": request_id, "result": {"ok": True}}
+        self._reply = {"jsonrpc": "2.0", "id": request_id, "result": {"ok": True, "value": None}}
 
     def receive(self, timeout):
         return self._reply
@@ -153,7 +153,10 @@ def test_later_turn_writes_still_land_after_an_on_loop_heartbeat(relay_turn, wor
 
 
 def test_label_reset_on_a_running_loop_persists_off_loop(worker_agent, caplog):
-    """Sibling writer in the same mixin: turn-teardown label clear reached on a loop."""
+    """Sibling writer in the same mixin: turn-teardown label clear reached on a loop.
+
+    Defence in depth, not a reproduced caller: no reported stack shows this path on a loop, so
+    this drives it from a synthetic ``asyncio.run``."""
     agent, store, owner = worker_agent
     caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
 
@@ -188,3 +191,49 @@ def test_sync_aux_usage_inside_managed_tool_persists_off_relay_loop(relay_turn, 
     finally:
         reset_accounting_context(token)
     _assert_persisted_off_loop(store, owner, caplog, "usage.auxiliary")
+
+
+def test_begin_tool_execution_inside_relay_tool_persists_off_relay_loop(relay_turn, worker_agent, caplog):
+    """Reporter stack 3 through the real frame: tool_executor._begin_tool_execution on a
+    ThreadPoolExecutor thread inside relay_tools.execute."""
+    from agent import tool_executor
+
+    agent, store, owner = worker_agent
+    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    agent.quiet_mode, agent.tool_progress_callback, agent.tool_start_callback = True, None, None
+    agent._checkpoint_mgr = SimpleNamespace(enabled=False)
+    ref = tool_executor._ToolCallRef(name="image_generate", args={"prompt": "x"}, task_id="task-1",
+                                     call_id="call-1", trace=[])
+
+    def tool(args):
+        assert asyncio.get_running_loop() is not None
+        tool_executor._begin_tool_execution(agent, ref, 1)
+        return {"ok": True}
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(relay_tools.execute, "image_generate", {"prompt": "x"}, tool,
+                    session_id=SESSION, tool_call_id="call-1").result(timeout=30)
+    _assert_persisted_off_loop(store, owner, caplog, "session.activity")
+
+
+def test_async_delegation_ledger_writes_inside_relay_tool_persist_off_relay_loop(
+        relay_turn, worker_agent, caplog, monkeypatch):
+    """Reviewer probe: ``_persist_dispatch`` -> ``WorkerDelegationLedger.dispatch`` (and the
+    ``unscheduled`` mark) run inside the tool callback, on Relay's loop."""
+    from tools import async_delegation
+    from tools.async_delegation_worker import WorkerDelegationLedger
+
+    _agent, store, owner = worker_agent
+    caplog.set_level(logging.WARNING, logger="agent.runtime_session_store")
+    ledger = WorkerDelegationLedger(store)
+    monkeypatch.setattr(async_delegation, "worker_ledger", lambda: ledger)
+
+    def tool(args):
+        assert asyncio.get_running_loop() is not None
+        async_delegation._persist_dispatch({"delegation_id": "d-1", "parent_session_id": SESSION,
+                                            "goal": "g", "dispatched_at": 1.0})
+        ledger.unscheduled("d-1")
+        return {"ok": True}
+
+    relay_tools.execute("cronjob", {"action": "run"}, tool, session_id=SESSION)
+    _assert_persisted_off_loop(store, owner, caplog, "delegation.dispatch", "delegation.unscheduled")
