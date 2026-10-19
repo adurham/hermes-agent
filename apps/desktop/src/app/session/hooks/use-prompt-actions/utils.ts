@@ -355,6 +355,11 @@ export function isForwardedReceipt(
   return legacyAccepted && result?.forwarded === true && result.status === 'queued'
 }
 
+/** TUI-26: the owner ended the session's voice chat on a typed stop phrase and admitted nothing. */
+export function isVoiceStoppedReceipt(legacyAccepted: boolean, result: { voice_stopped?: boolean } | undefined): boolean {
+  return !legacyAccepted && result?.voice_stopped === true
+}
+
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 // Retry a gateway call across transient "session busy" so it never reaches the
