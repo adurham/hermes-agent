@@ -161,3 +161,38 @@ def test_another_session_may_start_once_the_capture_ended(owner):
     owner.mic.active = False
     assert owner.rpc("voice.record", action="start", session_id="other")["result"]["status"] == "recording"
     assert server._voice_capture_sid == "other"
+
+
+@pytest.fixture
+def stop_phrase(monkeypatch):
+    import types
+
+    monkeypatch.setitem(sys.modules, "tools.voice_mode_transcript",
+                        types.SimpleNamespace(is_voice_stop_phrase=lambda t: t.strip().lower() == "stop"))
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda user_barge=False: None)
+
+
+def test_typed_stop_turns_the_owner_mode_off_not_the_sidecar_flag(owner, stop_phrase, monkeypatch):
+    owner.slash("owner", "on")
+    owner.rpc("voice.record", action="start", session_id="owner")
+    monkeypatch.setenv("HERMES_VOICE", "1")  # a sidecar session's own voice chat
+    reply = owner.rpc("prompt.submit", session_id="owner", text="stop")
+    assert reply["result"] == {"voice_stopped": True}
+    assert owner.runner._voice_mode["owner"] == "off" and owner.mic.active is False
+    assert server._voice_mode_enabled() is True
+
+
+def test_typed_stop_reads_the_owner_mode(owner, stop_phrase):
+    owner.slash("owner", "on")  # HERMES_VOICE stays "0": the owner mode is the gate
+    assert owner.rpc("prompt.submit", session_id="owner", text="stop")["result"] == {"voice_stopped": True}
+    assert owner.runner._voice_mode["owner"] == "off"
+
+
+def test_full_duplex_stop_turns_the_owner_mode_off_not_the_sidecar_flag(owner, stop_phrase, monkeypatch):
+    owner.slash("owner", "on")
+    owner.rpc("voice.record", action="start", session_id="owner")
+    monkeypatch.setenv("HERMES_VOICE", "1")
+    server._deliver_fd_transcript("stop")
+    assert owner.runner._voice_mode["owner"] == "off"
+    assert server._voice_mode_enabled() is True
+    assert _transcripts(owner.sink)[-1]["stop_phrase"] is True

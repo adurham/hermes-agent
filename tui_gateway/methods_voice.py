@@ -127,6 +127,16 @@ def _end_voice_chat(*, stop_loop: bool, stop_tts: bool) -> None:
             _tts_stream_stop(user_barge=False)
 
 
+def _end_session_voice_chat(session_id, *, stop_loop: bool, stop_tts: bool) -> None:
+    """A stop phrase (spoken, typed or full-duplex) ends *session_id*'s voice chat: a shared-owner
+    session through its own mode (which ends only its capture); else the sidecar's env flags."""
+    if not _set_session_voice_off(session_id):
+        _end_voice_chat(stop_loop=stop_loop, stop_tts=stop_tts)
+    elif stop_tts:
+        with contextlib.suppress(Exception):
+            _tts_stream_stop(user_barge=False)
+
+
 def _tts_lease_async(lease: str, active: bool) -> None:
     """Acquire/release a TTS lease off the RPC thread (acquiring warms a local engine; must not
     block the toggle's reply). Best-effort."""
@@ -322,7 +332,9 @@ def _deliver_fd_transcript(text: str) -> None:
     except Exception:
         is_stop = False
     if is_stop:  # turn already interrupted / TTS cut at trip time; now end the chat
-        _end_voice_chat(stop_loop=True, stop_tts=False)
+        with _voice_sid_lock:
+            sid = _voice_event_sid
+        _end_session_voice_chat(sid, stop_loop=True, stop_tts=False)
     _voice_emit("voice.transcript", {"stop_phrase": True, "text": text} if is_stop else {"text": text})
 
 
@@ -768,8 +780,7 @@ def _vr_transcript(payload: dict) -> None:
 def _vr_on_stop_phrase(t):
     # A SPOKEN bare stop phrase: end the chat like /voice off and emit a distinct signal so
     # clients end the conversation instead of treating it as a no-speech timeout.
-    _end_voice_chat(stop_loop=False, stop_tts=True)
-    _set_session_voice_off(_voice_capture_sid)
+    _end_session_voice_chat(_voice_capture_sid, stop_loop=False, stop_tts=True)
     _vr_transcript({"stop_phrase": True, "text": t})
 
 
