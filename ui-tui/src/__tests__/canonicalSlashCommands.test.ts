@@ -12,6 +12,8 @@ const flush = () => new Promise(resolve => setImmediate(resolve))
 const LEGACY = ['session.title', 'session.undo', 'session.usage', 'slash.exec', 'tools.configure']
 
 function harness() {
+  let voiceMode = 'off'
+
   const messages = [
     { role: 'user', content: 'first', row_id: 11 },
     { role: 'assistant', content: 'a1', row_id: 12 },
@@ -65,6 +67,16 @@ function harness() {
       }
     }
 
+    if (method === 'slash.exec' && /^voice( |$)/.test(params.command)) {
+      voiceMode = params.command === 'voice on' ? 'voice_only' : params.command === 'voice off' ? 'off' : voiceMode
+
+      return { type: 'exec', output: `voice: ${voiceMode}` }
+    }
+
+    if (method === 'config.get' && params.key === 'voice') {
+      return { value: voiceMode }
+    }
+
     if (method === 'config.get') {
       return { value: params.key === 'skin' ? 'default' : 'auto' }
     }
@@ -89,7 +101,10 @@ function harness() {
   const panel = vi.fn()
   const page = vi.fn()
 
+  const voice = { setVoiceEnabled: vi.fn(), setVoiceRecordKey: vi.fn(), setVoiceTts: vi.fn() }
+
   const ctx = {
+    voice,
     slashFlightRef: { current: 0 },
     gateway: { gw: { isCanonical: true, request }, rpc: request },
     transcript: { page, panel, send, sys, setHistoryItems: vi.fn(), trimLastExchange: (items: unknown[]) => items },
@@ -98,8 +113,33 @@ function harness() {
     composer: { enqueue: vi.fn() }
   }
 
-  return { page, panel, request, send, slash: createSlashHandler(ctx as any), sys }
+  return { page, panel, request, send, slash: createSlashHandler(ctx as any), sys, voice }
 }
+
+it('/voice on|off|status run on the owner and mirror its per-session voice mode, never voice.toggle (T9)', async () => {
+  const { request, slash, sys, voice } = harness()
+
+  slash('/voice on')
+  await flush()
+  await flush()
+  expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice on', session_id: 'owner' })
+  expect(request).toHaveBeenCalledWith('config.get', { key: 'voice', session_id: 'owner' })
+  expect(voice.setVoiceEnabled).toHaveBeenLastCalledWith(true)
+  expect(voice.setVoiceTts).toHaveBeenLastCalledWith(false)
+
+  slash('/voice status')
+  await flush()
+  await flush()
+  expect(voice.setVoiceEnabled).toHaveBeenLastCalledWith(true)
+
+  slash('/voice off')
+  await flush()
+  await flush()
+  expect(voice.setVoiceEnabled).toHaveBeenLastCalledWith(false)
+
+  expect(request.mock.calls.some(([method]) => method === 'voice.toggle')).toBe(false)
+  expect(sys.mock.calls.map(([text]) => String(text))).toContain('voice: voice_only')
+})
 
 beforeEach(() => {
   resetUiState()

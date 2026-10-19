@@ -230,3 +230,44 @@ def test_rollback_restore_reads_a_null_all_as_omitted(tmp_path):
         asyncio.run(probe())
     kept = (['mine.txt'], 'hand edit\n')
     assert out == {'omitted': kept, 'null': kept, 'false': kept, 'true': (None, 'original mine\n')}, out
+
+
+@pytest.mark.platforms("linux")
+def test_config_get_voice_reports_the_sessions_own_voice_mode(tmp_path):
+    """T9: Ink's /voice runs the owner's per-session handler (slash.exec) and reads the mode back
+    with ``config.get key=voice``; the sidecar's process-global HERMES_VOICE is never consulted."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='voice', source='tui', toolsets=[]))['result']['session_id']
+                other = (await rpc(ws, 'session.create', request_id='voice2', source='tui', toolsets=[]))['result']['session_id']
+                assert (await rpc(ws, 'config.get', key='voice', session_id=sid))['result']['value'] == 'off'
+                on = await rpc(ws, 'slash.exec', command='voice on', session_id=sid)
+                assert on['result']['type'] == 'exec', on
+                assert (await rpc(ws, 'config.get', key='voice', session_id=sid))['result']['value'] == 'voice_only'
+                assert (await rpc(ws, 'config.get', key='voice', session_id=other))['result']['value'] == 'off'
+                await rpc(ws, 'slash.exec', command='voice off', session_id=sid)
+                assert (await rpc(ws, 'config.get', key='voice', session_id=sid))['result']['value'] == 'off'
+                assert (await rpc(ws, 'config.get', key='voice'))['error']['message'] == 'invalid_params'
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_voice_record_follows_the_sessions_gateway_voice_mode(tmp_path):
+    """T9: push-to-talk (``voice.record``) gates on the session's gateway voice mode, the state
+    Ink's ``/voice on`` sets through slash.exec, not the sidecar's process-global HERMES_VOICE."""
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='rec', source='tui', toolsets=[]))['result']['session_id']
+                off = await rpc(ws, 'voice.record', action='start', session_id=sid)
+                assert off.get('error', {}).get('code') == 4015, off
+                await rpc(ws, 'slash.exec', command='voice on', session_id=sid)
+                on = await rpc(ws, 'voice.record', action='start', session_id=sid)
+                # No microphone in CI: any answer but "voice mode is off" proves the gate passed.
+                assert on.get('error', {}).get('code') != 4015, on
+                await rpc(ws, 'voice.record', action='stop', session_id=sid)
+                await rpc(ws, 'slash.exec', command='voice off', session_id=sid)
+                again = await rpc(ws, 'voice.record', action='start', session_id=sid)
+                assert again.get('error', {}).get('code') == 4015, again
+        asyncio.run(probe())

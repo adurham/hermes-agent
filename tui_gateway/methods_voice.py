@@ -52,6 +52,17 @@ def _voice_mode_enabled() -> bool:
     return os.environ.get("HERMES_VOICE", "").strip() == "1"
 
 
+def _session_voice_enabled(session_id) -> bool:
+    """Push-to-talk gate: a shared-owner local session's own gateway ``/voice`` mode (what Ink's
+    ``/voice on`` sets through slash.exec, T9); the sidecar's env flag for its own sessions."""
+    try:
+        from gateway.session_config import local_voice_enabled
+        held = local_voice_enabled(session_id)
+    except ImportError:
+        held = None
+    return _voice_mode_enabled() if held is None else held
+
+
 def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
@@ -733,7 +744,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"status": "busy", "reason": "wake_owned"})
     try:
         global _voice_event_sid, _voice_event_transport, _voice_wake_owner
-        if action == "start" and not _voice_mode_enabled():
+        if action == "start" and not _session_voice_enabled(params.get("session_id")):
             return _err(rid, 4015, "voice mode is off — enable with /voice on")
         with _voice_sid_lock:
             _voice_event_sid = params.get("session_id") or _voice_event_sid
