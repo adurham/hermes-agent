@@ -661,6 +661,8 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    hermes_ext = manifest.get("extensions", {}).get("com.nousresearch.hermes", {})
+    _check_config_spec(report, {"config_schema": hermes_ext.get("config_schema")})
     for server_name, config in package.mcp_servers.items():
         if config.get("trust") == "untrusted":
             report.add(f"server trust: {server_name}", True,

@@ -755,6 +755,34 @@ def mcp_servers_awaiting_connect() -> list[str]:
     return _awaiting_connect(_enabled_config_names(), _core._mcp_registry_scope())
 
 
+def restart_mcp_servers_with_new_inputs(names: set[str]) -> list[str]:
+    """Reconnect each live server in *names* whose resolved launch inputs (stdio command/env/cwd,
+    HTTP url/headers) no longer hash to what it connected with, e.g. after a plugin settings form
+    saved a new ``${VAR}`` its ``env`` passes through. A server whose inputs did not change keeps
+    its connection. Returns the names restarted."""
+    scope = _core._mcp_registry_scope()
+    with _owner_secret_scope():
+        servers = _config._load_mcp_config()
+        changed = []
+        for name in sorted(names):
+            config = servers.get(name)
+            with _core._lock:
+                server = _core._servers.get(_server_key(name, scope, current=False))
+            recorded = getattr(server, "_resolved_identity", None)
+            if config is None or recorded is None or not mcp_server_enabled(config):
+                continue
+            # Render as the connect path does (plugin servers join the config after load's render pass).
+            if _registration._adopter_identity_digest(name, _config._interpolate_env_vars(config)) != recorded:
+                changed.append(name)
+    if changed:
+        logger.info("MCP server(s) %s: launch inputs changed; reconnecting", ", ".join(changed))
+        _lifecycle.shutdown_mcp_servers(scope=scope, names=set(changed))
+        for name in changed:
+            _clear_connect_failure(name)
+        discover_mcp_tools()
+    return changed
+
+
 def _forget_lazy_server(key) -> None:
     """Drop a schema-cache (lazy) registration whose config entry is gone: its cached tools would
     otherwise stay callable and spawn the server on first use."""

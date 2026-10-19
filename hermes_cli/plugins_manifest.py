@@ -493,10 +493,14 @@ def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginMan
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin '%s': %s", child, diagnostic.message)
     key = f"{prefix}/{child.name}" if prefix else data["name"]
+    hermes = data.get("extensions", {}).get("com.nousresearch.hermes", {})
+    schema = hermes.get("config_schema") if isinstance(hermes, Mapping) else None
     return PluginManifest(
         name=data["name"], version=data.get("version", ""), description=data.get("description", ""),
         author=_display_author(data.get("author", "")), source=source, path=str(child), key=key,
         portable=True, skill_namespace=_portable_skill_namespace(key),
+        config_schema={str(k): dict(v) for k, v in schema.items() if isinstance(v, Mapping)}
+        if isinstance(schema, Mapping) else {},
     )
 
 
