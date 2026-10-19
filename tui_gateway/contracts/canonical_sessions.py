@@ -234,8 +234,10 @@ class CanonicalVoiceStopped(Result):
     voice_stopped: Literal[True]
 
 
-class CanonicalSubmitResult(RootModel[AdmissionStatus | CanonicalVoiceStopped]):
+class CanonicalSubmitResult(RootModel):
     """``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``."""
+
+    root: AdmissionStatus | CanonicalVoiceStopped
 
 
 class CanonicalSteerQueuedParams(CanonicalSessionParams):
@@ -268,9 +270,11 @@ class CanonicalCorrectionAck(Result):
     authority_epoch: int
 
 
-class CanonicalCorrectionResult(RootModel[CanonicalCorrectionAck | CanonicalVoiceStopped]):
+class CanonicalCorrectionResult(RootModel):
     """``session.steer`` / ``session.redirect``: the correction verdict, or ``{voice_stopped: true}``
     when the busy-time text was a bare stop phrase that ended the LOCAL voice chat."""
+
+    root: CanonicalCorrectionAck | CanonicalVoiceStopped
 
 
 class CanonicalApprovalParams(CanonicalControlParams):
