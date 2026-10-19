@@ -145,3 +145,84 @@ async def test_user_stop_is_not_relabelled_when_shutdown_starts_during_settlemen
         assert len(complete) == 1
         assert persisted['result']['interrupt_message'] == 'User requested stop'
         assert 'warning' not in complete[0], complete[0]
+
+
+STOPPABLE_CHILD = """import json, os, sys, psutil
+me = psutil.Process()
+out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
+def send(frame):
+    out.write((json.dumps(frame) + '\\n').encode())
+send({'type': 'hello', 'pid': me.pid, 'birth': me.create_time(), 'ancestors': [p.pid for p in me.parents()[:3]]})
+for line in sys.stdin.buffer:
+    frame = json.loads(line)
+    if frame == {'type': 'stop'}:
+        send({'type': 'result', 'result': {'final_response': '', 'interrupted': True, 'completed': False}})
+    elif frame == {'type': 'finish'}:
+        send({'type': 'finished'})
+        break
+"""
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize('user_stopped_first', [False, True])
+def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(tmp_path, monkeypatch,
+                                                                                  user_stopped_first):
+    """A managed-worker turn (real child, real SQLite authority) that the gateway restart stops
+    settles with the restart notice; one the user had already stopped before shutdown began gets
+    none. The worker's wire result carries no cause: the owner records which stop it sent."""
+    import subprocess
+
+    from gateway import session_managed_worker as managed
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_policy import build_policy
+    from gateway.session_settlement_recovery import commit_and_publish
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch, claim_session_input
+    from tests.gateway.restart_test_helpers import make_restart_runner
+    from tests.waiting import async_wait_until
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = True
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    db.create_session('s', source='test')
+    authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id='i'))
+    runner.session_authority = authority
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
+    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    ref = SessionRef('owned', 's')
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+
+    class Child(subprocess.Popen):
+        def __init__(self, args, **kw):
+            super().__init__([sys.executable, '-c', STOPPABLE_CHILD], **kw)
+    monkeypatch.setattr(managed.subprocess, 'Popen', Child)
+    policy = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {}, profile_terminal=False)
+
+    async def scenario():
+        await authority.submit(actor, Submission('turn', ref, {'text': 'go'}, 'queue'))
+        row = claim_session_input(db, epoch=authority.epoch, session_id='s')
+        authority._stamp_claim(ref, live, row)
+        task = asyncio.create_task(managed.execute_managed(authority, ref, row, policy))
+        await async_wait_until(lambda: (w := getattr(authority, '_managed_workers', {}).get('s')) is not None and w.writer.is_alive(),
+                               timeout=30, what='the managed worker to receive its bootstrap')
+        if user_stopped_first:
+            assert managed.interrupt_managed(authority, actor, ref, row['generation'])
+        runner._interrupt_running_agents(runner._shutdown_interrupt_reason())  # stop()'s timed-out path
+        async with asyncio.timeout(30):
+            return row, await task
+
+    with db:
+        row, response = asyncio.run(scenario())
+        frames = []
+        live.event_stream.observers.add(frames.append)
+        commit_and_publish(authority, live, ref, row, response, 'interrupted',
+                           authority.pending_results[row['admission_id']], {})
+    (complete,) = [f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete']
+    assert complete['status'] == 'interrupted'
+    if user_stopped_first:
+        assert 'warning' not in complete, complete
+    else:
+        assert complete['warning'] == RESTART_INTERRUPT_NOTICE
