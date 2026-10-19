@@ -217,8 +217,17 @@ _SESSION_CONTROL_SLASHES = frozenset({"goal", "heartbeat", "loop", "subgoal"})
 
 # Tool completions publish from the agent thread while control actions and slash commands publish from
 # RPC threads: the snapshot read, the revision compare and the emit happen as one step, so an update read
-# before a user's change can never be emitted after it.
-_PUBLISH_LOCK = threading.Lock()
+# before a user's change can never be emitted after it. The lock is the SESSION's: a stalled socket write
+# (up to the transport's write timeout) only holds back that session's own later updates, never another's.
+_PUBLISH_LOCK_GUARD = threading.Lock()
+
+
+def _session_publish_lock(session: dict) -> threading.Lock:
+    lock = session.get("control_publish_lock")
+    if lock is None:
+        with _PUBLISH_LOCK_GUARD:
+            lock = session.setdefault("control_publish_lock", threading.Lock())
+    return lock
 
 
 def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if_present: bool = False,
@@ -231,7 +240,7 @@ def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if
     if not session or not (session_key := str(session.get("session_key") or "")):
         return
     try:
-        with _PUBLISH_LOCK:
+        with _session_publish_lock(session):
             with _session_profile_runtime_scope(session):
                 control = _snapshot_control(session_key)
             if (only_if_present and not control["revision"]) or (

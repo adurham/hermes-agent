@@ -421,6 +421,39 @@ class TestUpdatePublication:
                    if event == "session.control.update"]
         assert updates[-1] == ["newer criterion"]
 
+    def test_a_stalled_client_write_never_delays_another_sessions_publish(self, server, session, monkeypatch):
+        """Ordering is per session: while one session's socket write stalls (up to the transport's write
+        timeout), an unrelated session's control update and tool completions still go out."""
+        sid, key, entry = session
+        _save_goal(key)
+        other_sid, other_key = f"sid-control-{uuid.uuid4().hex}", f"control-{uuid.uuid4().hex}"
+        other = {**entry, "session_key": other_key, "history_lock": threading.Lock()}
+        server._sessions[other_sid] = other
+        _save_goal(other_key)
+        stalled, release, emitted = threading.Event(), threading.Event(), []
+
+        def emit(event, event_sid, payload=None):
+            if event_sid == sid:
+                stalled.set()
+                release.wait(5)
+            emitted.append(event_sid)
+        monkeypatch.setattr(server, "_emit", emit)
+        slow = threading.Thread(target=server._publish_session_control_snapshot, args=(sid, entry))
+        slow.start()
+        try:
+            assert stalled.wait(5)
+            fast = threading.Thread(target=server._publish_session_control_snapshot, args=(other_sid, other))
+            fast.start()
+            fast.join(1)
+            assert not fast.is_alive(), "another session's stalled write blocked this publish"
+            assert emitted == [other_sid]
+        finally:
+            release.set()
+            slow.join(5)
+            server._sessions.pop(other_sid, None)
+            from hermes_cli.goals import GoalManager
+            GoalManager(other_key).clear()
+
     @pytest.mark.parametrize("name,arg", [("goal", "pause"), ("loop", "pause")])
     def test_typed_slash_via_command_dispatch_publishes_the_new_state(self, server, session, monkeypatch, name, arg):
         """/goal and /loop never reach the slash worker (``_PENDING_INPUT_COMMANDS``) — the built-in path must
