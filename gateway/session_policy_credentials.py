@@ -305,7 +305,8 @@ def _current_custom_path(frozen, config, path):
     """*path* (``custom_providers[i]...``, an index into the frozen list) re-pointed at the profile's
     entry of the SAME canonical identity (``custom_provider_slug``), wherever a reorder moved it.
     An entry the profile no longer declares maps to no index (absent), never to whatever entry now
-    sits at ``i``. A frozen entry with no name has no identity: its index is all there is."""
+    sits at ``i``, unless that entry is the same endpoint renamed in place (the fingerprint then decides,
+    as on main). A frozen entry with no name has no identity: its index is all there is."""
     from hermes_cli.providers import custom_provider_slug
 
     def identity(entry):
@@ -323,6 +324,10 @@ def _current_custom_path(frozen, config, path):
     for index, entry in enumerate(current):
         if identity(entry) == mine:  # the first match, as the runtime's own name lookup takes
             return (path[0], index, *path[2:])
+    from hermes_cli.runtime_provider_custom import _entry_url, _normalize_base_url_for_match as url
+    if 0 <= path[1] < len(current) and isinstance(current[path[1]], dict) \
+            and url(_entry_url(current[path[1]])) == url(_entry_url(held[path[1]])):
+        return path  # renamed in place: same endpoint at the same index, as main read it (the fingerprint decides)
     return (path[0], len(current), *path[2:])  # gone: past the end reads as absent
 
 
