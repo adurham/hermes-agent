@@ -50,26 +50,30 @@ _PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "
 # ``BROWSER_CDP_URL`` that every chat's browser tools read first (dokterdok N25); ``status`` and ``use``
 # (the profile's ``browser.backend``) stay. A missing action means ``status``.
 #
-# CLI-9 (#134889): on an owner serving ONE profile those chats are all that profile's, so the live
-# connect is the user's own choice and runs (Ink, Desktop and the classic CLI all send it here). On an
-# owner serving several profiles it would reach another profile's sessions, and the browser state has
-# no per-profile scope yet (``cleanup_all_browsers`` reaps every task's browser): refused by name.
-_PROCESS_GLOBAL_ACTIONS = {"browser.manage": ({"connect", "disconnect"}, (
-    "/browser connect and /browser disconnect are unavailable on a gateway serving several profiles: "
+# CLI-9 (#134889): on an owner that serves ONE profile and never multiplexes (a standalone gateway)
+# those chats are all that profile's, so the live connect is the user's own choice and runs (Ink,
+# Desktop and the classic CLI all send it here). An owner that CAN multiplex refuses by name even
+# while it serves one profile: a later hot-served profile would inherit the process-wide override
+# (which wins over its own ``browser.cdp_url``), and the browser state has no per-profile scope yet
+# (``cleanup_all_browsers`` reaps every task's browser). ``data.reason`` is the client's bounded code.
+_PROCESS_GLOBAL_ACTIONS = {"browser.manage": ({"connect", "disconnect"}, "browser_profile_shared", (
+    "/browser connect and /browser disconnect are unavailable on a gateway that serves several profiles: "
     "the live browser connection is shared by every profile's chats. Set browser.cdp_url in this "
     "profile's config.yaml instead."))}
 
 
-def _serves_several_profiles() -> bool:
-    """Whether this owner serves more than one profile (the running gateway's authority registry);
-    without a registered runner, whether the process multiplexes at all (fail closed)."""
+def _owner_may_multiplex() -> bool:
+    """Whether this owner serves, or can hot-serve, more than one profile (the running gateway's
+    authority registry: multiplex mode, or a second profile ever served); without a registered
+    runner, whether the process multiplexes at all. Unknown means yes (fail closed)."""
+    from agent.secret_scope import is_multiplex_active
     from gateway import run_api
     runner = getattr(run_api, "_ACTIVE_RUNNER", None)
-    if runner is not None and getattr(runner, "session_authorities", None) is not None:
-        from gateway.session_authorities import serving_authorities
-        return len(serving_authorities(runner)) > 1
-    from agent.secret_scope import is_multiplex_active
-    return is_multiplex_active()
+    registry = getattr(runner, "session_authorities", None)
+    if registry is None:
+        return is_multiplex_active()
+    from gateway.session_authorities import serving_authorities
+    return bool(getattr(registry, "multiplexed", True)) or len(serving_authorities(runner)) > 1
 
 
 def legacy_fallback_allowed(actor: Any, method: str) -> bool:
@@ -159,9 +163,10 @@ def _own_profile_read(server: Any, req: dict, home: str) -> dict:
 def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict | None:
     """Run ``server.dispatch`` with the ticket's profile home bound (call from a worker thread;
     the pool path copies this context, so long handlers see it too)."""
-    actions, refusal = _PROCESS_GLOBAL_ACTIONS.get(req.get("method"), ((), ""))
-    if (req.get("params") or {}).get("action", "status") in actions and _serves_several_profiles():
-        return {"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": 4030, "message": refusal}}
+    actions, reason, refusal = _PROCESS_GLOBAL_ACTIONS.get(req.get("method"), ((), "", ""))
+    if (req.get("params") or {}).get("action", "status") in actions and _owner_may_multiplex():
+        return {"jsonrpc": "2.0", "id": req.get("id"),
+                "error": {"code": 4030, "message": refusal, "data": {"reason": reason}}}
     try:
         home = _foreign_profile_home(server, getattr(actor, "profile_id", None))
     except OSError:
