@@ -16,7 +16,7 @@ import queue
 import threading
 import time
 
-from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, GatewayClientError
+from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, RESUME_KEY_MISMATCH, GatewayClientError, GatewayRPCError
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +26,27 @@ DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the print
 NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 # Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls).
 _GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
+# Keyed-resume refusals a plain resume answers as main did: the key does not apply to this session
+# (``rebind_launch_key``: keyless or non-local, another key held, another fingerprint), or the viewer
+# lacks the ``session:control`` a rebind needs but may still read. Any other refusal is the resume's.
+_KEY_NOT_TAKEN = frozenset({"admission_conflict", "permission_denied"})
 
 
 class CallStopped(GatewayClientError):
     """The caller stopped waiting (:meth:`GatewayConnection.call_until`); the request was sent."""
+
+
+def _resume_plain(exc, session_id, typed):
+    """A keyed ``session.resume`` the owner refused with ``exc``: returns when the caller resumes plain,
+    else raises. Only a refusal in ``_KEY_NOT_TAKEN`` resumes plain (a keyed startup alias on a Desktop/TUI
+    session); any other is raised, not hidden by a keyless attach whose first turn fails. ``typed`` (a typed
+    ``--api-key`` the user resumes with) never resumes plain: ``admission_conflict`` is the thin client's
+    refusal."""
+    if typed and str(exc) == "admission_conflict":
+        raise GatewayClientError(RESUME_KEY_MISMATCH) from None
+    if typed or str(exc) not in _KEY_NOT_TAKEN:
+        raise exc
+    logger.debug("session.resume %s: launch key not taken (%s); resuming without it", session_id, exc)
 
 
 def lost_before(frame, epoch) -> bool:
@@ -137,6 +154,12 @@ class GatewayConnection:
         self._side_lock = threading.Lock()
         # The wake events of :meth:`call_until` commands in flight, each on its own socket.
         self._commands: set[threading.Event] = set()
+        # This CLI's launch-only key (``--api-key`` or a keyed startup alias), set by the session store:
+        # an owner restart revokes it, so every resume re-supplies it (the owner's ``rebind_launch_key``).
+        self.launch_api_key = None
+        # True when that key is the typed ``--api-key`` (not a keyed startup alias's): a startup resume the
+        # owner will not bind it to is refused as the thin client refuses it, never attached plain.
+        self.launch_api_key_typed = False
 
     @classmethod
     def shared(cls):
@@ -248,12 +271,35 @@ class GatewayConnection:
             if state.subscription_id is None:
                 continue
             try:
-                state.adopt_snapshot(await client.rpc("session.resume", session_id=session_id))
+                state.adopt_snapshot(await self._resume(client, session_id))
             except GatewayClientError as exc:
                 if str(exc) not in _GONE:
                     raise
                 logger.debug("session.resume %s after reconnect: %s", session_id, exc)
                 state.subscription_id = None
+
+    def resume(self, call, session_id, *, typed=False):
+        """``session.resume`` through ``call`` (the store's attach), re-supplying :attr:`launch_api_key`;
+        a refusal of the keyed resume is :func:`_resume_plain`'s to decide. ``typed``: the user resumes with
+        a typed ``--api-key``."""
+        key = self.launch_api_key
+        if key:
+            try:
+                return call("session.resume", session_id=session_id, api_key=key)
+            except GatewayRPCError as exc:
+                _resume_plain(exc, session_id, typed)
+        return call("session.resume", session_id=session_id)
+
+    async def _resume(self, client, session_id):
+        """:meth:`resume` for :meth:`_resubscribe`, awaited on this loop so a cancelled reconnect cancels
+        its request. A reconnect types nothing: never ``typed``."""
+        key = self.launch_api_key
+        if key:
+            try:
+                return await client.rpc("session.resume", session_id=session_id, api_key=key)
+            except GatewayRPCError as exc:
+                _resume_plain(exc, session_id, typed=False)
+        return await client.rpc("session.resume", session_id=session_id)
 
     async def _pump(self, client):
         while True:
