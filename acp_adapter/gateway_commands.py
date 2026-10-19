@@ -137,7 +137,7 @@ async def _rewind(agent, client, session_id, command, arg):
         return t('cli.session.retry_no_user_message' if retry else 'cli.session.undo_no_user_message'), None
     # Retained until the refresh lands: a repeat after a lost refresh replays this rewind instead of
     # deriving a new target from the already-shortened transcript (which would drop the turn before).
-    agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+    await agent._adopt(session_id, await client.rpc('session.resume', session_id=session_id))
     agent._mutations.acknowledge(session_id, 'rewind', payload)
     content = (result.get('target_message') or {}).get('content')
     if retry:
@@ -192,7 +192,7 @@ async def _mutate(agent, client, session_id, command, arg):
     if unchanged is not None:
         reply = unchanged(result)
     else:
-        agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        await agent._adopt(session_id, await client.rpc('session.resume', session_id=session_id))
         if operation in {'reset', 'compress'}:
             await _refresh_context(agent, client, session_id, operation)
         reply = {'model': lambda: _model_text('Model switched to', result),
