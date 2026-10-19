@@ -329,3 +329,23 @@ async def test_branch_after_new_in_a_typed_key_cli_switches_to_the_child(tmp_pat
         assert child != fresh and store.current['stored_session_id'] == child
     finally:
         await owners.close(conn)
+
+
+@pytest.mark.asyncio
+async def test_probe_slash_resume_keyless_session_from_api_key_cli_switches(tmp_path, monkeypatch):
+    """Review 2.1 probe (#141481, CLI-34): in a CLI started with ``--resume <keyed> --api-key K`` after a
+    restart, ``/resume``'s id lookup (``_gateway_owned_id``) of a session launched without K answers that
+    session's id and attaches it, as on main; only the startup resume is held to the typed key."""
+    from hermes_cli.cli_agent_setup_mixin import _gateway_owned_id
+    owners = await _Owners().start(tmp_path, monkeypatch)
+    await owners.boot('restarted')
+    conn = GatewayConnection(connect=owners.dial)
+    try:
+        store = GatewaySessionStore(conn)
+        assert await asyncio.to_thread(store.open_session, _typed(owners.keyed, RAW), LAUNCH) == owners.keyed
+        assert await asyncio.to_thread(_gateway_owned_id, store, owners.plain) == owners.plain
+        assert store.current['stored_session_id'] == owners.plain
+        assert owners.key_of(owners.plain) is None  # K was not bound to it
+        assert owners.key_of(owners.keyed) == RAW
+    finally:
+        await owners.close(conn)
