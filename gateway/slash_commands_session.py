@@ -184,8 +184,15 @@ class GatewaySessionCommandsMixin:
         authority = active_authority(self)
         session_key = self._session_key_for_source(event.source)
         sid = authority.logical_owner(self.session_store.peek_session_id(session_key)) if authority else None
-        if not sid or sid not in authority.sessions:
+        if not sid:
             return t("gateway.discard.nothing")
+        if sid not in authority.sessions:
+            # A conversation /resume brought back after a restart is the chat's route but not yet
+            # live: publish it through the same route seam an inbound message uses (review #141357).
+            from functools import partial
+            from gateway.session_runtime_workers import tracked_write
+            sid = authority._publish_route(
+                event.source, *await tracked_write(authority, partial(authority._reserve_route, event.source))).session_id
         return await discard_lost_turns(authority, sid)
 
     async def _handle_reset_command(self, event: MessageEvent) -> str | EphemeralReply:
