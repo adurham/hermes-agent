@@ -41,6 +41,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
 import { clearSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
@@ -891,6 +892,7 @@ export function usePromptActions({
 
           if (result?.status === 'redirected') {
             if (mode === 'interrupt') {
+              flushStreamDeltas(id)
               updateSessionState(id, state => sealAcceptedCorrection(state, messageId))
             }
 
@@ -903,6 +905,7 @@ export function usePromptActions({
             // A redirect queued in the build window is the next turn; an
             // accepted steer joins this one after its running tool.
             if (mode === 'steer') {
+              flushStreamDeltas(id)
               updateSessionState(id, state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
             } else {
               moveOptimisticMessageToEnd()

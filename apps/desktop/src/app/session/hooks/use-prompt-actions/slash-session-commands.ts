@@ -7,6 +7,7 @@ import { setComposerDraft } from '@/store/composer'
 import { enqueueQueuedPrompt, getQueuedPrompts, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { $sessions, resolveComposerSessionKey } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
 
 import { sealLiveStream } from './rewind'
 import type { SubmissionDestination } from './submission-destination'
@@ -309,6 +310,7 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       if (accepted) {
         // The notice marks where the steer arrived: seal the live reply above it so the
         // output the model writes after reading the steer streams below, not above it.
+        flushStreamDeltas(out.sessionId)
         updateSessionState(out.sessionId, state => sealLiveStream(state, { keepRunningTools: true }))
 
         return out.render(copy().steerQueued(previewOf(text)))

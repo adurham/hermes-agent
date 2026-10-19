@@ -311,6 +311,31 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     ])
   })
 
+  it.each([false, true])('an accepted steer paints text still buffered above it, and a lost tool.complete cannot outlive the turn (tile=%s)', async tile => {
+    await mountHarness(tile)
+
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'Hello' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { args: { command: 'sleep 5' }, name: 'terminal', tool_id: 't1' }, session_id: SID, type: 'tool.start' })
+    // Buffered, not yet painted: the delta timer has not fired.
+    emit({ payload: { text: ' world' }, session_id: SID, type: 'message.delta' })
+
+    requestGatewayMock.mockImplementationOnce(async () => ({ status: 'queued' }))
+    await act(async () => {
+      await expect(redirect!('change course', 'steer')).resolves.toBe(true)
+    })
+
+    // tool.complete for t1 is lost; the answer to the steer completes the turn.
+    emit({ payload: { text: 'new direction' }, session_id: SID, type: 'message.delta' })
+    await flushDeltas()
+    emit({ payload: { text: 'new direction' }, session_id: SID, type: 'message.complete' })
+
+    expect(transcript()).toEqual(['assistant:Hello world', 'user:change course', 'assistant:new direction'])
+    expect(states.get(SID)!.messages.every(message => !message.pending)).toBe(true)
+    expect(states.get(SID)!.messages[0].parts.find(part => part.type === 'tool-call')).toHaveProperty('completedAt')
+  })
+
   it.each([false, true])('a refused redirect preserves the continuing stream (tile=%s)', async tile => {
     await mountHarness(tile)
 

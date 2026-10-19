@@ -501,15 +501,13 @@ export function sealLiveStream<State extends LiveStreamState>(state: State, { ke
 
 /** `finalizeInterruptedMessages` minus the seal on tool calls still waiting for a result:
  *  their bubble stays pending (a tool row only renders running inside a running message)
- *  until the result lands by call id. */
+ *  until the result lands by call id, or the turn's completion settles it. */
 function sealKeepingRunningTools(messages: ChatMessage[], streamId: null | string): ChatMessage[] {
-  const before = new Map(messages.map(message => [message.id, message]))
-
-  return finalizeInterruptedMessages(messages, streamId).map(message => {
-    const original = before.get(message.id)
-
-    return original && original !== message && hasUnresolvedToolCall(original) ? { ...original, interim: true } : message
-  })
+  return messages.flatMap(message =>
+    (message.pending || message.id === streamId) && hasUnresolvedToolCall(message)
+      ? [{ ...message, interim: true }]
+      : finalizeInterruptedMessages([message], streamId)
+  )
 }
 
 /** An accepted correction's reserved bubble becomes the arrival boundary: the

@@ -39,6 +39,7 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
+import { flushStreamDeltas } from '@/store/stream-delta-flush'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -477,6 +478,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
         if (result?.status === 'redirected') {
           if (mode === 'interrupt') {
+            flushStreamDeltas(sessionId)
             mutate(state => sealAcceptedCorrection(state, messageId))
           }
 
@@ -489,6 +491,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
           // A redirect queued in the build window is the next turn; an
           // accepted steer joins this one after its running tool.
           if (mode === 'steer') {
+            flushStreamDeltas(sessionId)
             mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
           } else {
             moveOptimisticMessageToEnd()
