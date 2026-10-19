@@ -31,20 +31,24 @@ async def test_api_created_sessions_are_local_and_the_connection_mode_marks_remo
     monkeypatch.setattr(run, '_hermes_home', home)
     (home / 'config.yaml').write_text(json.dumps({'model': {'provider': 'custom', 'default': 'm',
                                                             'base_url': 'http://127.0.0.1:1/v1'}}))
-    _store, _runner, authority, _dashboard = _owner(home)
-    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    local, remote = _connection(authority, 'here', native=True), _connection(authority, 'away', native=False)
-    assert (local.native_owner, remote.native_owner) == (True, False)
-    created = {}
-    for name, connection in (('local', local), ('remote', remote)):
-        reply = await connection.dispatch({'id': name, 'method': 'session.create', 'params': {
-            'request_id': name, 'source': 'gui', 'cwd': str(home), 'toolsets': [],
-            'client_env': {'PATH': '/usr/bin'}}})
-        assert 'result' in reply, reply
-        sid = reply['result']['session_id']
-        source = authority.sessions[sid].source
-        from gateway.session_local_recovery import local_adapter_map
-        policy = local_adapter_map(authority)[Platform.LOCAL].policies[source.chat_id]
-        created[name] = (source.platform, policy.client_env_remote)
-    # Same platform either way; only the connection-derived policy flag differs.
-    assert created == {'local': (Platform.LOCAL, False), 'remote': (Platform.LOCAL, True)}
+    store, _runner, authority, owner = _owner(home)
+    try:
+        monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+        local, remote = _connection(authority, 'here', native=True), _connection(authority, 'away', native=False)
+        assert (local.native_owner, remote.native_owner) == (True, False)
+        created = {}
+        for name, connection in (('local', local), ('remote', remote)):
+            reply = await connection.dispatch({'id': name, 'method': 'session.create', 'params': {
+                'request_id': name, 'source': 'gui', 'cwd': str(home), 'toolsets': [],
+                'client_env': {'PATH': '/usr/bin'}}})
+            assert 'result' in reply, reply
+            sid = reply['result']['session_id']
+            source = authority.sessions[sid].source
+            from gateway.session_local_recovery import local_adapter_map
+            policy = local_adapter_map(authority)[Platform.LOCAL].policies[source.chat_id]
+            created[name] = (source.platform, policy.client_env_remote)
+        # Same platform either way; only the connection-derived policy flag differs.
+        assert created == {'local': (Platform.LOCAL, False), 'remote': (Platform.LOCAL, True)}
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
