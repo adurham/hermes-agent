@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
 import sqlite3
+from types import SimpleNamespace
 import uuid
 
 from gateway.session_contract import (
@@ -79,6 +80,9 @@ class LiveSession:
     # Mounted by that cold path (not published by its lane): the lane publishing ANOTHER conversation
     # on the same route later supersedes it too.
     history_mount: bool = False
+    # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
+    # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
+    review: SimpleNamespace = field(default_factory=SimpleNamespace)
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -1124,6 +1128,12 @@ class SessionAuthority:
         the FIFO and re-raises ManagedExecutionUnknown."""
         from gateway.session_finite import execute_finite_admission
         from gateway.session_managed_worker import ManagedExecutionUnknown
+        review = getattr(live.review, '_background_review_run', None)
+        if review is not None and not review.request_done.is_set():
+            # A cold /refine's review shares the session id, as the resident agent's does: cancel it
+            # before the turn (its bounded wait runs off-loop).
+            from agent.background_review import cancel_background_review_for_live_turn
+            await asyncio.to_thread(cancel_background_review_for_live_turn, live.review)
         try:
             try:
                 return await execute_finite_admission(self, ref, row), 'completed'

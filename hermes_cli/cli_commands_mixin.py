@@ -2249,7 +2249,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             setattr(self, attr, value)
             if attr == "show_reasoning" and self.agent:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
-            _save(f"display.{attr}", value)
+            _save("display.platforms.cli.show_reasoning" if attr == "show_reasoning" else f"display.{attr}", value)  # T7
             _cp(_accent_line(_t("reasoning.display_saved", headline=_t(f"reasoning.{headline_key}"))))
             if note_key:
                 _cp(_dim_line(f"  {_t(f'reasoning.{note_key}')}"))
