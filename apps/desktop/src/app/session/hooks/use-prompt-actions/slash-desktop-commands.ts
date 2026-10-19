@@ -361,7 +361,14 @@ export function desktopReadCommandHandlers<C extends { arg: string }>(env: Deskt
           return out.render(errorText(err))
         }
 
-        // An older gateway without session.export: its session.save writes JSON on the gateway host.
+        // An older gateway without session.export: its session.save writes default-named, unredacted
+        // JSON on the gateway host, so only a plain /save may fall back to it.
+        if (request.redact || request.format !== 'json' || request.filename) {
+          return out.render(
+            'Not saved: this gateway cannot export a redacted, named or non-JSON copy. Update the gateway, or run /save with no options to write raw JSON on the gateway host.'
+          )
+        }
+
         try {
           const saved = await requestGateway<{ file?: string }>('session.save', { session_id: out.sessionId })
 

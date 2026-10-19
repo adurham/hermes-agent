@@ -278,6 +278,32 @@ describe('/save writes on the Electron side', () => {
     expect(renderedText(handle)).toMatch(/not saved/i)
   })
 
+  it('falls back to the legacy host save only for a plain /save, and says where it wrote', async () => {
+    const requestGateway = gateway(method => {
+      if (method === 'session.export') {
+        throw Object.assign(new Error('Method not found'), { code: -32601 })
+      }
+
+      if (method === 'session.save') {
+        return { file: '/gateway/saved/raw.json' }
+      }
+    })
+
+    const handle = await mount(requestGateway)
+
+    await handle.submitText('/save html report.html redact')
+    await handle.submitText('/save json redact')
+    await handle.submitText('/save md')
+    await handle.submitText('/save json mine.json')
+    expect(callsOf(requestGateway, 'session.save')).toEqual([])
+    expect(renderedText(handle)).not.toContain('/gateway/saved/raw.json')
+    expect(renderedText(handle)).toMatch(/not saved/i)
+
+    await handle.submitText('/save')
+    expect(callsOf(requestGateway, 'session.save')).toEqual([{ session_id: RUNTIME_SESSION_ID }])
+    expect(renderedText(handle)).toContain('Saved on the gateway host: /gateway/saved/raw.json')
+  })
+
   it('rejects an unknown format without a gateway call', async () => {
     const requestGateway = gateway(() => undefined)
     const handle = await mount(requestGateway)
