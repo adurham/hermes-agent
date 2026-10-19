@@ -1311,6 +1311,7 @@ userMessages.promptTimeout.vaultUnlockPrompt: "Kilit açma istemi kapandı: zama
 userMessages.rpc.notConnected: "Hermes şu anda bağlı değil, bu yüzden mesaj gönderilmedi. Otomatik olarak yeniden bağlanır; biraz bekleyip yeniden deneyin ya da sorun sürerse /logs yazın."
 userMessages.rpc.sessionNotFound: "Bu sohbet artık arka uca bağlı değil (boşta kaldı veya arka uç yeniden başlatıldı). Geçmişiniz kaydedildi: yeniden açmak için /resume yazın."
 userMessages.rpc.shellBackendRefused: "! komutları gateway ana makinesinde çalışır, ancak bu oturumun terminal arka ucu {0} olduğundan komut çalıştırılmadı. Bunun yerine ajandan çalıştırmasını isteyin; ajanın terminali {0} içinde çalışır."
+userMessages.rpc.shellBackendRefusedUnnamed: "! komutları gateway ana makinesinde çalışır, ancak bu oturumun terminal arka ucu yerel olmadığından komut çalıştırılmadı. Bunun yerine ajandan çalıştırmasını isteyin."
 userMessages.rpc.slashCrashed: "/{0} tamamlanamadı: komut yardımcısı çöktü. Yeniden deneyin; iz kaydı için /logs yazın."
 userMessages.rpc.slashTimedOut: "/{0} tamamlanamadı: komut yardımcısı zaman aşımına uğradı. Yeniden deneyin; tekrarlanırsa /logs yazıp son satırları bildirin."
 userMessages.rpc.timedOut: "Hermes {0} sn içinde yanıt vermedi. Yeniden deneyin; tekrarlanırsa /logs yazıp son satırları bildirin."

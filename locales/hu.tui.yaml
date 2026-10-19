@@ -1311,6 +1311,7 @@ userMessages.promptTimeout.vaultUnlockPrompt: "A feloldás bekérése bezárult:
 userMessages.rpc.notConnected: "A Hermes most nincs csatlakozva, így ez nem lett elküldve. Automatikusan újracsatlakozik; várj egy kicsit, és próbáld újra, vagy ha a hiba nem múlik, írd be: /logs."
 userMessages.rpc.sessionNotFound: "Ez a beszélgetés már nem kapcsolódik a backendhez (tétlen volt, vagy a backend újraindult). Az előzményeid mentve vannak: a /resume paranccsal nyithatod újra."
 userMessages.rpc.shellBackendRefused: "A !-parancsok a gateway gépén futnak, de ennek a munkamenetnek a terminál-backendje {0}, ezért a parancs nem futott le. Kérd meg inkább az ügynököt, hogy futtassa; az ügynök terminálja a(z) {0} belsejében fut."
+userMessages.rpc.shellBackendRefusedUnnamed: "A !-parancsok a gateway gépén futnak, de ennek a munkamenetnek a terminál-backendje nem helyi, ezért a parancs nem futott le. Kérd meg inkább az ügynököt, hogy futtassa."
 userMessages.rpc.slashCrashed: "A /{0} nem fejeződött be: a parancssegítő összeomlott. Próbáld újra; a nyomkövetéshez írd be: /logs."
 userMessages.rpc.slashTimedOut: "A /{0} nem fejeződött be: a parancssegítő túllépte az időkeretet. Próbáld újra; ha ismétlődik, írd be a /logs parancsot, és jelentsd az utolsó sorokat."
 userMessages.rpc.timedOut: "A Hermes nem válaszolt {0} mp-en belül. Próbáld újra; ha ismétlődik, írd be a /logs parancsot, és jelentsd az utolsó sorokat."

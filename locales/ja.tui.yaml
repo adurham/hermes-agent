@@ -1311,6 +1311,7 @@ userMessages.promptTimeout.vaultUnlockPrompt: "ロック解除プロンプトを
 userMessages.rpc.notConnected: "Hermes に接続していないため送信されませんでした。自動的に再接続しますので、少し待ってから再度お試しください。続く場合は /logs と入力してください。"
 userMessages.rpc.sessionNotFound: "このチャットはバックエンドから切り離されています（アイドル状態が続いたか、バックエンドが再起動しました）。履歴は保存されています。/resume と入力すると再び開けます。"
 userMessages.rpc.shellBackendRefused: "! コマンドはゲートウェイのホストで実行されますが、このセッションのターミナルバックエンドは {0} のため、コマンドは実行されませんでした。代わりにエージェントに実行を依頼してください。エージェントのターミナルは {0} 内で動作します。"
+userMessages.rpc.shellBackendRefusedUnnamed: "! コマンドはゲートウェイのホストで実行されますが、このセッションのターミナルバックエンドはローカルではないため、コマンドは実行されませんでした。代わりにエージェントに実行を依頼してください。"
 userMessages.rpc.slashCrashed: "/{0} が完了しませんでした: コマンドヘルパーがクラッシュしました。再度お試しください。トレースは /logs で確認できます。"
 userMessages.rpc.slashTimedOut: "/{0} が完了しませんでした: コマンドヘルパーがタイムアウトしました。再度お試しください。繰り返す場合は /logs と入力し、末尾の行を報告してください。"
 userMessages.rpc.timedOut: "Hermes が {0} 秒以内に応答しませんでした。再度お試しください。繰り返す場合は /logs と入力し、末尾の行を報告してください。"

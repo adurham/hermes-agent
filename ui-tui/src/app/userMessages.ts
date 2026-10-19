@@ -186,9 +186,10 @@ export const describeShellExecError = (err: unknown): string => {
   const data = (err as { data?: { detail?: unknown; reason?: unknown } } | null)?.data
 
   if (data?.reason === 'unsupported_terminal_backend') {
-    const backend = typeof data.detail === 'string' && data.detail.trim() ? data.detail.trim() : 'not local'
+    const backend = typeof data.detail === 'string' ? data.detail.trim() : ''
 
-    return t('userMessages.rpc.shellBackendRefused', backend)
+    // An older gateway names no backend: say so without a backend-shaped sentence.
+    return backend ? t('userMessages.rpc.shellBackendRefused', backend) : t('userMessages.rpc.shellBackendRefusedUnnamed')
   }
 
   return describeRpcError(err)
