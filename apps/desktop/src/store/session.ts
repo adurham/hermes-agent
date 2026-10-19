@@ -1583,8 +1583,8 @@ export const markSessionRead = (storedSessionId: string | null | undefined) => {
     return
   }
 
-  const sessions = $sessions.get()
-  const familyIds = new Set<string>(lineageAliases(storedSessionId, sessions))
+  const rows = [...$sessions.get(), ...$messagingSessions.get(), ...$cronSessions.get()]
+  const familyIds = new Set<string>(lineageAliases(storedSessionId, rows))
 
   const lastReadAt = Date.now()
   const nextReadMap = { ...$lastReadAtBySessionId.get() }
