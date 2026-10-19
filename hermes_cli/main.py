@@ -1526,6 +1526,22 @@ def _import_foreign_resume(args) -> None:
     args.resume = _imported_id
 
 
+def _recreate_resumed_tui_worktree(args) -> None:
+    """A resumed session whose frozen cwd is a ``--tui -w`` tree that quit removed gets that tree
+    back before attaching, or the owner refuses every turn ``workspace_unavailable`` (N8)."""
+    if not getattr(args, "resume", None) or getattr(args, "worktree", False):
+        return
+    cwd = ""
+    with _session_db() as db:  # a store error is swallowed: nothing to recreate
+        cwd = ((db.get_session(args.resume) or {}).get("cwd") or "").strip()
+    if not cwd or os.path.isdir(cwd):
+        return
+    from hermes_cli.tui_worktree_resume import recreate_tui_worktree
+    tree = recreate_tui_worktree(cwd, args.resume)
+    if tree:
+        print(f"↪ recreated the session's worktree: {tree}")
+
+
 def _resolve_chat_session_args(args, use_tui: bool) -> None:
     """Normalize --in / --resume / --continue on ``args`` before agent init.
 
@@ -1559,6 +1575,8 @@ def _resolve_chat_session_args(args, use_tui: bool) -> None:
     if resume_val:
         # On miss keep the original so _init_agent reports "Session not found" with it.
         args.resume = _resolve_session_by_name_or_id(resume_val) or resume_val
+
+    _recreate_resumed_tui_worktree(args)
 
     # cd back into a resumed session's recorded cwd (opt out: --no-restore-cwd;
     # --worktree owns its own dir). A missing dir warns and stays put.
