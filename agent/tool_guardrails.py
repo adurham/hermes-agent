@@ -14,7 +14,8 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed, has_failure_marker, is_guardrail_refusal
+from agent.tool_result_classification import (
+    shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
@@ -241,7 +242,7 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         # Same rule as _detect_tool_failure: a JSON object is judged by its top-level
         # shape, never by a substring scan of its nested content.
         err = data.get("error") or data.get("message")
-        return (True, " [error]") if err and (failed or "error" in data) else (False, "")
+        return (True, " [error]") if (err and (failed or "error" in data)) or shape_failure_error(data) else (False, "")
     return (True, " [error]") if has_failure_marker(result) else (False, "")
 
 
