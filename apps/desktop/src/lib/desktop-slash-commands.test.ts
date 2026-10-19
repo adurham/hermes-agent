@@ -199,7 +199,7 @@ describe('desktop slash command curation', () => {
     // print lands after the capture window closes, so the result never
     // reached the originating conversation).
     // /undo /retry /steer /queue are local actions now: the shared gateway refuses them as exec.
-    const execNames = ['/debug', '/goal', '/personality', '/rollback', '/tools', '/version']
+    const execNames = ['/debug', '/goal', '/personality', '/tools', '/version']
 
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })

@@ -58,14 +58,17 @@ export interface DesktopThemeCommandOption {
  * keyed by the id.
  */
 export type DesktopActionId =
+  | 'agents'
   | 'background'
   | 'branch'
   | 'browser'
   | 'btw'
   | 'compress'
+  | 'config'
   | 'handoff'
   | 'hatch'
   | 'help'
+  | 'history'
   | 'journey'
   | 'new'
   | 'pet'
@@ -73,6 +76,7 @@ export type DesktopActionId =
   | 'queue'
   | 'reasoning'
   | 'retry'
+  | 'rollback'
   | 'skin'
   | 'steer'
   | 'stop'
@@ -324,6 +328,22 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     aliases: ['/generate-pet'],
     surface: action('hatch')
   },
+  // T11: commands the shared gateway refuses as slash.exec (or Desktop marked terminal-only), on the
+  // owner's existing verbs (slash-desktop-commands.ts).
+  {
+    name: '/rollback',
+    description: 'List, diff or restore filesystem checkpoints [list|diff <n>|<n> [file] [--all]]',
+    surface: action('rollback'),
+    argumentMode: 'text'
+  },
+  {
+    name: '/agents',
+    description: 'Show active subagents and background processes',
+    aliases: ['/tasks'],
+    surface: action('agents')
+  },
+  { name: '/config', description: 'Show current configuration', surface: action('config') },
+  { name: '/history', description: 'Show conversation history', surface: action('history') },
   {
     name: '/save',
     description: 'Save the current transcript to JSON',

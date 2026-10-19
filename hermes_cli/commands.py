@@ -94,7 +94,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
                cli_only=True, desktop="terminal"),
     CommandDef("history", "Show conversation history", "Session",
-               cli_only=True, desktop="terminal"),
+               cli_only=True),
     CommandDef("save", "Export the current conversation (bare /save shows usage)", "Session",
                args_hint="<json|md|html> [filename] [redact]"),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
@@ -183,7 +183,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
-               cli_only=True, desktop="terminal"),
+               cli_only=True),
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),

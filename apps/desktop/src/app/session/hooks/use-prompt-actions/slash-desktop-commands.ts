@@ -1,0 +1,310 @@
+import type { GatewayRequest } from './utils'
+
+// T11 (#134889): /rollback, /agents (/tasks), /config and /history on the session owner's existing
+// verbs. The shared gateway refuses these as `slash.exec` (`gateway/session_commands.py`), and
+// `/config` / `/history` were marked terminal-only, so Desktop either dead-ended or never offered them.
+// Each verb here is the one Ink and the owner already serve: rollback.list|diff|restore,
+// subagent.list + process.list, config.get key=full (the presentation-only projection) and the
+// session.resume transcript snapshot.
+
+interface SlashOutput {
+  render: (text: string) => void
+  sessionId: string
+}
+
+export interface DesktopReadCommandEnv<C extends { arg: string }> {
+  requestGateway: GatewayRequest
+  withSlashOutput: (ctx: C) => Promise<null | SlashOutput>
+}
+
+interface CheckpointRow {
+  hash?: string
+  message?: string
+  timestamp?: string
+}
+
+interface RestoreResult {
+  error?: string
+  history_removed?: number
+  reason?: string
+  restored_to?: string
+  success?: boolean
+}
+
+const errorText = (err: unknown) => `error: ${err instanceof Error ? err.message : String(err)}`
+
+const ROLLBACK_USAGE = 'usage: /rollback [list] | diff <n|hash> | <n|hash> [file] [--all]'
+const HISTORY_PREVIEW = 400
+
+function formatCheckpoints(result: { checkpoints?: CheckpointRow[]; enabled?: boolean } | null): string {
+  if (result?.enabled === false) {
+    return 'Checkpoints are not enabled for this session (set checkpoints.enabled in config.yaml).'
+  }
+
+  const rows = Array.isArray(result?.checkpoints) ? result.checkpoints : []
+
+  if (!rows.length) {
+    return 'No checkpoints yet for this working directory.'
+  }
+
+  return [
+    'Checkpoints (newest first):',
+    ...rows.map((row, index) =>
+      `${index + 1}. ${String(row.hash ?? '').slice(0, 8)}  ${row.timestamp ?? ''}  ${row.message ?? ''}`.trimEnd()
+    ),
+    '',
+    'Restore with /rollback <n> [file] (add --all to also overwrite your own edits); preview with /rollback diff <n>.'
+  ].join('\n')
+}
+
+/** `/rollback` argument words → the owner verb and its params; null for a usage error. */
+export function rollbackRequest(
+  arg: string
+): { method: 'rollback.diff' | 'rollback.list' | 'rollback.restore'; params: Record<string, unknown> } | null {
+  const words = arg.trim().split(/\s+/).filter(Boolean)
+  const all = words.includes('--all')
+  const rest = words.filter(word => word !== '--all')
+  const first = rest[0]?.toLowerCase() ?? ''
+
+  if (!first || first === 'list' || first === 'ls') {
+    return rest.length <= 1 && !all ? { method: 'rollback.list', params: {} } : null
+  }
+
+  if (first === 'diff') {
+    return rest.length === 2 && !all ? { method: 'rollback.diff', params: { hash: rest[1] } } : null
+  }
+
+  const filePath = rest.slice(1).join(' ')
+
+  return {
+    method: 'rollback.restore',
+    params: { hash: rest[0], ...(filePath ? { file_path: filePath } : {}), ...(all ? { all: true } : {}) }
+  }
+}
+
+function formatRestore(result: RestoreResult | null): string {
+  if (!result?.success) {
+    return `Rollback failed: ${result?.error || 'unknown error'}`
+  }
+
+  const lines = [`Restored checkpoint ${result.restored_to ?? ''}.`.replace(' .', '.')]
+
+  if (result.reason) {
+    lines.push(result.reason)
+  }
+
+  if (result.history_removed) {
+    lines.push(`Rewound ${result.history_removed} message(s) from this conversation.`)
+  }
+
+  return lines.join('\n')
+}
+
+interface SubagentRow {
+  depth?: number
+  goal?: string
+  model?: string
+  status?: string
+  subagent_id?: string
+  tool_count?: number
+}
+
+interface ProcessRow {
+  command?: string
+  session_id?: string
+  status?: string
+}
+
+function formatAgents(subagents: SubagentRow[], processes: ProcessRow[]): string {
+  const running = processes.filter(row => !row.status || row.status === 'running')
+
+  if (!subagents.length && !running.length) {
+    return 'No active subagents or background processes in this chat.'
+  }
+
+  const lines: string[] = []
+
+  if (subagents.length) {
+    lines.push(`Subagents (${subagents.length}):`)
+
+    for (const row of subagents) {
+      const indent = '  '.repeat(Math.max(0, Number(row.depth ?? 1) - 1))
+      const tools = row.tool_count ? ` · ${row.tool_count} tool calls` : ''
+      lines.push(`${indent}- [${row.status ?? 'running'}] ${row.goal || row.subagent_id || 'subagent'}${tools}`)
+    }
+  }
+
+  if (running.length) {
+    lines.push(`Background processes (${running.length}):`)
+
+    for (const row of running) {
+      lines.push(`- ${row.session_id ?? ''} ${row.command ?? ''}`.trimEnd())
+    }
+  }
+
+  return lines.join('\n')
+}
+
+function yamlLines(value: unknown, indent = ''): string[] {
+  if (value === null || typeof value !== 'object') {
+    return [`${indent}${String(value)}`]
+  }
+
+  return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+    child !== null && typeof child === 'object' && !Array.isArray(child)
+      ? [`${indent}${key}:`, ...yamlLines(child, `${indent}  `)]
+      : [`${indent}${key}: ${Array.isArray(child) ? JSON.stringify(child) : String(child)}`]
+  )
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map(part =>
+        part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string'
+          ? (part as { text: string }).text
+          : ''
+      )
+      .filter(Boolean)
+      .join(' ')
+  }
+
+  return ''
+}
+
+interface HistoryRow {
+  archived?: unknown
+  content?: unknown
+  display_kind?: unknown
+  role?: unknown
+  text?: unknown
+}
+
+export function formatHistory(rows: HistoryRow[]): string {
+  const turns = rows.flatMap(row => {
+    if (row.archived || (row.role !== 'user' && row.role !== 'assistant')) {
+      return []
+    }
+
+    const text = (contentText(row.content) || (typeof row.text === 'string' ? row.text : '')).trim()
+
+    if (!text) {
+      return []
+    }
+
+    const clipped = text.length > HISTORY_PREVIEW ? `${text.slice(0, HISTORY_PREVIEW)}…` : text
+
+    return [`${row.role === 'user' ? 'You' : 'Hermes'}: ${clipped}`]
+  })
+
+  return turns.length ? [`Conversation history (${turns.length} messages):`, ...turns].join('\n') : 'No messages yet.'
+}
+
+export function desktopReadCommandHandlers<C extends { arg: string }>(env: DesktopReadCommandEnv<C>) {
+  const { requestGateway } = env
+
+  return {
+    rollback: async (ctx: C) => {
+      const out = await env.withSlashOutput(ctx)
+
+      if (!out) {
+        return
+      }
+
+      const request = rollbackRequest(ctx.arg)
+
+      if (!request) {
+        return out.render(ROLLBACK_USAGE)
+      }
+
+      try {
+        const result = await requestGateway<unknown>(request.method, { session_id: out.sessionId, ...request.params })
+
+        if (request.method === 'rollback.list') {
+          return out.render(formatCheckpoints(result as Parameters<typeof formatCheckpoints>[0]))
+        }
+
+        if (request.method === 'rollback.diff') {
+          const diff = result as { diff?: string; stat?: string } | null
+
+          return out.render([diff?.stat, diff?.diff].filter(Boolean).join('\n') || 'No changes since that checkpoint.')
+        }
+
+        out.render(formatRestore(result as RestoreResult | null))
+      } catch (err) {
+        out.render(errorText(err))
+      }
+    },
+    agents: async (ctx: C) => {
+      const out = await env.withSlashOutput(ctx)
+
+      if (!out) {
+        return
+      }
+
+      try {
+        const [subagents, processes] = await Promise.all([
+          requestGateway<{ subagents?: SubagentRow[] }>('subagent.list', { session_id: out.sessionId }),
+          requestGateway<{ processes?: ProcessRow[] }>('process.list', { session_id: out.sessionId })
+        ])
+
+        out.render(
+          formatAgents(
+            Array.isArray(subagents?.subagents) ? subagents.subagents : [],
+            Array.isArray(processes?.processes) ? processes.processes : []
+          )
+        )
+      } catch (err) {
+        out.render(errorText(err))
+      }
+    },
+    config: async (ctx: C) => {
+      const out = await env.withSlashOutput(ctx)
+
+      if (!out) {
+        return
+      }
+
+      try {
+        const result = await requestGateway<{ config?: unknown }>('config.get', {
+          session_id: out.sessionId,
+          key: 'full'
+        })
+
+        const body = result?.config && typeof result.config === 'object' ? yamlLines(result.config) : []
+
+        out.render(
+          [
+            'Configuration (display settings; secrets and provider config are not shown):',
+            ...(body.length ? body : ['(defaults)']),
+            '',
+            'Change settings in Settings, or edit config.yaml with `hermes config edit` on the gateway host.'
+          ].join('\n')
+        )
+      } catch (err) {
+        out.render(errorText(err))
+      }
+    },
+    history: async (ctx: C) => {
+      const out = await env.withSlashOutput(ctx)
+
+      if (!out) {
+        return
+      }
+
+      try {
+        const snapshot = await requestGateway<{ messages?: HistoryRow[] }>('session.resume', {
+          session_id: out.sessionId
+        })
+
+        out.render(formatHistory(Array.isArray(snapshot?.messages) ? snapshot.messages : []))
+      } catch (err) {
+        out.render(errorText(err))
+      }
+    }
+  }
+}
