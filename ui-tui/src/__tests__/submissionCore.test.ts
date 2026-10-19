@@ -259,3 +259,44 @@ describe('submissionCore.submitPrompt — voice marker ownership', () => {
     await vi.waitFor(() => expect(request.mock.calls.at(-1)?.[1]).toMatchObject({ voice_turn: true }))
   })
 })
+
+describe('submissionCore.submitPrompt — typed voice stop on the shared gateway (TUI-26)', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('renders the voice_stopped reply as the stop-phrase event, settles the item, never as an unconfirmed admission', async () => {
+    const request = vi.fn(async () => ({ voice_stopped: true }))
+    const publishLocalEvent = vi.fn()
+    const gw = { isCanonical: true, publishLocalEvent, request } as unknown as GatewayClient
+    const sys = vi.fn()
+    const settle = vi.fn()
+
+    submitPrompt('stop', makeDeps(gw, { sys }), true, undefined, {
+      destination: captureDestination(),
+      queueItem: { settle, submissionId: 's1', text: 'stop' } as never,
+      skipDetectDrop: true
+    })
+
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(true))
+    expect(publishLocalEvent).toHaveBeenCalledWith({
+      payload: { stop_phrase: true, typed: true },
+      session_id: 'sess-1',
+      type: 'voice.transcript'
+    })
+    expect(getUiState().busy).toBe(false)
+    expect(sys).not.toHaveBeenCalled()
+  })
+
+  it('the sidecar already emitted the event: no second local one', async () => {
+    const request = vi.fn(async () => ({ voice_stopped: true }))
+    const publishLocalEvent = vi.fn()
+    const gw = { isCanonical: false, publishLocalEvent, request } as unknown as GatewayClient
+
+    submitPrompt('stop', makeDeps(gw), true, undefined, { skipDetectDrop: true })
+
+    await vi.waitFor(() => expect(getUiState().busy).toBe(false))
+    expect(publishLocalEvent).not.toHaveBeenCalled()
+  })
+})

@@ -1,0 +1,75 @@
+"""TUI-26: a bare stop phrase TYPED into a voice chat on the shared gateway ends the voice chat
+instead of reaching the agent. Ink sends prompts to the canonical ``prompt.submit``; the request
+goes through the real ``AuthorityConnection.dispatch`` (contract parse, handler, result check)."""
+import pytest
+
+from gateway import run_api
+from hermes_state_runtime import list_session_admissions
+from tests.gateway.test_prompt_queued_controls import _call, _connection
+from tests.gateway.test_session_authority_cancel_settlement import _authority
+
+
+@pytest.fixture
+def voice_owner(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from tui_gateway import server
+    db, authority = _authority(tmp_path, monkeypatch)
+    # The owner's voice mode is keyed by the session's source (``_voice_key_for_source``). Ending the
+    # LOCAL push-to-talk capture is ``set_local_voice_mode``'s job, pinned in
+    # tests/tui_gateway/test_canonical_voice_mode_writers.py.
+    authority.sessions['s'].source.chat_id = 's'
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)  # admit only; never run a turn
+    runner = authority.runner
+    runner._voice_mode = {}
+    runner._voice_key_for_source = lambda src: src.chat_id
+    runner._save_voice_modes = lambda: None
+    runner.session_authority = authority
+    monkeypatch.setattr(run_api, '_ACTIVE_RUNNER', runner)
+    monkeypatch.setattr(server, '_tts_stream_stop', lambda user_barge=False: None)
+    return SimpleNamespace(db=db, authority=authority, runner=runner)
+
+
+def _ledger(db):
+    return [row['request_id'] for row in list_session_admissions(db, session_id='s', pending_only=False)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('typed', ['stop', '  Stop! '])
+async def test_typed_stop_phrase_ends_the_voice_chat_and_admits_nothing(voice_owner, typed):
+    voice_owner.runner._voice_mode['s'] = 'voice_only'
+    with voice_owner.db:
+        reply = await _call(_connection(voice_owner.authority), 'prompt.submit', text=typed, submission_id='r1')
+    assert reply.get('result') == {'voice_stopped': True}, reply
+    assert voice_owner.runner._voice_mode['s'] == 'off'
+    assert _ledger(voice_owner.db) == [], 'the stop phrase must never reach the agent'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode, text', [('off', 'stop'), ('voice_only', 'stop doing that')])
+async def test_other_text_or_voice_off_is_admitted_as_a_turn(voice_owner, mode, text):
+    voice_owner.runner._voice_mode['s'] = mode
+    with voice_owner.db:
+        reply = await _call(_connection(voice_owner.authority), 'prompt.submit', text=text, submission_id='r1')
+    assert reply['result']['status'] == 'queued', reply
+    assert voice_owner.runner._voice_mode['s'] == mode
+    assert len(list_session_admissions(voice_owner.db, session_id='s', pending_only=False)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stranger_cannot_end_the_voice_chat(voice_owner):
+    voice_owner.runner._voice_mode['s'] = 'voice_only'
+    conn = _connection(voice_owner.authority)
+    conn.subscriptions.pop('s')
+    with voice_owner.db:
+        reply = await _call(conn, 'prompt.submit', text='stop', submission_id='r1')
+    assert reply['error']['data']['reason'] == 'permission_denied', reply
+    assert voice_owner.runner._voice_mode['s'] == 'voice_only'
+
+
+def test_the_canonical_contract_declares_the_voice_stopped_reply():
+    from tui_gateway.contracts.registry import CANONICAL_METHODS
+    contract = CANONICAL_METHODS['prompt.submit']
+    contract.result.model_validate({'voice_stopped': True})
+    with pytest.raises(Exception):
+        contract.result.model_validate({'voice_stopped': False})

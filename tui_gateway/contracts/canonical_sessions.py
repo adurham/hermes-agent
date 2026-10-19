@@ -4,6 +4,8 @@ Reuse upstream authority-only value shapes; these overrides do not widen METHODS
 """
 from typing import Literal
 
+from pydantic import RootModel
+
 from .base import JsonValue, Params, Result
 from .common import ProfileParams, TranscriptMessage
 from .connectors_operation import ConnectionRequestPayload
@@ -225,6 +227,17 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     clarify_batch: bool = False
 
 
+class CanonicalVoiceStopped(Result):
+    """A bare stop phrase typed while the session's voice chat is on: the chat ended, nothing was
+    admitted (TUI-26)."""
+
+    voice_stopped: Literal[True]
+
+
+class CanonicalSubmitResult(RootModel[AdmissionStatus | CanonicalVoiceStopped]):
+    """``prompt.submit``: the admission receipt, or ``{voice_stopped: true}``."""
+
+
 class CanonicalSteerQueuedParams(CanonicalSessionParams):
     admission_id: str
 
@@ -296,7 +309,7 @@ for _name, _params, _result in (
     ('session.steer', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.redirect', CanonicalCorrectionParams, CanonicalCorrectionResult),
     ('session.events.since', CanonicalEventsParams, CanonicalEventsResult),
-    ('prompt.submit', CanonicalSubmitParams, AdmissionStatus),
+    ('prompt.submit', CanonicalSubmitParams, CanonicalSubmitResult),
     ('approval.respond', CanonicalApprovalParams, PromptResponseResult),
 ):
     canonical_method(_name, params=_params, result=_result)

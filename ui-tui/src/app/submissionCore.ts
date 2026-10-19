@@ -354,15 +354,31 @@ export function submitPrompt(
           return
         }
 
-        if (item) {
-          settleAdmissionReply(item, r, { deps, destination, focused, owner, sid })
+        // The gateway consumed a typed voice stop phrase server-side (voice
+        // chat ended, nothing admitted) — release the busy latch. The sidecar
+        // sends a voice.transcript {stop_phrase} event for the mode flags and
+        // notice; the shared gateway answers in this reply only (TUI-26), so
+        // render that same event locally.
+        if (r?.voice_stopped === true) {
+          item?.settle?.(true)
+
+          if (deps.gw.isCanonical) {
+            deps.gw.publishLocalEvent({
+              payload: { stop_phrase: true, typed: true },
+              session_id: sid,
+              type: 'voice.transcript'
+            })
+          }
+
+          if (focused()) {
+            patchUiState({ busy: false, status: 'ready' })
+          }
+
+          return
         }
 
-        // The gateway consumed a typed voice stop phrase server-side (voice
-        // chat ended, no turn started) — release the busy latch; the
-        // voice.transcript {stop_phrase} event handles the mode flags + notice.
-        if (r?.voice_stopped && focused()) {
-          patchUiState({ busy: false, status: 'ready' })
+        if (item) {
+          settleAdmissionReply(item, r, { deps, destination, focused, owner, sid })
         }
       })
       .catch(async (e: Error & { code?: number }) => {
