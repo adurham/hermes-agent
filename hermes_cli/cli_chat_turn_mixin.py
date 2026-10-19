@@ -71,11 +71,18 @@ class CLIChatTurnMixin:
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
             _retire_agent(self)
-        if self.agent is None:
-            _cprint(f"{_DIM}{t('cli.chat.initializing_agent')}{_RST}")
-        if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
-                                request_overrides=turn_route.get("request_overrides")):
-            return None
+        # A first-turn agent build shows in the live spinner (the spinner thread repaints it), never
+        # as a scrollback line.
+        initializing = t("cli.chat.initializing_agent") if self.agent is None else ""
+        if initializing:
+            self._spinner_text = initializing
+        try:
+            if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
+                                    request_overrides=turn_route.get("request_overrides")):
+                return None
+        finally:
+            if initializing and getattr(self, "_spinner_text", "") == initializing:
+                self._spinner_text = ""
         agent = self.agent
         if agent is None:
             return None
