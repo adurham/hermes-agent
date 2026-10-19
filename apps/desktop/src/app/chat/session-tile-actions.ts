@@ -48,7 +48,6 @@ import type { GatewayRequester } from '../contrib/types'
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
 import { isStaleTargetError } from '../session/hooks/use-prompt-actions'
 import {
-  appendMidTurnUserMessage,
   applyBranchVisibility,
   applyReloadOptimistic,
   applyRewindOptimistic,
@@ -61,6 +60,7 @@ import {
   rebindSurvivorRowIds,
   revalidateEditPlan,
   runRewindSubmit,
+  sealAcceptedCorrection,
   type SurvivorUserRowIds
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
@@ -477,20 +477,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
         if (result?.status === 'redirected') {
           if (mode === 'interrupt') {
-            mutate(state => {
-              const message = state.messages.find(candidate => candidate.id === messageId)
-
-              // A newer reply may precede this ACK; it already owns its boundary.
-              const hasNewReply = state.messages.slice(state.messages.findIndex(candidate => candidate.id === messageId) + 1)
-                .some(candidate => candidate.role === 'assistant')
-
-              return message && state.streamId && !hasNewReply
-                ? appendMidTurnUserMessage(
-                    { ...state, messages: state.messages.filter(candidate => candidate.id !== messageId) },
-                    message
-                  )
-                : state
-            })
+            mutate(state => sealAcceptedCorrection(state, messageId))
           }
 
           triggerHaptic('submit')
@@ -499,7 +486,11 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
 
         if (result?.status === 'queued') {
-          if (mode === 'interrupt') {
+          // A redirect queued in the build window is the next turn; an
+          // accepted steer joins this one after its running tool.
+          if (mode === 'steer') {
+            mutate(state => sealAcceptedCorrection(state, messageId, { keepRunningTools: true }))
+          } else {
             moveOptimisticMessageToEnd()
           }
 

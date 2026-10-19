@@ -8,6 +8,7 @@ import { enqueueQueuedPrompt, getQueuedPrompts, serverOwnsComposerQueue } from '
 import { $sessions, resolveComposerSessionKey } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
+import { sealLiveStream } from './rewind'
 import type { SubmissionDestination } from './submission-destination'
 import {
   type GatewayRequest,
@@ -306,6 +307,10 @@ export function sessionCommandHandlers<C extends { arg: string }>(env: SessionCo
       }
 
       if (accepted) {
+        // The notice marks where the steer arrived: seal the live reply above it so the
+        // output the model writes after reading the steer streams below, not above it.
+        updateSessionState(out.sessionId, state => sealLiveStream(state, { keepRunningTools: true }))
+
         return out.render(copy().steerQueued(previewOf(text)))
       }
 

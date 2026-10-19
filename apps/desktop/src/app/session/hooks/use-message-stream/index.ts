@@ -12,6 +12,7 @@ import {
   chatMessageText,
   completeOpenTimelineParts,
   type GatewayEventPayload,
+  hasUnresolvedToolCall,
   mergeFinalAssistantText,
   normalizeWs,
   partsText,
@@ -205,15 +206,23 @@ export function useMessageStream({
               }
             ]
           } else {
-            nextMessages = prev.map(m =>
-              m.id === streamId
-                ? {
-                    ...m,
-                    parts: transform(m.parts, m),
-                    pending: patchesSealedBubble ? (m.pending ?? false) : opts.pending ? opts.pending(m) : true
-                  }
-                : m
-            )
+            nextMessages = prev.map(m => {
+              if (m.id !== streamId) {
+                return m
+              }
+
+              const patched = { ...m, parts: transform(m.parts, m) }
+
+              // A bubble a steer sealed stays pending only while its own tools run.
+              return {
+                ...patched,
+                pending: patchesSealedBubble
+                  ? Boolean(m.pending) && hasUnresolvedToolCall(patched)
+                  : opts.pending
+                    ? opts.pending(m)
+                    : true
+              }
+            })
           }
 
           if (patchesSealedBubble) {
