@@ -80,6 +80,16 @@ async def _cron_head(authority, _actor, _ref):
     return row['admission_id']
 
 
+async def _webhook_head(authority, _actor, _ref):
+    # A webhook delivery: a messaging principal and a native envelope carrying its delivery
+    # destination, no automation block. The provider already got its 202; nobody can resend it.
+    row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='messaging:[null,"webhook","r",null,null]',
+                              session_id='s', request_id='delivery-1', payload={'text': 'HEAD', 'native_text_v1': {
+                                  'event': {'message_id': 'delivery-1'}, 'webhook_delivery': {'deliver': 'log'},
+                                  'webhook_route': 'digest'}})
+    return row['admission_id']
+
+
 async def _person_head(authority, actor, ref):
     receipt = await authority.submit(actor, Submission('head', ref, {'text': 'HEAD'}, 'queue'))
     return receipt.admission_id
@@ -91,7 +101,8 @@ def _statuses(db):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('admit_head', [_automation_head, _cron_head], ids=['local_automation_v1', 'cron'])
+@pytest.mark.parametrize('admit_head', [_automation_head, _cron_head, _webhook_head],
+                         ids=['local_automation_v1', 'cron', 'webhook_delivery'])
 async def test_unknown_automation_settles_interrupted_and_fifo_moves_on(tmp_path, monkeypatch, admit_head):
     executed = []
     store, authority, head_id, follower_id = await _lost_head_then_restart(tmp_path, monkeypatch, executed, admit_head)

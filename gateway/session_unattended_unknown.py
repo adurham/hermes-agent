@@ -3,8 +3,9 @@
 A turn lost across an owner restart is fenced ``unknown`` and pauses its session's FIFO, because
 only the person who sent it knows whether to resend it. An automation delivery has no such person:
 a cron run (``CRON_PRINCIPAL_ID``), a process completion or heartbeat (``automation:<route>``,
-``local_automation_v1``, or a native envelope's ``automation`` block). Pausing on it stalls every
-message queued behind it until an operator notices (a Bot Chat sat ten hours behind one).
+``local_automation_v1``, a native envelope's ``automation`` block) or a webhook delivery
+(``webhook_delivery``). Pausing on it stalls every message queued behind it until an operator
+notices (a Bot Chat sat ten hours behind one).
 
 Such a row settles through the same fenced resolution a person's Discard uses
 (``resolve_unknown_session_input``): terminal ``interrupted``, never requeued or replayed, with a
@@ -25,7 +26,9 @@ def is_unattended(row) -> bool:
     if principal == CRON_PRINCIPAL_ID or principal.startswith('automation:'):
         return True
     payload = row.get('payload') or {}
-    return 'local_automation_v1' in payload or 'automation' in (payload.get('native_text_v1') or {})
+    native = payload.get('native_text_v1') or {}
+    # A webhook delivery: the provider already got its 202 and nobody can be asked to resend it.
+    return 'local_automation_v1' in payload or 'automation' in native or 'webhook_delivery' in native
 
 
 def _unattended_unknown(rows):
