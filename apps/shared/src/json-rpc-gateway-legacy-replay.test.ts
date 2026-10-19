@@ -10,9 +10,11 @@ class FakeWebSocket extends EventTarget {
   static instances: FakeWebSocket[] = []
   readyState = 0
   sent: string[] = []
+  url: string
 
-  constructor(public url: string) {
+  constructor(url: string) {
     super()
+    this.url = url
     FakeWebSocket.instances.push(this)
   }
 
