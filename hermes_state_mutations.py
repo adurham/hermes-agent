@@ -32,7 +32,8 @@ def validate_action(operation, payload):
     if operation == 'editor_mcp' and set(payload) == {'mcp_servers'} and _valid_editor_fingerprint(payload):
         return
     # An ACP session's edit approval policy (gateway/session_mutation_policy.py prepare_edit_policy).
-    if operation == 'edit_policy' and set(payload) == {'policy'} and payload['policy'] in {'ask', 'workspace_session', 'session'}:
+    if (operation == 'edit_policy' and set(payload) == {'policy'} and isinstance(payload['policy'], str)
+            and payload['policy'] in {'ask', 'workspace_session', 'session'}):
         return
     if operation == 'compress' and _valid_compress_payload(payload):
         return

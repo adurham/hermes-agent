@@ -66,8 +66,10 @@ async def test_edit_policy_is_a_durable_session_setting_every_viewer_reads(tmp_p
         assert policy_for_source(first.runner, live.source).edit_approval_policy == 'workspace_session'
         assert (await _info(other, sid))['edit_approval_policy'] == 'workspace_session'
 
-        bad = await editor.dispatch(_mutation(db, sid, 'm2', {'policy': 'yolo'}))
-        assert bad['error']['data']['reason'] == 'invalid_params', bad
+        # An unknown or non-string policy is refused as a bad request, never an internal error.
+        for value in ['yolo', [], {}]:
+            bad = await editor.dispatch(_mutation(db, sid, 'm2', {'policy': value}))
+            assert bad['error']['data']['reason'] == 'invalid_params', bad
         # Only an ACP session has an editor edit policy; any other surface's edits never ask an editor.
         refused = await editor.dispatch(_mutation(db, gui, 'm3', {'policy': 'session'}))
         assert refused['error']['data']['reason'] == 'invalid_params', refused
