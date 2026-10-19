@@ -49,7 +49,11 @@ async def prepare_model(authority, live, payload, prepared):
     from hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config, current = _current_route(authority, live, old)
-    config = _provider_resolution_config(authority, config)
+    # A pick is an explicit user action: it resolves against the owning profile's CURRENT named
+    # providers, as CLI/TUI ``/model`` do (#139740). A following session's ``config`` already is
+    # the profile's current read; every other session keeps ``config`` for its own route below.
+    resolution = config if old.follows_profile else await asyncio.to_thread(
+        _provider_resolution_config, authority, config)
 
     def switch(**kwargs):
         result = switch_model(**kwargs)
@@ -57,15 +61,17 @@ async def prepare_model(authority, live, payload, prepared):
     result, alias_credential = await asyncio.to_thread(switch, raw_input=payload['model'],
         current_provider=current.provider, current_model=current.model, current_base_url=current.base_url,
         current_api_key=current.api_key, explicit_provider=payload.get('provider', ''),
-        is_global=False, user_providers=config.get('providers'),
-        custom_providers=get_compatible_custom_providers(config))
+        is_global=False, user_providers=resolution.get('providers'),
+        custom_providers=get_compatible_custom_providers(resolution))
     if not result.success:
         raise RuntimeStoreError('model_resolution_failed')
     refusal = await _selection_guard_refusal(authority, live, payload, prepared['snapshot'], current, result)
     if refusal is not None:
         return refusal
     frozen = old.config()
-    provider_secrets = _freeze_selected_provider(config, frozen, result.target_provider)
+    # The committed selection freezes the ONE picked endpoint (its key stays a private secret).
+    provider_secrets = {} if old.follows_profile else _freeze_selected_provider(
+        resolution, frozen, result.target_provider)
     if old.follows_profile:
         # A following session switches FROM the profile's current route: measured from its creation
         # endpoint, a pick on the current one read as a route change and dropped its key_env pointer.
@@ -103,7 +109,7 @@ async def prepare_model(authority, live, payload, prepared):
     # key is a private config secret at the alias entry's own path (what a restarted owner re-reads)
     # and the receipt keeps only a pointer to it, which config() projects into ``model.api_key``.
     key_env, source, alias_key = alias_credential
-    key_env = key_env or _selected_provider_key_env(config, result.target_provider)
+    key_env = key_env or _selected_provider_key_env(resolution, result.target_provider)
     if key_env:
         frozen['model']['key_env'] = key_env
     if source:
@@ -136,36 +142,26 @@ async def prepare_model(authority, live, payload, prepared):
 
 
 def _provider_resolution_config(authority, config):
-    """Supply current provider declarations to a legacy policy only for resolving a pick.
-
-    Older local-session receipts can lack ``providers`` after their endpoint secrets were split out
-    of the frozen config.  The committed policy remains frozen; this read is only the same owning
-    profile config that a new session would use to resolve the requested provider.
-    """
+    """*config* with the owning profile's CURRENT named providers over its frozen ones, used only to
+    resolve and freeze a pick. Reads this owner's own config.yaml (never another profile's); a
+    frozen entry the profile no longer declares stays resolvable."""
     from pathlib import Path
     from gateway.run import _load_gateway_config
     current = _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml')
     if not isinstance(current, dict):
         return config
     resolved = dict(config)
-    frozen_providers = config.get('providers')
-    current_providers = current.get('providers')
+    frozen_providers, current_providers = config.get('providers'), current.get('providers')
     if isinstance(frozen_providers, dict) or isinstance(current_providers, dict):
-        resolved['providers'] = {**(current_providers if isinstance(current_providers, dict) else {}),
-                                 **(frozen_providers if isinstance(frozen_providers, dict) else {})}
-    frozen_custom = config.get('custom_providers')
-    current_custom = current.get('custom_providers')
+        resolved['providers'] = {**(frozen_providers if isinstance(frozen_providers, dict) else {}),
+                                 **(current_providers if isinstance(current_providers, dict) else {})}
+    frozen_custom, current_custom = config.get('custom_providers'), current.get('custom_providers')
     if isinstance(frozen_custom, list) or isinstance(current_custom, list):
-        frozen_custom = list(frozen_custom) if isinstance(frozen_custom, list) else []
-        names = {_custom_provider_name(entry) for entry in frozen_custom if isinstance(entry, dict)}
-        resolved['custom_providers'] = frozen_custom + [
-            entry for entry in (current_custom if isinstance(current_custom, list) else [])
+        current_custom = list(current_custom) if isinstance(current_custom, list) else []
+        names = {_custom_provider_name(entry) for entry in current_custom if isinstance(entry, dict)}
+        resolved['custom_providers'] = current_custom + [
+            entry for entry in (frozen_custom if isinstance(frozen_custom, list) else [])
             if not isinstance(entry, dict) or _custom_provider_name(entry) not in names]
-    frozen_aliases = config.get('model_aliases')
-    current_aliases = current.get('model_aliases')
-    if isinstance(frozen_aliases, dict) or isinstance(current_aliases, dict):
-        resolved['model_aliases'] = {**(current_aliases if isinstance(current_aliases, dict) else {}),
-                                     **(frozen_aliases if isinstance(frozen_aliases, dict) else {})}
     return resolved
 
 
@@ -183,10 +179,10 @@ def _selected_provider_key_env(config, provider):
 
 
 def _freeze_selected_provider(config, frozen, provider):
-    """Copy only a picked named provider's declaration into its frozen session route.
+    """Copy only the picked named provider's declaration into the frozen session route.
 
-    A policy must resolve its next turn from its own configuration, not a later profile edit.  Keep
-    private provider fields in the policy's secret store, just as policy creation does.
+    The next turn resolves from the session's own configuration, not a later profile edit. Private
+    fields move to the policy's secret store, as policy creation does; nothing else moves.
     """
     from copy import deepcopy
     from gateway.session_policy import _extract_config_secrets
@@ -200,14 +196,19 @@ def _freeze_selected_provider(config, frozen, provider):
         return {}
     copied = deepcopy(entries[index])
     if section == 'providers':
-        frozen_entries = dict(frozen.get(section) or {})
-        frozen_entries[index] = copied
-        frozen[section] = frozen_entries
+        frozen[section] = {**(frozen.get(section) if isinstance(frozen.get(section), dict) else {}), index: copied}
     else:
         frozen_entries = list(frozen.get(section) or [])
-        frozen_entries.append(copied)
+        name = _custom_provider_name(copied)
+        same = [i for i, entry in enumerate(frozen_entries)
+                if isinstance(entry, dict) and _custom_provider_name(entry) == name]
+        if same:
+            index = same[0]
+            frozen_entries[index] = copied
+        else:
+            frozen_entries.append(copied)
+            index = len(frozen_entries) - 1
         frozen[section] = frozen_entries
-        index = len(frozen_entries) - 1
     secrets = {}
     _extract_config_secrets(frozen[section][index], secrets, (section, index))
     return secrets

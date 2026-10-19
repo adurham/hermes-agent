@@ -133,6 +133,120 @@ def test_model_receipt_changes_next_wire_and_branch_keeps_independent_history(tm
         thread.join(timeout=5)
 
 
+class RecordingModel(CatalogModel):
+    """A loopback endpoint that records each inference request's model and bearer."""
+    def do_POST(self):
+        self.server.bearers.append(self.headers.get('Authorization'))
+        super().do_POST()
+
+
+def _loopback():
+    peer = ThreadingHTTPServer(('127.0.0.1', 0), RecordingModel)
+    peer.requests, peer.bearers = [], []
+    peer.blocked, peer.release = threading.Event(), threading.Event()
+    thread = threading.Thread(target=peer.serve_forever, daemon=True)
+    thread.start()
+    return peer, thread, f'http://127.0.0.1:{peer.server_port}/v1'
+
+
+@pytest.mark.platforms("linux")
+def test_desktop_pick_resolves_a_provider_added_after_the_session_and_freezes_only_it(tmp_path):
+    """#139740: a session created before ``providers.loop`` existed picks ``loop`` the way the Desktop
+    picker sends it (``{model, provider}``). The pick resolves against the owning profile's CURRENT
+    ``providers:`` (as CLI/TUI ``/model`` do), the next turn reaches that endpoint with its
+    ``key_env`` key, the receipt freezes only that one entry plus the pointer (never the key
+    value), nothing else in the frozen config moves, and another profile's same-named provider
+    is never read."""
+    from hermes_state_local import POLICY_PREFIX
+    root = Path(__file__).resolve().parents[2]
+    home, user = tmp_path / 'state', tmp_path / 'user'
+    home.mkdir(mode=0o700)
+    user.mkdir()
+    origin, origin_thread, origin_url = _loopback()
+    picked, picked_thread, picked_url = _loopback()
+    foreign, foreign_thread, foreign_url = _loopback()
+    secret = 'sk-loop-only-7c41e0'
+    cfg = {'gateway': {'multiplex_profiles': False},
+           'model': {'provider': 'custom', 'default': 'original', 'base_url': origin_url},
+           'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': []},
+           'agent': {'max_turns': 7}}
+    (home / 'config.yaml').write_text(json.dumps(cfg))
+    (home / '.env').write_text(f'LOOP_KEY={secret}\n')
+    # Another profile on this host declares the same slug at another endpoint: never read.
+    other = home / 'profiles' / 'other'
+    other.mkdir(parents=True)
+    (other / 'config.yaml').write_text(json.dumps({'providers': {'loop': {
+        'name': 'Foreign', 'base_url': foreign_url, 'key_env': 'FOREIGN_KEY', 'models': {'switched': {}}}}}))
+    (home / 'models_dev_cache.json').write_text(json.dumps({'custom': {'id': 'custom', 'models': {
+        name: {'id': name, 'name': name, 'limit': {'context': 100000, 'output': 4000}}
+        for name in ('original', 'switched')}}}))
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
+    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
+               OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=origin_url, PYTHONUNBUFFERED='1',
+               FOREIGN_KEY='sk-foreign-never')
+
+    def receipt(sid):
+        with sqlite3.connect(home / 'state.db') as db:
+            (value,), = db.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + sid,)).fetchall()
+        return json.loads(value)['policy']
+
+    async def run(desc):
+        async with websocket(home, desc) as ws:
+            async def call(method, **params):
+                response = await rpc(ws, method, **params)
+                assert 'result' in response, response
+                return response['result']
+            async def turn(sid, text):
+                await call('prompt.submit', session_id=sid, input_id=text, text=text)
+                def terminal():
+                    with sqlite3.connect(home / 'state.db') as db:
+                        status = db.execute('SELECT status FROM session_admissions WHERE request_id=?', (text,)).fetchone()
+                    return status and status[0] == 'terminal'
+                await async_wait_until(terminal, timeout=30, what=f'{text} terminal')
+                return await call('session.resume', session_id=sid)
+            sid = (await call('session.create', source='gui', request_id='owner', toolsets=[]))['session_id']
+            before = await turn(sid, 'BEFORE_PICK')
+            frozen_before = json.loads(receipt(sid)['config_json'])
+            # The user adds the endpoint while the session exists (the Desktop menu then lists it).
+            (home / 'config.yaml').write_text(json.dumps({**cfg, 'providers': {'loop': {
+                'name': 'Loopback', 'base_url': picked_url, 'key_env': 'LOOP_KEY', 'api_mode': 'chat_completions',
+                'models': {'switched': {'context_length': 100000}}}}}))
+            picked_result = await rpc(ws, 'session.mutate', session_id=sid, request_id='pick', operation='model',
+                                      payload={'model': 'switched', 'provider': 'loop'},
+                                      expected_revision=before['revision'],
+                                      expected_generation=before['execution_generation'])
+            assert 'result' in picked_result, picked_result
+            assert picked_result['result']['model'] == 'switched'
+            await turn(sid, 'AFTER_PICK')
+            return sid, frozen_before
+    try:
+        with daemon(root, home, env, barrier=False) as (_, desc):
+            sid, frozen_before = asyncio.run(run(desc))
+        assert [r['model'] for r in origin.requests] == ['original']
+        assert [r['model'] for r in picked.requests] == ['switched'], 'the next turn did not reach the pick'
+        assert picked.bearers == [f'Bearer {secret}']
+        assert foreign.requests == [] and foreign.bearers == [], "another profile's provider was read"
+        frozen = json.loads(receipt(sid)['config_json'])
+        assert frozen['providers'] == {'loop': {
+            'name': 'Loopback', 'base_url': picked_url, 'key_env': 'LOOP_KEY', 'api_mode': 'chat_completions',
+            'models': {'switched': {'context_length': 100000}}}}
+        assert frozen['model']['provider'] == 'loop' and frozen['model']['key_env'] == 'LOOP_KEY'
+        assert frozen['model']['default'] == 'switched'
+        # Nothing else in the frozen config moved.
+        assert {k: v for k, v in frozen.items() if k not in ('model', 'providers')} == \
+            {k: v for k, v in frozen_before.items() if k not in ('model', 'providers')}
+        assert 'providers' not in frozen_before
+        # The key value never lands in the session store.
+        raw = b''.join(path.read_bytes() for path in home.glob('state.db*'))
+        assert secret.encode() not in raw and b'sk-foreign-never' not in raw
+    finally:
+        for peer, thread in ((origin, origin_thread), (picked, picked_thread), (foreign, foreign_thread)):
+            peer.release.set()
+            peer.shutdown()
+            peer.server_close()
+            thread.join(timeout=5)
+
+
 @pytest.mark.asyncio
 async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, monkeypatch):
     """A drain that runs while the model receipt commits off-loop sees the new stored policy beside
@@ -320,8 +434,10 @@ async def test_model_pick_freezes_legacy_custom_provider_for_the_next_runtime(tm
 
 
 @pytest.mark.asyncio
-async def test_model_pick_keeps_a_nonfollowing_sessions_named_provider_frozen(tmp_path, monkeypatch):
-    """A profile edit must not move an ordinary session's named endpoint on its next pick."""
+async def test_model_pick_resolves_the_profiles_current_entry_over_a_frozen_one(tmp_path, monkeypatch):
+    """A pick is an explicit user action: a slug the session froze earlier resolves to the profile's
+    CURRENT entry (as CLI/TUI ``/model`` do), and only that entry is re-frozen. Another frozen entry
+    the profile no longer declares stays as it was."""
     from dataclasses import asdict
     from types import SimpleNamespace
     from gateway.run_turn_prepare import _resolve_policy_agent_runtime
@@ -344,7 +460,7 @@ async def test_model_pick_keeps_a_nonfollowing_sessions_named_provider_frozen(tm
             base_url=kwargs['user_providers']['inkstone']['api'], api_mode='chat_completions')
 
     monkeypatch.setattr(model_switch, 'switch_model', switch)
-    monkeypatch.setenv('FROZEN_KEY', 'frozen-secret')
+    monkeypatch.setenv('CURRENT_KEY', 'current-secret')
     with SessionDB(tmp_path / 'state.db') as db:
         authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
         runner = SimpleNamespace(session_authority=authority,
@@ -352,15 +468,22 @@ async def test_model_pick_keeps_a_nonfollowing_sessions_named_provider_frozen(tm
         authority.runner = runner
         policy = build_policy({'cwd': str(tmp_path), 'model': 'old'}, {
             'model': {'provider': 'deepseek', 'default': 'old'},
-            'providers': {'inkstone': {'api': 'https://frozen.example.invalid/v1', 'key_env': 'FROZEN_KEY'}}})
+            'providers': {'inkstone': {'api': 'https://frozen.example.invalid/v1', 'key_env': 'FROZEN_KEY'},
+                          'kept': {'api': 'https://kept.example.invalid/v1', 'key_env': 'KEPT_KEY'}}})
         prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
         committed = await prepare_model(authority, SimpleNamespace(source=None, route='r'), {
             'model': 'new', 'provider': 'inkstone'}, prepared)
 
-    assert seen['user_providers']['inkstone']['key_env'] == 'FROZEN_KEY'
-    _, runtime = _resolve_policy_agent_runtime(runner, restore_policy(committed['policy']))
-    assert runtime['base_url'].rstrip('/') == 'https://frozen.example.invalid/v1'
-    assert runtime['api_key'] == 'frozen-secret'
+    assert seen['user_providers']['inkstone']['key_env'] == 'CURRENT_KEY'
+    switched = restore_policy(committed['policy'])
+    frozen = switched.config()
+    assert frozen['providers'] == {
+        'inkstone': {'api': 'https://current.example.invalid/v1', 'key_env': 'CURRENT_KEY'},
+        'kept': {'api': 'https://kept.example.invalid/v1', 'key_env': 'KEPT_KEY'}}
+    assert frozen['model']['key_env'] == 'CURRENT_KEY'
+    _, runtime = _resolve_policy_agent_runtime(runner, switched)
+    assert runtime['base_url'].rstrip('/') == 'https://current.example.invalid/v1'
+    assert runtime['api_key'] == 'current-secret'
 
 
 @pytest.mark.asyncio
