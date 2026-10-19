@@ -132,6 +132,9 @@ class SessionAuthority:
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
         self.pending_stops = {}
+        # session -> (generation, reason): a gateway restart/shutdown Stop latched before that
+        # generation's managed worker existed; its pre-bootstrap result carries the cause (GW-22).
+        self.pending_stop_causes = {}
         # session -> (generation, [steer text]) accepted before that generation adopted an agent;
         # adopt_agent hands it to that agent (never a later generation's), the drain drops the rest.
         self.pending_steers = {}
@@ -1152,6 +1155,7 @@ class SessionAuthority:
             with live.event_stream.lock:
                 live.event_stream.execution = {}
             self.pending_stops.pop(ref.session_id, None)
+            self.pending_stop_causes.pop(ref.session_id, None)
             self.pending_steers.pop(ref.session_id, None)
             self.adopted.pop(ref.session_id, None)
             # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10),
@@ -1275,6 +1279,7 @@ class SessionAuthority:
                 with live.event_stream.lock:
                     live.event_stream.execution = {}
                 self.pending_stops.pop(ref.session_id, None)
+                self.pending_stop_causes.pop(ref.session_id, None)
                 self.pending_steers.pop(ref.session_id, None)
                 self.adopted.pop(ref.session_id, None)
                 from gateway.session_queued_controls import publish_transfers
