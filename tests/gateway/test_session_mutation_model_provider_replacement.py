@@ -90,6 +90,18 @@ async def test_named_provider_replacement_does_not_keep_withdrawn_secrets(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_legacy_provider_respelling_picks_new_endpoint(tmp_path, monkeypatch):
+    with peers() as (a, au, b, bu):
+        before = {'model': {'provider':'custom:my-provider', 'default':'original'},
+                  'custom_providers':[{'name':'My Provider','base_url':au,'api_key':'same-review-key'}]}
+        after = {'model':before['model'],
+                 'custom_providers':[{'name':'my-provider','base_url':bu,'api_key':'same-review-key'}]}
+        _, runtime = await pick(tmp_path, monkeypatch, before, after, 'custom:my-provider')
+        assert b.bearers == ['Bearer same-review-key'] and not a.bearers
+        assert runtime['base_url'].rstrip('/') == bu
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('bypass', ['ignore_user_config', 'safe_mode'])
 async def test_config_only_pick_does_not_import_profile_provider(tmp_path, monkeypatch, bypass):
     from hermes_state_runtime import RuntimeStoreError
@@ -102,6 +114,18 @@ async def test_config_only_pick_does_not_import_profile_provider(tmp_path, monke
         except RuntimeStoreError as exc:
             assert str(exc) == 'model_resolution_failed'
         assert not b.bearers, 'ignore_user_config session imported profile-only provider'
+
+
+@pytest.mark.asyncio
+async def test_appended_legacy_provider_keeps_inline_key_after_cold_restore(tmp_path, monkeypatch):
+    with peers() as (a, au, b, bu):
+        before = {'model': {'provider':'custom:old-review', 'default':'original'},
+                  'custom_providers':[{'name':'old-review','base_url':au,'api_key':'old-review-key'}]}
+        after = {'model':before['model'],
+                 'custom_providers':[{'name':'new-review','base_url':bu,'api_key':'new-review-key'}]}
+        _, runtime = await pick(tmp_path, monkeypatch, before, after, 'custom:new-review')
+        assert b.bearers == ['Bearer new-review-key'] and not a.bearers
+        assert runtime['base_url'].rstrip('/') == bu
 
 
 @pytest.mark.platforms('linux')

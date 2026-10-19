@@ -165,14 +165,18 @@ def _provider_resolution_config(authority, config, bypass=False):
     if isinstance(frozen_custom, list) or isinstance(current_custom, list):
         current_custom = list(current_custom) if isinstance(current_custom, list) else []
         names = {_custom_provider_name(entry) for entry in current_custom if isinstance(entry, dict)}
+        # Current entries keep their profile positions (the path cold recovery re-reads).
         resolved['custom_providers'] = current_custom + [
             entry for entry in (frozen_custom if isinstance(frozen_custom, list) else [])
             if not isinstance(entry, dict) or _custom_provider_name(entry) not in names]
+        resolved['_profile_custom_count'] = len(current_custom)
     return resolved
 
 
 def _custom_provider_name(entry):
-    return str(entry.get('provider_key') or entry.get('name') or '').strip().lower()
+    """The runtime's canonical identity: ``My Provider`` and ``my-provider`` are one provider."""
+    from hermes_cli.providers import custom_provider_slug
+    return custom_provider_slug(str(entry.get('name') or ''), str(entry.get('provider_key') or ''))
 
 
 def _selected_provider_key_env(config, provider):
@@ -189,8 +193,9 @@ def _freeze_selected_provider(config, frozen, provider):
 
     The next turn resolves from the session's own configuration, not a later profile edit. Private
     fields move to the policy's secret store, as policy creation does; nothing else moves. Returns
-    ``(secrets, retired)``: the entry's private values and the ``(section, key)`` whose previous
-    private subtree they replace.
+    ``(secrets, retired)``: the entry's private values and every ``(section, key)`` whose previous
+    private subtree they replace. A legacy entry from the profile is frozen at its profile index (the
+    path cold recovery re-reads); an equivalent earlier spelling is blanked, never left to win.
     """
     from copy import deepcopy
     from gateway.session_policy import _extract_config_secrets
@@ -203,6 +208,7 @@ def _freeze_selected_provider(config, frozen, provider):
     if not isinstance(entries, (dict, list)) or not isinstance(entries[index], dict):
         return {}, ()
     copied = deepcopy(entries[index])
+    retired = {(section, index)}
     if section == 'providers':
         frozen[section] = {**(frozen.get(section) if isinstance(frozen.get(section), dict) else {}), index: copied}
     else:
@@ -210,16 +216,20 @@ def _freeze_selected_provider(config, frozen, provider):
         name = _custom_provider_name(copied)
         same = [i for i, entry in enumerate(frozen_entries)
                 if isinstance(entry, dict) and _custom_provider_name(entry) == name]
-        if same:
-            index = same[0]
-            frozen_entries[index] = copied
-        else:
-            frozen_entries.append(copied)
-            index = len(frozen_entries) - 1
+        if index >= config.get('_profile_custom_count', len(entries)):
+            index = same[0]  # a frozen-only entry stays where it is
+        frozen_entries += [{}] * (index + 1 - len(frozen_entries))
+        displaced = frozen_entries[index]
+        if isinstance(displaced, dict) and displaced and _custom_provider_name(displaced) != name:
+            frozen_entries.append(displaced)  # still resolvable by name; its index-bound secrets retire
+        for i in same:
+            frozen_entries[i] = {}
+        frozen_entries[index] = copied
+        retired |= {(section, i) for i in same} | {(section, index)}
         frozen[section] = frozen_entries
     secrets = {}
     _extract_config_secrets(frozen[section][index], secrets, (section, index))
-    return secrets, {(section, index)}
+    return secrets, retired
 
 
 def _alias_credential(authority, result):
