@@ -56,8 +56,15 @@ _live_overrides_lock = threading.Lock()
 
 
 def live_cdp_override() -> str:
-    """The current profile's live ``/browser connect`` endpoint, or ""."""
-    from hermes_constants import hermes_home_key
+    """The current profile's live ``/browser connect`` endpoint, or "".
+
+    On a multiplexed gateway a context with no profile bound (a bare ``threading.Thread`` or stdlib
+    executor that did not copy the caller's context) answers "" rather than the launch profile's
+    endpoint, the way ``get_secret`` fails closed. Single-profile processes are unchanged."""
+    from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    if get_hermes_home_override() is None and is_multiplex_active():
+        return ""
     with _live_overrides_lock:
         return _live_overrides.get(hermes_home_key(), "")
 
