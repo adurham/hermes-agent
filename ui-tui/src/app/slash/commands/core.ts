@@ -359,7 +359,10 @@ export const coreCommands: SlashCommand[] = [
 
       patchUiState({ timestamps: next })
       ctx.transcript.sys(`timestamps ${next ? 'on' : 'off'}`)
-      saveDisplayPref(ctx, 'timestamps', next ? 'on' : 'off')
+      // A refused write would revert on the next config refresh: say so instead of staying quiet.
+      ctx.gateway.gw
+        .request<ConfigSetResponse>('config.set', { key: 'timestamps', value: next ? 'on' : 'off' })
+        .catch(ctx.guardedErr)
     }
   },
 

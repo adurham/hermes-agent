@@ -443,4 +443,16 @@ it('/timestamps toggles display.timestamps on the owner (config.set) and the tra
   expect(notices).toContain('timestamps off')
   expect(notices.some(line => /not available/.test(line))).toBe(false)
   expect(request.mock.calls.some(([method]) => method === 'slash.exec')).toBe(false)
+
+  // A backend that refuses the write reports it instead of a silent `timestamps on`.
+  request.mockImplementation(async (method: string) => {
+    if (method === 'config.set') {
+      throw new Error('unknown config key: timestamps')
+    }
+
+    return {}
+  })
+  slash('/timestamps on')
+  await flush()
+  expect(sys.mock.calls.map(([text]) => String(text))).toContain('error: unknown config key: timestamps')
 })
