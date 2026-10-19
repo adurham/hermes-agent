@@ -58,7 +58,8 @@ async def refine_local_session(runner, source, focus):
         from agent.turn_finalizer import _clone_background_review_messages
         with _side_scope(authority, policy, task_id):
             # The session's own id: the review's usage is recorded against it, and the agent never
-            # runs a turn of its own, so it writes no row and must not end the session on close.
+            # runs a turn of its own, so it writes no row. close() would tear down that id's terminal,
+            # browser and memory provider (the session's), so only the agent's own clients are released.
             agent = holder[0] = _side_agent(authority, policy, live, task_id, session_id=target)
             agent._end_session_on_close = False
             agent.background_review_callback = publish
@@ -73,7 +74,7 @@ async def refine_local_session(runner, source, focus):
             finally:
                 finish_background_review_run(agent, run)
                 with contextlib.suppress(Exception):
-                    agent.close()
+                    agent.release_clients()
         return ''  # the summary (if any) was published above; an empty review.summary draws nothing
 
     try:
