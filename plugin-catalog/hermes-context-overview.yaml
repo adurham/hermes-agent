@@ -1,9 +1,9 @@
 name: hermes-context-overview
-version: "1.0.0"
+version: "1.1.0"
 repo: https://github.com/AsoTora/hermes-context-overview
-sha: 6ead83d8736056c53bd5123de8ee52373e55c61f
+sha: 91db6370735038e47d05ddc06de5559a24442243
 title: Context Overview
-description: "Read-only native Desktop context inspector: 100-cell model budget, provider/estimate provenance, category token estimates and context-file load metadata. Reuses session.context_breakdown; no collector, Python backend, credentials or telemetry."
+description: "Per-conversation Context control beside the composer opens a native popover with model budget, category estimates and context-file metadata. Reuses session.context_breakdown; no global page, collector, Python backend, credentials or telemetry."
 maintainer: AsoTora
 tier: community
 category: desktop
@@ -12,8 +12,8 @@ docs_url: https://github.com/AsoTora/hermes-context-overview#readme
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/6ead83d8736056c53bd5123de8ee52373e55c61f/docs/screenshots/harness-dark-1280.png
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/6ead83d8736056c53bd5123de8ee52373e55c61f/docs/screenshots/harness-light-390.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/91db6370735038e47d05ddc06de5559a24442243/docs/screenshots/harness-dark-1280.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/91db6370735038e47d05ddc06de5559a24442243/docs/screenshots/harness-light-390.png
 capabilities:
   provides_tools: []
   provides_hooks: []
