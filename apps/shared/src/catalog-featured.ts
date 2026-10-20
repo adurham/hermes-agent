@@ -8,6 +8,12 @@
  *  official entry with art and the most stars. Nothing here reads a download
  *  or install count; the feed has none. */
 
+/** Skill sources that are first-party (bundled with Hermes or published by
+ *  Nous). One list for the desktop catalog, the website and the hero pick. */
+export const OFFICIAL_SKILL_SOURCES: readonly string[] = ['built-in', 'bundled', 'optional', 'official']
+
+export const isOfficialSkillSource = (source: string | null | undefined) => OFFICIAL_SKILL_SOURCES.includes(source ?? '')
+
 export interface FeaturedCandidate {
   /** 1-based curated rank from the feed; absent for everything uncurated. */
   featured?: number | null

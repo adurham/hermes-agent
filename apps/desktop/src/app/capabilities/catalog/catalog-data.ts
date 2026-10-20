@@ -1,6 +1,7 @@
 import { skillCatalogInstallIdentifier } from '@hermes/shared'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
+import { CATALOG_ORIGIN } from '@/lib/plugin-catalog'
 import { queryClient } from '@/lib/query-client'
 
 import { curatedFeaturedRank, curationOwnsArtwork, officialCatalogArtwork } from './catalog-curation'
@@ -44,10 +45,11 @@ export interface CatalogEntry {
   search: string
 }
 
-const DOCS_ORIGIN = 'https://hermes-agent.nousresearch.com'
 // The public domain redirects here without CORS headers on the redirect.
 // Use the docs' actual static host, not GitHub's API or repository endpoints.
 const CATALOG_BASE = 'https://nousresearch.github.io/hermes-agent/docs/api'
+/** A download with no new bytes for this long is aborted (inactivity, not total time). */
+const CATALOG_STALL_MS = 60_000
 const text = (value: unknown): string => (typeof value === 'string' ? value : '')
 const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter(v => typeof v === 'string') : [])
 
@@ -94,7 +96,7 @@ function catalogLinks(kind: CatalogKind, row: any, rawName: string, source: stri
         : null,
     sourceUrl: webUrl(row.repo || row.sourceUrl),
     docsUrl:
-      webUrl(row.docsUrl) || (text(row.docsPath) ? `${DOCS_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
+      webUrl(row.docsUrl) || (text(row.docsPath) ? `${CATALOG_ORIGIN}/docs/user-guide/skills/${text(row.docsPath)}` : null),
     imageUrl: curationOwnsArtwork(kind, row) ? officialCatalogArtwork(kind, row) : catalogImageUrl(row.image),
     screenshots:
       kind === 'plugins'
@@ -209,7 +211,7 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
 
   const armDeadline = () => {
     clearTimeout(timer)
-    timer = setTimeout(() => controller.abort(), 60_000)
+    timer = setTimeout(() => controller.abort(), CATALOG_STALL_MS)
   }
 
   armDeadline()
@@ -260,7 +262,7 @@ export async function fetchCatalog(kind: CatalogKind): Promise<CatalogEntry[]> {
     // Chromium can turn our abort into "The user aborted a request." The
     // controller, not that browser-dependent exception name, owns the cause.
     if (controller.signal.aborted) {
-      throw new Error('Catalog download timed out after 60 seconds without progress. Please try again.')
+      throw new Error(`Catalog download timed out after ${CATALOG_STALL_MS / 1000} seconds without progress. Please try again.`)
     }
 
     throw error

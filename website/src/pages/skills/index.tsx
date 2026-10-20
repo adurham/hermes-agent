@@ -3,7 +3,7 @@ import Layout from "@theme/Layout";
 import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
 import CatalogFeatured from "../../components/CatalogFeatured";
-import { pickFeatured } from "../../../../apps/shared/src/catalog-featured";
+import { isOfficialSkillSource, pickFeatured } from "../../../../apps/shared/src/catalog-featured";
 import { skillCatalogInstallIdentifier, skillCatalogInstallUrl } from "../../../../apps/shared/src/catalog-install";
 
 interface Skill {
@@ -801,7 +801,7 @@ export default function SkillsDashboard() {
     () =>
       pickFeatured(allSkillsLocal, (s) => ({
         featured: s.featured,
-        official: s.source === "built-in" || s.source === "optional",
+        official: isOfficialSkillSource(s.source),
         pictured: Boolean(s.image),
       })),
     [allSkillsLocal],
