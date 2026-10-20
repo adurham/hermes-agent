@@ -6,7 +6,7 @@ title: Game Dev
 maintainer: 123mikeyd
 tier: community
 category: tools
-description: Read-only project inspection and asset audits with playable-slice, asset-production, and verification skills.
+description: "Read-only project inspection and asset audits with playable-slice, asset-production, and verification skills. Disclosure — lists file names and sizes under any absolute project path the agent supplies (skipping hidden, symlinked and credential-named entries), reads that project's project.godot/export_presets.cfg and, on request, hashes asset files; no writes, no shell commands, no network calls."
 docs_url: https://github.com/123mikeyd/hermes-game-dev#readme
 readme: true
 capabilities:
