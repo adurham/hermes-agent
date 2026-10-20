@@ -61,6 +61,8 @@ interface CatalogBrowserProps {
 }
 
 const PAGE_SIZE = 60
+/** Related entries listed under a detail. */
+const RELATED_COUNT = 3
 // The skills hub carries ~10k distinct tags; the rail is for browsing, search covers the tail.
 const TAG_LIMIT = 16
 /** On: masonry lanes. Off: fallback grid whose rows share one height (`.catalog-grid`). */
@@ -253,7 +255,7 @@ function CatalogFilteredCards({
 
 /** Related picks are only worth computing while a detail is on screen. */
 const detailRelated = (entries: CatalogEntry[], selected: CatalogEntry | undefined, shown: boolean) =>
-  selected && shown ? relatedEntries(entries, selected, 3) : []
+  selected && shown ? relatedEntries(entries, selected, RELATED_COUNT) : []
 
 /** Discovery shelves show only while browsing everything. */
 const isDiscoverView = (facets: CatalogFacets, query: string) =>

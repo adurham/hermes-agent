@@ -25,6 +25,10 @@ interface CatalogFilterBarProps {
   resultCount: number
 }
 
+
+/** Chips shown before the rest collapse behind "+N"; a selected chip always shows. */
+const VISIBLE_CHIPS = 3
+
 export function CatalogFilterBar(props: CatalogFilterBarProps) {
   const { t } = useI18n()
   const c = t.catalog
@@ -39,7 +43,7 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
 
   const selected = props.facets[mode]
   const onSelect = mode === 'categories' ? props.onCategory : props.onSource
-  const visible = rows.filter((row, index) => index < 3 || selected.includes(row.value))
+  const visible = rows.filter((row, index) => index < VISIBLE_CHIPS || selected.includes(row.value))
   const overflow = rows.filter(row => !visible.includes(row))
   const activeCount = props.facets.categories.length + props.facets.sources.length + props.facets.tags.length
 

@@ -6,6 +6,8 @@
   --capabilities-gap-lead: 20px; /* last control row → first section heading */
   --capabilities-gap-section: 48px; /* one section → the next section's heading */
   --capabilities-gap-heading: 20px; /* section heading → its cards or rows */
+  --capabilities-gap-sticky: 12px; /* sticky filter row → the bar's bottom edge */
+  --capabilities-inset: 20px; /* headings and copy inset from the card edge */
 }
 
 .capabilities-page,
