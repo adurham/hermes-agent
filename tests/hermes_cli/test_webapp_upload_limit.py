@@ -1,7 +1,6 @@
 """Real ASGI regressions for the Webapp's pre-parser upload limit (``hermes_cli/web_upload_limit.py``).
 
-The upload-limit half of #93508's ``test_webapp_upload_security.py``; its cookie Origin gate cases stay
-with that separate change.
+The cookie Origin gate on the same uploads is covered in ``test_webapp_upload_security.py``.
 """
 
 from __future__ import annotations
