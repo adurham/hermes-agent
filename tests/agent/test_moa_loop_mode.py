@@ -454,6 +454,19 @@ def test_reference_messages_drops_system_but_renders_tools_as_text():
     assert view[-1]["role"] == "user"
 
 
+def test_reference_view_keeps_the_data_use_requirement_of_a_folded_tool_result():
+    from agent.message_metadata import data_use_requirement
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": "read my mail"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]},
+    ]
+
+    assert data_use_requirement(_reference_messages(messages)) == {"no_training"}
+
+
 def test_reference_messages_ends_with_user_not_assistant_prefill():
     """Advisory reference views must never end on an assistant turn.
 
