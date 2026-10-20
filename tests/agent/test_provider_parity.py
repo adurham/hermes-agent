@@ -387,6 +387,14 @@ class TestBuildApiKwargsNousPortal:
         assert "provider" not in kwargs.get("extra_body", {})
         assert "data_use" not in kwargs["messages"][-1]
 
+    def test_auxiliary_nous_call_carrying_a_connector_result_asks_for_a_no_training_route(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        messages = [{"role": "user", "content": "title this"},
+                    {"role": "tool", "tool_call_id": "c1", "content": "inbox", "data_use": ["no_training"]}]
+        kwargs = _build_call_kwargs(provider="nous", model="hermes-4", messages=messages)
+        assert kwargs["extra_body"]["provider"] == {"data_collection": "deny"}
+
 
 
 class TestBuildApiKwargsCustomEndpoint:
