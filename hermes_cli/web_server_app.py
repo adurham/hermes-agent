@@ -200,8 +200,11 @@ async def standalone_lifespan(app: "FastAPI"):
 @asynccontextmanager
 async def http_lifespan(app: FastAPI):
     """The gateway already owns schema, rooms, scheduler and model services."""
+    from contextlib import AsyncExitStack
+
     from hermes_cli.web_server import _dashboard_selftest_loop
     from hermes_cli.web_server_chat import PTY_REGISTRY
+    from hermes_cli.web_server_surface import policy
 
     app.state.event_channels = {}
     app.state.event_lock = asyncio.Lock()
@@ -213,7 +216,11 @@ async def http_lifespan(app: FastAPI):
         asyncio.create_task(_dashboard_selftest_loop(), name="gateway-api-selftest"),
     ]
     try:
-        yield
+        async with AsyncExitStack() as surface:
+            if policy(app.state).host_terminal:
+                from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
+                await surface.enter_async_context(host_terminal_lifespan(app))
+            yield
     finally:
         for task in tasks:
             task.cancel()

@@ -40,7 +40,8 @@ class GatewayDashboardMount:
 
     ``state`` is the listener's boundary state (``bound_host``, ``bound_port``, ``auth_required``,
     ``trusted_public_hosts``, ``gateway_runner``, ``session_authority``) — what the native WebSocket
-    path checks, mirrored onto the dashboard app state once it is mounted.
+    path checks, mirrored onto the dashboard app state once it is mounted. ``state.webapp`` (a
+    ``gateway.webapp_listener.WebappMount``) makes the mount serve the browser-hosted Desktop.
     """
 
     def __init__(self, runner, state):
@@ -49,6 +50,7 @@ class GatewayDashboardMount:
         self._lock: asyncio.Lock | None = None
         self._lifespan = None
         self._closed = False
+        self._replaced_session_token = None
 
     @property
     def loaded(self) -> bool:
@@ -70,12 +72,26 @@ class GatewayDashboardMount:
         web.app.state.session_authority = getattr(self.runner, "session_authority", None)
         web.app.state.bound_host = self._state.bound_host
         web.app.state.bound_port = self._state.bound_port
+        webapp = getattr(self._state, "webapp", None)
+        if webapp is not None:
+            # The browser-hosted Desktop: its bundle at /, its routes (launch handoff, socket tickets,
+            # host terminal) on, and the browser credential kept in the home so tabs survive a restart.
+            # The page itself still never carries the credential (the webapp surface withholds it).
+            from gateway.webapp_listener import browser_session_token
+            web.app.state.ui_surface = "webapp"
+            web.app.state.web_dist = webapp.dist
+            self._replaced_session_token = web._SESSION_TOKEN
+            web._SESSION_TOKEN = browser_session_token(webapp.home)
 
     def _unbind_state(self) -> None:
         if self.web is not None:
             self.web.app.state.gateway_runner = None
             self.web.app.state.session_authority = None
             self.web.app.state.withhold_session_token = False
+            if self._replaced_session_token is not None:
+                self.web.app.state.ui_surface = None
+                self.web.app.state.web_dist = None
+                self.web._SESSION_TOKEN, self._replaced_session_token = self._replaced_session_token, None
 
     async def ensure(self):
         """Import (off the loop), bind and start the dashboard app once; returns ``web_server``."""
@@ -135,8 +151,9 @@ class GatewayDashboardMount:
         await web.app(scope, receive, send)
 
 
-async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -> GatewayAPIHandle:
+async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
     global _ACTIVE_RUNNER
+    from gateway.webapp_listener import dial_origin
     from hermes_cli.web_server_boundary import _dashboard_public_hosts, listener_auth_required
     from hermes_cli.web_server_lifecycle import build_listener_server
 
@@ -150,7 +167,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
     state = types.SimpleNamespace(
         bound_host=host, bound_port=None, auth_required=listener_auth_required(host, trusted),
         trusted_public_hosts=trusted, gateway_runner=runner,
-        session_authority=getattr(runner, "session_authority", None))
+        session_authority=getattr(runner, "session_authority", None), webapp=webapp)
     mount = GatewayDashboardMount(runner, state)
     # Lifespan off: the dashboard's own lifespan runs when it is mounted (GatewayDashboardMount).
     config, server = build_listener_server(mount, host, port, auth_required=state.auth_required,
@@ -169,8 +186,9 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
             config.load()
         config.loaded_app = GatewayRuntimeAPI(config.loaded_app, runner, mount)
         # A gated listener needs the dashboard's auth providers (and refuses to start without one);
-        # an already-imported dashboard costs nothing to mount now.
-        if state.auth_required or loaded_web is not None:
+        # an already-imported dashboard costs nothing to mount now; the Webapp serves its page and
+        # mints launch links from the start.
+        if state.auth_required or loaded_web is not None or webapp is not None:
             await mount.ensure()
         server.lifespan = config.lifespan_class(config)
         await server.startup(sockets=[listener])
@@ -197,9 +215,8 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
                     _ACTIVE_RUNNER = None
 
     task = asyncio.create_task(serve(), name="gateway-api")
-    origin_host = f"[{host}]" if ":" in host else host
     return GatewayAPIHandle(
-        api_origin=f"http://{origin_host}:{state.bound_port}",
+        api_origin=dial_origin(host, state.bound_port),
         server=server, task=task, app=mount, socket=listener,
     )
 
