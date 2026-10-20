@@ -502,28 +502,28 @@ def test_tool_result_is_durable_before_ui_completion_on_abnormal_exit(
     assert durable[2]["content"] == "repository result"
 
 
-def test_connector_data_use_rides_the_tool_message_and_survives_a_reload(tmp_path):
-    """The requirement dispatch recorded lands on the tool message as metadata (content untouched)
+@pytest.mark.parametrize("executor_mode", ["sequential", "concurrent"])
+def test_connector_data_use_rides_the_tool_message_and_survives_a_reload(tmp_path, executor_mode):
+    """A requirement recorded during dispatch lands on the tool message as metadata (content untouched)
     and comes back from the session DB on resume."""
     from tools.connectors.data_use import record_data_use
 
     agent = _make_agent()
     db_path = tmp_path / "state.db"
     db = _attach_real_session_db(agent, db_path, "data-use")
-    agent._current_turn_id = "turn-1"
     messages = [{"role": "user", "content": "read my mail"},
                 {"role": "assistant", "content": "", "tool_calls": [
                     {"id": "mail-call", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}]}]
     agent._flush_messages_to_session_db(messages)
 
     def _dispatch(name, args, task_id, **kwargs):
-        record_data_use(kwargs["turn_id"], kwargs["tool_call_id"], ["no_training"])
+        record_data_use(["no_training"])
         return '{"results": [{"response": "inbox"}]}'
 
     try:
         with (patch("model_tools.handle_function_call", side_effect=_dispatch),
               patch("agent.tool_executor.maybe_persist_tool_result", side_effect=lambda **kw: kw["content"])):
-            agent._execute_tool_calls_sequential(
+            getattr(agent, f"_execute_tool_calls_{executor_mode}")(
                 SimpleNamespace(content="", tool_calls=[_mock_tool_call(call_id="mail-call")]), messages, "task-1")
     finally:
         db.close()

@@ -1,35 +1,30 @@
-"""Data-use requirements of connector results, handed from dispatch to the tool message.
+"""Data-use requirements of connector results, collected while one tool call dispatches.
 
-The result string the model reads never carries them: dispatch records the requirement here under the
-call's ``(turn_id, tool_call_id)`` and the agent's tool executor takes it when it builds the tool message,
-storing it as that message's ``data_use`` metadata (``agent.message_metadata.DATA_USE``).
+The executor binds a sink around each dispatch and connector dispatch adds to it, so a batch's entries
+union into the wrapper's sink and the requirement never rides the model-visible result string.
 """
 
 from __future__ import annotations
 
-import threading
-from typing import Iterable, Optional
+import contextlib
+import contextvars
+from typing import Iterable, Iterator, Optional
 
-_LOCK = threading.Lock()
-_PENDING: dict[tuple[str, str], frozenset[str]] = {}
-# Callers outside the agent's tool executor (execute_code RPC, MCP serve) never take; keep that bounded.
-_MAX_PENDING = 512
+_sink: contextvars.ContextVar[Optional[set[str]]] = contextvars.ContextVar("connector_data_use", default=None)
 
 
-def record_data_use(turn_id: Optional[str], tool_call_id: Optional[str], requires: Iterable[str]) -> None:
-    wanted = frozenset(requires)
-    if not tool_call_id or not wanted:
-        return
-    with _LOCK:
-        key = (turn_id or "", tool_call_id)
-        _PENDING[key] = _PENDING.pop(key, frozenset()) | wanted
-        while len(_PENDING) > _MAX_PENDING:
-            _PENDING.pop(next(iter(_PENDING)))
+@contextlib.contextmanager
+def collect_data_use() -> Iterator[set[str]]:
+    sink: set[str] = set()
+    token = _sink.set(sink)
+    try:
+        yield sink
+    finally:
+        _sink.reset(token)
 
 
-def take_data_use(turn_id: Optional[str], tool_call_id: Optional[str]) -> list[str]:
-    """The requirement recorded for this call (sorted), removing it; ``[]`` when none was recorded."""
-    if not tool_call_id:
-        return []
-    with _LOCK:
-        return sorted(_PENDING.pop((turn_id or "", tool_call_id), ()))
+def record_data_use(requires: Iterable[str]) -> None:
+    """No-op outside an agent dispatch (execute_code RPC, MCP serve): no message is built there."""
+    sink = _sink.get()
+    if sink is not None:
+        sink.update(requires)

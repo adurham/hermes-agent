@@ -123,9 +123,9 @@ def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatc
     assert "not available" in result["error"]
 
 
-def test_a_connector_batch_records_the_union_of_data_use_and_keeps_it_out_of_the_result(monkeypatch):
+def test_a_connector_batch_collects_the_union_of_data_use_and_keeps_it_out_of_the_result(monkeypatch):
     import model_tools
-    from tools.connectors import take_data_use
+    from tools.connectors.data_use import collect_data_use
     from tools.connectors.gateway import bridge, config
     from tools.registry import invalidate_check_fn_cache
 
@@ -141,11 +141,12 @@ def test_a_connector_batch_records_the_union_of_data_use_and_keeps_it_out_of_the
 
     monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: Client())
     calls = [{"name": f"connectors__{c}__READ", "arguments": {}} for c in requires]
-    raw = model_tools.handle_function_call(
-        "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="s", tool_call_id="batch-1",
-        turn_id="turn-1", skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
-        skip_tool_execution_middleware=True)
+    with collect_data_use() as data_use:
+        raw = model_tools.handle_function_call(
+            "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="s", tool_call_id="batch-1",
+            turn_id="turn-1", skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+            skip_tool_execution_middleware=True)
 
     assert "data_use" not in raw
     assert [r["response"] for r in json.loads(raw)["results"]] == ["row", "row", "row"]
-    assert take_data_use("turn-1", "batch-1") == ["no_training", "zero_retention"]
+    assert data_use == {"no_training", "zero_retention"}
