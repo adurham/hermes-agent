@@ -1,5 +1,6 @@
 """Exercise the passive checker with real linked worktrees and loopback HTTP."""
 import json
+import shutil
 import subprocess
 import threading
 import urllib.request
@@ -598,8 +599,9 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(installation, tm
     from hermes_cli.source_check import check_for_updates
     from tests.hermes_cli.test_update_downgrade_guard import _ledgered_store
 
-    root, _linked, home, base, _head, responses, _requests, git = installation
-    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    root, _linked, home, base, _head, responses, requests, git = installation
+    sibling = tmp_path / "sibling"
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [("sibling", sibling)])
     (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
     git("add", "hermes_state_common.py")
     git("commit", "-q", "-m", "gateway runtime")
@@ -614,7 +616,7 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(installation, tm
     git("remote", "set-url", "origin", str(bare))
     git("checkout", "-q", "main")
     if ledgered:
-        _ledgered_store(home)
+        _ledgered_store(sibling)
     api = "/repos/NousResearch/hermes-agent"
     responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
     responses[f"{api}/commits/v1.2.3"] = (200, {"sha": release})
@@ -628,9 +630,17 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(installation, tm
 
     if not ledgered:
         # The first runtime turn lands after an offer was cached: the next passive check holds it.
-        _ledgered_store(home)
+        _ledgered_store(sibling)
         cached = check_for_updates(install_root=root, home=home, channel="stable")
         assert cached["updateAvailable"] is False and cached.get("held") == "downgrade", cached
+
+    # Removing the only ledgered profile clears a cached hold without re-resolving the release.
+    shutil.rmtree(sibling)
+    seen = list(requests)
+    allowed = check_for_updates(install_root=root, home=home, channel="stable")
+    assert allowed["updateAvailable"] is True and allowed["behind"] == -1, allowed
+    assert "held" not in allowed and allowed["fetchedAt"] == status["fetchedAt"]
+    assert requests == seen
 
 
 @pytest.mark.parametrize("ledgered", [True, False])
@@ -679,3 +689,89 @@ def test_an_unfetched_release_is_judged_from_github(installation, tmp_path, monk
     if ledgered:
         check_for_updates(install_root=root, home=home, channel="stable", force=True)
         assert len([p for p in requests if "/git/trees/" in p]) == 1
+
+
+@pytest.mark.parametrize("blocked", ["tree", "modules"])
+def test_runtime_lookup_has_one_deadline_with_bounded_parallel_reads(installation, monkeypatch, blocked):
+    from hermes_cli import source_check
+
+    _root, _linked, home, _base, sha, responses, _requests, _git = installation
+    tree = f"/repos/fixture/fork/git/trees/{sha}"
+    paths = [f"hermes_state_{i}.py" for i in range(12)]
+    responses[tree] = (200, {"tree": [{"path": path, "type": "blob"} for path in paths]})
+    release = threading.Event()
+    overlapped = threading.Event()
+    finished = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+    verdicts = []
+
+    def stalled(_handler):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 4:
+                overlapped.set()
+        try:
+            release.wait(20)
+            return 200, "SCHEMA_SQL = 'old schema'"
+        finally:
+            with lock:
+                active -= 1
+
+    if blocked == "tree":
+        responses[tree] = stalled
+    for path in paths:
+        responses[f"/fixture/fork/{sha}/{path}"] = stalled
+    monkeypatch.setattr(source_check, "_RUNTIME_LOOKUP_SECONDS", 3.0)
+
+    def check():
+        try:
+            verdicts.append(source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json"))
+        finally:
+            finished.set()
+
+    checker = threading.Thread(target=check, daemon=True)
+    checker.start()
+    try:
+        if blocked == "modules":
+            assert overlapped.wait(5), "independent schema reads must overlap"
+        assert finished.wait(5), "a slow successful response must not extend the whole lookup deadline"
+        assert verdicts == [None]
+        assert peak <= 4
+    finally:
+        release.set()
+        checker.join(5)
+
+
+@pytest.mark.parametrize("failure", ["tree", "module"])
+@pytest.mark.parametrize("runtime", [True, False])
+def test_unknown_runtime_verdict_expires_but_definite_verdict_does_not(installation, monkeypatch, failure, runtime):
+    from hermes_cli import source_check
+
+    _root, _linked, home, _base, sha, responses, requests, _git = installation
+    clock = [1000000.0]
+    monkeypatch.setattr(source_check.time, "time", lambda: clock[0])
+    tree = f"/repos/fixture/fork/git/trees/{sha}"
+    module = f"/fixture/fork/{sha}/hermes_state_common.py"
+    responses[tree] = (200, {"tree": [{"path": "hermes_state_common.py", "type": "blob"}]})
+    from hermes_state_common import SCHEMA_SQL
+    responses[module] = (200, SCHEMA_SQL if runtime else "SCHEMA_SQL = 'old schema'")
+    failed_path = tree if failure == "tree" else module
+    good = responses[failed_path]
+    responses[failed_path] = (503, {})
+    check = lambda: source_check._github_predates_runtime("fixture/fork", sha, home / "runtime.json")
+
+    assert check() is None
+    seen = list(requests)
+    responses[failed_path] = good
+    assert check() is None
+    assert requests == seen, "cache hits must not retry an unreachable GitHub"
+    clock[0] += source_check._UPDATE_CHECK_FAILURE_CACHE_SECONDS + 1
+    assert check() is not runtime
+    seen = list(requests)
+    clock[0] += 10 * source_check._UPDATE_CHECK_CACHE_SECONDS
+    assert check() is not runtime
+    assert requests == seen

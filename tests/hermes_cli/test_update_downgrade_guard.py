@@ -4,10 +4,11 @@ Downgrading is unsupported (#106742, jquesnelle item 6): the older release canno
 the sessions with runtime history, so the move is refused before the tree changes and the message
 names the pre-update snapshot that predates the cutover.
 """
+import json
 import sqlite3
 import subprocess
 from contextlib import closing
-from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -133,12 +134,58 @@ def test_check_holds_a_release_that_update_would_refuse(repo, tmp_path, monkeypa
 
 
 def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
-    """target_predates_runtime greps a release tree for this literal, so it must match the DDL as written.
+    from hermes_state_common import SCHEMA_SQL
 
-    If the marker drifts from hermes_state*.py (a renamed file, reformatted DDL), every later
-    forward release would read as pre-runtime: refused on --branch, and silently held on a channel.
-    """
-    root = Path(__file__).resolve().parents[2]
-    schema = [p.read_text(encoding="utf-8") for p in root.glob("hermes_state*.py")]
-    assert schema, "no hermes_state*.py next to tests/"
-    assert any(guard._RUNTIME_SCHEMA_MARKER in text for text in schema)
+    assert guard.defines_runtime([SCHEMA_SQL])
+
+
+@pytest.mark.parametrize("remote_result", [True, False, None, "no-reader"])
+def test_present_commit_with_missing_schema_blobs_uses_remote_without_git_writes(
+        repo, tmp_path, monkeypatch, remote_result):
+    from hermes_cli.source_check import source_git_env
+
+    _git(repo, "config", "uploadpack.allowFilter", "true")
+    clone = tmp_path / "partial"
+    _git(tmp_path, "clone", "--filter=blob:none", "--no-checkout", repo.as_uri(), str(clone))
+    target = _git(clone, "rev-parse", "old-release")
+    trace = tmp_path / "git-trace.jsonl"
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+
+    def probe(*args):
+        return subprocess.run(["git", *args], cwd=clone, env=source_git_env(),
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                              timeout=10, check=False)
+
+    def git(*args):
+        return probe(*args).returncode
+
+    before = {p.relative_to(clone): p.read_bytes() for p in (clone / ".git").rglob("*") if p.is_file()}
+    assert git("cat-file", "-e", f"{target}^{{commit}}") == 0
+    assert git("cat-file", "-e", f"{target}:hermes_state_common.py") != 0
+    grep = probe("grep", "-q", "-F", guard._RUNTIME_SCHEMA_MARKER, target, "--", guard.STATE_MODULES)
+    assert grep.returncode != 0 and grep.stderr
+    remote = None if remote_result == "no-reader" else Mock(return_value=remote_result)
+    assert guard.target_predates_runtime(None, clone, target, git=git, remote=remote) is (remote_result is True)
+    if remote is not None:
+        remote.assert_called_once_with(target)
+    assert {p.relative_to(clone): p.read_bytes() for p in (clone / ".git").rglob("*") if p.is_file()} == before
+    events = [json.loads(line) for line in trace.read_text().splitlines()]
+    assert not any(event["event"] == "child_start" for event in events)
+
+
+@pytest.mark.parametrize("grep_error", [False, True])
+def test_local_schema_decides_without_remote_unless_the_probe_fails(repo, grep_error):
+    runtime = _git(repo, "rev-parse", "HEAD")
+    (repo / "notes.txt").write_text("later build\n")
+    _git(repo, "add", "notes.txt")
+    _git(repo, "commit", "-qm", "later build")
+    remote = Mock(side_effect=lambda ref: ref == "old-release")
+    run = guard._updater_git(["git"], repo)
+
+    def git(*args):
+        return -1 if grep_error and args[0] == "grep" else run(*args)
+
+    assert guard.target_predates_runtime(None, repo, "old-release", git=git, remote=remote)
+    assert not guard.target_predates_runtime(None, repo, runtime, git=git, remote=remote)
+    assert not guard.target_predates_runtime(None, repo, "HEAD", git=git, remote=remote)
+    assert remote.call_count == (2 if grep_error else 0)

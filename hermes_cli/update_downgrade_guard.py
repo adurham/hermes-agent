@@ -51,16 +51,18 @@ def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
     tree. Any git failure proves nothing (False). ``git`` runs one git command and returns its exit
     code; the update check passes its own read-only probe.
 
-    ``remote`` answers the same question for a target this checkout has not fetched (True, False, or
-    None when it cannot tell). The update check passes one because it never fetches, and a release
-    off the checkout's tracked branch is usually absent until ``hermes update`` fetches it."""
+    ``remote`` answers the same question for a target whose commit, tree or schema blobs are missing
+    locally (True, False, or None when it cannot tell). The update check passes one because it never
+    fetches; the updater stays git-only."""
     git = git or _updater_git(git_cmd, root)
     if git("merge-base", "--is-ancestor", "HEAD", target_ref) == 0:
         return False  # forward update: whatever the target's schema, it was written knowing this one
-    if git("cat-file", "-e", f"{target_ref}^{{commit}}") != 0:
+    # grep can return 1 for unreadable blobs too: establish completeness before trusting no match.
+    if git("rev-list", "--objects", "--no-walk", "--missing=error", target_ref, "--", STATE_MODULES) != 0:
         return remote is not None and remote(target_ref) is True
-    # Exit 1 = no match (the target lacks the ledger); 0 = found; anything else is a git error.
-    return git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", STATE_MODULES) == 1
+    # Exit 1 = no match in a complete local schema; 0 = found; anything else is a git error.
+    result = git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", STATE_MODULES)
+    return result == 1 if result in (0, 1) else remote is not None and remote(target_ref) is True
 
 
 def _has_ledger_rows(db_path: Path) -> bool:
