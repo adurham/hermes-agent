@@ -214,6 +214,51 @@ async def test_a_full_replay_over_a_slow_link_is_not_a_stalled_viewer(monkeypatc
         stalled.release.set()
 
 
+class NarrowLinkWS(FakeWS):
+    """Carries a frame of up to ``capacity`` bytes within the deadline and never finishes a larger
+    one: a viewer still reading, over a link too slow for the whole replay."""
+
+    def __init__(self, capacity):
+        super().__init__()
+        self._capacity = capacity
+
+    async def send_bytes(self, data):
+        if len(data) > self._capacity:
+            await asyncio.Event().wait()
+        await super().send_bytes(data)
+
+
+@pytest.mark.asyncio
+async def test_redials_over_a_link_too_slow_for_the_whole_replay_reach_a_replay_it_carries(monkeypatch):
+    """A replay that misses its deadline is halved for the session's next attach, so a viewer on a
+    link of any speed gets the newest output it can carry after a few redials instead of timing out
+    on every one. A client that dropped is not a slow link and keeps the whole replay."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySession
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    history = bytes(range(256)) * 256
+    session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
+    session.buffer.append(history)
+
+    assert await session.attach(FailingWS()) is False
+    whole = FakeWS()
+    assert await session.attach(whole)
+    assert whole.sent == [("bytes", history)]
+
+    attached = []
+    for _redial in range(12):
+        viewer = NarrowLinkWS(4096)
+        attached.append(await session.attach(viewer))
+        if attached[-1]:
+            break
+    assert attached[-1], attached
+    replay = viewer.sent[0][1]
+    assert 0 < len(replay) <= 4096 and history.endswith(replay)
+    assert session._ws is viewer and viewer.close_code is None
+
+
 @pytest.mark.asyncio
 async def test_reattach_can_force_complete_tui_redraw_after_replay():
     """A fresh terminal cannot reconstruct a differential ANSI tail alone."""

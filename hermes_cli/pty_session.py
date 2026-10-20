@@ -29,7 +29,8 @@ WS_CLOSE_VIEWER_STALLED_REASON = "Terminal viewer stopped reading; reconnect"
 _VIEWER_SEND_TIMEOUT_SECONDS = 5.0
 # A reattach replay is a single frame of up to the 1 MiB buffer (host-terminal clients take exactly
 # the next binary frame as the replay, so it is not chunked). It gets the stall limit plus the time
-# to cross a link this slow (about 256 kbit/s; 37 s for 1 MiB), else a weak connection redials forever.
+# to cross a link this slow (about 256 kbit/s; 37 s for 1 MiB). A replay that misses that deadline is
+# halved for the session's next attach, so a viewer on a slower link redials onto a replay it carries.
 _REPLAY_MIN_BYTES_PER_SECOND = 32 * 1024
 # A viewer send that fails because the browser is gone: Starlette raises WebSocketDisconnect for a
 # dead transport and RuntimeError for a socket already closed; OSError covers the TimeoutError of
@@ -97,6 +98,8 @@ class PtySession:
         self.active_session_file = active_session_file
         self.active_session_cleanup: Optional[Callable[[], None]] = None
         self.buffer = RingBuffer(buffer_cap)
+        # How many of the buffer's newest bytes a reattach replays; a replay that times out halves it.
+        self._replay_limit = buffer_cap
         self.alive = True
         self.attached = False
         # Admission can fail before the first attach (e.g. lost metadata).
@@ -229,6 +232,7 @@ class PtySession:
         try:
             async with output_lock:
                 snap = self.buffer.snapshot()
+                snap = snap[len(snap) - min(len(snap), self._replay_limit):]
                 if old_ws is not ws:
                     await _close_ws(old_ws, WS_CLOSE_SUPERSEDED)
                 if self._ws is not ws:
@@ -242,7 +246,11 @@ class PtySession:
                 # frame never loses terminal-query replies on an empty history.
                 if snap or initial_text is not None:
                     replay_timeout = _VIEWER_SEND_TIMEOUT_SECONDS + len(snap) / _REPLAY_MIN_BYTES_PER_SECOND
-                    await asyncio.wait_for(ws.send_bytes(snap), timeout=replay_timeout)
+                    try:
+                        await asyncio.wait_for(ws.send_bytes(snap), timeout=replay_timeout)
+                    except TimeoutError:
+                        self._replay_limit = len(snap) // 2
+                        raise
         except _VIEWER_SEND_ERRORS:
             self.detach(ws)
             return False
