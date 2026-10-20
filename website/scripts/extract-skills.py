@@ -39,6 +39,9 @@ LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
 # bundled payload was ~26 MB; lazy-fetch keeps the initial page load
 # fast and shrinks the JS chunk back to a few hundred KB.
 OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills.json")
+# Curated artwork ships in website/static/img/catalog/, which the docs site serves
+# from its own host (docusaurus `url` + `baseUrl`); one place to change if it moves.
+CATALOG_ART_URL = "https://hermes-agent.nousresearch.com/docs/img/catalog/"
 META_OUTPUT = os.path.join(REPO_ROOT, "website", "static", "api", "skills-meta.json")
 
 CATEGORY_LABELS = {
@@ -341,7 +344,7 @@ def extract_local_skills():
                 "envVars": env_vars,
                 "commands": commands,
                 "docsPath": _docs_page_path(rel, source_label),
-                **({"image": "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/website/static/img/catalog/" + artwork[rel_id]} if rel_id in artwork else {}),
+                **({"image": CATALOG_ART_URL + artwork[rel_id]} if rel_id in artwork else {}),
                 # 1-based curated hero rank; the site and the app rotate through these.
                 **({"featured": featured.index(rel_id) + 1} if rel_id in featured else {}),
                 "installIdentifier": install_identifier,
