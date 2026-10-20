@@ -1,7 +1,7 @@
 name: hermes-context-overview
-version: "1.2.1"
+version: "1.2.2"
 repo: https://github.com/AsoTora/hermes-context-overview
-sha: a067d0305f16bc7dd01911076d299d84120336e0
+sha: ec4ba6a35c679b5f285f27808ed05950e9d132ed
 title: Context Overview
 description: "Bottom status-bar Context button with an icon shows the focused conversation's budget and metadata, including during running turns. Native cache indicators stay untouched. No collector, Python backend, credentials or telemetry."
 maintainer: AsoTora
@@ -12,8 +12,10 @@ docs_url: https://github.com/AsoTora/hermes-context-overview#readme
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/a067d0305f16bc7dd01911076d299d84120336e0/docs/screenshots/harness-dark-1280.png
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/a067d0305f16bc7dd01911076d299d84120336e0/docs/screenshots/harness-light-390.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/ec4ba6a35c679b5f285f27808ed05950e9d132ed/docs/screenshots/themes/sheet-dark-1280-1.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/ec4ba6a35c679b5f285f27808ed05950e9d132ed/docs/screenshots/themes/sheet-dark-1280-2.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/ec4ba6a35c679b5f285f27808ed05950e9d132ed/docs/screenshots/themes/sheet-light-1280-1.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/ec4ba6a35c679b5f285f27808ed05950e9d132ed/docs/screenshots/themes/sheet-light-1280-2.png
 capabilities:
   provides_tools: []
   provides_hooks: []
