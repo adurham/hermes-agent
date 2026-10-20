@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -32,6 +33,23 @@ def extract_bearer(request: Request) -> str:
     if len(parts) == 2 and parts[0].strip().lower() == "bearer":
         return parts[1].strip()
     return ""
+
+
+def _http_origin(value: str) -> tuple[str, str, int] | None:
+    """Parse one serialized HTTP origin, never an opaque or URL-like origin."""
+    if not value or any(ord(c) <= 32 or ord(c) >= 127 or c in "\\,?#%" for c in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None or parsed.path
+                or parsed.netloc.endswith(":")):
+            return None
+        port = parsed.port
+        effective_port = port if port is not None else (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme, parsed.hostname, effective_port
+    except ValueError:
+        return None
 
 
 def is_safe_next_path(path: str) -> bool:
