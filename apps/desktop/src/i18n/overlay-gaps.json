@@ -193,6 +193,8 @@
   "boot.failure.gatewaySettings": ["ar"],
   "boot.failure.reinstallApp": ["ar","de","es","fr","ja","ru","zh-hant"],
   "boot.failure.remoteFailureHint": ["ar"],
+  "boot.failure.webappDescription": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "boot.failure.webappTitle": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "boot.updateHold.checkAgain": ["ar","ja","ru","zh","zh-hant"],
   "boot.updateHold.confirmBody": ["ar","ja","ru","zh","zh-hant"],
   "boot.updateHold.confirmKeepWaiting": ["ar","ja","ru","zh","zh-hant"],

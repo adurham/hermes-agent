@@ -14,7 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
-import { BootFailureOverlay } from '@/components/boot-failure-overlay'
+import { StartupOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
@@ -1346,7 +1346,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
-      <BootFailureOverlay />
+      <StartupOverlay />
       <UpdateHoldOverlay />
       <CommandPalette />
       <PluginInstallModal />

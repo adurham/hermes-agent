@@ -1,6 +1,6 @@
 const FRAGMENT_KEY = 'hermes-session'
 
-export const WEBAPP_LAUNCH_REQUIRED = 'Open the private launch link printed by hermes webapp in this tab. If the gateway restarted or the link is lost, run hermes webapp again to get a new link. Keep the link private: it grants host access.'
+export const WEBAPP_LAUNCH_REQUIRED = 'Run hermes webapp on this computer to sign this browser in.'
 
 /** Pasting the launch link over a bare URL is a same-document navigation. */
 export function watchWebappLaunchLink(reload: () => void): void {
