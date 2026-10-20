@@ -679,12 +679,11 @@ describe('PluginsTab catalog UX', () => {
     await act(async () => {
       settleConfirm(true)
     })
-    expect(requestGateway).toHaveBeenCalledWith('plugins.manage', {
-      action: 'update',
-      name: 'demo-weather',
-      profile: 'workbot',
-      accept_capabilities: true
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'plugins.manage',
+      { action: 'update', name: 'demo-weather', profile: 'workbot', accept_capabilities: true },
+      expect.any(Number)
+    )
   })
 
   it('fetches the catalog once, retaining parent search across selection and filters', async () => {
@@ -796,7 +795,8 @@ describe('PluginsTab catalog UX', () => {
     await waitFor(() =>
       expect(requestGateway).toHaveBeenCalledWith(
         'plugins.manage',
-        expect.objectContaining({ action: 'update', name: 'demo-weather', profile: 'workbot' })
+        expect.objectContaining({ action: 'update', name: 'demo-weather', profile: 'workbot' }),
+        expect.any(Number)
       )
     )
   })
