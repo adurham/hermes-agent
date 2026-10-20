@@ -35,8 +35,28 @@ def adapter_supports_push(adapter: Any) -> bool:
     return bool(getattr(adapter, "supports_async_delivery", True))
 
 
+# Store refusal codes (``RuntimeStoreError.reason``) that refuse a notice for good: the route or the
+# session's ownership no longer matches it, so every retry meets the same verdict. Every other refusal
+# (``runtime_draining`` during a restart's after-turn wait or a parked profile, ``queue_full``,
+# ``session_busy``, ``stale_epoch``, ``runtime_retired``, ``storage_unavailable``, an adapter that
+# did not accept) clears on its own: back off, never give the notice up.
+PERMANENT_REFUSAL_REASONS = frozenset({
+    'admission_conflict', 'not_found', 'invalid_params', 'permission_denied', 'profile_mismatch',
+    'session_superseded',
+})
+
+
 class WakeNotAccepted(RuntimeError):
-    """No adapter admission: retry without treating a healthy chat as dead."""
+    """No adapter admission: retry without treating a healthy chat as dead. ``reason`` is the
+    store's refusal code when the session authority refused it (None: the adapter did not accept)."""
+
+    def __init__(self, message: str = "internal wake not accepted by adapter", *, reason: Optional[str] = None):
+        super().__init__(message)
+        self.reason = reason
+
+    @property
+    def permanent(self) -> bool:
+        return self.reason in PERMANENT_REFUSAL_REASONS
 
 
 def session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:
@@ -85,7 +105,7 @@ async def admit_internal_event(adapter: Any, event: Any) -> None:
     event._gateway_accepted = False
     await adapter.handle_message(event)
     if event._gateway_accepted is not True:
-        raise WakeNotAccepted("internal wake not accepted by adapter")
+        raise WakeNotAccepted()
 
 
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None,
@@ -109,7 +129,7 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
                 if await admit_route_wake(runner, adapter, source, text, "kanban-wake", category):
                     return  # committed to the session FIFO: never interrupts the admitted turn
             except RuntimeStoreError as exc:
-                raise WakeNotAccepted(str(exc)) from exc
+                raise WakeNotAccepted(str(exc), reason=exc.reason) from exc
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True,
                                    metadata={"notification_category": notification_category})
         await admit_internal_event(adapter, synth_event)

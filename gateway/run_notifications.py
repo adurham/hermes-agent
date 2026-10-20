@@ -71,6 +71,13 @@ _COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
 # 2 s drain cadence instead of the watcher's check interval (#140899).
 _WATCH_INJECTION_RETRY_BASE_DELAY = 4.0
 
+
+def _refusal_retry_at(step: int) -> float:
+    """When a refused queued notice is next offered: exponential from the drain base, capped."""
+    return time.monotonic() + jittered_backoff(
+        step, base_delay=_WATCH_INJECTION_RETRY_BASE_DELAY,
+        max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
+
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
     "drop": ("drop_completion_delivery", "Could not drop durable completion claim"),
@@ -739,23 +746,34 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                         delivered = False
             # The original event: a requeued tick folds again from what is still queued.
             if delivered is False:
-                attempts = int(evt.get("_watch_injection_attempts") or 0) + 1
-                evt["_watch_injection_attempts"] = attempts
-                if attempts < _MAX_COMPLETION_INJECTION_ATTEMPTS:
-                    # A refusal may clear (adapter reconnecting, store draining): retry with the
-                    # same bounded backoff as the process watcher (#139026), never on every tick.
-                    evt["_watch_next_retry_at"] = time.monotonic() + jittered_backoff(
-                        attempts, base_delay=_WATCH_INJECTION_RETRY_BASE_DELAY,
-                        max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
-                    completion_queue.put(evt)
-                else:
-                    logger.warning(
-                        "Watch notification for %s chat=%s (type=%s session_id=%s) was refused "
-                        "%d times; dropping the queued event (output remains available via "
-                        "process(action='log'))",
-                        evt.get("platform") or "?", evt.get("chat_id") or "?",
-                        evt.get("type") or "?", evt.get("session_id", "unknown"), attempts,
-                    )
+                self._requeue_refused_watch_event(completion_queue, evt)
+
+    @staticmethod
+    def _requeue_refused_watch_event(completion_queue, evt: dict) -> None:
+        """Retry a refused watch event on a bounded backoff, never on every 2 s tick (#140899).
+
+        Only a permanent refusal (``gateway.wake.PERMANENT_REFUSAL_REASONS``: the route or the
+        session's ownership no longer matches) counts toward the cap that drops it. A transient one
+        (a restart's after-turn wait, a parked profile, a full owner FIFO, an adapter reconnecting)
+        clears on its own, so the event waits it out however long it lasts.
+        """
+        from gateway.wake import PERMANENT_REFUSAL_REASONS
+        step = int(evt.get("_watch_retry_step") or 0) + 1
+        evt["_watch_retry_step"] = step
+        if evt.pop("_refusal_reason", None) in PERMANENT_REFUSAL_REASONS:
+            refusals = int(evt.get("_watch_injection_attempts") or 0) + 1
+            evt["_watch_injection_attempts"] = refusals
+            if refusals >= _MAX_COMPLETION_INJECTION_ATTEMPTS:
+                logger.warning(
+                    "Watch notification for %s chat=%s (type=%s session_id=%s) was refused "
+                    "%d times; dropping the queued event (output remains available via "
+                    "process(action='log'))",
+                    evt.get("platform") or "?", evt.get("chat_id") or "?",
+                    evt.get("type") or "?", evt.get("session_id", "unknown"), refusals,
+                )
+                return
+        evt["_watch_next_retry_at"] = _refusal_retry_at(step)
+        completion_queue.put(evt)
 
     def _adapter_by_platform_value(self, platform_name: str):
         """Literal ``p.value == platform_name`` scan over connected adapters (native adapters only)."""
@@ -928,7 +946,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 try:
                     await admit_process_notice(self, authority, adapter, synth_event, evt)
                 except RuntimeStoreError as exc:
-                    raise WakeNotAccepted(str(exc)) from exc
+                    raise WakeNotAccepted(str(exc), reason=exc.reason) from exc
             else:
                 await admit_internal_event(adapter, synth_event)
             return True
@@ -937,6 +955,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # refused, and one pinned to a gone session is dropped instead of requeued.
             if not raise_not_accepted and await self._watch_pin_gone(evt, str(exc)):
                 return None
+            if not raise_not_accepted:
+                evt["_refusal_reason"] = exc.reason  # the drain counts only permanent refusals
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
@@ -1240,9 +1260,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 with self._completion_delivery_lock:
                     self._mark_completions_delivered_locked((identity,))
             return True
-        except WakeNotAccepted:
-            # Past the watcher's bounded retries a refusal spends its attempt (#141153).
-            refused = not evt.get("_spend_refusal")
+        except WakeNotAccepted as exc:
+            # A permanent refusal (route/ownership mismatch) spends its durable attempt, so the row
+            # converges to ``dropped`` across restarts too (#141153); a transient one (restart wait,
+            # full FIFO) is refunded and never drops a completion the owner will take later.
+            refused = not exc.permanent
             return False
         finally:
             if identity_claimed and not accepted:
@@ -1608,17 +1630,13 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
 
     @staticmethod
     def _back_off_refused_completions(group: list[dict]) -> None:
-        """Space out an undelivered async group's retries; past the cap its next refusal spends a
-        durable delivery attempt (``_spend_refusal``), so a refusal that never clears converges to
-        ``dropped`` instead of being refunded on every 2 s pass, across restarts (#141153). A single
-        refusal still refunds: it may clear once the owner's turn settles."""
+        """Space out an undelivered async group's retries instead of re-offering it every 2 s pass.
+        The backoff only paces; the durable ledger decides when a row gives up (a permanent refusal
+        spends a delivery attempt there, so the count survives restarts) (#141153)."""
         for evt in group:
-            attempts = int(evt.get("_watch_injection_attempts") or 0) + 1
-            evt["_watch_injection_attempts"] = attempts
-            evt["_spend_refusal"] = attempts >= _MAX_COMPLETION_INJECTION_ATTEMPTS
-            evt["_watch_next_retry_at"] = time.monotonic() + jittered_backoff(
-                attempts, base_delay=_WATCH_INJECTION_RETRY_BASE_DELAY,
-                max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
+            step = int(evt.get("_watch_retry_step") or 0) + 1
+            evt["_watch_retry_step"] = step
+            evt["_watch_next_retry_at"] = _refusal_retry_at(step)
 
     @staticmethod
     def _redacted_output_tail(session, limit: int) -> str:
