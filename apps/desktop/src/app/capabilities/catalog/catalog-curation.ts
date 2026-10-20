@@ -51,9 +51,13 @@ export function curatedFeaturedRank(kind: 'skills' | 'plugins', row: CurationRow
 
 export type PluginTier = 'official' | 'verified' | 'community'
 
+/** Trust order: the tier filter, chips and shelves all read it. */
+export const PLUGIN_TIER_ORDER: readonly PluginTier[] = ['official', 'verified', 'community']
+
 /** Catalog tier straight from the feed (`tier` in plugin-catalog/*.yaml):
  *  official and bundled are Nous, verified is granted by Nous to plugins from
- *  the company behind the integration, everything else is community. */
+ *  the company behind the integration, everything else is community —
+ *  including installed-only values (`user`, `git`, desktop kinds). */
 export function pluginTier(entry: { source: string }): PluginTier {
   if (entry.source === 'official' || entry.source === 'bundled') {
     return 'official'

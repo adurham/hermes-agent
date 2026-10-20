@@ -1,4 +1,4 @@
-import { IconCategory, IconDatabase, IconFilter2 } from '@tabler/icons-react'
+import { IconCategory, IconDatabase, IconFilter2, IconRosetteDiscountCheck } from '@tabler/icons-react'
 import { type ReactNode, useId, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -6,11 +6,12 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 
-import { catalogLabel } from './catalog-data'
+import { type CatalogKind, catalogLabel } from './catalog-data'
 import type { FacetRow } from './catalog-filters'
 import type { CatalogFacets } from './catalog-query'
 
 interface CatalogFilterBarProps {
+  kind: CatalogKind
   sources: string[]
   categories: ReadonlyArray<readonly [string, { label: string; count: number }]>
   tags: FacetRow[]
@@ -34,12 +35,15 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
   const c = t.catalog
   const panelId = useId()
   const [mode, setMode] = useState<'categories' | 'sources'>('categories')
+  // Plugins file the source facet by trust tier; skills by registry.
+  const tiers = props.kind === 'plugins'
+  const tierLabel = (value: string) => (tiers ? c.tierLabels[value as keyof typeof c.tierLabels] : undefined)
   const [expanded, setExpanded] = useState(false)
   const [more, setMore] = useState(false)
 
   const rows = mode === 'categories'
     ? props.categories.map(([value, meta]) => ({ value, label: catalogLabel(meta.label) }))
-    : props.sources.map(value => ({ value, label: catalogLabel(value) }))
+    : props.sources.map(value => ({ value, label: tierLabel(value) ?? catalogLabel(value) }))
 
   const selected = props.facets[mode]
   const onSelect = mode === 'categories' ? props.onCategory : props.onSource
@@ -50,7 +54,7 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
   return (
     <div className="catalog-filter-bar" data-catalog-filters>
       <div className="catalog-filter-row">
-        <SegmentedControl onChange={setMode} options={[{ id: 'categories', label: c.category, icon: IconCategory }, { id: 'sources', label: c.source, icon: IconDatabase }]} sizing="content" value={mode} />
+        <SegmentedControl onChange={setMode} options={[{ id: 'categories', label: c.category, icon: IconCategory }, { id: 'sources', label: tiers ? c.tier : c.source, icon: tiers ? IconRosetteDiscountCheck : IconDatabase }]} sizing="content" value={mode} />
         <div className="catalog-filter-chips">
           <Button aria-pressed={!selected.length} onClick={() => onSelect(null)} size="xs" variant={!selected.length ? 'default' : 'outline'}>{t.skills.all}</Button>
           <span aria-hidden className="px-1 text-(--ui-text-quaternary)">/</span>

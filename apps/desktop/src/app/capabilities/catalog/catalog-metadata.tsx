@@ -6,9 +6,13 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { CheckCircle2 } from '@/lib/icons'
 import { fmtDateTime, relativeTime } from '@/lib/time'
 
 import { type CatalogEntry, catalogLabel } from './catalog-data'
+
+/** Trust tiers read at a glance (same tones as the installed-plugin pill); the rest stay muted. */
+const SOURCE_TONE: Record<string, 'default' | 'success'> = { official: 'default', verified: 'success' }
 
 interface CatalogMetadataProps {
   entry: CatalogEntry
@@ -35,7 +39,8 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
   return (
     <span className="flex min-w-0 items-center justify-start gap-1">
       {entry.source && (
-        <Badge className="max-w-full" size="xs" variant="muted">
+        <Badge className="max-w-full" size="xs" variant={SOURCE_TONE[entry.source] ?? 'muted'}>
+          {entry.source === 'verified' && <CheckCircle2 aria-hidden className="size-3 shrink-0" />}
           <span className="truncate">{catalogLabel(entry.source)}</span>
         </Badge>
       )}

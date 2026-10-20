@@ -58,6 +58,8 @@ export const enCatalog: CatalogTranslations = {
   installHint: 'Review the source before installing. Changes apply to new sessions.',
   results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
   back: 'Back to results',
+  tier: 'Tier',
+  tierLabels: { official: 'Official', verified: 'Verified', community: 'Community' },
   tiers: {
     official: { title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },
     verified: { title: 'Verified Plugins', blurb: 'From the company behind the integration, verified by Nous.' }

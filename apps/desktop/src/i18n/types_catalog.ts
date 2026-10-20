@@ -56,6 +56,8 @@ export interface CatalogTranslations {
   installHint: string
   results: (count: number) => string
   back: string
+  tier: string
+  tierLabels: Record<'official' | 'verified' | 'community', string>
   tiers: {
     official: { title: string; blurb: string }
     verified: { title: string; blurb: string }

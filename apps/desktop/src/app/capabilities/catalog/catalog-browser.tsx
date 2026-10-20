@@ -360,7 +360,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
   const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
-  const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled), sort, kind)
+  const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind)
 
   const discover = isDiscoverView(facets, deferredQuery)
   const pageOrder = filtered
@@ -457,6 +457,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             actions={actions}
             categories={catalogCategories(visible)}
             facets={facets}
+            kind={kind}
             onCategory={filters.toggleCategory}
             onClear={clearFilters}
             onInstalled={filters.toggleInstalled}
@@ -464,7 +465,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             onTag={filters.toggleTag}
             resultCount={filtered.length}
             sortControl={sortControl}
-            sources={catalogSources(visible)}
+            sources={catalogSources(visible, kind)}
             tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
           />
           {notice}
