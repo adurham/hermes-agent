@@ -1241,7 +1241,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     self._mark_completions_delivered_locked((identity,))
             return True
         except WakeNotAccepted:
-            refused = True
+            # Past the watcher's bounded retries a refusal spends its attempt (#141153).
+            refused = not evt.get("_spend_refusal")
             return False
         finally:
             if identity_claimed and not accepted:
@@ -1589,9 +1590,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     self._enrich_async_delegation_routing(evt)
                     groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
                 for group in groups.values():
+                    if any(evt.get("_watch_next_retry_at", 0) > time.monotonic() for evt in group):
+                        for evt in group:
+                            _pr.completion_queue.put(evt)
+                        continue
                     try:
                         delivered = await self._deliver_async_delegation_group(group)
                         if delivered is False:
+                            self._back_off_refused_completions(group)
                             for evt in group:
                                 _pr.completion_queue.put(evt)
                     except Exception as e:
@@ -1599,6 +1605,20 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                             _pr.completion_queue.put(evt)
                         logger.error("Async delegation injection error: %s", e)
             await asyncio.sleep(interval)
+
+    @staticmethod
+    def _back_off_refused_completions(group: list[dict]) -> None:
+        """Space out an undelivered async group's retries; past the cap its next refusal spends a
+        durable delivery attempt (``_spend_refusal``), so a refusal that never clears converges to
+        ``dropped`` instead of being refunded on every 2 s pass, across restarts (#141153). A single
+        refusal still refunds: it may clear once the owner's turn settles."""
+        for evt in group:
+            attempts = int(evt.get("_watch_injection_attempts") or 0) + 1
+            evt["_watch_injection_attempts"] = attempts
+            evt["_spend_refusal"] = attempts >= _MAX_COMPLETION_INJECTION_ATTEMPTS
+            evt["_watch_next_retry_at"] = time.monotonic() + jittered_backoff(
+                attempts, base_delay=_WATCH_INJECTION_RETRY_BASE_DELAY,
+                max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
 
     @staticmethod
     def _redacted_output_tail(session, limit: int) -> str:

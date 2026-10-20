@@ -244,3 +244,43 @@ async def test_unproven_heartbeat_refusal_requeues_the_original_tick(monkeypatch
         assert not _queued_admissions(authority, entry.session_id)
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_completion_refused_on_every_retry_converges_to_dropped(monkeypatch):
+    """The async watcher backs off a refused completion and, past its bounded retries, lets the
+    refusal spend a durable delivery attempt: the row reaches ``dropped`` instead of being refunded
+    on every 2 s pass and replayed after each restart (#141153)."""
+    import asyncio
+    import time
+    from gateway import run_notifications
+    from tools import async_delegation as delegation
+    from tools.process_registry import process_registry
+    runner, authority, entry = await _gateway(monkeypatch)
+    try:
+        evt = dict(_notice(entry, await _foreign_pin(runner), 'async_delegation'),
+                   delegation_id='refused-1', summary='review findings', status='completed',
+                   dispatched_at=time.time())
+        delegation._persist_dispatch(evt)
+        delegation._persist_completion(evt, {'status': 'completed', 'summary': 'review findings'})
+        monkeypatch.setattr(process_registry, 'completion_queue', queue.Queue())
+        process_registry.completion_queue.put(dict(evt))
+        clock = install_module_clock(monkeypatch, run_notifications)
+        real_sleep, ticks = asyncio.sleep, []
+
+        async def tick(delay):
+            ticks.append(delay)
+            clock.now += 1
+            runner._running = len(ticks) < 4000 and not process_registry.completion_queue.empty()
+            await real_sleep(0)
+        monkeypatch.setattr(asyncio, 'sleep', tick)
+        runner._running = True
+
+        await runner._async_delegation_watcher(interval=0)
+
+        row = delegation.get_durable_delegation('refused-1')
+        assert (row['delivery_state'], row['delivery_attempts']) == ('dropped', delegation._MAX_DELIVERY_ATTEMPTS)
+        # Eight refunded retries back off ~5 min, then each spent attempt waits a minute.
+        assert len(ticks) > 500, 'refused retries are spaced out, not re-attempted on every pass'
+    finally:
+        authority.db.close()
