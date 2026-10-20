@@ -622,6 +622,97 @@ def test_the_store_release_joins_the_pass_after_the_aliases_move(monkeypatch):
     assert seen[0][1] == json.loads(manifest)
 
 
+@pytest.mark.parametrize("recovery_head", ["0.21.5", "0.21.6"])
+def test_store_release_recovers_after_alias_movement_without_rewinding_channels(monkeypatch, recovery_head):
+    from scripts.releases import channel_releases, docker, sequencer, store
+    from tests.scripts.test_release_store import STORE_FILE, _Api
+
+    manifest = json.dumps({"files": [{"path": STORE_FILE}]}).encode()
+    _tags, _releases, run = _sequencer_fixture(
+        "0.21.5", manifest_digest=hashlib.sha256(manifest).hexdigest(), drafts_on_claim_tag=True)
+    head = ["0.21.4"]
+    events = []
+    api = _Api()
+    release_from_env = store.release_from_env
+    env = {"GITHUB_REPOSITORY": "example/project", "MS_STORE_PRODUCT_ID": "9NTEST",
+           "MS_STORE_TENANT_ID": "T", "MS_STORE_CLIENT_ID": "C", "MS_STORE_CLIENT_SECRET": "S"}
+
+    def advance(_env, record, _root):
+        head[0] = record["version"]
+        events.append("feed")
+
+    def interrupt_after_aliases(*_args):
+        events.append("aliases")
+        raise KeyboardInterrupt("cancelled after aliases moved")
+
+    def release_store(environment, candidate):
+        events.append("store")
+        return release_from_env(environment, candidate, run=api)
+
+    monkeypatch.setattr(channel_releases, "advance_stable", advance)
+    monkeypatch.setattr(docker, "promote_stable", interrupt_after_aliases)
+    monkeypatch.setattr(store, "release_from_env", release_store)
+    with pytest.raises(KeyboardInterrupt, match="after aliases moved"):
+        sequencer.reconcile(env, run=run, read_head=lambda: head[0], read_archive=lambda _key: manifest)
+    assert head[0] == "0.21.5" and events == ["feed", "aliases"]
+    assert api.mode == "Manual" and api.commits == 0
+
+    # Channel movement is already durable; retry only the receipt-bound Store work,
+    # even if another publication has since advanced the channels further.
+    head[0] = recovery_head
+    monkeypatch.setattr(channel_releases, "advance_stable",
+                        lambda *_args: pytest.fail("Store recovery moved the desktop head"))
+    monkeypatch.setattr(docker, "promote_stable",
+                        lambda *_args: pytest.fail("Store recovery moved the Docker aliases"))
+    assert sequencer.reconcile(
+        env, run=run, read_head=lambda: head[0], read_archive=lambda _key: manifest) == []
+    assert head[0] == recovery_head and events == ["feed", "aliases", "store"]
+    assert api.mode == "Immediate" and api.commits == 1
+    sequencer.reconcile(env, run=run, read_head=lambda: head[0], read_archive=lambda _key: manifest)
+    assert api.commits == 1
+
+
+@pytest.mark.parametrize("pending_is_latest", [True, False])
+def test_store_reconciliation_finds_the_newest_matching_published_submission(monkeypatch, pending_is_latest):
+    from scripts.releases import channel_releases, docker, sequencer, store
+    from tests.scripts.test_release_store import STORE_FILE, _Api
+
+    newest_file = "Store-HermesBundled-2026.7000.1.0-win.msixbundle"
+    manifests = {
+        f"releases/tag/rc.1-v{version}/release-candidates.json":
+            json.dumps({"files": [{"path": filename}]}).encode()
+        for version, filename in [("0.21.5", STORE_FILE), ("0.21.6", newest_file)]
+    }
+    tags, releases, run = _sequencer_fixture("0.21.5", "0.21.6", manifest_digest=None)
+    for version, raw in zip(("0.21.5", "0.21.6"), manifests.values()):
+        tags[f"v{version}"][2]["candidateManifestSha256"] = hashlib.sha256(raw).hexdigest()
+    for row in releases:
+        row.update(draft=False, published_at="2026-09-22T01:00:00Z")
+    api = _Api(files=[newest_file if pending_is_latest else STORE_FILE])
+    seen = []
+    release_from_env = store.release_from_env
+
+    def release_store(env, manifest):
+        result = release_from_env(env, manifest, run=api)
+        seen.append((store.store_bundle(manifest), result))
+        return result
+
+    monkeypatch.setattr(store, "release_from_env", release_store)
+    monkeypatch.setattr(channel_releases, "advance_stable",
+                        lambda *_args: pytest.fail("Store reconciliation moved the desktop head"))
+    monkeypatch.setattr(docker, "promote_stable",
+                        lambda *_args: pytest.fail("Store reconciliation moved the Docker aliases"))
+    env = {"GITHUB_REPOSITORY": "example/project", "MS_STORE_PRODUCT_ID": "9NTEST",
+           "MS_STORE_TENANT_ID": "T", "MS_STORE_CLIENT_ID": "C", "MS_STORE_CLIENT_SECRET": "S"}
+    assert sequencer.reconcile(
+        env, run=run, read_head=lambda: "0.21.6", read_archive=manifests.__getitem__) == []
+    # A newer public release may have failed its non-blocking Store upload;
+    # only a package mismatch permits trying an older public release.
+    assert seen == ([(newest_file, "immediate")] if pending_is_latest else
+                    [(newest_file, "superseded"), (STORE_FILE, "immediate")])
+    assert api.mode == "Immediate" and api.commits == 1
+
+
 def test_a_publish_that_died_before_the_retarget_is_repaired():
     from scripts.releases.sequencer import reconcile
 
