@@ -258,11 +258,12 @@ const detailRelated = (entries: CatalogEntry[], selected: CatalogEntry | undefin
   selected && shown ? relatedEntries(entries, selected, RELATED_COUNT) : []
 
 /** Discovery shelves show only while browsing everything. */
-/** Shelves (not a flat grid) while nothing narrows the catalog — or, for
- *  plugins, while only tiers do: Official / Verified stay their own shelves
- *  and Community keeps its category shelves. */
+/** Shelves (not a flat grid) while nothing narrows the catalog, and also
+ *  while only tiers (plugins) or several categories do: Official / Verified
+ *  stay their own shelves, Community and multi-category picks keep their
+ *  category shelves. One category is a drill-in, so it stays a flat grid. */
 const isDiscoverView = (facets: CatalogFacets, query: string, kind: CatalogKind) =>
-  (kind === 'plugins' || !facets.sources.length) && !facets.categories.length && !facets.tags.length && !query && !facets.installedOnly
+  (kind === 'plugins' || !facets.sources.length) && facets.categories.length !== 1 && !facets.tags.length && !query && !facets.installedOnly
 
 function CatalogLoadState({ error, onRetry }: { error: Error | null; onRetry: () => void }) {
   const { t } = useI18n()
@@ -491,7 +492,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     key={`${filterKey}:${sort}:${deferredQuery}:${facets.installedOnly}`}
                   >
                     {discover ? (
-                      <CatalogDiscovery actions={actions} card={card} entries={filtered} kind={kind} narrowed={facets.sources.length > 0} onCategory={filters.chooseCategory} />
+                      <CatalogDiscovery actions={actions} byCategory={facets.categories.length > 1} card={card} entries={filtered} kind={kind} narrowed={facets.sources.length > 0 || facets.categories.length > 1} onCategory={filters.chooseCategory} />
                     ) : (
                       <CatalogFilteredCards card={card} entries={filtered.slice(0, limit)} more={filtered.length > limit} onMore={() => setLimit(value => value + PAGE_SIZE)} />
                     )}

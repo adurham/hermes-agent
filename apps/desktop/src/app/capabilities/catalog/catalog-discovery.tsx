@@ -30,7 +30,7 @@ const CATEGORY_PAGE = 8
 /** Rows of the mixed "More to explore" shelf shown at first, and per "Show more". */
 const LOOSE_ROWS_PAGE = 3
 
-export function CatalogDiscovery({ entries, kind, card, onCategory, actions, narrowed }: {
+export function CatalogDiscovery({ entries, kind, card, onCategory, actions, narrowed, byCategory }: {
   entries: CatalogEntry[]
   kind: CatalogKind
   card: (entry: CatalogEntry, index: number, variant: CatalogCardVariant, placement?: React.CSSProperties) => ReactNode
@@ -38,6 +38,8 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   actions?: ReactNode
   /** A tier filter is on: the shelves show only those tiers, so no hero pick. */
   narrowed?: boolean
+  /** Several categories picked: one shelf per category, tiers and small-shelf folding off. */
+  byCategory?: boolean
 }) {
   const { t } = useI18n()
   const [categoryLimit, setCategoryLimit] = useState(CATEGORY_PAGE)
@@ -54,8 +56,8 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   }))
 
   const others = entries.filter(entry => entry !== featured)
-  const tiered = kind === 'plugins' ? PLUGIN_TIERS.map(tier => ({ tier, ...t.catalog.tiers[tier], items: others.filter(entry => pluginTier(entry) === tier) })).filter(({ items }) => items.length) : []
-  const remaining = kind === 'plugins' ? others.filter(entry => pluginTier(entry) === 'community') : others
+  const tiered = kind === 'plugins' && !byCategory ? PLUGIN_TIERS.map(tier => ({ tier, ...t.catalog.tiers[tier], items: others.filter(entry => pluginTier(entry) === tier) })).filter(({ items }) => items.length) : []
+  const remaining = kind === 'plugins' && !byCategory ? others.filter(entry => pluginTier(entry) === 'community') : others
 
   // Plugins with an unlisted category land in `general`, as in every other plugin grouping.
   const sections: [string, string, CatalogEntry[]][] = (
@@ -66,8 +68,10 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
 
   // A category too small to fill a row reads as a stray full-width strip; those
   // fold into one mixed shelf at the end instead.
-  const shelves = sections.filter(([, , items]) => items.length >= MIN_SHELF)
-  const loose = sections.filter(([, , items]) => items.length < MIN_SHELF).flatMap(([, , items]) => items)
+  // (A category the user picked always gets its own shelf, however small.)
+  const minShelf = byCategory ? 1 : MIN_SHELF
+  const shelves = sections.filter(([, , items]) => items.length >= minShelf)
+  const loose = sections.filter(([, , items]) => items.length < minShelf).flatMap(([, , items]) => items)
 
   const bento = (items: CatalogEntry[], rows?: number, flip = false) => (
     <div className="catalog-bento" data-catalog-hover-group>
