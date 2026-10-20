@@ -66,6 +66,8 @@
   "assistant.thread.errorCodes.content_policy_blocked.title": ["ar","ru"],
   "assistant.thread.errorCodes.context_overflow.body": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.context_overflow.title": ["ar","ja","ru","zh","zh-hant"],
+  "assistant.thread.errorCodes.cron_session_read_only.body": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
+  "assistant.thread.errorCodes.cron_session_read_only.title": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.disk_full.body": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.disk_full.title": ["ar","ja","ru","zh","zh-hant"],
   "assistant.thread.errorCodes.empty_response.body": ["ar","ru"],

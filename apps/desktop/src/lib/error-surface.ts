@@ -51,7 +51,7 @@ export const ERROR_CODE_KEYS = [
   'SESSION_NOT_OWNED',
   // The gateway that owns the chat is mid-turn and could not queue this send: transient.
   'SESSION_OWNER_BUSY',
-  // Cron sessions are durable scheduled-run sessions and cannot accept ordinary chat input.
+  // The chat is a scheduled job's session: it only runs that job, so a typed message never runs there.
   'cron_session_read_only',
   // The owner did not confirm a forwarded send in time; it may already be queued: no Retry.
   'SESSION_OWNER_UNCONFIRMED',
@@ -274,8 +274,8 @@ const SWITCH_PROVIDER_LAYERS: readonly ErrorSurfaceLayer[] = ['auth', 'billing',
 const CODE_PLANS: Partial<Record<ErrorCodeKey, Partial<ErrorRecoveryPlan>>> = {
   SESSION_NOT_OWNED: { retry: false, startNewSession: true },
   SESSION_OWNER_BUSY: { retry: true, startNewSession: false },
-  cron_session_read_only: { retry: false, startNewSession: true },
   SESSION_OWNER_UNCONFIRMED: { retry: false, startNewSession: false },
+  cron_session_read_only: { retry: false, startNewSession: true },
   content_policy_blocked: { editMessage: true, retry: false },
   context_overflow: { compress: true, retry: false, startNewSession: true },
   disk_full: { openHermesFolder: true, retry: true },
@@ -314,8 +314,8 @@ export function errorRecoveryPlan(surface: ErrorSurface | null | undefined): Err
 export function formatErrorDiagnostics(input: {
   appVersion?: string
   errorText: string
-  /** Epoch seconds when the gateway recorded the failure. Absent on legacy frames. */
-  failureAt?: number
+  /** Epoch seconds the failure was recorded (the bubble's own time), never the copy time. */
+  failedAt?: number
   model?: string
   provider?: string
   surface?: ErrorSurface | null
@@ -324,14 +324,10 @@ export function formatErrorDiagnostics(input: {
   // caller-supplied fallback (typically the foreground composer's atoms).
   const provider = input.surface?.provider || input.provider
   const model = input.surface?.model || input.model
-  const failureAt = input.failureAt
-  const hasFailureAt = typeof failureAt === 'number' && Number.isFinite(failureAt) && failureAt > 0
-  const failureDate = hasFailureAt ? new Date(failureAt * 1000) : null
-  const failureTime = failureDate && Number.isFinite(failureDate.getTime()) ? failureDate.toISOString() : null
 
   const lines = [
     '── Hermes error details ──',
-    failureTime ? `time: ${failureTime}` : null,
+    input.failedAt ? `time: ${new Date(input.failedAt * 1000).toISOString()}` : null,
     input.surface ? `layer: ${input.surface.layer}` : null,
     input.surface ? `code: ${input.surface.code}` : null,
     input.surface ? `retryable: ${input.surface.retryable}` : null,

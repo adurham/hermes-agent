@@ -73,23 +73,19 @@ describe('formatErrorDiagnostics', () => {
     expect(text).not.toContain('some/other-model')
   })
 
+  it('stamps the recorded failure time, never the copy time (#141348)', () => {
+    expect(formatErrorDiagnostics({ errorText: 'boom', failedAt: 1_792_000_000 })).toContain(
+      'time: 2026-10-14T17:46:40.000Z'
+    )
+  })
+
   it('omits absent fields without leaving blank lines', () => {
     const text = formatErrorDiagnostics({ errorText: 'boom' })
 
-    expect(text).not.toContain('layer:')
     expect(text).not.toContain('time:')
+    expect(text).not.toContain('layer:')
     expect(text).not.toContain('model:')
     expect(text.split('\n').every(line => line.trim().length > 0)).toBe(true)
-  })
-
-  it('uses the gateway failure timestamp when one is present', () => {
-    const text = formatErrorDiagnostics({ errorText: 'boom', failureAt: 1792345678.25 })
-
-    expect(text).toContain(`time: ${new Date(1792345678.25 * 1000).toISOString()}`)
-  })
-
-  it('omits an out-of-range gateway timestamp', () => {
-    expect(formatErrorDiagnostics({ errorText: 'boom', failureAt: Number.MAX_VALUE })).not.toContain('time:')
   })
 })
 
@@ -199,13 +195,11 @@ describe('free-tier refusals', () => {
   })
 })
 
-describe('cron admission conflicts', () => {
-  it('uses scheduled-session copy and starts a new chat instead of retrying', () => {
-    const surface = parseErrorSurface({ layer: 'gateway', code: 'cron_session_read_only', retryable: false })!
-    const { body, title } = errorCardText(en.assistant.thread, surface)
+describe('cron session read-only (#141348)', () => {
+  it('renders its own copy and offers a new chat instead of Retry', () => {
+    const surface = parseErrorSurface({ layer: 'gateway', code: 'cron_session_read_only', retryable: false })
 
-    expect(title).toBe(en.assistant.thread.errorCodes.cron_session_read_only.title)
-    expect(body).toBe(en.assistant.thread.errorCodes.cron_session_read_only.body)
+    expect(errorCardText(en.assistant.thread, surface)).toEqual(en.assistant.thread.errorCodes.cron_session_read_only)
     expect(errorRecoveryPlan(surface)).toMatchObject({ retry: false, startNewSession: true })
   })
 })
