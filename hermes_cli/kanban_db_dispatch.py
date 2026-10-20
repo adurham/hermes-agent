@@ -1182,7 +1182,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 continue
             # An ambiguous receipt holds the card while the attempt may still run; once nothing
             # can be executing it (a dead bound interpreter, or a run that never bound one): crash.
-            if owner_reclaim_blocked(conn, row["id"]):
+            if owner_reclaim_blocked(conn, row["id"], crash_sweep=True):
                 continue
 
             pid = int(row["worker_pid"])

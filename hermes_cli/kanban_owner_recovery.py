@@ -129,6 +129,8 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     """
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_dispatch import _worker_alive
+    if _latest_run_event(conn, task_id, 'worker_bound'):
+        return False  # a bound run is the crash sweep's to book (bound_interpreter_gone)
     row = conn.execute(
         "SELECT claim_lock, claim_expires, worker_pid, worker_started_at, last_heartbeat_at "
         "FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -149,19 +151,22 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     return not any(_worker_alive(pid, fingerprint) for pid, fingerprint in pids)
 
 
-def owner_reclaim_blocked(conn, task_id) -> bool:
+def owner_reclaim_blocked(conn, task_id, *, crash_sweep=False) -> bool:
     """True when a reclaim path must leave this task alone.
 
     The pause protects the effects of an attempt that may still be in flight, and stops
-    holding the claim as soon as nothing can still be executing it: either the owner bound an
-    interpreter that is gone (``bound_interpreter_gone``), or the receipt is unresolved while
-    every piece of the run's liveness evidence is dead (``owner_attempt_provably_over``) —
-    the shape that used to be unreclaimable forever, because its run wrote no ``worker_bound``
-    event and that override was the only one anyone consulted.
+    holding the claim as soon as nothing can still be executing it. A run whose bound
+    interpreter is dead stays the crash sweep's alone (``crash_sweep=True``), so it is booked
+    ``crashed`` and re-queued once rather than ``reclaimed`` by whichever path ticks first. A
+    run that never bound one is released by any path once ``owner_attempt_provably_over``:
+    the shape that used to be unreclaimable forever, because ``bound_interpreter_gone`` was the
+    only override and it needs the ``worker_bound`` event that run never wrote.
     """
     if not owner_reclaim_paused(conn, task_id):
         return False
-    return not (bound_interpreter_gone(conn, task_id) or owner_attempt_provably_over(conn, task_id))
+    if crash_sweep and bound_interpreter_gone(conn, task_id):
+        return False
+    return not owner_attempt_provably_over(conn, task_id)
 
 
 def managed_run_exit_code(conn, task_id, worker_pid, claim_lock):
