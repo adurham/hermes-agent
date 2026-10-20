@@ -56,4 +56,29 @@ export interface CatalogTranslations {
   installHint: string
   results: (count: number) => string
   back: string
+  tiers: {
+    official: { title: string; blurb: string }
+    verified: { title: string; blurb: string }
+  }
+  moreToExplore: string
+  moreToExploreBlurb: string
+  skillsFor: (category: string) => string
+  discoverKind: (kind: string) => string
+  developer: {
+    heading: string
+    title: string
+    pitch: string
+    pitchFollowUp: string
+    submit: string
+    docs: string
+  }
+  toolsets: {
+    mostUsed: string
+    mostUsedBlurb: string
+    essentials: string
+    essentialsBlurb: string
+    toolCount: (count: number) => string
+    callCount: (count: string, calls: number) => string
+    themes: Record<'work' | 'create' | 'recall' | 'connect' | 'more', { label: string; blurb: string }>
+  }
 }

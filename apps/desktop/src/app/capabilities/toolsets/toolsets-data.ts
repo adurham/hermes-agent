@@ -31,39 +31,38 @@ export const toolsetCalls = (toolset: ToolsetInfo, toolCalls: Record<string, num
 
 /** Browsing groups for the Tools page, by what a toolset lets the agent do.
  *  Toolsets not named here land in the trailing "More tools" group. */
-export const TOOLSET_THEMES: ReadonlyArray<{ id: string; label: string; blurb: string; names: readonly string[] }> = [
+export type ToolsetThemeId = 'work' | 'create' | 'recall' | 'connect' | 'more'
+
+/** Browsing-group membership; labels and blurbs are i18n (`catalog.toolsets.themes`). */
+export const TOOLSET_THEMES: ReadonlyArray<{ id: Exclude<ToolsetThemeId, 'more'>; names: readonly string[] }> = [
   {
     id: 'work',
-    label: 'Browse, work and automate',
-    blurb: 'Drive the browser and desktop, edit files, run code and schedule work.',
     names: ['browser', 'computer_use', 'web', 'terminal', 'file', 'code_execution', 'cronjob', 'kanban', 'delegation', 'todo', 'clarify']
   },
   {
     id: 'create',
-    label: 'See, hear and create',
-    blurb: 'Look at images and video, transcribe voice and generate media.',
     names: ['vision', 'video', 'stt', 'tts', 'image_gen', 'video_gen']
   },
   {
     id: 'recall',
-    label: 'Memory and knowledge',
-    blurb: 'What Hermes remembers, and the skills and history it can search.',
     names: ['memory', 'session_search', 'skills']
   },
   {
     id: 'connect',
-    label: 'Connect and reach out',
-    blurb: 'Accounts, other agents, the smart home and search beyond the web.',
     names: ['connections', 'a2a', 'homeassistant', 'x_search', 'messaging', 'spotify']
   }
 ]
 
-export const TOOLSET_MORE_THEME = { id: 'more', label: 'More tools', blurb: 'Everything else this profile can switch on.' }
+export const TOOLSET_MORE_THEME: { id: ToolsetThemeId } = { id: 'more' }
+
+/** Toolsets in the feature row, and the fewest a profile must have before the row shows. */
+export const TOOLSET_FEATURE_COUNT = 4
+export const TOOLSET_FEATURE_MIN = 8
 
 /** The feature row before there's usage to rank by. */
 export const TOOLSET_ESSENTIALS: readonly string[] = ['browser', 'file', 'code_execution', 'memory']
 
-export const toolsetTheme = (name: string) => TOOLSET_THEMES.find(theme => theme.names.includes(name)) ?? TOOLSET_MORE_THEME
+export const toolsetTheme = (name: string): { id: ToolsetThemeId } => TOOLSET_THEMES.find(theme => theme.names.includes(name)) ?? TOOLSET_MORE_THEME
 
 export function filteredToolsets(
   toolsets: ToolsetInfo[],

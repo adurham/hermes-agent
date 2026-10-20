@@ -57,5 +57,36 @@ export const enCatalog: CatalogTranslations = {
   snapshotHint: 'From the Hermes catalog. Browsing never contacts source repositories.',
   installHint: 'Review the source before installing. Changes apply to new sessions.',
   results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
-  back: 'Back to results'
+  back: 'Back to results',
+  tiers: {
+    official: { title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },
+    verified: { title: 'Verified Plugins', blurb: 'From the company behind the integration, verified by Nous.' }
+  },
+  moreToExplore: 'More to explore',
+  moreToExploreBlurb: 'Smaller corners of the catalog, all in one place.',
+  skillsFor: (category: string) => `Skills for ${category.toLowerCase()}.`,
+  discoverKind: (kind: string) => `Discover ${kind}`,
+  developer: {
+    heading: 'Developer Mode',
+    title: 'Build for Hermes',
+    pitch: 'Built a tool, connector, plugin, or Mod?',
+    pitchFollowUp: 'Want to but don’t know how?',
+    submit: 'Submit Mod',
+    docs: 'Developer Docs'
+  },
+  toolsets: {
+    mostUsed: 'Most used',
+    mostUsedBlurb: 'The toolsets Hermes reaches for most on this profile.',
+    essentials: 'Essentials',
+    essentialsBlurb: 'What most Hermes work runs on.',
+    toolCount: (count: number) => `${count} ${count === 1 ? 'tool' : 'tools'}`,
+    callCount: (count: string, calls: number) => `${count} ${calls === 1 ? 'call' : 'calls'}`,
+    themes: {
+      work: { label: 'Browse, work and automate', blurb: 'Drive the browser and desktop, edit files, run code and schedule work.' },
+      create: { label: 'See, hear and create', blurb: 'Look at images and video, transcribe voice and generate media.' },
+      recall: { label: 'Memory and knowledge', blurb: 'What Hermes remembers, and the skills and history it can search.' },
+      connect: { label: 'Connect and reach out', blurb: 'Accounts, other agents, the smart home and search beyond the web.' },
+      more: { label: 'More tools', blurb: 'Everything else this profile can switch on.' }
+    }
+  }
 }

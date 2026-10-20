@@ -21,6 +21,8 @@ import { ToolsetDetail } from './toolset-detail'
 import {
   filteredToolsets,
   TOOLSET_ESSENTIALS,
+  TOOLSET_FEATURE_COUNT,
+  TOOLSET_FEATURE_MIN,
   TOOLSET_MORE_THEME,
   TOOLSET_THEMES,
   toolsetCalls,
@@ -44,6 +46,7 @@ interface ToolsetsTabProps {
  *  banner) with each toolset's settings in a dialog. */
 export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: ToolsetsTabProps) {
   const { t } = useI18n()
+  const ts = t.catalog.toolsets
   const toolCalls = useToolCalls(profile)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [selectedToolset, setSelectedToolset] = useState<string | null>(null)
@@ -146,7 +149,7 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
   const item = (toolset: ToolsetInfo, layout: CatalogSurfaceSection['layout']): CatalogSurfaceItem => {
     const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : 0
     const count = toolNames(toolset).length
-    const tools = `${count} ${count === 1 ? 'tool' : 'tools'}`
+    const tools = ts.toolCount(count)
     const label = toolsetDisplayLabel(toolset)
 
     return {
@@ -154,7 +157,7 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
       name: label,
       description: asText(toolset.description),
       eyebrow: count ? tools : undefined,
-      badge: calls > 0 ? `${compactNumber(calls)} ${calls === 1 ? 'call' : 'calls'}` : layout === 'list' && count ? tools : undefined,
+      badge: calls > 0 ? ts.callCount(compactNumber(calls), calls) : layout === 'list' && count ? tools : undefined,
       action: (
         <CatalogSwitch
           aria-label={t.skills.toggleToolset(label, !toolset.enabled)}
@@ -169,23 +172,23 @@ export function ToolsetsTab({ hints, onQueryChange, profile, query, toolsets }: 
 
   // The feature row is the four most-used toolsets once there is real usage to
   // rank by; before that it's the essentials. Everything else sits under what it does.
-  const used = visibleToolsets.slice(0, 4)
-  const ranked = !!toolCalls && used.length === 4 && used.every(toolset => toolsetCalls(toolset, toolCalls) > 0)
-  const featured = query || visibleToolsets.length <= 8 ? [] : ranked ? used : visibleToolsets.filter(toolset => TOOLSET_ESSENTIALS.includes(toolset.name))
+  const used = visibleToolsets.slice(0, TOOLSET_FEATURE_COUNT)
+  const ranked = !!toolCalls && used.length === TOOLSET_FEATURE_COUNT && used.every(toolset => toolsetCalls(toolset, toolCalls) > 0)
+  const featured = query || visibleToolsets.length <= TOOLSET_FEATURE_MIN ? [] : ranked ? used : visibleToolsets.filter(toolset => TOOLSET_ESSENTIALS.includes(toolset.name))
   const rest = visibleToolsets.filter(toolset => !featured.includes(toolset))
 
   const sections: CatalogSurfaceSection[] = [
     {
       id: 'featured',
-      label: ranked ? 'Most used' : 'Essentials',
-      blurb: ranked ? 'The toolsets Hermes reaches for most on this profile.' : 'What most Hermes work runs on.',
+      label: ranked ? ts.mostUsed : ts.essentials,
+      blurb: ranked ? ts.mostUsedBlurb : ts.essentialsBlurb,
       layout: 'feature',
       items: featured.map(toolset => item(toolset, 'feature'))
     },
     ...[...TOOLSET_THEMES, TOOLSET_MORE_THEME].map(theme => ({
       id: theme.id,
-      label: theme.label,
-      blurb: theme.blurb,
+      label: ts.themes[theme.id].label,
+      blurb: ts.themes[theme.id].blurb,
       layout: 'list' as const,
       items: rest.filter(toolset => toolsetTheme(toolset.name).id === theme.id).map(toolset => item(toolset, 'list'))
     }))

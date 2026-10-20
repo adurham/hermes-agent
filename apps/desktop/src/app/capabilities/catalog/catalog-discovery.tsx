@@ -1,6 +1,6 @@
 import './catalog-discovery.css'
 
-import { groupCatalogPlugins, pickFeatured, PLUGIN_CATEGORIES } from '@hermes/shared'
+import { groupCatalogPlugins, isOfficialSkillSource, pickFeatured, PLUGIN_CATEGORIES } from '@hermes/shared'
 import { type ReactNode, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -17,17 +17,18 @@ import { catalogCategories } from './catalog-query'
 /** Fewest cards a category needs for its own shelf; smaller ones share "More to explore". */
 const MIN_SHELF = 3
 
-/** First-party sources, per kind, for the hero's fallback when the feed curates nothing. */
-const OFFICIAL = { plugins: ['official'], skills: ['built-in', 'bundled', 'optional', 'official'] } as const
 
 /** A shelf ranks by its most-starred entry, so the strongest categories lead. */
 const topStars = (items: CatalogEntry[]) => Math.max(-1, ...items.map(entry => entry.stars ?? -1))
 
 /** Plugin tiers in page order; community keeps its category shelves. */
-const PLUGIN_TIERS: { tier: Exclude<PluginTier, 'community'>; title: string; blurb: string }[] = [
-  { tier: 'official', title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },
-  { tier: 'verified', title: 'Verified Plugins', blurb: 'From the company behind the integration, verified by Nous.' }
-]
+const PLUGIN_TIERS: Exclude<PluginTier, 'community'>[] = ['official', 'verified']
+
+/** Category shelves shown at first, and how many more each "Show more" adds. */
+const CATEGORY_PAGE = 8
+
+/** Rows of the mixed "More to explore" shelf shown at first, and per "Show more". */
+const LOOSE_ROWS_PAGE = 3
 
 export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
   entries: CatalogEntry[]
@@ -37,21 +38,21 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
   actions?: ReactNode
 }) {
   const { t } = useI18n()
-  const [categoryLimit, setCategoryLimit] = useState(8)
-  const [looseRows, setLooseRows] = useState(3)
+  const [categoryLimit, setCategoryLimit] = useState(CATEGORY_PAGE)
+  const [looseRows, setLooseRows] = useState(LOOSE_ROWS_PAGE)
   const title = kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills
 
   // Same pick as the website: curated ranks from the feed, rotated weekly.
   const featured = pickFeatured(entries, entry => ({
     featured: entry.featured,
-    official: (OFFICIAL[kind] as readonly string[]).includes(entry.source),
+    official: kind === 'plugins' ? pluginTier(entry) === 'official' : isOfficialSkillSource(entry.source),
     pictured: Boolean(entry.imageUrl),
     addedAt: entry.addedAt,
     stars: entry.stars
   }))
 
   const others = entries.filter(entry => entry !== featured)
-  const tiered = kind === 'plugins' ? PLUGIN_TIERS.map(meta => ({ ...meta, items: others.filter(entry => pluginTier(entry) === meta.tier) })).filter(({ items }) => items.length) : []
+  const tiered = kind === 'plugins' ? PLUGIN_TIERS.map(tier => ({ tier, ...t.catalog.tiers[tier], items: others.filter(entry => pluginTier(entry) === tier) })).filter(({ items }) => items.length) : []
   const remaining = kind === 'plugins' ? others.filter(entry => pluginTier(entry) === 'community') : others
 
   // Plugins with an unlisted category land in `general`, as in every other plugin grouping.
@@ -80,7 +81,7 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
   return (
     <div className="catalog-discovery">
       {featured && <section data-catalog-section="featured">
-        <header className="catalog-section-heading"><h2>{t.catalog.discover} {title}</h2></header>
+        <header className="catalog-section-heading"><h2>{t.catalog.discoverKind(title)}</h2></header>
         {card(featured, 0, 'hero')}
       </section>}
       {tiered.map(({ tier, title: tierTitle, blurb, items }, index) => (
@@ -99,23 +100,23 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
           <header className="catalog-section-heading">
             <div>
               <h2><Button className="text-[length:inherit] font-[inherit] text-(--ui-text-primary) hover:text-(--ui-text-primary)" onClick={() => onCategory(category)} size="inline" variant="text">{catalogLabel(label)}</Button></h2>
-              <p>{kind === 'plugins' ? PLUGIN_CATEGORIES[category]?.blurb : `Skills for ${catalogLabel(label).toLowerCase()}.`}</p>
+              <p>{kind === 'plugins' ? PLUGIN_CATEGORIES[category]?.blurb : t.catalog.skillsFor(catalogLabel(label))}</p>
             </div>
             {items.length > packBento(items).length && <Button onClick={() => onCategory(category)} size="inline" variant="text">{t.catalog.seeAll}<Codicon name="arrow-right" /></Button>}
           </header>
           {bento(items, undefined, index % 2 === 1)}
         </section>
       })}
-      {shelves.length > categoryLimit && <Button onClick={() => setCategoryLimit(value => value + 8)} size="sm" variant="text">{t.catalog.more}</Button>}
+      {shelves.length > categoryLimit && <Button onClick={() => setCategoryLimit(value => value + CATEGORY_PAGE)} size="sm" variant="text">{t.catalog.more}</Button>}
       {loose.length > 0 && shelves.length <= categoryLimit && <section data-catalog-section="more">
         <header className="catalog-section-heading">
           <div>
-            <h2>More to explore</h2>
-            <p>Smaller corners of the catalog, all in one place.</p>
+            <h2>{t.catalog.moreToExplore}</h2>
+            <p>{t.catalog.moreToExploreBlurb}</p>
           </div>
         </header>
         {bento(loose, looseRows)}
-        {loose.length > packBento(loose, BENTO_COLUMNS, looseRows).length && <Button className="mt-4" onClick={() => setLooseRows(value => value + 3)} size="sm" variant="text">{t.catalog.more}</Button>}
+        {loose.length > packBento(loose, BENTO_COLUMNS, looseRows).length && <Button className="mt-4" onClick={() => setLooseRows(value => value + LOOSE_ROWS_PAGE)} size="sm" variant="text">{t.catalog.more}</Button>}
       </section>}
       <CatalogDeveloper actions={actions} kind={kind} />
     </div>
