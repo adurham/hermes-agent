@@ -60,3 +60,16 @@ async def test_resume_leaves_the_gateway_processs_stdout_alone(tmp_path, monkeyp
     assert sys.stdout is stdout
     assert 'tui_gateway.server' not in sys.modules
 
+
+def test_a_later_null_resume_clears_the_clients_todo_seed():
+    """The client keeps the reply's snapshot until the next one: a later resume of a session with no plan
+    (``todo_state: null``) clears it, so a fresh ``TodoStore`` is not seeded with a plan that is gone. A
+    reply without the field (an older gateway) keeps it."""
+    from hermes_cli.gateway_connection import SessionState
+    state = SessionState("local-abc")
+    state.adopt_snapshot({"todo_state": {"todos": TODOS, "revision": 2}})
+    assert state.todo_state == {"todos": TODOS, "revision": 2}
+    state.adopt_snapshot({})
+    assert state.todo_state == {"todos": TODOS, "revision": 2}
+    state.adopt_snapshot({"todo_state": None})
+    assert state.todo_state is None
