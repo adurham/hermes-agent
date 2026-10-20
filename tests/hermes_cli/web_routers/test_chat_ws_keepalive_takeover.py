@@ -46,6 +46,7 @@ class Viewer:
         self.inbound.put_nowait({"type": "websocket.disconnect"})
 
 
+@pytest.mark.platforms("any")  # the bridge is a stand-in, so the takeover runs the same on every host
 @pytest.mark.asyncio
 async def test_takeover_during_a_backpressured_write_is_not_reported_as_a_stall(caplog):
     bridge = BackpressuredBridge()

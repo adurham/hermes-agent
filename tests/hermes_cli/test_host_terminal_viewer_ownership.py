@@ -1,5 +1,6 @@
 """Viewer takeover linearizes at the PTY sink, including off-loop writes."""
 import asyncio
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import threading
@@ -112,13 +113,70 @@ class InputSocket(Socket):
         self.inbound.put_nowait({"type": "websocket.disconnect"})
 
 
-@pytest.mark.platforms("posix")
-@pytest.mark.asyncio
-async def test_takeover_during_an_admitted_input_write_keeps_the_shell(tmp_path, monkeypatch):
-    """The cancelled write returns False while the old socket is still the viewer (the takeover
-    waits for the sink); the pump must neither close the shell nor let the old tab reconnect."""
-    from types import SimpleNamespace
+class ConsoleInput:
+    """The console behind the Windows bridge: keeps the text it is given, after ``on_write`` sees it."""
+
+    pid = 1
+
+    def __init__(self, on_write):
+        self.on_write, self.written = on_write, []
+
+    def write(self, text):
+        self.on_write(text.encode())
+        self.written.append(text)
+
+    def terminate(self, force=False):
+        pass
+
+
+@contextmanager
+def posix_pty(monkeypatch, on_write):
+    """The POSIX bridge on a real pseudo-terminal. It returns a cancelled write at once, while its
+    worker may still be inside the sink."""
+    import pty
+    import tty
     from hermes_cli import pty_bridge
+
+    master, slave = pty.openpty()
+    tty.setraw(slave)
+    os.set_blocking(master, False)
+    bridge = pty_bridge.PtyBridge.__new__(pty_bridge.PtyBridge)
+    bridge._fd, bridge._closed, bridge._fd_lock = master, False, threading.Lock()
+    real_write = os.write
+
+    def sink(fd, data):
+        if fd == master:
+            on_write(bytes(data))
+        return real_write(fd, data)
+
+    monkeypatch.setattr(pty_bridge.os, "write", sink)
+    try:
+        yield bridge, lambda write: write is None
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+@contextmanager
+def conpty(_monkeypatch, on_write):
+    """The Windows bridge over a stand-in console. It gives a cancelled write a grace window to land,
+    so the write is still running, cancelled, while the sink holds it."""
+    from hermes_cli.win_pty_bridge import WinPtyBridge
+
+    yield WinPtyBridge(ConsoleInput(on_write)), lambda write: write is not None and write.cancelling() > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", [
+    # The POSIX bridge imports fcntl and termios and writes to a real pseudo-terminal.
+    pytest.param(posix_pty, id="posix-pty", marks=pytest.mark.platforms("posix")),
+    pytest.param(conpty, id="conpty", marks=pytest.mark.platforms("any")),
+])
+async def test_takeover_during_an_admitted_input_write_keeps_the_shell(tmp_path, monkeypatch, terminal):
+    """A takeover cancels the old socket's input write while the sink holds it and waits for the
+    sink. The cancelled write returns False; the pump must neither close the shell nor let the old
+    tab reconnect."""
+    from types import SimpleNamespace
     from hermes_cli.web_host_terminal_sessions import _pump_input
 
     home = tmp_path / ".hermes"
@@ -127,24 +185,13 @@ async def test_takeover_during_an_admitted_input_write_keeps_the_shell(tmp_path,
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     owner = HostOwner(("loopback", "test"), profile, "sh", str(tmp_path))
-    import pty
-    import tty
-    master, slave = pty.openpty()
-    tty.setraw(slave)
-    os.set_blocking(master, False)
-    bridge = pty_bridge.PtyBridge.__new__(pty_bridge.PtyBridge)
-    bridge._fd, bridge._closed, bridge._fd_lock = master, False, threading.Lock()
-    session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
     entered, release = threading.Event(), threading.Event()
-    real_write = os.write
 
-    def sink(fd, data):
-        if fd == master and bytes(data) == b"OLD\n":
+    def hold_old_input(data):
+        if data == b"OLD\n":
             entered.set()
             assert release.wait(5), "write barrier was not released"
-        return real_write(fd, data)
 
-    monkeypatch.setattr(pty_bridge.os, "write", sink)
     removed = []
 
     async def remove(token):
@@ -152,29 +199,29 @@ async def test_takeover_during_an_admitted_input_write_keeps_the_shell(tmp_path,
 
     old, new = InputSocket(b"OLD\n"), Socket()
     pump = takeover = None
-    try:
-        assert await session.attach(old)
-        pump = asyncio.create_task(_pump_input(old, SimpleNamespace(remove=remove), "terminal", session, owner))
-        assert await asyncio.to_thread(entered.wait, 3)
-        takeover = asyncio.create_task(session.attach(new))
-        # The takeover cancelled the write and waits for the sink; the old socket is still the viewer.
-        await async_wait_until(lambda: session._input_task is None, timeout=3)
-        assert session._ws is old
-        release.set()
-        assert await asyncio.wait_for(takeover, 3)
-        async with asyncio.timeout(3):
-            await pump
-        assert removed == [] and session.alive and not bridge._closed
-        assert old.closed == [WS_CLOSE_SUPERSEDED]
-        assert await session.write(new, b"NEW\n", fence=owner.admit)
-    finally:
-        release.set()
-        for task in (pump, takeover):
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-        os.close(master)
-        os.close(slave)
+    with terminal(monkeypatch, hold_old_input) as (bridge, write_cancelled):
+        session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
+        try:
+            assert await session.attach(old)
+            pump = asyncio.create_task(_pump_input(old, SimpleNamespace(remove=remove), "terminal", session, owner))
+            assert await asyncio.to_thread(entered.wait, 3)
+            takeover = asyncio.create_task(session.attach(new))
+            # The takeover cancelled the write and waits for the sink; the old socket is still the viewer.
+            await async_wait_until(lambda: write_cancelled(session._input_task), timeout=3)
+            assert session._ws is old
+            release.set()
+            assert await asyncio.wait_for(takeover, 3)
+            async with asyncio.timeout(3):
+                await pump
+            assert removed == [] and session.alive and not bridge._closed
+            assert old.closed == [WS_CLOSE_SUPERSEDED]
+            assert await session.write(new, b"NEW\n", fence=owner.admit)
+        finally:
+            release.set()
+            for task in (pump, takeover):
+                if task is not None:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.platforms("posix")
