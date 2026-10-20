@@ -1,9 +1,9 @@
 name: hermes-context-overview
-version: "1.2.2"
+version: "1.2.3"
 repo: https://github.com/AsoTora/hermes-context-overview
-sha: ec4ba6a35c679b5f285f27808ed05950e9d132ed
+sha: 033646d9fd3900d0ddc14042dc2a1044ca228d60
 title: Context Overview
-description: "Bottom status-bar Context button with an icon shows the focused conversation's budget and metadata, including during running turns. Native cache indicators stay untouched. No collector, Python backend, credentials or telemetry."
+description: "A Context button in the bottom status bar that shows how full the focused conversation's context window is: token budget, estimated allocation by category and context-file metadata, also during a running turn. Read-only, no backend."
 maintainer: AsoTora
 tier: community
 category: desktop
@@ -12,10 +12,10 @@ docs_url: https://github.com/AsoTora/hermes-context-overview#readme
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/ec4ba6a35c679b5f285f27808ed05950e9d132ed/docs/screenshots/themes/sheet-dark-1280-1.png
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/ec4ba6a35c679b5f285f27808ed05950e9d132ed/docs/screenshots/themes/sheet-dark-1280-2.png
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/ec4ba6a35c679b5f285f27808ed05950e9d132ed/docs/screenshots/themes/sheet-light-1280-1.png
-  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/ec4ba6a35c679b5f285f27808ed05950e9d132ed/docs/screenshots/themes/sheet-light-1280-2.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/033646d9fd3900d0ddc14042dc2a1044ca228d60/docs/screenshots/overview-dark.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/033646d9fd3900d0ddc14042dc2a1044ca228d60/docs/screenshots/overview-light.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/033646d9fd3900d0ddc14042dc2a1044ca228d60/docs/screenshots/themes-dark.png
+  - https://raw.githubusercontent.com/AsoTora/hermes-context-overview/033646d9fd3900d0ddc14042dc2a1044ca228d60/docs/screenshots/themes-light.png
 capabilities:
   provides_tools: []
   provides_hooks: []
