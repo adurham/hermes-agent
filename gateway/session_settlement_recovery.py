@@ -137,6 +137,16 @@ def owner_stop_notice(captured, outcome, row=None):
     return notice
 
 
+def gateway_refusal_boundary(captured, outcome):
+    """``(notice, display_metadata)`` for a failed turn the gateway itself refused with a renderable
+    descriptor (``session_cron.execute``: the only producer of ``result.error_surface``), else None."""
+    value = (captured or {}).get('result') or {}
+    surface, error = value.get('error_surface'), value.get('error')
+    if outcome != 'failed' or not isinstance(surface, dict) or not isinstance(error, str) or not error:
+        return None
+    return error, {'error': error, 'error_surface': dict(surface)}
+
+
 def _release_media(authority, row):
     """Terminal media cleanup: its own write txn after publication, never under the stream lock."""
     try:
