@@ -12,6 +12,7 @@ import functools
 import json
 import logging
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -607,6 +608,33 @@ def _available_source_summary(catalog: list[CatalogEntry]) -> list[dict[str, Any
     return sorted(rows + hidden_declared_sources(), key=lambda row: row["name"])
 
 
+def _unhealthy_mcp_servers() -> list[dict[str, Any]]:
+    """Configured MCP servers whose tools are not usable now (failed / connecting / degraded).
+
+    Only consulted when the MCP stack is already loaded (no import cost for non-MCP users);
+    any error degrades to "nothing to report", never a failed search."""
+    import sys as _sys
+    if "tools.mcp_tool_discovery" not in _sys.modules:
+        return []
+    try:
+        from tools.mcp_tool_discovery import unhealthy_mcp_servers
+        return unhealthy_mcp_servers()
+    except Exception:
+        logger.debug("unhealthy MCP server lookup failed", exc_info=True)
+        return []
+
+
+_TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def _server_matches_query(server_name: str, query: str) -> bool:
+    """True when a query names the server (``slack`` ~ ``slack``; ``ms 365`` no; ``pagerduty`` yes)."""
+    q_tokens = {t.lower() for t in _TOKEN_SPLIT_RE.split(query) if len(t) >= 3}
+    s_tokens = {t.lower() for t in _TOKEN_SPLIT_RE.split(server_name) if len(t) >= 3}
+    compact = server_name.lower().replace("-", "").replace("_", "")
+    return bool(q_tokens & s_tokens) or any(t == compact for t in q_tokens)
+
+
 def _string_list_arg(args: dict[str, Any], key: str, *, dedupe: bool, max_items: int,
                      retry_hint: str) -> tuple[Optional[list[str]], Optional[str]]:
     """Read a list-of-strings bridge argument -> ``(items, error_json)``. A bare string (a
@@ -648,6 +676,11 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
     results: list[dict[str, Any]] = []
     tools_map: dict[str, dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog)
+    # A configured server that failed / is degraded must never read as "no such tool": an
+    # agent seeing zero matches for "slack" concluded Slack did not exist, when its bridge
+    # was merely logged out. Name the server and its fix instead.
+    unhealthy = _unhealthy_mcp_servers()
+    unavailable_named: dict[str, dict[str, Any]] = {}
     for position, query in enumerate(queries):
         corpus = catalog + remote_entries[position]
         hits = search_catalog(corpus, query, limit=limit)
@@ -662,12 +695,25 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
                 "are connected and their tools remain available. Retry "
                 "tool_search with the service name plus a concrete action or "
                 "object before concluding the capability is unavailable.")
+        named = [u for u in unhealthy if _server_matches_query(u["name"], query)]
+        if not matches and not named:
+            named = unhealthy
+        if named:
+            group["unavailable_servers"] = named
+            group["unavailable_hint"] = (
+                "These configured MCP servers are NOT working right now, so their tools are missing "
+                "or replaced by a status stub. Do not tell the user the capability does not exist: "
+                "tell them which server is down and the fix in its message.")
+            for u in named:
+                unavailable_named[u["name"]] = u
         results.append(group)
     remote_count = sum(1 for name in tools_map if is_connector_name(name))
     payload: dict[str, Any] = {"queries": queries, "total_available": len(catalog) + remote_count,
                                "results": results, "tools": tools_map}
     if hosted_failure:
         payload["connectors"] = connectors_unavailable(hosted_failure, verb="searched")
+    if unavailable_named:
+        payload["unavailable_mcp_servers"] = sorted(unavailable_named.values(), key=lambda u: u["name"])
     _record_search_metric(current_tool_defs, catalog=catalog, hits=len(tools_map),
                           outcome="connector_unavailable" if hosted_failure else "hits" if tools_map else "no_hits")
     return json.dumps(payload, ensure_ascii=False)

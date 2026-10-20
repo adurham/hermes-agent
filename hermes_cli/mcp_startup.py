@@ -90,6 +90,48 @@ def _servers_awaiting_connect() -> list[str]:
     return pending if _mcp_server_filter is None else [n for n in pending if n in _mcp_server_filter]
 
 
+def unhealthy_mcp_server_report(*, include_connecting: bool = False) -> list[dict]:
+    """Failed / degraded (optionally still-connecting) configured MCP servers, honouring the
+    ``-t`` filter. Cheap cached-state read; empty when the MCP stack never loaded."""
+    if "tools.mcp_tool_discovery" not in sys.modules:
+        return []
+    from tools.mcp_tool_discovery import unhealthy_mcp_servers
+
+    out = []
+    for entry in unhealthy_mcp_servers():
+        if entry["status"] == "connecting" and not include_connecting:
+            continue
+        if _mcp_server_filter is not None and entry["name"] not in _mcp_server_filter:
+            continue
+        out.append(entry)
+    return out
+
+
+_reported_unhealthy: set[tuple[str, str]] = set()
+
+
+def announce_unhealthy_mcp_servers(printer) -> int:
+    """Print each failed/degraded MCP server ONCE per (server, message) through ``printer``.
+
+    The startup banner is drawn while servers are still "connecting", so a server that then
+    failed (e.g. a connector bridge whose login expired) was visible only in agent.log; this
+    puts the reason and its fix in front of the user before the first turn runs."""
+    count = 0
+    try:
+        entries = unhealthy_mcp_server_report(include_connecting=False)
+    except Exception:
+        return 0
+    for entry in entries:
+        key = (entry["name"], entry["message"])
+        if key in _reported_unhealthy:
+            continue
+        _reported_unhealthy.add(key)
+        label = "UNAVAILABLE" if entry["status"] == "degraded" else "FAILED"
+        printer(f"⚠️  MCP server '{entry['name']}' {label}: {entry['message']}")
+        count += 1
+    return count
+
+
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """Spawn one background MCP discovery thread per profile home.
 
@@ -135,6 +177,11 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         def _discover() -> None:
             try:
                 _discover_mcp_tools_without_interactive_oauth()
+                try:
+                    for bad in unhealthy_mcp_server_report(include_connecting=False):
+                        logger.warning("MCP server '%s' is %s: %s", bad["name"], bad["status"], bad["message"])
+                except Exception:
+                    logger.debug("Failed to report unhealthy MCP servers after discovery", exc_info=True)
                 try:
                     if not _any_mcp_connected():
                         logger.warning("Background MCP discovery completed with zero connected servers")

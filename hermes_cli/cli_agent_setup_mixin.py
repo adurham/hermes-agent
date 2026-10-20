@@ -650,6 +650,12 @@ class CLIAgentSetupMixin:
         from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
         ensure_mcp_discovery_before_agent_build(
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
+        try:
+            from cli import _cprint
+            from hermes_cli.mcp_startup import announce_unhealthy_mcp_servers
+            announce_unhealthy_mcp_servers(lambda line: _cprint(f"\033[33m{_escape(line)}\033[0m"))
+        except Exception:
+            logger.debug("Could not announce unhealthy MCP servers", exc_info=True)
         if self._session_db is None:
             try:
                 from hermes_state_registry import acquire

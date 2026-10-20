@@ -353,6 +353,10 @@ async def _discover_and_register_server(name: str, config: dict) -> list[str]:
     server._registered_tool_names = list(registered_names)
     logger.info("MCP server '%s' (%s): registered %d tool(s): %s", name,
                 "HTTP" if "url" in config else "stdio", len(registered_names), ", ".join(registered_names))
+    degraded = mcp_server_degraded_info(server)
+    if degraded is not None:
+        logger.warning("MCP server '%s' is UP BUT DEGRADED (%s): %s", name,
+                       degraded.get("kind", "unknown"), degraded.get("message", ""))
     return registered_names
 
 
@@ -744,6 +748,44 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return bool(server_name and _server_key(server_name) in _core._parallel_safe_servers)
 
 
+# A bridge that cannot reach its real backend (e.g. tools/bridges/cc_proxy_mcp.py with a dead
+# login) stays up and serves ONE stub tool tagged with this ``_meta`` key instead of exiting, so
+# the failure is a visible tool rather than a silently missing server. Status surfaces read it.
+MCP_DEGRADED_META_KEY = "hermes/connector_degraded"
+
+
+def mcp_server_degraded_info(server) -> Optional[dict]:
+    """``{"kind", "message", ...}`` when a live server advertises itself as degraded, else None."""
+    for tool in getattr(server, "_tools", None) or []:
+        meta = getattr(tool, "meta", None)
+        if meta is None and isinstance(tool, dict):
+            meta = tool.get("_meta")
+        info = meta.get(MCP_DEGRADED_META_KEY) if isinstance(meta, dict) else None
+        if isinstance(info, dict):
+            return info
+    return None
+
+
+def unhealthy_mcp_servers(status: Optional[list[dict]] = None) -> list[dict]:
+    """Configured, enabled servers whose tools are NOT usable right now: failed, still
+    connecting, or connected-but-degraded. ``{"name", "status", "message"}`` each; reads
+    cached state only. Callers use it so a missing capability is never reported silently."""
+    out = []
+    for entry in (get_mcp_status() if status is None else status) or []:
+        if entry.get("disabled") or entry.get("status") in ("lazy", "configured"):
+            continue
+        if entry.get("degraded"):
+            out.append({"name": entry["name"], "status": "degraded",
+                        "message": str(entry["degraded"].get("message") or "degraded")})
+        elif entry.get("status") == "failed":
+            out.append({"name": entry["name"], "status": "failed",
+                        "message": str(entry.get("error") or "could not connect")})
+        elif entry.get("status") == "connecting":
+            out.append({"name": entry["name"], "status": "connecting",
+                        "message": "still connecting; its tools are not registered yet"})
+    return out
+
+
 def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runtime: bool = True) -> list[dict]:
     """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
     status (connected / disabled / connecting / failed / lazy / configured) and error for failed.
@@ -794,6 +836,9 @@ def get_mcp_status(configured: Optional[dict[str, dict]] = None, *, include_runt
                               else len(server._tools))
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
+            degraded = mcp_server_degraded_info(server)
+            if degraded is not None:
+                entry["degraded"] = degraded
         elif status == "failed":
             entry["error"] = connect_errors[name]
         elif status == "lazy":

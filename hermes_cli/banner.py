@@ -586,6 +586,11 @@ def compute_toolset_availability(enabled_toolsets: list[str] | None = None) -> d
 def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
     """One banner line for an MCP server status entry."""
     name, transport = srv["name"], srv["transport"]
+    if srv["connected"] and srv.get("degraded"):
+        # Up, but serving only a status stub (e.g. a dead login): as loud as a failure.
+        from rich.markup import escape
+        msg = escape(" ".join(str(srv["degraded"].get("message") or "degraded").split())[:160])
+        return f"[red]{name}[/] [dim]({transport})[/] [red]— UNAVAILABLE:[/] {msg}"
     if srv["connected"]:
         return f"[dim {dim}]{name}[/] [{text}]({transport})[/] [dim {dim}]—[/] [{text}]{srv['tools']} tool(s)[/]"
     # Needs srv['tools'], so it cannot live in the suffix dict below. A registered but unspawned
