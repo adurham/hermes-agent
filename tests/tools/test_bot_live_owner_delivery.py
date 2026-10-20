@@ -368,3 +368,23 @@ def test_pre_dial_failure_is_a_definite_no_send_not_ambiguous(tmp_path, monkeypa
     dm_file = Path(dm_files[0])
     assert not dm_file.exists()  # nothing was admitted: no evidence to retain
     assert not Path(str(dm_file) + ".live.json").exists()  # the pinned intent can never settle
+
+
+def test_pre_dial_failure_on_a_retried_intent_stays_ambiguous(tmp_path, monkeypatch):
+    """An intent pinned by an earlier attempt may already be admitted: a later pre-dial death
+    proves nothing about that attempt, so the outcome stays unknown and the evidence is kept."""
+    from tools import bot_live_delivery as live
+    from tools import bot_mode_dm
+
+    def refused(home, params):
+        raise live.PreDialError("dial refused before the RPC went out")
+
+    dm_file = bot_mode_dm._write_dm_file("hello")
+    intent = Path(bot_mode_dm._live_intent_file(dm_file))
+    intent.write_text(json.dumps(dict(owner=_owner(tmp_path), message="hello",
+                                      delivery_id=bot_mode_dm._dm_delivery_id(dm_file))), encoding="utf-8")
+    monkeypatch.setattr(live, "authority_delivery", refused)
+
+    with pytest.raises(live.PreDialError):
+        bot_mode_dm._admit_live_dm(None, dm_file)
+    assert intent.exists() and Path(dm_file).exists()

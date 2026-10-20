@@ -491,6 +491,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
     intent: dict[str, Any]
     intent_path = Path(_live_intent_file(dm_file))
+    pinned_now = False
     if intent_path.exists():
         intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
@@ -515,6 +516,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
                 stream.flush()
                 os.fsync(stream.fileno())
             fsync_directory(intent_path.parent)
+            pinned_now = True
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None or intent["owner"].get("canonical"):
@@ -532,9 +534,10 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
             # may have admitted since: only the owner's settle decides, under that same lock.
             record = settle_held_delivery(home, intent["owner"], intent["message"], **identity)
         except PreDialError as exc:
-            # The dial died before bot_relay.deliver reached the socket: nothing was admitted
-            # and this intent can never settle, so drop it and report the definite no-send
-            # the sender may retry (#139303).
+            if not pinned_now:
+                raise  # an earlier attempt under this intent may have admitted: outcome unknown
+            # This call pinned the intent and its first dial died before the RPC went out: nothing
+            # was admitted anywhere, so it is a definite no-send the sender may retry (#139303).
             _unlink_dm_file(_live_intent_file(dm_file))
             raise LiveTargetUnavailableError(f"live authority dial failed before admission ({exc})") from exc
     if _held_disposition(record):
