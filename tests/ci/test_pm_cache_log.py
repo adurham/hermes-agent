@@ -11,8 +11,8 @@ import pytest
 
 
 @pytest.mark.parametrize("hit,save", [("true", "true"), ("false", "true"), ("", "false")])
-def test_cache_log_reports_selected_restore_and_save_policy(tmp_path, hit, save):
-    script = Path(__file__).resolve().parents[2] / "scripts/ci/pm_cache_log.py"
+def test_cache_log_reports_selected_restore_and_save_policy(tmp_path, hit, save, capsys):
+    from scripts.ci.pm_cache_log import log_caches
     steps: dict[str, dict] = {"prepare": {"outputs": {"store": str(tmp_path / "tools")}},
              "install": {"outputs": {"uv-cache-path": str(tmp_path / "uv"),
                                      "npm-cache-path": str(tmp_path / "npm")}}}
@@ -21,13 +21,8 @@ def test_cache_log_reports_selected_restore_and_save_policy(tmp_path, hit, save)
         inputs[f"save-{name}-cache"] = save
         selected = f"{name}-cache" + ("-restore" if save == "false" else "")
         steps[selected] = {"outcome": "success", "outputs": {"cache-hit": hit}}
-    result = subprocess.run(
-        [sys.executable, "-S", str(script)],
-        env={**os.environ, "_PM_CACHE_INPUTS": json.dumps(inputs), "_PM_CACHE_STEPS": json.dumps(steps)},
-        capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    lines = result.stdout.splitlines()
+    log_caches(inputs, steps, "fixture-ref")
+    lines = capsys.readouterr().out.splitlines()
     assert len(lines) == 3
     for family, line in zip(["tools", "uv", "npm"], lines):
         assert f"[setup-pm cache] {family}:" in line

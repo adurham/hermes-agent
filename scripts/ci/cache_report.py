@@ -9,7 +9,6 @@ from __future__ import annotations
 from datetime import datetime
 from html import escape
 import re
-from urllib.parse import quote
 
 
 def _record(name: str, action: str, step_number: int | None) -> dict:
@@ -60,7 +59,6 @@ class _CacheLogParser:
         self.phase = {
             "entry": _record(name, action, number), "save": save,
             "size": None, "received": None, "sent": None, "restored": False,
-            "seen": False,
         }
 
     def _save_target(self, entry: dict) -> dict | None:
@@ -87,10 +85,8 @@ class _CacheLogParser:
             return
         entry = phase["entry"]
         if phase["save"]:
-            if not phase["seen"]:
-                return
             if entry["save_status"] == "not-attempted":
-                entry["save_status"] = "unknown"
+                return
             if entry["save_status"] == "saved":
                 entry["saved_bytes"] = phase["sent"] if phase["sent"] is not None else phase["size"]
             target = self._save_target(entry)
@@ -118,7 +114,6 @@ class _CacheLogParser:
         if not phase["save"]:
             phase["entry"]["restore_warnings"].append(message)
         # Unrelated actions also emit warnings during Post job cleanup.
-        phase["seen"] = phase["seen"] or failure
         if phase["save"] and failure:
             phase["entry"]["save_status"] = "failed"
             key = re.search(r"with key (.+?)(?:,|$)", message)
@@ -135,7 +130,8 @@ class _CacheLogParser:
             phase["size"] = int(size[1])
         if progress:
             phase["received" if progress[1] == "Received" else "sent"] = int(progress[2])
-            phase["seen"] = True
+            if phase["save"] and phase["entry"]["save_status"] == "not-attempted":
+                phase["entry"]["save_status"] = "unknown"
         if phase["save"]:
             self._save_event(phase, line)
         else:
@@ -146,7 +142,6 @@ class _CacheLogParser:
         saved = re.fullmatch(r"Cache saved with key: (.+)", line)
         skipped = re.fullmatch(r"Cache hit occurred on the primary key (.+), not saving cache\.", line)
         if saved or skipped:
-            phase["seen"] = True
             entry["saved_key"] = (saved or skipped)[1]
             entry["save_status"] = "saved" if saved else "skipped-exact-hit"
 
@@ -244,22 +239,7 @@ def _bytes(value: int | None, *, signed: bool = False) -> str:
     if abs(value) < 1024:
         return f"{exact} B"
     mib = f"{value / (1024 * 1024):+.2f}" if signed else f"{value / (1024 * 1024):.2f}"
-    return f"{mib} MiB ({exact} B)"
-
-
-def _observed(entry: dict | None, phase: str) -> int | None:
-    if entry is None:
-        return None
-    status = entry[f"{phase}_status"]
-    if phase == "restore" and status in ("exact", "fallback"):
-        return entry["restored_bytes"]
-    if phase == "save" and status == "saved":
-        return entry["saved_bytes"]
-    if (phase, status) == ("save", "skipped-exact-hit"):
-        return 0
-    if (phase, status) == ("restore", "miss") and not entry.get("restore_warnings", entry["warnings"]):
-        return 0
-    return None
+    return f"{mib} MiB"
 
 
 def _archive_size(entry: dict | None) -> int | None:
@@ -289,16 +269,14 @@ def _view(timings: dict, baseline: dict | None) -> dict:
     references = {(e.get("job", ""), e["identity"]): e
                   for e in (baseline or {}).get("cache_data", {}).get("entries", [])}
     groups: dict[str, list[dict]] = {name: [] for name in ("hits", "misses", "unavailable", "saves without restore")}
-    attempts, missed = [], []
+    missed = []
     for entry in data.get("entries", []):
         group = _bucket(entry)
         groups[group].append(entry)
-        if entry["restore_status"] not in ("not-attempted", "lookup-only"):
-            attempts.append(entry)
-            if group != "hits":
-                reference = entry if is_main else references.get((entry.get("job", ""), entry["identity"]))
-                missed.append(_archive_size(reference))
-    return {"groups": groups, "attempts": len(attempts), "missed": missed,
+        if entry["restore_status"] not in ("not-attempted", "lookup-only") and group != "hits":
+            reference = entry if is_main else references.get((entry.get("job", ""), entry["identity"]))
+            missed.append(_archive_size(reference))
+    return {"groups": groups, "attempts": len(groups["hits"]) + len(missed), "missed": missed,
             "references": references, "is_main": is_main, "data": data,
             "has_baseline": "cache_data" in (baseline or {})}
 
@@ -306,16 +284,16 @@ def _view(timings: dict, baseline: dict | None) -> dict:
 def _amount(values: list[int | None], label: str) -> str:
     known = [value for value in values if value is not None]
     unknown = len(values) - len(known)
-    result = f"{_bytes(sum(known))} {label}" if known or not values else f"{label}: unknown"
+    result = f"{_bytes(sum(known))} {label}" if known or not values else f"? bytes {label}"
     return result + (f" (+{unknown} unknown sizes)" if unknown else "")
 
 
 def _summary(view: dict) -> str:
     groups = view["groups"]
-    result = (f"{len(groups['hits'])} / {view['attempts']} cache hits; "
-              f"{len(groups['misses'])} miss{'es' if len(groups['misses']) != 1 else ''}; "
+    result = (f"{len(groups['hits'])} / {view['attempts']} cache hits ({len(groups['misses'])} miss{'es' if len(groups['misses']) != 1 else ''})"
+    + "\n" 
               + _amount([e["restored_bytes"] for e in groups["hits"]], "restored")
-              + " / " + _amount(view["missed"], "not restored"))
+              + "\n" + _amount(view["missed"], "not restored"))
     if view["is_main"]:
         result += "; " + _amount([e["saved_bytes"] for rows in groups.values() for e in rows
                                  if e["save_status"] == "saved"], "saved")
@@ -335,12 +313,7 @@ def _notes(view: dict) -> list[str]:
     return notes
 
 
-def _md(value: str) -> str:
-    text = escape(str(value)).replace("\r", " ").replace("\n", " ")
-    return re.sub(r"([\\`*_\[\]|])", r"\\\1", text)
-
-
-def _link(entry: dict, html: bool) -> str:
+def _link(entry: dict) -> str:
     url = entry.get("job_url", "")
     if not url.startswith(("https://", "http://")):
         return "unavailable"
@@ -348,27 +321,27 @@ def _link(entry: dict, html: bool) -> str:
     label = "view step" if number is not None else "view job"
     if number is not None:
         url += f"#step:{number}:1"
-    if html:
-        return f'<a href="{escape(url, quote=True)}">{label}</a>'
-    return f"[{label}]({quote(url, safe='/:#?=&%')})"
+    return f'<a href="{escape(url, quote=True)}">{label}</a>'
 
 
 def _saved(entry: dict) -> str:
     status = entry["save_status"]
-    if status in ("saved", "skipped-exact-hit"):
-        return _bytes(_observed(entry, "save")) + (" (exact-hit skip)" if status == "skipped-exact-hit" else "")
+    if status == "saved":
+        return _bytes(entry["saved_bytes"])
+    if status == "skipped-exact-hit":
+        return _bytes(0) + " (exact-hit skip)"
     return status.replace("-", " ")
 
 
 def _headers(group: str, is_main: bool) -> list[str]:
     headers = ["Job", "Step", "Logs"]
     if group == "hits":
-        headers += ["Restored", "Saved" if is_main else "Δ vs main"]
+        headers.append("Restored")
+        if not is_main:
+            headers.append("Δ vs main")
     elif group == "unavailable":
         headers.append("Status")
-        if is_main:
-            headers.append("Saved")
-    elif is_main:
+    if is_main:
         headers.append("Saved")
     return headers
 
@@ -377,54 +350,43 @@ def _cells(entry: dict, group: str, view: dict) -> list[str]:
     cells = [entry.get("job", ""), entry["name"]]
     if group == "hits":
         cells.append(_bytes(entry["restored_bytes"]))
-        if view["is_main"]:
-            cells.append(_saved(entry))
-        else:
+        if not view["is_main"]:
             reference = view["references"].get((entry.get("job", ""), entry["identity"]))
             size = _archive_size(reference)
             current = entry["restored_bytes"]
             cells.append(_bytes(current - size, signed=True) if current is not None and size is not None else "unknown")
     elif group == "unavailable":
         cells.append(entry["restore_status"])
-        if view["is_main"]:
-            cells.append(_saved(entry))
-    elif view["is_main"]:
+    if view["is_main"]:
         cells.append(_saved(entry))
     return cells
 
 
-def _table(rows: list[dict], group: str, view: dict, html: bool) -> str:
-    headers = _headers(group, view["is_main"])
-    encode = escape if html else _md
-    if html:
-        lines = ["<table><thead><tr>" + "".join(f"<th>{escape(h)}</th>" for h in headers) + "</tr></thead><tbody>"]
-    else:
-        lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
+def _table(rows: list[dict], group: str, view: dict) -> str:
+    headers = "".join(f"<th>{escape(h)}</th>" for h in _headers(group, view["is_main"]))
+    lines = [f"<table><thead><tr>{headers}</tr></thead><tbody>"]
     for entry in rows:
-        cells = [encode(cell) for cell in _cells(entry, group, view)]
-        cells.insert(2, _link(entry, html))
-        lines.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>" if html
-                     else "| " + " | ".join(cells) + " |")
-    if html:
-        lines.append("</tbody></table>")
+        cells = [escape(cell) for cell in _cells(entry, group, view)]
+        cells.insert(2, _link(entry))
+        lines.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
+    lines.append("</tbody></table>")
     return "\n".join(lines)
 
 
-def _details(view: dict, html: bool) -> str:
-    encode = escape if html else _md
+def _details(view: dict) -> str:
     lines = ["<details>", "<summary>per-job cache results</summary>", ""]
     for group, rows in view["groups"].items():
         if group not in ("hits", "misses") and (not rows or (group == "saves without restore" and not view["is_main"])):
             continue
-        lines += [f"<h3>{group}</h3>" if html else f"### {group}", ""]
-        lines += [_table(rows, group, view, html) if rows else "none", ""]
+        lines += [f"<h3>{group}</h3>", ""]
+        lines += [_table(rows, group, view) if rows else "none", ""]
     for note in _notes(view):
-        lines.append(f"<p>{encode(note)}</p>" if html else encode(note) + "\n")
+        lines.append(f"<p>{escape(note)}</p>")
     for rows in view["groups"].values():
         for entry in rows:
             for warning in entry["warnings"]:
-                text = encode(f"{entry.get('job', '')} / {entry['name']}: {warning}")
-                lines.append(f"<p>{text}</p>" if html else f"- {text}")
+                text = escape(f"{entry.get('job', '')} / {entry['name']}: {warning}")
+                lines.append(f"<p>{text}</p>")
     lines += ["", "</details>"]
     return "\n".join(lines)
 
@@ -433,7 +395,7 @@ def render_cache_summary(timings: dict, baseline: dict | None) -> str:
     if "cache_data" not in timings:
         return ""
     view = _view(timings, baseline)
-    return "### CI caches\n\n" + _summary(view) + "\n\n" + _details(view, html=False)
+    return "### CI caches\n\n" + _summary(view) + "\n\n" + _details(view)
 
 
 def render_cache_html(timings: dict, baseline: dict | None) -> str:
@@ -441,14 +403,14 @@ def render_cache_html(timings: dict, baseline: dict | None) -> str:
         return ""
     view = _view(timings, baseline)
     return ('<section id="ci-caches"><h2>CI caches</h2><p>' + escape(_summary(view)) + '</p>'
-            + _details(view, html=True) + '</section>')
+            + _details(view) + '</section>')
 
 
 def cache_review_status(timings: dict, baseline: dict | None, report_url: str | None = None) -> list[dict]:
     if "cache_data" not in timings:
         return []
     view = _view(timings, baseline)
-    result = {"kind": "info", "title": "CI caches", "summary": _summary(view), "detail": _details(view, html=False)}
+    result = {"kind": "info", "title": "CI caches", "summary": _summary(view), "detail": _details(view)}
     if report_url:
         result.update(link=report_url, link_label="View report")
     return [{"source": "ci caches", "results": [result]}]

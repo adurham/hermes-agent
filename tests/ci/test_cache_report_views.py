@@ -59,7 +59,7 @@ def test_cache_summary_and_expando_follow_the_run_mode(is_main):
         assert "saved" not in result["summary"]
         assert "Saved" not in html and "130 B" not in html
         assert "vs main" in html and "+10 B" in html
-        misses = result["detail"].split("### misses", 1)[1].split("###", 1)[0]
+        misses = result["detail"].split("<h3>misses</h3>", 1)[1].split("<h3>", 1)[0]
         assert "Cache tools" in misses
         assert "Restored" not in misses and "vs main" not in misses
 

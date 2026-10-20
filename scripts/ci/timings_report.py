@@ -149,24 +149,15 @@ def api_get(path: str, token: str, params: dict | None = None,
     return results
 
 
-class _LogRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if redirected is not None:
-            # The signed log blob rejects a second Authorization mechanism.
-            redirected.remove_header("Authorization")
-        return redirected
-
-
 def _job_log(job_id: int, repo: str, token: str) -> str:
     request = urllib.request.Request(f"{API_BASE}/repos/{repo}/actions/jobs/{job_id}/logs", headers={
-        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "ci-timings-report",
     })
+    request.add_unredirected_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.build_opener(_LogRedirect).open(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=30) as response:
             return response.read().decode("utf-8-sig", errors="replace")
     except urllib.error.HTTPError as error:
         # Do not retain signed blob URLs in the public report.
@@ -175,7 +166,6 @@ def _job_log(job_id: int, repo: str, token: str) -> str:
 
 def _collect_cache_data(jobs: list[dict], repo: str, token: str) -> dict:
     entries, unavailable = [], []
-    collected = 0
     seen: set[int] = set()
     for job in jobs:
         job_id = job.get("job_id")
@@ -189,9 +179,8 @@ def _collect_cache_data(jobs: list[dict], repo: str, token: str) -> dict:
             print(f"Cache data unavailable for {name}: {error}", file=sys.stderr)
             unavailable.append(name)
             continue
-        collected += 1
         entries.extend(dict(entry, job=name, job_id=job_id, job_url=job["html_url"]) for entry in parsed)
-    return {"entries": entries, "unavailable_jobs": unavailable, "jobs_collected": collected}
+    return {"entries": entries, "unavailable_jobs": unavailable}
 
 
 def parse_ts(ts: str | None) -> datetime | None:

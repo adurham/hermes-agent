@@ -70,7 +70,6 @@ def test_collected_cache_data_reaches_reports_without_forwarding_auth(monkeypatc
     assert "cache_data" in current, "CI collection must retain per-cache data in the baseline JSON"
     assert current["is_main"] is is_main, "a PR from a branch named main is not a main run"
     caches = current["cache_data"]
-    assert caches["jobs_collected"] == 1
     assert caches["unavailable_jobs"] == ["logs unavailable"]
     assert len(caches["entries"]) == 1
     assert caches["entries"][0]["restored_bytes"] == 100
