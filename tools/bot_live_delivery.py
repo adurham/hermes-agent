@@ -62,10 +62,11 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
                 lease_id=discovery.endpoint.instance_id, live_session_id=tip or '')
 
 
-class PreDialError(RuntimeError):
+class PreDialError(ValueError):
     """The authority call died before its RPC reached the socket: nothing was admitted, so
     this is a definite no-send the sender may safely retry — never the ambiguous
-    post-admission state that orders 'do not resend' (#139303)."""
+    post-admission state that orders 'do not resend' (#139303). A ``ValueError`` like the
+    "authority is not ready" refusals it wraps, so existing ``except ValueError`` callers hold."""
 
 
 def authority_delivery(home, params):
