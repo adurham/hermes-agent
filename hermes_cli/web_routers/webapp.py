@@ -216,7 +216,7 @@ history.replaceState(null, '', location.pathname);
 const ticket = params.get('ticket') || '';
 const fail = () => {
   document.getElementById('status').textContent = 'This launch link was already used or has expired. '
-    + 'Open the private link printed by hermes webapp, or restart hermes webapp for a new one.';
+    + 'Run hermes webapp again for a new one.';
 };
 if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
   fail();
