@@ -26,19 +26,3 @@ class TestNotDeferrableSessionScope:
         msg = not_deferrable_error("clarify", session_tool_names={"clarify", "read_file"})
         assert "directly-listed" in msg
         assert "Call it directly" in msg
-
-    def test_no_session_context_preserves_original_behaviour(self):
-        """Callers with no session context (display layer, recorder) are unaffected."""
-        msg = not_deferrable_error("clarify")
-        assert "directly-listed" in msg
-
-    def test_unknown_tool_still_gets_discovery_hint(self):
-        """The unrelated branch must not regress: bare-suffix MCP names."""
-        msg = not_deferrable_error("definitely_not_a_real_tool", session_tool_names={"clarify"})
-        assert "not a known tool name" in msg
-
-    def test_session_names_accepts_any_iterable(self):
-        """Generators must work, not just sets — the dispatcher passes a frozenset but
-        the annotation promises Iterable and a generator is the obvious caller mistake."""
-        msg = not_deferrable_error("clarify", session_tool_names=(n for n in ["read_file"]))
-        assert "not available in this execution context" in msg

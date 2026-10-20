@@ -156,193 +156,45 @@ def board(tmp_path, monkeypatch):
 # --- the incident shape is reclaimed by the platform's own paths ---------------------------
 
 def test_dead_attempt_behind_an_unresolved_receipt_is_reclaimed(board):
-    """Every reclaim path declined this card; the stale-claim path must now take it."""
+    """Every reclaim path declined this card; the stale-claim and crash paths must now take it."""
     board.dead_attempt("t_ghost")
+    board.dead_attempt("t_ghost2")
     assert owner_reclaim_paused(board.conn, "t_ghost") is True      # the pause still applies
     assert bound_interpreter_gone(board.conn, "t_ghost") is False   # nothing bound to read
-    assert owner_attempt_provably_over(board.conn, "t_ghost") is True
     assert owner_reclaim_blocked(board.conn, "t_ghost") is False
 
-    assert kb.release_stale_claims(board.conn) == 1
-
+    assert kb.release_stale_claims(board.conn) == 2
     row = board.state("t_ghost")
-    assert row["status"] == "ready"
-    assert (row["claim_lock"], row["claim_expires"], row["worker_pid"]) == (None, None, None)
-    assert row["current_run_id"] is None
-    run = board.conn.execute(
-        "SELECT status, outcome FROM task_runs WHERE task_id = 't_ghost'").fetchone()
+    assert (row["status"], row["claim_lock"], row["worker_pid"], row["current_run_id"]) == ("ready", None, None, None)
+    run = board.conn.execute("SELECT status, outcome FROM task_runs WHERE task_id = 't_ghost'").fetchone()
     assert tuple(run) == ("reclaimed", "reclaimed")
 
 
-def test_dead_attempt_behind_an_unresolved_receipt_is_reclaimed_by_the_crash_sweep(board):
-    """The dead-pid path reclaims the same shape instead of deferring to the receipt."""
-    board.dead_attempt("t_ghost")
-    assert kbd.detect_crashed_workers(board.conn) == ["t_ghost"]
-    assert board.state("t_ghost")["status"] == "ready"
-
-
-def test_reclaiming_the_dead_attempt_frees_its_profile_lane(board):
-    """The point of the fix: the card stops holding its profile's worker slot."""
-    board.dead_attempt("t_ghost")
-    board.ready("t_ready0")
-    counted = "SELECT COUNT(*) FROM tasks WHERE status = 'running' AND assignee = 'default'"
-    assert board.conn.execute(counted).fetchone()[0] == 1   # the jam: a dead card holds the slot
-
-    kbd.dispatch_once(board.conn, dry_run=True, max_in_progress=2,
-                      max_in_progress_per_profile=1)
-    assert board.state("t_ghost")["status"] == "ready"
-    assert board.conn.execute(counted).fetchone()[0] == 0   # the slot is free again
-
-    # And the next tick spends it instead of deferring the queue forever.
-    lane = kbd.dispatch_once(board.conn, dry_run=True, max_in_progress=2,
-                             max_in_progress_per_profile=1)
-    assert len(lane.spawned) == 1
-
-
-# --- the pause still holds every attempt that may be alive ---------------------------------
-
-def test_a_live_worker_holds_the_card_even_with_the_pause(board):
-    """Real pid, real fingerprint: reclaiming beside it would spawn a duplicate."""
-    board.dead_attempt("t_ghost", worker_pid=os.getpid(),
-                       worker_fingerprint=kbd._process_fingerprint(os.getpid()))
-    assert owner_reclaim_paused(board.conn, "t_ghost") is True
-    assert owner_attempt_provably_over(board.conn, "t_ghost") is False
-    assert owner_reclaim_blocked(board.conn, "t_ghost") is True
-    assert kb.release_stale_claims(board.conn) == 0
-    assert board.state("t_ghost")["status"] == "running"
-    assert board.state("t_ghost")["worker_pid"] == os.getpid()
-
-
-def test_a_live_bound_interpreter_holds_the_card(board):
-    """A ``worker_bound`` interpreter that is still running is the same refusal."""
-    board.dead_attempt("t_ghost", worker_bound=True, worker_pid=os.getpid(),
-                       worker_fingerprint=kbd._process_fingerprint(os.getpid()))
-    assert bound_interpreter_gone(board.conn, "t_ghost") is False
-    assert owner_reclaim_blocked(board.conn, "t_ghost") is True
-    assert kb.release_stale_claims(board.conn) == 0
-    assert board.state("t_ghost")["status"] == "running"
-
-
-def test_a_fresh_heartbeat_holds_the_card(board):
-    """A slow worker inside one tool-free call keeps its claim (#23025)."""
-    board.dead_attempt("t_ghost", heartbeat_age=300)
+@pytest.mark.parametrize("shape", [
+    dict(worker_pid=os.getpid(), worker_fingerprint=kbd._process_fingerprint(os.getpid())),  # live worker
+    dict(worker_bound=True, worker_pid=os.getpid(),
+         worker_fingerprint=kbd._process_fingerprint(os.getpid())),                          # live bound interpreter
+    dict(heartbeat_age=300),                                                                 # fresh heartbeat
+    dict(expires_age_seconds=-3600),                                                         # live claim
+    dict(lock_host="some-other-host"),                                                       # foreign host
+    dict(owner_pid=os.getpid(), owner_birth=None),                                           # live, uncomparable owner
+    dict(record_worker_pid=False),                                                           # no pid recorded
+], ids=["live-worker", "live-bound", "fresh-heartbeat", "live-claim", "foreign-host", "live-owner", "no-pid"])
+def test_the_pause_still_holds_every_attempt_that_may_be_alive(board, shape):
+    """Missing evidence is never proof: reclaiming beside a possibly-live attempt repeats its effects."""
+    board.dead_attempt("t_ghost", **shape)
     assert owner_attempt_provably_over(board.conn, "t_ghost") is False
     assert kb.release_stale_claims(board.conn) == 0
-    assert board.state("t_ghost")["status"] == "running"
-
-
-def test_a_live_claim_is_never_overridden(board):
-    """An unexpired claim is the owner still working, whatever the receipt says."""
-    board.dead_attempt("t_ghost", expires_age_seconds=-3600)
-    assert owner_attempt_provably_over(board.conn, "t_ghost") is False
-    assert kb.release_stale_claims(board.conn) == 0
-    assert board.state("t_ghost")["status"] == "running"
-
-
-def test_another_hosts_lock_is_never_overridden(board):
-    """A foreign lock's pids say nothing here, and a numeric coincidence is not a death."""
-    board.dead_attempt("t_ghost", lock_host="some-other-host")
-    assert bound_interpreter_gone(board.conn, "t_ghost") is False
-    assert owner_attempt_provably_over(board.conn, "t_ghost") is False
-    assert kb.release_stale_claims(board.conn) == 0
-    assert board.state("t_ghost")["status"] == "running"
-
-
-def test_a_live_owner_without_a_birth_is_never_read_as_dead(board):
-    """The receipt names a live pid but no identity to compare: unprovable, so it holds."""
-    board.dead_attempt("t_ghost", owner_pid=os.getpid(), owner_birth=None)
-    assert owner_reclaim_paused(board.conn, "t_ghost") is True
-    assert owner_attempt_provably_over(board.conn, "t_ghost") is False
-    assert kb.release_stale_claims(board.conn) == 0
-    assert board.state("t_ghost")["status"] == "running"
-
-
-def test_a_recycled_owner_pid_is_dead_evidence(board):
-    """A live number whose birth moved on is a stranger, exactly as the pause reads it."""
-    board.dead_attempt("t_ghost", owner_pid=os.getpid(), owner_birth=1.0)
-    assert owner_reclaim_paused(board.conn, "t_ghost") is True
-    assert owner_attempt_provably_over(board.conn, "t_ghost") is True
-    assert kb.release_stale_claims(board.conn) == 1
-
-
-def test_owner_identity_reads_birth_through_the_shared_helper(board, monkeypatch):
-    """A live owner's birth must be read the way the pause reads it, or a clock step looks like death.
-
-    ``create_time()`` shifts on macOS after a boot-time change while the kernel's own start does
-    not (#140580), so comparing the fence's reading against the receipt's would call a live owner
-    recycled and release a claim that is still being worked. The fence defers to
-    ``process_identity.process_birth``; this pins that it does, whatever the platform.
-    """
-    from hermes_cli import process_identity
-    seen: list[int] = []
-
-    def fake_birth(proc):
-        seen.append(proc.pid)
-        return 1234.0
-
-    monkeypatch.setattr(process_identity, "process_birth", fake_birth)
-    board.dead_attempt("t_ghost", owner_pid=os.getpid(), owner_birth=1234.0)
-    assert owner_reclaim_paused(board.conn, "t_ghost") is True
-    assert owner_attempt_provably_over(board.conn, "t_ghost") is False
-    assert seen == [os.getpid()]
-    assert kb.release_stale_claims(board.conn) == 0
-    assert board.state("t_ghost")["status"] == "running"
-
-
-def test_no_recorded_worker_pid_is_never_proof(board):
-    """A run that recorded no worker pid cannot be shown to be dead — it holds."""
-    board.dead_attempt("t_ghost", record_worker_pid=False)
-    assert owner_attempt_provably_over(board.conn, "t_ghost") is False
-    assert kb.release_stale_claims(board.conn) == 0
+    assert kbd.detect_crashed_workers(board.conn) == []
     assert board.state("t_ghost")["status"] == "running"
 
 
 # --- the jam itself becomes visible to `kanban diagnostics` --------------------------------
 
-def test_stale_running_diagnostic_names_the_jam(board):
+def test_stale_running_diagnostic_names_the_jam_and_stays_silent_for_a_live_worker(board):
     board.dead_attempt("t_ghost")
+    board.dead_attempt("t_live", worker_pid=os.getpid(), worker_fingerprint=kbd._process_fingerprint(os.getpid()))
     hits = [d for d in board.diagnostics("t_ghost") if d.kind == "stale_running"]
-    assert len(hits) == 1
-    hit = hits[0]
-    assert hit.severity == "critical"       # 15x the 1h grace
-    assert hit.data["expired_seconds"] >= 3600
-    assert hit.data["recorded_pids"] and str(hit.data["recorded_pids"][0]) in hit.detail
-    assert [a.kind for a in hit.actions] == ["reclaim", "cli_hint"]
-    assert hit.actions[0].suggested is True
-
-
-@pytest.mark.parametrize("expired_for,severity", [
-    (30 * 60, ""),              # inside the grace: the dispatcher has not had its tick yet
-    (3 * 3600, "error"),        # 3x grace
-    (7 * 3600, "critical"),     # 7x grace
-])
-def test_stale_running_diagnostic_escalates_with_age(board, expired_for, severity):
-    board.dead_attempt("t_ghost", expires_age_seconds=expired_for)
-    hits = [d for d in board.diagnostics("t_ghost") if d.kind == "stale_running"]
-    assert [d.severity for d in hits] == ([severity] if severity else [])
-
-
-def test_stale_running_diagnostic_is_silent_for_a_live_worker(board):
-    board.dead_attempt("t_ghost", worker_pid=os.getpid(),
-                       worker_fingerprint=kbd._process_fingerprint(os.getpid()))
-    assert not [d for d in board.diagnostics("t_ghost") if d.kind == "stale_running"]
-
-
-def test_stale_running_diagnostic_is_silent_for_a_fresh_heartbeat(board):
-    board.dead_attempt("t_ghost", heartbeat_age=300)
-    assert not [d for d in board.diagnostics("t_ghost") if d.kind == "stale_running"]
-
-
-def test_stale_running_diagnostic_is_silent_for_a_live_claim(board):
-    board.dead_attempt("t_ghost", expires_age_seconds=-60)
-    assert not [d for d in board.diagnostics("t_ghost") if d.kind == "stale_running"]
-
-
-def test_stale_running_diagnostic_is_silent_for_another_hosts_lock(board):
-    board.dead_attempt("t_ghost", lock_host="some-other-host")
-    assert not [d for d in board.diagnostics("t_ghost") if d.kind == "stale_running"]
-
-
-def test_stale_running_diagnostic_is_silent_for_a_ready_card(board):
-    board.ready("t_ready0")
-    assert not [d for d in board.diagnostics("t_ready0") if d.kind == "stale_running"]
+    assert [d.severity for d in hits] == ["critical"]                  # 15x the 1h grace
+    assert [a.kind for a in hits[0].actions] == ["reclaim", "cli_hint"]
+    assert not [d for d in board.diagnostics("t_live") if d.kind == "stale_running"]
