@@ -35,28 +35,25 @@ def adapter_supports_push(adapter: Any) -> bool:
     return bool(getattr(adapter, "supports_async_delivery", True))
 
 
-# Store refusal codes (``RuntimeStoreError.reason``) that refuse a notice for good: the route or the
-# session's ownership no longer matches it, so every retry meets the same verdict. Every other refusal
+# Store refusal codes (``RuntimeStoreError.reason``) that refuse a notice for good by themselves: the
+# route has no session (``not_found``) or the payload is malformed (``invalid_params``). A bare
+# ``admission_conflict`` proves nothing: an unowned completion, or one pinned to a live session the
+# route does not run, may still find its owner (d6635ffe03b), so it is permanent only when the
+# authority's state proves the pin gone (``refusal_proven_permanent``). Every other refusal
 # (``runtime_draining`` during a restart's after-turn wait or a parked profile, ``queue_full``,
-# ``session_busy``, ``stale_epoch``, ``runtime_retired``, ``storage_unavailable``, an adapter that
-# did not accept) clears on its own: back off, never give the notice up.
-PERMANENT_REFUSAL_REASONS = frozenset({
-    'admission_conflict', 'not_found', 'invalid_params', 'permission_denied', 'profile_mismatch',
-    'session_superseded',
-})
+# ``session_busy``, ``stale_epoch``, ...) clears on its own: back off, never give the notice up.
+PERMANENT_REFUSAL_REASONS = frozenset({'not_found', 'invalid_params'})
 
 
 class WakeNotAccepted(RuntimeError):
     """No adapter admission: retry without treating a healthy chat as dead. ``reason`` is the
-    store's refusal code when the session authority refused it (None: the adapter did not accept)."""
+    store's refusal code when the session authority refused it (None: the adapter did not accept);
+    ``permanent`` is set once the refusal is proven final (``refusal_proven_permanent``)."""
 
     def __init__(self, message: str = "internal wake not accepted by adapter", *, reason: Optional[str] = None):
         super().__init__(message)
         self.reason = reason
-
-    @property
-    def permanent(self) -> bool:
-        return self.reason in PERMANENT_REFUSAL_REASONS
+        self.permanent = False
 
 
 def session_owned_by_profile(config: Any, profile: Optional[str], session_id: Any) -> bool:

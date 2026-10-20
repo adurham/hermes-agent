@@ -138,8 +138,8 @@ class GatewayNotificationOwnershipMixin:
             session_id = parent
         return "terminal", session_id, None
 
-    async def _watch_pin_gone(self, evt: dict, refusal: str) -> bool:
-        """True (logged once) when a refused watch notice is pinned to a permanently-gone session.
+    async def _watch_pin_gone(self, evt: dict, refusal: str, *, log: bool = True) -> bool:
+        """True (logged once with ``log``) when a refused notice is pinned to a permanently-gone session.
 
         The session authority admits a notice only into its pinned session or that session's
         compression continuation, so after /new it refuses the notice on every retry and the drain
@@ -154,6 +154,8 @@ class GatewayNotificationOwnershipMixin:
         verdict, _owner, _target = await cast(Any, self)._classify_completion_owner(pinned, session_key)
         if verdict != "terminal":
             return False
+        if not log:
+            return True
         logger.warning(
             "Dropping %s notification of process %s: pinned session %s is permanently gone (closed "
             "at a user boundary such as /new, or no longer an owner); the route now runs %s and "

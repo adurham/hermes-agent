@@ -752,15 +752,14 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     def _requeue_refused_watch_event(completion_queue, evt: dict) -> None:
         """Retry a refused watch event on a bounded backoff, never on every 2 s tick (#140899).
 
-        Only a permanent refusal (``gateway.wake.PERMANENT_REFUSAL_REASONS``: the route or the
-        session's ownership no longer matches) counts toward the cap that drops it. A transient one
-        (a restart's after-turn wait, a parked profile, a full owner FIFO, an adapter reconnecting)
-        clears on its own, so the event waits it out however long it lasts.
+        Only a refusal proven permanent (``WakeNotAccepted.permanent``: the route has no session,
+        or the payload is invalid) counts toward the cap that drops it. A transient one (a restart's
+        after-turn wait, a parked profile, a full owner FIFO) or one whose owner may still appear (an
+        unowned or foreign-pinned notice) waits it out however long it lasts.
         """
-        from gateway.wake import PERMANENT_REFUSAL_REASONS
         step = int(evt.get("_watch_retry_step") or 0) + 1
         evt["_watch_retry_step"] = step
-        if evt.pop("_refusal_reason", None) in PERMANENT_REFUSAL_REASONS:
+        if evt.pop("_refusal_permanent", False):
             refusals = int(evt.get("_watch_injection_attempts") or 0) + 1
             evt["_watch_injection_attempts"] = refusals
             if refusals >= _MAX_COMPLETION_INJECTION_ATTEMPTS:
@@ -951,12 +950,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 await admit_internal_event(adapter, synth_event)
             return True
         except WakeNotAccepted as exc:
-            # Durable callers ran the pre-flight already; a watch notice is classified only once
-            # refused, and one pinned to a gone session is dropped instead of requeued.
-            if not raise_not_accepted and await self._watch_pin_gone(evt, str(exc)):
+            # Permanent only on proof: a pin the authority's state shows gone (/new, #141562) or a
+            # final code. An unowned or foreign-pinned refusal may still find its owner (d6635ffe03b).
+            from gateway.wake import PERMANENT_REFUSAL_REASONS
+            pin_gone = await self._watch_pin_gone(evt, str(exc), log=not raise_not_accepted)
+            exc.permanent = pin_gone or exc.reason in PERMANENT_REFUSAL_REASONS
+            if pin_gone and not raise_not_accepted:
                 return None
             if not raise_not_accepted:
-                evt["_refusal_reason"] = exc.reason  # the drain counts only permanent refusals
+                evt["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
@@ -1261,9 +1263,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     self._mark_completions_delivered_locked((identity,))
             return True
         except WakeNotAccepted as exc:
-            # A permanent refusal (route/ownership mismatch) spends its durable attempt, so the row
-            # converges to ``dropped`` across restarts too (#141153); a transient one (restart wait,
-            # full FIFO) is refunded and never drops a completion the owner will take later.
+            # A proven-permanent refusal spends its durable attempt, so the row converges to
+            # ``dropped`` across restarts too (#141153); any other (restart wait, full FIFO, an owner
+            # not yet proven) is refunded and never drops a completion the owner will take later.
             refused = not exc.permanent
             return False
         finally:
