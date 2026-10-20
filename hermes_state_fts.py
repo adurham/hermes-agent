@@ -145,15 +145,21 @@ def fts_layout_drift(cursor: sqlite3.Cursor) -> list[str]:
     The one structural answer to "does optimize-storage have layout work": the update notice, doctor, the
     open-time stamp and optimize-storage all read it, so a layout bump needs no new per-version predicate
     and the ``fts_storage_version`` stamp is only ever written over tables that match it. An absent table
-    is not drift (the trigram index is optional; the base index is created on open). The cjk index is
-    left out: it exists only where its tokenizer loads and owns its own stale/backfill markers.
+    is not drift (the trigram index is optional; the base index is created on open), and neither is an
+    external-content base index over raw ``messages``: the next read-write open replaces it with the current
+    DDL (``_migrate_misaligned_fts_source``). The cjk index is left out: it exists only where its tokenizer
+    loads and owns its own stale/backfill markers.
     """
     expected = {"messages_fts": _expected_vtable_sql(FTS_SQL, "messages_fts"),
                 "messages_fts_trigram": _expected_vtable_sql(FTS_TRIGRAM_SQL, "messages_fts_trigram")}
     drift = []
     for table in _FTS_DDL_TABLES:
         row = cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
-        if row is not None and " ".join((row[0] or "").split()) != expected[table]:
+        if row is None:
+            continue
+        stored = " ".join((row[0] or "").split())
+        realigned_on_open = table == "messages_fts" and "tool_name" in stored and "messages_fts_src" not in stored
+        if stored != expected[table] and not realigned_on_open:
             drift.append(table)
     return drift
 
