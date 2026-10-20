@@ -863,8 +863,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
-    # Nous API: the request's data-use requirement (from a connector result) has no qualifying endpoint.
-    # Deterministic for this context on any provider, so no retry and no fallback.
+    # Deterministic for this context: another provider would receive the same connector result.
     if c.code == "data_policy_denied":
         return _v(_R.data_policy_denied, retryable=False, should_fallback=False)
     welcome = _nous_welcome_tier(c)

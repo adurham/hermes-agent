@@ -500,9 +500,8 @@ def _prompt_cache_scope_for_agent(agent) -> str | None:
 
 
 def _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs: dict, api_messages: list) -> dict:
-    """Merge Portal ``tags`` / ``session_id`` / data-use ``provider`` onto an Anthropic Messages kwargs
-    dict. The Nous profile is only consulted by the OpenAI-wire transport; never
-    ``provider_preferences`` (an OpenAI-wire routing object)."""
+    """The Nous profile body on the Messages wire, which the profile hook never reaches; never
+    ``provider_preferences`` (OpenAI-wire routing the Portal 400s on)."""
     if getattr(agent, "provider", None) not in {"nous", "nous-portal", "nousresearch"}:
         return anthropic_kwargs
     try:

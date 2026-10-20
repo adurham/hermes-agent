@@ -50,8 +50,7 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
-# A tool message's connector data-use requirement (``no_training`` / ``zero_retention``): set from the
-# gateway's ``dataUse``, persisted inside ``display_metadata``, read by the Nous profile, stripped by the transport.
+# Connector data-use requirement on a tool message; persisted inside ``display_metadata``, never sent to a model.
 DATA_USE = "data_use"
 
 
