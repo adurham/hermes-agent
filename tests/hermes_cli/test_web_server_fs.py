@@ -447,6 +447,40 @@ def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile
     assert not_host_owned.status_code == 404
 
 
+def test_a_browser_paste_reads_back_while_the_ssh_machine_is_unreachable(client, monkeypatch):
+    """A paste in the host image cache is read on this host before anything dials the SSH machine,
+    so it still sends while that machine is down. A path only the SSH machine has answers 503."""
+
+    class UnreachableSsh:
+        def __init__(self, **_options):
+            raise ConnectionRefusedError("ssh: connect to host 127.0.0.1 port 1: Connection refused")
+
+    monkeypatch.setattr(ssh_workspace_fs, "SSHEnvironment", UnreachableSsh)
+    monkeypatch.setattr(ssh_workspace_fs, "_BACKENDS", {})
+    monkeypatch.setattr(
+        file_routes, "load_config",
+        lambda: {"terminal": {"backend": "ssh", "ssh_host": "127.0.0.1", "ssh_user": "dev", "ssh_port": 1}},
+    )
+    monkeypatch.setattr(file_routes, "load_env", dict)
+    upload = client.post(
+        "/api/chat/image-upload",
+        json={"data_url": "data:image/png;base64,iVBORw0KGgo=", "filename": "paste.png"},
+    )
+    assert upload.status_code == 200, upload.text
+    host_path = upload.json()["path"]
+
+    read_back = client.get("/api/fs/read-data-url", params={"path": host_path})
+    saved = client.get("/api/fs/download", params={"path": host_path})
+    remote_only = client.get("/api/fs/read-data-url", params={"path": "/srv/repos/shot.png"})
+    remote_download = client.get("/api/fs/download", params={"path": "/srv/repos/shot.png"})
+
+    assert read_back.status_code == 200, read_back.text
+    assert read_back.json()["dataUrl"] == "data:image/png;base64,iVBORw0KGgo="
+    assert (saved.status_code, saved.content) == (200, base64.b64decode("iVBORw0KGgo="))
+    for response in (remote_only, remote_download):
+        assert (response.status_code, response.json()) == (503, {"detail": "SSH workspace is unavailable"})
+
+
 @pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
 def test_fs_reads_translate_docker_workspace_path_to_host(
     client, docker_volumes, monkeypatch, endpoint,

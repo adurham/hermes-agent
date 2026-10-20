@@ -312,9 +312,17 @@ def _is_host_image(path: str, profile: Optional[str]) -> bool:
 
 
 def _remote_fs_backend(path: str, profile: Optional[str]):
-    """The SSH workspace reader for *path*, or None when this host owns it."""
-    backend = _fs_backend(profile)
-    return None if backend is None or _is_host_image(path, profile) else backend
+    """The SSH workspace reader for *path*, or None when this host owns it. The host image cache is
+    checked before the SSH machine is dialed, so a paste reads back while that machine is down; other
+    paths answer 503 until it is back."""
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    if _is_host_image(path, profile):
+        return None
+    try:
+        return _fs_backend(profile)
+    except SshWorkspaceFsError as exc:
+        _raise_fs_backend_error(exc)
 
 
 def _raise_fs_backend_error(exc: Exception) -> None:
