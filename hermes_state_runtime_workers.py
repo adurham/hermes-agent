@@ -54,10 +54,15 @@ def retire_child_executions(conn, execution_id):
     """A child never outlives the execution that reserved it: every live descendant goes terminal
     with it, its read receipts shrink and its open session row is ended. A late child write is
     then refused ``stale_generation`` like any write after retirement."""
-    prefix = execution_id + CHILD_SEPARATOR
     _retire_children(conn, conn.execute("SELECT execution_id,session_id FROM worker_executions "
-                                        "WHERE substr(execution_id,1,?)=? AND status!='terminal'",
-                                        (len(prefix), prefix)).fetchall())
+                                        "WHERE execution_id>=? AND execution_id<? AND status!='terminal'",
+                                        descendant_range(execution_id)).fetchall())
+
+
+def descendant_range(execution_id):
+    """``(low, high)`` bounds every descendant id of ``execution_id`` on the primary key index
+    (';' sorts right after the separator's ':'), so a no-child finish costs one index probe."""
+    return execution_id + CHILD_SEPARATOR, execution_id + CHILD_SEPARATOR[:-1] + ';'
 
 
 def retire_stale_children(conn, epoch):
@@ -68,12 +73,16 @@ def retire_stale_children(conn, epoch):
 
 
 def _retire_children(conn, rows):
-    import time
-    for child, session_id in rows:
+    for child, _session_id in rows:
         conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (child,))
         _compact(conn, child)
-        conn.execute("UPDATE sessions SET ended_at=?,end_reason='agent_close' WHERE id=? AND ended_at IS NULL",
-                     (time.time(), session_id))
+        _end_child_row(conn, child)
+
+
+def _end_child_row(conn, execution_id):
+    import time
+    conn.execute("UPDATE sessions SET ended_at=?,end_reason='agent_close' WHERE ended_at IS NULL "
+                 "AND id=(SELECT session_id FROM worker_executions WHERE execution_id=?)", (time.time(), execution_id))
 
 
 def compact_terminal_receipts(conn, execution_id):
@@ -86,6 +95,10 @@ def compact_terminal_receipts(conn, execution_id):
     conflicts. Mutation acknowledgements (counts, row annotations, assignments) stay replayable."""
     retire_child_executions(conn, execution_id)
     _compact(conn, execution_id)
+    if CHILD_SEPARATOR in execution_id:
+        # A child that finished itself (an early close: failed constructor, refused sibling) never
+        # reaches _retire_children, which only selects live children: its row ends here.
+        _end_child_row(conn, execution_id)
 
 
 def _compact(conn, execution_id):

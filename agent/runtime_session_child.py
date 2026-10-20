@@ -6,6 +6,7 @@ child persists through the ordinary ``worker.persist`` path under its own claim.
 (capacity, depth, draining) is a ValueError so ``delegate_task`` reports it as a tool error.
 """
 import secrets
+from functools import partial
 
 from agent.runtime_session_store import RuntimeSessionStore, call_off_event_loop
 
@@ -50,4 +51,7 @@ def reserve_child_store(parent):
     child = result['child']
     scope = dict(parent.scope, **child, secret=secret)
     outbox = parent.path.parent / ('child-' + child['execution_id'].rsplit(':', 1)[1])
-    return ChildSessionStore(parent.rpc, scope, outbox)
+    # Every child RPC hops off a running loop, not only this reservation: the child is built, run
+    # and closed inside delegate_task's callback, and its constructor already reads the store
+    # (ContextCompressor.bind_session_state), which WorkerRPC refuses on Relay's loop.
+    return ChildSessionStore(partial(call_off_event_loop, parent.rpc), scope, outbox)

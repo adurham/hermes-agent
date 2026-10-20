@@ -148,3 +148,37 @@ def test_owner_restart_mid_child_retires_the_child_and_never_replays_it(tmp_path
                        "WHERE w.kind='child'") == [('agent_close',)]
     # The lost turn is not replayed: the parent never got a child result to finish on.
     assert not [s for s in peer.seen if s[0] == ['DELEGATE_BLOCK'] and s[1] == 'PARENT_DONE'], peer.seen
+
+
+@pytest.mark.platforms("linux")
+def test_relay_driven_worker_builds_and_runs_its_child_off_the_relay_loop(tmp_path):
+    """NeMo Relay drives tool callbacks on its own event loop: the child's construction reads the
+    store (bind_session_state) and its close finishes the execution, and the worker RPC refuses a
+    synchronous call on a running loop, so every child store call must hop off it."""
+    relay = pytest.importorskip('nemo_relay')
+    if getattr(relay, '_native', None) is None:
+        pytest.skip('NeMo Relay native binding unavailable')
+    home, peer, url, env = _setup(tmp_path)
+    plugins = home / 'plugins.toml'
+    plugins.write_text('version = 1\n[[components]]\nkind = "observability"\nenabled = true\n'
+                       '[components.config]\nversion = 4\n[components.config.atof]\nenabled = true\n'
+                       '[[components.config.atof.sinks]]\ntype = "file"\noutput_directory = '
+                       + json.dumps(str(home / 'relay-events')) + '\nfilename = "events.jsonl"\nmode = "overwrite"\n')
+    env['HERMES_NEMO_RELAY_PLUGINS_TOML'] = str(plugins)
+
+    async def exercise(desc):
+        sid = await _submit(home, desc, url, 'DELEGATE')
+        await async_wait_until(lambda: _rows(home, "SELECT status FROM session_admissions WHERE request_id='run'") == [
+            ('terminal',)], timeout=120, interval=.1, what='run terminal')
+        return sid
+    try:
+        with daemon(ROOT, home, env, barrier=False) as (_owner, desc):
+            sid = asyncio.run(exercise(desc))
+    finally:
+        peer.shutdown()
+        peer.server_close()
+    assert (home / 'relay-events' / 'events.jsonl').exists(), 'Relay never drove this turn'
+    tool = [c for r, c in _rows(home, 'SELECT role, content FROM messages WHERE session_id=?', sid) if r == 'tool']
+    assert tool and 'CHILD_RESULT_42' in tool[-1], tool
+    assert _rows(home, "SELECT w.status, s.end_reason FROM worker_executions w JOIN sessions s ON s.id=w.session_id "
+                       "WHERE w.kind='child'") == [('terminal', 'agent_close')]

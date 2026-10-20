@@ -11,7 +11,7 @@ import secrets
 from functools import partial
 
 from hermes_state_runtime import RuntimeStoreError, apply_worker_receipt
-from hermes_state_runtime_workers import CHILD_SEPARATOR
+from hermes_state_runtime_workers import CHILD_SEPARATOR, descendant_range
 
 _DEFAULTS = {'max_concurrent_children': 10, 'max_spawn_depth': 1}
 
@@ -49,9 +49,9 @@ def reserve_child_execution(db, conn, session_id, payload, *, epoch, execution_i
         raise RuntimeStoreError('invalid_params')
     max_children, max_depth = limits
     prefix = execution_id + CHILD_SEPARATOR
-    live = conn.execute("SELECT COUNT(*) FROM worker_executions WHERE substr(execution_id,1,?)=? "
+    live = conn.execute("SELECT COUNT(*) FROM worker_executions WHERE execution_id>=? AND execution_id<? "
                         "AND instr(substr(execution_id,?),'/')=0 AND status!='terminal'",
-                        (len(prefix), prefix, len(prefix) + 1)).fetchone()[0]
+                        (*descendant_range(execution_id), len(prefix) + 1)).fetchone()[0]
     if refused is None and prefix.count(CHILD_SEPARATOR) > max_depth:
         refused = 'delegation_depth_exceeded'
     if refused is None and live >= max_children:
