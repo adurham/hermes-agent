@@ -210,6 +210,27 @@ def local_batch_error(entries: list[dict[str, Any]]) -> str:
     )
 
 
+# Toolsets a managed worker turn never offers (agent/managed_worker.py::WORKER_DISABLED_TOOLSETS,
+# ef52a09a558), with the supported way to get the same work done from inside that turn.
+_MANAGED_WORKER_ALTERNATIVES = {
+    "delegation": ("a delegated child needs its own owner-registered execution, which a managed worker "
+                   "turn (every Kanban card, and opted-in managed sessions) cannot reserve. Don't retry it: "
+                   "split fan-out into child cards with kanban_create (parents=[<this task>]), or do the "
+                   "subtask yourself in this turn."),
+}
+
+
+def managed_worker_unavailable_reason(name: str) -> Optional[str]:
+    """Why ``name`` is absent in THIS managed worker process, or None anywhere else.
+
+    The generic wording cannot say a toolset was removed by the worker boundary on purpose,
+    so a model told only "not available" keeps trying to reach ``delegate_task`` another way."""
+    from agent.runtime_session_store import is_worker_process
+    from tools.tool_search_catalog import _registry_toolset
+    reason = _MANAGED_WORKER_ALTERNATIVES.get(_registry_toolset(name)) if is_worker_process() else None
+    return f"'{name}' is not offered in a managed worker turn: {reason}" if reason else None
+
+
 def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] = None) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
@@ -227,8 +248,9 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
         if session_tool_names is not None and name not in set(session_tool_names):
-            return (f"'{name}' is not available in this execution context. "
-                    "Don't retry it — state the assumption and proceed with the work.")
+            return managed_worker_unavailable_reason(name) or (
+                f"'{name}' is not available in this execution context. "
+                "Don't retry it — state the assumption and proceed with the work.")
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
                 "Call it directly instead of via tool_call.")
     suffix = f"__{name}"

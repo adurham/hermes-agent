@@ -522,7 +522,7 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
-            errors[name] = not_deferrable_error(name)
+            errors[name] = not_deferrable_error(name, session_tool_names(current_tool_defs))
         else:
             not_found.append(name)
     result: dict[str, Any] = {"tools": tools}
