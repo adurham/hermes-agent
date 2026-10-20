@@ -90,3 +90,15 @@ describe.each(FILES)('a Webapp file under $dir', ({ dir, native }) => {
     expect(Object.fromEntries(src.searchParams)).toEqual({ path: clip, profile: 'default', ticket: 'stream-ticket' })
   })
 })
+
+it('refuses to stream a file URL that encodes a separator', async () => {
+  // The gateway would decode the separator into another path segment, so the clip could be
+  // a different file than the one its label names.
+  for (const clip of ['file:///C:/Users/me/a%2F..%2Fclip.mp4', 'file:///C:/Users/me/a%5Cclip.mp4']) {
+    await expect(window.hermesDesktop.getGatewayFileStreamUrl!({ ...OWNER, path: clip })).rejects.toThrow(
+      'does not name one file'
+    )
+  }
+
+  expect(requests).toEqual([])
+})

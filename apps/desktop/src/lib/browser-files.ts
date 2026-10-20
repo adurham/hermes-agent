@@ -1,3 +1,5 @@
+import { fileUrlToNativePath } from '@hermes/shared'
+
 import type { HermesApiRequest } from '@/global'
 import { translateNow } from '@/i18n'
 import { requireBrowserConnection } from '@/lib/browser-connection'
@@ -63,6 +65,12 @@ export function createBrowserFilesBridge({
   return {
     getGatewayFileStreamUrl: async payload => {
       requireBrowserConnection(payload.connectionId)
+
+      // The gateway decodes an encoded separator into another path segment; stream only a
+      // file: URL the shared parser reads, so the clip is the file its label names.
+      if (/^file:/i.test(payload.path) && fileUrlToNativePath(payload.path) === null) {
+        throw new Error(`${payload.path} does not name one file`)
+      }
 
       return (await fileEndpointUrl(bootstrap, 'stream', {
         path: payload.path,
