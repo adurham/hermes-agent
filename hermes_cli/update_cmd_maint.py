@@ -198,11 +198,14 @@ def _print_fts_optimize_available_notice() -> None:
                 f"of your current {size_gb:.1f} GB."
             )
     else:
-        print("◆ Search index update available")
+        if mode == "require":
+            print("◆ Search index rebuild required by your notice policy")
+        else:
+            print("◆ Search index update available")
         print(
-            f"  Your search index is on the compact layout from an earlier "
-            f"optimization, but a later release changed it. This is a smaller "
-            f"follow-up rebuild than the first optimization."
+            "  Your search index is on the compact layout from an earlier "
+            "optimization, but a later release changed it. Running the "
+            "command again rebuilds it in the current layout."
         )
     print("  Run when convenient:  hermes sessions optimize-storage")
     print(

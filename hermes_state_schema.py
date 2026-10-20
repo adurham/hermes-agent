@@ -26,7 +26,7 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
-from hermes_state_fts import _drop_orphan_fts_shadow_tables, fts_layout_drift
+from hermes_state_fts import _drop_orphan_fts_shadow_tables, base_source_view_is_stale, fts_layout_current
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
@@ -358,7 +358,8 @@ class SessionSchemaMixin:
         optimize path)."""
         if legacy or not self._sqlite_table_exists(cursor, "messages_fts"):
             return
-        if not self._fts_index_is_misaligned_source(cursor):
+        stale_view = base_source_view_is_stale(cursor)
+        if not stale_view and not self._fts_index_is_misaligned_source(cursor):
             return
         has_messages = cursor.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is not None
 
@@ -366,9 +367,18 @@ class SessionSchemaMixin:
             for name in _FTS_BASE_TRIGGERS:
                 cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
             cursor.execute("DROP TABLE IF EXISTS messages_fts")
+            if stale_view:
+                # CREATE VIEW IF NOT EXISTS never replaces a differing view; the index is rebuilt from it below.
+                cursor.execute("DROP VIEW messages_fts_src")
             self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
             if has_messages:
                 cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+                # The cleared markers below are shared with the trigram backfill: finish that index too, or rows
+                # an interrupted backfill had not reached stay out of it with nothing left to resume them.
+                if self._sqlite_table_exists(cursor, "messages_fts_trigram") and _meta_row(
+                    cursor, "fts_rebuild_high_water"
+                ) is not None:
+                    cursor.execute("INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')")
             cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
             cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
 
@@ -1007,17 +1017,18 @@ class SessionSchemaMixin:
         self._conn.commit()
 
     def _stamp_settled_fts_layout(self, cursor: sqlite3.Cursor) -> None:
-        """Write ``fts_storage_version`` once the stored layout is current and nothing is in flight.
+        """Write ``fts_storage_version`` once the stored layout is exactly current and nothing is in flight.
 
         The only open-time writer of the stamp, run after _init_fts so a fresh store is stamped on creation
-        and a realigned base index is stamped only when the trigram also matches (``fts_layout_drift``). An
-        interrupted optimize (markers, trash, an empty external index against non-empty messages) keeps the
-        stamp unwritten so the resume offer stays alive. Reads before writing: a settled store never takes
-        the write lock here.
+        and a realigned base index is stamped only when the trigram also matches. A definition this code does
+        not recognise (a newer release's) is never stamped down to this release's version. An interrupted
+        optimize (markers, trash, an empty external index against non-empty messages) keeps the stamp
+        unwritten so the resume offer stays alive. Reads before writing: a settled store never takes the write
+        lock here.
         """
         if (
             self._fts_stale
-            or fts_layout_drift(cursor)
+            or not fts_layout_current(cursor)
             or _meta_row(cursor, "fts_rebuild_high_water") is not None
             or self._has_fts_trash(cursor)
             or self._fts_external_index_empty_with_messages(cursor)

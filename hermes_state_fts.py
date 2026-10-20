@@ -4,6 +4,7 @@ FTS-scoped corruption detection and the atomic fail-open trigger detach."""
 
 import logging
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -130,38 +131,101 @@ def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
 _FTS_DDL_TABLES = ("messages_fts", "messages_fts_trigram")
 
 
-def _expected_vtable_sql(ddl: str, table: str) -> str:
-    """The stored-form ``CREATE VIRTUAL TABLE`` for *table* that *ddl* would create (``IF NOT EXISTS`` and
-    ``;`` dropped, whitespace collapsed), i.e. what ``sqlite_master.sql`` holds once the DDL has run."""
-    marker = f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING"
-    start = ddl.index(marker)
+def _stored_form(sql: str) -> str:
+    """``sqlite_master.sql`` as compared here: whitespace collapsed and the object name unquoted (an ALTER TABLE
+    RENAME round trip stores it as ``"name"`` without changing the layout)."""
+    return re.sub(r'^CREATE (VIRTUAL TABLE|VIEW) "([^"]+)"', r"CREATE \1 \2", " ".join((sql or "").split()))
+
+
+def _expected_stored_sql(ddl: str, kind: str, name: str) -> str:
+    """The stored form of the ``CREATE <kind> IF NOT EXISTS <name>`` statement in *ddl* (``IF NOT EXISTS``
+    and ``;`` dropped), i.e. what ``sqlite_master.sql`` holds once the DDL has run."""
+    start = ddl.index(f"CREATE {kind} IF NOT EXISTS {name} ")
     end = ddl.index(";", start)
-    return " ".join(ddl[start:end].replace(" IF NOT EXISTS", "", 1).split())
+    return _stored_form(ddl[start:end].replace(" IF NOT EXISTS", "", 1))
+
+
+def _expected_vtable_sql(ddl: str, table: str) -> str:
+    return _expected_stored_sql(ddl, "VIRTUAL TABLE", table)
+
+
+# Every stored definition a released version has created, oldest first; the LAST entry is the one this code
+# creates. optimize-storage rebuilds only the older entries: an unrecognised definition (a newer release's, after
+# a downgrade) is left alone. Literal on purpose: a change to FTS_SQL / FTS_TRIGRAM_SQL fails
+# test_the_layout_registry_ends_with_the_shipping_ddl until its new form is appended here, which keeps the
+# previous form recognisable as old.
+FTS_VTABLE_LAYOUTS: dict[str, tuple[str, ...]] = {
+    "messages_fts": (
+        "CREATE VIRTUAL TABLE messages_fts USING fts5( content, content=messages, content_rowid=id )",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5( content )",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5( content, tool_name, tool_calls, content='messages', "
+        "content_rowid='id' )",
+        "CREATE VIRTUAL TABLE messages_fts USING fts5( content, tool_name, tool_calls, content='messages_fts_src', "
+        "content_rowid='id' )",
+    ),
+    "messages_fts_trigram": (
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5( content, content=messages, content_rowid=id, "
+        "tokenize='trigram' )",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5( content, tokenize='trigram' )",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5( content, tool_name, tool_calls, "
+        "content='messages_fts_trigram_src', content_rowid='id', tokenize='trigram' )",
+        "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5( content, tool_name, "
+        "content='messages_fts_trigram_src', content_rowid='id', tokenize='trigram' )",
+    ),
+}
+
+
+def _stored_vtables(cursor: sqlite3.Cursor) -> dict[str, str]:
+    rows = cursor.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN (?, ?)", _FTS_DDL_TABLES).fetchall()
+    return {name: _stored_form(sql) for name, sql in rows}
+
+
+def _is_older_layout(table: str, stored: str) -> bool:
+    """A definition an earlier release created. The two shape checks keep every store the pre-registry code
+    treated as old (any base index without ``tool_name``, any trigram with ``tool_calls``) on the opt-in path."""
+    if stored in FTS_VTABLE_LAYOUTS[table][:-1]:
+        return True
+    if table == "messages_fts":
+        return "tool_name" not in stored
+    return "tool_calls" in stored.lower()
+
+
+def base_index_realigned_on_open(stored: str) -> bool:
+    """External-content base index not reading ``messages_fts_src``: the next read-write open rebuilds it from
+    the current DDL (``_migrate_misaligned_fts_source``), so it is never opt-in work."""
+    return "tool_name" in stored and "messages_fts_src" not in stored
 
 
 def fts_layout_drift(cursor: sqlite3.Cursor) -> list[str]:
-    """FTS tables whose stored definition differs from what this code creates; empty when current.
+    """FTS tables on an older release's definition that only ``optimize-storage`` replaces; empty otherwise.
 
-    The one structural answer to "does optimize-storage have layout work": the update notice, doctor, the
-    open-time stamp and optimize-storage all read it, so a layout bump needs no new per-version predicate
-    and the ``fts_storage_version`` stamp is only ever written over tables that match it. An absent table
-    is not drift (the trigram index is optional; the base index is created on open), and neither is an
-    external-content base index over raw ``messages``: the next read-write open replaces it with the current
-    DDL (``_migrate_misaligned_fts_source``). The cjk index is left out: it exists only where its tokenizer
-    loads and owns its own stale/backfill markers.
+    Shared by the update notice, doctor and optimize-storage's demote decision. An absent table is not drift
+    (the trigram index is optional; the base index is created on open), nor is a base index the next open
+    realigns, nor a definition this code does not recognise. The cjk index owns its own markers.
     """
-    expected = {"messages_fts": _expected_vtable_sql(FTS_SQL, "messages_fts"),
-                "messages_fts_trigram": _expected_vtable_sql(FTS_TRIGRAM_SQL, "messages_fts_trigram")}
-    drift = []
-    for table in _FTS_DDL_TABLES:
-        row = cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
-        if row is None:
-            continue
-        stored = " ".join((row[0] or "").split())
-        realigned_on_open = table == "messages_fts" and "tool_name" in stored and "messages_fts_src" not in stored
-        if stored != expected[table] and not realigned_on_open:
-            drift.append(table)
-    return drift
+    return [table for table, stored in _stored_vtables(cursor).items()
+            if _is_older_layout(table, stored)
+            and not (table == "messages_fts" and base_index_realigned_on_open(stored))]
+
+
+def fts_layout_current(cursor: sqlite3.Cursor) -> bool:
+    """True when every present FTS table, and the base index's source view, is exactly what this code creates:
+    the only state the ``fts_storage_version`` stamp may be written over."""
+    stored = _stored_vtables(cursor)
+    if any(sql != FTS_VTABLE_LAYOUTS[table][-1] for table, sql in stored.items()):
+        return False
+    if "messages_fts" not in stored:
+        return True
+    row = cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'messages_fts_src'").fetchone()
+    return row is not None and _stored_form(row[0]) == _expected_stored_sql(FTS_SQL, "VIEW", "messages_fts_src")
+
+
+def base_source_view_is_stale(cursor: sqlite3.Cursor) -> bool:
+    """``messages_fts_src`` exists but differs from what this code creates (``CREATE VIEW IF NOT EXISTS`` never
+    replaces it)."""
+    row = cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'messages_fts_src'").fetchone()
+    return row is not None and _stored_form(row[0]) != _expected_stored_sql(FTS_SQL, "VIEW", "messages_fts_src")
 
 
 # FTS5 shadow tables the virtual-table engine owns. `sqlite3 .recover` re-emits them
