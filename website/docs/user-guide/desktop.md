@@ -90,6 +90,20 @@ Chats written before the gateway owned sessions show their history but cannot be
 browser until they are adopted: run `hermes sessions adopt` once on the host (`hermes -p <profile>
 sessions adopt` for another profile), or open them once in the native Desktop, TUI or CLI.
 
+### Open it from your phone or another computer
+
+In the native app, **Settings → Web Access** turns the Webapp on for other devices, behind sign-in with
+your Nous account (Providers → Accounts). It appears only on the local connection.
+
+- **This network:** devices on the same Wi-Fi open `http://<this computer's address>:9120`. This is plain
+  HTTP, so use it only on a network you trust.
+- **My own URL:** an HTTPS address you already run (Tailscale Serve, a tunnel or a reverse proxy) that
+  forwards to `http://127.0.0.1:9120`. Never forward that port from your router directly.
+
+**Start** saves the `webapp:` settings and restarts the gateway, which reads them when it starts. While a
+chat is running the gateway refuses to restart: the pane shows **Restart needed** and the settings apply
+on the next restart. **Stop** turns the Webapp off the same way.
+
 ### Terminal in the Webapp
 
 The terminal rail opens the host's interactive shell, running as a child of the gateway, in your home
