@@ -5051,6 +5051,10 @@ export const esOverrides = {
           title: 'Hermes se quedó atascado en un bucle',
           body: 'La respuesta repetía los mismos pasos, así que Hermes la detuvo. Reinténtalo o empieza un chat nuevo si vuelve a ocurrir.'
         },
+        cron_session_read_only: {
+          title: 'Este chat pertenece a una tarea programada',
+          body: 'Solo ejecuta esa tarea, así que tu mensaje no se ejecutó. Empieza un chat nuevo para enviarlo.'
+        },
         SESSION_NOT_OWNED: {
           title: 'Este chat está abierto en otro sitio',
           body: 'Este chat está abierto en otra ventana de Hermes o en un terminal. Ciérralo allí y vuelve a enviar el mensaje, o empieza un chat nuevo aquí.'

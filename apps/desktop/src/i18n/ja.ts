@@ -3385,6 +3385,10 @@ export const jaOverrides = {
           title: '安全な接続に失敗しました',
           body: provider =>
             `Hermes は ${provider} との安全な接続を検証できませんでした。ネットワークやプロキシの設定を確認するか、プロバイダーを切り替えて再送してください。`
+        },
+        cron_session_read_only: {
+          title: 'このチャットはスケジュールされたジョブ用です',
+          body: 'このチャットはそのジョブの実行専用のため、メッセージは実行されませんでした。送信するには新しいチャットを開始してください。'
         }
       },
       errorLayers: {
