@@ -196,7 +196,7 @@ def test_a_base_index_the_next_open_realigns_is_not_offered_as_opt_in_work(tmp_p
 
 
 def test_a_layout_change_the_code_has_not_shipped_yet_is_reported_as_drift(tmp_path, monkeypatch):
-    """The next bump (any DDL change) must surface without someone adding a per-version predicate."""
+    """After a DDL change appends its new form to the registry, stores on the previous form are drift."""
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path=db_path)
     _seed(db)
@@ -208,6 +208,9 @@ def test_a_layout_change_the_code_has_not_shipped_yet_is_reported_as_drift(tmp_p
         "content_rowid='id'\n);", "content_rowid='id',\n    tokenize='porter unicode61'\n);", 1)
     assert bumped != hermes_state_common.FTS_SQL
     monkeypatch.setattr(hermes_state_fts, "FTS_SQL", bumped)
+    layouts = dict(hermes_state_fts.FTS_VTABLE_LAYOUTS)
+    layouts["messages_fts"] = (*layouts["messages_fts"], hermes_state_fts._expected_vtable_sql(bumped, "messages_fts"))
+    monkeypatch.setattr(hermes_state_fts, "FTS_VTABLE_LAYOUTS", layouts)
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
@@ -215,3 +218,162 @@ def test_a_layout_change_the_code_has_not_shipped_yet_is_reported_as_drift(tmp_p
     finally:
         conn.close()
     assert "messages_fts" in drift
+
+
+def test_the_layout_registry_ends_with_the_shipping_ddl():
+    """A change to the FTS DDL must append its stored form, keeping the previous one recognisable as old."""
+    import hermes_state_fts
+    from hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL
+
+    layouts = hermes_state_fts.FTS_VTABLE_LAYOUTS
+    assert layouts["messages_fts"][-1] == hermes_state_fts._expected_vtable_sql(FTS_SQL, "messages_fts")
+    assert layouts["messages_fts_trigram"][-1] == hermes_state_fts._expected_vtable_sql(
+        FTS_TRIGRAM_SQL, "messages_fts_trigram")
+    assert hermes_state_fts._expected_vtable_sql(LEGACY_FTS_SQL, "messages_fts") in layouts["messages_fts"][:-1]
+    assert hermes_state_fts._expected_vtable_sql(
+        LEGACY_FTS_TRIGRAM_SQL, "messages_fts_trigram") in layouts["messages_fts_trigram"][:-1]
+
+
+def _forbid_demote(db: SessionDB, monkeypatch) -> None:
+    def _demote():
+        pytest.fail("optimize-storage demoted an index it does not recognise as an old layout")
+    monkeypatch.setattr(db, "_demote_legacy_fts_to_trash", _demote)
+
+
+def test_a_layout_from_a_newer_release_is_left_alone(tmp_path, monkeypatch):
+    """Downgrade: an unrecognised (newer) definition is neither rebuilt nor re-stamped as this release's."""
+    from hermes_state_common import FTS_SQL, FTS_STORAGE_VERSION
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    _seed(db)
+    sql = db._conn.execute("SELECT sql FROM sqlite_master WHERE name = 'messages_fts'").fetchone()[0]
+    db._conn.executescript(
+        "DROP TRIGGER messages_fts_insert; DROP TRIGGER messages_fts_delete; DROP TRIGGER messages_fts_update;"
+        "DROP TABLE messages_fts;")
+    db._conn.execute(sql.replace("content_rowid='id'", "content_rowid='id', tokenize='porter unicode61'"))
+    db._conn.executescript(FTS_SQL)
+    db._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+    db._conn.execute("UPDATE state_meta SET value = ? WHERE key = 'fts_storage_version'", (str(FTS_STORAGE_VERSION + 1),))
+    db._conn.commit()
+    db.close()
+
+    db = SessionDB(db_path=db_path)
+    try:
+        assert not db.fts_optimize_available()
+        _forbid_demote(db, monkeypatch)
+        db.optimize_fts_storage(vacuum=False)
+    finally:
+        db.close()
+    assert _stamp(db_path) == str(FTS_STORAGE_VERSION + 1)
+
+
+def test_a_quoted_table_name_in_the_stored_definition_is_still_current(tmp_path, monkeypatch):
+    """ALTER TABLE ... RENAME round trips store the name quoted; the layout is unchanged and must not be rebuilt."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    _require_trigram(db)
+    _seed(db)
+    db._conn.execute("ALTER TABLE messages_fts_trigram RENAME TO renamed_trigram")
+    db._conn.execute("ALTER TABLE renamed_trigram RENAME TO messages_fts_trigram")
+    stored = db._conn.execute("SELECT sql FROM sqlite_master WHERE name = 'messages_fts_trigram'").fetchone()[0]
+    assert '"messages_fts_trigram"' in stored
+    db._conn.execute("DELETE FROM state_meta WHERE key = 'fts_storage_version'")
+    db._conn.commit()
+    db.close()
+
+    db = SessionDB(db_path=db_path)
+    try:
+        _forbid_demote(db, monkeypatch)
+        db.optimize_fts_storage(vacuum=False)
+    finally:
+        db.close()
+    assert _stamp(db_path) == str(hermes_state_common.FTS_STORAGE_VERSION)
+
+
+def test_a_stale_base_source_view_is_replaced_before_the_store_is_stamped(tmp_path):
+    from hermes_state_common import FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    _seed(db)
+    db.append_message("cli", role="tool", content="x" * FTS_TOOL_CONTENT_PREFIX_CHARS + " trailingneedle")
+    current_view = db._conn.execute("SELECT sql FROM sqlite_master WHERE name = 'messages_fts_src'").fetchone()[0]
+    db._conn.execute("DROP VIEW messages_fts_src")
+    db._conn.execute("CREATE VIEW messages_fts_src AS SELECT id, content, tool_name, tool_calls FROM messages")
+    db._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+    db._conn.execute("DELETE FROM state_meta WHERE key = 'fts_storage_version'")
+    db._conn.commit()
+    db.close()
+
+    db = SessionDB(db_path=db_path)
+    try:
+        view = db._conn.execute("SELECT sql FROM sqlite_master WHERE name = 'messages_fts_src'").fetchone()[0]
+        assert " ".join(view.split()) == " ".join(current_view.split())
+        assert db.search_messages("trailingneedle") == []
+        db._conn.execute("INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)")
+    finally:
+        db.close()
+    assert _stamp(db_path) == str(FTS_STORAGE_VERSION)
+
+
+def test_the_base_realign_finishes_a_pending_trigram_backfill(tmp_path):
+    """The open-time base-index realign clears the shared backfill markers, so it must also complete the trigram."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    _require_trigram(db)
+    db.create_session("s1", source="cli")
+    first_id = db.append_message("s1", role="user", content="already indexed")
+    last_id = db.append_message("s1", role="user", content="大别山项目 deployment")
+    db._reset_fts_index_to_empty(db._conn)
+    _install_raw_messages_base(db)
+    db._conn.execute("DELETE FROM messages_fts")
+    db._conn.execute(
+        "INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) "
+        "SELECT id, content, tool_name, tool_calls FROM messages WHERE id = ?", (first_id,))
+    db._conn.execute(
+        "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
+        "SELECT id, content, tool_name FROM messages WHERE id = ?", (first_id,))
+    db.set_meta("fts_storage_version", "2")
+    db.set_meta("fts_rebuild_high_water", str(last_id))
+    db.set_meta("fts_rebuild_progress", str(first_id))
+    db._conn.commit()
+    db.close()
+
+    db = SessionDB(db_path=db_path)
+    try:
+        assert [row["id"] for row in db.search_messages("大别山")] == [last_id]
+    finally:
+        db.close()
+
+
+def test_doctor_offers_the_resume_after_backfill_before_teardown(tmp_path, monkeypatch):
+    """optimize-storage interrupted after backfill but before trash teardown: doctor agrees with the update notice."""
+    from hermes_cli import doctor_state
+    from hermes_state_dbfile import collect_state_db_stats
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    _require_trigram(db)
+    _seed(db)
+    db._demote_legacy_fts_to_trash()
+    while db.fts_rebuild_step():
+        pass
+    assert db.get_meta("fts_rebuild_high_water") is None and db._has_fts_trash(db._conn)
+    db.close()
+
+    assert "optimize-storage" in _notice_for(db_path, monkeypatch)
+    monkeypatch.setattr(doctor_state, "STATE_DB_SIZE_WARN_BYTES", 0)
+    rows = doctor_state._render_state_db_stats(collect_state_db_stats(db_path))
+    assert any("hermes sessions optimize-storage" in detail for _, _, detail in rows)
+
+
+@pytest.mark.parametrize("mode, heading", [("advise", "Search index update available"),
+                                           ("require", "required by your notice policy")])
+def test_the_follow_up_notice_makes_no_size_or_effort_claim(v1_trigram_db, monkeypatch, mode, heading):
+    from hermes_cli import config as hermes_config
+
+    monkeypatch.setattr(hermes_config, "load_config", lambda: {"sessions": {"fts_optimize_notice": mode}})
+    out = _notice_for(v1_trigram_db, monkeypatch)
+    assert heading in out
+    assert "%" not in out and "smaller" not in out.lower()
