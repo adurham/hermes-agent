@@ -801,8 +801,8 @@ def collect_state_db_stats(db_path: Path) -> dict[str, Any]:
         # Raw state_meta reads — cheap, and independent of SessionDB.
         stats["fts_storage_version"] = _meta_int("fts_storage_version")
         with contextlib.suppress(Exception):
-            from hermes_state_fts import SessionFtsSetupMixin
-            stats["fts_storage_upgrade_needed"] = SessionFtsSetupMixin._db_needs_fts_storage_upgrade(conn.cursor())
+            from hermes_state_fts import fts_layout_drift
+            stats["fts_storage_upgrade_needed"] = bool(fts_layout_drift(conn.cursor()))
         stats["fts_rebuild_high_water"] = high_water = _meta_int("fts_rebuild_high_water")
         stats["fts_rebuild_progress"] = progress = _meta_int("fts_rebuild_progress")
         stats["fts_rebuild_pending"] = False if high_water is None else (progress or 0) < high_water

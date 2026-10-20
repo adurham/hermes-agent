@@ -19,6 +19,7 @@ from hermes_state_common import (
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
+from hermes_state_fts import fts_layout_drift
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -643,6 +644,8 @@ class SessionSearchMixin:
             return "teardown_incomplete"
         if self._fts_external_index_empty_with_messages(conn):
             return "backfill_incomplete"
+        if fts_layout_drift(conn):
+            return "layout_drift"
         self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=conn)
         _delete_meta(conn, "fts_optimize_available")
         conn.execute("UPDATE schema_version SET version = ? WHERE version < ?", (SCHEMA_VERSION, SCHEMA_VERSION))

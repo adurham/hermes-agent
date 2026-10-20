@@ -26,7 +26,7 @@ from hermes_state_common import (
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
 )
-from hermes_state_fts import _drop_orphan_fts_shadow_tables
+from hermes_state_fts import _drop_orphan_fts_shadow_tables, fts_layout_drift
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
@@ -371,7 +371,6 @@ class SessionSchemaMixin:
                 cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
             cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
             cursor.execute(_DROP_RETIRED_TOOL_HIGH_WATER_SQL)
-            cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
 
         if not has_messages:
             # Nothing indexed and nothing to index: swap the shape in place, no rebuild authority needed.
@@ -1004,7 +1003,31 @@ class SessionSchemaMixin:
         self._ensure_unique_title_index(cursor)
         if fts5_available:
             self._init_fts(cursor)
+            self._stamp_settled_fts_layout(cursor)
         self._conn.commit()
+
+    def _stamp_settled_fts_layout(self, cursor: sqlite3.Cursor) -> None:
+        """Write ``fts_storage_version`` once the stored layout is current and nothing is in flight.
+
+        The only open-time writer of the stamp, run after _init_fts so a fresh store is stamped on creation
+        and a realigned base index is stamped only when the trigram also matches (``fts_layout_drift``). An
+        interrupted optimize (markers, trash, an empty external index against non-empty messages) keeps the
+        stamp unwritten so the resume offer stays alive. Reads before writing: a settled store never takes
+        the write lock here.
+        """
+        if (
+            self._fts_stale
+            or fts_layout_drift(cursor)
+            or _meta_row(cursor, "fts_rebuild_high_water") is not None
+            or self._has_fts_trash(cursor)
+            or self._fts_external_index_empty_with_messages(cursor)
+        ):
+            return
+        if cursor.execute(
+            "SELECT 1 FROM state_meta WHERE key = 'fts_storage_version' AND value = ? LIMIT 1",
+            (str(FTS_STORAGE_VERSION),),
+        ).fetchone() is None:
+            cursor.execute(_STATE_META_UPSERT_SQL, ("fts_storage_version", str(FTS_STORAGE_VERSION)))
 
     def _run_data_migrations(self, cursor: sqlite3.Cursor, current_version: int, fts5_available: bool) -> None:
         """Version-gated chain for DATA migrations only (row backfills); column additions never
@@ -1069,10 +1092,7 @@ class SessionSchemaMixin:
             # Rebuild once so rows indexed by older view/trigger definitions do not linger.
             fts_migrations_complete = self._migrate_trigram_cron_exclusion(cursor)
 
-        # Stamp the FTS layout version (fresh/optimized DBs); a legacy DB keeps its absent/0
-        # marker until optimize-storage runs. An INTERRUPTED optimize (markers, trash, or an
-        # empty external index against non-empty messages) is NOT stamped: the marker is the
-        # source of truth for "fully optimized" and keeps the resume offer alive.
+        # The FTS layout stamp is written by _stamp_settled_fts_layout after _init_fts, not here.
         # v23: FTS storage redesign (issues #22478, #43690, #55233). The v11 inline-mode FTS tables each
         # store a full private copy of every message (content || tool_name || tool_calls), and the trigram
         # index additionally covers role='tool' rows (~90% of message bytes: base64 payloads, file dumps) at
@@ -1089,23 +1109,6 @@ class SessionSchemaMixin:
         # marker (see _fts_storage_version / SETTLE below), so schema_version advances to SCHEMA_VERSION
         # here like every other migration — future v24+ migrations land automatically for legacy-FTS users
         # too. Only the FTS *layout* waits for opt-in.
-        if (
-            fts5_available
-            and not self._db_needs_fts_storage_upgrade(cursor)
-            and cursor.execute(
-                "SELECT 1 FROM state_meta WHERE key = 'fts_rebuild_high_water' LIMIT 1"
-            ).fetchone() is None
-            and not self._has_fts_trash(cursor)
-            and not self._fts_external_index_empty_with_messages(cursor)
-        ):
-            # Stamp only when it would change something: on a settled DB every condition above
-            # already holds, and re-writing the same value takes the write lock on every open.
-            if cursor.execute(
-                "SELECT 1 FROM state_meta WHERE key = 'fts_storage_version' AND value = ? LIMIT 1",
-                (str(FTS_STORAGE_VERSION),),
-            ).fetchone() is None:
-                self.set_meta("fts_storage_version", str(FTS_STORAGE_VERSION), cursor=cursor)
-
         # v32: nothing to run here. The declared tables/columns #106742 added under v31 were already
         # created by _init_schema's executescript(SCHEMA_SQL) + _reconcile_columns() before this chain;
         # the version only records that the store has them (#140315).

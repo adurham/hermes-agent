@@ -4705,6 +4705,9 @@ class TestFTSExternalContentMigration:
         try:
             db.create_session(session_id="s1", source="cli")
             db.append_message("s1", role="user", content="settle guard needle")
+            # A fresh store is stamped on creation; clear it so the assertion reads settle's own write.
+            db._conn.execute("DELETE FROM state_meta WHERE key = 'fts_storage_version'")
+            db._conn.commit()
             # Plant markers without going through demote.
             db.set_meta("fts_rebuild_high_water", "1")
             db.set_meta("fts_rebuild_progress", "0")

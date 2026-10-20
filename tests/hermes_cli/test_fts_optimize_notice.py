@@ -33,6 +33,7 @@ def test_update_notice_offers_v1_trigram_tool_calls_rebuild(tmp_path, monkeypatc
         _db_needs_fts_storage_upgrade = staticmethod(
             hermes_state.SessionDB._db_needs_fts_storage_upgrade
         )
+        _db_has_legacy_inline_fts = staticmethod(hermes_state.SessionDB._db_has_legacy_inline_fts)
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(hermes_state, "SessionDB", FakeSessionDB)
@@ -64,6 +65,8 @@ def test_doctor_collects_structural_fts_upgrade_status(
     """Real read-only collection must ignore forged or lagging version markers."""
     from hermes_cli import doctor_state
     from hermes_state_dbfile import collect_state_db_stats
+    from hermes_state_fts import _expected_vtable_sql
+    from hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL
 
     db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:
@@ -75,13 +78,11 @@ def test_doctor_collects_structural_fts_upgrade_status(
         if base_layout == "legacy":
             conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(content)")
         elif base_layout == "current":
-            conn.execute(
-                "CREATE VIRTUAL TABLE messages_fts USING "
-                "fts5(content, tool_name, tool_calls, content='messages')"
-            )
-        if trigram_layout != "absent":
-            columns = "content, tool_name" + (", tool_calls" if trigram_layout == "legacy" else "")
-            conn.execute(f"CREATE VIRTUAL TABLE messages_fts_trigram USING fts5({columns}, tokenize='trigram')")
+            conn.execute(_expected_vtable_sql(FTS_SQL, "messages_fts"))
+        if trigram_layout == "legacy":
+            conn.execute("CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content, tool_name, tool_calls, tokenize='trigram')")
+        elif trigram_layout == "current":
+            conn.execute(_expected_vtable_sql(FTS_TRIGRAM_SQL, "messages_fts_trigram"))
         if marker is not None:
             conn.execute("INSERT INTO state_meta VALUES ('fts_storage_version', ?)", (str(marker),))
 
@@ -104,13 +105,15 @@ def test_doctor_collects_structural_fts_upgrade_status(
 def test_doctor_collects_pending_rebuild_with_settled_layout(tmp_path, monkeypatch, progress, pending):
     from hermes_cli import doctor_state
     from hermes_state_dbfile import collect_state_db_stats
+    from hermes_state_fts import _expected_vtable_sql
+    from hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL
 
     db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             "CREATE TABLE state_meta (key TEXT PRIMARY KEY, value TEXT);"
-            "CREATE VIRTUAL TABLE messages_fts USING fts5(content, tool_name, tool_calls);"
-            "CREATE VIRTUAL TABLE messages_fts_trigram USING fts5(content, tool_name, tokenize='trigram');"
+            f"{_expected_vtable_sql(FTS_SQL, 'messages_fts')};"
+            f"{_expected_vtable_sql(FTS_TRIGRAM_SQL, 'messages_fts_trigram')};"
             "INSERT INTO state_meta VALUES ('fts_rebuild_high_water', '10');"
         )
         conn.execute("INSERT INTO state_meta VALUES ('fts_rebuild_progress', ?)", (str(progress),))

@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Sequence
 
 from hermes_constants import get_hermes_home
-from hermes_state_common import (FTS_CJK_STALE_KEY, FTS_STALE_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS,
-    routed_sessions_setting)
+from hermes_state_common import (FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_TRIGRAM_SQL, _FTS_CJK_TRIGGERS,
+    _FTS_TRIGGERS, routed_sessions_setting)
 from hermes_state_errors import is_fts_scoped_corruption_error, is_sqlite_lock_error
 
 # caplog tests pin the "hermes_state" logger name.
@@ -127,6 +127,37 @@ def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
         return False
 
 
+_FTS_DDL_TABLES = ("messages_fts", "messages_fts_trigram")
+
+
+def _expected_vtable_sql(ddl: str, table: str) -> str:
+    """The stored-form ``CREATE VIRTUAL TABLE`` for *table* that *ddl* would create (``IF NOT EXISTS`` and
+    ``;`` dropped, whitespace collapsed), i.e. what ``sqlite_master.sql`` holds once the DDL has run."""
+    marker = f"CREATE VIRTUAL TABLE IF NOT EXISTS {table} USING"
+    start = ddl.index(marker)
+    end = ddl.index(";", start)
+    return " ".join(ddl[start:end].replace(" IF NOT EXISTS", "", 1).split())
+
+
+def fts_layout_drift(cursor: sqlite3.Cursor) -> list[str]:
+    """FTS tables whose stored definition differs from what this code creates; empty when current.
+
+    The one structural answer to "does optimize-storage have layout work": the update notice, doctor, the
+    open-time stamp and optimize-storage all read it, so a layout bump needs no new per-version predicate
+    and the ``fts_storage_version`` stamp is only ever written over tables that match it. An absent table
+    is not drift (the trigram index is optional; the base index is created on open). The cjk index is
+    left out: it exists only where its tokenizer loads and owns its own stale/backfill markers.
+    """
+    expected = {"messages_fts": _expected_vtable_sql(FTS_SQL, "messages_fts"),
+                "messages_fts_trigram": _expected_vtable_sql(FTS_TRIGRAM_SQL, "messages_fts_trigram")}
+    drift = []
+    for table in _FTS_DDL_TABLES:
+        row = cursor.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+        if row is not None and " ".join((row[0] or "").split()) != expected[table]:
+            drift.append(table)
+    return drift
+
+
 # FTS5 shadow tables the virtual-table engine owns. `sqlite3 .recover` re-emits them
 # as ordinary tables but cannot re-emit the CREATE VIRTUAL TABLE row, so every later
 # CREATE VIRTUAL TABLE fails with "fts5: error creating shadow table <name>: table
@@ -210,8 +241,8 @@ class SessionFtsSetupMixin:
 
     @classmethod
     def _db_needs_fts_storage_upgrade(cls, cursor: sqlite3.Cursor) -> bool:
-        """True when the current FTS storage layout should be treated as stale (optimize-storage has work)."""
-        return cls._db_has_legacy_inline_fts(cursor) or cls._db_has_trigram_tool_calls_projection(cursor)
+        """True when optimize-storage has layout work: a stored FTS vtable differs from what this code creates."""
+        return bool(fts_layout_drift(cursor))
 
     def _warn_trigram_unavailable(self, exc: sqlite3.OperationalError) -> None:
         """Log once that the trigram tokenizer is missing; base FTS5 stays enabled."""
