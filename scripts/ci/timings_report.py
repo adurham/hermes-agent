@@ -338,6 +338,9 @@ def collect_timings(token: str, repo: str, run_id: str, head_sha: str) -> dict:
         "run_id": run_id,
         "head_sha": head_sha,
         "created_at": created_at,
+        "is_main": (run_info.get("head_branch") == "main"
+                    and bool(run_info.get("event"))
+                    and run_info["event"] not in ("pull_request", "pull_request_target")),
         "jobs": all_jobs,
         "cache_data": _collect_cache_data(all_jobs, repo, token),
     }

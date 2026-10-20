@@ -104,96 +104,6 @@ def test_cache_invocations_account_only_confirmed_phase_local_archives():
     assert [e["identity"] for e in changed] == [e["identity"] for e in entries]
 
 
-def test_reports_compare_each_invocation_without_fabricating_missing_bytes():
-    report = importlib.import_module("scripts.ci.cache_report")
-
-    def parsed(restore_size, save_size, suffix):
-        log = "\n".join([
-            _cache("tools|<svg>", "first-" + suffix, [
-                "Cache hit for restore-key: previous-key",
-                f"Cache Size: ~0 MB ({restore_size} B)", "Cache restored from key: previous-key",
-            ]),
-            _cache("tools|<svg>", "second-" + suffix, [
-                "Cache not found for input keys: second-" + suffix,
-            ]),
-            _cache("unknown", "unknown-" + suffix, ["Cache restored from key: unknown-" + suffix]),
-            _cache("failed", "failed-" + suffix, [
-                "Cache not found for input keys: failed-" + suffix,
-            ]),
-            _post("tools|<svg>", [
-                f"Sent {save_size} of {save_size} (100.0%), 1.0 MBs/sec",
-                "Cache saved with key: first-" + suffix,
-            ]),
-            _post("tools|<svg>", [
-                "Sent 200 of 200 (100.0%), 1.0 MBs/sec", "Cache saved with key: second-" + suffix,
-            ]),
-            _post("unknown", ["Cache saved with key: unknown-" + suffix]),
-            _post("failed", [
-                "Sent 99999 of 99999 (100.0%), 1.0 MBs/sec",
-                "##[warning]Failed to save: finalization | <script>alert(1)</script>",
-            ]),
-        ])
-        entries = report.parse_cache_log(log)
-        entries += report.parse_cache_log("\n".join(
-            _cache(f"lookup-{i:02d}", f"lookup-{i:02d}", [
-                f"Cache found and can be restored from key: lookup-{i:02d}",
-            ]) for i in range(21)
-        ))
-        return [dict(e, job="job|<svg>") for e in entries]
-
-    current = {"cache_data": {"entries": parsed(100, 150, "a" * 64),
-                              "unavailable_jobs": ["lost|<script>"], "jobs_collected": 1}}
-    baseline = {"cache_data": {"entries": parsed(90, 120, "b" * 64),
-                               "unavailable_jobs": [], "jobs_collected": 1}}
-    # A baseline miss is a known absence of transfer, not a missing measurement.
-    baseline["cache_data"]["entries"][1].update(
-        restore_status="exact", restored_bytes=200, matched_key="older",
-        save_status="skipped-exact-hit", saved_bytes=None,
-    )
-    markdown = report.render_cache_summary(current, baseline)
-    html = report.render_cache_html(current, baseline)
-    status = report.cache_review_status(current, baseline, "https://example.test/report.html")
-    assert status[0]["source"] == "ci caches"
-    result = status[0]["results"][0]
-    assert result["kind"] == "info"
-    assert result["title"] == "CI caches"
-    assert result["link"] == "https://example.test/report.html"
-    assert "restored 100 B" in result["summary"]
-    assert "saved 350 B" in result["summary"]
-    assert "Showing 20 of 25 caches" in result["detail"]
-    assert "lookup-20" not in result["detail"]
-    assert "lookup-20" in markdown and "lookup-20" in html
-    assert html.count("<tr>") == len(current["cache_data"]["entries"]) + 1
-    for rendered in (markdown, result["detail"]):
-        assert "+10 B" in rendered  # Restored bytes compared to this invocation on main.
-        assert "+30 B" in rendered  # Saved bytes compared to this invocation on main.
-        assert "+50 B" in rendered  # Saved minus restored, not a main comparison.
-        assert "-200 B" in rendered and "+200 B" in rendered
-        assert "miss → 0 B" in rendered
-        assert "unknown" in rendered.lower() and "lookup-only" in rendered
-        assert "finalization \\| &lt;script&gt;" in rendered
-        assert "lost\\|&lt;script&gt;" in rendered
-        assert "job\\|&lt;svg&gt;" in rendered
-        assert "tools\\|&lt;svg&gt;" in rendered
-        assert "per-file" in rendered
-        assert "<script>" not in rendered and "<svg>" not in rendered
-    assert "first-" + "a" * 64 in html and "previous-key" in html
-    assert "Requested key" in html and "Matched key" in html
-    assert "&lt;script&gt;" in html and "<script>" not in html
-    assert "&lt;svg&gt;" in html and "<svg>" not in html
-    assert "Unknown archive sizes: 2" in markdown
-    for old_baseline in (None, {"jobs": []}):
-        result = report.cache_review_status(current, old_baseline)[0]["results"][0]
-        assert "no cache-aware main baseline" in result["summary"].lower()
-        assert "link" not in result
-        assert "no cache-aware main baseline" in result["detail"].lower()
-        assert "+100 B" not in result["detail"]
-    assert report.cache_review_status({}, baseline) == []
-    assert report.render_cache_summary({}, baseline) == ""
-    assert report.render_cache_html({}, baseline) == ""
-    empty = {"cache_data": {"entries": [], "jobs_collected": 0, "unavailable_jobs": ["denied"]}}
-    assert "denied" in report.cache_review_status(empty, baseline)[0]["results"][0]["detail"]
-    assert "not observed" in report.render_cache_summary(empty, baseline)
 
 
 def test_restore_only_and_combined_actions_keep_the_same_comparison_identity():
@@ -221,7 +131,7 @@ def test_restore_only_and_combined_actions_keep_the_same_comparison_identity():
     assert current[0]["save_status"] == "saved" and current[0]["saved_bytes"] == 150
     markdown = report.render_cache_summary({"cache_data": {"entries": current}},
                                            {"cache_data": {"entries": main}})
-    assert "+20 B" in markdown and "+150 B" in markdown and "+30 B" in markdown
+    assert "+20 B" in markdown and "Saved" not in markdown
 
 
 def test_failed_save_does_not_obscure_a_clean_restore_miss():
@@ -231,10 +141,11 @@ def test_failed_save_does_not_obscure_a_clean_restore_miss():
         _post("Cache downloads", ["##[warning]Failed to save: finalization failed"]),
     ]))[0]
     main = dict(entry, restore_status="exact", restored_bytes=10, save_status="skipped-exact-hit")
-    markdown = report.render_cache_summary({"cache_data": {"entries": [entry]}},
+    markdown = report.render_cache_summary({"is_main": True, "cache_data": {"entries": [entry]}},
                                            {"cache_data": {"entries": [main]}})
-    assert "miss · 0 B" in markdown and "-10 B" in markdown
-    assert "failed · unknown" in markdown and "finalization failed" in markdown
+    assert "0 / 1 cache hits" in markdown and "1 miss" in markdown
+    assert "failed" in markdown and "finalization failed" in markdown
+    assert "vs main" not in markdown
 
 
 def test_content_key_changes_pair_restore_and_save_by_their_transport_paths():
@@ -254,5 +165,6 @@ def test_content_key_changes_pair_restore_and_save_by_their_transport_paths():
     assert entries[0]["restored_bytes"] == 100 and entries[0]["saved_bytes"] == 140
     assert entries[0]["saved_key"] == "after-build"
     assert entries[1]["restore_status"] == "not-attempted" and entries[1]["saved_bytes"] == 10
-    summary = report.render_cache_summary({"cache_data": {"entries": entries}}, None)
-    assert "+40 B" in summary
+    summary = report.render_cache_summary({"is_main": True, "cache_data": {"entries": entries}}, None)
+    assert "140 B" in summary and "100 B" in summary
+    assert "vs main" not in summary

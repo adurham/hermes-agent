@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import json
 import threading
+
+import pytest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from scripts.ci import assemble_review_comment, timings_report
 
 
-def test_collected_cache_data_reaches_reports_without_forwarding_auth(monkeypatch):
+@pytest.mark.parametrize("event,is_main", [("pull_request", False), ("push", True), ("workflow_dispatch", True)])
+def test_collected_cache_data_reaches_reports_without_forwarding_auth(monkeypatch, event, is_main):
     timestamp = "2026-10-20T12:00:01Z "
     messages = [
         "##[group]Run actions/cache/restore@fixture", "with:",
@@ -30,7 +33,7 @@ def test_collected_cache_data_reaches_reports_without_forwarding_auth(monkeypatc
                                        (103, "not selected", "skipped")]]
     prefix = "/repos/fixture/cache/actions"
     routes = {
-        f"{prefix}/runs/42": (200, {}, json.dumps({"created_at": "2026-10-20T12:00:00Z"}).encode()),
+        f"{prefix}/runs/42": (200, {}, json.dumps({"created_at": "2026-10-20T12:00:00Z", "head_branch": "main", "event": event}).encode()),
         f"{prefix}/runs/42/jobs": (200, {}, json.dumps({"jobs": jobs}).encode()),
         f"{prefix}/runs": (200, {}, b'{"workflow_runs": []}'),
         "/blob": (200, {}, log),
@@ -65,6 +68,7 @@ def test_collected_cache_data_reaches_reports_without_forwarding_auth(monkeypatc
         thread.join()
 
     assert "cache_data" in current, "CI collection must retain per-cache data in the baseline JSON"
+    assert current["is_main"] is is_main, "a PR from a branch named main is not a main run"
     caches = current["cache_data"]
     assert caches["jobs_collected"] == 1
     assert caches["unavailable_jobs"] == ["logs unavailable"]
@@ -80,5 +84,6 @@ def test_collected_cache_data_reaches_reports_without_forwarding_auth(monkeypatc
     assert cache_status["results"][0]["link"] == "https://example.invalid/report"
     comment = assemble_review_comment.assemble(review_statuses_json=json.dumps(statuses))
     assert "CI caches" in comment and "logs unavailable" in comment
-    assert "fixture-v1" in timings_report.generate_html(current, old_baseline)
+    assert "Cache artifacts" in timings_report.generate_html(current, old_baseline)
+    assert "#step:1:1" in comment
     assert "CI caches" in timings_report.generate_summary(current, old_baseline)

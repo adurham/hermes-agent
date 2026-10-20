@@ -9,12 +9,12 @@ from __future__ import annotations
 from datetime import datetime
 from html import escape
 import re
-from typing import cast
+from urllib.parse import quote
 
 
-def _record(name: str, action: str) -> dict:
+def _record(name: str, action: str, step_number: int | None) -> dict:
     return {
-        "name": name, "action": action, "requested_key": None, "matched_key": None,
+        "name": name, "step_number": step_number, "action": action, "requested_key": None, "matched_key": None,
         "restore_status": "not-attempted" if action.endswith("/save") else "unknown",
         "restored_bytes": None, "save_status": "not-attempted", "saved_bytes": None,
         "saved_key": None, "warnings": [], "restore_warnings": [], "paths": [],
@@ -41,23 +41,24 @@ class _CacheLogParser:
         self.path_input = False
         self.steps = [
             (datetime.fromisoformat(s["started_at"]).timestamp(),
-             datetime.fromisoformat(s["completed_at"]).timestamp() + 1, s["name"])
+             datetime.fromisoformat(s["completed_at"]).timestamp() + 1, s["name"], s.get("number"))
             for s in steps if s.get("started_at") and s.get("completed_at")
             and s.get("conclusion") != "skipped"
         ]
 
-    def _name(self, timestamp: str | None, action: str) -> str:
-        step = None
+    def _context(self, timestamp: str | None, action: str) -> tuple[str, int | None]:
+        step, number = None, None
         if timestamp:
             instant = datetime.fromisoformat(timestamp).timestamp()
-            step = next((name for start, end, name in reversed(self.steps)
-                         if start <= instant < end), None)
+            step, number = next(((name, number) for start, end, name, number in reversed(self.steps)
+                                 if start <= instant < end), (None, None))
         labels = [_stable_label(label) for label in (step, self.marker) if label]
-        return " / ".join(dict.fromkeys(labels)) or action
+        return " / ".join(dict.fromkeys(labels)) or action, number
 
     def _start(self, timestamp: str | None, action: str, save: bool):
+        name, number = self._context(timestamp, action)
         self.phase = {
-            "entry": _record(self._name(timestamp, action), action), "save": save,
+            "entry": _record(name, action, number), "save": save,
             "size": None, "received": None, "sent": None, "restored": False,
             "seen": False,
         }
@@ -261,95 +262,77 @@ def _observed(entry: dict | None, phase: str) -> int | None:
     return None
 
 
-def _transfer(entry: dict | None, phase: str) -> str:
+def _archive_size(entry: dict | None) -> int | None:
     if entry is None:
-        return "not observed"
-    status = entry[f"{phase}_status"]
-    return f"{status} · {_bytes(_observed(entry, phase))}"
+        return None
+    if entry["save_status"] == "saved":
+        return entry["saved_bytes"]
+    if entry["restore_status"] in ("exact", "fallback"):
+        return entry["restored_bytes"]
+    return None
 
 
-def _delta(current: dict | None, main: dict | None, phase: str) -> str:
-    a, b = _observed(current, phase), _observed(main, phase)
-    return _bytes(a - b, signed=True) if a is not None and b is not None else "unknown"
+def _bucket(entry: dict) -> str:
+    status = entry["restore_status"]
+    if status in ("exact", "fallback"):
+        return "hits"
+    if status == "miss" and not entry.get("restore_warnings", entry["warnings"]):
+        return "misses"
+    if status == "not-attempted":
+        return "saves without restore"
+    return "unavailable"
 
 
-def _archive_delta(entry: dict | None) -> str:
-    if entry is None or entry["save_status"] != "saved":
-        return "not written" if entry and entry["save_status"] == "skipped-exact-hit" else "unknown"
-    saved, restored = _observed(entry, "save"), _observed(entry, "restore")
-    if saved is None or restored is None:
-        return "unknown"
-    result = _bytes(saved - restored, signed=True)
-    return result + " (miss → 0 B)" if entry["restore_status"] == "miss" else result
-
-
-def _comparison_rows(timings: dict, baseline: dict | None) -> list[tuple[dict | None, dict | None]]:
-    def identity(entry):
-        return entry.get("job", ""), entry["identity"]
-
-    main = (baseline or {}).get("cache_data", {}).get("entries", [])
-    main_map = {identity(e): e for e in main}
-    current = timings["cache_data"].get("entries", [])
-    current_ids = {identity(e) for e in current}
-    return ([(e, main_map.get(identity(e))) for e in current]
-            + [(None, e) for e in main if identity(e) not in current_ids])
-
-
-def _totals(timings: dict) -> tuple[int, int, int]:
-    restored = saved = unknown = 0
-    for entry in timings["cache_data"].get("entries", []):
-        if entry["restore_status"] in ("exact", "fallback"):
-            if entry["restored_bytes"] is None:
-                unknown += 1
-            else:
-                restored += entry["restored_bytes"]
-        if entry["save_status"] == "saved":
-            if entry["saved_bytes"] is None:
-                unknown += 1
-            else:
-                saved += entry["saved_bytes"]
-    return restored, saved, unknown
-
-
-def _summary(timings: dict, baseline: dict | None) -> str:
-    restored, saved, _ = _totals(timings)
-    result = f"Observed compressed archives: restored {_bytes(restored)}; saved {_bytes(saved)} (known sizes only)."
-    if "cache_data" not in (baseline or {}):
-        result += " No cache-aware main baseline."
-    return result
-
-
-def _notes(timings: dict, baseline: dict | None) -> list[str]:
+def _view(timings: dict, baseline: dict | None) -> dict:
     data = timings["cache_data"]
-    notes = [_summary(timings, baseline),
-             f"Job logs collected: {data.get('jobs_collected', 0)}. "
-             f"Unknown archive sizes: {_totals(timings)[2]} successful transfer(s)."]
-    if data.get("unavailable_jobs"):
-        notes.append("Unavailable job logs: " + ", ".join(data["unavailable_jobs"]))
-    baseline_data = (baseline or {}).get("cache_data")
-    if baseline_data is None:
-        notes.append("No cache-aware main baseline; comparisons are unknown, not zero.")
-    elif baseline_data.get("unavailable_jobs"):
-        notes.append("Unavailable main job logs: " + ", ".join(baseline_data["unavailable_jobs"]))
-    notes.append(
-        "Per-cache restored/saved deltas compare observed bytes against main. "
-        "Missing invocations or measurements are unknown, not zero. "
-        "Archive Δ is saved compressed archive bytes minus restored compressed archive bytes, "
-        "not per-file growth. A clean miss explicitly uses 0 B restored; exact-hit skips write no archive."
-    )
+    is_main = timings.get("is_main", False)
+    references = {(e.get("job", ""), e["identity"]): e
+                  for e in (baseline or {}).get("cache_data", {}).get("entries", [])}
+    groups: dict[str, list[dict]] = {name: [] for name in ("hits", "misses", "unavailable", "saves without restore")}
+    attempts, missed = [], []
+    for entry in data.get("entries", []):
+        group = _bucket(entry)
+        groups[group].append(entry)
+        if entry["restore_status"] not in ("not-attempted", "lookup-only"):
+            attempts.append(entry)
+            if group != "hits":
+                reference = entry if is_main else references.get((entry.get("job", ""), entry["identity"]))
+                missed.append(_archive_size(reference))
+    return {"groups": groups, "attempts": len(attempts), "missed": missed,
+            "references": references, "is_main": is_main, "data": data,
+            "has_baseline": "cache_data" in (baseline or {})}
+
+
+def _amount(values: list[int | None], label: str) -> str:
+    known = [value for value in values if value is not None]
+    unknown = len(values) - len(known)
+    result = f"{_bytes(sum(known))} {label}" if known or not values else f"{label}: unknown"
+    return result + (f" (+{unknown} unknown sizes)" if unknown else "")
+
+
+def _summary(view: dict) -> str:
+    groups = view["groups"]
+    result = (f"{len(groups['hits'])} / {view['attempts']} cache hits; "
+              f"{len(groups['misses'])} miss{'es' if len(groups['misses']) != 1 else ''}; "
+              + _amount([e["restored_bytes"] for e in groups["hits"]], "restored")
+              + " / " + _amount(view["missed"], "not restored"))
+    if view["is_main"]:
+        result += "; " + _amount([e["saved_bytes"] for rows in groups.values() for e in rows
+                                 if e["save_status"] == "saved"], "saved")
+    return result + "."
+
+
+def _notes(view: dict) -> list[str]:
+    source = "newly saved archive sizes" if view["is_main"] else "the main-size reference"
+    notes = [f"Compressed archive bytes. Not-restored bytes use {source}; missing sizes remain unknown."]
+    if not view["is_main"] and not view["has_baseline"]:
+        notes.append("No main archive reference yet; deltas and missed sizes are unknown.")
+    if view["data"].get("unavailable_jobs"):
+        notes.append("Unavailable job logs: " + ", ".join(view["data"]["unavailable_jobs"]))
+    lookups = sum(e["restore_status"] == "lookup-only" for e in view["groups"]["unavailable"])
+    if lookups:
+        notes.append(f"{lookups} lookup-only checks excluded from restore attempts.")
     return notes
-
-
-def _cells(current: dict | None, main: dict | None) -> list[str]:
-    entry = cast(dict, current if current is not None else main)
-    return [entry.get("job", ""), entry["identity"],
-            _transfer(current, "restore"), _delta(current, main, "restore"),
-            _transfer(current, "save"), _delta(current, main, "save"), _archive_delta(current)]
-
-
-def _headers() -> tuple[str, ...]:
-    return ("Job", "Cache invocation", "Restored", "Restored Δ vs main", "Saved",
-            "Saved Δ vs main", "Archive Δ (saved − restored)")
 
 
 def _md(value: str) -> str:
@@ -357,68 +340,115 @@ def _md(value: str) -> str:
     return re.sub(r"([\\`*_\[\]|])", r"\\\1", text)
 
 
-def _markdown(timings: dict, baseline: dict | None, limit: int | None = None, *, standalone: bool = True) -> str:
-    rows = _comparison_rows(timings, baseline)
-    displayed = rows if limit is None else rows[:limit]
-    notes = _notes(timings, baseline)
-    lines = ["### CI caches", "", _md(notes[0])] if standalone else []
-    lines += [*[_md(note) for note in notes[1:]], "",
-              "| " + " | ".join(_headers()) + " |", "| " + " | ".join(["---"] * len(_headers())) + " |"]
-    for current, main in displayed:
-        lines.append("| " + " | ".join(_md(cell) for cell in _cells(current, main)) + " |")
-    if limit is not None and len(rows) > limit:
-        lines += ["", f"Showing {limit} of {len(rows)} caches; see the full HTML report for all invocations and keys."]
-    for current, main in displayed:
-        entry = cast(dict, current if current is not None else main)
-        for warning in entry["warnings"]:
-            lines.append(f"- {_md(entry.get('job', ''))} / {_md(entry['identity'])}: {_md(warning)}")
+def _link(entry: dict, html: bool) -> str:
+    url = entry.get("job_url", "")
+    if not url.startswith(("https://", "http://")):
+        return "unavailable"
+    number = entry.get("step_number")
+    label = "view step" if number is not None else "view job"
+    if number is not None:
+        url += f"#step:{number}:1"
+    if html:
+        return f'<a href="{escape(url, quote=True)}">{label}</a>'
+    return f"[{label}]({quote(url, safe='/:#?=&%')})"
+
+
+def _saved(entry: dict) -> str:
+    status = entry["save_status"]
+    if status in ("saved", "skipped-exact-hit"):
+        return _bytes(_observed(entry, "save")) + (" (exact-hit skip)" if status == "skipped-exact-hit" else "")
+    return status.replace("-", " ")
+
+
+def _headers(group: str, is_main: bool) -> list[str]:
+    headers = ["Job", "Step", "Logs"]
+    if group == "hits":
+        headers += ["Restored", "Saved" if is_main else "Δ vs main"]
+    elif group == "unavailable":
+        headers.append("Status")
+        if is_main:
+            headers.append("Saved")
+    elif is_main:
+        headers.append("Saved")
+    return headers
+
+
+def _cells(entry: dict, group: str, view: dict) -> list[str]:
+    cells = [entry.get("job", ""), entry["name"]]
+    if group == "hits":
+        cells.append(_bytes(entry["restored_bytes"]))
+        if view["is_main"]:
+            cells.append(_saved(entry))
+        else:
+            reference = view["references"].get((entry.get("job", ""), entry["identity"]))
+            size = _archive_size(reference)
+            current = entry["restored_bytes"]
+            cells.append(_bytes(current - size, signed=True) if current is not None and size is not None else "unknown")
+    elif group == "unavailable":
+        cells.append(entry["restore_status"])
+        if view["is_main"]:
+            cells.append(_saved(entry))
+    elif view["is_main"]:
+        cells.append(_saved(entry))
+    return cells
+
+
+def _table(rows: list[dict], group: str, view: dict, html: bool) -> str:
+    headers = _headers(group, view["is_main"])
+    encode = escape if html else _md
+    if html:
+        lines = ["<table><thead><tr>" + "".join(f"<th>{escape(h)}</th>" for h in headers) + "</tr></thead><tbody>"]
+    else:
+        lines = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
+    for entry in rows:
+        cells = [encode(cell) for cell in _cells(entry, group, view)]
+        cells.insert(2, _link(entry, html))
+        lines.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>" if html
+                     else "| " + " | ".join(cells) + " |")
+    if html:
+        lines.append("</tbody></table>")
+    return "\n".join(lines)
+
+
+def _details(view: dict, html: bool) -> str:
+    encode = escape if html else _md
+    lines = ["<details>", "<summary>per-job cache results</summary>", ""]
+    for group, rows in view["groups"].items():
+        if group not in ("hits", "misses") and (not rows or (group == "saves without restore" and not view["is_main"])):
+            continue
+        lines += [f"<h3>{group}</h3>" if html else f"### {group}", ""]
+        lines += [_table(rows, group, view, html) if rows else "none", ""]
+    for note in _notes(view):
+        lines.append(f"<p>{encode(note)}</p>" if html else encode(note) + "\n")
+    for rows in view["groups"].values():
+        for entry in rows:
+            for warning in entry["warnings"]:
+                text = encode(f"{entry.get('job', '')} / {entry['name']}: {warning}")
+                lines.append(f"<p>{text}</p>" if html else f"- {text}")
+    lines += ["", "</details>"]
     return "\n".join(lines)
 
 
 def render_cache_summary(timings: dict, baseline: dict | None) -> str:
-    """Full Markdown per-cache table for the Actions summary."""
-    return _markdown(timings, baseline) if "cache_data" in timings else ""
+    if "cache_data" not in timings:
+        return ""
+    view = _view(timings, baseline)
+    return "### CI caches\n\n" + _summary(view) + "\n\n" + _details(view, html=False)
 
 
 def render_cache_html(timings: dict, baseline: dict | None) -> str:
-    """An embeddable HTML section with every invocation and complete cache keys."""
     if "cache_data" not in timings:
         return ""
-    parts = ['<section id="ci-caches"><h2>CI caches</h2>']
-    parts += [f"<p>{escape(note)}</p>" for note in _notes(timings, baseline)]
-    parts += ["<table><thead><tr>" + "".join(f"<th>{escape(h)}</th>" for h in _headers())
-              + "</tr></thead><tbody>"]
-    for current, main in _comparison_rows(timings, baseline):
-        parts.append("<tr>" + "".join(f"<td>{escape(cell)}</td>" for cell in _cells(current, main)) + "</tr>")
-    parts.append("</tbody></table>")
-    for current, main in _comparison_rows(timings, baseline):
-        entry = cast(dict, current if current is not None else main)
-        label = f"{entry.get('job', '')} / {entry['identity']}"
-        parts.append(f"<details><summary>{escape(label)}</summary>")
-        for version, record in (("Current", current), ("Main", main)):
-            parts.append(f"<h4>{version}</h4>")
-            if record is None:
-                parts.append("<p>not observed</p>")
-                continue
-            parts.append("<dl>")
-            for title, field in (("Requested key", "requested_key"), ("Matched key", "matched_key"),
-                                 ("Saved key", "saved_key")):
-                parts.append(f"<dt>{title}</dt><dd><code>{escape(record.get(field) or 'unknown')}</code></dd>")
-            parts.append("</dl>")
-            parts += [f"<p>{escape(warning)}</p>" for warning in record["warnings"]]
-        parts.append("</details>")
-    return "\n".join([*parts, "</section>"])
+    view = _view(timings, baseline)
+    return ('<section id="ci-caches"><h2>CI caches</h2><p>' + escape(_summary(view)) + '</p>'
+            + _details(view, html=True) + '</section>')
 
 
-def cache_review_status(
-    timings: dict, baseline: dict | None, report_url: str | None = None,
-) -> list[dict]:
-    """An informational cache section for the existing unified CI review comment."""
+def cache_review_status(timings: dict, baseline: dict | None, report_url: str | None = None) -> list[dict]:
     if "cache_data" not in timings:
         return []
-    result = {"kind": "info", "title": "CI caches", "summary": _summary(timings, baseline),
-              "detail": _markdown(timings, baseline, limit=20, standalone=False)}
+    view = _view(timings, baseline)
+    result = {"kind": "info", "title": "CI caches", "summary": _summary(view), "detail": _details(view, html=False)}
     if report_url:
-        result["link"] = report_url
-        result["link_label"] = "View report"
+        result.update(link=report_url, link_label="View report")
     return [{"source": "ci caches", "results": [result]}]
