@@ -46,7 +46,12 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
     : props.sources.map(value => ({ value, label: tierLabel(value) ?? catalogLabel(value) }))
 
   const selected = props.facets[mode]
-  const onSelect = mode === 'categories' ? props.onCategory : props.onSource
+  const select = mode === 'categories' ? props.onCategory : props.onSource
+
+  // Picking the last unselected chip means every value is on: that is "All".
+  const onSelect = (value: string | null) =>
+    select(value !== null && !selected.includes(value) && rows.every(row => row.value === value || selected.includes(row.value)) ? null : value)
+
   const visible = rows.filter((row, index) => index < VISIBLE_CHIPS || selected.includes(row.value))
   const overflow = rows.filter(row => !visible.includes(row))
   const activeCount = props.facets.categories.length + props.facets.sources.length + props.facets.tags.length

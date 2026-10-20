@@ -30,12 +30,14 @@ const CATEGORY_PAGE = 8
 /** Rows of the mixed "More to explore" shelf shown at first, and per "Show more". */
 const LOOSE_ROWS_PAGE = 3
 
-export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
+export function CatalogDiscovery({ entries, kind, card, onCategory, actions, narrowed }: {
   entries: CatalogEntry[]
   kind: CatalogKind
   card: (entry: CatalogEntry, index: number, variant: CatalogCardVariant, placement?: React.CSSProperties) => ReactNode
   onCategory: (category: string) => void
   actions?: ReactNode
+  /** A tier filter is on: the shelves show only those tiers, so no hero pick. */
+  narrowed?: boolean
 }) {
   const { t } = useI18n()
   const [categoryLimit, setCategoryLimit] = useState(CATEGORY_PAGE)
@@ -43,7 +45,7 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions }: {
   const title = kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills
 
   // Same pick as the website: curated ranks from the feed, rotated weekly.
-  const featured = pickFeatured(entries, entry => ({
+  const featured = narrowed ? undefined : pickFeatured(entries, entry => ({
     featured: entry.featured,
     official: kind === 'plugins' ? pluginTier(entry) === 'official' : isOfficialSkillSource(entry.source),
     pictured: Boolean(entry.imageUrl),

@@ -258,8 +258,11 @@ const detailRelated = (entries: CatalogEntry[], selected: CatalogEntry | undefin
   selected && shown ? relatedEntries(entries, selected, RELATED_COUNT) : []
 
 /** Discovery shelves show only while browsing everything. */
-const isDiscoverView = (facets: CatalogFacets, query: string) =>
-  !facets.sources.length && !facets.categories.length && !facets.tags.length && !query && !facets.installedOnly
+/** Shelves (not a flat grid) while nothing narrows the catalog — or, for
+ *  plugins, while only tiers do: Official / Verified stay their own shelves
+ *  and Community keeps its category shelves. */
+const isDiscoverView = (facets: CatalogFacets, query: string, kind: CatalogKind) =>
+  (kind === 'plugins' || !facets.sources.length) && !facets.categories.length && !facets.tags.length && !query && !facets.installedOnly
 
 function CatalogLoadState({ error, onRetry }: { error: Error | null; onRetry: () => void }) {
   const { t } = useI18n()
@@ -362,7 +365,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
   const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind)
 
-  const discover = isDiscoverView(facets, deferredQuery)
+  const discover = isDiscoverView(facets, deferredQuery, kind)
   const pageOrder = filtered
 
   const selected = visible.find(entry => entry.id === selectedId) ?? filtered[0]
@@ -488,7 +491,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                     key={`${filterKey}:${sort}:${deferredQuery}:${facets.installedOnly}`}
                   >
                     {discover ? (
-                      <CatalogDiscovery actions={actions} card={card} entries={filtered} kind={kind} onCategory={filters.chooseCategory} />
+                      <CatalogDiscovery actions={actions} card={card} entries={filtered} kind={kind} narrowed={facets.sources.length > 0} onCategory={filters.chooseCategory} />
                     ) : (
                       <CatalogFilteredCards card={card} entries={filtered.slice(0, limit)} more={filtered.length > limit} onMore={() => setLimit(value => value + PAGE_SIZE)} />
                     )}
