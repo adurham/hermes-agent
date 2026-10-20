@@ -171,6 +171,30 @@ def test_notice_for_a_legacy_inline_store_keeps_the_reclaim_estimate(tmp_path, m
     assert "60%" in _notice_for(db_path, monkeypatch)
 
 
+def test_a_base_index_the_next_open_realigns_is_not_offered_as_opt_in_work(tmp_path, monkeypatch):
+    """A raw-``messages`` base index with a current trigram is realigned automatically on the next read-write
+    open, so the update notice (read-only, before that open) must not send the user to optimize-storage."""
+    import hermes_state_fts
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    _require_trigram(db)
+    _seed(db)
+    _install_raw_messages_base(db)
+    db._conn.execute("UPDATE state_meta SET value = '2' WHERE key = 'fts_storage_version'")
+    db._conn.commit()
+    db.close()
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        assert hermes_state_fts.fts_layout_drift(conn.cursor()) == []
+    finally:
+        conn.close()
+    assert "optimize-storage" not in _notice_for(db_path, monkeypatch)
+    SessionDB(db_path=db_path).close()
+    assert _stamp(db_path) == str(hermes_state_common.FTS_STORAGE_VERSION)
+
+
 def test_a_layout_change_the_code_has_not_shipped_yet_is_reported_as_drift(tmp_path, monkeypatch):
     """The next bump (any DDL change) must surface without someone adding a per-version predicate."""
     db_path = tmp_path / "state.db"
