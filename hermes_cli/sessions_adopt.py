@@ -11,6 +11,7 @@ shared operator access.
 from __future__ import annotations
 
 from collections import Counter
+import sqlite3
 import sys
 
 _PROGRESS_EVERY = 25
@@ -94,6 +95,20 @@ def _refusal(exc) -> str:
     return f'{reason} ({why})'
 
 
+def _unreadable_store(exc: sqlite3.Error, store: str) -> str:
+    """One line for a store adopt cannot read: what is wrong and what to run. Adopt opens the store
+    read-only, so it neither upgrades a store from an older release nor waits out another writer."""
+    from hermes_state_errors import is_sqlite_lock_error
+    from hermes_state_repair import _schema_not_built
+
+    if is_sqlite_lock_error(exc):
+        return f'Error: {store} is locked by another program. Close that program, then run this command again.'
+    if _schema_not_built(exc):
+        return (f'Error: {store} is from an older Hermes and has not been upgraded ({exc}). Run '
+                '`hermes sessions repair` to upgrade it (it makes a backup first), then run this command again.')
+    return f'Error: could not read {store} ({exc}). Run `hermes sessions repair` to check it.'
+
+
 def cmd_adopt(args) -> int:
     import asyncio
     from websockets.exceptions import WebSocketException
@@ -104,7 +119,11 @@ def cmd_adopt(args) -> int:
     if not path.exists():
         print(f'No session database at {display_hermes_home()}/state.db (nothing to adopt).')
         return 0
-    rows = adoptable_sessions(path)
+    try:
+        rows = adoptable_sessions(path)
+    except sqlite3.Error as exc:
+        print(_unreadable_store(exc, f'{display_hermes_home()}/state.db'), file=sys.stderr)
+        return 1
     if not rows:
         print('Nothing to adopt: every local chat in this profile already belongs to its gateway.')
         return 0

@@ -7,7 +7,9 @@ adopts them in one pass, after which the browser login continues each.
 """
 import argparse
 import asyncio
+from contextlib import closing
 import json
+import sqlite3
 
 import pytest
 
@@ -35,14 +37,19 @@ def _seed(home):
         db.close()
 
 
-def _adopt(capsys, *argv):
+def _run_adopt(capsys, *argv):
     from hermes_cli import sessions_cmd
     from hermes_cli.subcommands.sessions import build_sessions_parser
     parser = argparse.ArgumentParser()
     build_sessions_parser(parser.add_subparsers(dest='command'), cmd_sessions=sessions_cmd.cmd_sessions)
     args = parser.parse_args(['sessions', 'adopt', *argv])
     status = args.func(args)
-    return status, capsys.readouterr().out
+    return status, capsys.readouterr()
+
+
+def _adopt(capsys, *argv):
+    status, captured = _run_adopt(capsys, *argv)
+    return status, captured.out
 
 
 async def _rpc(socket, method, **params):
@@ -113,3 +120,67 @@ def test_adopt_survives_a_long_history_and_names_what_the_owner_refused(tmp_path
         assert 'Skipped 1: invalid_params (cwd: must be an absolute path to an existing directory).' in out, out
         resumed = asyncio.run(_browser_resume(home, descriptor, 'long-desktop'))
         assert resumed.get('result', {}).get('session_id') == 'long-desktop', str(resumed)[:300]
+
+
+def _rollback_journal_store(home):
+    """A seeded store in rollback-journal mode, where a writer's exclusive lock also blocks readers."""
+    home.mkdir(parents=True)
+    _seed(home)
+    with closing(sqlite3.connect(home / 'state.db', isolation_level=None)) as conn:
+        assert conn.execute('PRAGMA journal_mode=DELETE').fetchone()[0] == 'delete'
+    return home / 'state.db'
+
+
+def _store_files(home):
+    return {path.name: path.read_bytes() for path in sorted(home.glob('state.db*'))}
+
+
+def _refused_adopt(capsys, monkeypatch, home, *argv):
+    """Runs adopt where no gateway is reachable: the store has to answer before any connection."""
+    from hermes_cli import gateway_client
+
+    def no_gateway(**_kwargs):
+        raise AssertionError('adopt connected to the gateway')
+
+    monkeypatch.setattr(gateway_client, 'connect_gateway', no_gateway)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    status, captured = _run_adopt(capsys, *argv)
+    return status, captured.out, captured.err
+
+
+@pytest.mark.parametrize('argv', [(), ('--dry-run',)])
+def test_adopt_names_the_upgrade_for_a_store_no_newer_hermes_has_opened(tmp_path, monkeypatch, capsys, argv):
+    """Adopt reads the store without upgrading it, so a store from an older release that lacks this
+    release's tables gets one line naming the command that upgrades it, and stays as it was."""
+    home = tmp_path / 'home'
+    db = _rollback_journal_store(home)
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute('DROP TABLE state_meta')
+        conn.commit()
+    before = _store_files(home)
+
+    status, out, err = _refused_adopt(capsys, monkeypatch, home, *argv)
+
+    assert status == 1 and out == '', out
+    assert len(err.splitlines()) == 1 and 'older' in err and '`hermes sessions repair`' in err, err
+    assert _store_files(home) == before
+
+
+@pytest.mark.parametrize('argv', [(), ('--dry-run',)])
+def test_adopt_says_to_close_the_holder_of_a_locked_store(tmp_path, monkeypatch, capsys, argv):
+    """Another process's exclusive lock on a rollback-journal store blocks the read. Adopt says the
+    store is locked and to retry once what holds it is closed, and changes nothing."""
+    import hermes_state
+
+    home = tmp_path / 'home'
+    db = _rollback_journal_store(home)
+    before = _store_files(home)
+    monkeypatch.setattr(hermes_state, '_READ_BUSY_TIMEOUT_S', 0.1)
+    with closing(sqlite3.connect(db, isolation_level=None)) as holder:
+        holder.execute('BEGIN EXCLUSIVE')
+        status, out, err = _refused_adopt(capsys, monkeypatch, home, *argv)
+        holder.execute('ROLLBACK')
+
+    assert status == 1 and out == '', out
+    assert len(err.splitlines()) == 1 and 'locked' in err and 'close' in err.lower(), err
+    assert _store_files(home) == before
