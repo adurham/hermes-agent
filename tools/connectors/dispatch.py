@@ -9,12 +9,14 @@ from tools.connectors.gateway.merge import assemble_results, fill_remote_failure
 
 
 def dispatch_connector_call(name, arguments, tool_call_id, turn_id=None, task_id=None):
+    from tools.connectors.data_use import record_data_use
     from tools.connectors.gateway.bridge import run_remote
 
     partition = partition_calls([{"name": name, "arguments": arguments}])
     entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None, turn_id=turn_id,
                          task_id=task_id)
     entry = entries[0]
+    record_data_use(turn_id, tool_call_id, entry.get("data_use") or ())
     return json.dumps({key: value for key, value in entry.items() if key in {"response", "error", "account"}},
                       ensure_ascii=False)
 
@@ -24,6 +26,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
     from dataclasses import replace
 
     from model_tools import handle_function_call, suppress_post_tool_call_hook
+    from tools.connectors.data_use import record_data_use, take_data_use
     from tools.interrupt import is_interrupted
 
     if len(calls) > MAX_CALLS_PER_DISPATCH:
@@ -34,6 +37,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
         from tools.tool_search_validation import local_batch_error
         return tool_error(local_batch_error(calls))
     entries = list(partition.errors)
+    requires: set[str] = set()
     for offset, plan in enumerate(partition.remote):
         if is_interrupted():
             # Check before every entry so /stop prevents unstarted remote side effects.
@@ -52,6 +56,8 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                 skip_tool_execution_middleware=False,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
             )
+        # The batch is one tool message: it carries the union of its entries' requirements.
+        requires.update(take_data_use(entry_ids.turn_id, entry_ids.tool_call_id))
         try:
             value = json.loads(payload) if isinstance(payload, str) else payload
         except ValueError:
@@ -65,4 +71,5 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
         if isinstance(value, dict) and value.get("account"):
             entry["account"] = value["account"]
         entries.append(entry)
+    record_data_use(ids.turn_id, ids.tool_call_id, requires)
     return json.dumps(assemble_results(len(calls), entries), ensure_ascii=False)

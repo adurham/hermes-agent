@@ -43,6 +43,7 @@ from agent.inline_tool_executors import (
     emit_terminal_post_tool_call,
     tool_hook_ids,
 )
+from agent.message_metadata import stamp_data_use
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -1161,6 +1162,8 @@ def _commit_tool_result(
                 tool_message["display_metadata"] = metadata
         except Exception as callback_error:
             logging.debug("Tool result metadata callback error: %s", callback_error)
+    from tools.connectors.data_use import take_data_use
+    stamp_data_use(tool_message, take_data_use(getattr(agent, "_current_turn_id", "") or "", tool_call_id))
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

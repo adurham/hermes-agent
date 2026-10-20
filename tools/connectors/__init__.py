@@ -23,6 +23,7 @@ _LAZY_EXPORTS: dict[str, str] = {
     "ensure_guest_identity": "tools.connectors.gateway.config",
     "guest_identity_pending": "tools.connectors.gateway.config",
     "is_connector_name": "tools.connectors.gateway.names",
+    "take_data_use": "tools.connectors.data_use",
     "manage_connections": "tools.connectors.tool",
 }
 
