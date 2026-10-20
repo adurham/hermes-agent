@@ -62,10 +62,12 @@ def report_pack_tidy(root: Path) -> None:
         print(f"  (git cleanup stopped at its {TIDY_BUDGET_SECONDS}s limit; the next update continues it)")
 
 
-def _refuses(git_cmd: list[str], root: Path, target: str) -> bool:
+def _refuses(git_cmd: list[str], root: Path, target: str, repository: str) -> bool:
     """`hermes update` would refuse ``target`` (see update_downgrade_guard), so --check must not offer it."""
     from hermes_cli.update_downgrade_guard import would_refuse
     from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+    from hermes_cli.source_check import _github_predates_runtime
+    from hermes_constants import get_hermes_home
 
     def git(*args: str) -> int:
         try:
@@ -73,7 +75,10 @@ def _refuses(git_cmd: list[str], root: Path, target: str) -> bool:
                         timeout=20).returncode
         except (OSError, subprocess.SubprocessError):
             return -1
-    return would_refuse(root, target, git=git)
+
+    def remote(sha: str):
+        return _github_predates_runtime(repository, sha, get_hermes_home() / "source-checks" / "release-runtime.json")
+    return would_refuse(root, target, git=git, remote=remote)
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:
@@ -102,7 +107,7 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
         print(f"✓ No newer release: {target.label}.")
     elif _uc()._capture_head_sha(git_cmd, root) == target.commit:
         print(f"✓ Up to date with the latest release ({target.label}).")
-    elif _refuses(git_cmd, root, target.commit):
+    elif _refuses(git_cmd, root, target.commit, target.repository):
         # Before the rollback branch: a release this checkout contains is held too, not moved back to.
         print(f"→ Holding at this build: {target.label} predates the gateway runtime your sessions use.")
         print("  `hermes update` stays on this build; the next release that includes the runtime"

@@ -117,7 +117,8 @@ def test_check_holds_a_release_that_update_would_refuse(repo, tmp_path, monkeypa
         _git(repo, "commit", "-qm", "release from the older line")
         release = _git(repo, "rev-parse", "HEAD")
         _git(repo, "checkout", "-q", "main")
-    target = SimpleNamespace(commit=release, retired=False, ahead=False, label="v1.2.3", branch=None)
+    target = SimpleNamespace(commit=release, retired=False, ahead=False, label="v1.2.3", branch=None,
+                             repository="NousResearch/hermes-agent")
     monkeypatch.setattr(source_releases, "resolve_source_target", lambda *a, **k: target)
 
     update_cmd_check.channel_compare_branch("stable", ["git"], repo)

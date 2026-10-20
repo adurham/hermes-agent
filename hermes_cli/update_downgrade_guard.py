@@ -11,13 +11,14 @@ reason to refuse, and a target that descends from the running commit is a forwar
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import closing
 from pathlib import Path
 from typing import Optional
 
 # The runtime ledger DDL: a target whose state-store modules lack it predates the cutover.
 _RUNTIME_SCHEMA_MARKER = "CREATE TABLE IF NOT EXISTS session_admissions"
+STATE_MODULES = "hermes_state*.py"  # git pathspec and fnmatch pattern alike (``*`` crosses ``/`` in both)
 _LEDGER_PROBE = ("SELECT EXISTS(SELECT 1 FROM session_admissions) "
                  "OR EXISTS(SELECT 1 FROM worker_executions)")
 _DOCS = "https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release"
@@ -36,19 +37,30 @@ def _updater_git(git_cmd, root: Path) -> Callable[..., int]:
     return git
 
 
+def defines_runtime(sources: Iterable[str]) -> bool:
+    """Whether any of a tree's ``STATE_MODULES`` sources defines the runtime ledger. Lazy: stops at
+    the first match, so a caller reading sources over the network fetches no more than it needs."""
+    return any(_RUNTIME_SCHEMA_MARKER in source for source in sources)
+
+
 def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
-                            git: Optional[Callable[..., int]] = None) -> bool:
+                            git: Optional[Callable[..., int]] = None,
+                            remote: Optional[Callable[[str], Optional[bool]]] = None) -> bool:
     """True when ``target_ref`` does not descend from HEAD and none of its ``hermes_state*.py`` files
     defines the runtime ledger. The pathspec keeps a blobless partial clone from fetching the whole
     tree. Any git failure proves nothing (False). ``git`` runs one git command and returns its exit
-    code; the update check passes its own read-only probe."""
+    code; the update check passes its own read-only probe.
+
+    ``remote`` answers the same question for a target this checkout has not fetched (True, False, or
+    None when it cannot tell). The update check passes one because it never fetches, and a release
+    off the checkout's tracked branch is usually absent until ``hermes update`` fetches it."""
     git = git or _updater_git(git_cmd, root)
     if git("merge-base", "--is-ancestor", "HEAD", target_ref) == 0:
         return False  # forward update: whatever the target's schema, it was written knowing this one
     if git("cat-file", "-e", f"{target_ref}^{{commit}}") != 0:
-        return False
+        return remote is not None and remote(target_ref) is True
     # Exit 1 = no match (the target lacks the ledger); 0 = found; anything else is a git error.
-    return git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", "hermes_state*.py") == 1
+    return git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", STATE_MODULES) == 1
 
 
 def _has_ledger_rows(db_path: Path) -> bool:
@@ -99,10 +111,13 @@ def _ledgered_profiles(home: Path | None) -> list[tuple[str, Path]]:
     return [(name, h) for name, h in profiles if _has_ledger_rows(h / "state.db")]
 
 
-def would_refuse(root: Path, target_ref: str, home: Path | None = None, *, git: Callable[..., int]) -> bool:
+def would_refuse(root: Path, target_ref: str, home: Path | None = None, *, git: Callable[..., int],
+                 remote: Optional[Callable[[str], Optional[bool]]] = None) -> bool:
     """Whether ``hermes update`` would refuse ``target_ref`` here: the update check's read-only twin of
-    :func:`downgrade_refusal`, so a release the updater refuses is never offered as an update."""
-    return bool(_ledgered_profiles(home)) and target_predates_runtime(None, root, target_ref, git=git)
+    :func:`downgrade_refusal`, so a release the updater refuses is never offered as an update.
+    The store scan runs first, so ``remote`` is only consulted when some store has runtime history."""
+    return bool(_ledgered_profiles(home)) and target_predates_runtime(
+        None, root, target_ref, git=git, remote=remote)
 
 
 def downgrade_refusal(git_cmd, root: Path, target_ref: str, home: Path | None = None) -> str | None:

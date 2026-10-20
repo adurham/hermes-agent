@@ -89,7 +89,7 @@ def installation(tmp_path, monkeypatch):
 
     def local(request, *args, **kwargs):
         url = urlsplit(request.full_url)
-        assert url.hostname in {"api.github.com", "hermes-assets.nousresearch.com"}
+        assert url.hostname in {"api.github.com", "hermes-assets.nousresearch.com", "raw.githubusercontent.com"}
         rewritten = urllib.request.Request(
             f"http://127.0.0.1:{server.server_port}{url.path}" + (f"?{url.query}" if url.query else ""),
             headers=dict(request.header_items()))
@@ -631,3 +631,51 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(installation, tm
         _ledgered_store(home)
         cached = check_for_updates(install_root=root, home=home, channel="stable")
         assert cached["updateAvailable"] is False and cached.get("held") == "downgrade", cached
+
+
+@pytest.mark.parametrize("ledgered", [True, False])
+def test_an_unfetched_release_is_judged_from_github(installation, tmp_path, monkeypatch, ledgered):
+    """The usual install tracks only ``main``, so a release cut beside it is absent until `hermes
+    update` fetches it, and a local probe proves nothing. The check reads the release's state modules
+    from GitHub instead, so it still holds what the update would refuse (#140215 review)."""
+    from hermes_cli.source_check import check_for_updates
+    from tests.hermes_cli.test_update_downgrade_guard import _ledgered_store
+
+    root, _linked, home, base, _head, responses, requests, git = installation
+    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    # The release lives on origin only: cut in a scratch clone, pushed there, never fetched here.
+    bare, cut = tmp_path / "origin.git", tmp_path / "cut"
+    git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
+    git("clone", "-q", "--no-local", str(bare), str(cut), cwd=tmp_path)
+    git("checkout", "-q", "-b", "release-line", base, cwd=cut)
+    git("commit", "-q", "--allow-empty", "-m", "release from the older line", cwd=cut)
+    release = git("rev-parse", "HEAD", cwd=cut)
+    git("tag", "v1.2.3", release, cwd=cut)
+    git("push", "-q", "origin", "v1.2.3", cwd=cut)
+    git("remote", "set-url", "origin", str(bare))
+    assert subprocess.run(["git", "cat-file", "-e", f"{release}^{{commit}}"], cwd=root,
+                          stderr=subprocess.DEVNULL, check=False).returncode != 0
+    api = "/repos/NousResearch/hermes-agent"
+    responses[f"{api}/releases/latest"] = (200, {"draft": False, "prerelease": False, "tag_name": "v1.2.3"})
+    responses[f"{api}/commits/v1.2.3"] = (200, {"sha": release})
+    responses[f"{api}/compare/{git('rev-parse', 'HEAD')}...{release}"] = (200, {"status": "diverged"})
+    responses[f"{api}/git/trees/{release}"] = (200, {"truncated": False, "tree": [
+        {"path": "hermes_state.py", "type": "blob"}, {"path": "hermes_state_common.py", "type": "blob"},
+        {"path": "run_agent.py", "type": "blob"}]})
+    responses[f"/NousResearch/hermes-agent/{release}/hermes_state.py"] = (200, "from hermes_state_common import *\n")
+    responses[f"/NousResearch/hermes-agent/{release}/hermes_state_common.py"] = (
+        200, "SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
+    if ledgered:
+        _ledgered_store(home)
+
+    status = check_for_updates(install_root=root, home=home, channel="stable", force=True)
+
+    assert status.get("targetSha") == release, status
+    assert status["updateAvailable"] is not ledgered
+    assert status.get("held") == ("downgrade" if ledgered else None)
+    # Only a store with runtime history pays for the lookup, and a release tree is read once.
+    trees = [p for p in requests if "/git/trees/" in p]
+    assert len(trees) == int(ledgered)
+    if ledgered:
+        check_for_updates(install_root=root, home=home, channel="stable", force=True)
+        assert len([p for p in requests if "/git/trees/" in p]) == 1
