@@ -245,3 +245,43 @@ def test_a_webapp_listener_that_cannot_start_still_leaves_native_clients_a_liste
 def test_cancelling_the_gateway_while_the_webapp_listener_starts_cancels_it(monkeypatch, tmp_path):
     with pytest.raises(asyncio.CancelledError):
         _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n", refuse=asyncio.CancelledError())
+
+
+@pytest.mark.parametrize("posix", [True, False])
+def test_only_posix_lets_the_webapps_fixed_port_bind_again_at_once(monkeypatch, posix):
+    # A restarted gateway must take the Webapp's port back while the old connections sit in
+    # TIME_WAIT. On Windows SO_REUSEADDR would let another process bind the port, so it stays off.
+    import socket
+
+    from gateway import run_api
+    monkeypatch.setattr(run_api, "_REUSE_FIXED_PORT", posix)
+    with run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, webapp.DEFAULT_PORT) as fixed, \
+            run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, 0) as ephemeral:
+        assert bool(fixed.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)) is posix
+        assert not ephemeral.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)  # main's private listener
+
+
+def test_the_fixed_port_switch_follows_the_platform():
+    from gateway import run_api
+    assert run_api._REUSE_FIXED_PORT is (os.name != "nt")
+
+
+def test_a_fixed_port_binds_again_while_the_last_gateways_connections_linger():
+    # The server closing first leaves its side of the connection in TIME_WAIT on the fixed port.
+    import socket
+
+    from gateway import run_api
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    first = run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, port)
+    first.bind(("127.0.0.1", port))
+    first.listen()
+    client = socket.create_connection(("127.0.0.1", port))
+    served, _ = first.accept()
+    served.close()
+    client.recv(1)
+    client.close()
+    first.close()
+    with run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, port) as second:
+        second.bind(("127.0.0.1", port))

@@ -15,6 +15,7 @@ process that already imported it mount it before the listener starts, exactly as
 import asyncio
 from dataclasses import dataclass
 import logging
+import os
 import socket
 import sys
 import types
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 # One listener per process: the dashboard routers share one process-local app.
 _ACTIVE_RUNNER: Any = None
+# A fixed port (the Webapp's) has to bind again while the last gateway's closed connections sit in
+# TIME_WAIT. POSIX allows that with SO_REUSEADDR; on Windows that option lets another process bind
+# the same port, and a rebind there does not wait on TIME_WAIT anyway.
+_REUSE_FIXED_PORT = os.name != "nt"
 
 
 @dataclass
@@ -151,6 +156,14 @@ class GatewayDashboardMount:
         await web.app(scope, receive, send)
 
 
+def _listener_socket(family, kind, proto, port: int) -> socket.socket:
+    """The listener's unbound socket; a fixed *port* may bind again at once (``_REUSE_FIXED_PORT``)."""
+    listener = socket.socket(family, kind, proto)
+    if port and _REUSE_FIXED_PORT:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    return listener
+
+
 async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
     global _ACTIVE_RUNNER
     from gateway.webapp_listener import dial_origin
@@ -175,7 +188,7 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     family, kind, proto, _, address = socket.getaddrinfo(
         host, port, type=socket.SOCK_STREAM,
     )[0]
-    listener = socket.socket(family, kind, proto)
+    listener = _listener_socket(family, kind, proto, port)
     _ACTIVE_RUNNER = runner
     try:
         listener.bind(address)
