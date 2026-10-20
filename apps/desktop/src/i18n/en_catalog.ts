@@ -59,6 +59,9 @@ export const enCatalog: CatalogTranslations = {
   results: (count: number) => `${count.toLocaleString()} result${count === 1 ? '' : 's'}`,
   back: 'Back to results',
   tier: 'Tier',
+  previousSlide: 'Previous featured',
+  nextSlide: 'Next featured',
+  slideOf: (index: number, count: number) => `${index} of ${count}`,
   tierLabels: { official: 'Official', verified: 'Verified', community: 'Community' },
   tiers: {
     official: { title: 'Official Plugins', blurb: 'Built and maintained by Nous Research.' },

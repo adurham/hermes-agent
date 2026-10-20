@@ -34,3 +34,17 @@ describe('multi-category discovery', () => {
     expect(sections(renderDiscovery(picked, false))).toEqual(['featured', 'official', 'more'])
   })
 })
+
+describe('featured slider', () => {
+  const curated = (name: string, featured: number) => ({ ...entry(name, 'tools', 'official'), featured, imageUrl: 'x.png' }) as CatalogEntry
+
+  it('shows one hero bare, and several as a slider with a dot per pick', () => {
+    const one = renderDiscovery([curated('a', 1), entry('b', 'tools')], false)
+    expect(one.querySelector('[aria-roledescription=carousel]')).toBeNull()
+
+    const many = renderDiscovery([curated('a', 1), curated('b', 2), curated('c', 3)], false)
+    expect(many.querySelectorAll('[aria-roledescription=slide]')).toHaveLength(3)
+    expect(many.querySelectorAll('.catalog-featured-dot')).toHaveLength(3)
+    expect(many.querySelectorAll('[aria-roledescription=slide]:not([inert])')).toHaveLength(1)
+  })
+})

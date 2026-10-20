@@ -1,6 +1,6 @@
 import './catalog-discovery.css'
 
-import { groupCatalogPlugins, isOfficialSkillSource, pickFeatured, PLUGIN_CATEGORIES } from '@hermes/shared'
+import { featuredPicks, groupCatalogPlugins, isOfficialSkillSource, PLUGIN_CATEGORIES } from '@hermes/shared'
 import { type ReactNode, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,7 @@ import type { CatalogCardVariant } from './catalog-card'
 import { pluginTier, type PluginTier } from './catalog-curation'
 import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
 import { CatalogDeveloper } from './catalog-developer'
+import { CatalogFeaturedSlider } from './catalog-featured-slider'
 import { catalogCategories } from './catalog-query'
 
 /** Fewest cards a category needs for its own shelf; smaller ones share "More to explore". */
@@ -47,7 +48,8 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
   const title = kind === 'plugins' ? t.skills.tabPlugins : t.skills.tabSkills
 
   // Same pick as the website: curated ranks from the feed, rotated weekly.
-  const featured = narrowed ? undefined : pickFeatured(entries, entry => ({
+  // Every curated pick, this week's first; more than one becomes a slider.
+  const featured = narrowed ? [] : featuredPicks(entries, entry => ({
     featured: entry.featured,
     official: kind === 'plugins' ? pluginTier(entry) === 'official' : isOfficialSkillSource(entry.source),
     pictured: Boolean(entry.imageUrl),
@@ -55,7 +57,8 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
     stars: entry.stars
   }))
 
-  const others = entries.filter(entry => entry !== featured)
+  // A slide leaves its shelf, as the single hero always did.
+  const others = entries.filter(entry => !featured.includes(entry))
   const tiered = kind === 'plugins' && !byCategory ? PLUGIN_TIERS.map(tier => ({ tier, ...t.catalog.tiers[tier], items: others.filter(entry => pluginTier(entry) === tier) })).filter(({ items }) => items.length) : []
   const remaining = kind === 'plugins' && !byCategory ? others.filter(entry => pluginTier(entry) === 'community') : others
 
@@ -86,9 +89,9 @@ export function CatalogDiscovery({ entries, kind, card, onCategory, actions, nar
 
   return (
     <div className="catalog-discovery">
-      {featured && <section data-catalog-section="featured">
+      {featured.length > 0 && <section data-catalog-section="featured">
         <header className="catalog-section-heading"><h2>{t.catalog.discoverKind(title)}</h2></header>
-        {card(featured, 0, 'hero')}
+        <CatalogFeaturedSlider slides={featured.map((entry, index) => card(entry, index, 'hero'))} />
       </section>}
       {tiered.map(({ tier, title: tierTitle, blurb, items }, index) => (
         <section data-catalog-section={tier} data-catalog-tier={tier} key={tier}>

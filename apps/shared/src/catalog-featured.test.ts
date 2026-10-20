@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { type FeaturedCandidate, pickFeatured } from './catalog-featured'
+import { type FeaturedCandidate, featuredPicks, pickFeatured } from './catalog-featured'
 
 const WEEK = 7 * 24 * 60 * 60 * 1000
 const NOW = Date.parse('2026-09-30T12:00:00Z')
@@ -54,5 +54,30 @@ describe('pickFeatured', () => {
     expect(pick(rows)).toBe('official-big')
     expect(pick([...rows, { name: 'official-art', official: true, pictured: true, stars: 1 }])).toBe('official-art')
     expect(pick([{ name: 'community', official: false, pictured: true }])).toBeUndefined()
+  })
+
+  it('lists every curated pick for the slider, starting at this week\'s', () => {
+    const rows = [
+      { name: 'c', featured: 3, official: true, pictured: true },
+      { name: 'a', featured: 1, official: true, pictured: true },
+      { name: 'b', featured: 2, official: true, pictured: true },
+      { name: 'x', official: true, pictured: true }
+    ]
+
+    const week = 7 * 24 * 60 * 60 * 1000
+
+    for (const offset of [0, 1, 2]) {
+      const now = NOW + offset * week
+      const slides = featuredPicks(rows, row => row, now).map(row => row.name)
+
+      expect(slides).toHaveLength(3)
+      expect(slides[0]).toBe(pick(rows, now))
+      expect([...slides].sort()).toEqual(['a', 'b', 'c'])
+    }
+  })
+
+  it('falls back to one slide without curated picks, none without candidates', () => {
+    expect(featuredPicks([{ name: 'x', official: true, pictured: true }], row => row, NOW).map(row => row.name)).toEqual(['x'])
+    expect(featuredPicks([{ name: 'y', official: false, pictured: true }], row => row, NOW)).toEqual([])
   })
 })
