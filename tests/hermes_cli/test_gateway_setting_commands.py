@@ -77,3 +77,19 @@ def test_ctrl_c_during_a_cron_wait_prints_the_stopped_line_and_propagates(monkey
     with pytest.raises(KeyboardInterrupt):
         gateway_setting_commands.run(cli, "cron", "/cron run probe")
     assert "/cron: stopped waiting" in capsys.readouterr().out and cli._gateway_command_wait is None
+
+
+def test_cron_reads_keep_the_answer_deadline(monkeypatch, capsys):
+    """Only a /cron write waits with no deadline (a /cron run lasts as long as its job): bare /cron and
+    /cron list answer on the session's connection with its deadline, as /fast does, so a frozen gateway
+    gives up instead of hanging until Ctrl+C."""
+    class _BoundedConn(_Conn):
+        def call_until(self, method, wake, **params):
+            raise AssertionError("a /cron read must keep the answer deadline")
+    conn = _BoundedConn()
+    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    cli = SimpleNamespace(session_id="local-s", _gateway_command_wait=None)
+    for typed in ("/cron", "/cron list", "/cron LIST -a", '/cron add "every 2h'):
+        assert gateway_setting_commands.run(cli, "cron", typed) is True
+    assert [params["command"] for _m, params in conn.calls] == [
+        "cron", "cron list", "cron LIST -a", 'cron add "every 2h']
