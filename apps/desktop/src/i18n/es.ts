@@ -497,14 +497,6 @@ export const esOverrides = {
     }
   },
   ...esNotices,
-  billingBlock: {
-    titleNous: 'Sin créditos de Nous',
-    titleProvider: provider => `Sin créditos — ${provider}`,
-    fallbackMessage: 'Tu cuenta se quedó sin créditos. Añade créditos para continuar.',
-    openBilling: 'Abrir facturación',
-    addCredits: 'Añadir créditos',
-    dismiss: 'Descartar'
-  },
   sendDiagnostics: {
     title: 'Enviar diagnóstico a Nous',
     privacyNotice:

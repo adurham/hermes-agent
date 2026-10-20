@@ -190,15 +190,6 @@ export const ruOverrides = {
   },
   ...ruNotices,
 
-  billingBlock: {
-    titleNous: 'Кредиты Nous закончились',
-    titleProvider: provider => `Кредиты закончились — ${provider}`,
-    fallbackMessage: 'В вашем аккаунте закончились кредиты. Пополните баланс, чтобы продолжить.',
-    openBilling: 'Открыть биллинг',
-    addCredits: 'Пополнить кредиты',
-    dismiss: 'Скрыть'
-  },
-
   titlebar: {
     hideSidebar: 'Скрыть боковую панель',
     showSidebar: 'Показать боковую панель',
