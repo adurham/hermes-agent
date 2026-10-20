@@ -154,6 +154,52 @@ async def test_cron_writes_stay_refused_on_a_viewer_connection_and_reads_list_al
 
 
 @pytest.mark.asyncio
+async def test_concurrent_cron_runs_never_wait_on_the_pool_their_jobs_need(owner, monkeypatch):
+    """A /cron run waits for its job, and the job's admission (tracked_write) and execution
+    (session_cron.execute) take threads from the loop's default pool. Waiting on that same pool, two
+    runs on a one-thread pool never answered: the job could not start, and the cron layer paused it as
+    unverified. The wait holds a thread of the runner's own unbounded pool instead."""
+    import asyncio
+    import concurrent.futures
+    from pathlib import Path
+    from types import MethodType
+    import cron.scheduler
+    from cron.jobs import create_job, get_job
+    from gateway.run import GatewayRunner
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_cron import current_execution
+    runner = owner.authority.runner
+    runner._get_executor = MethodType(GatewayRunner._get_executor, runner)
+    runner._run_in_executor_with_context = MethodType(GatewayRunner._run_in_executor_with_context, runner)
+    submit = cron.scheduler.run_job  # outside the owner's execution: submit the fire and wait for it
+
+    def run_job(job, **kwargs):
+        return submit(job, **kwargs) if current_execution() is None else (True, '# out', 'ran', None)
+    monkeypatch.setattr(cron.scheduler, 'run_job', run_job)
+    # The fire is submitted to the owner bound to the home of the authority's store (bind_owner).
+    home = Path(owner.authority.db.db_path).resolve().parent
+    (home / 'config.yaml').write_text((owner.home / 'config.yaml').read_text())
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    ids = [create_job('ping', 'every 2h', name=name)['id'] for name in ('one', 'two')]
+    sid = (await owner.call('session.create', request_id='r', source='cli', cwd=str(owner.workdir)))['session_id']
+    asyncio.get_running_loop().set_default_executor(concurrent.futures.ThreadPoolExecutor(1))
+
+    async def run(n, job_id):
+        socket = AuthorityConnection(owner.authority, object(), {'user_id': 'human'})  # the CLI's own
+        reply = await socket.dispatch({'id': n, 'method': 'slash.exec',
+                                       'params': {'session_id': sid, 'command': f'cron run {job_id}'}})
+        assert 'result' in reply, reply
+        return reply['result']['output']
+    try:
+        outs = await asyncio.wait_for(asyncio.gather(*(run(n, i) for n, i in enumerate(ids))), 30)
+    finally:
+        if getattr(runner, '_executor', None) is not None:
+            runner._executor.shutdown(wait=False)
+    assert [out.splitlines()[-1].strip() for out in outs] == ['Ran now: succeeded.'] * 2, (
+        outs, [get_job(i)['last_error'] for i in ids])
+
+
+@pytest.mark.asyncio
 async def test_other_surfaces_keep_the_gateway_handlers(owner):
     from gateway.session_tui_reads import tui_read
     for source in ('cli', 'gui', 'acp'):
