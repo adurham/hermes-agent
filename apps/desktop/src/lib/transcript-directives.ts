@@ -87,8 +87,18 @@ function inlineText(node: MdNode): string | null {
   // A GFM literal autolink keeps its source verbatim, backslash escapes
   // included (preprocess escapes `_`/`&`/`~` inside directives); a URL never
   // holds a literal `\`, so drop the CommonMark escapes to get it as written.
+  // Only a literal autolink (its text IS its URL) folds: an explicit
+  // `[label](url)` is the author's link and stays clickable.
   if (node.type === 'link' && node.children?.every(child => child.type === 'text')) {
-    return node.children.map(child => (child.value ?? '').replace(/\\([!-/:-@[-`{-~])/g, '$1')).join('')
+    // GFM keeps the escapes in both the literal's text and its url, so compare them raw.
+    const raw = node.children.map(child => child.value ?? '').join('')
+    const url = (node as MdNode & { url?: string }).url ?? ''
+
+    if (raw !== url && `http://${raw}` !== url && `mailto:${raw}` !== url) {
+      return null
+    }
+
+    return raw.replace(/\\([!-/:-@[-`{-~])/g, '$1')
   }
 
   return null

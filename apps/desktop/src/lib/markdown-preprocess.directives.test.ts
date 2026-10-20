@@ -103,6 +103,12 @@ describe('preprocessMarkdown / directive attributes holding URLs', () => {
     ])
     expect(directiveAttrs(tree.children[1]?.children?.[0]?.value ?? '')).toEqual({ url })
   })
+
+  it('keeps an explicit markdown link inside directive-like text clickable', () => {
+    const children = rendered('::example{\nSee [docs](https://example.com)\n}').children[0]?.children ?? []
+
+    expect(children.filter(child => child.type === 'link').map(child => child.url)).toEqual(['https://example.com'])
+  })
 })
 
 function directiveAttrs(text: string) {
