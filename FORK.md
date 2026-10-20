@@ -21204,6 +21204,59 @@ carries the fields the installer reads). Both are pure test additions with no
 production behavior change. The ollama-cloud plugin's `OLLAMA_BASE_URL` `/v1`
 fix is PR'd upstream as rriggs/hermes-plugin-ollama-cloud-search#1.
 
+### Fix — 2026-10-20 (`cc_proxy_mcp.py`: connector auth failures are loud; the shared refresh chain stops getting burned)
+
+**Problem:** Slack (and every other connector bridge) vanished from a session; `tool_search slack` found nothing
+and the agent told the user it had no Slack tool. The banner said `slack (stdio) — connecting`; the bridge died
+with `Token refresh failed: 400 invalid_grant`, surfaced only as `Connection closed`.
+
+**Root cause (from `~/.hermes/logs/mcp-stderr.log`):** the claude.ai *Tanium Provisioner* connector's own OAuth is
+invalidated — mcp-proxy answers a VALID Claude token with `401 {"error_code":"mcp_invalid_oauth_token"}` (verified:
+same bearer → slack 200, provisioner 401). The bridge treated every 401 as "our token is stale" and force-refreshed,
+and Hermes respawned the failing provisioner bridge ~96×/hour around the clock (88–96 starts every hour since
+2026-10-12), so the ONE rotating refresh chain shared by all 7 bridges was rotated ~2,200×/day. On 2026-10-19
+20:02–20:04 two provisioner bridges refreshed concurrently, a refresh hit the 30 s httpx timeout, and from 20:04:02
+every refresh returned `invalid_grant` → all connectors dead until the user re-logged in at 09:41. The prior chain
+(`…-bb7ba64f`) died the same way (invalid_grant storms Sep 29 – Oct 8). Aggravators: the bridge's flock was on
+`~/.claude/.credentials.json.lock` — not the pinned keychain chain's — and the pinned entry `…-3775e6c9` is
+`sha256("~/.claude-personal")[:8]`, the user's ACTIVE interactive `CLAUDE_CONFIG_DIR`, so interactive `claude` and
+Hermes' own `claude -p` subprocesses rotate the same chain without our lock. Tools were absent instead of
+erroring because the bridge exited before serving stdio, so Hermes parked the server with zero tools.
+
+**Fix:**
+- 401 classification: `mcp_invalid_oauth_token` → `connector_unauthorized`, NO refresh. Other 401s refresh once,
+  passing the rejected token so a sibling's fresher stored token is used instead of rotating again; a shared
+  cross-process cooldown (60 s) caps forced refreshes per chain.
+- Refresh robustness: flock + state file keyed by the keychain service under `$HERMES_HOME/cache/cc_proxy/`;
+  120 s refresh timeout (an abandoned refresh rotates the chain to a token nobody holds); on `invalid_grant`
+  re-read once and retry only with a DIFFERENT stored token, never replay the rejected one; a dead token's
+  fingerprint (sha256, never the token) is recorded so siblings stop replaying it; the rotated token is saved
+  and read back (3 attempts) BEFORE the new access token is used, with a loud ERROR if it cannot be.
+- Degraded mode: any startup failure keeps the bridge up serving ONE stub tool (`slack_auth_expired_relogin_required`,
+  `…_network_unreachable`, `…_connector_reauthorize_required`, `…_upstream_error`, `…_config_error`) whose
+  description, server `instructions`, and `isError` call result state the cause and exact fix — for reauth the
+  `CLAUDE_CONFIG_DIR=<dir> claude auth login` command, dir derived from the keychain suffix hash. Calling it
+  re-checks health. A stable stub also ends the respawn loop. Mid-session relay failures return the same text.
+- Hermes: `get_mcp_status` marks such servers `degraded` (stub `_meta` `hermes/connector_degraded`); banner shows
+  them red "UNAVAILABLE"; post-discovery WARNING per failed/degraded server; the CLI prints each once before
+  the first turn; `tool_search` attaches `unavailable_servers` + an explicit "do not say it doesn't exist" hint.
+- `cc_proxy_mcp.py --health [--json] [--connector X]`: per-connector status for every bridge entry in
+  `$HERMES_HOME/config.yaml`, no session needed; exit 1 if any is unhealthy.
+
+**Files:** `tools/bridges/cc_proxy_mcp.py`, `tools/mcp_tool_discovery.py`, `tools/tool_search.py`,
+`hermes_cli/banner.py`, `hermes_cli/mcp_startup.py`, `hermes_cli/cli_agent_setup_mixin.py`,
+`tests/tools/test_cc_proxy_failure_modes.py`, `tests/tools/test_mcp_degraded_visibility.py`.
+
+**Verification:** 60 targeted tests green (incl. a real stdio subprocess e2e of the stub); 311 neighbouring
+tool_search/banner/mcp_startup/mcp_tool tests green; `-k mcp` over `tests/tools/` has the identical 103
+pre-existing failures on unmodified `main`. Live read-only `--health`: 6 connectors OK, `tanium-provisioner`
+`connector_unauthorized` (no refresh performed).
+
+**Still needs the owner:** reconnect *Tanium Provisioner* in claude.ai (or disable that mcp_servers entry), and
+re-pin the bridges to a DEDICATED login dir that nothing interactive uses
+(`CLAUDE_CONFIG_DIR=~/.hermes/claude-proxy claude auth login` → `Claude Code-credentials-bb7ba64f`), since
+interactive `claude` / `claude -p` on `~/.claude-personal` still share the chain without our lock.
+
 ### Fix — 2026-10-02 (`cc_proxy_mcp.py` dedicated-login isolation restored: newest-entry resolution + `CC_PROXY_KEYCHAIN_SERVICE` pin)
 
 **(2026-10-09 de-fork round 2):** RETIRED — owner-approved retirement of the cc_proxy MCP bridge; `tools/bridges/` and its test are deleted. Kept for history. — **restored 2026-10-10 (live dependency on the corp connector stack).**
