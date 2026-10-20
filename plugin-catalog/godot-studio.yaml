@@ -1,29 +1,38 @@
 name: godot-studio
 repo: https://github.com/Foolafroos/godot-studio
-sha: 33008fc12fb74e4871a7fa781be6c5d5b4b5d347
+sha: e3e6066f264b087962eccc574eeb7dada5dfe564
 description: >-
   Headless Godot 4 workflows for the agent game studio — godot_headless_check
   (script/resource validation via godot --headless, no editor needed),
   godot_export (CI builds from named export presets, e.g. a Web build a
-  playtester agent can load), godot_setup (read-only install-state report for
+  playtester agent can load), godot_builds (export presets + artifact state:
+  exists/size/modified — gallery data for re-export decisions and attaching
+  fresh builds in chat), godot_setup (read-only install-state report for
   Godot/godot-ai/uv with the exact registration path). Complements the
   hi-godot/godot-ai MCP editor bridge by covering the verification and export
   leg of the loop; bundles the godot-studio skill teaching edit → verify →
-  export → playtest. Tools register only when a Godot 4 binary is present
-  (check_fn). Disclosure — runs shell commands (godot --headless against the
-  caller-targeted project; read-only hermes mcp list in godot_setup); no
-  network calls, no credentials, no telemetry, no background processes;
-  exports write only to the caller-supplied output path.
+  export → playtest. Ships an optional desktop half (unified package): a
+  Godot version statusbar chip and a builds gallery pane backed by its own
+  read-only dashboard API; opt-in, degrades gracefully when the backend is
+  off. Tools register only when a Godot 4 binary is present (check_fn).
+  Disclosure — runs shell commands (godot --headless against the
+  caller-targeted project; read-only godot --version in the desktop backend;
+  read-only hermes mcp list in godot_setup); no network calls, no
+  credentials, no telemetry, no background processes; exports write only to
+  the caller-supplied output path; the desktop backend reads
+  export_presets.cfg and artifact metadata inside the project path the user
+  configures in the pane.
 maintainer: Foolafroos
 tier: community
 category: tools
 docs_url: https://github.com/Foolafroos/godot-studio#readme
-version: "0.1.0"
+version: "0.2.0"
 platforms: []
 capabilities:
   provides_tools:
     - godot_headless_check
     - godot_export
+    - godot_builds
     - godot_setup
   provides_hooks: []
   provides_middleware: []
