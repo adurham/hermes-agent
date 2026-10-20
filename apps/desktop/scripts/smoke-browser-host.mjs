@@ -9,15 +9,14 @@ import process from 'node:process'
 
 import { CDP, sleep } from './perf/lib/cdp.mjs'
 
-const url = process.env.HERMES_BROWSER_HOST_URL || process.argv[2] || 'http://127.0.0.1:9119/'
+const url = process.env.HERMES_BROWSER_HOST_URL || process.argv[2] || 'http://127.0.0.1:9120/'
 // Navigation keeps the private launch fragment; HTTP responses never contain it.
 const documentUrl = new URL(url)
 documentUrl.hash = ''
 const allowGatewayFailure = process.env.HERMES_BROWSER_ALLOW_GATEWAY_FAILURE === '1'
 const requireTerminal = process.env.HERMES_BROWSER_REQUIRE_TERMINAL === '1'
-// A cold Webapp starts the profile's gateway on the first ticket mint, so its relayed socket can open
-// long after the shell paints (the renderer allows the mint 75 s).
-const GATEWAY_SOCKET_TIMEOUT_MS = 90_000
+// The gateway serving the page is already up, so its socket opens shortly after the shell paints.
+const GATEWAY_SOCKET_TIMEOUT_MS = 30_000
 
 function findExecutable() {
   const explicit = process.env.HERMES_BROWSER_EXECUTABLE?.trim()
@@ -385,11 +384,11 @@ try {
     if (state.rootError) failures.push('renderer reached its root error boundary')
     if (!allowGatewayFailure && state.desktopBootFailed)
       failures.push('Desktop could not connect to the Hermes gateway')
-    // The Webapp relays the browser to its profile's gateway: the live socket speaks the canonical
-    // contract (native_dial) and never carries the session token.
+    // The gateway serves the page and the live socket: it speaks the canonical contract (native_dial)
+    // and never carries the session token.
     if (!allowGatewayFailure && state.privateSession) {
       if (!gatewaySockets.some(socket => socket.searchParams.has('native_dial')))
-        failures.push(`Webapp gateway socket is not the canonical relay: ${gatewaySockets.map(String).join(', ') || 'none'}`)
+        failures.push(`Webapp gateway socket is not the gateway's canonical one: ${gatewaySockets.map(String).join(', ') || 'none'}`)
       if (gatewaySockets.some(socket => socket.searchParams.has('token')))
         failures.push('Webapp gateway socket carried the session token in its URL')
     }
