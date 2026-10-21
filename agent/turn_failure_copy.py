@@ -217,10 +217,10 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "models with /model."
     ),
     FailoverReason.data_policy_denied.value: (
-        "This conversation contains a result from a connected app that may only be sent to a model "
-        "that does not train on your data, and '{model}' on {label} can't guarantee that. Switch to "
-        "another model with /model, run /compress to summarize the result away, or start a new "
-        "session with /new."
+        "This conversation holds a result from a connected app that may only go to a model that "
+        "does not train on your data, and '{model}' on {label} can't promise that. Switch models "
+        "with /model, run /compress to summarize the result away, or start fresh with /new. If you "
+        "are on the free tier, no free model can take this content: upgrade, or use /compress or /new."
     ),
     FailoverReason.upstream_blocked.value: (
         "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
