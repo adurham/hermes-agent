@@ -92,6 +92,16 @@ class TestClassifyFetchFailure:
         assert "damaged" in msg
         assert "hermes-agent.nousresearch.com/install." in msg
 
+        # A healthy checkout whose REMOTE is the broken one: reinstalling Hermes cannot fix that.
+        healthy = tmp_path / "healthy"
+        healthy.mkdir()
+        subprocess.run(["git", "init", "-q", str(healthy)], check=True)
+        remote = subprocess.run(["git", "fetch", str(tmp_path)], cwd=healthy, capture_output=True, check=False,
+                                text=True, encoding="utf-8", errors="replace").stderr
+        for stderr in (remote, "remote: fatal: not a git repository (or any of the parent directories): .git\n"
+                               "fatal: Could not read from remote repository."):
+            assert "damaged" not in update_cmd._classify_fetch_failure(stderr), stderr
+
     def test_ssh_host_key_failure_reports_ssh_auth(self):
         msg = update_cmd._classify_fetch_failure(
             "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"

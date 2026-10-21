@@ -510,9 +510,12 @@ def _damaged_checkout_message() -> str:
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
 # repo), not a user credentials problem. A diagnosis may be a callable when it depends on the host.
 _FETCH_FAILURE_RULES = (
-    # The updater only fetches when .git exists, so this is a .git git rejects (empty dir, lost HEAD):
-    # no retry can work and the ZIP fallback cannot tell user edits apart, but the installer can.
-    (lambda s: "not a git repository" in s, _damaged_checkout_message),
+    # The updater only fetches when .git exists, so local git saying this about itself is a .git it
+    # rejects (empty dir, lost HEAD): no retry can work and the ZIP fallback cannot tell user edits
+    # apart, but the installer can. Line-anchored: a remote's own refusal arrives as "'<path>' does
+    # not appear to be a git repository" or relayed under "remote: ", and reinstalling cannot fix it.
+    (lambda s: any(line.startswith("fatal: not a git repository") for line in s.splitlines()),
+     _damaged_checkout_message),
     (lambda s: _has_http_code(s, "429") or "rate limit" in s.lower(),
      "✗ GitHub is rate limiting requests or having an outage (HTTP 429) — try again in 5 minutes."),
     (lambda s: _has_http_code(s, "500", "502", "503", "504"),
