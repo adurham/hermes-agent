@@ -671,11 +671,14 @@ def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
         portable = get_plugin_manager().get_portable_mcp_servers()
         for name, cfg in _filter_suspicious_mcp_servers(portable).items():
             if name in safe_servers:
-                logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
                 native = safe_servers[name]
                 carried = {k: cfg[k] for k in CONFIG_KEYS if k in cfg and k not in native}
                 if carried:
                     safe_servers[name] = {**native, **carried}
+                    logger.warning("Portable MCP server '%s' conflicts with native config; using the native entry "
+                                   "with the package's declared %s", name, ", ".join(carried))
+                else:
+                    logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
             else:
                 safe_servers[name] = dict(cfg)
     except Exception:
