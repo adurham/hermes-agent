@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import time
 import urllib.request
@@ -411,6 +412,7 @@ def cached_nous_portal_account_info(*, any_age: bool = False) -> Optional[NousPo
             return None
         return info
     except Exception:
+        logging.getLogger(__name__).debug("Cached Nous account info unreadable", exc_info=True)
         return None
 
 

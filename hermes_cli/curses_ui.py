@@ -721,9 +721,9 @@ def curses_radiolist(
 
 
 def _radiolist_with_headings(
-    title: str, items: List[RadioItem], selected: int, headings: dict[int, str], *,
+    title: str, items: list[RadioItem], selected: int, headings: dict[int, str], *,
     cancel_returns: int | None, description: str | None, searchable: bool,
-    search_labels: List[str] | None) -> int:
+    search_labels: list[str] | None) -> int:
     """``curses_radiolist`` with dim, unselectable section titles (``{item_index: text}``) drawn
     above the given items. Headings carry an empty search label, so any query hides them. Returns
     the ORIGINAL item index, exactly like the plain list."""

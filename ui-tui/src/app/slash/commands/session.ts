@@ -829,6 +829,7 @@ export const sessionCommands: SlashCommand[] = [
         return canonicalUsage(ctx)
       }
 
+      // health: allow CC -- /usage: appends the plan allowance bars from billing.state for usage-window plans only; this handler was over target on main
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
         if (ctx.stale()) {
           return

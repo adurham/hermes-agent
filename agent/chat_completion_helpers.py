@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
+from agent.chat_completion_headers import _chat_completion_capturing_headers
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -48,9 +49,7 @@ from agent.message_sanitization import (
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import (
-    append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
-    streamed_reasoning_detail_text,
-)
+    append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -794,40 +793,6 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
     return _chat_completion_capturing_headers(agent, request_client, api_kwargs)
 
-
-def _chat_completion_capturing_headers(agent, client, api_kwargs: dict):
-    """Non-streaming ``chat.completions.create`` that also feeds the response headers to the
-    rate-limit / credits capture, as ``_chat_stream_created`` does for streams.
-
-    The parsed ``ChatCompletion`` drops headers, so without this a non-streaming turn never
-    observes ``x-nous-credits-*`` (usage-window ``spend_source`` / gauges go stale). The SDK's
-    ``with_raw_response`` returns the same request with headers attached; test doubles
-    (``Mock`` clients, namespaces without the attribute) keep the plain call. Usage-window plans
-    only: every other provider, and a Nous session not yet known to be on a window plan (the
-    session-start seed or a stream header establishes it), keep the plain call; headers are
-    captured only when the response itself is the usage-window kind. A capture failure never
-    fails the turn.
-    """
-    # `is True`: a Mock agent's invented attribute is not a window plan.
-    state = getattr(agent, "_credits_state", None)
-    if getattr(agent, "provider", "") != "nous" or getattr(state, "is_usage_window", False) is not True:
-        return client.chat.completions.create(**api_kwargs)
-    raw_api = getattr(getattr(getattr(client, "chat", None), "completions", None), "with_raw_response", None)
-    # Test doubles (unittest.mock) invent every attribute; checked by module so production never
-    # imports unittest.
-    if raw_api is None or any(cls.__module__ == "unittest.mock" for cls in type(client).__mro__):
-        return client.chat.completions.create(**api_kwargs)
-    raw = raw_api.create(**api_kwargs)
-    from agent.credits_tracker import response_is_usage_window
-    if not response_is_usage_window(raw):
-        return raw.parse()
-    for capture in (agent._capture_rate_limits, agent._capture_credits,
-                    agent._capture_nous_model_switch, agent._check_openrouter_cache_status):
-        try:
-            capture(raw)
-        except Exception:
-            logger.debug("non-streaming header capture failed", exc_info=True)
-    return raw.parse()
 
 
 def should_use_direct_api_call(agent) -> bool:

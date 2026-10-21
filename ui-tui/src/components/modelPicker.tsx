@@ -70,6 +70,32 @@ export function providerIndexAfterClearingFilter(
   return providerRows.findIndex(row => row.provider.slug === provider.slug)
 }
 
+/** Window-plan layout for the model list; every other provider gets plain rows at full height.
+ *  Up to two section titles ("Recommended" / "Other models") ride inside the list, so the window shrinks
+ *  by two rows to keep the overlay's height fixed; a query is its own order, so no sections while
+ *  filtering. Past an allowance, one line in the footnote row says what happens next (pay as you go, or
+ *  wait); rows it stops are dimmed rather than annotated. */
+function planListLayout(
+  provider: ModelOptionProvider | undefined,
+  models: readonly string[],
+  filtering: boolean,
+  width: number,
+  M: ReturnType<typeof useT>['pickers']['model']
+) {
+  const sectioned = !filtering && sectionAt(provider, models, 0) !== null
+  const levelled = models.some(m => usageLevel(provider, m))
+  const limitLine = levelled ? planLimitLine(provider, Date.now(), M.plan) : ''
+
+  return {
+    footnote: limitLine || (hasTopTier(provider, models) ? M.plan.largeFootnote : ''),
+    levelled,
+    nameWidth: levelled ? Math.min(Math.max(...models.map(m => m.length), 0), Math.max(10, width - 22)) : 0,
+    sectioned,
+    visibleModels: sectioned ? VISIBLE - 2 : VISIBLE
+  }
+}
+
+// health: allow CC -- usage-window plans: Large/Free tags, section titles and dimmed rows (layout in planListLayout); this component was over target on main
 export function ModelPicker({
   allowPersistGlobal = true,
   gw,
@@ -253,6 +279,7 @@ export function ModelPicker({
   const listStage = stage === 'provider' || stage === 'model' || stage === 'reasoning'
   useOverlayKeys({ disabled: listStage, onBack: back, onClose: onCancel })
 
+  // health: allow CC -- usage-window plans: the cursor starts on the current model inside its section; this key handler was over target on main
   useInput((ch, key) => {
     // Key entry stage handles its own input
     if (stage === 'key') {
@@ -779,20 +806,16 @@ export function ModelPicker({
   }
 
   // ── Model selection stage ────────────────────────────────────────────
-  // Window plans: up to two section titles ("Recommended" / "Other models") ride inside the list, so
-  // the window shrinks by two rows to keep the overlay's height fixed.
   const filtering = !!filter.trim()
-  // A query is its own order, so no sections while filtering.
-  const sectioned = !filtering && sectionAt(provider, models, 0) !== null
-  const visibleModels = sectioned ? VISIBLE - 2 : VISIBLE
+  const { footnote, levelled, nameWidth, sectioned, visibleModels } = planListLayout(
+    provider,
+    models,
+    filtering,
+    width,
+    M
+  )
   const { items, offset } = windowItems(models, modelIdx, visibleModels)
   const noModelMatches = filtering && models.length === 0
-  const levelled = models.some(m => usageLevel(provider, m))
-  const nameWidth = levelled ? Math.min(Math.max(...models.map(m => m.length), 0), Math.max(10, width - 22)) : 0
-  // Window plans past an allowance: one line saying what happens next (pay as you go, or wait), in the
-  // footnote row; rows it stops are dimmed rather than annotated. Filtering hides nothing here (fixed row).
-  const limitLine = levelled ? planLimitLine(provider, Date.now(), M.plan) : ''
-  const footnote = limitLine || (hasTopTier(provider, models) ? M.plan.largeFootnote : '')
   let sectionLines = 0
 
   return (

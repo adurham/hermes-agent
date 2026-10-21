@@ -621,6 +621,7 @@ def response_is_usage_window(http_response: Any) -> bool:
         state = parse_credits_headers(headers)
         return state is not None and state.is_usage_window
     except Exception:
+        logger.debug("Usage-window header parse failed", exc_info=True)
         return False
 
 
@@ -774,10 +775,7 @@ def restore_window_notices(session_id, latch: dict) -> None:
 
 def forget_window_notices(session_id) -> None:
     """The session is no longer on a window plan: drop its saved lines. Never raises."""
-    try:
-        _seen_window_notices.pop(session_id, None)
-    except Exception:
-        pass
+    _seen_window_notices.pop(session_id, None)
 
 
 def remember_window_notices(session_id, latch: dict) -> None:

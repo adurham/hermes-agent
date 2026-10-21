@@ -9,6 +9,7 @@ so tests may still monkeypatch e.g. ``server._usage_payload``.
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from .method_ctx import bind_module
@@ -130,6 +131,7 @@ def _plan_usage_payload(state) -> Optional[dict]:
         usage = nous_picker_usage(warm=True)
         return usage.to_payload() if usage is not None else None
     except Exception:
+        logging.getLogger(__name__).debug("Plan usage payload unavailable", exc_info=True)
         return None
 
 

@@ -5,6 +5,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from agent import plan_snapshot_sync as sync
+from agent.usage_gauges import BP_FULL, SCOPE_ALL, WindowGauge
 
 
 def _state(window, full=()):
@@ -12,7 +13,9 @@ def _state(window, full=()):
 
 
 def _snap(gauges=None, source="network"):
-    window = None if gauges is None else NS(gauges=[NS(id=g, full=f) for g, f in gauges])
+    # The portal snapshot carries parsed gauges (agent.usage_gauges.WindowGauge), as nous_account stores them.
+    window = None if gauges is None else NS(gauges=tuple(WindowGauge(g, SCOPE_ALL, g, BP_FULL if f else 0)
+                                                         for g, f in gauges))
     return NS(usage_window=window, source=source)
 
 
@@ -75,7 +78,7 @@ def test_a_limit_change_refreshes_only_the_account(wired):
 
 
 def test_back_in_step_rearms(wired):
-    calls, box = wired
+    _calls, box = wired
     assert sync.sync_plan_snapshot(_state(True)) is True
     box["snap"] = ON_PLAN
     assert sync.sync_plan_snapshot(_state(True)) is False  # in step: clears the guard

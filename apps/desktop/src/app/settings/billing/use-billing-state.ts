@@ -767,6 +767,7 @@ function autoReloadRow(billing: BillingStateResponse, b: Translations['settings'
   }
 }
 
+// health: allow CC -- usage-window plans: allowance rows beside the dollar rows; this row builder was over target on main
 function deriveUsageRows(
   billing: BillingStateResponse,
   subscription: null | SubscriptionStateResponse,

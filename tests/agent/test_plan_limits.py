@@ -37,7 +37,7 @@ HEALTHY = (_g("day", 3_000), _g("week", 2_000), _g("top_tier", 2_000, scope=SCOP
 @pytest.fixture(autouse=True)
 def _no_caches(monkeypatch):
     """Every test names its own catalog and plan; nothing reads the user's disk caches."""
-    monkeypatch.setattr(pl, "_portal_free_models", lambda: [])
+    monkeypatch.setattr(pl, "_portal_free_models", list)
     monkeypatch.setattr(pl, "_plan_usage", lambda: SimpleNamespace(featured_model_ids=FEATURED))
     monkeypatch.setattr(pl, "cached_pricing", lambda base_url: PRICING)
     monkeypatch.setattr(pl, "_fits_context", lambda model, needed, base_url: True)

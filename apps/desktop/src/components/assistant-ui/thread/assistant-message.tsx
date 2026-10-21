@@ -833,6 +833,28 @@ const UseCreditsAction: FC = () => {
   )
 }
 
+// usage_window's own buttons, ahead of the generic ones: switch to the plan's suggested model, or turn
+// on credits. Nothing for any other failure.
+const UsageWindowLeadActions: FC<{ plan: ReturnType<typeof errorRecoveryPlan>; surface?: ErrorSurface }> = ({
+  plan,
+  surface
+}) => {
+  const suggestion = surface?.usageLimit?.suggestions[0]
+
+  return (
+    <>
+      {plan.switchToModel && suggestion && <SwitchToModelAction suggestion={suggestion} />}
+      {plan.useCredits && <UseCreditsAction />}
+    </>
+  )
+}
+
+// A plan limit names the fix as choosing another model; every other failure keeps "switch provider".
+const switchProviderLabel = (
+  copy: { errorChooseModel: string; errorSwitchProvider: string },
+  surface?: ErrorSurface
+) => (surface?.code === 'usage_window' ? copy.errorChooseModel : copy.errorSwitchProvider)
+
 // One client-side retry of THIS turn at the provider's own reset moment (#98852,
 // option B): arm → visible countdown + Cancel → fires `message().reload()` — the
 // exact call behind the Retry button — exactly once. Nothing persists: closing
@@ -914,6 +936,7 @@ const ScheduledRetryAction: FC<{ resetsAt: number }> = ({ resetsAt }) => {
   )
 }
 
+// health: allow CC -- usage-window limit card: an Open Billing button, and diagnostics hidden for plan limits; this action bar was over target on main
 const ErrorRecoveryActions: FC = () => {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -1027,12 +1050,9 @@ const ErrorRecoveryActions: FC = () => {
   // Retry will work instead of guessing (#98852). Informational only: no automatic retry.
   const limitReset = formatLimitReset(surface?.resetsAt)
 
-  const suggestion = surface?.usageLimit?.suggestions[0]
-
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      {plan.switchToModel && suggestion && <SwitchToModelAction suggestion={suggestion} />}
-      {plan.useCredits && <UseCreditsAction />}
+      <UsageWindowLeadActions plan={plan} surface={surface} />
       {plan.editMessage && <EditPreviousMessageAction label={copy.editMessage} />}
       {plan.compress && <CompressConversationAction label={copy.errorCompressConversation} />}
       {plan.chooseModel && (
@@ -1095,29 +1115,25 @@ const ErrorRecoveryActions: FC = () => {
           {copy.errorOpenBillingSettings}
         </button>
       )}
-      {plan.switchProvider && inRouter && (
-        <SwitchProviderAction
-          label={surface?.code === 'usage_window' ? copy.errorChooseModel : copy.errorSwitchProvider}
-        />
-      )}
-      {plan.diagnostics && localFolders && (
-        <button className="aui-error-action" onClick={() => void openLogs()} type="button">
-          {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
-        </button>
-      )}
+      {plan.switchProvider && inRouter && <SwitchProviderAction label={switchProviderLabel(copy, surface)} />}
       {plan.diagnostics && (
-        <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
-          <Upload className="size-3" />
-          {copy.errorSendDiagnostics}
-        </button>
-      )}
-      {plan.diagnostics && (
-        <CopyButton
-          appearance="inline"
-          className="aui-error-action"
-          label={copy.errorCopyDiagnostics}
-          text={diagnosticsText}
-        />
+        <>
+          {localFolders && (
+            <button className="aui-error-action" onClick={() => void openLogs()} type="button">
+              {remoteConnection ? copy.errorOpenDesktopLogs : copy.errorOpenLogs}
+            </button>
+          )}
+          <button className="aui-error-action" onClick={() => requestSendDiagnostics(diagnosticsText())} type="button">
+            <Upload className="size-3" />
+            {copy.errorSendDiagnostics}
+          </button>
+          <CopyButton
+            appearance="inline"
+            className="aui-error-action"
+            label={copy.errorCopyDiagnostics}
+            text={diagnosticsText}
+          />
+        </>
       )}
     </div>
   )

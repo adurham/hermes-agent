@@ -4,7 +4,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
@@ -118,6 +118,7 @@ def _reset_phrase(dt: Optional[datetime]) -> str:
         from hermes_cli.model_picker_usage import format_resets_in
         return format_resets_in(int(dt.timestamp() * 1000))
     except Exception:
+        logger.debug("Reset phrase formatting failed", exc_info=True)
         return f"resets {_format_reset(dt)}"
 
 
@@ -164,6 +165,7 @@ def _render_usage_window_lines(snapshot: AccountUsageSnapshot) -> list[str]:
                 from hermes_cli.model_picker_usage import format_percent_used, render_bar
                 bar, pct = render_bar(used), format_percent_used(used)
             except Exception:
+                logger.debug("Usage bar rendering failed", exc_info=True)
                 bar, pct = "", f"{int(used * 100)}%"
             base = f"{label}  {bar}  {pct} used" if bar else f"{label}  {pct} used"
         if window.reset_at:
@@ -203,7 +205,7 @@ def _bp_window(label: str, used_bp: Any, resets_at_ms: Any) -> Optional[AccountU
     if isinstance(used_bp, bool) or not isinstance(used_bp, int) or isinstance(resets_at_ms, bool) or not isinstance(resets_at_ms, int):
         return None
     try:
-        reset_at = datetime.fromtimestamp(resets_at_ms / 1000, tz=timezone.utc)
+        reset_at = datetime.fromtimestamp(resets_at_ms / 1000, tz=UTC)
     except (ValueError, OverflowError, OSError):
         return None  # an implausible server stamp drops the row, never the whole /usage view
     return AccountUsageWindow(label=label, used_percent=max(0.0, min(100.0, used_bp / BP_FULL * 100.0)),
@@ -411,6 +413,7 @@ def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_
         from agent.credits_tracker import dev_fixture_credits_state
         fixture = dev_fixture_credits_state()
     except Exception:
+        logger.debug("Dev credits fixture unavailable", exc_info=True)
         fixture = None
     if fixture is not None:
         snapshot = _snapshot_from_credits_state(fixture)

@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- usage-window plans: two delivery hooks only (Portal wording on chat platforms, then the limit offer after the reply); the logic lives in agent/plan_limits.py and gateway/slash_commands_model.py
 """Agent-turn execution for GatewayRunner: _handle_message_with_agent, _run_agent*, proxy path,
 background tasks, MCP reload. Bound onto ``GatewayRunner`` via the MRO; ``gateway.run`` internals
 are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.X")`` still works.

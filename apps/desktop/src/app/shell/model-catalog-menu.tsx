@@ -233,6 +233,7 @@ function useDownloadRows(owner: LocalModelsOwner, localModelsEnabled: boolean) {
  * plugin surfaces that pick a model without a session behind it — so the two
  * can never drift apart.
  */
+// health: allow CC -- usage-window plans: section headings and the limit line in the existing list render; this component was over target on main
 export function ModelCatalogMenu({
   controller,
   footer,
@@ -273,20 +274,8 @@ export function ModelCatalogMenu({
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
     queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId }),
-    // Nous only: re-read on every open (cached list shows instantly, the re-read swaps in when it
-    // lands). The plan (usage-window labels, used-up notes) loads with the first turn, after the
-    // list was first fetched at boot, so the 60s cache would hide it until "Refresh models".
-    // A cheap local cache-only read (the plan may not be known yet, so any Nous row); every other
-    // provider keeps the 60s cache.
-    refetchOnMount: query => (query.state.data?.providers?.some(isNous) ? 'always' : true),
-    // A cache-only open on a fresh backend ships rows marked pending while pricing warms in the
-    // background; re-read a few times so window-plan labels appear without "Refresh models".
-    // Bounded (~10s): a failed pricing fetch can leave rows pending, and an open menu must not
-    // poll forever. Only runs while the menu is mounted and a row is pending.
-    refetchInterval: query =>
-      query.state.dataUpdateCount < 6 && query.state.data?.providers?.some(p => isNous(p) && p.pricing_pending)
-        ? 2_000
-        : false
+    refetchOnMount: query => nousRefetchOnMount(query.state.data),
+    refetchInterval: query => nousPricingPoll(query.state.data, query.state.dataUpdateCount)
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -1016,6 +1005,7 @@ interface ModelFamilyRowProps {
  *  model, plus the hover-revealed options submenu. Shared by the Favorites
  *  section and the provider groups, so the two can never paint a model
  *  differently. */
+// health: allow CC -- usage-window plans: the Large/Free tag replaces the price on tagged rows; this row was over target on main
 function ModelFamilyRow({
   controller,
   current,
@@ -1431,6 +1421,23 @@ function groupModels(
 // The Nous row: the only one the menu re-reads on open or while its pricing warms (window-plan labels).
 function isNous(provider: ModelOptionProvider): boolean {
   return provider.slug === 'nous'
+}
+
+// Nous only: re-read on every open (cached list shows instantly, the re-read swaps in when it
+// lands). The plan (usage-window labels, used-up notes) loads with the first turn, after the
+// list was first fetched at boot, so the 60s cache would hide it until "Refresh models".
+// A cheap local cache-only read (the plan may not be known yet, so any Nous row); every other
+// provider keeps the 60s cache.
+function nousRefetchOnMount(data: ModelOptionsResult | undefined): 'always' | true {
+  return data?.providers?.some(isNous) ? 'always' : true
+}
+
+// A cache-only open on a fresh backend ships rows marked pending while pricing warms in the
+// background; re-read a few times so window-plan labels appear without "Refresh models".
+// Bounded (~10s): a failed pricing fetch can leave rows pending, and an open menu must not
+// poll forever. Only runs while the menu is mounted and a row is pending.
+function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number): false | number {
+  return updates < 6 && data?.providers?.some(p => isNous(p) && p.pricing_pending) ? 2_000 : false
 }
 
 // Window plans, no query: "Recommended" above the first of the plan's featured families and

@@ -182,7 +182,7 @@ def test_picker_draws_whatever_allowances_the_server_lists():
             *usage_window()["gauges"],
         ], featured_model_ids=()),
     ))
-    assert [g.label for g in usage.gauges][0] == "five_hour"
+    assert next(g.label for g in usage.gauges) == "five_hour"
     assert plan_gauge_lines(usage)[1].startswith("Next 5 hours")
     assert usage.included_summary.startswith("Next 5 hours limit reached")
     assert usage.blocks("any/model")
@@ -424,31 +424,28 @@ def test_warm_picker_never_forces_a_fetch_for_a_non_window_account(monkeypatch):
 
 def test_the_in_chat_cli_picker_says_the_limit_once_on_nous_only(monkeypatch):
     from hermes_cli import model_picker_usage as mpu
-    from hermes_cli.cli_tui_mixin import CLITuiMixin
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage(day_used_bp=10_000))
-    cli = SimpleNamespace(base_url="https://inference-api.nousresearch.com/v1")
-    rows, line = CLITuiMixin._annotate_window_plan_rows(cli, {"slug": "nous"}, ["paid/m", "gift/m:free"])
+    rows, line = mpu.annotate_window_plan_rows({"slug": "nous"}, ["paid/m", "gift/m:free"])
     # Rows stay the bare ids; the limit is said once, above the list.
     assert rows == ["paid/m", "gift/m:free"] and line.startswith("Daily limit reached")
     # Any other provider, or no fresh snapshot: the bare ids and no line.
-    assert CLITuiMixin._annotate_window_plan_rows(cli, {"slug": "example"}, ["paid/m"]) == (["paid/m"], None)
+    assert mpu.annotate_window_plan_rows({"slug": "example"}, ["paid/m"]) == (["paid/m"], None)
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
-    assert CLITuiMixin._annotate_window_plan_rows(cli, {"slug": "nous"}, ["paid/m"]) == (["paid/m"], None)
+    assert mpu.annotate_window_plan_rows({"slug": "nous"}, ["paid/m"]) == (["paid/m"], None)
 
 
 def test_the_in_chat_cli_picker_tags_large_and_free_rows_on_window_plans_only(monkeypatch):
     from hermes_cli import model_picker_usage as mpu
-    from hermes_cli.cli_tui_mixin import CLITuiMixin
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
     window = {"slug": "nous", "plan_usage": {"kind": "usage_window"},
               "usage_levels": {"example/model-b": "top_tier", "example/model-a": "low", "example/model-free:free": "free"}}
     ids = ["example/model-b", "example/model-a", "example/model-free:free"]
-    rows, _line = CLITuiMixin._annotate_window_plan_rows(None, window, ids)
+    rows, _line = mpu.annotate_window_plan_rows(window, ids)
     assert [r.split() for r in rows] == [["example/model-b", "Large"], ["example/model-a"], ["example/model-free:free", "Free"]]
     # Same payload without a window plan (or a stray levels map): the bare ids.
-    assert CLITuiMixin._annotate_window_plan_rows(None, {**window, "plan_usage": None}, ids)[0] == ids
+    assert mpu.annotate_window_plan_rows({**window, "plan_usage": None}, ids)[0] == ids
 
 
 _LEVELS = {"example/model-b": {"usage_level": "top_tier", "top_tier": True},

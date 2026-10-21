@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- usage-window plans: /usage marks the window view, plus one billing write route (keep going on credits) beside its siblings; data building lives in agent/account_usage.py
 """Session / delegation / spawn-tree / billing / pet JSON-RPC handlers.
 
 Bodies are rebound onto server.py's globals at install time (method_ctx.py), so they use server

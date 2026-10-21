@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- usage-window plans: /model picker hooks only (a multi-row hint, Large/Free row labels); the logic lives in hermes_cli/model_picker_usage.py
 """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments for the
 interactive CLI. Mixin bound onto ``HermesCLI`` via the MRO; cli.py-internal symbols are imported
 LAZILY inside each method (``from cli import ...``) — never at module load (import cycle)."""
@@ -562,19 +563,6 @@ class CLITuiMixin:
         panel.blank()
         return panel.close()
 
-    def _annotate_window_plan_rows(self, provider_data: dict, model_ids: list) -> tuple[list, Optional[str]]:
-        """``(labels, limit_line)`` for the /model picker's model stage. On a Nous usage-window plan rows carry
-        the TUI's ``Large`` / ``Free`` tags, and with a full allowance ``limit_line`` (above the hint) says it
-        once, with what happens next. Every other account: the bare ids and None. Display only."""
-        if str((provider_data or {}).get("slug") or "").lower() != "nous":
-            return list(model_ids), None
-        try:
-            from hermes_cli.model_picker_usage import nous_picker_usage, window_row_labels
-            usage = nous_picker_usage()  # fresh snapshot only: a stale percent would mislabel the line
-            return window_row_labels(provider_data, model_ids), (usage.limit_line() if usage is not None else None)
-        except Exception:
-            return list(model_ids), None
-
     def _get_model_picker_display_fragments(self):
         state = self._model_picker_state
         if not state:
@@ -617,7 +605,8 @@ class CLITuiMixin:
             filtered_pairs = self._filter_model_picker_entries(model_list, _query)
             state["_filtered_pairs"] = filtered_pairs
             model_labels = [e for (_i, e) in filtered_pairs]
-            row_labels, limit_line = self._annotate_window_plan_rows(provider_data, model_labels)
+            from hermes_cli.model_picker_usage import annotate_window_plan_rows
+            row_labels, limit_line = annotate_window_plan_rows(provider_data, model_labels)
             choices = row_labels + [t("cli.shared.back"), t("cli.shared.cancel")]
             if _query:
                 hint = t("cli.tui.picker_filter_hint", query=_query, shown=len(model_labels), total=len(model_list))

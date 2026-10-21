@@ -9,6 +9,7 @@ Every other account (credit-grant, pay-as-you-go, free tier) gets nothing from h
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
@@ -98,7 +99,7 @@ class PickerUsage:
         """The gateway's ``top_tier`` mark. Unmarked: not top tier (fail open)."""
         return model_id in self.top_tier_ids
 
-    def with_pricing(self, pricing: Optional[dict[str, dict[str, Any]]]) -> "PickerUsage":
+    def with_pricing(self, pricing: Optional[dict[str, dict[str, Any]]]) -> PickerUsage:
         """A copy that reads the gateway's ``top_tier`` marks from *pricing* (picker pricing shape)."""
         if not pricing:
             return self
@@ -193,7 +194,7 @@ class PickerUsage:
 
 
 def clamp_fraction(value: float) -> float:
-    return 0.0 if value < 0.0 else 1.0 if value > 1.0 else value
+    return 0.0 if value < 0.0 else min(value, 1.0)
 
 
 def gauge_style(left_fraction: float) -> GaugeStyle:
@@ -319,7 +320,7 @@ def _capitalize(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
-def _limit_name(g: "UsageGauge", lang: Optional[str] = None) -> str:
+def _limit_name(g: UsageGauge, lang: Optional[str] = None) -> str:
     """``weekly`` for ``Weekly limit reached`` / ``your weekly limit``; an unknown id shows the server's title."""
     if g.label in (GAUGE_TODAY, GAUGE_WEEK, GAUGE_MONTH, GAUGE_TOP_TIER):
         return _t(f"limit_{g.label}", lang)
@@ -371,6 +372,7 @@ def picker_usage_from_account(info: Any) -> Optional[PickerUsage]:
             credits_pay=_credits_pay(info, window),
         )
     except Exception:
+        logging.getLogger(__name__).debug("Plan usage parse failed", exc_info=True)
         return None
 
 
@@ -399,6 +401,7 @@ def nous_picker_usage(*, warm: bool = False, any_age: bool = False) -> Optional[
             get_nous_portal_account_info(force_fresh=on_window)
         return picker_usage_from_account(cached_nous_portal_account_info(any_age=any_age))
     except Exception:
+        logging.getLogger(__name__).debug("Nous plan usage unavailable", exc_info=True)
         return None
 
 
@@ -439,6 +442,7 @@ def large_model_notice(
             return _t("large_notice", lang)
         return usage.with_pricing({model_id: row}).large_model_notice(model_id, detail=fresh is not None, lang=lang)
     except Exception:
+        logging.getLogger(__name__).debug("Large-model notice unavailable", exc_info=True)
         return None
 
 
@@ -477,3 +481,35 @@ def plan_gauge_lines(usage: PickerUsage) -> list[str]:
         f"{_gauge_name(g):<{label_w}}  {g.bar}  {g.percent_used + ' used':<9}  {format_resets_in(g.resets_at_ms)}"
         for g in usage.gauges
     )]
+
+
+def window_plan_default(model_ids: list[str], pricing: Optional[dict] = None) -> str:
+    """A usage-window plan's first featured pick that is listed (the picker's top Recommended row), or
+    "" for every other account. Cache-only: the caller's fresh tier read just filled the snapshot. Never raises."""
+    try:
+        usage = nous_picker_usage(any_age=True)
+        if usage is None:
+            return ""
+        recommended, _other = split_recommended(model_ids, usage.featured_model_ids)
+        rows = pricing or {}
+        # A default must not spend the Large allowance: skip Large picks (a user can still choose one).
+        usable = [mid for mid in recommended if not (rows.get(mid) or {}).get("top_tier")
+                  and (rows.get(mid) or {}).get("usage_level") != "top_tier"]
+        return usable[0] if usable else ""
+    except Exception:
+        logging.getLogger(__name__).debug("Window plan default unavailable", exc_info=True)
+        return ""
+
+
+def annotate_window_plan_rows(provider_data: dict, model_ids: list) -> tuple[list, Optional[str]]:
+    """``(labels, limit_line)`` for the /model picker's model stage. On a Nous usage-window plan rows carry
+    the TUI's ``Large`` / ``Free`` tags, and with a full allowance ``limit_line`` (above the hint) says it
+    once, with what happens next. Every other account: the bare ids and None. Display only."""
+    if str((provider_data or {}).get("slug") or "").lower() != "nous":
+        return list(model_ids), None
+    try:
+        usage = nous_picker_usage()  # fresh snapshot only: a stale percent would mislabel the line
+        return window_row_labels(provider_data, model_ids), (usage.limit_line() if usage is not None else None)
+    except Exception:
+        logging.getLogger(__name__).debug("Window plan row labels unavailable", exc_info=True)
+        return list(model_ids), None

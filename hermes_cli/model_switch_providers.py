@@ -476,7 +476,7 @@ def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:
         from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
         model_ids = restrict_to_nous_policy(model_ids, nous_policy_allowed_ids(), rescue_empty=True)
     except Exception:
-        pass
+        logger.debug("Nous model policy filter failed", exc_info=True)
     try:
         # Window plans: the plan's featured picks lead the list. Plan shape only (it rarely changes), so
         # the last snapshot at any age answers — a long-running gateway's 60s cache has usually lapsed
@@ -1412,7 +1412,7 @@ def list_picker_providers(
     return filtered
 
 
-def _attach_window_model_notes(providers: List[dict]) -> None:
+def _attach_window_model_notes(providers: list[dict]) -> None:
     """Nous on a usage-window plan, for the messaging pickers (same words as the CLI/TUI/desktop pickers):
     ``model_labels`` {id: "Large" | "Free"} (plan shape, any-age snapshot; other levels carry no tag), and
     from a fresh snapshot only (a stale percent would mislabel it) ``plan_line`` (the limit line: "Weekly

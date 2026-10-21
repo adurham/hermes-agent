@@ -1496,7 +1496,7 @@ def step_up_nous_billing_scope(
         from hermes_cli.nous_billing import invalidate_cached_token
         invalidate_cached_token()
     except Exception:
-        pass
+        logger.debug("Billing token cache invalidation failed", exc_info=True)
     granted = auth_state.get("scope")
     return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()
 

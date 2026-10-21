@@ -14,7 +14,7 @@ class _Cli(CLIBillingMixin):
     def __init__(self, choice: str = "agree"):
         self.choice, self.asked = choice, []
 
-    def _modal_choice(self, title, detail, choices):  # noqa: ARG002 - signature mirrors the mixin
+    def _modal_choice(self, title, detail, choices):
         self.asked.append((title, [c[0] for c in choices]))
         return self.choice
 

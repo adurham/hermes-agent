@@ -617,6 +617,7 @@ def _reject_all_turns(agent: Any, api_error: Exception) -> bool:
     return bool(reject(api_error)) if callable(reject) else False
 
 
+# health: allow CC -- usage-window 402: skip the credential refresh and hand the pool a model-scoped bench context; this recovery ladder was over target on main
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: list[dict[str, Any]],

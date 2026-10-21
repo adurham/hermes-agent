@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -412,7 +412,7 @@ class TestHardStops:
         latch = new_credits_latch()
         show, _ = _run(_state(window_day_used_bp=10_000, window_week_used_bp=6_000, spend_source="included"), latch)
         assert _keys(show)[-1] == CREDITS_WINDOW_LIMIT_KEY
-        key, level, text = show[-1]
+        _key, level, text = show[-1]
         assert level == "error"
         assert text == f"✕ You've hit your daily limit · resets {format_window_reset(DAY_RESET)} · /topup to add credits"
         assert CREDITS_WINDOW_PAYG_KEY not in _keys(show)
@@ -706,8 +706,8 @@ class TestUsageCommand:
         assert snap is not None and snap.plan == "Window Plan"
         assert [w.label for w in snap.windows] == ["Today", "This week", "Large models (monthly)"]
         # The monthly row resets on the large-model allowance's own clock, and the used-up line names that date.
-        top_local = datetime.fromtimestamp(top_reset_ms / 1000, tz=timezone.utc).astimezone()
-        assert snap.windows[2].reset_at == datetime.fromtimestamp(top_reset_ms / 1000, tz=timezone.utc)
+        top_local = datetime.fromtimestamp(top_reset_ms / 1000, tz=UTC).astimezone()
+        assert snap.windows[2].reset_at == datetime.fromtimestamp(top_reset_ms / 1000, tz=UTC)
         assert (f"Monthly large-model usage is used up. Resets {top_local:%b} {top_local.day}. "
                 "Past this, large models use your credits.") in snap.details
         assert [round(w.used_percent) for w in snap.windows] == [76, 40, 100]
@@ -739,7 +739,7 @@ class TestUsageCommand:
         # A new allowance renders with the server's label, where the server put it.
         window.gauges = [{"id": "five_hour", "scope": "all", "label": "Next 5 hours", "used_bp": 5_000,
                           "resets_at_ms": now + 3600_000}, *_gauges(100, 200, **kw)]
-        assert [w.label for w in account_usage.build_nous_credits_snapshot(info).windows][0] == "Next 5 hours"
+        assert next(w.label for w in account_usage.build_nous_credits_snapshot(info).windows) == "Next 5 hours"
 
     def test_header_gauge_raises_stale_portal_percents(self, monkeypatch):
         from agent import account_usage
@@ -979,7 +979,7 @@ class TestBlockedResponseCapture:
         (spend_source / window gauges otherwise go stale until the next stream or 402)."""
         from unittest.mock import MagicMock
 
-        from agent.chat_completion_helpers import _chat_completion_capturing_headers
+        from agent.chat_completion_headers import _chat_completion_capturing_headers
 
         seen = []
         agent = SimpleNamespace(
@@ -1024,7 +1024,7 @@ class TestBlockedResponseCapture:
     def test_non_streaming_non_window_keeps_mains_behaviour(self):
         """Not a usage-window response: nothing is captured. A session not known to be on a window
         plan (no state yet, or a credit-grant state) keeps main's plain call."""
-        from agent.chat_completion_helpers import _chat_completion_capturing_headers
+        from agent.chat_completion_headers import _chat_completion_capturing_headers
 
         seen = []
         agent = SimpleNamespace(
@@ -1113,7 +1113,7 @@ class TestRefusalReadsAsTheStopLine:
     def _no_plan_caches(self, monkeypatch):
         from agent import plan_limits as pl
         monkeypatch.setattr(pl, "_plan_usage", lambda: None)
-        monkeypatch.setattr(pl, "_portal_free_models", lambda: [])
+        monkeypatch.setattr(pl, "_portal_free_models", list)
         monkeypatch.setattr(pl, "cached_pricing", lambda base_url: {})
 
     def _agent(self, **state_kw):

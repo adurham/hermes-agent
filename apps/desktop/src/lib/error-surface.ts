@@ -152,6 +152,7 @@ function parseUsageLimit(value: unknown): UsageLimitSurface | undefined {
 }
 
 /** Validate a wire payload into an ErrorSurface, or null when absent/garbled. */
+// health: allow CC -- usage-window: one branch for the optional usageLimit payload (parsed in parseUsageLimit); over target on main
 export function parseErrorSurface(value: unknown): ErrorSurface | null {
   if (!value || typeof value !== 'object') {
     return null

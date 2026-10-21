@@ -650,9 +650,11 @@ def _usage_window_refusal(agent, classified, api_messages=None) -> tuple[str, Op
                             needed_tokens=estimate_messages_tokens_rough(api_messages or []) if api_messages else None)
             limit = hit.to_payload() if hit is not None else None
         except Exception:
+            logger.debug("Usage-window limit payload unavailable", exc_info=True)
             limit = None
         return (message, resets_ms / 1000 if isinstance(resets_ms, int) and resets_ms > 0 else None, limit)
     except Exception:
+        logger.debug("Usage-window refusal parse failed", exc_info=True)
         return "", None, None
 
 

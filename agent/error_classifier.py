@@ -1129,7 +1129,7 @@ def _status_5xx(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_SERVER_ERROR
 
 
-def _is_nous_route(c: "_Ctx") -> bool:
+def _is_nous_route(c: _Ctx) -> bool:
     """The usage-window 402 code is Nous's: any other upstream sending it keeps main's text rules."""
     if (c.provider or "").strip().lower() == "nous":
         return True

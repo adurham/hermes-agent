@@ -725,7 +725,7 @@ class CLIChatTurnMixin:
                         box=rich_box.HORIZONTALS, padding=(1, 4), width=self._scrollback_box_width(),
                     ))
                 except Exception:
-                    pass
+                    logging.getLogger(__name__).debug("Usage-limit panel rendering failed", exc_info=True)
             elif (turn.result and turn.result.get("failure_reason") == "billing"
                   and not turn.result.get("usage_window_message")):
                 # (A window plan's refusal already reads as its own sentence with the way on; an

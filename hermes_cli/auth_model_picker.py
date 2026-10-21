@@ -209,6 +209,50 @@ class _ModelPickerRows:
         return TOP_TIER_FOOTNOTE
 
 
+def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tuple[list[str], dict[int, str], int]:
+    """``(ordered ids, {row index: section heading}, cursor start)`` for the picker.
+
+    Window plan: "Recommended" (the plan's featured picks) then "Other models", with the current
+    model left in its own section (the cursor starts on it). Everyone else: current first.
+    """
+    sections: dict[int, str] = {}
+    if window_usage is not None:
+        from hermes_cli.model_picker_usage import SECTION_OTHER, SECTION_RECOMMENDED, split_recommended
+        head, rest = split_recommended(list(dict.fromkeys(model_ids)), window_usage.featured_model_ids)
+        ordered = head + rest
+        if head:
+            sections[0] = SECTION_RECOMMENDED
+            if rest:
+                sections[len(head)] = SECTION_OTHER
+    else:
+        # Reorder: current model first, then the rest (deduplicated)
+        ordered = list(dict.fromkeys(
+            ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)
+        ))
+    return ordered, sections, (ordered.index(current_model) if current_model in ordered else 0)
+
+
+def _print_numbered_rows(rows: _ModelPickerRows, menu_title: str, ordered: list[str], sections: dict[int, str]) -> int:
+    """The no-curses fallback's title, numbered rows (+ custom / skip) and footnote; returns the number width."""
+    from hermes_cli.curses_ui import colorize_gauge_bars_ansi, format_radio_item_ansi
+    from hermes_cli.colors import Colors, color
+    n, _DIM, _RESET = len(ordered), "\033[2m", "\033[0m"
+    for line in menu_title.splitlines():
+        if rows.window_mode:
+            line = colorize_gauge_bars_ansi(line)
+        print(line.replace("★", color("★", Colors.YELLOW), 1) if "★" in line else line)
+    num_width = len(str(n + 2))
+    for i, mid in enumerate(ordered, 1):
+        if (i - 1) in sections:
+            print(f"  {_DIM}{sections[i - 1]}{_RESET}")
+        print(f"  {i:>{num_width}}. {format_radio_item_ansi(rows.segments(mid))}")
+    print(f"  {n + 1:>{num_width}}. {_CUSTOM_LABEL}")
+    print(f"  {n + 2:>{num_width}}. {_SKIP_LABEL}")
+    if footnote := rows.footnote():
+        print(f"  {_DIM}{footnote}{_RESET}")
+    return num_width
+
+
 def _prompt_model_selection(
     model_ids: list[str], current_model: str = "",
     pricing: Optional[dict[str, dict[str, str]]] = None,
@@ -248,23 +292,7 @@ def _prompt_model_selection(
 
     # All models for column-width computation (selectable + unavailable). Plan usage is Nous-only chrome.
     window_usage = usage if sale_chrome else None
-    # Window plan: "Recommended" (the plan's featured picks) then "Other models", with the
-    # current model left in its own section (the cursor starts on it). Everyone else: current first.
-    sections: dict[int, str] = {}
-    if window_usage is not None:
-        from hermes_cli.model_picker_usage import SECTION_OTHER, SECTION_RECOMMENDED, split_recommended
-        head, rest = split_recommended(list(dict.fromkeys(model_ids)), window_usage.featured_model_ids)
-        ordered = head + rest
-        if head:
-            sections[0] = SECTION_RECOMMENDED
-            if rest:
-                sections[len(head)] = SECTION_OTHER
-    else:
-        # Reorder: current model first, then the rest (deduplicated)
-        ordered = list(dict.fromkeys(
-            ([current_model] if current_model and current_model in model_ids else []) + list(model_ids)
-        ))
-    start = ordered.index(current_model) if current_model in ordered else 0
+    ordered, sections, start = _picker_order(model_ids, current_model, window_usage)
 
     rows = _ModelPickerRows(
         ordered + list(_unavailable), pricing, current_model=current_model, sale_chrome=sale_chrome,
@@ -324,21 +352,7 @@ def _prompt_model_selection(
         pass
 
     # Fallback: numbered list (ANSI colors for sale chrome / usage gauges)
-    from hermes_cli.curses_ui import colorize_gauge_bars_ansi, format_radio_item_ansi
-    from hermes_cli.colors import Colors, color
-    for line in menu_title.splitlines():
-        if rows.window_mode:
-            line = colorize_gauge_bars_ansi(line)
-        print(line.replace("★", color("★", Colors.YELLOW), 1) if "★" in line else line)
-    num_width = len(str(n + 2))
-    for i, mid in enumerate(ordered, 1):
-        if (i - 1) in sections:
-            print(f"  {_DIM}{sections[i - 1]}{_RESET}")
-        print(f"  {i:>{num_width}}. {format_radio_item_ansi(rows.segments(mid))}")
-    print(f"  {n + 1:>{num_width}}. {_CUSTOM_LABEL}")
-    print(f"  {n + 2:>{num_width}}. {_SKIP_LABEL}")
-    if footnote := rows.footnote():
-        print(f"  {_DIM}{footnote}{_RESET}")
+    num_width = _print_numbered_rows(rows, menu_title, ordered, sections)
 
     if _unavailable:
         unavailable_footer = unavailable_message.strip() or (

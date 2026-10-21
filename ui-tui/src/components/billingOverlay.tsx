@@ -111,12 +111,7 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   // instead of an amount picker that would 403 no_payment_method.
   // Window plans: turning it on spends money later, so it confirms first (like
   // the terminal /topup); turning it off happens at once.
-  const hermesRow =
-    s.keep_going_on_credits == null ? null : s.keep_going_on_credits ? B.keepGoing.rowTurnOff : B.keepGoing.rowTurnOn
-
-  // Turning it off only stops spending, so an admin keeps that one row with
-  // Remote Spending off (the portal and the server allow it too).
-  const offOnly = !full && s.is_admin && s.keep_going_on_credits === true
+  const { line: hermesLine, offOnly, row: hermesRow } = keepGoingChrome(s, B, full)
 
   const items = full
     ? [
@@ -158,8 +153,6 @@ function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
   const sel = useMenu(rows, onClose)
 
   const auto = autoReloadLine(B, s)
-  const hermesLine =
-    s.keep_going_on_credits == null ? null : s.keep_going_on_credits ? B.keepGoing.onLine : B.keepGoing.offLine
   // Balance leads, in the title — the first thing seen (review feedback).
   const title = B.overview.title(s.balance_display)
 
@@ -972,6 +965,23 @@ function LimitScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
       {footer(B.limit.hint(labels.length), t)}
     </Box>
   )
+}
+
+/** Keep going on credits chrome (window plans; nulls elsewhere): the overview row, its status line, and
+ *  whether an admin with Remote Spending off still gets the row (turning it off only stops spending, and
+ *  the portal and the server allow that too). */
+function keepGoingChrome(s: BillingStateResponse, B: BillingMessages, full: boolean) {
+  if (s.keep_going_on_credits == null) {
+    return { line: null, offOnly: false, row: null }
+  }
+
+  const on = s.keep_going_on_credits
+
+  return {
+    line: on ? B.keepGoing.onLine : B.keepGoing.offLine,
+    offOnly: !full && s.is_admin && on,
+    row: on ? B.keepGoing.rowTurnOff : B.keepGoing.rowTurnOn
+  }
 }
 
 /** Flip the account setting; the ✅ line lands once the gateway confirms (errors render there). */

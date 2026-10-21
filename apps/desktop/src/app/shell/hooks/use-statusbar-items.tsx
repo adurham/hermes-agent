@@ -124,6 +124,7 @@ function versionItem(
   }
 }
 
+// health: allow CC FUNC_LINES -- usage-window plans: one status-bar gauge item, hidden for every other account; this hook was over both targets on main
 export function useStatusbarItems({
   agentsOpen,
   changeSessionCwd,

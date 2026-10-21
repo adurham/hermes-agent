@@ -85,6 +85,7 @@ def cached_pricing(base_url: str) -> dict:
         from hermes_cli.models_pricing import peek_cached_pricing
         return peek_cached_pricing(base_url) or {}
     except Exception:
+        logger.debug("Cached pricing unavailable", exc_info=True)
         return {}
 
 
@@ -93,6 +94,7 @@ def _billed_elsewhere(model: str, pricing: Optional[dict]) -> bool:
         from hermes_cli.models import _is_subscription_billed
         return _is_subscription_billed((pricing or {}).get(model))
     except Exception:
+        logger.debug("Subscription billing lookup failed", exc_info=True)
         return False
 
 
@@ -106,6 +108,7 @@ def is_free(model: str, pricing: Optional[dict]) -> bool:
         from hermes_cli.models import _is_model_free
         return bool(pricing) and _is_model_free(model, pricing)
     except Exception:
+        logger.debug("Free-model lookup failed", exc_info=True)
         return False
 
 
@@ -150,6 +153,7 @@ def _plan_usage() -> Any:
         from hermes_cli.model_picker_usage import nous_picker_usage
         return nous_picker_usage(any_age=True)
     except Exception:
+        logger.debug("Plan usage unavailable", exc_info=True)
         return None
 
 
@@ -165,6 +169,7 @@ def _portal_free_models() -> list[str]:
         entries = payload.get("freeRecommendedModels") if isinstance(payload, dict) else None
         return [n for e in (entries or []) if (n := m._extract_model_name(e))]
     except Exception:
+        logger.debug("Portal free models unavailable", exc_info=True)
         return []
 
 
@@ -176,6 +181,7 @@ def _fits_context(model: str, needed_tokens: Optional[int], base_url: str) -> bo
         ctx = get_model_context_length(model, base_url=base_url, provider=PROVIDER)
         return not ctx or ctx >= needed_tokens + _CONTEXT_HEADROOM_TOKENS
     except Exception:
+        logger.debug("Context length lookup failed", exc_info=True)
         return True
 
 
