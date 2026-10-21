@@ -3,6 +3,7 @@ dynamic webhook route store, and the refresh loop's re-subscription rules."""
 
 import asyncio
 import base64
+import contextlib
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -172,6 +173,26 @@ class TestRefresh:
         session = FakeSession(MCPError(-32024, "Forbidden"))
         asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
         assert _routes(home) == {}
+
+    def test_a_new_subscription_wakes_the_refresh_loop(self, home, monkeypatch):
+        passes = []
+
+        async def recording_pass(server, *, force):
+            passes.append(force)
+            return float("inf")  # nothing due: without a wake-up the loop sleeps for an hour
+        monkeypatch.setattr(events, "refresh_server_subscriptions", recording_pass)
+
+        async def scenario():
+            loop = asyncio.create_task(events.run_refresh_loop(_server(FakeSession())))
+            await async_wait_until(lambda: passes == [True], what="the first pass")
+            await events._subscribe_event(FakeSession(_grant(seconds=600)), {
+                "name": "feed.emission.created", "arguments": ARGS}, "ambush")
+            await async_wait_until(lambda: len(passes) == 2, what="a pass for the new subscription")
+            loop.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await loop
+        asyncio.run(scenario())
+        assert passes == [True, False]
 
     def test_an_unsubscribe_while_waiting_for_the_session_is_not_undone(self, home):
         _subscribe(FakeSession(_grant()))

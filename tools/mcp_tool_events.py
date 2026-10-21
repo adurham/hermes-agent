@@ -12,6 +12,7 @@ the server task keeps every route's subscription alive with :func:`run_refresh_l
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -36,6 +37,9 @@ _ROUTE_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
 _STATE_FILENAME = "mcp_event_subscriptions.json"
 # Error codes from the sketch's Error Codes table (SEP-3415 numbering) that end a subscription for good.
 _FORBIDDEN, _NOT_FOUND = -32024, -32023
+# Refresh loops by server name, each as (its event loop, its wake-up event). A new subscription wakes them
+# so its first refresh is scheduled from its own grant, not after the loop's current sleep (up to an hour).
+_refresh_wakers: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
 
 
 def events_enabled(config: dict) -> bool:
@@ -209,6 +213,11 @@ async def _subscribe_route(session, route_name: str, route: dict, url_base: str)
     return await asyncio.to_thread(_store_grant, route_name, result, params["delivery"]["url"])
 
 
+def _wake_refresh_loops(server_name: str) -> None:
+    for loop, wake in list(_refresh_wakers.get(server_name, ())):
+        loop.call_soon_threadsafe(wake.set)
+
+
 async def refresh_server_subscriptions(server, *, force: bool) -> float:
     """Re-subscribe this server's routes that are due (all of them when *force*, i.e. on a fresh
     connection, where the server may have lost soft state). Returns the next due time."""
@@ -246,15 +255,29 @@ async def refresh_server_subscriptions(server, *, force: bool) -> float:
 
 async def run_refresh_loop(server) -> None:
     """Keep this server's event subscriptions alive for the life of one session (cancelled with it)."""
+    wake = asyncio.Event()
+    waker = (asyncio.get_running_loop(), wake)
+    _refresh_wakers.setdefault(server.name, set()).add(waker)
     force = True
-    while True:
-        try:
-            next_due = await refresh_server_subscriptions(server, force=force)
-        except Exception as exc:
-            logger.warning("MCP server '%s': event subscription refresh failed: %s", server.name, exc, exc_info=True)
-            next_due = time.time() + _REFRESH_MIN_SLEEP_S
-        force = False
-        await asyncio.sleep(min(_REFRESH_MAX_SLEEP_S, max(_REFRESH_MIN_SLEEP_S, next_due - time.time())))
+    try:
+        while True:
+            wake.clear()  # before the pass, so a subscription made during it still wakes the next one
+            try:
+                next_due = await refresh_server_subscriptions(server, force=force)
+            except Exception as exc:
+                logger.warning("MCP server '%s': event subscription refresh failed: %s", server.name, exc,
+                               exc_info=True)
+                next_due = time.time() + _REFRESH_MIN_SLEEP_S
+            force = False
+            delay = min(_REFRESH_MAX_SLEEP_S, max(_REFRESH_MIN_SLEEP_S, next_due - time.time()))
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wake.wait(), timeout=delay)
+    finally:
+        wakers = _refresh_wakers.get(server.name)
+        if wakers is not None:
+            wakers.discard(waker)
+            if not wakers:
+                _refresh_wakers.pop(server.name, None)
 
 
 def start_refresh_task(server) -> Optional[asyncio.Task]:
@@ -311,6 +334,7 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
         if error is None:
             raise
         return {"error": error}
+    _wake_refresh_loops(server_name)
     return {"subscribed": {"name": args["name"], "arguments": arguments, "deliver": route["deliver"],
                            "refreshBefore": (stored or {}).get("refresh_before")}}
 
