@@ -208,12 +208,24 @@ def _load_routes(server_name: str) -> dict[str, dict]:
 
 
 async def _subscribe_route(session, route_name: str, route: dict, url_base: str) -> Optional[dict]:
-    """``events/subscribe`` for one route and record the grant; returns the stored state, None when the
-    route was removed while the request was in flight."""
+    """``events/subscribe`` for one route and record the grant; returns the stored state. When the
+    route was removed while the request was in flight (an unsubscribe in another process holds its own
+    lock, not this one), the subscription just granted is released again and None is returned."""
     state = (await asyncio.to_thread(_load_state)).get(route_name, {})
     params = _subscribe_params(route_name, route, url_base, state)
     result = await _send(session, "events/subscribe", params)
-    return await asyncio.to_thread(_store_grant, route_name, result, params["delivery"]["url"])
+    url = params["delivery"]["url"]
+    stored = await asyncio.to_thread(_store_grant, route_name, result, url)
+    if stored is None:
+        event = route["mcp_event"]
+        try:
+            await _send(session, "events/unsubscribe",
+                        {"name": event["name"], "arguments": event["arguments"], "delivery": {"url": url}})
+        except Exception as exc:
+            error = _mcp_error(exc)
+            logger.warning("MCP events: releasing subscription %s after its route was removed failed: %s",
+                           route_name, error or exc, exc_info=error is None)
+    return stored
 
 
 def _wake_refresh_loops(server_name: str) -> None:
@@ -355,9 +367,11 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
         if error is None:
             raise
         return {"error": error}
+    if stored is None:
+        return {"error": f"The subscription to '{args['name']}' was removed while it was being made."}
     _wake_refresh_loops(server_name)
     return {"subscribed": {"name": args["name"], "arguments": arguments, "deliver": route["deliver"],
-                           "refreshBefore": (stored or {}).get("refresh_before")}}
+                           "refreshBefore": stored.get("refresh_before")}}
 
 
 async def _unsubscribe_event(session, args: dict, server_name: str) -> dict:

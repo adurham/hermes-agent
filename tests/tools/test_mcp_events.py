@@ -211,6 +211,22 @@ class TestRefresh:
         asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
         assert session.sent == []
 
+    def test_a_route_removed_during_the_refresh_is_released(self, home):
+        _subscribe(FakeSession(_grant()))
+
+        class RacingSession(FakeSession):
+            async def send_request(self, request, result_type):
+                reply = await super().send_request(request, result_type)
+                if request.method == "events/subscribe":  # another process unsubscribed meanwhile
+                    (home / "webhook_subscriptions.json").write_text("{}")
+                return reply
+
+        session = RacingSession(_grant(), {})
+        asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
+        assert [sent["method"] for sent in session.sent] == ["events/subscribe", "events/unsubscribe"]
+        assert session.sent[1]["params"]["delivery"] == {"url": session.sent[0]["params"]["delivery"]["url"]}
+        assert _routes(home) == {}
+
     def test_a_new_subscription_wakes_the_refresh_loop(self, home, monkeypatch):
         passes = []
 
