@@ -1,6 +1,6 @@
 name: godot-studio
 repo: https://github.com/Foolafroos/godot-studio
-sha: bec72edc2db3cb96d78a95b9c9c063f73b908523
+sha: 46410c6ae6340793ad6b0f21fa4737be8fc54163
 description: >-
   Headless Godot 4 workflows for the agent game studio — godot_headless_check
   (script/resource validation via godot --headless, no editor needed),
