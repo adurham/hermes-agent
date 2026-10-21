@@ -134,6 +134,16 @@ class TestSubscribe:
         assert "public_url" in _subscribe(session)["error"]
         assert session.sent == [] and _routes(home) == {}
 
+    def test_a_disabled_subscription_is_not_turned_back_on(self, home):
+        _subscribe(FakeSession(_grant()))
+        data = _routes(home)
+        (name, route), = data.items()
+        route["enabled"] = False
+        (home / "webhook_subscriptions.json").write_text(json.dumps(data))
+        session = FakeSession()
+        assert "error" in _subscribe(session)
+        assert session.sent == [] and _routes(home)[name]["enabled"] is False
+
 
 class TestUnsubscribe:
     def test_unsubscribe_sends_the_granted_url_and_drops_the_route(self, home):
@@ -191,6 +201,15 @@ class TestRefresh:
         session = FakeSession()
         next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), force=False, failures=failures))
         assert session.sent == [] and 100 < next_due - time.time() <= 4 * events._REFRESH_MIN_SLEEP_S
+
+    def test_a_disabled_route_is_left_to_lapse(self, home):
+        _subscribe(FakeSession(_grant()))
+        data = _routes(home)
+        next(iter(data.values()))["enabled"] = False
+        (home / "webhook_subscriptions.json").write_text(json.dumps(data))
+        session = FakeSession()
+        asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
+        assert session.sent == []
 
     def test_a_new_subscription_wakes_the_refresh_loop(self, home, monkeypatch):
         passes = []

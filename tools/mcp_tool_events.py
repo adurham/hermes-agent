@@ -224,9 +224,9 @@ def _wake_refresh_loops(server_name: str) -> None:
 async def refresh_server_subscriptions(server, *, force: bool,
                                        failures: Optional[dict[str, tuple[int, float]]] = None) -> float:
     """Re-subscribe this server's routes that are due (all of them when *force*, i.e. on a fresh
-    connection, where the server may have lost soft state). A failed refresh is retried with exponential
-    back-off: *failures* maps a route to (consecutive failures, retry time) across passes. Returns the next
-    due time."""
+    connection, where the server may have lost soft state). A route disabled in the dashboard is left to
+    lapse; turning it back on resubscribes it. A failed refresh is retried with exponential back-off:
+    *failures* maps a route to (consecutive failures, retry time) across passes. Returns the next due time."""
     failures = {} if failures is None else failures
     url_base = _callback_base()
     routes = await asyncio.to_thread(_load_routes, server.name)
@@ -242,7 +242,7 @@ async def refresh_server_subscriptions(server, *, force: bool,
                     # Re-read under the lock: an unsubscribe that ran while we waited must not be undone.
                     route = (await asyncio.to_thread(_load_routes, server.name)).get(route_name)
                     stored = None
-                    if route is not None:
+                    if route is not None and route.get("enabled", True) is not False:
                         stored = await _subscribe_route(server.session, route_name, route, url_base)
                 if stored is None:
                     failures.pop(route_name, None)
@@ -313,7 +313,8 @@ async def _list_events(session, args: dict, server_name: str) -> dict:
     routes = await asyncio.to_thread(_load_routes, server_name)
     states = await asyncio.to_thread(_load_state)
     subscribed = [{"name": r["mcp_event"]["name"], "arguments": r["mcp_event"]["arguments"],
-                   "deliver": r.get("deliver", "log"), "refreshBefore": states.get(n, {}).get("refresh_before")}
+                   "deliver": r.get("deliver", "log"), "refreshBefore": states.get(n, {}).get("refresh_before"),
+                   **({"enabled": False} if r.get("enabled", True) is False else {})}
                   for n, r in routes.items()]
     return {"events": events, "subscriptions": subscribed}
 
@@ -326,6 +327,10 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
     arguments = args.get("arguments") or {}
     route_name = _route_name(server_name, args["name"], arguments)
     existing = (await asyncio.to_thread(_load_routes, server_name)).get(route_name)
+    if existing is not None and existing.get("enabled", True) is False:
+        # Only the dashboard's enable action turns a route back on (same rule as hermes_cli.webhook).
+        return {"error": f"The subscription to '{args['name']}' with these arguments is turned off in the "
+                         "webhook dashboard. Turn it back on there to resume it."}
     deliver_extra = {"chat_id": args["deliver_chat_id"]} if args.get("deliver_chat_id") else {}
     # The route is the subscription's fixed contract: an admitted run's reply is checked against a digest
     # of it, so nothing that changes while the subscription lives (grant, cursor) is stored here, and an
