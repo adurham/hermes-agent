@@ -629,24 +629,42 @@ def _warn_hidden_whitespace(server_name: str, config: dict) -> list[str]:
     return flagged
 
 
+def _malformed_cost_table(name: str, cfg: Any) -> Optional[str]:
+    """Why a server's ``tool_costs``/``spend_limit``/``cost_unit`` is unusable, else None. A budget the
+    user declared must never be silently dropped while its server keeps spending, so the server is skipped."""
+    from tools.mcp_tool_costs import config_cost_policy
+    try:
+        config_cost_policy(name, cfg if isinstance(cfg, dict) else None)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
-    """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
+    """Drop exfiltration-shaped MCP configs, and servers with a malformed cost table, before any stdio spawn path."""
     try:
         from hermes_cli.mcp_security import validate_mcp_server_entry
     except Exception:
-        return servers
+        validate_mcp_server_entry = None
     safe_servers = {}
     for name, cfg in servers.items():
-        issues = validate_mcp_server_entry(name, cfg) if isinstance(cfg, dict) else None
+        issues = validate_mcp_server_entry(name, cfg) if validate_mcp_server_entry and isinstance(cfg, dict) else None
         if issues:
             logger.warning("Skipping suspicious MCP server '%s': %s", name, "; ".join(issues))
+        elif (bad_costs := _malformed_cost_table(name, cfg)) is not None:
+            logger.error("Skipping MCP server '%s': %s (fix tool_costs/spend_limit/cost_unit in config.yaml)",
+                         name, bad_costs)
         else:
             safe_servers[name] = cfg
     return safe_servers
 
 
 def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
-    """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises."""
+    """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises.
+
+    The package's declared costs are facts about its server, so a same-name native entry (the way a user widens
+    a package server's trust) keeps them unless it sets the cost key itself; ``spend_limit: 0`` turns the limit off."""
+    from tools.mcp_tool_costs import CONFIG_KEYS
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
@@ -654,6 +672,10 @@ def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
         for name, cfg in _filter_suspicious_mcp_servers(portable).items():
             if name in safe_servers:
                 logger.warning("Portable MCP server '%s' conflicts with native config; skipping", name)
+                native = safe_servers[name]
+                carried = {k: cfg[k] for k in CONFIG_KEYS if k in cfg and k not in native}
+                if carried:
+                    safe_servers[name] = {**native, **carried}
             else:
                 safe_servers[name] = dict(cfg)
     except Exception:
