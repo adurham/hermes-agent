@@ -168,16 +168,34 @@ class TestRefresh:
         next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), force=False))
         assert session.sent == [] and next_due > time.time()
 
-    def test_a_forbidden_refresh_ends_the_subscription(self, home):
+    @pytest.mark.parametrize("code", [-32024, -32023, -32602, -32026],
+                             ids=["forbidden", "not-found", "invalid-params", "unsupported"])
+    def test_a_refusal_that_cannot_change_ends_the_subscription(self, home, code):
         _subscribe(FakeSession(_grant()))
-        session = FakeSession(MCPError(-32024, "Forbidden"))
+        session = FakeSession(MCPError(code, "refused"))
         asyncio.run(events.refresh_server_subscriptions(_server(session), force=True))
         assert _routes(home) == {}
+
+    def test_a_failing_refresh_backs_off(self, home):
+        _subscribe(FakeSession(_grant()))
+        failures = {}
+        delays = []
+        for _ in range(3):
+            session = FakeSession(MCPError(-32027, "CallbackEndpointError", {"reason": "timeout"}))
+            next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), force=True, failures=failures))
+            delays.append(next_due - time.time())
+        assert [round(delay / events._REFRESH_MIN_SLEEP_S) for delay in delays] == [1, 2, 4]
+        state = _state(home)  # the grant has run out, so only the back-off holds the next attempt
+        next(iter(state.values())).update(granted_at=time.time() - 7200, refresh_before=_grant(-3600)["refreshBefore"])
+        (home / "mcp_event_subscriptions.json").write_text(json.dumps(state))
+        session = FakeSession()
+        next_due = asyncio.run(events.refresh_server_subscriptions(_server(session), force=False, failures=failures))
+        assert session.sent == [] and 100 < next_due - time.time() <= 4 * events._REFRESH_MIN_SLEEP_S
 
     def test_a_new_subscription_wakes_the_refresh_loop(self, home, monkeypatch):
         passes = []
 
-        async def recording_pass(server, *, force):
+        async def recording_pass(server, *, force, failures=None):
             passes.append(force)
             return float("inf")  # nothing due: without a wake-up the loop sleeps for an hour
         monkeypatch.setattr(events, "refresh_server_subscriptions", recording_pass)

@@ -35,8 +35,11 @@ _REFRESH_MIN_SLEEP_S, _REFRESH_MAX_SLEEP_S = 30.0, 3600.0
 _ROUTE_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
 # Per-route subscription state (grant, cursor, granted URL), kept out of the route config.
 _STATE_FILENAME = "mcp_event_subscriptions.json"
-# Error codes from the sketch's Error Codes table (SEP-3415 numbering) that end a subscription for good.
-_FORBIDDEN, _NOT_FOUND = -32024, -32023
+# Error codes from the sketch's Error Codes table (SEP-3415 numbering) plus JSON-RPC InvalidParams.
+_FORBIDDEN, _NOT_FOUND, _UNSUPPORTED, _INVALID_PARAMS = -32024, -32023, -32026, -32602
+# A refresh refused with one of these can never succeed as stored: access was revoked, the event type is
+# gone, its arguments no longer validate, or the server no longer offers what the subscription asks for.
+_TERMINAL_REFRESH_CODES = frozenset({_FORBIDDEN, _NOT_FOUND, _UNSUPPORTED, _INVALID_PARAMS})
 # Refresh loops by server name, each as (its event loop, its wake-up event). A new subscription wakes them
 # so its first refresh is scheduled from its own grant, not after the loop's current sleep (up to an hour).
 _refresh_wakers: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
@@ -218,15 +221,21 @@ def _wake_refresh_loops(server_name: str) -> None:
         loop.call_soon_threadsafe(wake.set)
 
 
-async def refresh_server_subscriptions(server, *, force: bool) -> float:
+async def refresh_server_subscriptions(server, *, force: bool,
+                                       failures: Optional[dict[str, tuple[int, float]]] = None) -> float:
     """Re-subscribe this server's routes that are due (all of them when *force*, i.e. on a fresh
-    connection, where the server may have lost soft state). Returns the next due time."""
+    connection, where the server may have lost soft state). A failed refresh is retried with exponential
+    back-off: *failures* maps a route to (consecutive failures, retry time) across passes. Returns the next
+    due time."""
+    failures = {} if failures is None else failures
     url_base = _callback_base()
     routes = await asyncio.to_thread(_load_routes, server.name)
     states = await asyncio.to_thread(_load_state)
     next_due = float("inf")
     for route_name in routes:
         due = _refresh_due_at(states.get(route_name, {}))
+        if route_name in failures:
+            due = max(due, failures[route_name][1])
         if url_base and (force or due <= time.time()):
             try:
                 async with server._rpc_lock:
@@ -236,18 +245,24 @@ async def refresh_server_subscriptions(server, *, force: bool) -> float:
                     if route is not None:
                         stored = await _subscribe_route(server.session, route_name, route, url_base)
                 if stored is None:
+                    failures.pop(route_name, None)
                     continue
             except Exception as exc:
                 error = _mcp_error(exc)
-                if error and error["code"] in (_FORBIDDEN, _NOT_FOUND):
-                    logger.warning("MCP server '%s': event subscription %s ended by the server (%s); removing it",
+                if error and error["code"] in _TERMINAL_REFRESH_CODES:
+                    logger.warning("MCP server '%s': event subscription %s refused by the server (%s); removing it",
                                    server.name, route_name, error)
                     await asyncio.to_thread(_write_route, route_name, None)
+                    failures.pop(route_name, None)
                     continue
-                logger.warning("MCP server '%s': refreshing event subscription %s failed: %s",
-                               server.name, route_name, error or exc, exc_info=error is None)
-                due = time.time() + _REFRESH_MIN_SLEEP_S
+                count = failures.get(route_name, (0, 0.0))[0] + 1
+                delay = min(_REFRESH_MAX_SLEEP_S, _REFRESH_MIN_SLEEP_S * 2 ** min(count - 1, 10))
+                due = time.time() + delay
+                failures[route_name] = (count, due)
+                logger.warning("MCP server '%s': refreshing event subscription %s failed (attempt %d, next in %.0fs): %s",
+                               server.name, route_name, count, delay, error or exc, exc_info=error is None)
             else:
+                failures.pop(route_name, None)
                 due = _refresh_due_at(stored)
         next_due = min(next_due, due)
     return next_due
@@ -258,12 +273,13 @@ async def run_refresh_loop(server) -> None:
     wake = asyncio.Event()
     waker = (asyncio.get_running_loop(), wake)
     _refresh_wakers.setdefault(server.name, set()).add(waker)
+    failures: dict[str, tuple[int, float]] = {}
     force = True
     try:
         while True:
             wake.clear()  # before the pass, so a subscription made during it still wakes the next one
             try:
-                next_due = await refresh_server_subscriptions(server, force=force)
+                next_due = await refresh_server_subscriptions(server, force=force, failures=failures)
             except Exception as exc:
                 logger.warning("MCP server '%s': event subscription refresh failed: %s", server.name, exc,
                                exc_info=True)

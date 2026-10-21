@@ -1035,8 +1035,10 @@ Each subscription is stored as a dynamic webhook route (`hermes webhook list` sh
 `mcp_event_subscriptions.json`, so the route itself only changes when you resubscribe with different
 instructions or a different destination. Hermes answers the server's signed verification challenge, deduplicates
 events by `eventId`, and refreshes the subscription before the lifetime the server granted runs out
-while the MCP connection is up (and again whenever it reconnects). If the server ends a
-subscription, Hermes removes the route and tells the `deliver` target. Events only arrive while
+while the MCP connection is up (and again whenever it reconnects). A refresh the server refuses
+for good (access revoked, event type removed, arguments no longer valid) removes the route; other
+failures are retried with back-off. If the server ends a subscription,
+Hermes removes the route and tells the `deliver` target. Events only arrive while
 `hermes gateway run` is running. Event payloads are external data: event runs use the same
 constrained webhook toolset as other webhook routes.
 The listener's per-route rate limit (`platforms.webhook.extra.rate_limit`, 30 a minute by default)
