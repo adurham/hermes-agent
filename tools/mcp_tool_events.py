@@ -40,6 +40,7 @@ _FORBIDDEN, _NOT_FOUND, _UNSUPPORTED, _INVALID_PARAMS = -32024, -32023, -32026, 
 # A refresh refused with one of these can never succeed as stored: access was revoked, the event type is
 # gone, its arguments no longer validate, or the server no longer offers what the subscription asks for.
 _TERMINAL_REFRESH_CODES = frozenset({_FORBIDDEN, _NOT_FOUND, _UNSUPPORTED, _INVALID_PARAMS})
+_MAX_LIST_PAGES = 20
 # The approval prompt shows the instructions in full, so they are bounded.
 _MAX_INSTRUCTIONS_CHARS = 2000
 # Refresh loops by server name, each as (its event loop, its wake-up event). A new subscription wakes them
@@ -317,12 +318,13 @@ def start_refresh_task(server) -> Optional[asyncio.Task]:
 # ---- utility tools ----
 
 async def _list_events(session, args: dict, server_name: str) -> dict:
-    events, cursor = [], None
+    events, cursor, pages = [], None, 0
     while True:
         result = await _send(session, "events/list", {"cursor": cursor} if cursor else {})
+        pages += 1
         events.extend(result.get("events") or [])
         cursor = result.get("nextCursor")
-        if not cursor:
+        if not cursor or pages >= _MAX_LIST_PAGES:
             break
     routes = await asyncio.to_thread(_load_routes, server_name)
     states = await asyncio.to_thread(_load_state)
@@ -330,7 +332,11 @@ async def _list_events(session, args: dict, server_name: str) -> dict:
                    "deliver": r.get("deliver", "log"), "refreshBefore": states.get(n, {}).get("refresh_before"),
                    **({"enabled": False} if r.get("enabled", True) is False else {})}
                   for n, r in routes.items()]
-    return {"events": events, "subscriptions": subscribed}
+    listed = {"events": events, "subscriptions": subscribed}
+    if cursor:
+        listed["truncated"] = (f"The server has more than {_MAX_LIST_PAGES} pages of event types; "
+                               f"these are the first {len(events)}.")
+    return listed
 
 
 async def _subscribe_event(session, args: dict, server_name: str) -> dict:

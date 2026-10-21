@@ -85,6 +85,21 @@ class TestUtilitySelection:
         assert set(events.EVENT_UTILITY_KEYS) <= self._keys({"events": True})
 
 
+class TestList:
+    def test_listing_stops_at_the_page_cap(self, home):
+        class Endless:
+            calls = 0
+
+            async def send_request(self, request, result_type):
+                Endless.calls += 1
+                await asyncio.sleep(0)
+                return {"events": [{"name": f"e{Endless.calls}"}], "nextCursor": f"c{Endless.calls}"}
+
+        result = asyncio.run(asyncio.wait_for(events._list_events(Endless(), {}, "ambush"), timeout=5))
+        assert len(result["events"]) == Endless.calls == events._MAX_LIST_PAGES
+        assert "truncated" in result
+
+
 class TestSubscribe:
     def test_subscribe_registers_a_signed_route_then_the_subscription(self, home):
         session = FakeSession(_grant())
