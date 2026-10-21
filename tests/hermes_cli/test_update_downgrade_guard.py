@@ -140,14 +140,26 @@ def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
 
 
 @pytest.mark.parametrize("remote_result", [True, False, None, "no-reader"])
+@pytest.mark.parametrize("runtime", [False, True], ids=["pre-runtime", "runtime"])
 def test_present_commit_with_missing_schema_blobs_uses_remote_without_git_writes(
-        repo, tmp_path, monkeypatch, remote_result):
+        repo, tmp_path, monkeypatch, remote_result, runtime):
     from hermes_cli.source_check import source_git_env
 
+    # Release commits change the version, not the schema: pathspec history simplification must
+    # not skip their inherited schema objects (Git 2.53 does; newer Git can mask the regression).
+    _git(repo, "checkout", "-q", "-b", "release-line", "HEAD" if runtime else "old-release")
+    (repo / "VERSION").write_text("1.2.3\n", encoding="utf-8")
+    _git(repo, "add", "VERSION")
+    _git(repo, "commit", "-qm", "release version bump")
+    target = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    (repo / "hermes_state_common.py").write_text(
+        "SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS session_admissions (seq INTEGER, extra TEXT)'''\n",
+        encoding="utf-8")
+    _git(repo, "commit", "-qam", "newer runtime schema")
     _git(repo, "config", "uploadpack.allowFilter", "true")
     clone = tmp_path / "partial"
     _git(tmp_path, "clone", "--filter=blob:none", "--no-checkout", repo.as_uri(), str(clone))
-    target = _git(clone, "rev-parse", "old-release")
     trace = tmp_path / "git-trace.jsonl"
     monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
 

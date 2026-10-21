@@ -58,7 +58,7 @@ def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
     if git("merge-base", "--is-ancestor", "HEAD", target_ref) == 0:
         return False  # forward update: whatever the target's schema, it was written knowing this one
     # grep can return 1 for unreadable blobs too: establish completeness before trusting no match.
-    if git("rev-list", "--objects", "--no-walk", "--missing=error", target_ref, "--", STATE_MODULES) != 0:
+    if git("rev-list", "--objects", "--no-walk", "--sparse", "--missing=error", target_ref, "--", STATE_MODULES) != 0:
         return remote is not None and remote(target_ref) is True
     # Exit 1 = no match in a complete local schema; 0 = found; anything else is a git error.
     result = git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", STATE_MODULES)

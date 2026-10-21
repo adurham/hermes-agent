@@ -593,23 +593,29 @@ def test_stable_release_the_checkout_already_contains_is_a_rollback(installation
 
 
 @pytest.mark.parametrize("ledgered", [True, False])
-def test_stable_release_the_updater_refuses_is_held_not_offered(installation, tmp_path, monkeypatch, ledgered):
-    """A release off this checkout's history that predates the gateway runtime is held while a store
-    has runtime history (#139099): `hermes update` refuses it, so the check must not offer it."""
+@pytest.mark.parametrize("divergent", [True, False], ids=["beside-history", "in-history"])
+def test_stable_release_the_updater_refuses_is_held_not_offered(
+        installation, tmp_path, monkeypatch, capsys, ledgered, divergent):
+    """A pre-runtime release is held while a store has runtime history (#139099), even when the
+    checkout already contains it: neither an update offer nor a rollback promise is valid."""
+    from hermes_cli import _startup_fast
     from hermes_cli.source_check import check_for_updates
     from tests.hermes_cli.test_update_downgrade_guard import _ledgered_store
 
     root, _linked, home, base, _head, responses, requests, git = installation
     sibling = tmp_path / "sibling"
     monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [("sibling", sibling)])
-    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
-    git("add", "hermes_state_common.py")
-    git("commit", "-q", "-m", "gateway runtime")
     git("checkout", "-q", "-b", "release-line", base)
     (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS sessions (id)'\n")
     git("add", "hermes_state_common.py")
     git("commit", "-q", "-m", "release from the older line")
     release = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+    if not divergent:
+        git("merge", "--no-ff", "-qm", "release on main's history", "release-line")
+    (root / "hermes_state_common.py").write_text("SCHEMA_SQL = 'CREATE TABLE IF NOT EXISTS session_admissions (seq)'\n")
+    git("add", "hermes_state_common.py")
+    git("commit", "-q", "-m", "gateway runtime")
     bare = tmp_path / "origin.git"
     git("clone", "-q", "--bare", str(root), str(bare), cwd=tmp_path)
     git("tag", "v1.2.3", release, cwd=bare)
@@ -624,21 +630,29 @@ def test_stable_release_the_updater_refuses_is_held_not_offered(installation, tm
     status = check_for_updates(install_root=root, home=home, channel="stable", force=True)
 
     assert status.get("targetSha") == release, status
-    assert status["rollback"] is False  # off-history: the ancestry test alone cannot see it
     assert status["updateAvailable"] is not ledgered
     assert status.get("held") == ("downgrade" if ledgered else None)
+    held_status = status
 
     if not ledgered:
         # The first runtime turn lands after an offer was cached: the next passive check holds it.
         _ledgered_store(sibling)
-        cached = check_for_updates(install_root=root, home=home, channel="stable")
-        assert cached["updateAvailable"] is False and cached.get("held") == "downgrade", cached
+        held_status = check_for_updates(install_root=root, home=home, channel="stable")
+        assert held_status["updateAvailable"] is False and held_status.get("held") == "downgrade", held_status
+
+    # --version consumes this status too, and checks rollback before the behind count.
+    with monkeypatch.context() as version:
+        version.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: held_status)
+        _startup_fast.print_fast_version_info()
+    assert "moves back to it" not in capsys.readouterr().out
+    assert held_status["rollback"] is False
 
     # Removing the only ledgered profile clears a cached hold without re-resolving the release.
     shutil.rmtree(sibling)
     seen = list(requests)
     allowed = check_for_updates(install_root=root, home=home, channel="stable")
     assert allowed["updateAvailable"] is True and allowed["behind"] == -1, allowed
+    assert allowed["rollback"] is not divergent
     assert "held" not in allowed and allowed["fetchedAt"] == status["fetchedAt"]
     assert requests == seen
 

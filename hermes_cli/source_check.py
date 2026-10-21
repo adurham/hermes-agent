@@ -394,7 +394,7 @@ def _hold_refused_release(result: dict, co: _Checkout, home: Path) -> None:
     or the only ledgered profile can be removed, between checks."""
     target = result.get("targetSha")
     if result.get("updateAvailable") and target and _update_refuses(co, target, home):
-        result.update(updateAvailable=False, behind=0, held="downgrade")
+        result.update(updateAvailable=False, behind=0, held="downgrade", rollback=False)
 
 
 def _resolve_channel(result: dict, channel: str, co: _Checkout, *, forward_only: bool = False):
