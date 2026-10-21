@@ -503,6 +503,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -1036,7 +1037,9 @@ Each subscription is stored as a dynamic webhook route (`hermes webhook list` sh
 `mcp_event_subscriptions.json`, so the route itself only changes when you resubscribe with different
 instructions or a different destination. Hermes answers the server's signed verification challenge, deduplicates
 events by `eventId`, and refreshes the subscription before the lifetime the server granted runs out
-while the MCP connection is up (and again whenever it reconnects). A refresh the server refuses
+while the MCP connection is up (and again whenever it reconnects). With `lazy: true` or
+`idle_timeout_seconds` the connection is not always up, so a subscription can lapse until the next
+connection resubscribes it. A refresh the server refuses
 for good (access revoked, event type removed, arguments no longer valid) removes the route; other
 failures are retried with back-off. Turning the route off in the webhook dashboard lets the
 subscription lapse, and turning it back on resubscribes it. If the server ends a subscription,
