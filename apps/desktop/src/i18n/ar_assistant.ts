@@ -27,12 +27,6 @@ export const arAssistant = {
       credentialsHeading: 'بيانات الاعتماد'
     },
     thread: {
-      errorCodes: {
-        usage_window: {
-          title: 'نفد الاستخدام المضمّن',
-          body: 'نفد الاستخدام المضمّن في خطتك حتى إعادة التعيين. أضف رصيدًا عبر /topup للمتابعة.'
-        }
-      },
       loadingSession: 'جار تحميل الجلسة...',
       showEarlier: 'عرض الرسائل الأقدم',
       loadingResponse: 'جار تحميل الرد...',
@@ -61,6 +55,16 @@ export const arAssistant = {
         provider: 'خطأ من المزوّد',
         runtime: 'خطأ في بيئة التشغيل المحلية',
         streaming: 'خطأ في اتصال البث'
+      },
+      errorCodes: {
+        cron_session_read_only: {
+          title: 'هذه المحادثة تابعة لمهمة مجدولة',
+          body: 'إنها تشغّل تلك المهمة فقط، لذا لم تُنفَّذ رسالتك. ابدأ محادثة جديدة لإرسالها.'
+        },
+        usage_window: {
+          title: 'نفد الاستخدام المضمّن',
+          body: 'نفد الاستخدام المضمّن في خطتك حتى إعادة التعيين. أضف رصيدًا عبر /topup للمتابعة.'
+        }
       },
       errorRetry: 'إعادة المحاولة',
       errorSwitchToModel: (model, note) => (note ? `التبديل إلى ${model} (${note})` : `التبديل إلى ${model}`),
