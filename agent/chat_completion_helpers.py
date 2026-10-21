@@ -2260,6 +2260,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
     # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
     sanitize_outbound_kwargs(agent, summary_kwargs)
+    from agent.conversation_loop import _moa_client_consumes_prepared_request
+    if agent.provider == "moa" and _moa_client_consumes_prepared_request(agent.client):  # transport strips data_use
+        summary_kwargs["_moa_prepared_request"] = agent.client.chat.completions.prepare(api_messages)
 
     def _attempt(retry_count: int) -> str:
         # Use the ordinary request-local lifecycle: a summary can be interrupted
@@ -2279,9 +2282,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
     if getattr(agent, "suppress_status_output", False):
         # Strict machine-readable mode (-Q, oneshot): keep diagnostics off stdout. quiet_mode is
-        # NOT the gate — the interactive CLI runs quiet_mode=True by default and must see this.
-        # Strict machine-readable mode (hermes chat -Q, oneshot, background review): keep diagnostics out of
-        # stdout so wrappers receive only the final assistant content (#93220 class).
+        # NOT the gate — the interactive CLI runs quiet_mode=True by default and must see this (#93220 class).
         logger.warning(warning)
     else:
         agent._safe_print(warning, diagnostic=True)
