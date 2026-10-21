@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 # A Codex ChatGPT-account model entitlement 400 is a plan property, not a window: bench the
 # (credential, model) pair until an explicit ``hermes auth reset`` clears model_cooldowns (#71970).
 MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
+# A usage-window plan limit: this model is refused until the allowance resets; every other model
+# (a Free or non-Large one) stays usable on the same credential.
+FAILURE_REASON_USAGE_WINDOW = "usage_window"
 
 
 def model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
@@ -67,7 +70,7 @@ class CredentialPoolModelCooldownMixin:
 
         if not model:
             return False
-        if failure_reason == "model_entitlement":
+        if failure_reason in ("model_entitlement", FAILURE_REASON_USAGE_WINDOW):
             return True
         return (
             self.provider == "anthropic" and status_code == 429

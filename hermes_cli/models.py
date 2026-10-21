@@ -569,8 +569,27 @@ def recommended_nous_default_model() -> dict[str, Any]:
         model_ids, _unavailable = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
         # Never default onto a subscription-billed row: spending that plan is the user's call.
         model_ids = [mid for mid in model_ids if not _is_subscription_billed(pricing.get(mid))] or model_ids
-    return {"provider": "nous", "model": pick_silent_default_model(model_ids, provider="nous"),
+    model = _window_plan_default(model_ids, pricing) if not free_tier else ""
+    return {"provider": "nous", "model": model or pick_silent_default_model(model_ids, provider="nous"),
             "free_tier": bool(free_tier)}
+
+
+def _window_plan_default(model_ids: list[str], pricing: Optional[dict] = None) -> str:
+    """A usage-window plan's first featured pick that is listed (the picker's top Recommended row), or
+    "" for every other account. Cache-only: the caller's fresh tier read just filled the snapshot. Never raises."""
+    try:
+        from hermes_cli.model_picker_usage import nous_picker_usage, split_recommended
+        usage = nous_picker_usage(any_age=True)
+        if usage is None:
+            return ""
+        recommended, _other = split_recommended(model_ids, usage.featured_model_ids)
+        rows = pricing or {}
+        # A default must not spend the Large allowance: skip Large picks (a user can still choose one).
+        usable = [mid for mid in recommended if not (rows.get(mid) or {}).get("top_tier")
+                  and (rows.get(mid) or {}).get("usage_level") != "top_tier"]
+        return usable[0] if usable else ""
+    except Exception:
+        return ""
 
 
 def get_default_model_for_provider(provider: str) -> str:

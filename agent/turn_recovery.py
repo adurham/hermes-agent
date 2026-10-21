@@ -650,6 +650,8 @@ def recover_after_classification(
 
     if (
         classified.reason == FailoverReason.billing
+        # A usage-window 402 is the plan's own limit: refreshing credentials cannot lift it.
+        and not (getattr(classified, "error_context", None) or {}).get("usage_window")
         and _is_nous_inference_route(
             getattr(agent, "provider", "") or "", getattr(agent, "base_url", "") or ""
         )
@@ -660,9 +662,13 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
+    _pool_context = error_context
+    if (getattr(classified, "error_context", None) or {}).get("usage_window"):
+        # A plan limit benches only the refused model on the credential, until its reset.
+        _pool_context = {**(error_context if isinstance(error_context, dict) else {}), "usage_window": True}
     recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
         status_code=status_code, has_retried_429=_retry.has_retried_429,
-        classified_reason=classified.reason, error_context=error_context,
+        classified_reason=classified.reason, error_context=_pool_context,
         billing_unverified=classified.billing_unverified,
     )
     if recovered_with_pool:
@@ -994,7 +1000,9 @@ def nonretryable_client_error_result(
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
     for likely context-overflow 400s so the failure does not grow the session), build result."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
-    from agent.conversation_loop import _billing_failure_result, _content_policy_blocked_result
+    from agent.conversation_loop import (
+        _billing_failure_result, _content_policy_blocked_result, _usage_window_refusal,
+    )
 
     if api_kwargs is not None:
         agent._dump_api_request_debug(api_kwargs, reason="non_retryable_client_error", error=api_error)
@@ -1081,6 +1089,7 @@ def nonretryable_client_error_result(
         return _billing_failure_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
+            usage_window=_usage_window_refusal(agent, classified, api_messages),
         )
     if _welcome_hint:
         # A free-tier refusal is fully explained by its own sentence; the raw provider summary
@@ -1891,7 +1900,7 @@ def route_classified_error(
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
-    )
+    ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.

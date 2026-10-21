@@ -540,7 +540,9 @@ class CLITuiMixin:
         (e.g. Ollama Cloud's 36+ models). ``state["_scroll_offset"]`` is updated in place.
         """
         from cli import HermesCLI, _panel_box_width, _wrap_panel_text
-        box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
+        # ``hint`` may be several rows (a window plan's limit line above the usual hint).
+        hints = list(hint) if isinstance(hint, (list, tuple)) else [hint]
+        box_width = _panel_box_width(title, hints + labels, min_width=min_width, max_width=max_width)
         # ``_Panel.row`` pads every row to ``box_width - 2``, so that is the real
         # body width. Keep the wrap budget in sync with it and reserve the
         # leading cell for the cursor/indent applied below, rather than the old
@@ -554,12 +556,14 @@ class CLITuiMixin:
         except Exception:
             term_rows = _term_rows()
         scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
-            selected, state.get("_scroll_offset", 0), len(labels), term_rows)
+            selected, state.get("_scroll_offset", 0), len(labels), term_rows,
+            panel_chrome=5 + len(hints))
         state["_scroll_offset"] = scroll_offset
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.blank()
-        panel.row('class:clarify-hint', hint)
+        for line in hints:
+            panel.row('class:clarify-hint', line)
         panel.blank()
         for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
@@ -573,6 +577,19 @@ class CLITuiMixin:
                 panel.row(style, wrapped)
         panel.blank()
         return panel.close()
+
+    def _annotate_window_plan_rows(self, provider_data: dict, model_ids: list) -> tuple[list, Optional[str]]:
+        """``(labels, limit_line)`` for the /model picker's model stage. On a Nous usage-window plan rows carry
+        the TUI's ``Large`` / ``Free`` tags, and with a full allowance ``limit_line`` (above the hint) says it
+        once, with what happens next. Every other account: the bare ids and None. Display only."""
+        if str((provider_data or {}).get("slug") or "").lower() != "nous":
+            return list(model_ids), None
+        try:
+            from hermes_cli.model_picker_usage import nous_picker_usage, window_row_labels
+            usage = nous_picker_usage()  # fresh snapshot only: a stale percent would mislabel the line
+            return window_row_labels(provider_data, model_ids), (usage.limit_line() if usage is not None else None)
+        except Exception:
+            return list(model_ids), None
 
     def _get_model_picker_display_fragments(self):
         state = self._model_picker_state
@@ -616,13 +633,17 @@ class CLITuiMixin:
             filtered_pairs = self._filter_model_picker_entries(model_list, _query)
             state["_filtered_pairs"] = filtered_pairs
             model_labels = [e for (_i, e) in filtered_pairs]
-            choices = list(model_labels) + [t("cli.shared.back"), t("cli.shared.cancel")]
+            row_labels, limit_line = self._annotate_window_plan_rows(provider_data, model_labels)
+            choices = row_labels + [t("cli.shared.back"), t("cli.shared.cancel")]
             if _query:
                 hint = t("cli.tui.picker_filter_hint", query=_query, shown=len(model_labels), total=len(model_list))
             elif model_list:
                 hint = t("cli.tui.picker_select_hint", count=len(model_list))
             else:
                 hint = t("cli.tui.picker_empty")
+            # Window plan past an allowance: say once what happens next (pay as you go or wait), above the hint.
+            if limit_line:
+                hint = [limit_line, hint]
         return self._render_scroll_list_panel(
             state, title, hint, choices, min_width=46, max_width=84, indent='  ')
 

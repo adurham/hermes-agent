@@ -309,6 +309,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 reply_expected=event.reply_expected,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
+            if agent_result.get("usage_window_message") and response:
+                # A chat has no /topup Keep going control: the plan's credits settings live in the Portal.
+                from agent.plan_limits import portal_wording
+                response = portal_wording(response)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
@@ -330,10 +334,15 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
-            return await self._hmwa_deliver_turn_response(
+            delivered = await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
             )
+            if isinstance(agent_result.get("usage_limit"), dict):
+                # After the reply lands: the limit sentence is the reply; the button follows it.
+                self._schedule_usage_limit_offer(event, agent_result["usage_limit"], session_key=session_key,
+                                                 generation=run_generation)
+            return delivered
 
         except Exception as e:
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)

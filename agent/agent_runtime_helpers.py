@@ -1055,7 +1055,10 @@ def recover_with_credential_pool(
         # need opposite cooldowns.
         if effective_reason is not None:
             failure_reason = effective_reason.value
-            if effective_reason == FailoverReason.billing and billing_unverified:
+            if effective_reason == FailoverReason.billing and (error_context or {}).get("usage_window"):
+                from agent.credential_pool_model_cooldowns import FAILURE_REASON_USAGE_WINDOW
+                failure_reason = FAILURE_REASON_USAGE_WINDOW
+            elif effective_reason == FailoverReason.billing and billing_unverified:
                 # Ambiguous billing body: size the cooldown as transient, not a 1-hour bench.
                 from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
                 failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
