@@ -291,6 +291,24 @@ test('a canonical gateway proves its tree by the cwd `gateway ensure` starts it 
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
+test('a canonical gateway whose cwd is unreadable proves its tree by the commit it stamped', (): void => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-gateway-sha-'))
+
+  try {
+    // Windows: CIM exposes neither cwd nor environment for the detached `gateway run`.
+    const executable = path.join(os.tmpdir(), 'hermes-tools', 'python', 'python.exe')
+    const commit = 'a'.repeat(40)
+
+    const backend = { pid: 2, parentPid: 1, executable, ownership: 'host-gateway' as const, codeSha: commit,
+      command: [executable, '-m', 'hermes_cli.main', '--profile', 'default', 'gateway', 'run', '--quiet'].map(arg => JSON.stringify(arg)).join(' ') }
+
+    expect(() => assertBackendOrigin(backend, root, 'source', { appReportedRoot: root, installedCommit: commit })).not.toThrow()
+    // A gateway started from another commit (or one that stamped none) is not vouched for.
+    expect(() => assertBackendOrigin({ ...backend, codeSha: 'b'.repeat(40) }, root, 'source', { appReportedRoot: root, installedCommit: commit })).toThrow('different source tree')
+    expect(() => assertBackendOrigin({ ...backend, codeSha: undefined }, root, 'source', { appReportedRoot: root, installedCommit: commit })).toThrow('different source tree')
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 test('a backend bound to the tree by environment needs no root in argv', (): void => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-env-origin-'))
 
@@ -388,7 +406,7 @@ test('OLD update-window source provenance carries its verified app identity to t
     fs.mkdirSync(other, { recursive: true })
 
     // As `localBackendProcess` reports a listener that descends from the app.
-    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'), ownership: 'child',
+    const backend = { pid: 2, parentPid: 1, executable: path.join(home, 'python.exe'), ownership: 'child' as const,
       command: `"${path.join(home, 'python.exe')}" -m hermes_cli.main dashboard --port 0` }
 
     expect((): void => {
