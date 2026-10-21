@@ -27,3 +27,18 @@ def test_data_policy_copy_gives_free_tier_users_a_way_out():
                              model="some/model", summary="No endpoint qualifies.")
     free_tier = copy[copy.index("free tier"):]
     assert "'some/model'" in copy and "upgrade" in free_tier and "/compress" in free_tier and "/new" in free_tier
+
+
+def test_limit_reset_line_only_explains_a_limit():
+    import time
+    from types import SimpleNamespace
+
+    from agent.turn_recovery import _stamp_limit_reset
+
+    agent = SimpleNamespace(_extract_api_error_context=lambda _e: {"reset_at": time.time() + 600})
+    refused = {"final_response": "refused"}
+    _stamp_limit_reset(refused, agent, Exception(), SimpleNamespace(reason=FailoverReason.data_policy_denied))
+    limited = {"final_response": "slow down"}
+    _stamp_limit_reset(limited, agent, Exception(), SimpleNamespace(reason=FailoverReason.rate_limit))
+    assert refused == {"final_response": "refused"}
+    assert "failure_resets_at" in limited and "Limit resets at" in limited["final_response"]
