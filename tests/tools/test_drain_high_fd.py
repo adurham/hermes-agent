@@ -37,8 +37,10 @@ def high_fds():
             pass
         if resource.getrlimit(resource.RLIMIT_NOFILE)[0] < want:
             pytest.skip("fd limit too low to reproduce")
-    held = [os.open(os.devnull, os.O_RDONLY) for _ in range(_TARGET_LOW_FDS)]
+    held = []
     try:
+        while len(held) < _TARGET_LOW_FDS:
+            held.append(os.open(os.devnull, os.O_RDONLY))
         assert held[-1] >= 1024, "setup failed to push fds above FD_SETSIZE"
         yield
     finally:
@@ -47,18 +49,29 @@ def high_fds():
 
 
 @pytest.mark.platforms("posix")
-def test_command_output_survives_pipe_fd_above_fd_setsize(high_fds, tmp_path):
-    """Foreground ``terminal`` drain and the background-process reader both keep output."""
+def test_command_output_survives_pipe_fd_above_fd_setsize(high_fds, tmp_path, monkeypatch):
+    """Foreground ``terminal`` drain and the background-process reader both keep output,
+    including when the selector itself cannot be created (EMFILE: epoll/kqueue need an fd)."""
+    import errno
+
+    from tools.environments import fd_wait
     from tools.environments.local import LocalEnvironment
     from tools.process_registry import ProcessRegistry
+
+    def _emfile():
+        raise OSError(errno.EMFILE, "Too many open files")
 
     env = LocalEnvironment(cwd=str(tmp_path))
     try:
         result = env.execute("echo hello-high-fd")
+        with monkeypatch.context() as m:
+            m.setattr(fd_wait.selectors, "DefaultSelector", _emfile)
+            at_fd_limit = env.execute("echo still-here")
     finally:
         env.cleanup()
     assert result["returncode"] == 0
     assert "hello-high-fd" in result["output"]
+    assert "still-here" in at_fd_limit["output"]
 
     registry = ProcessRegistry()
     session = registry.spawn_local("echo bg-high-fd", cwd=str(tmp_path), task_id="high-fd")

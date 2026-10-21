@@ -6,20 +6,22 @@ that many open fds, and every drain swallowed that ValueError as "fd already
 closed", silently discarding output (issue #94928).
 
 ``selectors.DefaultSelector`` (epoll on Linux, kqueue on macOS) has no FD_SETSIZE
-ceiling. ``poll()`` is not a substitute: macOS ``poll()`` does not support device
+ceiling. ``poll()`` is not the default: macOS ``poll()`` does not support device
 fds and reports a PTY master as POLLNVAL, i.e. "ready" at once, so a PTY read loop
-would spin a core.
+would spin a core. It stays the fallback because, unlike epoll/kqueue, it needs no
+fd of its own.
 """
 
+import errno
 import selectors
 
 
 class FdWaiter:
-    """Readability wait on one fd. Owns a selector (itself one fd): create it once
-    per reader lifetime and ``close()`` it when the reader is done."""
+    """Readability wait on one fd. Owns a selector (epoll/kqueue are fds themselves):
+    create it once per reader lifetime and ``close()`` it when the reader is done."""
 
-    def __init__(self, fd: int):
-        self._selector = selectors.DefaultSelector()
+    def __init__(self, fd: int, selector_cls):
+        self._selector = selector_cls()
         try:
             self._selector.register(fd, selectors.EVENT_READ)
         except BaseException:
@@ -36,9 +38,15 @@ class FdWaiter:
 
 
 def open_fd_waiter(fd: int):
-    """Return an :class:`FdWaiter` for *fd*, or None when *fd* cannot be watched
-    (already closed / invalid) and there is nothing to drain."""
+    """Return an :class:`FdWaiter` for *fd*, or None only when *fd* is closed/invalid
+    and there is nothing to drain."""
     try:
-        return FdWaiter(fd)
-    except (ValueError, OSError):
+        return FdWaiter(fd, selectors.DefaultSelector)
+    except ValueError:
         return None
+    except OSError as exc:
+        if exc.errno == errno.EBADF:
+            return None
+    # The selector itself could not be set up (EMFILE: the process is at its fd limit)
+    # while the pipe is still live. poll() needs no extra fd; never report that as EOF.
+    return FdWaiter(fd, selectors.PollSelector)
