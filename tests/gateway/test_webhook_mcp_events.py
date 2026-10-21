@@ -90,11 +90,13 @@ async def test_occurrence_runs_once_per_event_id(home):
 
 @pytest.mark.asyncio
 async def test_terminated_drops_the_route(home):
+    (home / "mcp_event_subscriptions.json").write_text(json.dumps({ROUTE: {"cursor": "c-1"}}))
     adapter = _adapter()
     async with TestClient(TestServer(_app(adapter))) as cli:
         resp = await _post(cli, {"type": "terminated", "error": {"code": -32024, "message": "Forbidden"}})
         assert resp.status == 200
     assert ROUTE not in _routes(home)
+    assert ROUTE not in json.loads((home / "mcp_event_subscriptions.json").read_text())
     adapter.handle_message.assert_not_called()
 
 
@@ -104,5 +106,31 @@ async def test_gap_remembers_the_fresh_cursor(home):
     async with TestClient(TestServer(_app(adapter))) as cli:
         resp = await _post(cli, {"type": "gap", "cursor": "c-9"})
         assert resp.status == 200
-    assert _routes(home)[ROUTE]["mcp_event"]["cursor"] == "c-9"
+    assert json.loads((home / "mcp_event_subscriptions.json").read_text())[ROUTE]["cursor"] == "c-9"
     adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_subscription_state_changes_do_not_strand_an_admitted_run(home):
+    # The durable admission pins a digest of the route config, and the reply leg refuses a route
+    # that changed since. The cursor and the grant change all the time, so they must live outside it.
+    from gateway.platforms.webhook_delivery import retained_destination
+    from tools import mcp_tool_events as events
+    routes = _routes(home)
+    routes[ROUTE].update(deliver="telegram", deliver_extra={"chat_id": "42"})
+    (home / "webhook_subscriptions.json").write_text(json.dumps(routes))
+    adapter = _adapter()
+    occurrence = {"name": "feed.emission.created", "timestamp": "2026-10-16T00:00:00Z", "data": {"feed_id": "f-1"}}
+    async with TestClient(TestServer(_app(adapter))) as cli:
+        assert (await _post(cli, {**occurrence, "eventId": "e-1", "cursor": "c-1"})).status == 202
+        chat_id = adapter.handle_message.await_args_list[0].args[0].source.chat_id
+        destination = retained_destination(adapter, chat_id)
+        assert (await _post(cli, {**occurrence, "eventId": "e-2", "cursor": "c-2"})).status == 202
+        assert (await _post(cli, {"type": "gap", "cursor": "c-3"})).status == 200
+        events._store_grant(ROUTE, {"id": "sub_1", "refreshBefore": "2026-10-17T00:00:00Z", "cursor": "c-4"},
+                            "https://hermes.example.com/webhooks/" + ROUTE)
+        assert retained_destination(adapter, chat_id) == destination
+        retry = await _post(cli, {**occurrence, "eventId": "e-1", "cursor": "c-4"})  # watermark moved on
+        assert retry.status == 200 and (await retry.json())["status"] == "duplicate"
+    assert _routes(home)[ROUTE] == routes[ROUTE]
+

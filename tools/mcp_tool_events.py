@@ -4,10 +4,10 @@ WG: modelcontextprotocol/experimental-ext-triggers-events ``docs/design-sketch-p
 Opt-in per server (``mcp_servers.<name>.events: true``): the SDK drops the server's ``events``
 capability while parsing, so it cannot gate these tools the way ``resources``/``prompts`` do. Each
 subscription is a dynamic webhook route (``webhook_subscriptions.json``) with an ``mcp_event`` block
-(server, event name, arguments, the server's grant); the gateway's webhook adapter receives the
-deliveries (``gateway/platforms/webhook_mcp_events.py``) and the server task keeps every route's
-subscription alive with :func:`run_refresh_loop`. Delivery modes ``poll`` and ``push`` are not
-implemented.
+(server, event name, arguments); its grant and replay cursor live in ``mcp_event_subscriptions.json``.
+The gateway's webhook adapter receives the deliveries (``gateway/platforms/webhook_mcp_events.py``) and
+the server task keeps every route's subscription alive with :func:`run_refresh_loop`. Delivery modes
+``poll`` and ``push`` are not implemented.
 """
 
 import asyncio
@@ -32,6 +32,8 @@ _DEFAULT_TTL_MS = 24 * 3600 * 1000
 _REFRESH_AT_FRACTION = 0.8
 _REFRESH_MIN_SLEEP_S, _REFRESH_MAX_SLEEP_S = 30.0, 3600.0
 _ROUTE_SLUG_RE = re.compile(r"[^a-z0-9_-]+")
+# Per-route subscription state (grant, cursor, granted URL), kept out of the route config.
+_STATE_FILENAME = "mcp_event_subscriptions.json"
 # Error codes from the sketch's Error Codes table (SEP-3415 numbering) that end a subscription for good.
 _FORBIDDEN, _NOT_FOUND = -32024, -32023
 
@@ -91,30 +93,84 @@ def _mcp_error(exc: BaseException) -> Optional[dict]:
     return {"code": exc.code, "message": exc.message, **({"data": exc.data} if exc.data is not None else {})}
 
 
-def _subscribe_params(route_name: str, route: dict, url_base: str) -> dict:
+def _subscribe_params(route_name: str, route: dict, url_base: str, state: dict) -> dict:
     event = route["mcp_event"]
     params = {"name": event["name"], "arguments": event["arguments"],
               "delivery": {"mode": "webhook", "url": _callback_url(url_base, route_name), "secret": route["secret"]},
               "ttlMs": event.get("ttl_ms", _DEFAULT_TTL_MS)}
-    if event.get("cursor"):
-        params["cursor"] = event["cursor"]
+    if state.get("cursor"):
+        params["cursor"] = state["cursor"]
     return params
 
 
-def _record_grant(event: dict, result: dict, url: str) -> dict:
-    """The route's ``mcp_event`` block updated with a subscribe/refresh result (``url`` is half of the
-    server's subscription key, so unsubscribe must send the one that was granted)."""
-    granted = dict(event, subscription_id=result.get("id"), refresh_before=result.get("refreshBefore"),
-                   granted_at=time.time(), url=url)
-    if result.get("cursor"):
-        granted["cursor"] = result["cursor"]
-    return granted
+# ---- subscription state ----
+# The route holds the subscription's fixed contract (server, event name, arguments, secret, prompt,
+# destination). What changes while it lives (the grant, the cursor, the granted callback URL) is kept
+# here instead, keyed by route name: an admitted run pins a digest of its route config and its reply is
+# refused if the route changed, so per-event cursor writes on the route would strand in-flight runs.
+
+def _state_path():
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / _STATE_FILENAME
 
 
-def _refresh_due_at(event: dict) -> float:
+def _load_state() -> dict[str, dict]:
+    """Lock-free read; writers publish by atomic rename."""
+    try:
+        data = json.loads(_state_path().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+
+
+def _mutate_state(mutate, *, route_must_exist: Optional[str] = None) -> Any:
+    """Apply *mutate* to the state under the webhook store's lock (never nested inside
+    ``_mutate_subscriptions``: the lock is not reentrant). With *route_must_exist*, nothing is written
+    and None is returned when that route is gone."""
+    from hermes_cli.webhook import _load_subscriptions_unlocked, _subscriptions_lock
+    from utils import atomic_json_write
+    with _subscriptions_lock():
+        if route_must_exist is not None:
+            route = _load_subscriptions_unlocked().get(route_must_exist)
+            if not (isinstance(route, dict) and isinstance(route.get("mcp_event"), dict)):
+                return None
+        state = _load_state()
+        result = mutate(state)
+        atomic_json_write(_state_path(), state, mode=0o600)
+        return result
+
+
+def _store_grant(route_name: str, result: dict, url: str) -> Optional[dict]:
+    """Record a subscribe/refresh result for a route that still exists (an unsubscribe made while the
+    request was in flight wins); returns the stored state, None when the route is gone. ``url`` is half
+    of the server's subscription key, so unsubscribe must send the one that was granted."""
+    def mutate(state: dict) -> dict:
+        entry = {**state.get(route_name, {}), "subscription_id": result.get("id"),
+                 "refresh_before": result.get("refreshBefore"), "granted_at": time.time(), "url": url}
+        if result.get("cursor"):
+            entry["cursor"] = result["cursor"]
+        state[route_name] = entry
+        return entry
+    return _mutate_state(mutate, route_must_exist=route_name)
+
+
+def store_cursor(route_name: str, cursor: str) -> None:
+    """Persist the newest replay cursor the server sent for a route (occurrences and ``gap``)."""
+    def mutate(state: dict) -> None:
+        state[route_name] = {**state.get(route_name, {}), "cursor": cursor}
+    if _load_state().get(route_name, {}).get("cursor") != cursor:
+        _mutate_state(mutate, route_must_exist=route_name)
+
+
+def drop_state(route_name: str) -> None:
+    if route_name in _load_state():
+        _mutate_state(lambda state: state.pop(route_name, None))
+
+
+def _refresh_due_at(state: dict) -> float:
     """Epoch seconds at which the route must be refreshed; 0 when it never got a grant on record,
     ``inf`` for a no-expiry grant."""
-    granted_at, refresh_before = event.get("granted_at"), event.get("refresh_before")
+    granted_at, refresh_before = state.get("granted_at"), state.get("refresh_before")
     if not isinstance(granted_at, (int, float)):
         return 0.0
     if refresh_before is None:
@@ -135,20 +191,8 @@ def _write_route(route_name: str, route: Optional[dict]) -> None:
         else:
             subscriptions[route_name] = route
     _mutate_subscriptions(mutate)
-
-
-def _merge_grant(route_name: str, event: dict) -> Optional[dict]:
-    """Store a grant on the route as it is NOW (an unsubscribe or a dashboard edit made while the RPC
-    was in flight wins); returns the published route, None when it is gone."""
-    from hermes_cli.webhook import _mutate_subscriptions
-
-    def mutate(subscriptions: dict) -> Optional[dict]:
-        route = subscriptions.get(route_name)
-        if not isinstance(route, dict):
-            return None
-        subscriptions[route_name] = {**route, "mcp_event": event}
-        return subscriptions[route_name]
-    return _mutate_subscriptions(mutate)
+    if route is None:
+        drop_state(route_name)
 
 
 def _load_routes(server_name: str) -> dict[str, dict]:
@@ -157,11 +201,12 @@ def _load_routes(server_name: str) -> dict[str, dict]:
 
 
 async def _subscribe_route(session, route_name: str, route: dict, url_base: str) -> Optional[dict]:
-    """``events/subscribe`` for one route and persist the grant; returns the published route."""
-    params = _subscribe_params(route_name, route, url_base)
+    """``events/subscribe`` for one route and record the grant; returns the stored state, None when the
+    route was removed while the request was in flight."""
+    state = (await asyncio.to_thread(_load_state)).get(route_name, {})
+    params = _subscribe_params(route_name, route, url_base, state)
     result = await _send(session, "events/subscribe", params)
-    event = _record_grant(route["mcp_event"], result, params["delivery"]["url"])
-    return await asyncio.to_thread(_merge_grant, route_name, event)
+    return await asyncio.to_thread(_store_grant, route_name, result, params["delivery"]["url"])
 
 
 async def refresh_server_subscriptions(server, *, force: bool) -> float:
@@ -169,17 +214,19 @@ async def refresh_server_subscriptions(server, *, force: bool) -> float:
     connection, where the server may have lost soft state). Returns the next due time."""
     url_base = _callback_base()
     routes = await asyncio.to_thread(_load_routes, server.name)
+    states = await asyncio.to_thread(_load_state)
     next_due = float("inf")
-    for route_name, route in routes.items():
-        due = _refresh_due_at(route["mcp_event"])
+    for route_name in routes:
+        due = _refresh_due_at(states.get(route_name, {}))
         if url_base and (force or due <= time.time()):
             try:
                 async with server._rpc_lock:
                     # Re-read under the lock: an unsubscribe that ran while we waited must not be undone.
                     route = (await asyncio.to_thread(_load_routes, server.name)).get(route_name)
+                    stored = None
                     if route is not None:
-                        route = await _subscribe_route(server.session, route_name, route, url_base)
-                if route is None:
+                        stored = await _subscribe_route(server.session, route_name, route, url_base)
+                if stored is None:
                     continue
             except Exception as exc:
                 error = _mcp_error(exc)
@@ -192,7 +239,7 @@ async def refresh_server_subscriptions(server, *, force: bool) -> float:
                                server.name, route_name, error or exc, exc_info=error is None)
                 due = time.time() + _REFRESH_MIN_SLEEP_S
             else:
-                due = _refresh_due_at(route["mcp_event"])
+                due = _refresh_due_at(stored)
         next_due = min(next_due, due)
     return next_due
 
@@ -225,9 +272,10 @@ async def _list_events(session, args: dict, server_name: str) -> dict:
         if not cursor:
             break
     routes = await asyncio.to_thread(_load_routes, server_name)
+    states = await asyncio.to_thread(_load_state)
     subscribed = [{"name": r["mcp_event"]["name"], "arguments": r["mcp_event"]["arguments"],
-                   "deliver": r.get("deliver", "log"), "refreshBefore": r["mcp_event"].get("refresh_before")}
-                  for r in routes.values()]
+                   "deliver": r.get("deliver", "log"), "refreshBefore": states.get(n, {}).get("refresh_before")}
+                  for n, r in routes.items()]
     return {"events": events, "subscriptions": subscribed}
 
 
@@ -240,20 +288,23 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
     route_name = _route_name(server_name, args["name"], arguments)
     existing = (await asyncio.to_thread(_load_routes, server_name)).get(route_name)
     deliver_extra = {"chat_id": args["deliver_chat_id"]} if args.get("deliver_chat_id") else {}
+    # The route is the subscription's fixed contract: an admitted run's reply is checked against a digest
+    # of it, so nothing that changes while the subscription lives (grant, cursor) is stored here, and an
+    # unchanged resubscribe republishes identical bytes (created_at is kept).
     route = {
         "description": f"MCP event {args['name']} from {server_name}",
         "secret": (existing or {}).get("secret") or _new_secret(),
         "prompt": _event_prompt(server_name, args["name"], args.get("instructions") or ""),
         "deliver": args.get("deliver") or "log", "profile": "default",
         **({"deliver_extra": deliver_extra} if deliver_extra else {}),
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "mcp_event": {"server": server_name, "name": args["name"], "arguments": arguments,
-                      **({"cursor": existing["mcp_event"]["cursor"]}
-                         if existing and existing["mcp_event"].get("cursor") else {})}}
+        "created_at": (existing or {}).get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "mcp_event": {"server": server_name, "name": args["name"], "arguments": arguments}}
+    if existing is None:
+        await asyncio.to_thread(drop_state, route_name)  # a fresh subscription replays nothing stale
     # The route must exist before subscribing: the server verifies the callback with a signed challenge.
     await asyncio.to_thread(_write_route, route_name, route)
     try:
-        published = await _subscribe_route(session, route_name, route, url_base) or route
+        stored = await _subscribe_route(session, route_name, route, url_base)
     except Exception as exc:
         await asyncio.to_thread(_write_route, route_name, existing)
         error = _mcp_error(exc)
@@ -261,7 +312,7 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
             raise
         return {"error": error}
     return {"subscribed": {"name": args["name"], "arguments": arguments, "deliver": route["deliver"],
-                           "refreshBefore": published["mcp_event"].get("refresh_before")}}
+                           "refreshBefore": (stored or {}).get("refresh_before")}}
 
 
 async def _unsubscribe_event(session, args: dict, server_name: str) -> dict:
@@ -270,7 +321,8 @@ async def _unsubscribe_event(session, args: dict, server_name: str) -> dict:
     route = (await asyncio.to_thread(_load_routes, server_name)).get(route_name)
     if route is None:
         return {"error": f"No subscription to '{args['name']}' with these arguments on '{server_name}'"}
-    url = route["mcp_event"].get("url") or _callback_url(_callback_base() or "", route_name)
+    state = (await asyncio.to_thread(_load_state)).get(route_name, {})
+    url = state.get("url") or _callback_url(_callback_base() or "", route_name)
     try:
         await _send(session, "events/unsubscribe",
                     {"name": args["name"], "arguments": arguments, "delivery": {"url": url}})

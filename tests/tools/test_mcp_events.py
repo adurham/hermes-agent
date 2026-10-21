@@ -32,6 +32,11 @@ def _routes(home):
     return json.loads(path.read_text()) if path.exists() else {}
 
 
+def _state(home):
+    path = home / "mcp_event_subscriptions.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
 def _grant(seconds=86400):
     expires = datetime.now(UTC) + timedelta(seconds=seconds)
     return {"id": "sub_1", "refreshBefore": expires.isoformat().replace("+00:00", "Z"), "cursor": None,
@@ -93,15 +98,27 @@ class TestSubscribe:
         assert route["secret"].startswith("whsec_")
         assert len(base64.b64decode(route["secret"].removeprefix("whsec_"))) == 32
         assert route["deliver"] == "telegram" and "Explain the deal." in route["prompt"]
-        assert route["mcp_event"]["url"] == sent["params"]["delivery"]["url"]
-        assert route["mcp_event"]["subscription_id"] == "sub_1"
-        assert result["subscribed"]["refreshBefore"] == route["mcp_event"]["refresh_before"]
+        state = _state(home)[name]
+        assert state["url"] == sent["params"]["delivery"]["url"]
+        assert state["subscription_id"] == "sub_1"
+        assert result["subscribed"]["refreshBefore"] == state["refresh_before"]
+        assert set(route["mcp_event"]) == {"server", "name", "arguments"}  # the route holds no changing state
 
     def test_resubscribing_keeps_the_route_secret(self, home):
         _subscribe(FakeSession(_grant()))
-        first = next(iter(_routes(home).values()))["secret"]
+        data = _routes(home)
+        next(iter(data.values()))["created_at"] = "2026-01-01T00:00:00Z"
+        (home / "webhook_subscriptions.json").write_text(json.dumps(data))
+        first = next(iter(data.values()))
         _subscribe(FakeSession(_grant()))
-        assert [r["secret"] for r in _routes(home).values()] == [first]
+        assert list(_routes(home).values()) == [first]  # identical: in-flight runs keep their route digest
+
+    def test_a_fresh_subscription_ignores_state_left_by_a_removed_route(self, home):
+        name = events._route_name("ambush", "feed.emission.created", ARGS)  # e.g. after `hermes webhook remove`
+        (home / "mcp_event_subscriptions.json").write_text(json.dumps({name: {"cursor": "stale"}}))
+        session = FakeSession(_grant())
+        _subscribe(session)
+        assert "cursor" not in session.sent[0]["params"]
 
     def test_a_rejected_subscription_leaves_no_route(self, home):
         failed = MCPError(-32027, "CallbackEndpointError", {"reason": "challenge_failed"})
@@ -120,14 +137,14 @@ class TestSubscribe:
 class TestUnsubscribe:
     def test_unsubscribe_sends_the_granted_url_and_drops_the_route(self, home):
         _subscribe(FakeSession(_grant()))
-        url = next(iter(_routes(home).values()))["mcp_event"]["url"]
+        url = next(iter(_state(home).values()))["url"]
         (home / "config.yaml").write_text("{}\n")  # the subscription key is the URL that was granted
         session = FakeSession({})
         result = asyncio.run(events._unsubscribe_event(
             session, {"name": "feed.emission.created", "arguments": ARGS}, "ambush"))
         assert session.sent[0]["params"] == {"name": "feed.emission.created", "arguments": ARGS,
                                              "delivery": {"url": url}}
-        assert "unsubscribed" in result and _routes(home) == {}
+        assert "unsubscribed" in result and _routes(home) == {} and _state(home) == {}
 
 
 class TestRefresh:

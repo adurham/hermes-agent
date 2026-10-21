@@ -1031,7 +1031,9 @@ The server then gets three more utility tools:
 - `unsubscribe_event`: cancel a subscription
 
 Each subscription is stored as a dynamic webhook route (`hermes webhook list` shows it) with its own
-`whsec_` signing secret. Hermes answers the server's signed verification challenge, deduplicates
+`whsec_` signing secret; the grant and the replay cursor are kept beside it in
+`mcp_event_subscriptions.json`, so the route itself only changes when you resubscribe with different
+instructions or a different destination. Hermes answers the server's signed verification challenge, deduplicates
 events by `eventId`, and refreshes the subscription before the lifetime the server granted runs out
 while the MCP connection is up (and again whenever it reconnects). If the server ends a
 subscription, Hermes removes the route and tells the `deliver` target. Events only arrive while

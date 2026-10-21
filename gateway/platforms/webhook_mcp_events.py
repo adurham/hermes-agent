@@ -33,19 +33,18 @@ def mcp_event_delivery_id(route_config: dict, payload: Any) -> Optional[str]:
     return f"mcp-event:{event_id}" if isinstance(event_id, str) and event_id else None
 
 
-def _update_event_block(route_name: str, **changes: Any) -> None:
-    from hermes_cli.webhook import _mutate_subscriptions
-
-    def mutate(subscriptions: dict) -> None:
-        route = subscriptions.get(route_name)
-        if isinstance(route, dict) and isinstance(route.get("mcp_event"), dict):
-            subscriptions[route_name] = {**route, "mcp_event": {**route["mcp_event"], **changes}}
-    _mutate_subscriptions(mutate)
+def _store_cursor(route_name: str, cursor: str) -> None:
+    # Subscription state lives beside the route, never in it: an admitted run's reply is checked against
+    # a digest of the route config, so a cursor written there would strand every run still in flight.
+    from tools.mcp_tool_events import store_cursor
+    store_cursor(route_name, cursor)
 
 
 def _remove_route(route_name: str) -> None:
     from hermes_cli.webhook import _mutate_subscriptions
+    from tools.mcp_tool_events import drop_state
     _mutate_subscriptions(lambda subscriptions: subscriptions.pop(route_name, None))
+    drop_state(route_name)
 
 
 async def _verification(adapter, route_name: str, route_config: dict, payload: dict, profile) -> Any:
@@ -74,7 +73,7 @@ async def _terminated(adapter, route_name: str, route_config: dict, payload: dic
 async def _gap(adapter, route_name: str, route_config: dict, payload: dict, profile) -> Any:
     cursor = payload.get("cursor")
     if isinstance(cursor, str) and cursor:
-        await asyncio.to_thread(_update_event_block, route_name, cursor=cursor)
+        await asyncio.to_thread(_store_cursor, route_name, cursor)
     logger.warning("[webhook] MCP event route %s: the server skipped events (gap); resuming from a fresh cursor",
                    route_name)
     return _json({"status": "gap"})
@@ -93,6 +92,6 @@ async def handle_mcp_event_control(adapter, route_name: str, route_config: dict,
     if handler is not None:
         return await handler(adapter, route_name, route_config, payload, profile)
     cursor = payload.get("cursor")
-    if isinstance(cursor, str) and cursor and cursor != route_config["mcp_event"].get("cursor"):
-        await asyncio.to_thread(_update_event_block, route_name, cursor=cursor)
+    if isinstance(cursor, str) and cursor:
+        await asyncio.to_thread(_store_cursor, route_name, cursor)
     return None
