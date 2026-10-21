@@ -496,11 +496,23 @@ def _has_http_code(stderr: str, *codes: str) -> bool:
     return any(f"HTTP {code}" in stderr or f"returned error: {code}" in stderr for code in codes)
 
 
+def _damaged_checkout_message() -> str:
+    from hermes_cli.update_cmd_maint import _REINSTALL_ONE_LINER
+
+    return ("✗ This Hermes checkout's git data is damaged (git no longer recognizes its .git folder),"
+            " so it cannot be updated in place.\n"
+            "  Run the installer again to repair it; it moves the damaged checkout aside and keeps"
+            f" your config and chats:\n    {_REINSTALL_ONE_LINER[sys.platform == 'win32']}")
+
+
 # Ordered (predicate, diagnosis): curl reports HTTP errors as ``unable to access '<url>': ... error: 429``,
 # so rate-limit/outage checks must run BEFORE the generic "unable to access" check. An anonymous fetch
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
-# repo), not a user credentials problem.
+# repo), not a user credentials problem. A diagnosis may be a callable when it depends on the host.
 _FETCH_FAILURE_RULES = (
+    # The updater only fetches when .git exists, so this is a .git git rejects (empty dir, lost HEAD):
+    # no retry can work and the ZIP fallback cannot tell user edits apart, but the installer can.
+    (lambda s: "not a git repository" in s, _damaged_checkout_message),
     (lambda s: _has_http_code(s, "429") or "rate limit" in s.lower(),
      "✗ GitHub is rate limiting requests or having an outage (HTTP 429) — try again in 5 minutes."),
     (lambda s: _has_http_code(s, "500", "502", "503", "504"),
@@ -526,7 +538,8 @@ _FETCH_FAILURE_RULES = (
 
 def _classify_fetch_failure(stderr: str) -> str:
     """Map git-fetch stderr to a one-line diagnosis (caller also prints the raw first line)."""
-    return next((message for matches, message in _FETCH_FAILURE_RULES if matches(stderr)), "✗ Failed to fetch updates from origin.")
+    message = next((message for matches, message in _FETCH_FAILURE_RULES if matches(stderr)), "✗ Failed to fetch updates from origin.")
+    return message() if callable(message) else message
 
 
 def _print_fetch_failure(stderr: str) -> None:

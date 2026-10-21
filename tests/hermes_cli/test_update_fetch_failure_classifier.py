@@ -7,6 +7,9 @@ classifier must call out rate limiting / outages explicitly, and the raw
 stderr line must always be printed alongside the diagnosis.
 """
 
+import os
+import subprocess
+
 from hermes_cli import update_cmd
 
 
@@ -77,6 +80,17 @@ class TestClassifyFetchFailure:
         )
         assert "SSH authentication failed" in msg
         assert "https://github.com/NousResearch/hermes-agent.git" in msg
+
+    def test_a_git_dir_git_rejects_names_the_installer_repair(self, tmp_path):
+        # The updater fetches only when .git exists; git rejecting it (here an empty .git) cannot
+        # be retried away, and the generic "Failed to fetch" left users with no way out.
+        (tmp_path / ".git").mkdir()
+        stderr = subprocess.run(["git", "fetch", "origin"], cwd=tmp_path, capture_output=True, check=False,
+                                text=True, encoding="utf-8", errors="replace",
+                                env={**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path.parent)}).stderr
+        msg = update_cmd._classify_fetch_failure(stderr)
+        assert "damaged" in msg
+        assert "hermes-agent.nousresearch.com/install." in msg
 
     def test_ssh_host_key_failure_reports_ssh_auth(self):
         msg = update_cmd._classify_fetch_failure(
