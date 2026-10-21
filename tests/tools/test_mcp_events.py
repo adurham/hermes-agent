@@ -134,6 +134,24 @@ class TestSubscribe:
         assert "public_url" in _subscribe(session)["error"]
         assert session.sent == [] and _routes(home) == {}
 
+    def test_the_approval_shows_the_instructions_and_the_destination(self, monkeypatch):
+        shown = {}
+
+        def consent(message, description, **kwargs):
+            shown.update(message=message, description=description)
+            return "accept"
+        monkeypatch.setattr("tools.approval_prompt.request_elicitation_consent", consent)
+        args = {"name": "feed.emission.created", "arguments": ARGS, "instructions": "Post a two-line summary.",
+                "deliver": "telegram", "deliver_chat_id": "-100123"}
+        assert events._consent_error("ambush", args) is None
+        text = f"{shown['message']}\n{shown['description']}"
+        assert "Post a two-line summary." in text and "telegram" in text and "-100123" in text
+
+    def test_overlong_instructions_are_refused_before_asking(self):
+        assert events._subscribe_args_error({"name": "x", "instructions": "a" * events._MAX_INSTRUCTIONS_CHARS}) is None
+        assert events._subscribe_args_error({"name": "x", "instructions": "a" * (events._MAX_INSTRUCTIONS_CHARS + 1)})
+        assert events._subscribe_args_error({"name": "x", "deliver_chat_id": 123})
+
     def test_a_disabled_subscription_is_not_turned_back_on(self, home):
         _subscribe(FakeSession(_grant()))
         data = _routes(home)

@@ -40,6 +40,8 @@ _FORBIDDEN, _NOT_FOUND, _UNSUPPORTED, _INVALID_PARAMS = -32024, -32023, -32026, 
 # A refresh refused with one of these can never succeed as stored: access was revoked, the event type is
 # gone, its arguments no longer validate, or the server no longer offers what the subscription asks for.
 _TERMINAL_REFRESH_CODES = frozenset({_FORBIDDEN, _NOT_FOUND, _UNSUPPORTED, _INVALID_PARAMS})
+# The approval prompt shows the instructions in full, so they are bounded.
+_MAX_INSTRUCTIONS_CHARS = 2000
 # Refresh loops by server name, each as (its event loop, its wake-up event). A new subscription wakes them
 # so its first refresh is scheduled from its own grant, not after the loop's current sleep (up to an hour).
 _refresh_wakers: dict[str, set[tuple[asyncio.AbstractEventLoop, asyncio.Event]]] = {}
@@ -396,14 +398,31 @@ async def _unsubscribe_event(session, args: dict, server_name: str) -> dict:
     return {"unsubscribed": {"name": args["name"], "arguments": arguments}}
 
 
+def _subscribe_args_error(args: dict) -> Optional[str]:
+    """Validation for ``subscribe_event`` that runs before the user is asked to approve it."""
+    instructions = args.get("instructions")
+    if instructions is not None and not isinstance(instructions, str):
+        return "'instructions' must be a string"
+    if isinstance(instructions, str) and len(instructions) > _MAX_INSTRUCTIONS_CHARS:
+        return f"'instructions' is limited to {_MAX_INSTRUCTIONS_CHARS} characters"
+    for key in ("deliver", "deliver_chat_id"):
+        if args.get(key) is not None and not isinstance(args[key], str):
+            return f"'{key}' must be a string"
+    return None
+
+
 def _consent_error(server_name: str, args: dict) -> Optional[str]:
     """Subscribing installs a standing trigger that starts unattended agent runs: ask the user
-    every time (fail closed), whatever the server's trust tier."""
+    every time (fail closed), whatever the server's trust tier. The prompt shows the whole standing
+    contract: the event, its arguments, the instructions each run follows, and where results go."""
+    deliver = args.get("deliver") or "log"
+    target = f"'{deliver}' chat {args['deliver_chat_id']}" if args.get("deliver_chat_id") else f"'{deliver}'"
     try:
         from tools.approval_prompt import request_elicitation_consent
         answer = request_elicitation_consent(
-            f"Subscribe to MCP event '{args['name']}' from server '{server_name}'? Each event starts an agent run "
-            f"whose result goes to '{args.get('deliver') or 'log'}'.",
+            f"Subscribe to MCP event '{args['name']}' from server '{server_name}'? Each event starts an "
+            f"unattended agent run that follows the instructions below and sends its result to {target}.",
+            f"Instructions: {args.get('instructions') or 'Summarize what happened.'}\n"
             f"Arguments: {json.dumps(args.get('arguments') or {})[:500]}",
             surface=f"mcp-events/{server_name}", title=f"MCP server '{server_name}' event subscription")
     except Exception as exc:
@@ -427,8 +446,11 @@ def _make_events_handler(op: str, label: str, rpc, needs_consent: bool = False):
                 return tool_error("Missing required parameter 'name'")
             if args.get("arguments") is not None and not isinstance(args["arguments"], dict):
                 return tool_error("'arguments' must be an object")
-            if needs_consent and (error := _consent_error(server_name, args)):
-                return error
+            if needs_consent:
+                if invalid := _subscribe_args_error(args):
+                    return tool_error(invalid)
+                if error := _consent_error(server_name, args):
+                    return error
 
             async def _call():
                 async with server._rpc_lock:

@@ -1026,8 +1026,9 @@ The server then gets three more utility tools:
 
 - `list_events`: the event types the server offers, and your current subscriptions to them
 - `subscribe_event`: subscribe with the event's arguments, what to do when it arrives
-  (`instructions`) and where each run's result goes (`deliver`, `deliver_chat_id`); you are asked to
-  approve every subscription, since it starts unattended agent runs
+  (`instructions`, up to 2000 characters) and where each run's result goes (`deliver`,
+  `deliver_chat_id`). You are asked to approve every subscription, since it starts unattended agent
+  runs; the approval shows the instructions and the destination in full.
 - `unsubscribe_event`: cancel a subscription
 
 Each subscription is stored as a dynamic webhook route (`hermes webhook list` shows it) with its own
