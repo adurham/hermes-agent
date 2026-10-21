@@ -1,30 +1,44 @@
-"""POSIX fd-readiness helper shared by the stdout drains.
+"""POSIX fd-readiness helper shared by the stdout drains and the PTY bridge.
 
 ``select.select()`` raises ``ValueError: filedescriptor out of range in select()``
-the moment a pipe fd reaches FD_SETSIZE (1024); a long-lived gateway/desktop
-process holds that many open fds, and both drains swallowed that ValueError as
-"fd already closed", silently discarding output with no error signal (issue
-#94928). ``poll()`` has no FD_SETSIZE ceiling, and POLLHUP/POLLERR count as
-readable so the caller's read observes the real EOF or broken descriptor.
+once an fd reaches FD_SETSIZE (1024). A long-lived gateway/desktop process holds
+that many open fds, and every drain swallowed that ValueError as "fd already
+closed", silently discarding output (issue #94928).
+
+``selectors.DefaultSelector`` (epoll on Linux, kqueue on macOS) has no FD_SETSIZE
+ceiling. ``poll()`` is not a substitute: macOS ``poll()`` does not support device
+fds and reports a PTY master as POLLNVAL, i.e. "ready" at once, so a PTY read loop
+would spin a core.
 """
 
-import select
+import selectors
 
 
-def make_fd_waiter(fd: int):
-    """Return a ``wait(timeout_ms) -> bool`` readability waiter for *fd*.
+class FdWaiter:
+    """Readability wait on one fd. Owns a selector (itself one fd): create it once
+    per reader lifetime and ``close()`` it when the reader is done."""
 
-    Returns None when *fd* is already closed and there is nothing to drain.
-    ``wait`` returns True as soon as *fd* is readable (POLLHUP/POLLERR included,
-    so the caller's read observes EOF), False when *timeout_ms* elapses idle.
-    """
-    poller = select.poll()
+    def __init__(self, fd: int):
+        self._selector = selectors.DefaultSelector()
+        try:
+            self._selector.register(fd, selectors.EVENT_READ)
+        except BaseException:
+            self._selector.close()
+            raise
+
+    def wait(self, timeout_s: float) -> bool:
+        """True as soon as the fd is readable (EOF and hangup included), False when
+        *timeout_s* elapses idle."""
+        return bool(self._selector.select(max(timeout_s, 0)))
+
+    def close(self) -> None:
+        self._selector.close()
+
+
+def open_fd_waiter(fd: int):
+    """Return an :class:`FdWaiter` for *fd*, or None when *fd* cannot be watched
+    (already closed / invalid) and there is nothing to drain."""
     try:
-        poller.register(fd, select.POLLIN)
+        return FdWaiter(fd)
     except (ValueError, OSError):
         return None
-
-    def wait(timeout_ms: int) -> bool:
-        return bool(poller.poll(timeout_ms))
-
-    return wait

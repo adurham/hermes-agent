@@ -107,6 +107,8 @@ class PtyBridge:
     WebSocket task, never the dashboard event loop.
     """
 
+    _waiter = None  # FdWaiter for the master; None until __init__ registers it
+
     def __init__(self, proc: ptyprocess.PtyProcess):  # type: ignore[name-defined]
         self._proc = proc
         self._fd: int = proc.fd
@@ -118,6 +120,11 @@ class PtyBridge:
         except OSError:
             self._pgid = None
         os.set_blocking(self._fd, False)
+        # A selector, never select.select() (ValueError at fd >= FD_SETSIZE, #94928) or poll()
+        # (macOS poll() reports a PTY master as POLLNVAL, so read() would spin).
+        from tools.environments.fd_wait import open_fd_waiter
+
+        self._waiter = open_fd_waiter(self._fd)
 
     @classmethod
     def is_available(cls) -> bool:
@@ -165,13 +172,13 @@ class PtyBridge:
 
         ``b""`` = nothing yet; ``None`` = EOF / closed (also after :meth:`close`).
         """
-        if self._closed:
+        if self._closed or self._waiter is None:
             return None
-        from tools.environments.fd_wait import make_fd_waiter
-        wait = make_fd_waiter(self._fd)
-        if wait is None:
+        try:
+            readable = self._waiter.wait(timeout)
+        except (OSError, ValueError):  # close() raced this read
             return None
-        if not wait(int(timeout * 1000)):
+        if not readable:
             return b""
         try:
             data = os.read(self._fd, 65536)
@@ -269,15 +276,10 @@ class PtyBridge:
         # Exiting children flush their pending terminal output first; on macOS a process stays in
         # exit (and a SIGHUP save outlasts the grace) until someone drains the master. The drain
         # task no longer consumes the output, so read and drop while waiting.
-        from tools.environments.fd_wait import make_fd_waiter
-        wait = make_fd_waiter(self._fd)
-        if wait is None:
-            time.sleep(timeout)
-            return
         try:
-            if wait(int(timeout * 1000)) and os.read(self._fd, 65536):
+            if self._waiter is not None and self._waiter.wait(timeout) and os.read(self._fd, 65536):
                 return
-        except OSError:
+        except (OSError, ValueError):
             pass
         time.sleep(timeout)  # nothing read, EOF (b"") or EIO: don't spin on a readable dead fd
 
@@ -376,6 +378,11 @@ class PtyBridge:
             self._proc.close(force=True)
         except Exception:
             pass
+        self._close_waiter()
+
+    def _close_waiter(self) -> None:
+        if self._waiter is not None:
+            self._waiter.close()
 
     def __enter__(self) -> PtyBridge:
         return self
