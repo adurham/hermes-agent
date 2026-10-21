@@ -84,6 +84,19 @@ class TestUtilitySelection:
         assert not self._keys({}) & set(events.EVENT_UTILITY_KEYS)
         assert set(events.EVENT_UTILITY_KEYS) <= self._keys({"events": True})
 
+    def test_a_native_list_events_tool_keeps_every_event_utility(self):
+        # Calendar servers commonly ship a native ``list_events`` tool; a native tool shadows a utility
+        # of the same name, which would leave the model no way to list event types.
+        from tools import mcp_tool_registration as reg
+        from tools.mcp_tool_schema import _build_utility_schemas
+        native = SimpleNamespace(name="list_events", description="Calendar events", inputSchema={"type": "object"})
+        utilities = [e for e in _build_utility_schemas("cal") if e["handler_key"] in events.EVENT_UTILITY_KEYS]
+        candidates = reg._tool_candidates("cal", [native], lambda name: True, 30)
+        candidates += reg._utility_candidates("cal", utilities, 30)
+        kept = {c.origin for c in reg._resolve_name_collisions("cal", candidates)}
+        assert "tool 'list_events'" in kept
+        assert {f"generated utility {key!r}" for key in events.EVENT_UTILITY_KEYS} <= kept
+
 
 class TestList:
     def test_listing_stops_at_the_page_cap(self, home):
@@ -95,7 +108,7 @@ class TestList:
                 await asyncio.sleep(0)
                 return {"events": [{"name": f"e{Endless.calls}"}], "nextCursor": f"c{Endless.calls}"}
 
-        result = asyncio.run(asyncio.wait_for(events._list_events(Endless(), {}, "ambush"), timeout=5))
+        result = asyncio.run(asyncio.wait_for(events._list_event_types(Endless(), {}, "ambush"), timeout=5))
         assert len(result["events"]) == Endless.calls == events._MAX_LIST_PAGES
         assert "truncated" in result
 

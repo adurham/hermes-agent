@@ -27,7 +27,7 @@ from tools.registry import tool_error
 
 logger = logging.getLogger("tools.mcp_tool")
 
-EVENT_UTILITY_KEYS = ("list_events", "subscribe_event", "unsubscribe_event")
+EVENT_UTILITY_KEYS = ("list_event_types", "subscribe_event", "unsubscribe_event")
 _DEFAULT_TTL_MS = 24 * 3600 * 1000
 # Refresh once this share of the granted lifetime has elapsed (never later than 60s before expiry).
 _REFRESH_AT_FRACTION = 0.8
@@ -317,7 +317,7 @@ def start_refresh_task(server) -> Optional[asyncio.Task]:
 
 # ---- utility tools ----
 
-async def _list_events(session, args: dict, server_name: str) -> dict:
+async def _list_event_types(session, args: dict, server_name: str) -> dict:
     events, cursor, pages = [], None, 0
     while True:
         result = await _send(session, "events/list", {"cursor": cursor} if cursor else {})
@@ -439,7 +439,7 @@ def _consent_error(server_name: str, args: dict) -> Optional[str]:
     return tool_error("The user did not approve this event subscription. Do not retry without explicit user direction.")
 
 
-def _make_events_handler(op: str, label: str, rpc, needs_consent: bool = False):
+def _make_events_handler(op: str, label: str, rpc, *, needs_name: bool = True, needs_consent: bool = False):
     """Like ``mcp_tool_handlers._make_utility_handler``, with ``name`` required and an optional consent gate."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
@@ -448,7 +448,7 @@ def _make_events_handler(op: str, label: str, rpc, needs_consent: bool = False):
             server = _discovery._get_connected_server_for_call(server_name)
             if not server or not server.session:
                 return tool_error(f"MCP server '{server_name}' is not connected")
-            if label != "list_events" and not isinstance(args.get("name"), str):
+            if needs_name and not isinstance(args.get("name"), str):
                 return tool_error("Missing required parameter 'name'")
             if args.get("arguments") is not None and not isinstance(args["arguments"], dict):
                 return tool_error("'arguments' must be an object")
@@ -470,7 +470,8 @@ def _make_events_handler(op: str, label: str, rpc, needs_consent: bool = False):
     return _factory
 
 
-_make_list_events_handler = _make_events_handler("events/list", "list_events", _list_events)
+_make_list_event_types_handler = _make_events_handler(
+    "events/list", "list_event_types", _list_event_types, needs_name=False)
 _make_subscribe_event_handler = _make_events_handler(
     "events/subscribe", "subscribe_event", _subscribe_event, needs_consent=True)
 _make_unsubscribe_event_handler = _make_events_handler("events/unsubscribe", "unsubscribe_event", _unsubscribe_event)

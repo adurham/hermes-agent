@@ -210,12 +210,12 @@ _UTILITY_TOOL_SPECS = (
              "properties": {},
              "additionalProperties": True},
      }, ["name"]),
-    ("list_events", "List the event types MCP server '{server}' can notify about, and your active "
+    ("list_event_types", "List the event types MCP server '{server}' can notify about, and your active "
      "subscriptions to them", {}, None),
     ("subscribe_event", "Subscribe to an event from MCP server '{server}': each occurrence starts a new "
      "agent run with your instructions and delivers its result to the chosen target",
      {
-         "name": {"type": "string", "description": "Event type name from list_events"},
+         "name": {"type": "string", "description": "Event type name from list_event_types"},
          "arguments": {
              "type": "object",
              "description": "Subscription arguments matching the event's inputSchema",
@@ -289,4 +289,4 @@ def matches_name_filter(tool_name: str, patterns: set[str]) -> bool:
 _UTILITY_CAPABILITY_ATTRS = {
     "list_resources": "resources", "read_resource": "resources",
     "list_prompts": "prompts", "get_prompt": "prompts",
-    "list_events": "events", "subscribe_event": "events", "unsubscribe_event": "events"}
+    "list_event_types": "events", "subscribe_event": "events", "unsubscribe_event": "events"}

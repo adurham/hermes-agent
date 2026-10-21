@@ -33,7 +33,7 @@ _UTILITY_ORIGIN_PREFIX = "generated utility "
 _UTILITY_HANDLER_FACTORIES = {
     "list_resources": _make_list_resources_handler, "read_resource": _make_read_resource_handler,
     "list_prompts": _make_list_prompts_handler, "get_prompt": _make_get_prompt_handler,
-    "list_events": _events._make_list_events_handler, "subscribe_event": _events._make_subscribe_event_handler,
+    "list_event_types": _events._make_list_event_types_handler, "subscribe_event": _events._make_subscribe_event_handler,
     "unsubscribe_event": _events._make_unsubscribe_event_handler}
 
 

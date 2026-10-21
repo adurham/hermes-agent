@@ -1609,7 +1609,7 @@ platform_toolsets:
 #       log_level: "info"       # audit verbosity
 #
 # MCP events (experimental, webhook delivery) — opt-in per server. Adds the
-# list_events / subscribe_event / unsubscribe_event tools; needs
+# list_event_types / subscribe_event / unsubscribe_event tools; needs
 # platforms.webhook.extra.public_url and a running gateway:
 #   feeds:
 #     url: https://feeds.example.com/mcp
