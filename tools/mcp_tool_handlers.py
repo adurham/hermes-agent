@@ -72,20 +72,31 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
         from tools.approval_context import get_current_session_key
         charge = _costs.pending_charge(key, server_name, tool_name, get_current_session_key())
-    if charge is None and not gated:
+    if charge is None:
+        return _ask_for_call(server_name, tool_name, None, booked) if gated else None
+    if not gated and charge.reserve_within_limit()[0]:
+        if booked is not None:
+            booked.append(charge)
         return None
+    with charge.asking():  # re-read under the slot: a call that asked first may have booked meanwhile
+        return _ask_for_call(server_name, tool_name, charge, booked, gated=gated)
+
+
+def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[list], *,
+                  gated: bool = True) -> Optional[str]:
+    """Ask the user about one gated and/or costed call; book the charge only on an explicit yes."""
     spent, over = 0.0, False
     if charge is not None:
-        if not gated:
+        if gated:
+            spent = charge.spent()
+            over = charge.over_limit(spent)
+        else:
             reserved, spent = charge.reserve_within_limit()
             if reserved:
                 if booked is not None:
                     booked.append(charge)
                 return None
             over = True
-        else:
-            spent = charge.spent()
-            over = charge.over_limit(spent)
     extra = charge.lines(spent) if charge is not None else []
     if gated:
         head = f"MCP tool '{tool_name}' on UNTRUSTED server '{server_name}' wants to run."

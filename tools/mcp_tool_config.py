@@ -659,7 +659,7 @@ def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     return safe_servers
 
 
-def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
+def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str] = frozenset()) -> None:
     """Merge plugin-provided (portable) MCP servers into *safe_servers*; native config wins on a clash. Never raises.
 
     The package's declared costs are facts about its server, so a same-name native entry (the way a user widens
@@ -670,7 +670,9 @@ def _portable_mcp_servers(safe_servers: dict[str, dict]) -> None:
         discover_plugins()
         portable = get_plugin_manager().get_portable_mcp_servers()
         for name, cfg in _filter_suspicious_mcp_servers(portable).items():
-            if name in safe_servers:
+            if name in rejected:  # the user's own entry for this name has a malformed budget: stay off
+                logger.warning("Portable MCP server '%s' skipped: the native entry of that name was rejected", name)
+            elif name in safe_servers:
                 native = safe_servers[name]
                 carried = {k: cfg[k] for k in CONFIG_KEYS if k in cfg and k not in native}
                 if carried:
@@ -702,12 +704,17 @@ def _load_mcp_config() -> dict[str, dict]:
         except Exception:
             pass
         safe_servers: dict[str, dict] = {}
-        for name, cfg in _filter_suspicious_mcp_servers(servers if isinstance(servers, dict) else {}).items():
+        servers = servers if isinstance(servers, dict) else {}
+        kept = _filter_suspicious_mcp_servers(servers)
+        for name, cfg in kept.items():
             interpolated = _interpolate_env_vars(cfg)
             if isinstance(interpolated, dict):
                 _warn_hidden_whitespace(name, interpolated)
                 safe_servers[name] = interpolated
-        _portable_mcp_servers(safe_servers)
+        # A same-name package must not revive a server whose native budget was rejected (a mistyped
+        # tighter limit would fall back to the package's looser one while the server keeps spending).
+        rejected = frozenset(n for n in servers if n not in kept and _malformed_cost_table(n, servers[n]) is not None)
+        _portable_mcp_servers(safe_servers, rejected)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)

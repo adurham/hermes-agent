@@ -99,4 +99,6 @@ def rekey_unscoped_connections(scope: str) -> None:
         for key in set(_core._servers) | set(_core._lazy_server_tool_names):
             if _key_scope(key) == scope:
                 _core._server_tool_scopes.setdefault(key, set()).add(scope)
+    from tools.mcp_tool_costs import rekey_unscoped
+    rekey_unscoped(scope)  # chats' spend totals follow their server's policy key
     registry.move_to_scope(tool_names, scope)

@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import math
 import threading
-from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from contextlib import contextmanager
+from typing import Any, Iterator, Mapping, Optional
 
 DEFAULT_UNIT = "credits"
 # Native ``mcp_servers.<name>`` keys; a portable package's ``costs`` maps to ``tool_costs``.
@@ -95,10 +95,23 @@ def _fmt(amount: float) -> str:
 
 
 # Spend per (policy key, approval session key): the policy key carries the profile scope under a
-# multiplexer and the session key is the chat the approval system already isolates. In memory only.
+# multiplexer and the session key is the chat the approval system already isolates. In memory only and
+# never evicted: a forgotten total would hand a chat that already spent its limit a fresh budget.
 _lock = threading.Lock()
-_spent: OrderedDict[tuple, float] = OrderedDict()
-_MAX_TALLIES = 16384  # bounds a long-lived gateway; the least recently charged chat falls off first
+_spent: dict[tuple, float] = {}
+# One budget prompt at a time per tally: a parallel call must see the total the previous approval booked,
+# and identical prompts would otherwise coalesce into one answer that releases several charges.
+_ask_locks: dict[tuple, threading.Lock] = {}
+
+
+def rekey_unscoped(scope: str) -> None:
+    """Follow ``mcp_tool_scope.rekey_unscoped_connections``: a process that starts multiplexing moves its
+    bare-name policies under ``(scope, name)``, and the chats' totals must move with them."""
+    with _lock:
+        for policy_key, session_key in [k for k in _spent if isinstance(k[0], str)]:
+            amount = _spent.pop((policy_key, session_key))
+            moved = ((scope, policy_key), session_key)
+            _spent[moved] = _spent.get(moved, 0.0) + amount
 
 
 @dataclass(frozen=True)
@@ -137,9 +150,14 @@ class Charge:
 
     def _add_locked(self, amount: float) -> None:
         _spent[self.key] = max(0.0, _spent.get(self.key, 0.0) + amount)
-        _spent.move_to_end(self.key)
-        while len(_spent) > _MAX_TALLIES:
-            _spent.popitem(last=False)
+
+    @contextmanager
+    def asking(self) -> Iterator[None]:
+        """Hold this chat's budget-prompt slot while asking and booking."""
+        with _lock:
+            slot = _ask_locks.setdefault(self.key, threading.Lock())
+        with slot:
+            yield
 
     def cost_sentence(self) -> str:
         unit, cost = self.policy.unit, self.cost

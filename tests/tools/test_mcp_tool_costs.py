@@ -123,11 +123,14 @@ def test_chats_and_profiles_never_share_a_tally(session):
     assert a is not None and b is not None
     a.book()
     assert a.spent() == 40 and b.spent() == 0
+    # A process that starts multiplexing moves bare-name policies under (scope, name); totals follow.
+    mcp_tool_costs.rekey_unscoped("launch")
+    assert mcp_tool_costs._spent[(("launch", "srv"), "chat-a")] == 120  # 40 + 40 + the approved 40
 
 
 def test_declarations_validate_translate_and_survive_a_native_trust_override(tmp_path, caplog):
     from hermes_cli.agent_plugins import AgentPluginError, load_agent_plugin
-    from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _portable_mcp_servers
+    from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_mcp_config, _portable_mcp_servers
 
     def package(server_decl):
         root = tmp_path / "pkg"
@@ -155,5 +158,8 @@ def test_declarations_validate_translate_and_survive_a_native_trust_override(tmp
     manager = SimpleNamespace(get_portable_mcp_servers=lambda: dict(pkg.mcp_servers))
     with patch("hermes_cli.plugins.discover_plugins"), patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
         _portable_mcp_servers(native)
-    assert native["srv"]["trust"] == "full" and native["srv"]["spend_limit"] == 0
-    assert native["srv"]["tool_costs"] == {"paid_render": [5, 20]}
+        assert native["srv"]["trust"] == "full" and native["srv"]["spend_limit"] == 0
+        assert native["srv"]["tool_costs"] == {"paid_render": [5, 20]}
+        # A native entry rejected for a malformed budget is not revived by the package's looser one.
+        with patch("hermes_cli.config.load_config", return_value={"mcp_servers": {"srv": {"command": "x", "spend_limit": -5}}}):
+            assert "srv" not in _load_mcp_config()
