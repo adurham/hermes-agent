@@ -1,6 +1,6 @@
 name: godot-studio
 repo: https://github.com/Foolafroos/godot-studio
-sha: e3e6066f264b087962eccc574eeb7dada5dfe564
+sha: bec72edc2db3cb96d78a95b9c9c063f73b908523
 description: >-
   Headless Godot 4 workflows for the agent game studio — godot_headless_check
   (script/resource validation via godot --headless, no editor needed),
@@ -17,16 +17,21 @@ description: >-
   off. Tools register only when a Godot 4 binary is present (check_fn).
   Disclosure — runs shell commands (godot --headless against the
   caller-targeted project; read-only godot --version in the desktop backend;
-  read-only hermes mcp list in godot_setup); no network calls, no
-  credentials, no telemetry, no background processes; exports write only to
-  the caller-supplied output path; the desktop backend reads
-  export_presets.cfg and artifact metadata inside the project path the user
-  configures in the pane.
+  read-only hermes mcp list in godot_setup); godot_headless_check and
+  godot_export execute the target project's own GDScript (autoloads, main
+  scene, export plugins) with no approval prompt — point them only at
+  projects you trust; no network calls, no credentials, no telemetry, no
+  background processes; exports write only inside the target project (the
+  output path is resolved and confined to the project directory, existing
+  files that aren't known export artifacts are never overwritten, and the
+  default is the preset's own export_path from export_presets.cfg); the
+  desktop backend reads export_presets.cfg and artifact metadata inside the
+  project path the user configures in the pane.
 maintainer: Foolafroos
 tier: community
 category: tools
 docs_url: https://github.com/Foolafroos/godot-studio#readme
-version: "0.2.0"
+version: "0.2.1"
 platforms: []
 capabilities:
   provides_tools:
