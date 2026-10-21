@@ -134,3 +134,16 @@ async def test_subscription_state_changes_do_not_strand_an_admitted_run(home):
         assert retry.status == 200 and (await retry.json())["status"] == "duplicate"
     assert _routes(home)[ROUTE] == routes[ROUTE]
 
+
+@pytest.mark.asyncio
+async def test_an_unknown_control_envelope_is_acknowledged_without_a_run(home):
+    # The sketch: any body with a top-level ``type`` is a control envelope, including types a later
+    # revision adds. None of them may start an agent run.
+    adapter = _adapter()
+    async with TestClient(TestServer(_app(adapter))) as cli:
+        resp = await _post(cli, {"type": "paused", "reason": "maintenance"})
+        assert resp.status == 200 and (await resp.json())["status"] == "ignored"
+        odd = await _post(cli, {"type": {"not": "a string"}})
+        assert odd.status == 200
+    adapter.handle_message.assert_not_called()
+

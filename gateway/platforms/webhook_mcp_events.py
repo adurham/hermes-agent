@@ -88,9 +88,15 @@ async def handle_mcp_event_control(adapter, route_name: str, route_config: dict,
     as an event occurrence (whose replay cursor, when the server sends one, is remembered first)."""
     if _mcp_event(route_config) is None or not isinstance(payload, dict):
         return None
-    handler = _CONTROL_HANDLERS.get(payload.get("type"))
+    kind = payload.get("type")
+    handler = _CONTROL_HANDLERS.get(kind) if isinstance(kind, str) else None
     if handler is not None:
         return await handler(adapter, route_name, route_config, payload, profile)
+    if "type" in payload:
+        # The sketch: a body with a top-level ``type`` is a control envelope. Acknowledge one this client
+        # does not know (a later revision's) so the server stops retrying it; it never starts a run.
+        logger.info("[webhook] MCP event route %s: ignoring a control envelope of unknown type %r", route_name, kind)
+        return _json({"status": "ignored", "type": kind if isinstance(kind, str) else None})
     cursor = payload.get("cursor")
     if isinstance(cursor, str) and cursor:
         await asyncio.to_thread(_store_cursor, route_name, cursor)
