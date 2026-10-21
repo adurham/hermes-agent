@@ -5,6 +5,7 @@ route pipeline, keyed for idempotency by its ``eventId``. Signatures (Standard W
 are already verified by the adapter before any of this runs."""
 
 import asyncio
+import json
 import logging
 from typing import Any, Optional
 
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_CHALLENGE_CHARS = 512
 _MAX_NOTICE_DETAIL_CHARS = 200
+_MAX_EVENT_DATA_CHARS = 32_000
 
 
 def _json(body: dict, status: int = 200):
@@ -22,6 +24,25 @@ def _json(body: dict, status: int = 200):
 def _mcp_event(route_config: dict) -> Optional[dict]:
     event = route_config.get("mcp_event")
     return event if isinstance(event, dict) else None
+
+
+def render_mcp_event_prompt(adapter, route_config: dict, payload: Any, event_type: str,
+                            route_name: str) -> Optional[str]:
+    """The prompt for an occurrence on an MCP event route whose template uses ``{data}``; None otherwise.
+    ``{data}`` takes the whole payload (up to ``_MAX_EVENT_DATA_CHARS``, with a note when cut) instead of
+    the 2,000-character cap other placeholders get, and the JSON goes in after the rest of the template
+    renders, so text inside the payload is never read as a placeholder."""
+    if _mcp_event(route_config) is None or not isinstance(payload, dict):
+        return None
+    template = route_config.get("prompt")
+    if not isinstance(template, str) or "{data}" not in template:
+        return None
+    data = json.dumps(payload.get("data"), indent=2, ensure_ascii=False)
+    if len(data) > _MAX_EVENT_DATA_CHARS:
+        data = (f"{data[:_MAX_EVENT_DATA_CHARS]}\n[truncated: the first {_MAX_EVENT_DATA_CHARS:,} of "
+                f"{len(data):,} characters]")
+    return data.join(adapter._render_prompt(part, payload, event_type, route_name) if part else ""
+                     for part in template.split("{data}"))
 
 
 def mcp_event_delivery_id(route_config: dict, payload: Any) -> Optional[str]:

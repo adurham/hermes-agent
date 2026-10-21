@@ -147,3 +147,21 @@ async def test_an_unknown_control_envelope_is_acknowledged_without_a_run(home):
         assert odd.status == 200
     adapter.handle_message.assert_not_called()
 
+
+@pytest.mark.asyncio
+async def test_the_event_payload_reaches_the_prompt_whole(home):
+    from tools.mcp_tool_events import _event_prompt
+    routes = _routes(home)
+    routes[ROUTE]["prompt"] = _event_prompt("ambush", "feed.emission.created", "Explain it.")
+    (home / "webhook_subscriptions.json").write_text(json.dumps(routes))
+    adapter = _adapter()
+    text = "b" * 10_000
+    occurrence = {"name": "feed.emission.created", "timestamp": "2026-10-16T00:00:00Z", "cursor": None}
+    async with TestClient(TestServer(_app(adapter))) as cli:
+        assert (await _post(cli, {**occurrence, "eventId": "e-big",
+                                  "data": {"text": text, "note": "{eventId}"}})).status == 202
+        assert (await _post(cli, {**occurrence, "eventId": "e-huge", "data": {"text": "h" * 50_000}})).status == 202
+    big, huge = (call.args[0].text for call in adapter.handle_message.await_args_list)
+    assert text in big and big.endswith("Explain it.")
+    assert '"note": "{eventId}"' in big  # payload text is never read as a placeholder
+    assert "truncated" in huge and len(huge) < 40_000

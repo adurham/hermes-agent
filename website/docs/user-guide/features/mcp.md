@@ -1040,7 +1040,8 @@ for good (access revoked, event type removed, arguments no longer valid) removes
 failures are retried with back-off. Turning the route off in the webhook dashboard lets the
 subscription lapse, and turning it back on resubscribes it. If the server ends a subscription,
 Hermes removes the route and tells the `deliver` target. Events only arrive while
-`hermes gateway run` is running. Event payloads are external data: event runs use the same
+`hermes gateway run` is running. The event payload reaches the run whole, up to 32,000 characters
+of JSON, with a note when it is cut. Event payloads are external data: event runs use the same
 constrained webhook toolset as other webhook routes.
 The listener's per-route rate limit (`platforms.webhook.extra.rate_limit`, 30 a minute by default)
 applies to event deliveries too; raise it for a busy event type, since a server may not retry a
