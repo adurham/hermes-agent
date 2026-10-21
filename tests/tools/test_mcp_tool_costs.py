@@ -47,7 +47,8 @@ def session():
          patch.dict(mcp_tool._server_trust_levels, {}, clear=True), \
          patch.dict(mcp_tool._tool_read_only_hints, {}, clear=True), \
          patch.dict(mcp_tool._server_cost_policies, {}, clear=True), \
-         patch.dict(mcp_tool_costs._spent, {}, clear=True):
+         patch.dict(mcp_tool_costs._spent, {}, clear=True), \
+         patch.object(mcp_tool_costs, "_unscoped_moved_to", None):
         yield session
 
 
@@ -123,9 +124,13 @@ def test_chats_and_profiles_never_share_a_tally(session):
     assert a is not None and b is not None
     a.book()
     assert a.spent() == 40 and b.spent() == 0
-    # A process that starts multiplexing moves bare-name policies under (scope, name); totals follow.
+    # A process that starts multiplexing moves bare-name policies under (scope, name); totals follow,
+    # and so does a charge built before the move but booked after it.
+    in_flight = mcp_tool_costs.pending_charge("srv", "srv", "paid_render", "chat-a")
+    assert in_flight is not None
     mcp_tool_costs.rekey_unscoped("launch")
-    assert mcp_tool_costs._spent[(("launch", "srv"), "chat-a")] == 120  # 40 + 40 + the approved 40
+    in_flight.book()
+    assert mcp_tool_costs._spent[(("launch", "srv"), "chat-a")] == 160  # 40 + 40 + the approved 40 + in flight
 
 
 def test_declarations_validate_translate_and_survive_a_native_trust_override(tmp_path, caplog):

@@ -104,14 +104,26 @@ _spent: dict[tuple, float] = {}
 _ask_locks: dict[tuple, threading.Lock] = {}
 
 
+_unscoped_moved_to: Optional[str] = None  # set once the process starts multiplexing
+
+
 def rekey_unscoped(scope: str) -> None:
     """Follow ``mcp_tool_scope.rekey_unscoped_connections``: a process that starts multiplexing moves its
-    bare-name policies under ``(scope, name)``, and the chats' totals must move with them."""
+    bare-name policies under ``(scope, name)``, and the chats' totals must move with them. A charge built
+    before the move (booked or refunded after it) resolves to the moved key too."""
+    global _unscoped_moved_to
     with _lock:
-        for policy_key, session_key in [k for k in _spent if isinstance(k[0], str)]:
-            amount = _spent.pop((policy_key, session_key))
-            moved = ((scope, policy_key), session_key)
-            _spent[moved] = _spent.get(moved, 0.0) + amount
+        _unscoped_moved_to = scope
+        for key in [k for k in _spent if isinstance(k[0], str)]:
+            amount = _spent.pop(key)
+            _spent[_live(key)] = _spent.get(_live(key), 0.0) + amount
+
+
+def _live(key: tuple) -> tuple:
+    policy_key, session_key = key
+    if isinstance(policy_key, str) and _unscoped_moved_to is not None:
+        return (_unscoped_moved_to, policy_key), session_key
+    return key
 
 
 @dataclass(frozen=True)
@@ -125,7 +137,7 @@ class Charge:
 
     def spent(self) -> float:
         with _lock:
-            return _spent.get(self.key, 0.0)
+            return _spent.get(_live(self.key), 0.0)
 
     def over_limit(self, spent: float) -> bool:
         return self.policy.limit > 0 and spent + self.cost.high > self.policy.limit
@@ -134,7 +146,7 @@ class Charge:
         """Book the estimate when it keeps the chat within its limit; ``(booked, spent before)``.
         Check and book share the lock, so parallel calls cannot both slip under the limit."""
         with _lock:
-            spent = _spent.get(self.key, 0.0)
+            spent = _spent.get(_live(self.key), 0.0)
             if self.over_limit(spent):
                 return False, spent
             self._add_locked(self.cost.high)
@@ -149,13 +161,14 @@ class Charge:
             self._add_locked(-self.cost.high)
 
     def _add_locked(self, amount: float) -> None:
-        _spent[self.key] = max(0.0, _spent.get(self.key, 0.0) + amount)
+        key = _live(self.key)
+        _spent[key] = max(0.0, _spent.get(key, 0.0) + amount)
 
     @contextmanager
     def asking(self) -> Iterator[None]:
         """Hold this chat's budget-prompt slot while asking and booking."""
         with _lock:
-            slot = _ask_locks.setdefault(self.key, threading.Lock())
+            slot = _ask_locks.setdefault(_live(self.key), threading.Lock())
         with slot:
             yield
 
