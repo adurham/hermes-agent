@@ -304,6 +304,11 @@ def _pid_naming_dir(user_data_dir: str) -> Optional[int]:
     return None
 
 
+def _browser_running_on(user_data_dir: str) -> bool:
+    """A live Chromium still uses ``user_data_dir`` (by argv: a ``SingletonLock`` outlives a crashed browser)."""
+    return _pid_naming_dir(user_data_dir) is not None
+
+
 def _devtools_endpoint_live(port: int, path: str) -> bool:
     """The port answers ``/json/version`` with the browser id the DevToolsActivePort file names (the file
     outlives a crashed Chromium and its port can be recycled by another CDP server)."""
@@ -760,7 +765,8 @@ def _reap_record(path: Path, home: str) -> bool:
         _terminate(record["pid"], record.get("start_time"), None)
         logger.info("browser: reaped orphaned Chromium pid %s (%s)", record["pid"], record["user_data_dir"])
     udd = record.get("user_data_dir")
-    if record.get("ephemeral") and isinstance(udd, str) and _inside_ephemeral_root(udd, home):
+    if (record.get("ephemeral") and isinstance(udd, str) and _inside_ephemeral_root(udd, home)
+            and (reaped or not _browser_running_on(udd))):
         shutil.rmtree(udd, ignore_errors=True)  # its owner is gone: no launch reuses a per-process dir
     path.unlink(missing_ok=True)
     return reaped
@@ -805,9 +811,13 @@ def _reclaim_throwaway_dirs(home: str) -> None:
         match = _THROWAWAY_DIR.match(entry.name)
         if match is None or int(match.group(1)) == os.getpid():
             continue
-        if not process_alive(int(match.group(1)), int(match.group(2)) if match.group(2) else None):
-            shutil.rmtree(entry, ignore_errors=True)  # a symlink is refused, never followed
-            logger.info("browser: removed the throwaway profile %s of a Hermes process that is gone", entry)
+        if process_alive(int(match.group(1)), int(match.group(2)) if match.group(2) else None):
+            continue
+        if _browser_running_on(str(entry)):  # its record was lost or could not prove the pid: never pull the dir
+            logger.debug("browser: keeping the throwaway profile %s: a Chromium still runs on it", entry)
+            continue
+        shutil.rmtree(entry, ignore_errors=True)  # a symlink is refused, never followed
+        logger.info("browser: removed the throwaway profile %s of a Hermes process that is gone", entry)
 
 
 def _served_home_keys(homes) -> set[str]:
