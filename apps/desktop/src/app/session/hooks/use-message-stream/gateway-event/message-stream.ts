@@ -1,4 +1,4 @@
-import type { BillingBlock } from '@hermes/shared'
+import { type BillingBlock, mergeUsage } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
@@ -442,11 +442,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       // let a background tile's turn overwrite the primary's count.
       updateSessionState(sessionId, state => ({
         ...state,
-        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+        usage: mergeUsage({ calls: 0, input: 0, output: 0, total: 0, ...state.usage }, payload.usage)
       }))
 
       if (isActiveEvent) {
-        setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        setCurrentUsage(current => mergeUsage(current, payload.usage))
       }
     }
 

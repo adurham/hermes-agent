@@ -193,7 +193,7 @@ export {
 } from './translucency'
 
 export { type UpdateDebt, updateDebt, type UpdateDebtReceipt, type UpdateDebtStep } from './update-debt'
-export { usageFromTick, type UsageTickPayload } from './usage-tick'
+export { mergeUsage, usageFromTick, type UsageTickPayload } from './usage-tick'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,
