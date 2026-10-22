@@ -710,7 +710,8 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   // Web Access: each handler takes `?profile=` and acts on the gateway serving it.
   'GET /api/webapp-access/status',
   'POST /api/webapp-access/start',
-  'POST /api/webapp-access/stop'
+  'POST /api/webapp-access/stop',
+  'POST /api/webapp-access/restart'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {

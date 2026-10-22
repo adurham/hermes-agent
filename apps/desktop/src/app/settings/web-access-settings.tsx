@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   getWebAccessStatus,
+  restartWebAccess,
   startWebAccess,
   stopWebAccess,
   type WebAccessChange,
@@ -33,6 +34,8 @@ const START_TIMEOUT_MS = 90_000
  * `pendingOn`/`pendingOff`: they disagree until the gateway restarts (a refused restart, or one in flight).
  */
 type Phase = 'off' | 'pendingOff' | 'pendingOn' | 'serving' | 'unavailable'
+
+type Busy = 'restart' | 'start' | 'stop' | null
 
 /** The gateway serves the configured web app: it applied this config, not an earlier one's port. */
 function servesConfig(status: WebAccessStatus): boolean {
@@ -92,7 +95,7 @@ type FormProps = { queryKey: readonly unknown[]; status: WebAccessStatus; w: Web
 
 function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
   const queryClient = useQueryClient()
-  const [busy, setBusy] = useState<'start' | 'stop' | null>(null)
+  const [busy, setBusy] = useState<Busy>(null)
   const [mode, setMode] = useState<WebAccessMode>(status.mode === 'public' ? 'public' : 'lan')
   const [publicUrl, setPublicUrl] = useState(status.public_url)
   const phase = phaseOf(status)
@@ -109,7 +112,7 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
   }
 
   // Saved either way; a refused restart (a chat is running) applies when the gateway next restarts.
-  const run = async (kind: 'start' | 'stop', change: () => Promise<WebAccessChange>) => {
+  const run = async (kind: NonNullable<Busy>, change: () => Promise<WebAccessChange>) => {
     setBusy(kind)
 
     try {
@@ -120,7 +123,7 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
         throw new Error(w.restartRefused(result.restart_error ?? ''))
       }
 
-      if (kind === 'start') {
+      if (result.enabled && kind !== 'stop') {
         apply(await waitForWebApp().catch(() => Promise.reject(new Error(w.startTimedOut))))
       }
     } catch (err) {
@@ -133,6 +136,8 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
 
   const start = () => void run('start', () => startWebAccess(mode, mode === 'public' ? publicUrl.trim() : undefined))
   const stop = () => void run('stop', stopWebAccess)
+  // A saved change the gateway has not applied yet: restart it, and nothing else.
+  const restart = () => void run('restart', restartWebAccess)
 
   return (
     <SettingsContent>
@@ -156,7 +161,7 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
           action={
             <Button
               disabled={busy !== null || (phase === 'off' && !ready)}
-              onClick={phase === 'off' || phase === 'pendingOn' ? start : stop}
+              onClick={phase === 'off' ? start : phase.startsWith('pending') ? restart : stop}
               size="sm"
               variant={phase === 'off' ? 'default' : 'outline'}
             >
@@ -214,7 +219,7 @@ function WhereRow({ lanUrl, locked, mode, onMode, onPublicUrl, port, publicUrl, 
   )
 }
 
-function pillLabel(phase: Phase, busy: 'start' | 'stop' | null, w: WebAccessTranslations): string {
+function pillLabel(phase: Phase, busy: Busy, w: WebAccessTranslations): string {
   const labels: Record<Phase, string> = {
     off: w.stopped,
     pendingOff: w.restartNeeded,
@@ -223,7 +228,7 @@ function pillLabel(phase: Phase, busy: 'start' | 'stop' | null, w: WebAccessTran
     unavailable: w.unavailable
   }
 
-  return busy === 'start' ? w.starting : labels[phase]
+  return busy === 'start' || (busy === 'restart' && phase === 'pendingOn') ? w.starting : labels[phase]
 }
 
 function describe(phase: Phase, status: WebAccessStatus, w: WebAccessTranslations): string {

@@ -247,3 +247,22 @@ def test_a_failed_build_turns_nothing_on_and_says_how_to_build(client, restarts,
     assert nous == []
     assert restarts == []
     assert not _config()["webapp"]["enabled"]
+
+
+def test_restart_applies_the_saved_config_and_does_nothing_else(client, restarts, nous, builds):
+    """The pane's "Restart gateway" (a saved change the gateway has not applied yet) restarts the
+    gateway serving the profile and nothing else: no Portal registration, no build, no config
+    write."""
+    from hermes_cli.config import read_raw_config, save_config
+
+    save_config({**_config(), "webapp": {"enabled": True, "host": "0.0.0.0"}})
+    saved = read_raw_config()
+
+    response = client.post("/api/webapp-access/restart")
+    assert response.status_code == 200, response.text
+    assert response.json()["restart_started"] is True
+    assert response.json()["mode"] == "lan"
+    assert restarts == ["applying Web Access"]
+    assert nous == []
+    assert builds == []
+    assert read_raw_config() == saved

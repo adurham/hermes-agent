@@ -45,3 +45,8 @@ export function startWebAccess(mode: WebAccessMode, publicUrl?: string): Promise
 export function stopWebAccess(): Promise<WebAccessChange> {
   return hermesApi<WebAccessChange>({ ...profileScoped(), method: 'POST', path: '/api/webapp-access/stop' })
 }
+
+/** Restart the gateway onto the saved config, and nothing else. */
+export function restartWebAccess(): Promise<WebAccessChange> {
+  return hermesApi<WebAccessChange>({ ...profileScoped(), method: 'POST', path: '/api/webapp-access/restart' })
+}

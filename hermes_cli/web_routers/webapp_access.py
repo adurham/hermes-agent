@@ -103,3 +103,11 @@ async def stop_webapp_access(profile: Optional[str] = None):
         return _restart(gateway, "turning off Web Access")
 
     return await _scoped(profile, _stop, config_write=True)
+
+
+@router.post("/api/webapp-access/restart")
+async def restart_webapp_access(profile: Optional[str] = None):
+    """Apply the saved config to a gateway that has not restarted onto it yet: restart that gateway
+    and nothing else (no Portal registration, no build, no config write)."""
+    profile = destructive_profile(profile, "POST /api/webapp-access/restart")
+    return await _scoped(profile, lambda gateway: _restart(gateway, "applying Web Access"))

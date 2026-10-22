@@ -10,13 +10,14 @@ vi.mock('@/store/profile', async (): Promise<object> => {
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   getWebAccessStatus: vi.fn(),
+  restartWebAccess: vi.fn(),
   setApiRequestProfile: vi.fn(),
   startWebAccess: vi.fn(),
   stopWebAccess: vi.fn()
 }))
 
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { WebAccessStatus } from '@/api/webapp-access'
@@ -102,5 +103,18 @@ describe('WebAccessSettings', () => {
     expect(screen.queryByText('My own URL')).toBeNull()
     expect(screen.queryByText(/192\.168\.1\.50/)).toBeNull()
     expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy()
+  })
+
+  it('restarts the gateway for a saved change without starting web access again', async () => {
+    // Saved `enabled: true`, but the gateway has not restarted onto it yet (a chat refused it).
+    const pending: WebAccessStatus = { ...OFF, enabled: true, mode: 'lan' }
+    mocked.restartWebAccess.mockResolvedValue({ ...pending, restart_error: 'busy', restart_started: false })
+    renderPane(pending)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart gateway' }))
+
+    await waitFor(() => expect(mocked.restartWebAccess).toHaveBeenCalledTimes(1))
+    expect(mocked.startWebAccess).not.toHaveBeenCalled()
+    expect(mocked.stopWebAccess).not.toHaveBeenCalled()
   })
 })
