@@ -1,7 +1,8 @@
 """Table-driven config migration registry.
 
-Each step is ``_migrate_to_N(results, quiet)``; the version gate and strict ascending order live
-in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
+Each step is ``_migrate_to_N(results, quiet)`` (a large topical step lives in a
+``config_migrations_<topic>.py`` sibling, registered here); the version gate and strict ascending
+order live in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
 step may only persist values that differ from the schema default (plus removals/renames).
 """
 
@@ -10,10 +11,11 @@ from __future__ import annotations
 import copy
 import functools
 import logging
-import os
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+from hermes_cli.config_migrations_browser import migrate_to_52
 
 logger = logging.getLogger(__name__)
 
@@ -703,132 +705,6 @@ def _migrate_to_50(results: dict[str, Any], quiet: bool) -> None:
             "  ✓ Removed security.tirith_* — the tirith scanner is no longer bundled with Hermes.")
 
 
-# AGENT_BROWSER_* (read by agent-browser, which left Hermes) -> the browser.* key Hermes reads now.
-_AGENT_BROWSER_ENV_KEYS = (
-    ("AGENT_BROWSER_EXECUTABLE_PATH", "executable_path"),
-    ("AGENT_BROWSER_PROFILE", "user_data_dir"),
-    ("AGENT_BROWSER_ARGS", "chromium_args"),
-    ("AGENT_BROWSER_HEADED", "headed"),
-    ("AGENT_BROWSER_ENGINE", "engine"),
-)
-
-
-def _agent_browser_env(home) -> dict[str, str]:
-    """AGENT_BROWSER_* as *home* set them: its dotenv layers, then the process env for the launch home
-    only (a served profile's env is the launch profile's, not its own)."""
-    import os
-
-    from hermes_cli.env_loader import resolve_home_dotenv
-    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
-
-    dotenv = resolve_home_dotenv(home)
-    launch = hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
-    found = {}
-    for name, _key in _AGENT_BROWSER_ENV_KEYS:
-        value = (dotenv.get(name) or (os.environ.get(name) if launch else None) or "").strip()
-        if value:
-            found[name] = value
-    return found
-
-
-def _inside_pm_store(value: str) -> bool:
-    """pm (and the Docker image, from pm) exported its own Chromium as AGENT_BROWSER_EXECUTABLE_PATH:
-    that is the default now, and a copied versioned store path would break at the next Chromium bump."""
-    from pathlib import Path
-
-    from pm import paths
-
-    try:
-        resolved = Path(value).expanduser().resolve()
-        roots = {paths.store_root().resolve(), paths.writable_store_root().resolve()}
-    except (OSError, RuntimeError):
-        return False
-    return any(resolved.is_relative_to(root) for root in roots)
-
-
-def _browser_value_from_env(key: str, value: str) -> Any:
-    """The ``browser.<key>`` value an AGENT_BROWSER_* value meant, or None when it carries nothing."""
-    if key == "chromium_args":
-        return [arg.strip() for arg in re.split(r"[,\n]", value) if arg.strip()] or None
-    if key == "headed":
-        return True if value.lower() in ("1", "true", "yes", "on") else None
-    if key == "engine":
-        return value.lower() if value.lower() in ("auto", "lightpanda", "chrome") else None
-    if key == "executable_path" and _inside_pm_store(value):
-        return None
-    if key == "user_data_dir" and not os.path.isabs(os.path.expanduser(value)):
-        # agent-browser inherited Hermes's cwd and resolved a relative profile there; browser.user_data_dir
-        # anchors relative paths at HERMES_HOME, so pin the directory the logins are in now.
-        return os.path.abspath(os.path.expanduser(value))
-    return value
-
-
-def _config_decided(key: str, current: Any) -> bool:
-    """``browser.<key>`` already won over its AGENT_BROWSER_* var, as core resolved them: ``engine: auto``
-    deferred to AGENT_BROWSER_ENGINE and ``headed`` was config OR env, so those defaults (core's `hermes
-    tools` Local Browser row wrote ``engine: auto``; old saves materialised both) do not block the move."""
-    if key == "engine":
-        return str(current or "").strip().lower() not in ("", "auto")
-    if key == "headed":
-        return current is not None and str(current).strip().lower() in ("true", "1", "yes")
-    return current not in (None, "", [])
-
-
-def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
-    # 51 -> 52: agent-browser and the built-in browser_* tools left Hermes; browser_exec is the only
-    # browser. `browser.backend` chose between the two, so it is dropped (an `off`, the opt-out of
-    # browser_exec, gets a notice saying how to turn browsing off now). The AGENT_BROWSER_* settings
-    # this home's .env gave agent-browser move to the browser.* keys the launcher reads, never over
-    # a value that already won over them (:func:`_config_decided`). .env itself is left alone. Camofox left core in the same release: a home
-    # running it is recorded now, from its pre-v52 files, so its left-core row converts it later
-    # while a newer home that installs the camofox plugin itself keeps browser_exec. The
-    # browser-extension control lane dispatched to the removed tools, so its key goes too.
-    from pathlib import Path
-
-    from hermes_cli.left_core_migration import record_core_use
-    from hermes_constants import get_hermes_home
-
-    config = read_raw_config()
-    browser = config.get("browser") if isinstance(config.get("browser"), dict) else {}
-    added, messages = [], []
-    if "backend" in browser:
-        backend = browser.pop("backend")
-        # YAML 1.1 reads an unquoted `off` as False; core treated that as off too.
-        if backend is False or (isinstance(backend, str) and backend.strip().lower() == "off"):
-            # config_added is what `hermes update` re-surfaces on its quiet path, so the notice rides in it.
-            note = ("removed browser.backend: off — the built-in browser tools are gone and browser_exec is the "
-                    "browser now; to turn browsing off, disable the `browser` toolset in `hermes tools`")
-            added.append(note)
-            messages.append(f"  ✓ {note[0].upper()}{note[1:]}.")
-        else:
-            added.append("removed browser.backend")
-    if "extension_control" in browser:
-        browser.pop("extension_control")
-        added.append("removed browser.extension_control")
-    moved = []
-    for name, value in _agent_browser_env(Path(get_hermes_home())).items():
-        key = dict(_AGENT_BROWSER_ENV_KEYS)[name]
-        if _config_decided(key, browser.get(key)):
-            continue
-        new = _browser_value_from_env(key, value)
-        if new is not None:
-            browser[key] = new
-            moved.append(f"{name} → browser.{key}")
-    if moved:
-        added.append(f"browser: {', '.join(moved)}")
-        messages.append(f"  ✓ Moved agent-browser settings from .env to config.yaml: {', '.join(moved)}")
-    used = record_core_use(Path(get_hermes_home()), config, 52)
-    if not added and not used:
-        return
-    if added:
-        config["browser"] = browser
-    _persist_migration(config)
-    results["config_added"].extend(added)
-    if not quiet:
-        for message in messages:
-            print(message)
-
-
 MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -975,8 +851,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
             "longer runs (or times out) a Bot Chat turn of its own."),
         extra_guard=lambda raw: "bot_chat_delivery_timeout_seconds" in raw)),
     # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
-    # browser.* (see _migrate_to_52).
-    (52, _migrate_to_52),
+    # browser.* (see config_migrations_browser.migrate_to_52).
+    (52, migrate_to_52),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
