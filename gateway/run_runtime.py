@@ -496,7 +496,7 @@ async def recover_bot_mailbox(authority):
 
 async def start_gateway_runtime_api(runner):
     from gateway import run_api
-    from gateway.webapp_listener import dial_origin, listener_plan, register_control_verbs
+    from gateway.webapp_listener import browser_session_token, dial_origin, listener_plan, register_control_verbs
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     host, port, webapp = listener_plan(home)
@@ -518,6 +518,13 @@ async def start_gateway_runtime_api(runner):
             reason = f"could not listen on {host}:{port} ({cause})"
         logger.error("Webapp unavailable: %s", reason)
         runner.webapp_status = {"state": "unavailable", "url": None, "reason": reason}
+        # Open tabs keep sending their credential to whatever answers on the Webapp's port, and that
+        # is not this gateway now. Replace it, so one captured there never opens this gateway; the
+        # tabs sign in again once the Webapp is back.
+        try:
+            browser_session_token(home, rotate=True)
+        except OSError as write_error:
+            logger.warning("Could not replace the Webapp's browser credential: %s", write_error)
         runner.session_api = await run_api.start_gateway_api(runner)
     else:
         if webapp is not None:

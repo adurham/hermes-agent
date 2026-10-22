@@ -40,6 +40,25 @@ def test_the_private_listener_after_a_failed_webapp_mount_is_mains(lost_listen_r
     assert "WEBAPP_BUNDLE" not in report["index"]["body"]
 
 
+def test_a_webapp_that_loses_its_port_replaces_the_browser_credential(lost_listen_race, tmp_path):
+    # Open tabs keep sending their credential to whatever answers on the Webapp's port. When that is
+    # not this gateway, the credential may have been captured, so it must not open this gateway later.
+    _, report = lost_listen_race
+    assert report["token_rotated"] is True
+    held = _run(tmp_path, {"webapp": {"enabled": True, "port": _free_port()}, "hold_port": True})
+    assert held["start_error"] is None, held.get("start_traceback")
+    assert held["status"]["state"] == "unavailable"
+    assert held["native_session_list"] is True
+    assert held["token_rotated"] is True
+
+
+def test_a_webapp_that_starts_keeps_the_browser_credential(tmp_path):
+    report = _run(tmp_path, {"webapp": {"enabled": True, "port": _free_port()}})
+    assert report["status"]["state"] == "serving"
+    assert report["state"]["session_token_is_browser_credential"] is True
+    assert report["token_rotated"] is False
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="only Linux lets two SO_REUSEADDR sockets bind one address")
 def test_the_webapp_owns_its_port_before_mounting_the_dashboard(tmp_path):
     # Two processes may both bind the Webapp's port under SO_REUSEADDR; the first to listen owns it.
