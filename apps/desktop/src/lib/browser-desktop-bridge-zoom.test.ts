@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { pageStorage } from '@/test/page-storage'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
@@ -53,16 +54,20 @@ describe('browser UI scale', () => {
   })
 
   it('keeps scaling usable when storage is blocked and rejects invalid scale inputs', async () => {
-    vi.spyOn(localStorage, 'getItem').mockImplementation(() => {
+    const read = vi.spyOn(pageStorage(), 'getItem').mockImplementation(() => {
       throw new Error('storage denied')
     })
-    vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+
+    const write = vi.spyOn(pageStorage(), 'setItem').mockImplementation(() => {
       throw new Error('storage denied')
     })
+
     const zoom = createBrowserZoom('')
     const resized = vi.fn()
     window.addEventListener('resize', resized)
     zoom.setPercent(175)
+    expect(read).toHaveBeenCalled()
+    expect(write).toHaveBeenCalled()
     expect(document.documentElement.style.zoom).toBe('1.75')
     expect((await zoom.get()).percent).toBe(175)
     expect(resized).toHaveBeenCalledTimes(1)

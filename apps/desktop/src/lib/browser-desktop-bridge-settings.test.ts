@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
+import { pageStorage } from '@/test/page-storage'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
@@ -52,11 +53,12 @@ describe('browser default project folder', () => {
   })
 
   it('rejects a choice this browser cannot keep instead of reporting it saved', async () => {
-    vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+    const write = vi.spyOn(pageStorage(), 'setItem').mockImplementation(() => {
       throw new Error('storage denied')
     })
 
     await expect(reload().setDefaultProjectDir('/srv/repos/app')).rejects.toThrow()
+    expect(write).toHaveBeenCalled()
     expect((await reload().getDefaultProjectDir()).dir).toBeNull()
   })
 })
