@@ -72,8 +72,9 @@ _LEDGER_PASSTHROUGH_KEYS = (
     "reasoning_tokens", "total_tokens", "provider", "turn_exit_reason", "service_tier",
 )
 # Beside ``failure_reason`` and ``error``: what ``agent.error_surface.build_error_surface_from_result`` reads,
-# so the authority's ``message.complete`` carries the same error card the TUI path builds.
-_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at")
+# so the authority's ``message.complete`` carries the same error card the TUI path builds;
+# ``usage_window_message`` also marks a window-plan refusal for the chat rewording.
+_FAILURE_DESCRIPTOR_KEYS = ("free_tier", "failure_retryable", "failure_resets_at", "usage_window_message")
 
 
 def _finite_viewer_turn() -> bool:
