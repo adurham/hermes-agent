@@ -1183,6 +1183,17 @@ class TestRefusalReadsAsTheStopLine:
         assert _usage_window_reset_context(self._agent()) == {"reset_at": DAY_RESET / 1000}
         assert _usage_window_reset_context(SimpleNamespace(_credits_state=None)) == {}
 
+    def test_a_regular_model_refused_by_its_day_names_the_day_everywhere(self):
+        """Day and Large-model allowances both full on a 402 for a model that is not top tier: the line, the retry
+        time, the pool bench and the card all name the day (what stops this model), not the month-away reset."""
+        from agent.conversation_loop import _usage_window_refusal
+        from agent.turn_recovery import _usage_window_reset_context
+        agent = self._agent(window_top_tier_used_bp=10_000, window_top_tier_resets_at_ms=MONTH_RESET)
+        text, resets_at, limit = _usage_window_refusal(agent, SimpleNamespace(error_context={"usage_window": True}))
+        assert text.startswith(f"You've hit your daily limit · resets {format_window_reset(DAY_RESET)}")
+        assert resets_at == DAY_RESET / 1000 and limit["gauge_id"] == "day"
+        assert _usage_window_reset_context(agent) == {"reset_at": DAY_RESET / 1000}
+
     def test_keep_going_off_with_no_balance_says_both_steps_everywhere(self):
         """A new subscriber's first limit (setting off by default, no top-up): the stop line, the next-steps
         payload and the 402 guidance all name both steps, since either one alone is still refused."""

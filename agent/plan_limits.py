@@ -149,6 +149,11 @@ def blocking_gauge(model: str, gauges: Iterable[Any], *, free: bool, top_tier: b
     return max(full, key=lambda g: g.resets_at_ms or 0) if full else None
 
 
+def current_model_is_top_tier(agent: Any) -> bool:
+    """*agent*'s current model is top tier, by its own profile's cached catalog (see :func:`is_top_tier`)."""
+    return is_top_tier(str(getattr(agent, "model", "") or ""), cached_pricing(str(getattr(agent, "base_url", "") or "")))
+
+
 def is_blocked(model: str, gauges: Iterable[Any], pricing: Optional[dict]) -> bool:
     return blocking_gauge(model, gauges, free=is_free(model, pricing),
                           top_tier=is_top_tier(model, pricing)) is not None
