@@ -733,6 +733,7 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
     query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
     ticket = file_tickets.mint(
         payload.route, {key: value for key, value in query.items() if value is not None}, authority=authority,
+        session_token=file_tickets.session_token_of(request),
     )
     return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
 

@@ -103,6 +103,30 @@ def test_signing_out_ends_the_media_links_the_session_token_minted(webapp, sign_
     assert client.get("/api/files/stream", params=stream).status_code == 401
 
 
+def test_a_media_link_minted_while_signing_out_streams_nothing(webapp, sign_out, tmp_path, monkeypatch):
+    """The request asking for the link was admitted with the old credential, and the sign-out
+    finished before the link was stored: the link ends with the credential that asked for it."""
+    from hermes_cli import web_server_file_tickets
+
+    client = webapp.client
+    root = tmp_path / "files"
+    root.mkdir()
+    (root / "clip.mp4").write_bytes(b"hello")
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+    mint = web_server_file_tickets.mint
+
+    def mint_after_sign_out(*args, **kwargs):
+        sign_out()
+        return mint(*args, **kwargs)
+
+    monkeypatch.setattr(web_server_file_tickets, "mint", mint_after_sign_out)
+    minted = client.post("/api/files/ticket", json={"route": "stream", "path": str(root / "clip.mp4")},
+                         headers={"X-Hermes-Session-Token": _TOKEN})
+    assert minted.status_code == 200, minted.text
+    stream = {"path": str(root / "clip.mp4"), "ticket": minted.json()["ticket"]}
+    assert client.get("/api/files/stream", params=stream).status_code == 401
+
+
 def test_a_socket_admitted_while_the_token_is_replaced_closes_at_once(monkeypatch):
     """The gate checked the old token, then sign-out replaced it and closed the sockets it knew of
     before this one was tracked: tracking it closes it."""

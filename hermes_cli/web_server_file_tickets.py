@@ -9,11 +9,15 @@ else. A download is one request, so its ticket is single-use; a media element
 issues many Range requests for one source, so a stream ticket is reusable until
 it expires. Each ticket captures the resolved file and the named profile homes it
 belongs to; the resource opener refuses it once one of those homes is missing or
-deleted (``hermes_constants.assert_named_profile_home_live``). In-memory only:
-tickets die with the process, like the token.
+deleted (``hermes_constants.assert_named_profile_home_live``). A ticket minted for
+a request that presented the browser session token redeems only while that token
+is current, like a socket ticket, so signing out ends it even when the sign-out
+lands while the ticket is being minted. In-memory only: tickets die with the
+process, like the token.
 """
 from __future__ import annotations
 
+import hmac
 import secrets
 import threading
 import time
@@ -56,6 +60,10 @@ class _Ticket:
     expires_at: float
     single_use: bool
     authority: FileAuthority
+    #: Digest of the browser session token the minting request presented (None for any other
+    #: credential): the ticket redeems only while that token is current, so a sign-out that lands
+    #: between the request's admission and the mint still ends it.
+    session_token: str | None = None
 
 
 _lock = threading.Lock()
@@ -66,8 +74,25 @@ def _scope(route_path: str, query: Iterable[tuple[str, str]]) -> _Scope:
     return route_path, tuple(sorted(query))
 
 
-def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority) -> str:
-    """Ticket for GET/HEAD of ``ROUTES[route]`` with exactly ``query`` (plus ``ticket``)."""
+def session_token_of(request: Request) -> str | None:
+    """The browser session token *request* was admitted with on the loopback gate, or None when it
+    came with any other credential (a sign-in, a native client's grant, a service token)."""
+    from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+    if (getattr(request.app.state, "auth_required", False)
+            or getattr(request.state, "native_http_principal", None)
+            or getattr(request.state, "token_authenticated", False)):
+        return None
+    return (request.headers.get(_SESSION_HEADER_NAME)
+            or request.headers.get("authorization", "").removeprefix("Bearer ") or None)
+
+
+def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority,
+         session_token: str | None = None) -> str:
+    """Ticket for GET/HEAD of ``ROUTES[route]`` with exactly ``query`` (plus ``ticket``); minted for
+    a request admitted with *session_token*, it redeems only while that token is current."""
+    from hermes_cli.web_session_sockets import token_digest
+
     route_path = ROUTES[route]
     single_use = route == "download"
     now = time.monotonic()
@@ -77,6 +102,7 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority) -> s
         expires_at=now + (DOWNLOAD_TTL_SECONDS if single_use else STREAM_TTL_SECONDS),
         single_use=single_use,
         authority=authority,
+        session_token=None if session_token is None else token_digest(session_token),
     )
     with _lock:
         for stale in [key for key, value in _tickets.items() if value.expires_at <= now]:
@@ -94,7 +120,10 @@ def revoke_all() -> None:
 
 
 def redeem(request: Request) -> bool:
-    """True when ``?ticket=`` authorizes this exact request; consumes a download ticket."""
+    """True when ``?ticket=`` authorizes this exact request; consumes a download ticket. A ticket
+    minted with a session token that has since been replaced is dropped instead."""
+    from hermes_cli.web_session_sockets import current_digest
+
     ticket = request.query_params.get("ticket", "")
     if not ticket or request.method not in ("GET", "HEAD"):
         return False
@@ -102,6 +131,9 @@ def redeem(request: Request) -> bool:
     with _lock:
         entry = _tickets.get(ticket)
         if entry is None or entry.scope != scope or entry.expires_at <= time.monotonic():
+            return False
+        if entry.session_token is not None and not hmac.compare_digest(entry.session_token, current_digest()):
+            del _tickets[ticket]
             return False
         if entry.single_use:
             del _tickets[ticket]

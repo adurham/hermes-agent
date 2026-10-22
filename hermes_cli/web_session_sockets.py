@@ -41,7 +41,8 @@ def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _current_digest() -> str:
+def current_digest() -> str:
+    """Digest of the browser session token in use now."""
     from hermes_cli.web_server import _SESSION_TOKEN
     return token_digest(_SESSION_TOKEN)
 
@@ -57,7 +58,7 @@ def ticket_refusal(info: dict[str, Any], socket: Optional[str], *, auth_required
     if named != socket and (named is not None or socket in OWN_TICKET_SOCKETS):
         return f"ticket for {named or 'any socket'} presented to {socket or 'an unnamed socket'}"
     minted_with = info.get("session_token")
-    if minted_with is not None and (auth_required or not hmac.compare_digest(minted_with, _current_digest())):
+    if minted_with is not None and (auth_required or not hmac.compare_digest(minted_with, current_digest())):
         return "ticket minted with a replaced session token"
     return None
 
@@ -78,7 +79,7 @@ def track(ws, admitted_with: str) -> None:
         for key in [key for key, (ref, _loop) in _live.items() if ref() is None]:
             del _live[key]
         _live[id(ws)] = (weakref.ref(ws), loop)
-    if not hmac.compare_digest(admitted_with, _current_digest()):
+    if not hmac.compare_digest(admitted_with, current_digest()):
         _close_on(ws, loop)
 
 
