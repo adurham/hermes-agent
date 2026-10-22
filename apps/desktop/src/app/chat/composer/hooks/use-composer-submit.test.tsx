@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
@@ -597,9 +597,15 @@ describe('useComposerSubmit busy-turn routing', () => {
 })
 
 describe('useComposerSubmit keyboard after send', () => {
+  beforeEach(() => {
+    // Touch handling is the browser-hosted Desktop's.
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+  })
+
   afterEach(() => {
     cleanup()
     window.document.body.replaceChildren()
+    delete window.document.documentElement.dataset.hermesDesktopHost
     vi.unstubAllGlobals()
   })
 

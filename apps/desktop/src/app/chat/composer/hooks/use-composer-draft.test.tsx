@@ -825,6 +825,8 @@ describe('useComposerDraft — touch never re-enters the editor on its own', () 
   }
 
   beforeEach(() => {
+    // Touch handling is the browser-hosted Desktop's.
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
   })
 
@@ -834,6 +836,7 @@ describe('useComposerDraft — touch never re-enters the editor on its own', () 
     clearSessionDraft('touch-clear')
     mainComposerScope.clear()
     markActiveComposer('main')
+    delete window.document.documentElement.dataset.hermesDesktopHost
     vi.unstubAllGlobals()
   })
 

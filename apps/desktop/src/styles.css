@@ -848,9 +848,10 @@
 /* Touch surfaces need a real finger-sized control lane. Keep desktop's
    compact 24/26px rhythm, but promote the same composer actions to the 44px
    minimum recommended for coarse pointers without adding a second
-   mobile-only component. */
+   mobile-only component. The touch layout is the browser-hosted Desktop's;
+   native Desktop keeps its compact rhythm on a coarse pointer too. */
 @media (hover: none), (pointer: coarse) {
-  :root {
+  html[data-hermes-desktop-host='browser'] {
     --composer-control-size: 2.75rem;
     --composer-control-primary-size: 2.75rem;
     --composer-voice-menu-size: var(--composer-control-size);
@@ -2564,38 +2565,39 @@ button[data-slot='aui_msg-reactions'] svg {
 /* Hover reveals are useful on desktop, but a coarse pointer needs a stable
    action lane. Keep the rich desktop row intact and expose a compact Copy +
    More pair on touch surfaces; the buttons themselves get the 44px hit box
-   while the glyphs retain the existing quiet 14px scale. */
+   while the glyphs retain the existing quiet 14px scale. Only the
+   browser-hosted Desktop has the touch layout. */
 .aui-message-actions-touch {
   display: none;
 }
 
 @media (hover: none), (pointer: coarse) {
-  [data-slot='aui_msg-actions'] {
+  html[data-hermes-desktop-host='browser'] [data-slot='aui_msg-actions'] {
     opacity: 1;
     pointer-events: auto;
   }
 
-  [data-slot='aui_msg-actions'] .aui-message-actions-desktop {
+  html[data-hermes-desktop-host='browser'] [data-slot='aui_msg-actions'] .aui-message-actions-desktop {
     display: none;
   }
 
-  [data-slot='aui_msg-actions'] .aui-message-actions-touch {
+  html[data-hermes-desktop-host='browser'] [data-slot='aui_msg-actions'] .aui-message-actions-touch {
     display: flex;
   }
 
-  [data-slot='aui_msg-actions'] .aui-message-actions-touch button {
+  html[data-hermes-desktop-host='browser'] [data-slot='aui_msg-actions'] .aui-message-actions-touch button {
     min-width: 2.75rem;
     min-height: 2.75rem;
   }
 
-  button[data-slot='aui_msg-reactions'] {
+  html[data-hermes-desktop-host='browser'] button[data-slot='aui_msg-reactions'] {
     min-width: 2.75rem;
     min-height: 2.75rem;
     opacity: 0.5;
     pointer-events: auto;
   }
 
-  button[data-slot='aui_msg-reactions'][data-reacted] {
+  html[data-hermes-desktop-host='browser'] button[data-slot='aui_msg-reactions'][data-reacted] {
     opacity: 1;
   }
 }

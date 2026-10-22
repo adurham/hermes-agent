@@ -43,6 +43,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  delete window.document.documentElement.dataset.hermesDesktopHost
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -70,6 +71,8 @@ describe('isTapbackDoubleClick', () => {
 
 describe('double-click to heart an assistant message', () => {
   it('leaves touch double-tap selection intact instead of claiming it as a reaction', async () => {
+    // Touch handling is the browser-hosted Desktop's.
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     vi.stubGlobal(
       'matchMedia',
       vi.fn((query: string) => ({

@@ -25,7 +25,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { LruCache } from '@/lib/lru-cache'
-import { $touchPointer } from '@/lib/touch-interaction'
+import { $touchPointer, isTouchInteraction } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
@@ -570,13 +570,14 @@ export const UserMessage: FC<{
                 // menu, and this handler's selection guard keeps ⌘C flows.
                 data-context-menu-skip=""
                 onContextMenu={
-                  // Right-click is the desktop reaction gesture. Touch surfaces
-                  // leave long-press entirely to the platform so selection
-                  // handles and Copy are never replaced by the picker.
+                  // Right-click is the desktop reaction gesture. A touch long-press
+                  // in the browser-hosted Desktop stays the platform's, so selection
+                  // handles and Copy are never replaced by the picker; a mouse
+                  // right-click on the same device still opens it.
                   readOnly || !reactionsEnabled
                     ? undefined
                     : event => {
-                        if (hasTextSelection() || touch) {
+                        if (hasTextSelection() || isTouchInteraction(event.nativeEvent)) {
                           return
                         }
 
