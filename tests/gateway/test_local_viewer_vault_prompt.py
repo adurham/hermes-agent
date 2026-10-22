@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform
+from tests.waiting import wait_until
 
 
 class _Peer:
@@ -31,13 +32,6 @@ def _events():
     return events, peer
 
 
-def _wait_for(predicate, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        assert time.monotonic() < deadline
-        time.sleep(0.01)
-
-
 def _turn(events, platform=Platform.LOCAL, session_id='s1'):
     authority = SimpleNamespace(sessions={session_id: SimpleNamespace(event_stream=events)})
     return SimpleNamespace(_approval_owner=(authority, session_id, 1),
@@ -46,7 +40,7 @@ def _turn(events, platform=Platform.LOCAL, session_id='s1'):
 
 def _answer(peer, method, value):
     from gateway.session_server_requests import is_response_frame, resolve
-    _wait_for(lambda: any(f.get('method') == method for f in peer.frames))
+    wait_until(lambda: any(f.get('method') == method for f in peer.frames), what=f'{method} request')
     request = next(f for f in peer.frames if f.get('method') == method)
     from tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
     assert validate_params(SERVER_REQUESTS[method], request['params'])[1] is None
@@ -157,11 +151,12 @@ def test_interrupt_withdraws_the_code_card():
             out['code'] = unlock.get_code_prompt_callback()('example.com', '')
     worker = threading.Thread(target=run)
     worker.start()
-    _wait_for(lambda: any(f.get('method') == 'vault.code' for f in peer.frames))
+    wait_until(lambda: any(f.get('method') == 'vault.code' for f in peer.frames), what='vault.code request')
     agent._interrupt_requested = True
     worker.join(5)
     assert out['code'] == ''
-    _wait_for(lambda: any(f.get('params', {}).get('type') == 'request.cancel' for f in peer.frames))
+    wait_until(lambda: any(f.get('params', {}).get('type') == 'request.cancel' for f in peer.frames),
+               what='request.cancel')
 
 
 def test_no_attached_viewer_returns_at_once():
@@ -235,3 +230,23 @@ def test_closing_the_session_locks_only_the_managers_it_unlocked():
     finally:
         unlock.lock('test-backend-a')
         unlock.lock('test-backend-b')
+
+
+def test_a_manager_unlocked_on_a_tool_worker_is_released_with_its_session():
+    """browser_vault often runs on a tool worker (parallel calls): the unlock owner must cross that boundary
+    with the callbacks, or closing the chat leaves the manager unlocked until its idle timeout."""
+    from agent.vault_backends import unlock
+    from gateway.session_vault_prompt import release_unlocks, vault_prompt_scope
+    from tools.thread_context import propagate_context_to_thread
+    events, _ = _events()
+    try:
+        with vault_prompt_scope(_turn(events, session_id='s1'), SimpleNamespace()):
+            worker = threading.Thread(target=propagate_context_to_thread(
+                lambda: unlock.store_session_token('test-backend-w', 'token-w')))
+            worker.start()
+            worker.join(5)
+        assert unlock.is_unlocked('test-backend-w')
+        release_unlocks('s1')
+        assert not unlock.is_unlocked('test-backend-w')
+    finally:
+        unlock.lock('test-backend-w')

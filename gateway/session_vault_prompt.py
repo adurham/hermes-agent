@@ -69,7 +69,7 @@ def vault_prompt_scope(turn, agent):
         return ask("vault.code", {"site": site, "hint": hint}, CODE_TIMEOUT_S)
 
     previous = (unlock.get_unlock_prompt_callback(), unlock.get_save_login_prompt_callback(),
-                unlock.get_code_prompt_callback(), getattr(unlock._current_session_tls, "sid", None))
+                unlock.get_code_prompt_callback(), unlock.get_current_session_id())
     unlock.set_unlock_prompt_callback(unlock_prompt)
     unlock.set_save_login_prompt_callback(save_login)
     unlock.set_code_prompt_callback(code_prompt)
