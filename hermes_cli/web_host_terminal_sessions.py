@@ -259,9 +259,11 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return session, owner
 
 
-async def _read_frames(ws: WebSocket, inbox: asyncio.Queue) -> None:
+async def _read_frames(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future) -> None:
     """Queue inbound frames. The last item is None, or the error that ended reading
-    (re-raised by ``_pump_input`` so the route's handlers still see it)."""
+    (re-raised by ``_pump_input`` so the route's handlers still see it). ``ended`` gets the same
+    item as soon as reading ends, before it is queued: a write waiting on the shell, or a full
+    inbox behind it, must not keep the pump from seeing that the socket is gone."""
     end = None
     try:
         while (msg := await ws.receive()).get("type") != "websocket.disconnect":
@@ -271,7 +273,45 @@ async def _read_frames(ws: WebSocket, inbox: asyncio.Queue) -> None:
     # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
     except Exception as exc:
         end = exc
+    ended.set_result(end)
     await inbox.put(end)
+
+
+async def _write_while_open(session: PtySession, ws: WebSocket, data: bytes, fence,
+                            ended: asyncio.Future) -> bool | None:
+    """``session.write`` of *data* with no deadline while the socket is open, or None once the
+    socket has ended and the write has to wait for the program to read.
+
+    The program may leave its input unread for as long as it likes, but not past the viewer. Input
+    the tab sent before it closed still reaches the program as far as the program takes it; the
+    first time the write then has to wait for room, it is cancelled (the rest is dropped, as on a
+    takeover) and the session stays alive for the caller to detach.
+    """
+    loop = asyncio.get_running_loop()
+    stalled = asyncio.Event()
+
+    def watched(write):
+        accepted = fence(write)
+        # The POSIX bridge reports 0 bytes taken when the program's input queue is full; it then
+        # waits for room. Runs in the bridge's worker thread.
+        full = type(accepted) is int and accepted == 0
+        loop.call_soon_threadsafe(stalled.set if full else stalled.clear)
+        return accepted
+
+    write = asyncio.ensure_future(session.write(ws, data, fence=watched, timeout=None))
+    try:
+        await asyncio.wait((write, ended), return_when=asyncio.FIRST_COMPLETED)
+        if not write.done():
+            stall = asyncio.ensure_future(stalled.wait())
+            try:
+                await asyncio.wait((write, stall), return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stall.cancel()
+    finally:
+        if not write.done():
+            write.cancel()
+            await asyncio.wait((write,))
+    return None if write.cancelled() else write.result()
 
 
 def _input_runs(frames: list[dict], resize_re):
@@ -306,13 +346,15 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
     Writes have no deadline. While the foreground program is not reading (``sleep``,
     ``npm install``) the PTY takes about 1 KB of input on macOS, so a paste waits for
     that program, in order, with any Ctrl-C behind it, as in native Desktop's terminal.
-    A re-attach cancels the wait and keeps the shell; only a closed bridge (the shell
+    A re-attach or the socket closing cancels the wait and keeps the shell (``host_terminal``
+    then detaches it, so the retention reaper owns it again); only a closed bridge (the shell
     exited or the terminal was closed) or a deleted profile drops the session. ConPTY
     buffers input itself, so Windows writes land at once and keep the bridge's deadline.
     """
     from hermes_cli.web_server_chat import _RESIZE_RE
     inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)
-    reader = asyncio.create_task(_read_frames(ws, inbox))
+    ended = asyncio.get_running_loop().create_future()
+    reader = asyncio.create_task(_read_frames(ws, inbox, ended))
     try:
         # No Ctrl-L/redraw input: arbitrary foreground shell programs own stdin.
         while session._ws is ws and session.alive:
@@ -325,9 +367,15 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
                     session.resize(ws, cols=item[0], rows=item[1])
                     continue
                 try:
-                    delivered = await session.write(ws, item, fence=owner.admit, timeout=None)
+                    delivered = await _write_while_open(session, ws, item, owner.admit, ended)
                 except (TerminalExpired, FileNotFoundError):
                     await registry.remove(token)
+                    return
+                if delivered is None:
+                    # The socket ended and this input was left waiting for the program: stop here,
+                    # so the caller detaches a shell that is still running.
+                    if isinstance(ended.result(), Exception):
+                        raise ended.result()
                     return
                 if not delivered:
                     # A closed bridge marked the session dead. A takeover only cancelled this

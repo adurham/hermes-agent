@@ -252,3 +252,161 @@ async def test_host_reaper_releases_dead_shell_before_drain_observes_eof(tmp_pat
     finally:
         await registry.close_all()
         await asyncio.to_thread(bridge.close)
+
+
+class ClosingTab:
+    """A browser tab on the host terminal: it sends ``frames``, then whatever ``type`` adds, and its
+    socket ends when ``close`` is called. Closing never cancels the route: like uvicorn, it only
+    queues the disconnect for the next ``receive``."""
+
+    app = None
+    query_params: dict = {}
+
+    def __init__(self, *frames):
+        self.inbound = asyncio.Queue()
+        self.type(*frames)
+
+    def type(self, *frames):
+        for frame in frames:
+            self.inbound.put_nowait({"type": "websocket.receive", "bytes": frame})
+
+    def close_tab(self):
+        self.inbound.put_nowait({"type": "websocket.disconnect"})
+
+    async def receive(self):
+        return await self.inbound.get()
+
+    async def send_text(self, _text):
+        pass
+
+    async def send_bytes(self, _data):
+        pass
+
+    async def close(self, code=1000, reason=None):
+        pass
+
+
+class UnreadInput:
+    """The POSIX bridge while the foreground program is not reading: its input queue is full, so a
+    write takes 0 bytes and then, with no deadline, waits for room until it is cancelled."""
+
+    def __init__(self):
+        self._closed = False
+        self.waiting, self.cancelled = threading.Event(), threading.Event()
+
+    async def write(self, data, *, timeout=10.0, fence=None):
+        assert timeout is None, "host terminal input has no deadline"
+        assert await asyncio.to_thread(fence, lambda: 0) == 0
+        self.waiting.set()
+        try:
+            await asyncio.get_running_loop().create_future()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+    def resize(self, cols, rows):
+        pass
+
+    def close(self):
+        self._closed = True
+
+    def is_alive(self):
+        return not self._closed
+
+
+@contextmanager
+def unread_input(_monkeypatch):
+    bridge = UnreadInput()
+    yield bridge, bridge.waiting, bridge.cancelled
+
+
+@contextmanager
+def unread_posix_pty(_monkeypatch):
+    """The POSIX bridge on a real pseudo-terminal that nobody reads: a paste fills its input buffers
+    and then waits for room."""
+    import pty
+    import tty
+    from hermes_cli import pty_bridge
+
+    master, slave = pty.openpty()
+    tty.setraw(slave)
+    os.set_blocking(master, False)
+    bridge = pty_bridge.PtyBridge.__new__(pty_bridge.PtyBridge)
+    bridge._fd, bridge._closed, bridge._fd_lock = master, False, threading.Lock()
+    waiting, cancelled = threading.Event(), threading.Event()
+    wait_writable = bridge._wait_writable
+
+    async def watched(timeout):
+        waiting.set()
+        try:
+            return await wait_writable(timeout)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    bridge._wait_writable = watched
+    try:
+        yield bridge, waiting, cancelled
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("typed_after", [0, 64], ids=["quiet", "full-inbox"])
+@pytest.mark.parametrize("terminal", [
+    pytest.param(unread_posix_pty, id="posix-pty", marks=pytest.mark.platforms("posix")),
+    pytest.param(unread_input, id="unread-input", marks=pytest.mark.platforms("any")),
+])
+async def test_closing_the_tab_during_a_waiting_paste_detaches_and_keeps_the_shell(
+    tmp_path, monkeypatch, terminal, typed_after,
+):
+    """A paste into a program that is not reading (``sleep``, ``npm install``) waits for it with no
+    deadline. When the tab closes meanwhile, the wait is cancelled and the shell is detached, as on
+    any disconnect: it keeps running, retained for a reattach, and the reaper retires it once its
+    retention runs out. A full input queue behind the paste (keys typed while it waited) does not
+    hide the close."""
+    from hermes_cli import web_host_terminal_sessions as host_sessions
+
+    assert typed_after in (0, host_sessions._INPUT_BATCH_FRAMES)
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner = HostOwner(("loopback", "test"), profile, "sh", str(tmp_path))
+    registry = HostTerminalRegistry()
+    # 1 MiB: more than a pseudo-terminal buffers anywhere between its master and the program.
+    paste = b"".join(b"%05d %s\n" % (n, b"x" * 57) for n in range(16 * 1024))
+    handler = None
+    with terminal(monkeypatch) as (bridge, waiting, cancelled):
+        session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
+        registry._sessions[session.key] = session
+        registry.owners[session.key] = owner
+
+        async def admit(_ws, _registry):
+            return session, owner
+
+        monkeypatch.setattr(host_sessions, "get_host_terminals", lambda _app: registry)
+        monkeypatch.setattr(host_sessions, "_admit", admit)
+        tab = ClosingTab(paste)
+        try:
+            handler = asyncio.create_task(host_sessions.host_terminal(tab))
+            assert await asyncio.to_thread(waiting.wait, 5), "the paste never waited for the program"
+            tab.type(*[b"k"] * typed_after)
+            tab.close_tab()
+            async with asyncio.timeout(5):
+                await handler
+            assert cancelled.is_set()
+            assert session.alive and not bridge._closed
+            assert registry._sessions.get(session.key) is session
+            assert not session.attached and session._ws is None
+            assert session.last_detached_at is not None
+            assert registry.expired(session, session.last_detached_at + registry._ttl + 1)
+        finally:
+            if handler is not None:
+                handler.cancel()
+                await asyncio.gather(handler, return_exceptions=True)
+            registry._sessions.clear()
+            registry.owners.clear()
+            await registry.close_all()
