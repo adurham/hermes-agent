@@ -200,6 +200,25 @@ def test_behind_the_dashboard_sign_in_the_launcher_gets_the_webapp_address(monke
     assert not getattr(state, "webapp_window_tickets", None)
 
 
+@pytest.mark.parametrize(("public_url", "params", "opened"), [
+    ("https://webapp.example.net", {}, "https://webapp.example.net/"),
+    ("https://example.net:8443/hermes", {"profile": "work"}, "https://example.net:8443/hermes/?profile=work"),
+])
+def test_behind_its_own_public_url_the_launcher_opens_that_url_to_sign_in(monkeypatch, tmp_path, public_url,
+                                                                          params, opened):
+    # Sign-in keeps its state cookie on the address the browser opened and returns to a callback on
+    # webapp.public_url, so the launcher opens that URL, path prefix kept; a sign-in started on the
+    # loopback address could never finish. Native clients keep the loopback address.
+    runner, _, _ = _start_runtime_api(
+        monkeypatch, tmp_path, f"webapp:\n  enabled: true\n  port: 9555\n  public_url: {public_url}\n")
+    # The gateway's dashboard mount records webapp.public_url as the listener's own public URL.
+    state = SimpleNamespace(ui_surface="webapp", auth_required=True, listener_public_url=public_url)
+    runner.session_api.app = SimpleNamespace(web=SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=state)))
+    result = _ask(runner, "webapp-launch", params=params)["result"]
+    assert result == {"url": opened, "private": False, "expires_in_seconds": None, "sign_in": True}
+    assert runner.webapp_status["url"] == "http://127.0.0.1:9555"
+
+
 def _serving_runner(monkeypatch, tmp_path):
     runner, _, _ = _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n  port: 9555\n")
     # The gateway mounts the dashboard app as the Webapp surface on a private (loopback) listener.

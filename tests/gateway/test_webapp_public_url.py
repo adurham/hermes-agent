@@ -113,6 +113,13 @@ def test_the_webapps_public_url_engages_sign_in_on_a_loopback_bind(own_url):
     assert own_url["launch"]["sign_in"] is True
 
 
+def test_hermes_webapp_opens_the_webapps_public_url_to_sign_in(own_url):
+    # The sign-in callback is on the public URL, so the browser starts there too; native clients
+    # keep the loopback address.
+    assert own_url["launch"]["url"] == f"{WEBAPP_URL}/"
+    assert own_url["api_origin"].startswith("http://127.0.0.1:")
+
+
 def test_the_webapp_trusts_only_its_own_public_host(own_url):
     assert own_url["state"]["trusted_public_hosts"] == ["webapp.example.net"]
     assert own_url["probe_host_status_code"] == 200

@@ -66,9 +66,10 @@ serves share its Webapp; a standalone profile's own gateway serves its own when 
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
 for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
 you run, keep the loopback host and set `webapp.public_url` to the address it serves instead; that
-requires the same sign-in. `hermes webapp` then opens the Webapp's address, where you sign in with your
-dashboard account; one-use links serve only a Webapp that needs no sign-in. HTTPS is strongly
-recommended remotely and browsers require it for some microphone and clipboard features.
+requires the same sign-in. `hermes webapp` then opens the Webapp's address (`webapp.public_url` when
+set), where you sign in with your dashboard account; one-use links serve only a Webapp that needs no
+sign-in. HTTPS is strongly recommended remotely and browsers require it for some microphone and
+clipboard features.
 
 :::warning Treat Webapp access like access to Hermes on the host
 A signed-in Webapp user can run arbitrary commands as the OS account running Hermes, run agent tools,
