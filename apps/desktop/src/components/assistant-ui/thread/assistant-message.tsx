@@ -754,9 +754,10 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
 
 // usage_window: "Switch to Model A" — the plan's recommended model that
 // still works past the limit (agent/plan_limits.py picked it). Switches THIS
-// session through the same slash path a typed `/model <id> --provider nous
-// --session` takes (session.info repaints the composer), then re-runs the
-// refused turn. Session-only on purpose: the user's default stays put.
+// session (session.info repaints the composer), then re-runs the refused turn
+// only once the switch applied: a guarded target waits for the user's answer,
+// and keeping the current model re-runs nothing. Session-only on purpose: the
+// user's default stays put.
 const SwitchToModelAction: FC<{ suggestion: UsageLimitSuggestion }> = ({ suggestion }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -766,10 +767,10 @@ const SwitchToModelAction: FC<{ suggestion: UsageLimitSuggestion }> = ({ suggest
   const [busy, setBusy] = useState(false)
 
   const switchAndRetry = useCallback(async () => {
-    const delegate = sessionTileDelegate()
+    const switchSessionModel = sessionTileDelegate()?.switchSessionModel
 
-    if (!sessionId || !delegate) {
-      notifyError(new Error('slash delegate unavailable'), copy.errorSwitchModelFailed)
+    if (!sessionId || !switchSessionModel) {
+      notifyError(new Error('session delegate unavailable'), copy.errorSwitchModelFailed)
 
       return
     }
@@ -778,8 +779,9 @@ const SwitchToModelAction: FC<{ suggestion: UsageLimitSuggestion }> = ({ suggest
     setBusy(true)
 
     try {
-      await delegate.executeSlash(`/model ${suggestion.model} --provider ${suggestion.provider} --session`, sessionId)
-      aui.message().reload()
+      if (await switchSessionModel(sessionId, suggestion.model, suggestion.provider)) {
+        aui.message().reload()
+      }
     } catch (error) {
       notifyError(error, copy.errorSwitchModelFailed)
     } finally {

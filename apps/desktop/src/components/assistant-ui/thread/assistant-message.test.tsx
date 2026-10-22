@@ -416,9 +416,9 @@ describe("a window plan's limit: one-click switch and credits (no silent switch)
   })
 
   it('switches THIS session to the recommended model, then re-runs the turn', async () => {
-    const executeSlash = vi.fn(async () => {})
+    const switchSessionModel = vi.fn(async () => true)
     const onReload = vi.fn(async () => {})
-    setSessionTileDelegate({ executeSlash } as unknown as SessionTileDelegate)
+    setSessionTileDelegate({ switchSessionModel } as unknown as SessionTileDelegate)
     $activeSessionId.set('rt-1')
 
     render(
@@ -430,12 +430,34 @@ describe("a window plan's limit: one-click switch and credits (no silent switch)
     fireEvent.click(await screen.findByRole('button', { name: 'Switch to Model Free (free)' }))
 
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1))
-    expect(executeSlash).toHaveBeenCalledWith('/model example/model-free:free --provider nous --session', 'rt-1')
+    expect(switchSessionModel).toHaveBeenCalledWith('rt-1', 'example/model-free:free', 'nous')
     // No balance: the credits way on is Billing, labelled for what it does.
     expect(screen.getByRole('button', { name: 'Open billing settings' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Turn on Keep going on credits' })).toBeNull()
     // The generic provider menu is replaced by the one-click switch.
     expect(screen.queryByRole('button', { name: 'Switch provider' })).toBeNull()
+  })
+
+  it('re-runs nothing while the switch is unconfirmed or the user keeps the current model', async () => {
+    // The gateway asked to confirm a guarded target and the user kept the current model.
+    const switchSessionModel = vi.fn(async () => false)
+    const executeSlash = vi.fn(async () => {})
+    const onReload = vi.fn(async () => {})
+    setSessionTileDelegate({ executeSlash, switchSessionModel } as unknown as SessionTileDelegate)
+    $activeSessionId.set('rt-1')
+
+    render(
+      <MemoryRouter>
+        <Harness assistant={limitMessage('add_credits')} onReload={onReload} />
+      </MemoryRouter>
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Switch to Model Free (free)' }))
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+
+    expect(onReload).not.toHaveBeenCalled()
   })
 
   it('with a balance and Keep going off, offers to turn on Keep going (a lasting setting)', async () => {
