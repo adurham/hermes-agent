@@ -327,8 +327,7 @@ export function useTerminalSession({
         getSessionId: () => sessionIdRef.current,
         getShellName: () => shellNameRef.current,
         markActivity,
-        term,
-        terminalApi
+        term
       })
     )
 

@@ -2680,6 +2680,8 @@
     "rightSidebar.terminal",
     "rightSidebar.terminalCloseAll",
     "rightSidebar.terminalCloseOthers",
+    "rightSidebar.terminalDropControl",
+    "rightSidebar.terminalDropControlTitle",
     "rightSidebar.terminalDropTooLarge",
     "rightSidebar.terminalDropTooLargeTitle",
     "rightSidebar.terminalDropUploadFailed",

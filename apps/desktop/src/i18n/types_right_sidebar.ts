@@ -46,5 +46,7 @@ export interface RightSidebarTranslations {
   terminalDropUploadFailed: (name: string) => string
   terminalDropTooLargeTitle: string
   terminalDropTooLarge: (names: string, limit: string) => string
+  terminalDropControlTitle: string
+  terminalDropControl: (paths: string) => string
   addToChat: string
 }

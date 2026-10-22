@@ -5,8 +5,6 @@ import { BROWSER_UPLOAD_MAX_BYTES } from '@/lib/browser-uploads'
 import { triggerHaptic } from '@/lib/haptics'
 import { notify, notifyError } from '@/store/notifications'
 
-type TerminalApi = Window['hermesDesktop']['terminal']
-
 const HERMES_PATHS_MIME = 'application/x-hermes-paths'
 
 /** A host path, or an OS file with no path the browser must upload to get one. */
@@ -158,21 +156,35 @@ function quotePathForShell(path: string, shellName: string): string {
   return `'${path.replace(/'/g, "'\\''")}'`
 }
 
+// C0 controls, DEL and C1 controls. A line editor acts on them inside any quoting (^U erases the
+// line typed so far, CR runs it), so a path holding one is never typed.
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g
+
+function hasControlCharacter(path: string): boolean {
+  return path.search(CONTROL_CHARACTERS) !== -1
+}
+
+/** The path with each control character spelled `\xNN`, so a notice can name it. */
+function printablePath(path: string): string {
+  return path.replace(CONTROL_CHARACTERS, char => `\\x${char.charCodeAt(0).toString(16).padStart(2, '0')}`)
+}
+
 interface TerminalDropOptions {
   getSessionId: () => string | null
   getShellName: () => string
   markActivity: () => void
   term: Terminal
-  terminalApi: TerminalApi
 }
 
 // Dropping files (from the OS or the app's file trees) types their shell-quoted
 // paths at the prompt, like a native terminal. In the browser-hosted Desktop an
-// OS file is uploaded to the host first and its host path is typed. Returns the
-// listener teardown.
+// OS file is uploaded to the host first and its host path is typed. The paths
+// go through xterm's paste, so a shell that turned bracketed paste on inserts
+// them without acting on them. Returns the listener teardown.
 export function bindTerminalDrop(
   host: HTMLElement,
-  { getSessionId, getShellName, markActivity, term, terminalApi }: TerminalDropOptions
+  { getSessionId, getShellName, markActivity, term }: TerminalDropOptions
 ): () => void {
   const onDragOver = (e: DragEvent) => {
     if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
@@ -200,12 +212,23 @@ export function bindTerminalDrop(
     }
 
     const typePaths = (paths: string[]) => {
-      if (!paths.length) {
+      const refused = paths.filter(hasControlCharacter)
+      const typed = paths.filter(path => !hasControlCharacter(path))
+
+      if (refused.length) {
+        notify({
+          kind: 'warning',
+          title: translateNow('rightSidebar.terminalDropControlTitle'),
+          message: translateNow('rightSidebar.terminalDropControl', refused.map(printablePath).join(', '))
+        })
+      }
+
+      if (!typed.length) {
         return
       }
 
       markActivity()
-      void terminalApi.write(id, `${paths.map(p => quotePathForShell(p, getShellName())).join(' ')} `)
+      term.paste(`${typed.map(p => quotePathForShell(p, getShellName())).join(' ')} `)
       term.focus()
       triggerHaptic('selection')
     }
