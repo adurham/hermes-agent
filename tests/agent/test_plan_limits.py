@@ -15,6 +15,7 @@ from agent.usage_gauges import SCOPE_ALL, SCOPE_TOP_TIER, WindowGauge
 
 RESET = 4_000_000_000_000
 _REAL_FITS_CONTEXT = pl._fits_context
+_REAL_PORTAL_FREE_MODELS = pl._portal_free_models
 
 PRICING = {
     "example/model-a": {"prompt": "0.00000001", "completion": "0.0000001", "name": "Model A"},
@@ -243,3 +244,19 @@ class TestNextSteps:
     def test_a_malformed_payload_degrades_to_the_generic_line(self):
         text = pl.limit_next_steps_from_payload({"suggestions": [{"label": "no model"}, "junk"], "credits": "junk"})
         assert text == "Pick another model with /model."
+
+
+def test_free_picks_come_from_this_profiles_own_portal_entry(monkeypatch):
+    """One process holds several profiles' recommended lists side by side: a limit card offers only the
+    calling profile's own Portal picks, else its own disk copy; another profile's entry never answers."""
+    from hermes_cli import models as m
+    portal = "https://portal.example.test"
+    monkeypatch.setattr(m, "_resolve_nous_portal_url", lambda: portal)
+    other = {"freeRecommendedModels": [{"modelName": "other/profile:free"}]}
+    mine = {"freeRecommendedModels": [{"modelName": "mine/model:free"}]}
+    monkeypatch.setattr(m, "_nous_recommended_cache", {})
+    m._nous_recommended_cache[("other-profile", portal)] = (other, 0.0)
+    assert _REAL_PORTAL_FREE_MODELS() == []  # this profile holds nothing, in memory or on disk
+    m._nous_recommended_cache[(m._pricing_profile_key(), portal)] = (mine, 0.0)
+    m._nous_recommended_cache[("other-profile", "https://other-portal.test")] = (other, 0.0)
+    assert _REAL_PORTAL_FREE_MODELS() == ["mine/model:free"]

@@ -173,13 +173,14 @@ def _plan_usage() -> Any:
 
 
 def _portal_free_models() -> list[str]:
-    """The Portal's free picks, from what Hermes already holds (in-process, else the
-    last copy on disk). Never fetches: this runs mid-turn."""
+    """The Portal's free picks, from what this profile already holds for its own Portal (in-process,
+    else its last copy on disk). Never fetches: this runs mid-turn."""
     try:
         from hermes_cli import models as m
-        payload = next((data for data, _ts in reversed(list(m._nous_recommended_cache.values())) if data), None)
-        if payload is None:
-            disk = m._read_nous_recommended_disk(m._resolve_nous_portal_url())
+        base = m._resolve_nous_portal_url()
+        payload = (m._nous_recommended_cache.get((m._pricing_profile_key(), base)) or (None,))[0]
+        if not payload:
+            disk = m._read_nous_recommended_disk(base)
             payload = disk[0] if disk else None
         entries = payload.get("freeRecommendedModels") if isinstance(payload, dict) else None
         return [n for e in (entries or []) if (n := m._extract_model_name(e))]
