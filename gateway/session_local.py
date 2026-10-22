@@ -235,14 +235,6 @@ def staged_creation_follows(authority, actor, request_id):
     return isinstance(request, dict) and request.get('follow_profile_config') is True
 
 
-def _welcome_trial_model():
-    """The free model for a chat that has no configured one, while the welcome trial carries this
-    activity (the local Desktop, a claimed guest): what the agent pins on the welcome host anyway
-    (``anon_auth.pin_model_for_route``). Else None, and the create refuses as before."""
-    from hermes_cli import anon_auth
-    return anon_auth.GUEST_MODEL if anon_auth.free_inference_active() else None
-
-
 def stage_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None, skills_prompt=None,
                         client_local=False, desktop_local=False):
     """Everything before the creation commit: the existing session's ref on an exact retry, else the
@@ -284,12 +276,11 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
                 sort_keys=True))
         marks = {LOCAL_DESKTOP_CHAT: True} if desktop_local and policy.source == 'gui' else {}
         if policy.model is None:
-            configured = _resolve_gateway_model(policy.config())
-            model = configured or _welcome_trial_model()
-            if model and not configured:
+            from hermes_cli.anon_auth import GUEST_MODEL
+            policy = replace(policy, model=_resolve_gateway_model(policy.config()) or None)
+            if policy.model == GUEST_MODEL:
                 # Follows its profile, so the provider the user connects later replaces the trial model.
                 marks[FOLLOW_ADOPTED] = True
-            policy = replace(policy, model=model)
         if marks:
             import json
             policy = replace(policy, config_json=json.dumps({**json.loads(policy.config_json), **marks}))
