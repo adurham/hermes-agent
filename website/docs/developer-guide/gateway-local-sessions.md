@@ -50,7 +50,8 @@ The server issues `session:operator` only at these existing trusted boundaries:
   legacy session token when that authentication path is enabled. With `webapp.enabled`, that
   session token is the browser-hosted Desktop's credential: the gateway keeps it in its home so
   Webapp tabs survive a restart, hands it out only through a one-use link minted for a same-user
-  control-socket peer, and replaces it on `hermes webapp --sign-out`.
+  control-socket peer, and replaces it on `hermes webapp --sign-out` and whenever the Webapp's
+  listener fails to start, since its port then belongs to someone else.
 - The HTTP mutation gate, after a verified dashboard Session, native HTTP owner grant,
   or permitted legacy session token has been accepted.
 
@@ -64,8 +65,11 @@ restriction rather than treating every accepted dashboard credential as an opera
 Cross-subject local submissions carry a private, server-written profile/session/principal
 binding for queued execution and recovery. It is not exposed in model requests or public
 session snapshots. This change does not implement OpenAI API-to-local session affinity. The gateway
-listener stays on loopback unless `webapp.host` binds a wildcard address, which engages the
-dashboard sign-in gate.
+listener stays on loopback unless `webapp.host` binds a wildcard address. The Webapp's listener engages
+the dashboard sign-in gate on a wildcard bind or when `webapp.public_url` is set, on any bind, and
+one-use launch links are then off. `dashboard.public_url` never applies to the Webapp's listener; the
+gateway's private listener for native clients reads it as main does, so hosted sign-in on that
+listener keeps working.
 
 ## Deliberately limited compatibility
 

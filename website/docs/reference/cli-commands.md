@@ -1944,10 +1944,11 @@ browser in as you until you run `hermes webapp --sign-out`; keep it private.
 For a named profile served by the default gateway (`hermes -p work webapp`), the Webapp opens on that
 profile.
 
-Behind the dashboard sign-in gate (`webapp.host: 0.0.0.0`), the command opens the Webapp's address
-instead of a one-use link, and you sign in there with your dashboard account. When the gateway cannot
-serve the Webapp, the command says why; the gateway reads its Webapp settings when it starts, so run
-`hermes gateway restart` after fixing the cause.
+Behind the dashboard sign-in gate (`webapp.host: 0.0.0.0` or `::`, or `webapp.public_url` set), the
+command opens the Webapp's address instead of a one-use link, and you sign in there with your dashboard
+account. When the gateway cannot serve the Webapp, the command says why; the gateway reads its Webapp
+settings when it starts, so run `hermes gateway restart` after fixing the cause. A Webapp bundle that
+is not built yet is the exception: this command builds it, and the running gateway serves it at once.
 
 | Option | Description |
 |--------|-------------|

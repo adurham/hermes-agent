@@ -62,10 +62,11 @@ serves share its Webapp; a standalone profile's own gateway serves its own when 
 
 **From another machine.** Set `webapp.host` to `0.0.0.0`; the gateway then requires the
 [dashboard sign-in gate](./features/web-dashboard.md#authentication-gated-mode) (username and password
-for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). `hermes webapp` then opens the
-Webapp's address, where you sign in with your dashboard account; one-use links serve only a loopback
-Webapp. HTTPS is strongly recommended remotely and browsers require it for some microphone and
-clipboard features.
+for a trusted LAN or VPN, OAuth/OIDC for anything internet-facing). Behind a reverse proxy or tunnel
+you run, keep the loopback host and set `webapp.public_url` to the address it serves instead; that
+requires the same sign-in. `hermes webapp` then opens the Webapp's address, where you sign in with your
+dashboard account; one-use links serve only a Webapp that needs no sign-in. HTTPS is strongly
+recommended remotely and browsers require it for some microphone and clipboard features.
 
 :::warning Treat Webapp access like access to Hermes on the host
 A signed-in Webapp user can run arbitrary commands as the OS account running Hermes, run agent tools,
@@ -74,10 +75,12 @@ a sign-in provider. Prefer an SSH tunnel, Tailscale or another trusted VPN.
 :::
 
 `hermes webapp --status` shows whether the gateway serves the Webapp. When it cannot (the port is
-taken, or a wildcard host has no sign-in provider), the gateway still serves native clients and the
-status says why. The gateway reads these settings when it starts, so restart it after fixing the cause
-(`hermes gateway restart`). When the Webapp's bundle has not been built yet, the status says so instead:
-`hermes webapp` builds it, and the running gateway serves it without a restart.
+taken, or sign-in is required and no sign-in provider is set up), the gateway still serves native
+clients and the status says why. The gateway reads these settings when it starts, so restart it after
+fixing the cause (`hermes gateway restart`). When the port was taken, the gateway also replaces the
+Webapp's sign-in, so open tabs need `hermes webapp` again. When the Webapp's bundle has not been built
+yet, the status says so instead: `hermes webapp` builds it, and the running gateway serves it without a
+restart.
 
 Browser-selected files are staged under the active profile before they enter the normal attachment
 flow, with a **16 MiB** limit per file. Host files download through the browser's download manager, and
