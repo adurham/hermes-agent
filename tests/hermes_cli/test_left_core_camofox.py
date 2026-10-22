@@ -153,17 +153,27 @@ def test_browser_becomes_camofox_where_core_carried_it(tmp_path, monkeypatch):
         assert "camofox" not in enabled and "browser" not in enabled, platform
 
 
-def test_globally_disabled_browsing_stays_off_after_the_conversion(tmp_path, monkeypatch):
-    """A Camofox home that had turned browsing off everywhere (``agent.disabled_toolsets: [browser]``): its
-    saved lists still become ``camofox``, but the plugin's toolset is disabled too, so browsing stays off."""
-    home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n", config={
-        "_config_version": 51,
-        "platform_toolsets": {"cli": ["terminal", "browser", "file"]},
-        "agent": {"disabled_toolsets": ["browser"]},
-    })
-    assert lcm.migrate_home(home, install=_installer(home, []), say=lambda _m: None) == ["camofox"]
+def _boot(home: Path, monkeypatch, said: list | None = None) -> list[str]:
+    """Agent start for *home* (``recover_at_startup``), the plugin install a stand-in."""
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(lcm, "_install_into", lambda target, consent=None: _installer(target, []))
+    return lcm.recover_at_startup(say=said.append if said is not None else lambda _m: None)
+
+
+@pytest.mark.parametrize("saved", [{"cli": ["terminal", "browser", "file"]}, None], ids=["saved-list", "no-saved-list"])
+def test_globally_disabled_browsing_stays_off_after_the_conversion(tmp_path, monkeypatch, saved):
+    """A Camofox home that had turned browsing off everywhere (``agent.disabled_toolsets: [browser]``): a
+    saved list still becomes ``camofox``, but the plugin's toolset is disabled too, so browsing stays off
+    on every platform, with or without a saved list."""
+    config = {"_config_version": 51, "agent": {"disabled_toolsets": ["browser"]}}
+    if saved is not None:
+        config["platform_toolsets"] = saved
+    home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n", config=config)
+    assert _boot(home, monkeypatch) == ["camofox"]
     config = _config(home)
-    assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
+    if saved is not None:
+        assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
     assert set(config["agent"]["disabled_toolsets"]) == {"browser", "camofox"}
     for platform in ("cli", "telegram"):
         enabled = _resolved(home, platform, monkeypatch)
