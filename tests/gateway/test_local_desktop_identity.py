@@ -160,9 +160,10 @@ async def test_a_trial_users_desktop_chat_runs_on_the_free_model(tmp_path, monke
         receipt = local_receipt(conn.authority.db, created["result"]["stored_session_id"])
         assert receipt["policy"]["model"] == anon_auth.GUEST_MODEL
 
-        conn.transport.desktop_local = False  # the trial is the local Desktop's only
-        refused = await _request(conn, 3, "session.create", {"source": "gui", "request_id": "b"})
-        assert "error" in refused, refused
+        conn.transport.desktop_local = False  # only the claim is the Desktop's; every chat runs on it
+        other = await _request(conn, 3, "session.create", {"source": "gui", "request_id": "b"})
+        assert "result" in other, other
+        assert local_receipt(conn.authority.db, other["result"]["stored_session_id"])["policy"]["model"] == anon_auth.GUEST_MODEL
     finally:
         await conn.connection.close()
 

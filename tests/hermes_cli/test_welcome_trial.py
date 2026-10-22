@@ -68,12 +68,12 @@ def test_a_connector_guest_neither_claims_nor_carries_inference(portal, monkeypa
     assert [r["body"]["purpose"] for r in portal.token_requests] == ["connectors"]
 
 
-def test_a_claimed_guest_carries_inference_only_on_the_local_desktop_backend(portal, monkeypatch):
+def test_a_claimed_trial_carries_inference_outside_the_desktop_too(portal, monkeypatch):
     state = claimed_trial(monkeypatch)
     monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN")  # the same home, read by a CLI process
 
-    assert not anon_auth.free_inference_active()
-    assert anon_auth.guest_without_free_tier(state)
+    assert anon_auth.free_inference_active()
+    assert not anon_auth.guest_without_free_tier(state)
 
 
 def _chat(db_path, model: str) -> None:

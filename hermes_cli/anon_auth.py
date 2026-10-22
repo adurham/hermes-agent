@@ -5,9 +5,9 @@ trial (``hermes_cli.welcome_trial``), and on the first hosted connector action f
 Nous identity (``tools.connectors.gateway.config.ensure_guest_identity``, gated by ``guest_allowed``).
 Either mints an anonymous Nous account (``POST /api/anonymous/create``); its ``anon_`` credential is
 later exchanged for short-lived JWTs (``POST /api/anonymous/token``). The result is persisted as the
-singleton ``providers.nous``. Only a guest stamped with the trial claim carries inference, and only on
-the backend the desktop spawned on this machine (:func:`free_inference_active`); every other guest
-serves connectors and managed tools. In the resolver ladder (``resolve_provider``) a guest that
+singleton ``providers.nous``. Only a guest stamped with the trial claim carries inference
+(:func:`free_inference_active`), on every surface of the install once the desktop claimed it: chats,
+cron, side agents, workers, the CLI. Every other guest serves connectors and managed tools. In the resolver ladder (``resolve_provider``) a guest that
 carries inference sits directly above the implicit AWS Bedrock chain (NS-829): any explicit provider
 (env key, ``model.provider``, OpenRouter pool, a logged-in ``active_provider``) beats it, and the
 ladder never creates one.
@@ -208,11 +208,11 @@ def on_local_desktop_backend() -> bool:
 
 
 def free_inference_active(state: Any = None) -> bool:
-    """The welcome trial carries inference here: a guest that claimed it (or was grandfathered),
-    guests still allowed, and this is the desktop's local backend. *state* defaults to the profile's."""
+    """The welcome trial carries inference: a guest that claimed it (or was grandfathered) and guests
+    still allowed. Only the claim is the local Desktop's (``welcome_trial``); once claimed, every
+    surface of the install runs on it. *state* defaults to the profile's."""
     state = current_nous_state() if state is None else state
-    return (is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
-            and on_local_desktop_backend())
+    return is_guest_state(state) and state.get(WELCOME_CLAIM_FLAG) is True and guest_allowed()
 
 
 def has_free_tier_account() -> bool:
