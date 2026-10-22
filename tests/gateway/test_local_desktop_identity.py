@@ -320,3 +320,49 @@ async def test_a_desktop_boot_that_could_not_record_the_install_tries_again_on_t
     finally:
         await conn.connection.close()
         free_tier_bootstrap.reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_a_desktop_chat_saved_before_the_mark_moved_still_resumes_and_runs_as_the_local_desktops(
+        tmp_path, monkeypatch):
+    """An earlier build stamped ``desktop_local`` into the frozen create request. The Desktop's exact retry
+    after a reconnect never sends it, so it still gets that chat, and the chat's turns still run as
+    work for the local Desktop."""
+    import json
+    from contextlib import nullcontext
+    from gateway.session_local import publish_local_policy
+    from gateway.session_local_recovery import local_source
+    from gateway.session_policy import local_desktop_turn
+    from hermes_cli.anon_auth import on_local_desktop_backend
+    from hermes_state_local import POLICY_PREFIX
+
+    conn = await _connect(tmp_path, monkeypatch,
+                          config="model:\n  provider: openrouter\n  default: anthropic/claude-sonnet-4\n")
+    try:
+        await _request(conn, 1, "client.capabilities", {"desktop_local": True})
+        stored = (await _request(conn, 2, "session.create", {"source": "gui", "request_id": "a"}))[
+            "result"]["stored_session_id"]
+        db = conn.authority.db
+
+        def saved_the_old_way(c):
+            key = POLICY_PREFIX + stored
+            receipt = json.loads(c.execute("SELECT value FROM state_meta WHERE key=?", (key,)).fetchone()[0])
+            policy = receipt["policy"]
+            config = json.loads(policy["config_json"])
+            config.pop("desktop_local")
+            policy["config_json"] = json.dumps(config)
+            policy["request_json"] = json.dumps({**json.loads(policy["request_json"]), "desktop_local": True},
+                                                sort_keys=True)
+            c.execute("UPDATE state_meta SET value=? WHERE key=?", (json.dumps(receipt), key))
+        db._execute_write(saved_the_old_way)
+        publish_local_policy(conn.authority, stored, evict=False)  # the chat as an owner restores it
+        conn.transport.desktop_local = False
+
+        retry = await _request(conn, 3, "session.create", {"source": "gui", "request_id": "a"})
+        assert "result" in retry, retry
+        assert retry["result"]["stored_session_id"] == stored
+        source = local_source(conn.authority, stored, conn.connection.actor.subject)
+        with local_desktop_turn(conn.runner, source, nullcontext()):
+            assert on_local_desktop_backend() is True
+    finally:
+        await conn.connection.close()

@@ -1014,7 +1014,9 @@ def local_desktop_turn(runner, source, scope):
     policy = None
     if getattr(source, 'platform', None) == Platform.LOCAL:
         policy = getattr(runner._adapter_for_source(source), 'policies', {}).get(source.chat_id)
-    if policy is None or policy.source != 'gui' or json.loads(policy.config_json).get(LOCAL_DESKTOP_CHAT) is not True:
+    # The request_json mark: a chat an earlier build created, which stamped it into the creation request.
+    if policy is None or policy.source != 'gui' or not any(
+            json.loads(raw).get(LOCAL_DESKTOP_CHAT) is True for raw in (policy.config_json, policy.request_json)):
         return scope
     return _serving_local_desktop_within(scope)
 
