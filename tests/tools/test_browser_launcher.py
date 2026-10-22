@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 
@@ -197,6 +198,40 @@ def test_a_dead_browser_is_dropped_so_the_next_launch_starts_a_new_one(fake_chro
     assert launcher.get_browser("crashy") is None
     second, err = launcher.launch_chromium("crashy", env=dict(os.environ))
     assert err is None and second.pid != first.pid
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # the fake browser's reparented helper is ours to stop
+def test_a_stop_racing_a_relaunch_never_forgets_the_replacement(fake_chromium):
+    """Once a stop has signalled the old browser, a concurrent launch of the same key sees it dead and starts a
+    replacement. The stop finishing afterwards must not drop the replacement from the registry nor delete its
+    throwaway profile (the same per-process dir for the same key)."""
+    old, _ = launcher.launch_chromium("racy", env=dict(os.environ))
+    real_terminate, relaunch = launcher._terminate, {}
+
+    def terminate_then_relaunch(pid, start_time, proc):
+        real_terminate(pid, start_time, proc)
+        launcher._terminate = real_terminate  # one race only
+        worker = threading.Thread(target=lambda: relaunch.update(
+            browser=launcher.launch_chromium("racy", env=dict(os.environ))[0]))
+        relaunch["worker"] = worker
+        worker.start()
+        worker.join(timeout=2)  # a launch serialized behind this stop is still waiting here
+
+    launcher._terminate = terminate_then_relaunch
+    try:
+        launcher.stop_browser("racy")
+        relaunch["worker"].join(timeout=60)
+    finally:
+        launcher._terminate = real_terminate
+    new = relaunch.get("browser")
+    try:
+        assert new is not None and new.pid != old.pid
+        assert launcher.get_browser("racy") is new, "the stop forgot the replacement browser"
+        assert Path(new.user_data_dir, "DevToolsActivePort").exists(), "the stop deleted the replacement's profile"
+    finally:
+        if new is not None and launcher.get_browser("racy") is not new:
+            real_terminate(new.pid, new.start_time, None)  # untracked by the bug: stop it here
 
 
 @pytest.mark.platforms("posix")

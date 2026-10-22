@@ -488,8 +488,10 @@ def get_browser(key: str) -> Optional[LaunchedBrowser]:
 
 
 def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> None:
-    _browsers.pop(key, None)
-    proc = _procs.pop(key, None)
+    proc = None
+    if _browsers.get(key) is browser:  # a replacement registered since is not this browser's to drop
+        _browsers.pop(key)
+        proc = _procs.pop(key, None)
     if proc is not None:
         try:
             proc.wait(timeout=0)  # reap the zombie
@@ -525,7 +527,13 @@ def _terminate(pid: Optional[int], start_time: Optional[int], proc: Optional[sub
 def stop_browser(key: str) -> None:
     """Let go of ``key``'s browser. A throwaway one this process launched is stopped. A shared-profile one is
     stopped only by its LAST holder across Hermes processes (:func:`_last_holder_out`); one a human started is
-    never stopped."""
+    never stopped. Holds ``key``'s launch lock: a relaunch of ``key`` waits for this stop instead of
+    registering a replacement on the dir it is about to delete."""
+    with _key_lock(key):
+        _stop_locked(key)
+
+
+def _stop_locked(key: str) -> None:
     with _lock:
         browser = _browsers.get(key)
         proc = _procs.get(key)
