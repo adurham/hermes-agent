@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from tools import browser_launcher as launcher
+from tools.browser_launcher_holders import ns_identity
 
 _FAKE_CHROMIUM = textwrap.dedent('''\
     #!{python}
@@ -266,7 +267,7 @@ def _write_orphan_record(records: Path, pid: int, udd: str) -> Path:
     path = records / f"orphan-{pid}.json"
     path.write_text(json.dumps({"owner_pid": dead_owner.pid, "owner_start_time": None, "pid": pid,
                                 "start_time": launcher._start_time(pid), "user_data_dir": udd,
-                                "home_key": "x", "ephemeral": False}))
+                                "home_key": "x", "ephemeral": False, "ns": ns_identity()}))
     return path
 
 

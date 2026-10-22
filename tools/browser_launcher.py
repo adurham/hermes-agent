@@ -183,10 +183,12 @@ def _default_user_data_dir(key: str, home_key: str) -> str:
     named sessions), and each launch wipes its throwaway dir first. The name carries the owner's pid and
     start time: a process that dies before its launch record exists leaves the dir to the reaper
     (:func:`_reclaim_throwaway_dirs`)."""
+    from tools.browser_launcher_holders import ns_tag
     digest = hashlib.sha256(f"{home_key}\0{key}".encode()).hexdigest()[:16]
     pid = os.getpid()
     started = _start_time(pid)
-    return str(_ephemeral_root(home_key) / (f"{digest}-{pid}-{started}" if started is not None else f"{digest}-{pid}"))
+    owner = f"{pid}-{started}" if started is not None else str(pid)
+    return str(_ephemeral_root(home_key) / f"{digest}-{owner}{ns_tag()}")
 
 
 def _launch_timeout(timeout: Optional[float]) -> float:
@@ -620,9 +622,10 @@ def _last_holder_out(record: Path, browser: LaunchedBrowser) -> bool:
     data = _load_record(record) if record.exists() else None
     if data is not None and data.get("start_time") != browser.start_time:
         data = None  # an earlier browser on a recycled pid
-    held_elsewhere = data is not None and data.get("owner_pid") != os.getpid() and _owner_alive(data)
-    if others and data is not None and not held_elsewhere:
-        holders.hand_over(record, data, others[0])
+    held_elsewhere = data is not None and not holders.held_here(data, "owner_pid") and _owner_alive(data)
+    heir = holders.successor(others)
+    if heir is not None and data is not None and not held_elsewhere:
+        holders.hand_over(record, data, heir)
     if others or held_elsewhere:
         return False
     return browser.owned or data is not None
@@ -703,14 +706,18 @@ def _state_dir(browser: LaunchedBrowser) -> Optional[Path]:
 
 def _record_path(browser: LaunchedBrowser) -> Optional[Path]:
     records = _state_dir(browser)
-    return records / f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}.json" if records is not None else None
+    if records is None:
+        return None
+    from tools.browser_launcher_holders import ns_tag
+    return records / f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}{ns_tag()}.json"
 
 
 def _write_record(browser: LaunchedBrowser) -> None:
+    from tools import browser_launcher_holders as holders
     from utils import atomic_json_write
     record = {"owner_pid": os.getpid(), "owner_start_time": _start_time(os.getpid()), "pid": browser.pid,
               "start_time": browser.start_time, "user_data_dir": browser.user_data_dir,
-              "home_key": browser.home_key, "ephemeral": browser.ephemeral}
+              "home_key": browser.home_key, "ephemeral": browser.ephemeral, "ns": holders.ns_identity()}
     try:
         path = _record_path(browser)
         if path is not None:
@@ -729,6 +736,10 @@ def _remove_record(browser: LaunchedBrowser) -> None:
 
 
 def _owner_alive(record: dict) -> bool:
+    """The record's owner is alive, or cannot be proven gone (it was written in another PID namespace)."""
+    from tools.browser_launcher_holders import same_namespace
+    if not same_namespace(record):
+        return True
     owner = record.get("owner_pid")
     if not isinstance(owner, int) or not _pid_alive(owner):
         return False
@@ -804,8 +815,9 @@ def _load_record(path: Path) -> Optional[dict]:
 
 def _reap_record(path: Path, home: Optional[str]) -> bool:
     """Caller holds the records lock."""
+    from tools import browser_launcher_holders as holders
     record = _load_record(path)
-    if record is None:
+    if record is None or not holders.same_namespace(record):  # another namespace's pids name nobody here
         return False
     tracked = _tracked_browser(record)
     if tracked is not None:  # in use here, whoever launched it
@@ -813,10 +825,11 @@ def _reap_record(path: Path, home: Optional[str]) -> bool:
         return False
     if record.get("owner_pid") != os.getpid() and _owner_alive(record):
         return False
-    from tools import browser_launcher_holders as holders
     others = holders.other_live_holders(path, record.get("start_time"))
     if others:  # another live Hermes process still drives it
-        holders.hand_over(path, record, others[0])
+        heir = holders.successor(others)
+        if heir is not None:
+            holders.hand_over(path, record, heir)
         return False
     reaped = _is_recorded_browser(record, home)
     if reaped:
@@ -871,17 +884,18 @@ def _reap_state_dir(records: Path, home: Optional[str]) -> int:
     return reaped
 
 
-_THROWAWAY_DIR = re.compile(r"^[0-9a-f]{16}-(\d+)(?:-(\d+))?$")  # _default_user_data_dir's names
+_THROWAWAY_DIR = re.compile(r"^[0-9a-f]{16}-(\d+)(?:-(\d+))?(-n[0-9a-f]{12})?$")  # _default_user_data_dir's names
 
 
 def _reclaim_throwaway_dirs(home: str) -> None:
     """Remove ``home``'s throwaway profiles whose owning process is gone (pid and start time in the name): one
-    that died before writing its launch record left nothing else that would. The dir of a live owner is never
-    touched; a name without a start time is reclaimed only once its pid is gone."""
+    that died before writing its launch record left nothing else that would. The dir of a live owner, or of an
+    owner in another PID namespace or boot (its name's ``ns_tag`` differs or is missing), is never touched; a
+    name without a start time is reclaimed only once its pid is gone."""
     root = _ephemeral_root(home)
     if not os.path.lexists(root) or not _is_private_dir(root):
         return
-    from tools.browser_launcher_holders import process_alive
+    from tools.browser_launcher_holders import ns_tag, process_alive
     try:
         entries = list(root.iterdir())
     except OSError as exc:
@@ -889,8 +903,8 @@ def _reclaim_throwaway_dirs(home: str) -> None:
         return
     for entry in entries:
         match = _THROWAWAY_DIR.match(entry.name)
-        if match is None or int(match.group(1)) == os.getpid():
-            continue
+        if match is None or (match.group(3) or "") != ns_tag() or int(match.group(1)) == os.getpid():
+            continue  # not a launcher dir, another PID namespace's (its owner cannot be checked here), or ours
         if process_alive(int(match.group(1)), int(match.group(2)) if match.group(2) else None):
             continue
         if _browser_running_on(str(entry)):  # its record was lost or could not prove the pid: never pull the dir

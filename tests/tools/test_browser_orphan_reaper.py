@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from tools import browser_launcher as launcher
+from tools.browser_launcher_holders import ns_identity
 from tools import browser_session as bs
 from tools import browser_session_lifecycle as lifecycle
 
@@ -44,7 +45,7 @@ def _record(records, *, pid: int, udd: str, owner_pid: int = _DEAD_OWNER, start_
     path = records.dir / f"rec-{pid}.json"
     path.write_text(json.dumps({"owner_pid": owner_pid, "owner_start_time": None, "pid": pid,
                                 "start_time": start_time, "user_data_dir": udd, "home_key": "x",
-                                "ephemeral": ephemeral}))
+                                "ephemeral": ephemeral, "ns": ns_identity()}))
     return path
 
 
@@ -235,7 +236,8 @@ def test_browser_attached_after_its_owner_crashed_is_never_reaped_while_in_use(r
                                        user_data_dir=udd, owned=True, ephemeral=False, home_key=hermes_home_key())
     record = launcher._record_path(crashed)  # where the crashed owner left it
     record.write_text(json.dumps({"owner_pid": _DEAD_OWNER, "owner_start_time": None, "pid": 4242, "start_time": 777,
-                                  "user_data_dir": udd, "home_key": crashed.home_key, "ephemeral": False}))
+                                  "user_data_dir": udd, "home_key": crashed.home_key, "ephemeral": False,
+                                  "ns": ns_identity()}))
 
     attached, err = launcher.launch_chromium(f"profile:{udd}", executable="/opt/chrome", user_data_dir=udd,
                                              ephemeral=False)
