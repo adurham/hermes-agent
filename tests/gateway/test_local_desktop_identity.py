@@ -193,3 +193,25 @@ async def test_a_fresh_launch_claims_the_trial_and_opens_onboarding_on_it(tmp_pa
         assert "error" not in resumed, resumed
     finally:
         await conn.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_the_first_local_desktop_connection_runs_the_desktop_boot_work(tmp_path, monkeypatch):
+    """`hermes serve` recorded a fresh install at boot (onboarding stays due when the first launch misses
+    the run). The gateway never boots that way, so the local Desktop's first accepted connection does it,
+    as work for that Desktop, and only once."""
+    from hermes_cli import anon_auth, free_tier_bootstrap, onboarding_run
+    from tui_gateway import server
+    seen = []
+    monkeypatch.setattr(onboarding_run, "latch_first_install", lambda: seen.append(anon_auth.on_local_desktop_backend()))
+    monkeypatch.setattr(server, "_local_desktop_boot_started", False)
+    free_tier_bootstrap.reset_for_tests()
+    conn = await _connect(tmp_path, monkeypatch)
+    try:
+        await _request(conn, 1, "client.capabilities", {"desktop_local": True})
+        await _request(conn, 2, "client.capabilities", {"desktop_local": True})
+        assert free_tier_bootstrap.wait_for_record(timeout=20) is not None
+        assert seen == [True]
+    finally:
+        await conn.connection.close()
+        free_tier_bootstrap.reset_for_tests()

@@ -533,6 +533,9 @@ def _(rid, params: dict) -> dict:
         server_requests.advertise(transport, bool(params.get("server_requests")))
     if "desktop_local" in params and hasattr(transport, "auth_identity"):  # a WebSocket client
         transport.desktop_local = local_desktop_client(transport.auth_identity, params.get("desktop_local"))
+        if transport.desktop_local:
+            from tui_gateway import server
+            server.begin_local_desktop_boot()
     return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True})
 
 
