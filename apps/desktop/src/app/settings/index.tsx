@@ -246,6 +246,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
   const webAccessAvailable = useWebAccessAvailable()
 
+  // Where the nav hides Web Access, its deep link lands on Gateways, like the Connections alias.
+  useEffect(() => {
+    if (activeView === 'web-access' && !webAccessAvailable) {
+      setActiveView('gateway')
+    }
+  }, [activeView, setActiveView, webAccessAvailable])
+
   const navGroups: OverlayNavGroup[] = useMemo(
     () =>
       (

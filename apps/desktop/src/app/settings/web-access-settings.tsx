@@ -78,11 +78,24 @@ export function useWebAccessAvailable(): boolean {
   return !isBrowserHostedDesktop() && connection?.mode !== 'remote'
 }
 
-export function WebAccessSettings(): ReactElement {
+export function WebAccessSettings(): ReactElement | null {
   const { t } = useI18n()
   const w = t.settings.gateway.webAccess
   const key = ['web-access', JSON.stringify(useStore($apiRequestScope))]
-  const { data: status, error } = useQuery({ queryFn: getWebAccessStatus, queryKey: key, retry: false })
+  // A `?tab=web-access` link can reach this pane where the nav hides it: there it neither asks the
+  // backend nor shows anything.
+  const available = useWebAccessAvailable()
+
+  const { data: status, error } = useQuery({
+    enabled: available,
+    queryFn: getWebAccessStatus,
+    queryKey: key,
+    retry: false
+  })
+
+  if (!available) {
+    return null
+  }
 
   if (!status) {
     return error ? <SettingsContent>{w.failed}</SettingsContent> : <SettingsSkeleton sections={[{ rows: 2 }]} />

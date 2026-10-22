@@ -1,3 +1,9 @@
+const platform = vi.hoisted(() => ({ browserHosted: false }))
+
+vi.mock('@/lib/platform', async (importOriginal): Promise<object> => ({
+  ...(await importOriginal<object>()),
+  isBrowserHostedDesktop: (): boolean => platform.browserHosted
+}))
 vi.mock('@/store/profile', async (): Promise<object> => {
   const { atom } = await import('nanostores')
 
@@ -57,6 +63,7 @@ beforeEach(() => queryClient.clear())
 afterEach(() => {
   cleanup()
   clearNotifications()
+  platform.browserHosted = false
   vi.clearAllMocks()
 })
 
@@ -143,5 +150,15 @@ describe('WebAccessSettings', () => {
     expect(toast.title).toBe('Restart needed')
     expect(toast.message).toMatch(/^Saved\. A chat is running/)
     expect(JSON.stringify(toast)).not.toMatch(/Refusing|interrupt|Couldn't change/)
+  })
+
+  it('shows nothing and asks nothing where the settings nav hides it', async () => {
+    // `?tab=web-access` in the Webapp: the nav has no Web Access entry there.
+    platform.browserHosted = true
+    renderPane(OFF)
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(mocked.getWebAccessStatus).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
   })
 })
