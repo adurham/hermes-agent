@@ -20,6 +20,7 @@ export const jaGatewayHost: GatewayHostTranslations = {
     needsNous: '先に「プロバイダー」で Nous アカウントにサインインしてください。',
     runningLan: '同じネットワーク上のデバイスでこのアドレスを開いてください。',
     runningPublic: 'あなたの URL 経由で提供中です。',
+    runningLocal: 'このコンピューターからのみ開けます。他のデバイスから開くには、停止してからもう一度起動してください。',
     pendingOn: '保存しました。ゲートウェイの再起動後に Web アプリが提供されます。',
     pendingOff: 'オフにしましたが、ゲートウェイは再起動するまで Web アプリを提供し続けます。',
     unavailableDetail: reason => `ゲートウェイが Web アプリを提供できませんでした: ${reason}`,

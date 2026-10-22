@@ -988,6 +988,7 @@ export const zhHantSettings = {
         needsNous: '請先在「供應商」中登入你的 Nous 帳戶。',
         runningLan: '在同一網路中的裝置上開啟此網址。',
         runningPublic: '透過你的網址提供服務。',
+        runningLocal: '只有這台電腦可以開啟。要從其他裝置開啟，請先停止，再重新啟動。',
         pendingOn: '已儲存。閘道重新啟動後將提供網頁應用程式。',
         pendingOff: '已關閉，但閘道在重新啟動前仍會繼續提供網頁應用程式。',
         unavailableDetail: reason => `閘道無法提供網頁應用程式：${reason}`,

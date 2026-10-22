@@ -20,6 +20,7 @@ export const enGatewayHost: GatewayHostTranslations = {
     needsNous: 'Sign in to your Nous account under Providers first.',
     runningLan: 'Open this address on a device on the same network.',
     runningPublic: 'Served through your URL.',
+    runningLocal: 'Only this computer can open it. Stop it, then start it again to open it from other devices.',
     pendingOn: 'Saved. The gateway serves the web app once it restarts.',
     pendingOff: 'Turned off, but the gateway keeps serving the web app until it restarts.',
     unavailableDetail: reason => `The gateway couldn't serve the web app: ${reason}`,

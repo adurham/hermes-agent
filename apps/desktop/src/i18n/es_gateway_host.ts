@@ -21,6 +21,7 @@ export const esGatewayHost: GatewayHostTranslations = {
     needsNous: 'Primero inicia sesión en tu cuenta de Nous en Proveedores.',
     runningLan: 'Abre esta dirección en un dispositivo de la misma red.',
     runningPublic: 'Servido a través de tu URL.',
+    runningLocal: 'Solo este ordenador puede abrirla. Detenla y vuelve a iniciarla para abrirla desde otros dispositivos.',
     pendingOn: 'Guardado. El gateway servirá la aplicación web cuando se reinicie.',
     pendingOff: 'Desactivado, pero el gateway sigue sirviendo la aplicación web hasta que se reinicie.',
     unavailableDetail: reason => `El gateway no pudo servir la aplicación web: ${reason}`,

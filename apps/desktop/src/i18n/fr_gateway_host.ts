@@ -20,6 +20,7 @@ export const frGatewayHost: GatewayHostTranslations = {
     needsNous: "Connectez-vous d'abord à votre compte Nous dans Fournisseurs.",
     runningLan: 'Ouvrez cette adresse sur un appareil du même réseau.',
     runningPublic: 'Servi via votre URL.',
+    runningLocal: "Seul cet ordinateur peut ouvrir l'application web. Arrêtez-la, puis relancez-la pour l'ouvrir depuis d'autres appareils.",
     pendingOn: "Enregistré. La passerelle servira l'application web après son redémarrage.",
     pendingOff: "Désactivé, mais la passerelle continue de servir l'application web jusqu'à son redémarrage.",
     unavailableDetail: reason => `La passerelle n'a pas pu servir l'application web : ${reason}`,

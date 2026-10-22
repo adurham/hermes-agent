@@ -87,4 +87,20 @@ describe('WebAccessSettings', () => {
     expect(await screen.findByText('Restart needed')).toBeTruthy()
     expect(screen.queryByText('Stopped')).toBeNull()
   })
+
+  it('shows a web app served on this computer only as local, never as your own URL', async () => {
+    // `webapp.enabled: true` on loopback (the `hermes webapp` setup): reachable from this computer only.
+    renderPane({
+      ...OFF,
+      enabled: true,
+      gateway: { reason: null, state: 'serving', url: 'http://127.0.0.1:9120' },
+      mode: 'local'
+    })
+
+    expect(await screen.findByRole('link', { name: /http:\/\/127\.0\.0\.1:9120/ })).toBeTruthy()
+    expect(screen.getByText(/Only this computer can open it/)).toBeTruthy()
+    expect(screen.queryByText('My own URL')).toBeNull()
+    expect(screen.queryByText(/192\.168\.1\.50/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy()
+  })
 })

@@ -23,6 +23,7 @@ export interface WebAccessTranslations {
   needsNous: string
   runningLan: string
   runningPublic: string
+  runningLocal: string
   pendingOn: string
   pendingOff: string
   unavailableDetail: (reason: string) => string

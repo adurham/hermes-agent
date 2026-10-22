@@ -20,6 +20,7 @@ export const deGatewayHost: GatewayHostTranslations = {
     needsNous: 'Melde dich zuerst unter Anbieter bei deinem Nous-Konto an.',
     runningLan: 'Öffne diese Adresse auf einem Gerät im selben Netzwerk.',
     runningPublic: 'Über deine URL bereitgestellt.',
+    runningLocal: 'Nur dieser Computer kann die Web-App öffnen. Stoppe sie und starte sie erneut, um sie von anderen Geräten aus zu öffnen.',
     pendingOn: 'Gespeichert. Das Gateway stellt die Web-App nach seinem Neustart bereit.',
     pendingOff: 'Ausgeschaltet, aber das Gateway stellt die Web-App bis zu seinem Neustart weiter bereit.',
     unavailableDetail: reason => `Das Gateway konnte die Web-App nicht bereitstellen: ${reason}`,

@@ -11,7 +11,8 @@ export interface WebAccessStatus {
   /** What the gateway serves now; `stopped` when none answers. */
   gateway: { reason: null | string; state: 'off' | 'serving' | 'stopped' | 'unavailable'; url: null | string }
   lan_address: null | string
-  mode: null | WebAccessMode
+  /** Who the configured web app serves; `local` is a loopback bind, reachable from this computer only. */
+  mode: 'local' | null | WebAccessMode
   nous_signed_in: boolean
   port: number
   public_url: string

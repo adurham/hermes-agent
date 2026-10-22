@@ -174,16 +174,29 @@ def _gateway_state(home: Path) -> dict:
     return dict(response["result"])
 
 
+def _mode(settings, public_url: str) -> Optional[str]:
+    """Who the configured Webapp serves: ``public`` (its own URL pins the callback and Host),
+    ``lan`` (a wildcard bind), ``local`` (a loopback bind, as ``hermes webapp`` sets it up), or None
+    when it is off."""
+    from gateway.webapp_listener import _is_wildcard
+
+    if not settings.enabled:
+        return None
+    if public_url:
+        return "public"
+    return "lan" if _is_wildcard(settings.host) else "local"
+
+
 def access_status() -> dict:
     """Everything the Web Access pane shows, read for the gateway home in scope."""
-    from gateway.webapp_listener import _is_wildcard, webapp_settings
+    from gateway.webapp_listener import webapp_settings
 
     home = gateway_home()
     settings = webapp_settings(home)
     public_url = _configured_public_url(home)
     return {
         "enabled": settings.enabled,
-        "mode": ("lan" if _is_wildcard(settings.host) else "public") if settings.enabled else None,
+        "mode": _mode(settings, public_url),
         "port": settings.port,
         "gateway": _gateway_state(home),
         "lan_address": lan_address(),

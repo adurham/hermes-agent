@@ -3544,6 +3544,7 @@
     "settings.gateway.webAccess.restartRefused",
     "settings.gateway.webAccess.running",
     "settings.gateway.webAccess.runningLan",
+    "settings.gateway.webAccess.runningLocal",
     "settings.gateway.webAccess.runningPublic",
     "settings.gateway.webAccess.start",
     "settings.gateway.webAccess.startTimedOut",

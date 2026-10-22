@@ -93,11 +93,15 @@ type FormProps = { queryKey: readonly unknown[]; status: WebAccessStatus; w: Web
 function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
   const queryClient = useQueryClient()
   const [busy, setBusy] = useState<'start' | 'stop' | null>(null)
-  const [mode, setMode] = useState<WebAccessMode>(status.mode ?? 'lan')
+  const [mode, setMode] = useState<WebAccessMode>(status.mode === 'public' ? 'public' : 'lan')
   const [publicUrl, setPublicUrl] = useState(status.public_url)
   const phase = phaseOf(status)
   const lanUrl = status.lan_address ? `http://${status.lan_address}:${status.port}` : null
-  const url = status.mode === 'public' ? status.public_url : (lanUrl ?? '')
+  const localUrl = status.gateway.url ?? `http://127.0.0.1:${status.port}`
+
+  const url =
+    status.mode === 'public' ? status.public_url : status.mode === 'local' ? localUrl : (lanUrl ?? '')
+
   const ready = status.nous_signed_in && (mode === 'lan' ? Boolean(lanUrl) : publicUrl.trim().startsWith('https://'))
 
   const apply = (next: WebAccessStatus): void => {
@@ -135,16 +139,19 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
       <SectionHeading icon={Network} page title={w.title} />
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{w.intro}</p>
       <SettingsSection aside={<Pill tone={phase === 'serving' ? 'success' : 'muted'}>{pillLabel(phase, busy, w)}</Pill>} icon={Globe} title={w.title}>
-        <WhereRow
-          lanUrl={lanUrl}
-          locked={phase !== 'off' || busy !== null}
-          mode={mode}
-          onMode={setMode}
-          onPublicUrl={setPublicUrl}
-          port={status.port}
-          publicUrl={publicUrl}
-          w={w}
-        />
+        {/* A web app served on this computer only has no network address to choose until it stops. */}
+        {status.mode !== 'local' && (
+          <WhereRow
+            lanUrl={lanUrl}
+            locked={phase !== 'off' || busy !== null}
+            mode={mode}
+            onMode={setMode}
+            onPublicUrl={setPublicUrl}
+            port={status.port}
+            publicUrl={publicUrl}
+            w={w}
+          />
+        )}
         <ListRow
           action={
             <Button
@@ -224,7 +231,7 @@ function describe(phase: Phase, status: WebAccessStatus, w: WebAccessTranslation
     off: status.nous_signed_in ? w.notRunningDetail : w.needsNous,
     pendingOff: w.pendingOff,
     pendingOn: w.pendingOn,
-    serving: status.mode === 'public' ? w.runningPublic : w.runningLan,
+    serving: status.mode === 'public' ? w.runningPublic : status.mode === 'local' ? w.runningLocal : w.runningLan,
     unavailable: w.unavailableDetail(status.gateway.reason ?? '')
   }
 

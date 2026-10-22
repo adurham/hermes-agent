@@ -102,3 +102,23 @@ def test_start_without_a_nous_account_writes_and_restarts_nothing(client, restar
     assert nous == []
     assert restarts == []
     assert not _config().get("webapp", {}).get("enabled")
+
+
+@pytest.mark.parametrize(("webapp", "mode"), [
+    ({"enabled": True}, "local"),
+    ({"enabled": True, "host": "::1"}, "local"),
+    ({"enabled": True, "host": "0.0.0.0"}, "lan"),
+    ({"enabled": True, "public_url": "https://hermes.example.test"}, "public"),
+    ({"enabled": False, "host": "0.0.0.0", "public_url": "https://hermes.example.test"}, None),
+])
+def test_status_names_the_mode_the_config_serves(client, webapp, mode):
+    """The pane's mode follows the config: the documented loopback setup (``webapp.enabled: true``)
+    serves this computer only, a wildcard host serves the network, and ``webapp.public_url`` serves
+    the user's own URL. A loopback Webapp is never shown as "My own URL" with no address."""
+    from hermes_cli.config import save_config
+
+    save_config({**_config(), "webapp": webapp})
+
+    status = client.get("/api/webapp-access/status")
+    assert status.status_code == 200, status.text
+    assert status.json()["mode"] == mode

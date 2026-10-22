@@ -20,6 +20,7 @@ export const zhGatewayHost: GatewayHostTranslations = {
     needsNous: '请先在“提供商”中登录你的 Nous 账户。',
     runningLan: '在同一网络中的设备上打开此地址。',
     runningPublic: '通过你的网址提供服务。',
+    runningLocal: '只有这台电脑可以打开。要从其他设备打开，请先停止，再重新启动。',
     pendingOn: '已保存。网关重启后将提供网页应用。',
     pendingOff: '已关闭，但网关在重启前仍会继续提供网页应用。',
     unavailableDetail: reason => `网关无法提供网页应用：${reason}`,
