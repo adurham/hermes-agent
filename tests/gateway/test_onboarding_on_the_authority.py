@@ -197,3 +197,112 @@ def test_the_authority_turn_plays_the_opening_and_skips_the_note_while_a_card_wa
                 _open.pop("srq-test", None)
     finally:
         db.close()
+
+
+async def _settled(desktop, session_id):
+    """The opening turn's lease released: a delete is not refused as a write in flight."""
+    def idle():
+        with desktop.db._read_ctx() as conn:
+            return not desktop.db._guarded_ids(conn, [session_id])
+    await async_wait_until(idle, timeout=10)
+
+
+@pytest.mark.asyncio
+async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_path, monkeypatch):
+    """Multiplexed host socket on a secondary profile: onboarding runs in ``default``, so the trial claim,
+    the provider check and the chat's policy read the default home, never the asking connection's."""
+    from gateway.session_authorities import SessionAuthorities
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    desktop = await _desktop(tmp_path, monkeypatch, [])
+    home = tmp_path / ".hermes"
+    work = home / "profiles" / "work"
+    work.mkdir(parents=True)
+    (work / "config.yaml").write_text("{}\n", encoding="utf-8")  # nothing to run on in the asking profile
+    claims = []
+
+    def claim(*, assume_fresh):
+        claims.append(Path(get_hermes_home()))
+    monkeypatch.setattr("hermes_cli.welcome_trial.claim_desktop_free_tier", claim)
+    runner = desktop.authority.runner
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    work_db = SessionDB(db_path=work / "state.db")
+    secondary = await initialize_session_authority(runner, profile_id=str(work), instance_id="owner", db=work_db,
+                                                   register=False)
+    runner.session_authorities = SessionAuthorities(home, multiplexed=True)
+    runner.session_authorities.add(home, desktop.authority, name="default")
+    runner.session_authorities.add(work, secondary, name="work")
+    connection = AuthorityConnection(secondary, desktop.transport, {
+        "user_id": "uid:1", "provider": "local", "profile_id": str(work), "instance_id": "owner",
+        "profile_scope": "host"})
+    try:
+        started = await connection.dispatch({"jsonrpc": "2.0", "id": 1, "method": "onboarding.start", "params": {}})
+        assert "result" in started, started
+        assert claims == [home]
+        assert started["result"]["stored_session_id"] in desktop.authority.sessions
+    finally:
+        await connection.close()
+        await desktop.connection.close()
+        work_db.close()
+
+
+@pytest.mark.asyncio
+async def test_skip_accepts_the_profile_the_desktop_names(tmp_path, monkeypatch):
+    desktop = await _desktop(tmp_path, monkeypatch, [])
+    try:
+        stored = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
+        skipped = await _request(desktop, 2, "onboarding.skip", {"session_id": stored, "profile": "default"})
+        assert skipped.get("result") == {"skipped": True}, skipped
+    finally:
+        await desktop.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_deleting_the_onboarding_chat_from_the_sidebar_ends_the_run(tmp_path, monkeypatch):
+    from agent import onboarding_record
+    from hermes_cli.onboarding_run import _root_config
+    from hermes_cli.config import read_user_config_raw
+    turns, ended = [], []
+    desktop = await _desktop(tmp_path, monkeypatch, turns)
+    onboarding_record.on_ended(ended.append)
+    try:
+        stored = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
+        await async_wait_until(lambda: turns, timeout=10)
+        await _settled(desktop, stored)
+        row = desktop.db.get_session(stored)
+        deleted = await _request(desktop, 2, "session.mutate", {
+            "session_id": stored, "request_id": "delete-onboarding", "expected_revision": row["runtime_revision"],
+            "expected_generation": row["runtime_generation"], "operation": "delete", "payload": {}})
+        assert "result" in deleted, deleted
+        assert [e["outcome"] for e in ended if e["stored_session_id"] == stored] == ["deleted"]
+        assert read_user_config_raw(_root_config())["onboarding"]["run"] is False
+    finally:
+        onboarding_record._ended_listeners.remove(ended.append)
+        await desktop.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_launch_deletes_the_chat_the_last_launch_left_with_no_viewer(tmp_path, monkeypatch):
+    """The previous launch's chat is still mounted (a backend that outlived the app, or local recovery),
+    but no window watches it and no turn runs in it: the new launch's start deletes it and drops it
+    from the authority."""
+    from gateway.session_controls import AuthorityConnection
+    turns = []
+    desktop = await _desktop(tmp_path, monkeypatch, turns)
+    first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
+    await async_wait_until(lambda: turns, timeout=10)
+    await _settled(desktop, first)
+    await desktop.connection.close()  # the app quits
+    assert first in desktop.authority.sessions
+    identity = {"user_id": "uid:1", "provider": "local", "profile_id": desktop.authority.profile_id,
+                "instance_id": "owner"}
+    desktop.connection = AuthorityConnection(desktop.authority, desktop.transport, identity)
+    try:
+        second = (await _request(desktop, 2, "onboarding.start", {"fresh_launch": True}))["result"]
+        assert second["stored_session_id"] != first
+        assert desktop.db.get_session(first) is None
+        assert first not in desktop.authority.sessions
+    finally:
+        await desktop.connection.close()

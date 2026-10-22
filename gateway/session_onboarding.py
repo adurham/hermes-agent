@@ -58,7 +58,10 @@ async def start(connection, ref, params):
         raise RuntimeStoreError('invalid_params', detail=str(exc)) from exc
     target = _onboarding_connection(connection)
     if target is not connection:
-        return await start(target, ref, params)
+        # Dispatch entered the asking profile's scope; the claim, the facts and the chat's policy are default's.
+        from gateway.session_authorities import owner_scope
+        with owner_scope(target.authority):
+            return await start(target, ref, params)
     if 'session:create' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
     authority = connection.authority
@@ -69,11 +72,20 @@ async def start(connection, ref, params):
     async with lock:
         plan = await asyncio.to_thread(_choose_run, authority, request)
         stored = plan['stored'] or await _create_chat(connection)
-        await asyncio.to_thread(_settle_runs, authority, request, plan, stored)
+        from gateway.session_mutations import retire_live_sessions
+        from gateway.session_runtime_workers import tracked_write
+        unwatched = {sid for sid in plan['replaced']
+                     if (live := authority.sessions.get(sid)) is None or not live.subscribers}
+
+        def retire(deleted):
+            retire_live_sessions(authority, deleted)
+            return deleted
+        deleted = await tracked_write(authority, partial(_settle_runs, authority, request, plan, stored, unwatched),
+                                      retire)
         if plan['claimed'] is not None:
             from hermes_cli import free_tier_bootstrap
             await asyncio.to_thread(free_tier_bootstrap.refresh_record)
-        _withdraw_setup_cards(authority, [] if request.fresh_launch else plan['replaced'])
+        _withdraw_setup_cards(authority, [sid for sid in plan['replaced'] if sid not in deleted])
         chat = SessionRef(authority.profile_id, stored)
         await connection.resume(chat, {})
         opening = plan['opening'] if plan['stored'] else await asyncio.to_thread(_opening_for, authority, stored)
@@ -152,9 +164,10 @@ async def _create_chat(connection):
     return restore_local_session(authority, staged['session_id']).session_id
 
 
-def _settle_runs(authority, request, plan, stored):
-    """The new chat's record and title, and the end of every other open run. One open run at a time:
-    the kept run is open before the others end, so the install flag never closes in between."""
+def _settle_runs(authority, request, plan, stored, unwatched):
+    """The new chat's record and title, and the end of every other open run; returns the chats it
+    deleted. One open run at a time: the kept run is open before the others end, so the install flag
+    never closes in between."""
     from agent.onboarding_flow import End
     from agent.onboarding_record import advance, start
     from agent.onboarding_text import CHAT_TITLE
@@ -162,36 +175,49 @@ def _settle_runs(authority, request, plan, stored):
     if plan['stored'] is None:
         # The record exists before any agent is built, so the first turn already folds the toolset in.
         start(db, stored, plan['facts'])
+    deleted = []
     if request.fresh_launch:
-        _discard_unfinished_runs(authority, plan['replaced'])
-    else:
-        for old in plan['replaced']:
+        deleted = _discard_unfinished_runs(db, [sid for sid in plan['replaced'] if sid in unwatched])
+    for old in plan['replaced']:
+        if old not in deleted:
             advance(db, old, End('replaced'))
     if plan['stored'] is None:
         # After the discard, so a run started over keeps the title its deleted chat had.
         db.set_session_title(stored, db.get_next_title_in_lineage(CHAT_TITLE))
+    return deleted
 
 
-def _discard_unfinished_runs(authority, stored_ids):
-    """A new launch's start: the runs the app was closed on never count as done. A chat nobody holds
-    live is deleted the way ``session.delete`` deletes it, which ends its run (``deleted``) and tells
-    every window; a chat still live here (a backend that outlived the app) or one the delete refuses
-    keeps its messages, and its run ends as ``replaced`` so it is never resumed."""
+def _discard_unfinished_runs(db, stored_ids):
+    """A new launch's start: the runs the app was closed on never count as done. A chat no window
+    watches is deleted the way ``session.delete`` deletes it, which ends its run (``deleted``) and
+    tells every window; the caller retires the deleted ids from the authority. A chat a turn still
+    writes is refused by the delete and kept, and its run ends as ``replaced`` so it is never resumed."""
     from pathlib import Path
-    from agent.onboarding_flow import End
-    from agent.onboarding_record import advance, delete_chat
-    db = authority.db
+    from agent.onboarding_record import delete_chat
     sessions_dir = Path(db.db_path).parent / 'sessions'
+    deleted = []
     for old in stored_ids:
-        deleted = False
-        if old not in authority.sessions:
-            try:
-                deleted = delete_chat(db, old, lambda old=old: db.delete_session(
-                    old, sessions_dir=sessions_dir, exclude_active_write_guards=True))
-            except Exception:
-                logger.exception('onboarding.start could not delete unfinished chat %s', old)
-        if not deleted:
-            advance(db, old, End('replaced'))
+        try:
+            if delete_chat(db, old, lambda old=old: db.delete_session(
+                    old, sessions_dir=sessions_dir, exclude_active_write_guards=True)):
+                deleted.append(old)
+        except Exception:
+            logger.exception('onboarding.start could not delete unfinished chat %s', old)
+    return deleted
+
+
+def ending_run_on_delete(db, session_id, commit):
+    """*commit* (the canonical delete's receipt transaction) wrapped so deleting the chat that holds
+    the live run ends that run (``deleted``) and tells every window, as the sidecar's
+    ``session.delete`` did. Returns the receipt."""
+    from agent.onboarding_record import delete_chat
+    receipt = []
+
+    def delete():
+        receipt.append(commit())
+        return session_id in receipt[0]['deleted_ids']
+    delete_chat(db, session_id, delete)
+    return receipt[0]
 
 
 def _withdraw_setup_cards(authority, stored_ids):
@@ -224,7 +250,13 @@ async def skip(connection, ref, params):
     from agent.onboarding_record import advance, load
     from gateway.session_runtime_workers import tracked_write
     from gateway.session_server_requests import withdraw
-    if set(params) != {'session_id'} or not isinstance(params.get('session_id'), str) or not params['session_id']:
+    from pydantic import ValidationError
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import OnboardingSkipParams
+    try:
+        request = OnboardingSkipParams.model_validate(params)
+    except ValidationError as exc:
+        raise RuntimeStoreError('invalid_params', detail=str(exc)) from exc
+    if not request.session_id:
         raise RuntimeStoreError('invalid_params')
     authority = connection.authority
     authority.authorize(connection.actor, ref, 'session:control')
