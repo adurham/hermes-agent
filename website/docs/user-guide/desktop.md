@@ -76,7 +76,8 @@ a sign-in provider. Prefer an SSH tunnel, Tailscale or another trusted VPN.
 `hermes webapp --status` shows whether the gateway serves the Webapp. When it cannot (the port is
 taken, or a wildcard host has no sign-in provider), the gateway still serves native clients and the
 status says why. The gateway reads these settings when it starts, so restart it after fixing the cause
-(`hermes gateway restart`).
+(`hermes gateway restart`). When the Webapp's bundle has not been built yet, the status says so instead:
+`hermes webapp` builds it, and the running gateway serves it without a restart.
 
 Browser-selected files are staged under the active profile before they enter the normal attachment
 flow, with a **16 MiB** limit per file. Host files download through the browser's download manager, and

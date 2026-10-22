@@ -187,6 +187,24 @@ def _one_use_links_work() -> bool:
     return sys.platform != "darwin"
 
 
+#: How every missing-bundle reason starts; ``hermes webapp --status`` asks for no restart after it.
+NOT_BUILT = "The Webapp is not built"
+
+
+def bundle_missing_reason(dist) -> str | None:
+    """Why the Webapp cannot be served from *dist*, or None once its bundle is built. The listener
+    serves a bundle the moment it appears, so building it needs no gateway restart."""
+    if (Path(dist) / "index.html").is_file():
+        return None
+    return f"{NOT_BUILT} ({Path(dist) / 'index.html'} is missing). Run hermes webapp to build it."
+
+
+def _bundle_missing(web) -> str | None:
+    """:func:`bundle_missing_reason` for the bundle the mounted Webapp serves, or None."""
+    dist = getattr(getattr(getattr(web, "app", None), "state", None), "web_dist", None)
+    return None if dist is None else bundle_missing_reason(dist)
+
+
 def register_control_verbs(runner, home) -> None:
     """The private control-socket verbs ``hermes webapp`` uses; only an authenticated same-user peer
     reaches them. ``webapp-launch`` returns a one-use launch link, so the credential crosses neither
@@ -209,7 +227,12 @@ def register_control_verbs(runner, home) -> None:
         return status, web
 
     def webapp_status(_params, _peer):
-        return dict(runner.webapp_status)
+        # Serving only while the bundle is built; the listener serves one as soon as it appears.
+        status = dict(runner.webapp_status)
+        missing = _bundle_missing(getattr(getattr(getattr(runner, "session_api", None), "app", None), "web", None))
+        if status["state"] == "serving" and missing:
+            return {"state": "unavailable", "url": None, "reason": missing}
+        return status
 
     def webapp_launch(params, _peer):
         from urllib.parse import urlencode
@@ -221,6 +244,9 @@ def register_control_verbs(runner, home) -> None:
             raise ValueError("profile must be a profile name")
         query = f"?profile={profile}" if profile else ""  # the page opens on that profile
         status, web = serving()
+        missing = _bundle_missing(web)
+        if missing:
+            raise RuntimeError(f"The Webapp is unavailable: {missing}")
         from hermes_cli.web_server_surface import private_launch
         if not private_launch(web.app.state):
             # Behind the dashboard's sign-in the page asks for it; a launch link opens only a private Webapp.

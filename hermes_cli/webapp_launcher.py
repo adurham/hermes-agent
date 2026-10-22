@@ -101,7 +101,9 @@ def _status(target: Path) -> int:
         print(f"The Webapp is off. Set webapp.enabled: true in {target / 'config.yaml'}, then run {RESTART_COMMAND}.")
     else:
         print(f"Unavailable: {status['reason']}")
-        print(RETRY_AFTER_FIX)
+        from gateway.webapp_listener import NOT_BUILT
+        if not str(status["reason"]).startswith(NOT_BUILT):  # a build is served without a restart
+            print(RETRY_AFTER_FIX)
     return 0
 
 

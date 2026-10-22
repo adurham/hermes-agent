@@ -170,8 +170,12 @@ def mount_spa(application: FastAPI):
         try:
             html = (web_dist() / "index.html").read_text(encoding="utf-8-sig")
         except OSError:
-            # Partial build / wiped dist / permissions: same JSON 404 as a fully-missing dist.
-            return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
+            # Partial build / wiped dist / permissions: same JSON 404 as a fully-missing dist. The
+            # Webapp's bundle is built by `hermes webapp`, not by the dashboard's web project.
+            webapp = getattr(application.state, "ui_surface", "dashboard") == "webapp"
+            missing = ("The Webapp is not built. Run: hermes webapp" if webapp
+                       else "Frontend not built. Run: cd web && npm run build")
+            return JSONResponse({"error": missing}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(application.state, "auth_required", False))
         surface = getattr(application.state, "ui_surface", "dashboard")
