@@ -19,7 +19,10 @@ _RP = "browser.use_real_profile is on, but "
 # Keep lock contention well inside the agent's 420-second outer tool deadline (an abandoned holder
 # may be a daemon worker Python cannot terminate).
 _LOCK_TIMEOUT_S = 30.0
-_lock = threading.Lock()
+# One launch lock per profile home (the real-profile browser and its copy dir are per home): a slow or
+# abandoned launch in one profile must never make another wait, then fall back to a signed-out browser.
+_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
 # Extra flags on top of the launcher's base set: no hang monitor / popup blocking / repost prompts on an
 # unattended browser driving the user's own sessions.
 _REAL_PROFILE_EXTRA_FLAGS = ("--disable-hang-monitor", "--disable-popup-blocking", "--disable-prompt-on-repost")
@@ -54,6 +57,12 @@ def _snapshot_error(err: str) -> str:
                 "quits their browser and loses unsaved tabs), run: `hermes browser close-profile`; the next "
                 "browser session then uses the profile.")
     return f"{_RP}{err}"
+
+
+def _home_lock() -> threading.Lock:
+    from hermes_constants import hermes_home_key
+    with _locks_guard:
+        return _locks.setdefault(hermes_home_key(), threading.Lock())
 
 
 def real_profile_key() -> str:
@@ -120,7 +129,8 @@ def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
     if using_lightpanda_engine():
         return None, (_RP + "browser.engine is set to 'lightpanda', which cannot load a real Chromium profile. "
                       "Set browser.engine to 'auto' to use real-profile browsing, or turn the toggle off.")
-    if not _lock.acquire(timeout=_LOCK_TIMEOUT_S):
+    lock = _home_lock()
+    if not lock.acquire(timeout=_LOCK_TIMEOUT_S):
         return None, (_RP + "the real-profile browser is already being prepared by another call that has not "
                       "finished. Retry after that call completes, or restart Hermes if it was abandoned.")
     try:
@@ -135,4 +145,4 @@ def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
             return None, unsupported
         return _launch(browser_name)
     finally:
-        _lock.release()
+        lock.release()

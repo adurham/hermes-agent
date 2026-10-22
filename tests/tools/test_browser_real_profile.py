@@ -208,36 +208,51 @@ class TestRealProfileCdpLaunch:
         assert cdp is None
         assert err and "boom" in err
 
-    def test_stale_resolver_holder_fails_fast(self, monkeypatch):
-        """A timed-out worker holding the launch lock must not wedge later calls."""
+    @staticmethod
+    def _resolve_in(home, result: dict):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(str(home))
+        try:
+            result[str(home)] = rp.real_profile_cdp()
+        finally:
+            reset_hermes_home_override(token)
+
+    @pytest.mark.parametrize("second", ["same-profile", "other-profile"])
+    def test_a_held_launch_only_makes_its_own_profile_wait(self, tmp_path, monkeypatch, second):
+        """A launch stuck in an expensive step (an abandoned worker) fails its own profile's next call fast
+        with a clear error, and never holds up another profile's launch."""
         import threading
+        from hermes_constants import get_hermes_home
 
-        monkeypatch.setattr(rp, "_LOCK_TIMEOUT_S", 0.05)
-        result = {}
-        started = threading.Event()
+        monkeypatch.setattr(rp, "_LOCK_TIMEOUT_S", 0.5)
+        home_a, home_b = tmp_path / "a", tmp_path / "b"
+        inside_a, release_a = threading.Event(), threading.Event()
 
-        def resolve():
-            started.set()
-            result.setdefault("value", rp.real_profile_cdp())
+        def detect_default_chromium():  # returns None (no Chromium default): answers right after the lock
+            if get_hermes_home() == home_a and not inside_a.is_set():
+                inside_a.set()
+                release_a.wait(timeout=10)
 
+        result: dict = {}
         with patch.object(bs_cloud, "use_real_profile", return_value=True), \
              patch.object(browser_lightpanda, "using_lightpanda_engine", return_value=False), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value=None):
-            rp._lock.acquire()
-            worker = threading.Thread(target=resolve, daemon=True)
+             patch("hermes_cli.browser_connect.detect_default_chromium", side_effect=detect_default_chromium):
+            held = threading.Thread(target=self._resolve_in, args=(home_a, result), daemon=True)
+            held.start()
             try:
-                worker.start()
-                assert started.wait(timeout=2.0), "resolver worker was not scheduled"
-                worker.join(timeout=2.0)
-                stalled = worker.is_alive()
+                assert inside_a.wait(timeout=5), "profile A's launch never started"
+                other: dict = {}
+                self._resolve_in(home_a if second == "same-profile" else home_b, other)
             finally:
-                rp._lock.release()
-                worker.join(timeout=2.0)
+                release_a.set()
+                held.join(timeout=5)
 
-        assert not stalled, "real-profile resolver waited indefinitely on a stale holder"
-        cdp, err = result["value"]
+        cdp, err = next(iter(other.values()))
         assert cdp is None
-        assert err and "already being prepared" in err
+        if second == "same-profile":
+            assert err and "already being prepared" in err
+        else:
+            assert err and "not a supported Chromium browser" in err
 
     def test_launch_is_headless_on_the_real_binary_and_keeps_the_keychain(self, tmp_path, monkeypatch):
         """Real-profile browsing runs headless (no focus-stealing window) on the user's REAL binary, on the
