@@ -1914,6 +1914,7 @@ export interface GatewayCapabilitiesResult {
 }
 export interface ClientCapabilitiesParams {
   server_requests?: boolean
+  desktop_local?: boolean
 }
 export interface ClientCapabilitiesResult {
   server_requests: string[]
