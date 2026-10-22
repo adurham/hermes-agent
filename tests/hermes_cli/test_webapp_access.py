@@ -249,6 +249,40 @@ def test_a_failed_build_turns_nothing_on_and_says_how_to_build(client, restarts,
     assert not _config()["webapp"]["enabled"]
 
 
+@pytest.mark.parametrize("step", ["build", "registration"])
+def test_other_requests_answer_while_start_builds_and_registers(client, restarts, nous, monkeypatch, step):
+    """Start's slow steps hold no lock that ordinary requests take: while the bundle builds (it may
+    compile for minutes or wait up to 30 minutes on another build) and while the Portal registers
+    the callback (a network round trip), a config request answers at once."""
+    import threading
+
+    from hermes_cli import web_server, webapp, webapp_access
+
+    answered_during_step: list[list[int]] = []
+
+    def ask_for_config(answers: list[int]) -> None:
+        other = TestClient(web_server.app, raise_server_exceptions=False)
+        other.headers.update(client.headers)
+        answers.append(other.get("/api/config").status_code)
+
+    def slow_step(*_args, **_options):
+        answers: list[int] = []
+        request = threading.Thread(target=ask_for_config, args=(answers,), daemon=True)
+        request.start()
+        request.join(timeout=10)
+        answered_during_step.append(list(answers))
+
+    if step == "build":
+        monkeypatch.setattr(webapp, "prepare_webapp_renderer", slow_step)
+    else:
+        monkeypatch.setattr(webapp_access, "_register_nous_sign_in", slow_step)
+
+    response = client.post("/api/webapp-access/start", json={"mode": "lan"})
+    assert response.status_code == 200, response.text
+    assert answered_during_step == [[200]]
+    assert restarts == ["turning on Web Access"]
+
+
 def test_restart_applies_the_saved_config_and_does_nothing_else(client, restarts, nous, builds):
     """The pane's "Restart gateway" (a saved change the gateway has not applied yet) restarts the
     gateway serving the profile and nothing else: no Portal registration, no build, no config

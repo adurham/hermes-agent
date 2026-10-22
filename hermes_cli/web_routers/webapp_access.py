@@ -17,7 +17,12 @@ from pydantic import BaseModel
 
 from hermes_cli import webapp_access
 from hermes_cli.web_deps import late
-from hermes_cli.web_routers._common import _profile_scope, config_write_scope, destructive_profile
+from hermes_cli.web_routers._common import (
+    _profile_scope,
+    config_scoped_to_thread,
+    config_write_scope,
+    destructive_profile,
+)
 
 _restart_gateway_after = late("_restart_gateway_after", "hermes_cli.web_server_gateway")
 
@@ -66,6 +71,17 @@ async def _scoped(profile: Optional[str], fn: Callable[[Optional[str]], Any], *,
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+async def _in_gateway_home(gateway: Optional[str], fn: Callable[[], Any]) -> Any:
+    """Run ``fn()`` off the loop in the home and secret scope of the *gateway* profile that
+    ``_scoped`` resolved, without the skills lock ``_profile_scope`` holds, which every config,
+    skills and tools request takes: for the slow steps (the bundle build, Portal registration),
+    which never touch skills. Access errors become 400s."""
+    try:
+        return await config_scoped_to_thread(gateway, fn)
+    except webapp_access.WebappAccessError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _restart(gateway_profile: Optional[str], what: str) -> dict:
     """The status after asking the gateway to restart onto the new config. A refused restart (a live
     chat) keeps the saved config and reports ``restart_error``."""
@@ -81,11 +97,11 @@ async def webapp_access_status(profile: Optional[str] = None):
 @router.post("/api/webapp-access/start")
 async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
     profile = destructive_profile(profile, "POST /api/webapp-access/start")
-    host, public_url, callback = await _scoped(
-        profile, lambda _gateway: webapp_access.plan(body.mode, body.public_url))
+    gateway, (host, public_url, callback) = await _scoped(
+        profile, lambda gateway: (gateway, webapp_access.plan(body.mode, body.public_url)))
     # The bundle before anything lasting: a failed build registers, writes and restarts nothing.
-    await _scoped(profile, lambda _gateway: webapp_access.build_bundle())
-    await _scoped(profile, lambda _gateway: webapp_access.register(callback))
+    await _in_gateway_home(gateway, webapp_access.build_bundle)
+    await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
 
     def _start(gateway):
         webapp_access.serve(host, public_url)
