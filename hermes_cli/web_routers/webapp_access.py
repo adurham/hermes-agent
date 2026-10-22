@@ -2,7 +2,8 @@
 
 Thin HTTP over :mod:`hermes_cli.webapp_access`. Every handler acts on the home of the gateway that
 serves the requested profile; start and stop write its ``webapp:`` config and restart that gateway,
-which reads the config only when it starts.
+which reads the config only when it starts. Only the machine's owner reaches them
+(:func:`owner_on_this_machine`), never a browser signed in over the network.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import asyncio
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from hermes_cli import webapp_access
@@ -20,7 +21,19 @@ from hermes_cli.web_routers._common import _profile_scope, config_write_scope, d
 
 _restart_gateway_after = late("_restart_gateway_after", "hermes_cli.web_server_gateway")
 
-router = APIRouter()
+
+def owner_on_this_machine(request: Request) -> None:
+    """Web Access decides what this machine exposes, so only its owner here may use it: the native
+    app (a same-user gateway ticket, gated or not) or, on a listener without sign-in, the loopback
+    session token that ``auth_middleware`` has already checked. Behind the sign-in gate any other
+    caller is a cookie or bearer login, which may come from another device."""
+    if getattr(request.state, "native_http_principal", None):
+        return
+    if getattr(request.app.state, "auth_required", False):
+        raise HTTPException(status_code=403, detail="Web Access can only be changed from the Hermes app on this computer.")
+
+
+router = APIRouter(dependencies=[Depends(owner_on_this_machine)])
 
 
 class StartBody(BaseModel):

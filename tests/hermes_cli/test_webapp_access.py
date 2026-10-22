@@ -141,3 +141,63 @@ def test_start_keeps_a_custom_port_and_builds_the_addresses_on_it(client, restar
     assert response.status_code == 200, response.text
     assert _config()["webapp"]["port"] == 9333
     assert response.json()["port"] == 9333
+
+
+@pytest.fixture()
+def lan_browser(monkeypatch):
+    """This listener on all interfaces behind password sign-in, and a browser on the LAN signed in
+    with a cookie session."""
+    import plugins.dashboard_auth.basic as basic_plugin
+    from hermes_cli import web_server
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    for key, value in (("bound_host", "0.0.0.0"), ("bound_port", 9120), ("auth_required", True),
+                       ("trusted_public_hosts", frozenset())):
+        monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    clear_providers()
+    register_provider(basic_plugin.BasicAuthProvider(
+        username="admin", password_hash=basic_plugin.hash_password("hunter2"), secret=b"s" * 32))
+    _reset_password_rate_limit()
+    browser = TestClient(web_server.app, base_url="http://192.168.1.50:9120")
+    login = browser.post("/auth/password-login", json={"provider": "basic", "username": "admin", "password": "hunter2"})
+    assert login.status_code == 200, login.text
+    yield browser
+    clear_providers()
+
+
+def test_a_browser_signed_in_over_the_network_cannot_use_web_access(lan_browser, restarts, nous):
+    """Web Access decides what this machine exposes, so only its owner here may use it. A browser
+    signed in behind the sign-in gate may be on another device: every Web Access route answers it
+    403 and changes nothing, while the same session still reaches an ordinary route."""
+    page = {"Origin": "http://192.168.1.50:9120", "Sec-Fetch-Site": "same-origin"}
+
+    assert lan_browser.get("/api/config").status_code == 200
+    assert lan_browser.get("/api/webapp-access/status").status_code == 403
+    assert lan_browser.post("/api/webapp-access/start", json={"mode": "lan"}, headers=page).status_code == 403
+    assert lan_browser.post("/api/webapp-access/stop?profile=default", headers=page).status_code == 403
+    assert nous == []
+    assert restarts == []
+    assert not _config()["webapp"]["enabled"]
+
+
+def test_web_access_answers_the_native_app_and_the_loopback_token_only():
+    """The owner on this machine is the native app (its same-user gateway ticket, gated or not) or,
+    on a listener without sign-in, the holder of the loopback session token, which the auth
+    middleware has already checked. Behind the sign-in gate anything else is a remote login."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from hermes_cli.web_routers.webapp_access import owner_on_this_machine
+
+    def request(*, gated: bool, native: bool):
+        return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(auth_required=gated)),
+                               state=SimpleNamespace(native_http_principal={"profile_id": "x"} if native else None))
+
+    owner_on_this_machine(request(gated=True, native=True))
+    owner_on_this_machine(request(gated=False, native=False))
+    with pytest.raises(HTTPException) as refused:
+        owner_on_this_machine(request(gated=True, native=False))
+    assert refused.value.status_code == 403
