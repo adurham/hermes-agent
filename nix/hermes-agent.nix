@@ -16,6 +16,9 @@
   openssh,
   ffmpeg,
 
+  # for pm
+  writeShellApplication,
+
   # linux-only deps
   wl-clipboard,
   xclip,
@@ -50,7 +53,10 @@ let
   # Install stamp values — written to install-stamp.json so the Python
   # runtime (CLI, TUI) reads one file instead of env vars or .git probes.
   stampDistance =
-    if builtins.isInt distance && distance >= 0 then distance else throw "distance must be a non-negative integer";
+    if builtins.isInt distance && distance >= 0 then
+      distance
+    else
+      throw "distance must be a non-negative integer";
   stampDisplayVersion =
     if stampDistance > 0 && rev != null then
       "${version}+${toString stampDistance}.g${builtins.substring 0 7 rev}"
@@ -60,22 +66,24 @@ let
       version;
 
   # CLI and Electron consume the same provenance and update owner.
-  installStampFile = writeText "hermes-install-stamp.json" (builtins.toJSON {
-    schemaVersion = 2;
-    commit = rev;
-    commitDate = lastModified;
-    inherit branch dirty;
-    builtAt = null;
-    baseVersion = version;
-    displayVersion = stampDisplayVersion;
-    distance = stampDistance;
-    source = "nix";
-    distribution = "nix";
-    pmRuntime = toString pmRuntime;
-    updateMechanism = "external";
-    payload = "bootstrap";
-    tag = null;
-  });
+  installStampFile = writeText "hermes-install-stamp.json" (
+    builtins.toJSON {
+      schemaVersion = 2;
+      commit = rev;
+      commitDate = lastModified;
+      inherit branch dirty;
+      builtAt = null;
+      baseVersion = version;
+      displayVersion = stampDisplayVersion;
+      distance = stampDistance;
+      source = "nix";
+      distribution = "nix";
+      pmRuntime = toString pmRuntime;
+      updateMechanism = "external";
+      payload = "bootstrap";
+      tag = null;
+    }
+  );
 
   mkHermesVenv =
     extraDependencyGroups:
@@ -169,38 +177,41 @@ let
     ];
   };
 
-  agentInputsFile = writeText "hermes-agent-inputs.json" (builtins.toJSON {
-    project = "${../pyproject.toml}";
-    code = "${hermesVenv}/${sitePackagesPath}";
-    repo = "share/hermes-agent";
-    placement = "references";
-    target = "${if stdenv.hostPlatform.isDarwin then "darwin" else "linux"}-${
-      if stdenv.hostPlatform.isAarch64 then "arm64" else "x64"
-    }";
-    python = "${hermesVenv}/bin/python3";
-    site_packages = "${hermesVenv}/${sitePackagesPath}";
-    environment = toString hermesVenv;
-    pm_runtime = toString pmRuntime;
-    command_dir = "${hermesVenv}/bin";
-    resources = {
-      skills = toString bundledSkills;
-      optional-skills = toString bundledOptionalSkills;
-      plugins = toString bundledPlugins;
-      locales = toString bundledLocales;
-      optional-mcps = toString bundledOptionalMcps;
-    };
-    frontends = {
-      tui = "${hermesTui}/lib/hermes-tui";
-      web = toString hermesWeb;
-    };
-    ref = if dirty then null else rev;
-    stamp = toString installStampFile;
-    env = {
-      HERMES_NODE = lib.getExe hermesNpmLib.nodejs;
-    } // lib.optionalAttrs (rev != null && !dirty) {
-      HERMES_REVISION = rev;
-    };
-  });
+  agentInputsFile = writeText "hermes-agent-inputs.json" (
+    builtins.toJSON {
+      project = "${../pyproject.toml}";
+      code = "${hermesVenv}/${sitePackagesPath}";
+      repo = "share/hermes-agent";
+      placement = "references";
+      target = "${if stdenv.hostPlatform.isDarwin then "darwin" else "linux"}-${
+        if stdenv.hostPlatform.isAarch64 then "arm64" else "x64"
+      }";
+      python = "${hermesVenv}/bin/python3";
+      site_packages = "${hermesVenv}/${sitePackagesPath}";
+      environment = toString hermesVenv;
+      pm_runtime = toString pmRuntime;
+      command_dir = "${hermesVenv}/bin";
+      resources = {
+        skills = toString bundledSkills;
+        optional-skills = toString bundledOptionalSkills;
+        plugins = toString bundledPlugins;
+        locales = toString bundledLocales;
+        optional-mcps = toString bundledOptionalMcps;
+      };
+      frontends = {
+        tui = "${hermesTui}/lib/hermes-tui";
+        web = toString hermesWeb;
+      };
+      ref = if dirty then null else rev;
+      stamp = toString installStampFile;
+      env = {
+        HERMES_NODE = lib.getExe hermesNpmLib.nodejs;
+      }
+      // lib.optionalAttrs (rev != null && !dirty) {
+        HERMES_REVISION = rev;
+      };
+    }
+  );
 
   # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
   # Without this, a plugin listing e.g. requests as a dep would fail at runtime
@@ -273,8 +284,9 @@ stdenv.mkDerivation (finalAttrs: {
       makeWrapper "$source" "$out/$destination" "$@" \
         --suffix PATH : "${runtimePath}" \
         --set-default HERMES_BIN "$out/bin/hermes"${
-          lib.optionalString (extraPythonPackages != [ ])
-            " \\\n        --suffix PYTHONPATH : \"${pythonPath}\""
+          lib.optionalString (
+            extraPythonPackages != [ ]
+          ) " \\\n        --suffix PYTHONPATH : \"${pythonPath}\""
         }
     }
     ${python}/bin/python3 - "$out/command-map.json" > "$TMPDIR/agent-wrappers.sh" <<'PY'
@@ -301,6 +313,14 @@ stdenv.mkDerivation (finalAttrs: {
   passthru =
     let
       devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+      pm = writeShellApplication {
+        name = "pm";
+        text = ''
+          root="$(git rev-parse --show-toplevel)"
+          cd "$root"
+          exec python -m pm.cli "$@"
+        '';
+      };
     in
     {
       inherit
@@ -323,7 +343,12 @@ stdenv.mkDerivation (finalAttrs: {
       # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
       # of the agent resolution in the desktop wrapper.
       hermesDesktop = callPackage ./desktop.nix {
-        inherit hermesNpmLib electron installStampFile generatedIcons;
+        inherit
+          hermesNpmLib
+          electron
+          installStampFile
+          generatedIcons
+          ;
         python3 = python;
         hermesAgent = finalAttrs.finalPackage;
       };
@@ -336,6 +361,7 @@ stdenv.mkDerivation (finalAttrs: {
         runtimeDeps
         ++ [
           devPython
+          pm
         ]
         ++ lib.optionals stdenv.isLinux [
           cage # for running e2e tests without popping windows
