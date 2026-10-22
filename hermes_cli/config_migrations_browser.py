@@ -121,6 +121,13 @@ def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
         if new is not None:
             browser[key] = new
             moved.append(f"{name} → browser.{key}")
+            if key == "user_data_dir" and new != value:
+                # Resolved against this process's cwd, which need not be where Hermes ran before.
+                note = (f"pinned browser.user_data_dir to {new}: {name}={value} was relative to the directory "
+                        f"Hermes ran in; check that the browser logins are there")
+                added.append(note)
+                messages.append(f"  ✓ {note[0].upper()}{note[1:]}.")
+                notices.append(f"{note[0].upper()}{note[1:]}.")
     if moved:
         added.append(f"browser: {', '.join(moved)}")
         messages.append(f"  ✓ Moved agent-browser settings from .env to config.yaml: {', '.join(moved)}")

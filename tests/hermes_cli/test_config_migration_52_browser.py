@@ -171,6 +171,28 @@ def test_relative_profile_keeps_the_directory_core_used(tmp_path, monkeypatch):
     assert _raw(home)["browser"]["user_data_dir"] == str(cwd / "prof" / "rel")
 
 
+def test_a_pinned_relative_profile_names_the_absolute_path_on_update_and_boot(tmp_path, monkeypatch):
+    """The relative AGENT_BROWSER_PROFILE was resolved against whatever directory the migrating process ran
+    in: `hermes update` and the first agent after a boot migration both name the absolute path pinned."""
+    import hermes_cli.left_core_migration as lcm
+
+    monkeypatch.setattr(lcm, "_undelivered", {})
+    monkeypatch.delenv("CAMOFOX_URL", raising=False)
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    pinned = str(cwd / "prof" / "rel")
+    updated = _home(tmp_path / "a", {"_config_version": 51}, "AGENT_BROWSER_PROFILE=prof/rel\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    results = _migrate(updated, quiet=True)
+    assert any(pinned in note and "prof/rel" in note for note in results["config_added"])
+
+    booted = _home(tmp_path / "b", {"_config_version": 51}, "AGENT_BROWSER_PROFILE=prof/rel\n")
+    said = _boot_agents(booted, monkeypatch, starts=1)
+    assert _raw(booted)["browser"]["user_data_dir"] == pinned
+    assert len(said) == 1 and pinned in said[0] and "prof/rel" in said[0]
+
+
 def test_falsy_headed_and_unknown_engine_carry_nothing(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     home = _home(tmp_path / "a", {"_config_version": 51},
