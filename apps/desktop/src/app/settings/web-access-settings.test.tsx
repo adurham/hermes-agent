@@ -46,6 +46,16 @@ const OFF: WebAccessStatus = {
   public_url: ''
 }
 
+const SERVING: WebAccessStatus = {
+  ...OFF,
+  enabled: true,
+  gateway: { reason: null, state: 'serving', url: 'http://192.168.1.50:9120' },
+  mode: 'lan'
+}
+
+/** Turned off and saved, while the gateway that has not restarted yet still serves the web app. */
+const OLD_GATEWAY: WebAccessStatus = { ...OFF, gateway: SERVING.gateway }
+
 function renderPane(status: WebAccessStatus) {
   mocked.getWebAccessStatus.mockResolvedValue(status)
 
@@ -65,6 +75,8 @@ afterEach(() => {
   clearNotifications()
   platform.browserHosted = false
   vi.clearAllMocks()
+  // A test that queued status answers it did not use must not hand them to the next one.
+  mocked.getWebAccessStatus.mockReset()
 })
 
 describe('WebAccessSettings', () => {
@@ -167,6 +179,70 @@ describe('WebAccessSettings', () => {
     renderPane({ ...OFF, enabled: true, gateway: { reason: null, state: 'serving', url: 'http://[::1' }, mode: 'lan' })
 
     expect(await screen.findByText('Restart needed')).toBeTruthy()
+  })
+
+  it('waits after Stop until the restarted gateway no longer serves the web app', async () => {
+    // Stop saves `enabled: false` and starts a restart. Until the old gateway exits it still serves
+    // the web app; while it restarts nothing answers. The pane waits through both for the new one.
+    mocked.stopWebAccess.mockResolvedValue({ ...OLD_GATEWAY, restart_started: true })
+    renderPane(SERVING)
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    mocked.getWebAccessStatus
+      .mockResolvedValueOnce(OLD_GATEWAY)
+      .mockRejectedValueOnce(new Error('gateway restarting'))
+      .mockResolvedValue(OFF)
+
+    fireEvent.click(stop)
+
+    expect(await screen.findByText('Stopped', {}, { timeout: 8000 })).toBeTruthy()
+    expect(screen.queryByText('Restart needed')).toBeNull()
+    expect($notifications.get()).toEqual([])
+  }, 15_000)
+
+  it('shows the web app stopping, not waiting for a restart, while the restart runs', async () => {
+    mocked.stopWebAccess.mockResolvedValue({ ...OLD_GATEWAY, restart_started: true })
+    renderPane(SERVING)
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    // The restarting gateway has not answered yet.
+    mocked.getWebAccessStatus.mockReturnValue(new Promise<WebAccessStatus>(() => {}))
+
+    fireEvent.click(stop)
+
+    expect(await screen.findByText('Stopping')).toBeTruthy()
+    expect(screen.queryByText('Restart needed')).toBeNull()
+  })
+
+  it('waits after Restart until a turned-off web app is no longer served', async () => {
+    // Saved `enabled: false`, but the gateway still serves the web app: Restart applies the change.
+    mocked.restartWebAccess.mockResolvedValue({ ...OLD_GATEWAY, restart_started: true })
+    renderPane(OLD_GATEWAY)
+    const restart = await screen.findByRole('button', { name: 'Restart gateway' })
+    mocked.getWebAccessStatus.mockResolvedValueOnce(OLD_GATEWAY).mockResolvedValue(OFF)
+
+    fireEvent.click(restart)
+
+    expect(await screen.findByText('Stopped', {}, { timeout: 8000 })).toBeTruthy()
+    expect(screen.queryByText('Restart needed')).toBeNull()
+  }, 15_000)
+
+  it('says when the gateway still serves the web app 90 seconds after Stop', async () => {
+    mocked.stopWebAccess.mockResolvedValue({ ...OLD_GATEWAY, restart_started: true })
+    renderPane(SERVING)
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    mocked.getWebAccessStatus.mockResolvedValue(OLD_GATEWAY)
+    vi.useFakeTimers()
+
+    try {
+      fireEvent.click(stop)
+      await vi.advanceTimersByTimeAsync(92_000)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    await waitFor(() => expect($notifications.get()).toHaveLength(1))
+    const [toast] = $notifications.get()
+    expect(toast.kind).toBe('error')
+    expect(toast.message).toBe("The gateway didn't stop serving the web app within 90 seconds.")
   })
 
   it('says that network access is not encrypted', async () => {

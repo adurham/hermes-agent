@@ -26,8 +26,8 @@ import { $connection } from '@/store/session'
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent, SettingsSection, SettingsSkeleton } from './primitives'
 
-const START_POLL_MS = 1500
-const START_TIMEOUT_MS = 90_000
+const RESTART_POLL_MS = 1500
+const RESTART_TIMEOUT_MS = 90_000
 
 /**
  * The config says what the gateway serves from its next start; the gateway says what it serves now.
@@ -65,14 +65,23 @@ function phaseOf(status: WebAccessStatus): Phase {
   return status.gateway.state === 'unavailable' ? 'unavailable' : 'pendingOn'
 }
 
-/** Poll until the restarted gateway serves the web app or reports why it can't. */
-async function waitForWebApp(): Promise<WebAccessStatus> {
-  for (const deadline = Date.now() + START_TIMEOUT_MS; Date.now() < deadline; ) {
-    await new Promise(resolve => setTimeout(resolve, START_POLL_MS))
+/** The gateway applied the saved config: it serves the web app the config turns on (or says why it
+ *  can't), or serves none when the config turns it off. */
+function appliesConfig(status: WebAccessStatus): boolean {
+  const phase = phaseOf(status)
+
+  return phase !== 'pendingOn' && phase !== 'pendingOff'
+}
+
+/** Poll until the restarted gateway applies the saved config. Start, Stop and Restart all wait here:
+ *  until the old gateway exits it still answers with what it served before. */
+async function waitForRestart(): Promise<WebAccessStatus> {
+  for (const deadline = Date.now() + RESTART_TIMEOUT_MS; Date.now() < deadline; ) {
+    await new Promise(resolve => setTimeout(resolve, RESTART_POLL_MS))
     // The backend answering this may be the gateway being restarted.
     const status = await getWebAccessStatus().catch(() => null)
 
-    if (status && (servesConfig(status) || status.gateway.state === 'unavailable')) {
+    if (status && appliesConfig(status)) {
       return status
     }
   }
@@ -162,9 +171,8 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
         return
       }
 
-      if (result.enabled && kind !== 'stop') {
-        apply(await waitForWebApp().catch(() => Promise.reject(new Error(w.startTimedOut))))
-      }
+      const timedOut = result.enabled ? w.startTimedOut : w.stopTimedOut
+      apply(await waitForRestart().catch(() => Promise.reject(new Error(timedOut))))
     } catch (err) {
       notifyError(err, w.failed)
     } finally {
@@ -281,7 +289,11 @@ function pillLabel(phase: Phase, busy: Busy, w: WebAccessTranslations): string {
     unavailable: w.unavailable
   }
 
-  return busy === 'start' || (busy === 'restart' && phase === 'pendingOn') ? w.starting : labels[phase]
+  if (busy === 'start' || (busy === 'restart' && phase === 'pendingOn')) {
+    return w.starting
+  }
+
+  return busy === 'stop' || (busy === 'restart' && phase === 'pendingOff') ? w.stopping : labels[phase]
 }
 
 function describe(phase: Phase, status: WebAccessStatus, w: WebAccessTranslations): string {

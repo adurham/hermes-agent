@@ -17,6 +17,7 @@ export interface WebAccessTranslations {
   running: string
   stopped: string
   starting: string
+  stopping: string
   restartNeeded: string
   unavailable: string
   notRunningDetail: string
@@ -30,6 +31,7 @@ export interface WebAccessTranslations {
   restartBusy: string
   restartFailed: string
   startTimedOut: string
+  stopTimedOut: string
   start: string
   stop: string
   restartGateway: string
