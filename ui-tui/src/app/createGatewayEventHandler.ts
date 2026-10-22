@@ -779,6 +779,11 @@ function confirmUsageLimit(usageLimit: UsageLimit, ctx: GatewayEventHandlerConte
           value: dialog.switchValue
         })
           .then(r => {
+            // `/retry` targets the active chat: never rewind one the user opened meanwhile.
+            if (getUiState().sid !== sid) {
+              return
+            }
+
             if (!r?.value) {
               return sys('error: model switch failed')
             }

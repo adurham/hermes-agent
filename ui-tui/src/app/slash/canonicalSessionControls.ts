@@ -225,17 +225,18 @@ export function openModelConfirmation(detail: string | undefined, target: string
   })
 }
 
+/** `baseline` is the session info the control started from: an epoch change or a newer turn wins. */
 function isSupersededControl(
   operation: 'model' | 'branch' | 'compress',
   result: CanonicalControlResult,
   expectedGeneration: number,
-  ctx: SlashRunCtx
+  baseline: ReturnType<typeof getUiState>['info']
 ) {
   const current = getUiState().info
 
   return (
     operation !== 'branch' &&
-    (current?.execution_epoch !== ctx.ui.info?.execution_epoch ||
+    (current?.execution_epoch !== baseline?.execution_epoch ||
       (current?.execution_generation ?? 0) > (result.execution_generation ?? expectedGeneration))
   )
 }
@@ -296,7 +297,9 @@ function applyModelResult(result: CanonicalControlResult, sys: (text: string) =>
 
 /** A model switch made outside `/model` (a window plan's limit card): the same revision-fenced
  *  `session.mutate` and guarded-target ask. `onApplied` runs only once the switch committed now,
- *  never for a refusal, a declined ask, or a pick deferred behind a running turn. */
+ *  never for a refusal, a declined ask, or a pick deferred behind a running turn. Like `/model`, a
+ *  reply that lands after the view moved to another chat (or a newer turn ran) applies nothing:
+ *  `onApplied` re-sends via the active chat, so it must still be `sid`. */
 export async function switchCanonicalModel(
   gw: MutationGateway,
   sid: string,
@@ -305,9 +308,11 @@ export async function switchCanonicalModel(
   onApplied: () => void,
   confirm?: string
 ): Promise<void> {
-  const mutation = await mutateCanonicalSession(gw, sid, 'model', arg, undefined, confirm)
+  const baseline = getUiState().info
+  const stale = () => getUiState().sid !== sid
+  const mutation = await mutateCanonicalSession(gw, sid, 'model', arg, stale, confirm)
 
-  if (!mutation) {
+  if (!mutation || stale() || isSupersededControl('model', mutation.result, mutation.expectedGeneration, baseline)) {
     return
   }
 
@@ -399,7 +404,7 @@ export async function runCanonicalSessionControl(
       return
     }
 
-    if (isSupersededControl(operation, result, expectedGeneration, ctx)) {
+    if (isSupersededControl(operation, result, expectedGeneration, ctx.ui.info)) {
       return
     }
 
