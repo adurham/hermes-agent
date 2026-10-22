@@ -202,13 +202,13 @@ def _nous_snapshot(windows: list, details: list, tail: list, *, source: str, pla
 
 
 def _bp_window(label: str, used_bp: Any, resets_at_ms: Any) -> Optional[AccountUsageWindow]:
-    """One usage-window gauge row from basis points + an epoch-ms reset; None when either is not an int."""
-    if isinstance(used_bp, bool) or not isinstance(used_bp, int) or isinstance(resets_at_ms, bool) or not isinstance(resets_at_ms, int):
+    """One usage-window gauge row from basis points + an epoch-ms reset (already bounded by
+    ``usage_gauges.parse_gauges``); None when the percent is not an int. An unknown reset keeps the row,
+    shown without a reset."""
+    if isinstance(used_bp, bool) or not isinstance(used_bp, int):
         return None
-    try:
-        reset_at = datetime.fromtimestamp(resets_at_ms / 1000, tz=UTC)
-    except (ValueError, OverflowError, OSError):
-        return None  # an implausible server stamp drops the row, never the whole /usage view
+    known = isinstance(resets_at_ms, int) and not isinstance(resets_at_ms, bool)
+    reset_at = datetime.fromtimestamp(resets_at_ms / 1000, tz=UTC) if known else None
     return AccountUsageWindow(label=label, used_percent=max(0.0, min(100.0, used_bp / BP_FULL * 100.0)),
                               reset_at=reset_at)
 

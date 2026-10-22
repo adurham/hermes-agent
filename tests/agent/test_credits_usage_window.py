@@ -766,6 +766,19 @@ class TestUsageCommand:
                           "resets_at_ms": now + 3600_000}, *_gauges(100, 200, **kw)]
         assert next(w.label for w in account_usage.build_nous_credits_snapshot(info).windows) == "Next 5 hours"
 
+    def test_an_unknown_reset_keeps_the_allowance_row(self):
+        """A valid percent with no usable reset still shows as a window row (no reset phrase), never the
+        dollar view: the window plan's details stay on screen."""
+        from agent import account_usage
+        gauges = [{"id": "day", "scope": "all", "label": "Today", "used_bp": 4_200},
+                  {"id": "week", "scope": "all", "label": "This week", "used_bp": 1_000, "resets_at_ms": "soon"}]
+        info = SimpleNamespace(logged_in=True, paid_service_access=True, paid_service_access_info=None, subscription=None,
+                               usage_window=SimpleNamespace(gauges=gauges, paused_reason=None))
+        snap = account_usage.build_nous_credits_snapshot(info)
+        assert snap.usage_window and [(w.label, round(w.used_percent), w.reset_at) for w in snap.windows] == [
+            ("Today", 42, None), ("This week", 10, None)]
+        assert not any("resets" in line for line in account_usage.render_account_usage_lines(snap))
+
     def test_header_gauge_raises_stale_portal_percents(self, monkeypatch):
         from agent import account_usage
         monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
