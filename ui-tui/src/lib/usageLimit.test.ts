@@ -132,6 +132,12 @@ describe('usageLimitDialog', () => {
     expect(dialog.detail.endsWith('Or turn on Keep going in /topup to use your credits.')).toBe(true)
   })
 
+  it('names both steps when Keep going is off and there is no balance', () => {
+    const dialog = usageLimitDialog({ ...limit, credits: { action: 'add_credits_and_keep_going' } } as never)
+
+    expect(dialog.detail.endsWith('Or add credits and turn on Keep going in /topup.')).toBe(true)
+  })
+
   it('without a model to offer, the confirm opens /topup', () => {
     const dialog = usageLimitDialog({ ...limit, suggestions: [] } as never)
 

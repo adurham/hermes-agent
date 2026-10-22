@@ -119,8 +119,9 @@ export interface UsageLimitSuggestion {
 
 export interface UsageLimitSurface {
   suggestions: UsageLimitSuggestion[]
-  /** use_credits: Keep going is off and there is a balance. add_credits: top up. */
-  credits?: 'add_credits' | 'use_credits'
+  /** agent/plan_limits.py::credits_action. use_credits: Keep going is off and there is a balance; add_credits:
+   * top up; add_credits_and_keep_going: both. Only use_credits gets its own button, the others open billing. */
+  credits?: 'add_credits' | 'add_credits_and_keep_going' | 'use_credits'
 }
 
 function parseUsageLimit(value: unknown): UsageLimitSurface | undefined {
@@ -146,7 +147,9 @@ function parseUsageLimit(value: unknown): UsageLimitSurface | undefined {
   })
 
   const action = raw.credits?.action
-  const credits = action === 'use_credits' || action === 'add_credits' ? action : undefined
+
+  const credits =
+    action === 'use_credits' || action === 'add_credits' || action === 'add_credits_and_keep_going' ? action : undefined
 
   return suggestions.length || credits ? { suggestions, ...(credits ? { credits } : {}) } : undefined
 }

@@ -1134,6 +1134,8 @@ class CLIBillingMixin:
             self._billing_render_charge_error(state, exc)
             return
         print(f"  {t('cli.billing.keep_going_turned_on' if turn_on else 'cli.billing.keep_going_turned_off')}")
+        from agent.credits_tracker import apply_keep_going_change
+        apply_keep_going_change(getattr(self, "agent", None), turn_on)
 
     def _billing_auto_reload_disable(self, state):
         """PATCH ``enabled:false``; the endpoint still requires threshold/topUpAmount → echo current (or 0)."""

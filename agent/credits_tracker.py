@@ -25,6 +25,7 @@ from agent.usage_gauges import (
     binding_gauge,
     gauge_limit_name,
     parse_gauges,
+    paused_for_payment,
     top_tier_gauge,
 )
 
@@ -184,6 +185,7 @@ CREDITS_RESTORED_KEY = "credits.restored"
 CREDITS_GRANT_SPENT_KEY = "credits.grant_spent"
 _DEPLETED_TEXT = "✕ Credit access paused · run /topup to top up"
 _PAUSED_TEXT = "✕ Included usage paused · your subscription payment failed · update your card, or add credits in /topup to keep going"
+_PAUSED_OTHER_TEXT = "✕ Included usage paused · see Billing in the Portal, or add credits in /topup to keep going"
 _TOP_TIER_LIMIT = "You've hit your monthly large-model limit"
 _AUTO_TOP_UP_SUFFIX = " · auto top-up is on"
 
@@ -246,18 +248,18 @@ def _window_hard_stop(state: CreditsState, *, model_is_free: bool) -> Optional[s
     then: payment paused with no credits (credits keep a paused plan going whatever the setting says; a
     card update restores included usage), the large-model allowance used with no pay path, the window used with no
     pay path. A free model keeps inferencing, so only the payment-paused line survives it.
-    With Keep going on credits off, a balance is not a pay path: the way on is that account setting, so
-    the copy names it instead of adding credits."""
+    The credits step comes from :func:`agent.plan_limits.credits_action`, the rule every limit surface reads."""
     purchased = state.purchased_micros
     if state.paused_reason and purchased <= 0:
-        return _PAUSED_TEXT
+        return _PAUSED_TEXT if paused_for_payment(state.paused_reason) else _PAUSED_OTHER_TEXT
     if not state.paid_access:
         return None if model_is_free else _DEPLETED_TEXT
     if model_is_free or state.credits_pay:
         return None
     if state.unmetered:
         return None
-    action = _KEEP_GOING_OFF_ACTION if state.keep_going_on_credits is False else _ADD_CREDITS_ACTION
+    from agent.plan_limits import credits_action
+    action = _CREDITS_STEP[credits_action(state.keep_going_on_credits, purchased)]
     # The large-model allowance ran out AND the last response was a block: the API stamps ``spend-source`` on every
     # admitted request and never on a 402, so header-sourced + no source = this model was refused. An
     # ``included`` source means the current model is not top-tier (still admitted) and a seed cannot know
@@ -281,8 +283,12 @@ def window_stop_resets_at_ms(state: CreditsState) -> Optional[int]:
 
 
 # "Keep going on credits": the account setting (/topup or Portal billing), off by default on a window plan.
-_KEEP_GOING_OFF_ACTION = "turn on Keep going in /topup"
 _ADD_CREDITS_ACTION = "/topup to add credits"
+_CREDITS_STEP = {  # keyed by agent.plan_limits.credits_action
+    "use_credits": "turn on Keep going in /topup",
+    "add_credits": _ADD_CREDITS_ACTION,
+    "add_credits_and_keep_going": "add credits and turn on Keep going in /topup",
+}
 
 
 def _window_payg_text(state: CreditsState) -> Optional[str]:
@@ -343,7 +349,7 @@ def _evaluate_window_notices(state: CreditsState, latch: dict, *, model_is_free:
         active.discard(CREDITS_GRANT_SPENT_KEY)
 
     stop = _window_hard_stop(state, model_is_free=model_is_free)
-    limit = stop is not None and stop not in (_PAUSED_TEXT, _DEPLETED_TEXT)
+    limit = stop is not None and stop not in (_PAUSED_TEXT, _PAUSED_OTHER_TEXT, _DEPLETED_TEXT)
     was_stopped = CREDITS_DEPLETED_KEY in active or CREDITS_WINDOW_LIMIT_KEY in active
     _reconcile_sticky(CREDITS_WINDOW_LIMIT_KEY, stop if limit else None, "error", latch, to_show, to_clear)
     _reconcile_sticky(CREDITS_DEPLETED_KEY, None if limit else stop, "error", latch, to_show, to_clear)
@@ -771,6 +777,24 @@ def restore_window_notices(session_id, latch: dict) -> None:
         latch.setdefault("window_warned", {}).update(saved["warned"])
     except Exception:
         logger.debug("window notice restore failed", exc_info=True)
+
+
+def apply_keep_going_change(agent, enabled: bool) -> None:
+    """The user just changed "Keep going on credits": the agent's state takes the new value now (the next
+    reply's headers confirm it) and the notice policy re-runs, so a "turn on Keep going" line clears at once.
+    The account snapshot the pickers read is refreshed in the background. Never raises."""
+    try:
+        from dataclasses import replace
+        state = getattr(agent, "_credits_state", None)
+        if state is None or not state.is_usage_window:
+            return
+        agent._credits_state = replace(state, keep_going_on_credits=enabled)
+        _rerun_notice_policy(agent)
+        from agent.memory_provider import spawn_context_thread
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        spawn_context_thread(lambda: get_nous_portal_account_info(force_fresh=True), name="keep-going-refresh").start()
+    except Exception:
+        logger.debug("keep going ▸ local refresh failed", exc_info=True)
 
 
 def forget_window_notices(session_id) -> None:

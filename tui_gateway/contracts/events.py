@@ -201,7 +201,8 @@ class UsageLimitSuggestion(Payload):
 
 
 class UsageLimitCredits(Payload):
-    """``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going) or ``add_credits``."""
+    """``agent/plan_limits.py::CreditsOption`` — ``use_credits`` (turn on Keep going), ``add_credits``, or
+    ``add_credits_and_keep_going`` (both: Keep going is off and there is no balance)."""
 
     action: str
 

@@ -27,6 +27,7 @@ _DEPLETED_LINE = "Status: access depleted — top up to restore"
 _WINDOW_TOP_TIER_USED_UP = "Monthly large-model usage is used up."
 _WINDOW_PAUSED_LINE = ("Status: included usage paused. Your subscription payment failed. Update your card to restore it. "
                        "Until then, Hermes uses your credits.")
+_WINDOW_PAUSED_OTHER_LINE = "Status: included usage paused. See Billing in the Portal. Until then, Hermes uses your credits."
 
 
 def _utc_now() -> datetime:
@@ -250,7 +251,8 @@ def _usage_window_rows(gauges: Any, *, paused_reason: Any,
     if top_full:
         lines.append(_window_top_tier_line(top_row.reset_at if top_row else None, keep_going_on_credits))
     if isinstance(paused_reason, str) and paused_reason:
-        lines.append(_WINDOW_PAUSED_LINE)
+        from agent.usage_gauges import paused_for_payment
+        lines.append(_WINDOW_PAUSED_LINE if paused_for_payment(paused_reason) else _WINDOW_PAUSED_OTHER_LINE)
     elif keep_going_on_credits is False:
         lines.append(_WINDOW_KEEP_GOING_OFF_LINE)
     elif keep_going_on_credits is True:
@@ -429,6 +431,17 @@ def nous_credits_view(*, markdown: bool = False, timeout: float = 10.0, credits_
         # Fail-open; breadcrumb so a dead /usage credits block is diagnosable.
         logger.debug("credits ▸ /usage portal fetch/render failed (fail-open)", exc_info=True)
         return [], False
+
+
+def nous_credits_usage_fields(agent: Any = None) -> dict[str, Any]:
+    """The ``session.usage`` fields for the Nous credits block: ``credits_lines`` (when there are any) and
+    ``credits_usage_window`` for the usage-window layout. Reads *agent*'s live credits headers. Never raises."""
+    try:
+        lines, is_window = nous_credits_view(credits_state=getattr(agent, "_credits_state", None) if agent else None)
+    except Exception:
+        logger.debug("credits ▸ /usage fields unavailable", exc_info=True)
+        return {}
+    return ({"credits_lines": lines} | ({"credits_usage_window": True} if is_window else {})) if lines else {}
 
 
 def _snapshot_from_credits_state(state) -> Optional[AccountUsageSnapshot]:

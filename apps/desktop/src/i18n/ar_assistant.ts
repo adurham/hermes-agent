@@ -69,7 +69,7 @@ export const arAssistant = {
       errorRetry: 'إعادة المحاولة',
       errorSwitchToModel: (model, note) => (note ? `التبديل إلى ${model} (${note})` : `التبديل إلى ${model}`),
       errorSwitchModelFailed: 'تعذر تبديل النموذج',
-      errorUseCredits: 'استخدام الرصيد',
+      errorUseCredits: 'تفعيل الاستمرار بالرصيد',
       errorUseCreditsFailed: 'تعذر تفعيل الاستمرار بالرصيد',
       errorAddCredits: 'إضافة رصيد',
       errorOpenBillingSettings: 'فتح إعدادات الفوترة',

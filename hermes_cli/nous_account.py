@@ -200,21 +200,29 @@ def nous_portal_topup_url(account_info: Optional[NousPortalAccountInfo] = None) 
 
 
 def format_usage_window_block_guidance(account_info: Optional[NousPortalAccountInfo]) -> Optional[str]:
-    """Next step after a usage-window 402 (included usage spent, no credits): the add-credits link,
-    plus the auto top-up nudge when it is off. None for every account not on a usage-window plan, so
-    the credit-grant guidance is unchanged. A paused plan points at the card, not at a top-up."""
+    """Next step after a usage-window 402: the credits step from :func:`agent.plan_limits.credits_action`
+    (turn on Keep going, add credits, or both), plus the auto top-up nudge when it is off. None for every
+    account not on a usage-window plan, so the credit-grant guidance is unchanged. A paused plan points
+    at the card, not at a top-up."""
     window = getattr(account_info, "usage_window", None) if account_info is not None else None
     # A partial/empty block is not a window plan (same completeness rule as the credits seed).
     from agent.credits_tracker import _window_seed_fields
     if _window_seed_fields(window) is None:
         return None
-    if getattr(window, "paused_reason", None):
+    if paused := getattr(window, "paused_reason", None):
         # A paused plan bills credits whatever the setting says: no credits is why this 402 came.
-        return ("Update your card to restore included usage, or add credits to keep going now: "
-                f"{nous_portal_billing_url(account_info)}")
-    if getattr(window, "keep_going_on_credits", None) is False:
-        # A balance doesn't unlock Hermes here: the account setting does.
+        from agent.usage_gauges import paused_for_payment
+        fix = "Update your card to restore included usage" if paused_for_payment(paused) else "Included usage is paused"
+        return f"{fix}, or add credits to keep going now: {nous_portal_billing_url(account_info)}"
+    from agent.plan_limits import ADD_CREDITS_AND_KEEP_GOING, USE_CREDITS, credits_action
+    purchased = getattr(account_info.paid_service_access_info, "purchased_credits_remaining", None)
+    action = credits_action(getattr(window, "keep_going_on_credits", None),
+                            int(purchased * 1_000_000) if isinstance(purchased, (int, float)) else None)
+    if action == USE_CREDITS:
         return f"Turn on Keep going in /topup to use your credits now: {nous_portal_billing_url(account_info)}"
+    if action == ADD_CREDITS_AND_KEEP_GOING:
+        # With the setting off the gateway refuses whatever the balance, so a top-up alone won't do.
+        return f"Add credits and turn on Keep going in /topup to keep going now: {nous_portal_billing_url(account_info)}"
     lines = [f"Add credits to keep going now: {nous_portal_topup_url(account_info)}"]
     if getattr(window, "auto_top_up_enabled", None) is False:
         lines.append("Turn on auto top-up in the same place so this doesn't stop you next time.")

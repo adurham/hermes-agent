@@ -66,6 +66,13 @@ class TestTheRule:
         assert not pl.is_top_tier("unknown/model", PRICING)
         assert not pl.is_top_tier("example/model-c", {})
 
+    def test_the_usage_level_word_marks_top_tier_too(self):
+        """Today's gateway sends both marks; either one alone is enough, and a free row never is."""
+        level_only = {"example/model-d": {"prompt": "0.000005", "completion": "0.000025", "usage_level": "top_tier"}}
+        assert pl.is_top_tier("example/model-d", level_only)
+        free_marked = {"example/model-e:free": {"prompt": "0", "completion": "0", "usage_level": "top_tier"}}
+        assert not pl.is_top_tier("example/model-e:free", free_marked)
+
     def test_nothing_full_blocks_nothing(self):
         assert not any(pl.is_blocked(m, HEALTHY, PRICING) for m in PRICING)
 
@@ -126,10 +133,15 @@ class TestCreditsOption:
         assert pl.credits_option(state).action == "use_credits"
 
     def test_no_balance_or_setting_on_offers_add_credits(self):
-        for state in (SimpleNamespace(paused_reason=None, purchased_micros=0, keep_going_on_credits=False),
-                      SimpleNamespace(paused_reason=None, purchased_micros=5_000_000, keep_going_on_credits=True),
+        for state in (SimpleNamespace(paused_reason=None, purchased_micros=5_000_000, keep_going_on_credits=True),
                       SimpleNamespace(paused_reason=None, purchased_micros=0, keep_going_on_credits=None)):
             assert pl.credits_option(state).action == "add_credits"
+
+    def test_keep_going_off_and_no_balance_needs_both_steps(self):
+        """The gateway refuses with Keep going off whatever the balance: a top-up alone would still be refused."""
+        state = SimpleNamespace(paused_reason=None, purchased_micros=0, keep_going_on_credits=False)
+        assert pl.credits_option(state).action == "add_credits_and_keep_going"
+        assert pl.credits_action(False, None) == "add_credits_and_keep_going"  # unknown balance counts as none
 
     def test_paused_offers_nothing(self):
         state = SimpleNamespace(paused_reason="payment_past_due", purchased_micros=5_000_000, keep_going_on_credits=False)
@@ -199,10 +211,26 @@ class TestNextSteps:
         text = pl.limit_next_steps_from_payload(self._payload(credits={"action": "use_credits"}))
         assert text.endswith("or turn on Keep going in /topup to use credits.")
 
+    def test_keep_going_off_with_no_balance_names_both_steps(self):
+        both = self._payload(credits={"action": "add_credits_and_keep_going"})
+        assert pl.limit_next_steps_from_payload(both).endswith("or add credits and turn on Keep going in /topup.")
+        assert pl.limit_next_steps_from_payload(both, topup_command=None, portal=True).endswith(
+            "or add credits and turn on Keep going in the Portal.")
+
     def test_messaging_points_at_the_portal_and_uses_the_platform_prefix(self):
         text = pl.limit_next_steps_from_payload(self._payload(), model_command="!model", topup_command=None, portal=True)
         assert text == "Switch to Model Free (free) with !model, or add credits in the Portal."
         assert "/topup" not in text
+
+    def test_a_chat_refusal_points_at_the_portal_and_reads_the_reset_as_a_duration(self):
+        """A gateway's clock is not the reader's time zone: the reset reads "resets in 3h" in a chat."""
+        import time
+
+        from agent.credits_tracker import format_window_reset
+        resets_at = time.time() + 3 * 3600 + 30
+        text = f"You've hit your daily limit · resets {format_window_reset(int(resets_at * 1000))} · /topup to add credits"
+        assert pl.chat_refusal_wording(text, resets_at) == "You've hit your daily limit · resets in 3h · add credits in the Portal"
+        assert pl.chat_refusal_wording("Limit · /topup to add credits") == "Limit · add credits in the Portal"
 
     def test_no_suggestion_still_says_how_to_change_model(self):
         text = pl.limit_next_steps_from_payload(self._payload(suggestions=[], credits=None))

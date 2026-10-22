@@ -1731,8 +1731,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
     from hermes_cli.model_picker_usage import large_model_notice
-    usage_notice = large_model_notice(
-        st.new_model, st.target_provider, base_url=str(st.base_url or ""), fetch=True) or ""
+    usage_notice = large_model_notice(st.new_model, st.target_provider, fetch=True) or ""
 
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.

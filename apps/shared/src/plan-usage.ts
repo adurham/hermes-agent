@@ -94,6 +94,10 @@ export function sectionAt(
  */
 export type KnownGaugeId = 'day' | 'month' | 'top_tier' | 'week'
 
+/** The pause reason that means the subscription payment failed (agent/usage_gauges.py
+ *  `PAYMENT_PAUSE_REASONS`). Any other reason, `unknown` included, is a pause with neutral copy. */
+export const PAYMENT_PAUSE_REASON = 'payment_past_due'
+
 const KNOWN_GAUGE_IDS = new Set<string>(['day', 'month', 'top_tier', 'week'])
 
 export function knownGaugeId(gauge: Pick<PlanUsageGauge, 'label'>): KnownGaugeId | null {

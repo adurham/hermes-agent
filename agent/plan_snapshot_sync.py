@@ -16,10 +16,16 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
-_inflight = False
+# Both keyed by Hermes home: one process can serve several profiles, each with its own account.
+_inflight: set[str] = set()
 # What the headers said the last time a refresh ran. The portal can trail the gateway by a few minutes
 # (usage is ingested in batches), so the same mismatch is refreshed once, not on every reply meanwhile.
-_last_attempt: Optional[tuple[bool, frozenset[str]]] = None
+_last_attempt: dict[str, tuple[bool, frozenset[str]]] = {}
+
+
+def _profile_key() -> str:
+    from hermes_constants import hermes_home_key
+    return hermes_home_key()
 
 
 def _snapshot_full_ids(snapshot: Any) -> Optional[frozenset[str]]:
@@ -47,8 +53,7 @@ def plan_snapshot_is_stale(state: Any, snapshot: Any) -> bool:
     return frozenset(g.id for g in getattr(state, "gauges", ()) if g.full) != full_ids
 
 
-def _refresh(plan_changed: bool) -> None:
-    global _inflight
+def _refresh(plan_changed: bool, key: str) -> None:
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
         get_nous_portal_account_info(force_fresh=True)
@@ -58,42 +63,45 @@ def _refresh(plan_changed: bool) -> None:
             get_pricing_for_provider("nous", force_refresh=True)
     except Exception:
         logger.debug("plan sync ▸ refresh failed (fail-open)", exc_info=True)
-        global _last_attempt
-        _last_attempt = None  # a transient portal error must not block the next re-sync
+        _last_attempt.pop(key, None)  # a transient portal error must not block the next re-sync
     finally:
         with _lock:
-            _inflight = False
+            _inflight.discard(key)
 
 
 def sync_plan_snapshot(state: Any) -> bool:
     """Start one background refresh when *state* (a fresh ``CreditsState`` from reply headers) says the
     cached plan is out of date. Returns True iff a refresh started. Never raises, never blocks."""
-    global _inflight, _last_attempt
+    key = ""
     try:
+        key = _profile_key()
         if not getattr(state, "is_usage_window", False):
             # Non-window reply: only a cached window snapshot (a downgrade / cancel) can be stale. Peek the
             # raw cache first so every other account pays no auth-state read per reply.
             from hermes_cli import nous_account
             cached = nous_account._account_info_cache
             if cached is None or _snapshot_full_ids(cached[2]) is None:
-                _last_attempt = None
+                _last_attempt.pop(key, None)
                 return False
         from hermes_cli.nous_account import cached_nous_portal_account_info
         snapshot = cached_nous_portal_account_info(any_age=True)
         if not plan_snapshot_is_stale(state, snapshot):
-            _last_attempt = None  # in step again: the next mismatch gets its own refresh
+            _last_attempt.pop(key, None)  # in step again: the next mismatch gets its own refresh
             return False
         on_window = bool(getattr(state, "is_usage_window", False))
         seen = (on_window, frozenset(g.id for g in getattr(state, "gauges", ()) if g.full))
         plan_changed = on_window != (_snapshot_full_ids(snapshot) is not None)
         with _lock:
-            if _inflight or seen == _last_attempt:
+            if key in _inflight or _last_attempt.get(key) == seen:
                 return False
-            _inflight, _last_attempt = True, seen
-        threading.Thread(target=_refresh, args=(plan_changed,), name="nous-plan-sync", daemon=True).start()
+            _inflight.add(key)
+            _last_attempt[key] = seen
+        # Under this profile's contextvars (its Hermes home and auth store), as the credits seed thread does.
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(_refresh, args=(plan_changed, key), name="nous-plan-sync").start()
         return True
     except Exception:
         logger.debug("plan sync ▸ check failed (fail-open)", exc_info=True)
         with _lock:
-            _inflight = False
+            _inflight.discard(key)
         return False

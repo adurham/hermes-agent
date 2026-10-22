@@ -45236,7 +45236,7 @@
       },
       "UsageLimitCredits": {
         "additionalProperties": false,
-        "description": "``agent/plan_limits.py::CreditsOption`` \u2014 ``use_credits`` (turn on Keep going) or ``add_credits``.",
+        "description": "``agent/plan_limits.py::CreditsOption`` \u2014 ``use_credits`` (turn on Keep going), ``add_credits``, or\n``add_credits_and_keep_going`` (both: Keep going is off and there is no balance).",
         "properties": {
           "action": {
             "title": "Action",

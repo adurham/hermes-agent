@@ -135,6 +135,22 @@ describe('deriveBillingView (usage-window plans)', () => {
     }
   })
 
+  it('a pause for any other reason does not claim a payment failed', () => {
+    const fixture = windowFixtures['window-paused']
+    const billing = fixture.billing.ok ? fixture.billing.data : undefined
+    const subscription = fixture.subscription.ok ? fixture.subscription.data : undefined
+    const planUsage = { ...billing!.plan_usage!, paused_reason: 'unknown' }
+
+    const view = deriveBillingView(
+      okBilling({ ...billing!, plan_usage: planUsage }),
+      okSubscription({ ...subscription!, plan_usage: planUsage })
+    )
+
+    for (const row of view.usageRows.slice(0, 3)) {
+      expect(row.caption).toBe('Paused: see Billing in the Portal')
+    }
+  })
+
   it('names the window plan on the Usage section, and nothing on a credit-grant plan', () => {
     const win = windowFixtures['window-healthy']
     expect(deriveBillingView(win.billing, win.subscription).usagePlanName).toBe('Window Plan')

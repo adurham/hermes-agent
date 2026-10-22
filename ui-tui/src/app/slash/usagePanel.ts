@@ -70,7 +70,10 @@ export function planUsageLines(plan: BillingStateResponse['plan_usage'], nowMs: 
     const used = Math.max(0, Math.min(1, 1 - left))
     // Same cells as `render_bar`: any use shows one, only a full allowance fills all ten.
     const filled = Math.min(used < 1 ? 9 : 10, Math.max(used > 0 ? 1 : 0, Math.round(used * 10)))
-    const bp = Math.round(used * 10_000)
+    // Same percent as the CLI / Desktop (`format_percent_used` / `formatPercentUsed`): floor, so a nearly
+    // full allowance reads 99% beside its 9 cells; 100% only once it is spent. Micro-rounded first:
+    // `1 - left` can land a hair under an exact basis point.
+    const bp = Math.floor(Math.round(used * 10_000 * 1e6) / 1e6)
     const pct = bp <= 0 ? '0%' : bp < 100 ? '<1%' : `${Math.floor(bp / 100)}%`
     const when = formatResetsIn(g.resets_at_ms, nowMs)
     const reset = when === 'soon' ? 'resets soon' : when ? `resets in ${when}` : ''

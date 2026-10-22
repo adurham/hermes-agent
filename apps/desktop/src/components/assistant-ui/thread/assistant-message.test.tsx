@@ -433,19 +433,19 @@ describe("a window plan's limit: one-click switch and credits (no silent switch)
     expect(executeSlash).toHaveBeenCalledWith('/model example/model-free:free --provider nous --session', 'rt-1')
     // No balance: the credits way on is Billing, labelled for what it does.
     expect(screen.getByRole('button', { name: 'Open billing settings' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Use credits' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Turn on Keep going on credits' })).toBeNull()
     // The generic provider menu is replaced by the one-click switch.
     expect(screen.queryByRole('button', { name: 'Switch provider' })).toBeNull()
   })
 
-  it('with a balance and Keep going off, offers Use credits', async () => {
+  it('with a balance and Keep going off, offers to turn on Keep going (a lasting setting)', async () => {
     render(
       <MemoryRouter>
         <Harness assistant={limitMessage('use_credits')} />
       </MemoryRouter>
     )
 
-    expect(await screen.findByRole('button', { name: 'Use credits' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Turn on Keep going on credits' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Switch to Model Free (free)' })).toBeTruthy()
   })
 

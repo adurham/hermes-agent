@@ -607,6 +607,9 @@ class GatewayStatusCommandsMixin:
             lambda: asyncio.to_thread(nous_credits_lines, markdown=True, credits_state=credits_state),
             [],
         )
+        # Window plans: a chat's /topup has no Keep going control, so point the setting at the Portal.
+        from agent.plan_limits import portal_wording
+        credits_lines = [portal_wording(line) for line in credits_lines]
 
         def _with_account_blocks(lines: list[str]) -> str:
             # Each block is preceded by a blank divider only when something precedes it.

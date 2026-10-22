@@ -1,5 +1,13 @@
 import type { ModelOptionProvider, ModelPricing, PlanUsage, PlanUsageGauge } from '@hermes/shared'
-import { gaugeTitle, hasTopTier, planBlocks, planLimit, splitRecommended, usageTag } from '@hermes/shared'
+import {
+  gaugeTitle,
+  hasTopTier,
+  PAYMENT_PAUSE_REASON,
+  planBlocks,
+  planLimit,
+  splitRecommended,
+  usageTag
+} from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -717,7 +725,9 @@ function PlanUsageSummary({ provider, usage }: { provider: ModelOptionProvider; 
         ) : (
           <div>
             {copy.included}
-            {usage.paused_reason ? ` · ${copy.pausedRenewal}` : ''}
+            {usage.paused_reason
+              ? ` · ${usage.paused_reason === PAYMENT_PAUSE_REASON ? copy.pausedRenewal : copy.pausedOther}`
+              : ''}
           </div>
         )}
         {windowGauges.map(g => {

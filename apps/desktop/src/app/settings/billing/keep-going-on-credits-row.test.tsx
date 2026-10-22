@@ -138,3 +138,27 @@ describe('KeepGoingOnCreditsRow after an approval', () => {
     await waitFor(() => expect(screen.queryByText(/didn't save/)).toBeNull())
   })
 })
+
+describe('KeepGoingOnCreditsRow with overlapping attempts', () => {
+  it('a cancelled approval that resolves late never snaps back the newer attempt', async () => {
+    const resolvers: ((value: unknown) => void)[] = []
+    apiMocks.updateKeepGoingOnCredits.mockResolvedValue(NEEDS_APPROVAL)
+    apiMocks.stepUp.mockImplementation(() => new Promise(resolve => resolvers.push(resolve)))
+
+    renderRow(false)
+    fireEvent.click(screen.getByRole('switch'))
+    expect(await screen.findByText(/Approve Remote Spending in your browser/)).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Cancel'))
+    await waitFor(() => expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false'))
+
+    fireEvent.click(screen.getByRole('switch'))
+    await waitFor(() => expect(apiMocks.updateKeepGoingOnCredits).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText(/Approve Remote Spending in your browser/)).toBeTruthy()
+
+    // The first (cancelled) approval comes back now: the second attempt keeps its switch and its prompt.
+    await act(async () => resolvers[0]?.({ data: { granted: false, ok: true }, ok: true }))
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByText(/Approve Remote Spending in your browser/)).toBeTruthy()
+  })
+})

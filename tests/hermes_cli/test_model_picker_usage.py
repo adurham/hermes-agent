@@ -4,7 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from hermes_cli.auth_model_picker import _ModelPickerRows
-from tests.usage_window_fixtures import usage_window
+from tests.usage_window_fixtures import FAR, usage_window
 from hermes_cli.model_picker_usage import (
     GAUGE_MONTH,
     GAUGE_TODAY,
@@ -129,7 +129,7 @@ def test_window_plan_gauges_stack_on_separate_lines():
         logged_in=True, subscription=SimpleNamespace(plan="Window Plan"),
         usage_window=SimpleNamespace(**usage_window(
             day_used_bp=0, week_used_bp=0, top_tier_used_bp=0,
-            day_resets_at_ms=int(1e13), week_resets_at_ms=int(1e13), paused_reason=None,
+            day_resets_at_ms=FAR, week_resets_at_ms=FAR, paused_reason=None,
         )),
     ))
     stacked = plan_gauge_lines(usage)
@@ -154,7 +154,7 @@ def test_window_gauges_for_model_omit_top_tier_on_regular_ids():
 def _window_usage(**window):
     """A window plan where the gateway marked Model B top tier."""
     base = dict(day_used_bp=0, week_used_bp=0, top_tier_used_bp=0,
-                day_resets_at_ms=int(1e13), week_resets_at_ms=int(1e13), paused_reason=None)
+                day_resets_at_ms=FAR, week_resets_at_ms=FAR, paused_reason=None)
     usage = picker_usage_from_account(SimpleNamespace(
         logged_in=True, subscription=SimpleNamespace(plan="Window Plan"),
         usage_window=SimpleNamespace(**usage_window(**{**base, **window})),
@@ -178,7 +178,7 @@ def test_picker_draws_whatever_allowances_the_server_lists():
     usage = picker_usage_from_account(SimpleNamespace(
         logged_in=True, subscription=SimpleNamespace(plan="Window Plan"),
         usage_window=SimpleNamespace(gauges=[
-            {"id": "five_hour", "scope": "all", "label": "Next 5 hours", "used_bp": 10_000, "resets_at_ms": int(1e13)},
+            {"id": "five_hour", "scope": "all", "label": "Next 5 hours", "used_bp": 10_000, "resets_at_ms": FAR},
             *usage_window()["gauges"],
         ], featured_model_ids=()),
     ))
@@ -263,7 +263,7 @@ def test_a_free_model_is_never_used_up():
 
 def test_the_note_names_the_allowance_that_frees_up_last():
     """Day and week both spent: the day's reset alone lets nothing through, so the note waits for the week."""
-    usage = _window_usage(day_used_bp=10_000, week_used_bp=10_000, day_resets_at_ms=1_000, week_resets_at_ms=int(1e13))
+    usage = _window_usage(day_used_bp=10_000, week_used_bp=10_000, day_resets_at_ms=1_000, week_resets_at_ms=FAR)
     assert usage.exhausted_gauge("paid/m").label == GAUGE_WEEK
 
 
@@ -458,7 +458,7 @@ def test_messaging_pickers_get_large_free_labels_and_the_limit_line(monkeypatch)
     from agent import plan_limits as pl
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage(top_tier_used_bp=10_000))
-    monkeypatch.setattr(pl, "cached_pricing", lambda base_url: dict(_LEVELS))
+    monkeypatch.setattr(pl, "cached_pricing", lambda base_url="": dict(_LEVELS))
     providers = [{"slug": "nous", "api_url": "https://x/v1", "models": ["example/model-b", "example/model-a"]},
                  {"slug": "example", "models": ["example/model-b"]}]
     msp._attach_window_model_notes(providers)
@@ -486,7 +486,7 @@ def test_messaging_pickers_get_large_free_labels_and_the_limit_line(monkeypatch)
 def test_large_model_notice_window_plans_only(monkeypatch):
     from dataclasses import replace as _replace
     from hermes_cli import model_picker_usage as mpu
-    monkeypatch.setattr(mpu, "_nous_catalog", lambda base_url="", fetch=False: dict(_LEVELS))
+    monkeypatch.setattr(mpu, "_nous_catalog", lambda fetch=False: dict(_LEVELS))
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage())
     note = mpu.large_model_notice("example/model-b", "nous")
     assert note.startswith("Large model: uses more of your plan's usage per message.") and "Monthly large-model limit:" in note
@@ -502,9 +502,22 @@ def test_large_model_notice_window_plans_only(monkeypatch):
     # Any other account: its catalog carries no marks (None), and it is never fetched.
     seen = []
     monkeypatch.setattr(mpu, "_nous_catalog",
-                        lambda base_url="", fetch=False: seen.append(fetch) or {"example/model-b": {"prompt": "0.000001"}})
+                        lambda fetch=False: seen.append(fetch) or {"example/model-b": {"prompt": "0.000001"}})
     assert mpu.large_model_notice("example/model-b", "nous", fetch=True) is None
     assert seen == [False]
+
+
+def test_catalog_reads_never_answer_from_another_profiles_cache(monkeypatch):
+    """One process, several profiles: tags and the Large notice read only this profile's catalog, never the
+    newest catalog cached for any credential (another plan can mark different models Large)."""
+    import hermes_cli.models_pricing as mp
+    from agent import plan_limits as pl
+    from hermes_cli import model_picker_usage as mpu
+    monkeypatch.setattr(mp, "peek_cached_pricing", lambda base_url: dict(_LEVELS))  # another profile's catalog
+    monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider, **kw: {})  # this profile: cold
+    monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)  # this profile: no window plan
+    assert pl.cached_pricing("https://inference-api.nousresearch.com/v1") == {}
+    assert mpu.large_model_notice("example/model-b", "nous") is None
 
 
 def test_picker_words_follow_the_display_language(monkeypatch):

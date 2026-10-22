@@ -228,3 +228,23 @@ def test_a_messaging_refusal_points_at_the_portal_not_topup():
     assert portal_wording("You've hit your daily limit · resets 15:56 · turn on Keep going in /topup") == (
         "You've hit your daily limit · resets 15:56 · turn on Keep going in the Portal")
     assert "/topup" not in portal_wording("You've hit your weekly limit · /topup to add credits")
+
+
+def test_a_chat_refusal_is_worded_for_the_chat_and_other_replies_are_untouched():
+    runner = _runner(_TextAdapter())
+    refusal = {"usage_window_message": "x", "failure_resets_at": None}
+    assert runner._usage_window_chat_wording(refusal, "Limit · /topup to add credits") == "Limit · add credits in the Portal"
+    assert runner._usage_window_chat_wording({}, "use /topup to add credits") == "use /topup to add credits"
+
+
+@pytest.mark.asyncio
+async def test_the_limit_offer_follows_the_delivered_reply_only_for_a_limit():
+    runner = _runner(_TextAdapter())
+    runner._hmwa_deliver_turn_response = AsyncMock(return_value="sent")
+    offers = []
+    runner._schedule_usage_limit_offer = lambda event, limit, **kw: offers.append((limit, kw))
+    args = ("src", "entry", "chat:c1", 7)
+    for result in ({"usage_limit": LIMIT}, {}):
+        assert await runner._deliver_turn_response_then_limit_offer(
+            _event(), *args, result, [], "reply", "", False) == "sent"
+    assert offers == [(LIMIT, {"session_key": "chat:c1", "generation": 7})]

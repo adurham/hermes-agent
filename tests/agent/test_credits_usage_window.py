@@ -261,6 +261,13 @@ class TestDerivedState:
         assert not _state(window_top_tier_used_bp=None).top_tier_exhausted  # not listed ≠ used
         assert not _state(paused_reason="payment_past_due").window_exhausted  # paused is not spent
 
+    def test_an_implausible_reset_stamp_reads_as_unknown(self):
+        """More than a year ahead is a bad stamp (the longest allowance is a month): no date decades away."""
+        far = int(time.time() * 1000) + 10 * 366 * 86_400_000
+        gauges = ct.parse_gauges([{"id": "day", "scope": "all", "used_bp": 100, "resets_at_ms": far},
+                                  {"id": "week", "scope": "all", "used_bp": 100, "resets_at_ms": WEEK_RESET}])
+        assert gauges[0].resets_at_ms is None and gauges[1].resets_at_ms == WEEK_RESET
+
     def test_no_gauges_is_not_a_usage_window(self):
         s = _state(gauges=())
         assert not s.is_usage_window and s.used_fraction is None and s.binding_gauge is None
@@ -443,6 +450,21 @@ class TestHardStops:
         text = show[0][2]
         assert "payment failed" in text and "update your card" in text and "add credits in /topup" in text
         assert "Keep going on credits" not in text  # the setting doesn't gate a paused plan
+
+    def test_a_pause_for_another_reason_never_claims_a_payment_failed(self):
+        """The server may send any reason (\"unknown\" for a malformed one): still a pause, neutral copy."""
+        from agent import account_usage
+        from hermes_cli import nous_account
+        show, _ = _run(_state(paid_access=False, paused_reason="unknown", spend_source=None), new_credits_latch())
+        assert [k for k, _l, _t in show] == [CREDITS_DEPLETED_KEY]
+        assert "payment" not in show[0][2] and "add credits in /topup" in show[0][2]
+        window = SimpleNamespace(gauges=ct.parse_gauges(_gauges(100, 50)), auto_top_up_enabled=False,
+                                 paused_reason="unknown", keep_going_on_credits=None)
+        info = SimpleNamespace(logged_in=True, paid_service_access=True, usage_window=window, portal_base_url=None,
+                               paid_service_access_info=SimpleNamespace(purchased_credits_remaining=0.0), subscription=None)
+        lines = account_usage.render_account_usage_lines(account_usage.build_nous_credits_snapshot(info))
+        assert account_usage._WINDOW_PAUSED_OTHER_LINE in lines and account_usage._WINDOW_PAUSED_LINE not in lines
+        assert nous_account.format_usage_window_block_guidance(info).startswith("Included usage is paused, or add credits")
 
     def test_payment_paused_wins_over_exhausted_and_survives_a_free_model(self):
         s = _state(paid_access=False, paused_reason="payment_past_due", window_day_used_bp=10_000, spend_source=None)
@@ -635,6 +657,7 @@ _PLAN_STATES = {
     "week_90pct": lambda: _plan_state(3_000, 9_100, source="included"),  # the week's 90% heads-up
     # window used up, $5.00 top-up but top-up for Hermes turned off → the stop names the setting
     "keep_going_off": lambda: _plan_state(10_000, 6_000, purchased="5.00", keep_going=False),
+    "keep_going_off_no_balance": lambda: _plan_state(10_000, 6_000, keep_going=False),
     # window used up, $5.00 top-up → PAYG one-shot
     "payg": lambda: _plan_state(10_000, 6_000, purchased="5.00", source="payg"),
     "payg_autotopup": lambda: _plan_state(10_000, 6_000, purchased="5.00", source="payg", auto_top_up=True),
@@ -661,6 +684,8 @@ class TestPlanStates:
         ("exhausted", [CREDITS_WINDOW_LIMIT_KEY], "/topup to add credits"),
         # A balance, but top-up for Hermes is off: the stop names the account setting, not /topup.
         ("keep_going_off", [CREDITS_WINDOW_LIMIT_KEY], "turn on Keep going in /topup"),
+        # No balance and the setting off (the default): the gateway refuses either way, so both steps.
+        ("keep_going_off_no_balance", [CREDITS_WINDOW_LIMIT_KEY], "add credits and turn on Keep going in /topup"),
         ("paused", [CREDITS_DEPLETED_KEY], "payment failed"),
     ])
     def test_every_window_state_drives_its_notice(self, name, expect_keys, must_contain):
@@ -926,6 +951,16 @@ class TestClassifier:
                                provider="example", model="m", base_url="https://example.invalid/v1")
         assert c.reason == FailoverReason.rate_limit and not c.error_context.get("usage_window")
 
+    def test_window_code_on_a_429_from_another_upstream_keeps_main_rules(self):
+        """The code is honoured only through the gated 402 path: on any other status (a 429 from another
+        provider or a custom endpoint) it is not a billing code, so the turn backs off and retries as on main."""
+        from agent.error_classifier import FailoverReason, classify_api_error
+        for provider, base_url in (("example", "https://example.invalid/v1"), ("custom", "https://custom.example.invalid/v1")):
+            c = classify_api_error(self._err(429, "usage_window_and_credits_exhausted", "Too many requests"),
+                                   provider=provider, model="m", base_url=base_url)
+            assert c.reason == FailoverReason.rate_limit and c.retryable
+            assert not c.error_context.get("usage_window")
+
     def test_a_plain_403_still_classifies_as_before(self):
         from agent.error_classifier import FailoverReason, classify_api_error
         c = classify_api_error(self._err(403, "forbidden", "Forbidden"), provider="nous", model="m")
@@ -977,8 +1012,6 @@ class TestBlockedResponseCapture:
     def test_non_streaming_success_feeds_the_header_capture(self):
         """A non-streaming 200 must observe x-nous-credits-* like a stream open does
         (spend_source / window gauges otherwise go stale until the next stream or 402)."""
-        from unittest.mock import MagicMock
-
         from agent.chat_completion_headers import _chat_completion_capturing_headers
 
         seen = []
@@ -1014,11 +1047,11 @@ class TestBlockedResponseCapture:
         assert _chat_completion_capturing_headers(
             SimpleNamespace(provider="example"), other, {"model": "m"}) is plain
 
-        # Test doubles without the raw surface keep the plain call and capture nothing.
+        # A client without the raw surface keeps the plain call and captures nothing.
         seen.clear()
         agent._capture_rate_limits = lambda r: seen.append(("rl", r))
-        mock_client = MagicMock()
-        assert _chat_completion_capturing_headers(agent, mock_client, {"model": "m"}) is mock_client.chat.completions.create.return_value
+        bare = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **kw: plain)))
+        assert _chat_completion_capturing_headers(agent, bare, {"model": "m"}) is plain
         assert seen == []
 
     def test_non_streaming_non_window_keeps_mains_behaviour(self):
@@ -1130,6 +1163,42 @@ class TestRefusalReadsAsTheStopLine:
         assert resets_at == DAY_RESET / 1000
         assert limit["gauge_id"] == "day" and limit["scope"] == "all" and limit["message"] == text
         assert limit["credits"] == {"action": "use_credits"} and limit["current_model"] == "example/model-b"
+
+    def test_only_a_billing_refusal_with_the_window_mark_benches_one_model(self):
+        """The model-scoped bench applies to the usage-window 402 alone, and wins over the unverified-billing
+        sizing; any other reason keeps the pool's own handling."""
+        from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+        from agent.credential_pool_model_cooldowns import FAILURE_REASON_USAGE_WINDOW, pool_failure_reason
+        from agent.error_classifier import FailoverReason
+        window = {"usage_window": True}
+        assert pool_failure_reason(FailoverReason.billing, window, True) == FAILURE_REASON_USAGE_WINDOW
+        assert pool_failure_reason(FailoverReason.rate_limit, window, False) == FailoverReason.rate_limit.value
+        assert pool_failure_reason(FailoverReason.billing, {}, True) == FAILURE_REASON_BILLING_UNVERIFIED
+        assert pool_failure_reason(FailoverReason.billing, None, False) == FailoverReason.billing.value
+
+    def test_the_pool_bench_lasts_until_the_refused_allowance_resets(self):
+        """The 402's own headers are captured before recovery, so the pool gets the window's reset (not its
+        default 60 s / 1 h bench); a state naming no reset leaves the default."""
+        from agent.turn_recovery import _usage_window_reset_context
+        assert _usage_window_reset_context(self._agent()) == {"reset_at": DAY_RESET / 1000}
+        assert _usage_window_reset_context(SimpleNamespace(_credits_state=None)) == {}
+
+    def test_keep_going_off_with_no_balance_says_both_steps_everywhere(self):
+        """A new subscriber's first limit (setting off by default, no top-up): the stop line, the next-steps
+        payload and the 402 guidance all name both steps, since either one alone is still refused."""
+        from agent.conversation_loop import _usage_window_refusal
+        from hermes_cli import nous_account
+        agent = self._agent(purchased_micros=0, keep_going_on_credits=False)
+        text, _resets_at, limit = _usage_window_refusal(agent, SimpleNamespace(error_context={"usage_window": True}))
+        assert text.endswith(" · add credits and turn on Keep going in /topup")
+        assert limit["credits"] == {"action": "add_credits_and_keep_going"}
+        window = SimpleNamespace(gauges=ct.parse_gauges(_gauges(100, 50)), auto_top_up_enabled=False,
+                                 paused_reason=None, keep_going_on_credits=False)
+        for purchased in (0.0, None):
+            info = SimpleNamespace(logged_in=True, paid_service_access=True, usage_window=window, portal_base_url=None,
+                                   paid_service_access_info=SimpleNamespace(purchased_credits_remaining=purchased))
+            guidance = nous_account.format_usage_window_block_guidance(info)
+            assert guidance.startswith("Add credits and turn on Keep going in /topup")
         # Any other billing failure keeps its own copy and carries no limit.
         assert _usage_window_refusal(agent, SimpleNamespace(error_context={})) == ("", None, None)
 

@@ -47,8 +47,8 @@ def wired(monkeypatch):
     monkeypatch.setattr(na, "get_nous_portal_account_info", lambda force_fresh=False: calls.append("account"))
     monkeypatch.setattr(mp, "get_pricing_for_provider",
                         lambda provider, force_refresh=False: calls.append(("catalog", provider, force_refresh)))
-    monkeypatch.setattr(sync, "_last_attempt", None)
-    monkeypatch.setattr(sync, "_inflight", False)
+    monkeypatch.setattr(sync, "_last_attempt", {})
+    monkeypatch.setattr(sync, "_inflight", set())
 
     class _Thread:  # run inline: deterministic, no sleeps
         def __init__(self, target, args=(), **kw):
@@ -84,6 +84,22 @@ def test_back_in_step_rearms(wired):
     assert sync.sync_plan_snapshot(_state(True)) is False  # in step: clears the guard
     box["snap"] = _snap(None)
     assert sync.sync_plan_snapshot(_state(True)) is True
+
+
+def test_each_profile_refreshes_its_own_account_under_its_own_home(wired, tmp_path, monkeypatch):
+    """One process, two profiles: the refresh runs with the asking profile's Hermes home, and one
+    profile's pending mismatch never blocks another's."""
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    import hermes_cli.nous_account as na
+    homes = []
+    monkeypatch.setattr(na, "get_nous_portal_account_info", lambda force_fresh=False: homes.append(str(get_hermes_home())))
+    for name in ("a", "b"):
+        token = set_hermes_home_override(tmp_path / name)
+        try:
+            assert sync.sync_plan_snapshot(_state(True)) is True
+        finally:
+            reset_hermes_home_override(token)
+    assert homes == [str(tmp_path / "a"), str(tmp_path / "b")]
 
 
 def test_an_ordinary_reply_costs_nothing(wired):

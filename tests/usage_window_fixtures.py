@@ -6,9 +6,12 @@ week 40%, top tier full", so this maps those names onto the list, in the server'
 
 from __future__ import annotations
 
+import time
 from typing import Any, Optional
 
-_FAR = int(1e13)
+# A reset well inside parse_gauges' plausible range (no more than a year ahead).
+FAR = int(time.time() * 1000) + 30 * 86_400_000
+_FAR = FAR
 
 
 def gauges(*, day_used_bp: int = 0, week_used_bp: int = 0, top_tier_used_bp: Optional[int] = 0,

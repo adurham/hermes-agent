@@ -128,7 +128,9 @@ _XAI_SPENDING_LIMIT_ERROR_CODE = "personal-team-blocked:spending-limit"
 
 # Nous usage-window plan: included usage (or the large-model allowance) is spent AND
 # there are no top-up credits. Billing so the pool may rotate to a key the user
-# owns; the message names the reset, so it must never read as transient.
+# owns; the message names the reset, so it must never read as transient. Honoured
+# only on a Nous 402 (``_classify_402`` behind ``_is_nous_route``), never via
+# _BILLING_ERROR_CODES, so any other status or upstream keeps main's rules.
 _NOUS_USAGE_WINDOW_402_CODE = "usage_window_and_credits_exhausted"
 
 # Structured codes meaning the account cannot serve paid traffic.
@@ -143,7 +145,6 @@ _BILLING_ERROR_CODES = frozenset({
     "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
     # Nous paid model behind an empty credit balance arrives as a 404 (#115702).
     "insufficient_credits_for_paid_model",
-    _NOUS_USAGE_WINDOW_402_CODE,
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also

@@ -1677,7 +1677,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         _save_model_choice(selected_model)
         print(f"Default model set to: {selected_model}")
         from hermes_cli.model_picker_usage import large_model_notice
-        if _notice := large_model_notice(selected_model, "nous", base_url=inference_base_url or ""):
+        if _notice := large_model_notice(selected_model, "nous"):
             print(f"  ⚠ {_notice}")  # window plans only (a Large mark exists only on their catalog)
         print(f"  Config updated: {config_path} (model.provider=nous)")
     except KeyboardInterrupt:

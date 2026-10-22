@@ -22,6 +22,18 @@ MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
 FAILURE_REASON_USAGE_WINDOW = "usage_window"
 
 
+def pool_failure_reason(reason: Any, error_context: Optional[dict[str, Any]], billing_unverified: bool) -> str:
+    """The pool's failure reason for a rotation (*reason* is a ``FailoverReason``). A usage-window 402
+    benches only the refused model; an ambiguous billing body is sized as transient, not a 1-hour bench."""
+    from agent.error_classifier import FailoverReason
+    if reason == FailoverReason.billing and (error_context or {}).get("usage_window"):
+        return FAILURE_REASON_USAGE_WINDOW
+    if reason == FailoverReason.billing and billing_unverified:
+        from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+        return FAILURE_REASON_BILLING_UNVERIFIED
+    return reason.value
+
+
 def model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
     """Active cooldown blocking *entry* for *model*, or ``None``.
 

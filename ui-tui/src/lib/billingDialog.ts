@@ -45,6 +45,13 @@ export interface UsageLimitDialog extends BillingDialogCopy {
   switchValue: null | string
 }
 
+// agent/plan_limits.py::credits_action → the dialog's credits line.
+const CREDITS_STEP: Record<string, () => string> = {
+  add_credits: () => t('libText.billingDialog.limitCreditsAdd'),
+  add_credits_and_keep_going: () => t('libText.billingDialog.limitCreditsBoth'),
+  use_credits: () => t('libText.billingDialog.limitCreditsUse')
+}
+
 /**
  * A usage-window plan's limit (error_surface.usage_limit, agent/plan_limits.py): the confirm button
  * switches THIS session to the plan's recommended model and re-sends the message; the detail names the
@@ -55,30 +62,26 @@ export function usageLimitDialog(limit: UsageLimit): UsageLimitDialog {
   const suggestion = limit.suggestions?.[0]
   const sentence = (limit.message || '').trim()
 
-  const credits =
-    limit.credits?.action === 'use_credits'
-      ? 'Or turn on Keep going in /topup to use your credits.'
-      : limit.credits?.action === 'add_credits'
-        ? 'Or add credits with /topup.'
-        : ''
+  const action = limit.credits?.action
+  const credits = action && Object.hasOwn(CREDITS_STEP, action) ? CREDITS_STEP[action]!() : ''
 
   if (!suggestion) {
     return {
-      cancelLabel: 'Dismiss',
-      confirmLabel: 'Open /topup',
+      cancelLabel: t('libText.billingDialog.dismiss'),
+      confirmLabel: t('libText.billingDialog.limitOpenTopup'),
       switchValue: null,
       detail: [sentence, credits].filter(Boolean).join('\n'),
-      title: 'Limit reached'
+      title: t('libText.billingDialog.limitTitle')
     }
   }
 
   const note = suggestion.note ? ` (${suggestion.note})` : ''
 
   return {
-    cancelLabel: 'Dismiss',
-    confirmLabel: `Switch to ${suggestion.label}${note}`,
+    cancelLabel: t('libText.billingDialog.dismiss'),
+    confirmLabel: t('libText.billingDialog.limitSwitchTo', `${suggestion.label}${note}`),
     detail: [sentence, credits].filter(Boolean).join('\n'),
     switchValue: `${suggestion.model} --provider ${suggestion.provider || 'nous'} --session`,
-    title: 'Limit reached'
+    title: t('libText.billingDialog.limitTitle')
   }
 }

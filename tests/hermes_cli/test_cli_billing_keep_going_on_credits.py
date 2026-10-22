@@ -92,3 +92,25 @@ def test_a_declined_step_up_sends_nothing_more(monkeypatch):
     monkeypatch.setattr(cli, "_step_up_remote_spending", lambda **_kw: False, raising=False)
     cli._billing_keep_going_on_credits_flow(SimpleNamespace(keep_going_on_credits=False))
     assert calls == [{"enabled": True}]
+
+
+def test_turning_on_updates_the_session_state_at_once(sent, monkeypatch):
+    """The "turn on Keep going" line must not wait for the next reply: the agent's state takes the new
+    value and the notice policy re-runs; the account snapshot refreshes in the background."""
+    import hermes_cli.nous_account as na
+    from agent.credits_tracker import CreditsState
+    from agent.usage_gauges import SCOPE_ALL, WindowGauge
+    refreshed, emitted = [], []
+    monkeypatch.setattr(na, "get_nous_portal_account_info", lambda force_fresh=False: refreshed.append(force_fresh))
+    cli = _Cli("agree")
+    cli.agent = SimpleNamespace(_credits_state=CreditsState(version=1, denominator_kind="usage_window",
+                                                            gauges=(WindowGauge("day", SCOPE_ALL, "Today", 10_000),),
+                                                            keep_going_on_credits=False),
+                                _emit_credits_notices=lambda: emitted.append(cli.agent._credits_state.keep_going_on_credits))
+    cli._billing_keep_going_on_credits_flow(SimpleNamespace(keep_going_on_credits=False))
+    assert cli.agent._credits_state.keep_going_on_credits is True and emitted == [True]
+    import threading
+    for th in threading.enumerate():
+        if th.name == "keep-going-refresh":
+            th.join(timeout=5)
+    assert refreshed == [True]

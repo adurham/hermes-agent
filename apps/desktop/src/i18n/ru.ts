@@ -367,6 +367,7 @@ export const ruOverrides = {
             topTier: 'Крупные модели (месяц)',
             barLabel: title => `${title}: использовано включённого объёма`,
             captionPaused: 'Приостановлено: платёж по подписке не прошёл',
+            captionPausedOther: 'Приостановлено: см. раздел «Оплата» на портале',
             captionTopTierUsedUp: 'Месячный лимит исчерпан, остальное оплачивается кредитами',
             captionTopTierUsedUpKeepGoingOff: 'Месячный лимит исчерпан, другие включённые модели работают',
             captionResetsIn: duration => `Сброс через ${duration}`,
@@ -3204,6 +3205,7 @@ export const ruOverrides = {
     topTier: 'Крупные модели (в месяц)',
     included: 'Все модели ниже включены',
     pausedRenewal: 'пауза: оплата не прошла',
+    pausedOther: 'пауза',
     includedUsedUp: 'Включённый объём исчерпан',
     limitReached: name => `Достигнут ${name}`,
     limitNames: {
@@ -3622,7 +3624,7 @@ export const ruOverrides = {
       errorSwitchToModel: (model: string, note?: string) =>
         note ? `Переключиться на ${model} (${note})` : `Переключиться на ${model}`,
       errorSwitchModelFailed: 'Не удалось переключить модель',
-      errorUseCredits: 'Использовать кредиты',
+      errorUseCredits: 'Включить «Продолжать за кредиты»',
       errorUseCreditsFailed: 'Не удалось включить «Продолжать за кредиты»',
       errorAddCredits: 'Пополнить кредиты',
       errorOpenBillingSettings: 'Открыть настройки оплаты',

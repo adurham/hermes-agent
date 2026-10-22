@@ -2138,6 +2138,7 @@ export const deOverrides = {
             topTier: 'Große Modelle (monatlich)',
             barLabel: (title: string) => `${title}: genutztes Inklusivvolumen`,
             captionPaused: 'Pausiert: Abo-Zahlung fehlgeschlagen',
+            captionPausedOther: 'Pausiert: siehe Abrechnung im Portal',
             captionTopTierUsedUp: 'Monatskontingent aufgebraucht, Credits decken den Rest',
             captionTopTierUsedUpKeepGoingOff:
               'Monatskontingent aufgebraucht, andere enthaltene Modelle funktionieren weiter',
@@ -4508,6 +4509,7 @@ export const deOverrides = {
     topTier: 'Große Modelle (monatlich)',
     included: 'Alle Modelle unten sind enthalten',
     pausedRenewal: 'pausiert: Verlängerung unbezahlt',
+    pausedOther: 'pausiert',
     includedUsedUp: 'Inklusivvolumen aufgebraucht',
     limitReached: (name: string) => `${name} erreicht`,
     limitNames: {
@@ -5156,7 +5158,7 @@ export const deOverrides = {
       errorRetry: 'Erneut versuchen',
       errorSwitchToModel: (model, note) => (note ? `Zu ${model} wechseln (${note})` : `Zu ${model} wechseln`),
       errorSwitchModelFailed: 'Modell konnte nicht gewechselt werden',
-      errorUseCredits: 'Guthaben nutzen',
+      errorUseCredits: 'Mit Guthaben weitermachen aktivieren',
       errorUseCreditsFailed: 'Mit Guthaben weitermachen konnte nicht aktiviert werden',
       errorAddCredits: 'Guthaben aufladen',
       errorOpenBillingSettings: 'Abrechnungseinstellungen öffnen',

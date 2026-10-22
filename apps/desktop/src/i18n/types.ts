@@ -1632,6 +1632,7 @@ catalog: CatalogTranslations
             topTier: string
             barLabel: (title: string) => string
             captionPaused: string
+            captionPausedOther: string
             captionTopTierUsedUp: string
             captionTopTierUsedUpKeepGoingOff: string
             captionResetsIn: (duration: string) => string
@@ -3513,6 +3514,7 @@ catalog: CatalogTranslations
     topTier: string
     included: string
     pausedRenewal: string
+    pausedOther: string
     includedUsedUp: string
     /** Row note: past its included usage, this model bills top-up credits (pay as you go). */
     /** "Weekly limit reached" from a limit name ("weekly"). */

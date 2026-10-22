@@ -336,6 +336,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         def present():
             try:
                 line = render_notice_line(notice)
+                if key.startswith("credits."):
+                    # Window plans (e.g. a paused plan's line): a chat's /topup has no credits settings.
+                    from agent.plan_limits import portal_wording
+                    line = portal_wording(line)
             except Exception:
                 logger.debug("render_notice_line failed", exc_info=True)
                 return

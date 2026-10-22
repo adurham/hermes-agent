@@ -272,6 +272,19 @@ describe('usage-window refusal', () => {
 
     expect(add.openBilling).toBe(true)
     expect(add.useCredits || add.switchToModel || add.switchProvider).toBe(false)
+
+    // Keep going off and no balance: both steps live on the Billing page, so Open billing (not Use credits).
+    const both = errorRecoveryPlan(
+      parseErrorSurface({
+        code: 'usage_window',
+        layer: 'billing',
+        retryable: true,
+        usage_limit: { credits: { action: 'add_credits_and_keep_going' }, suggestions: [] }
+      })
+    )
+
+    expect(both.openBilling).toBe(true)
+    expect(both.useCredits || both.switchToModel || both.switchProvider).toBe(false)
   })
 
   it('falls back to its own table body when an older backend sent no sentence', () => {

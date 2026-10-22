@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
@@ -35,50 +35,66 @@ export function KeepGoingOnCreditsRow({ enabled }: { enabled: boolean }) {
   // Approved, yet the change was still refused (e.g. an older backend replayed the pre-approval token).
   const [retryValue, setRetryValue] = useState<boolean | null>(null)
   const checked = optimistic ?? enabled
+  // Each click / cancel / retry is a new attempt; an older one that resolves late (an approval cancelled,
+  // then the switch flipped again) must not snap the switch back or touch the newer attempt's state.
+  const attempt = useRef(0)
 
-  const settle = async () => {
+  const settle = async (run = attempt.current) => {
     await queryClient.invalidateQueries({ queryKey: ['billing', 'state'] })
-    setOptimistic(null)
+
+    if (run === attempt.current) {
+      setOptimistic(null)
+    }
   }
 
-  const apply = async (next: boolean, afterApproval = false): Promise<void> => {
+  const apply = async (next: boolean, afterApproval = false, run = attempt.current): Promise<void> => {
     const result = await api.updateKeepGoingOnCredits(next)
+
+    if (run !== attempt.current) {
+      return
+    }
 
     if (result.ok) {
       setRetryValue(null)
 
-      return settle()
+      return settle(run)
     }
 
     if (result.refusal.kind === 'insufficient_scope' && afterApproval) {
       // Never the generic "start a top-up" copy here: the user just approved. Offer a plain retry.
       setRetryValue(next)
 
-      return settle()
+      return settle(run)
     }
 
     if (result.refusal.kind === 'insufficient_scope') {
       // Needs Remote Spending: approve, then apply the SAME change (the switch keeps the requested position).
       setApproving(true)
       const granted = await stepUp.start()
+
+      if (run !== attempt.current) {
+        return
+      }
+
       setApproving(false)
 
       if (granted) {
         stepUp.dismiss() // the change itself is the confirmation; no extra "Verification complete" line
 
-        return apply(next, true)
+        return apply(next, true, run)
       }
 
       // Denied / failed / cancelled: the switch goes back; a denial keeps its one-line reason below.
-      return settle()
+      return settle(run)
     }
 
     setRefusal(result.refusal)
 
-    return settle()
+    return settle(run)
   }
 
   const onChange = (next: boolean) => {
+    attempt.current += 1
     setOptimistic(next)
     setRefusal(null)
     setRetryValue(null)
@@ -104,6 +120,7 @@ export function KeepGoingOnCreditsRow({ enabled }: { enabled: boolean }) {
         <Button
           onClick={() => {
             // dismiss() makes the pending start() return early, so put the switch back here.
+            attempt.current += 1
             stepUp.dismiss()
             setApproving(false)
             void settle()
@@ -123,6 +140,7 @@ export function KeepGoingOnCreditsRow({ enabled }: { enabled: boolean }) {
         <Button
           onClick={() => {
             const next = retryValue
+            attempt.current += 1
             setRetryValue(null)
             setOptimistic(next)
             void apply(next, true)

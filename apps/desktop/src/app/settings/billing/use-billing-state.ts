@@ -1,4 +1,4 @@
-import { gaugeScope, gaugeTitle } from '@hermes/shared'
+import { gaugeScope, gaugeTitle, PAYMENT_PAUSE_REASON } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -909,7 +909,9 @@ function deriveWindowRows(
         value: used
       },
       caption: paused
-        ? copy.captionPaused
+        ? planUsage.paused_reason === PAYMENT_PAUSE_REASON
+          ? copy.captionPaused
+          : copy.captionPausedOther
         : gaugeScope(gauge) === 'top_tier' && exhausted
           ? keepGoingOff
             ? copy.captionTopTierUsedUpKeepGoingOff

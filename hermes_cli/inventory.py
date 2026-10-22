@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from contextvars import copy_context
 from dataclasses import dataclass, replace
@@ -1003,9 +1002,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 # The gateway's per-plan word per model (free / low / medium / top_tier).
                 row["usage_levels"] = usage_levels(list(models), raw_pricing)
                 # Top-tier marks from the gateway (it decides, not the client).
-                with contextlib.suppress(Exception):
-                    row["plan_usage"] = plan_usage.with_pricing(
-                        {m: raw_pricing.get(m) for m in models}).to_payload()
+                row["plan_usage"] = plan_usage.with_pricing({m: raw_pricing.get(m) for m in models}).to_payload()
                 # Window plans: the picker shows the usage word, not per-token prices.
                 row.pop("pricing", None)
 

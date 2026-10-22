@@ -1428,13 +1428,7 @@ def _attach_window_model_notes(providers: list[dict]) -> None:
         if usage is None:
             return
         from agent.plan_limits import cached_pricing
-        base_url = str(nous.get("api_url") or "")
-        if not base_url:
-            # Cache-only: the env override, else the default URL; never a credential refresh here.
-            from hermes_cli.auth import _nous_inference_env_override
-            from hermes_cli.auth_constants import DEFAULT_NOUS_INFERENCE_URL
-            base_url = _nous_inference_env_override() or DEFAULT_NOUS_INFERENCE_URL
-        pricing = cached_pricing(base_url)
+        pricing = cached_pricing()  # this profile's catalog only (cache-only, no credential refresh)
         models = [str(m) for m in nous.get("models", [])]
         labels = {m: label for m, lv in usage_levels(models, pricing).items() if (label := usage_level_label(lv))}
         if labels:

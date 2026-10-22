@@ -13,8 +13,8 @@ def _chat_completion_capturing_headers(agent, client, api_kwargs: dict):
 
     The parsed ``ChatCompletion`` drops headers, so without this a non-streaming turn never
     observes ``x-nous-credits-*`` (usage-window ``spend_source`` / gauges go stale). The SDK's
-    ``with_raw_response`` returns the same request with headers attached; test doubles
-    (``Mock`` clients, namespaces without the attribute) keep the plain call. Usage-window plans
+    ``with_raw_response`` returns the same request with headers attached; a client without it keeps
+    the plain call. Usage-window plans
     only: every other provider, and a Nous session not yet known to be on a window plan (the
     session-start seed or a stream header establishes it), keep the plain call; headers are
     captured only when the response itself is the usage-window kind. A capture failure never
@@ -25,9 +25,7 @@ def _chat_completion_capturing_headers(agent, client, api_kwargs: dict):
     if getattr(agent, "provider", "") != "nous" or getattr(state, "is_usage_window", False) is not True:
         return client.chat.completions.create(**api_kwargs)
     raw_api = getattr(getattr(getattr(client, "chat", None), "completions", None), "with_raw_response", None)
-    # Test doubles (unittest.mock) invent every attribute; checked by module so production never
-    # imports unittest.
-    if raw_api is None or any(cls.__module__ == "unittest.mock" for cls in type(client).__mro__):
+    if raw_api is None:
         return client.chat.completions.create(**api_kwargs)
     raw = raw_api.create(**api_kwargs)
     from agent.credits_tracker import response_is_usage_window

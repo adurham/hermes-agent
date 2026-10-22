@@ -12,6 +12,7 @@ any other id shows the server's ``label``.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -19,6 +20,13 @@ BP_FULL = 10_000
 SCOPE_ALL = "all"
 SCOPE_TOP_TIER = "top_tier"
 _SCOPES = frozenset({SCOPE_ALL, SCOPE_TOP_TIER})
+# The pause reasons that mean the subscription payment failed. Any other reason (including "unknown",
+# sent for a malformed one) is still a pause, with copy that does not claim a payment failed.
+PAYMENT_PAUSE_REASONS = frozenset({"payment_past_due"})
+
+
+def paused_for_payment(reason: Any) -> bool:
+    return reason in PAYMENT_PAUSE_REASONS
 
 
 @dataclass(frozen=True)
@@ -61,13 +69,23 @@ def parse_gauges(value: Any) -> Optional[tuple[WindowGauge, ...]]:
             continue
         if isinstance(bp, bool) or not isinstance(bp, int) or not 0 <= bp <= BP_FULL:
             continue
-        reset = item.get("resets_at_ms")
-        reset = reset if isinstance(reset, int) and not isinstance(reset, bool) and reset > 0 else None
+        reset = _plausible_reset_ms(item.get("resets_at_ms"))
         label = item.get("label")
         seen.add(gid)
         out.append(WindowGauge(gid, scope, label.strip() if isinstance(label, str) and label.strip() else gid,
                                bp, reset))
     return tuple(out) or None
+
+
+# A reset more than a year ahead is a bad stamp (the longest allowance is a month): shown as unknown, never
+# as a date or a duration decades away. A past stamp needs no bound: it already reads "shortly".
+_RESET_MAX_AHEAD_MS = 366 * 86_400_000
+
+
+def _plausible_reset_ms(value: Any) -> Optional[int]:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return value if 0 < value <= time.time() * 1000 + _RESET_MAX_AHEAD_MS else None
 
 
 def all_scope(gauges: Iterable[WindowGauge]) -> tuple[WindowGauge, ...]:

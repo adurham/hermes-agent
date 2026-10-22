@@ -120,7 +120,7 @@ export const zhHantAssistant = {
       errorRetry: '重試',
       errorSwitchToModel: (model, note) => (note ? `切換到 ${model}（${note}）` : `切換到 ${model}`),
       errorSwitchModelFailed: '無法切換模型',
-      errorUseCredits: '使用額度',
+      errorUseCredits: '開啟用額度繼續',
       errorUseCreditsFailed: '無法開啟用額度繼續',
       errorAddCredits: '新增額度',
       errorOpenBillingSettings: '開啟帳單設定',

@@ -103,9 +103,9 @@ class PickerUsage:
         """A copy that reads the gateway's ``top_tier`` marks from *pricing* (picker pricing shape)."""
         if not pricing:
             return self
-        from agent.plan_limits import is_free
-        free = frozenset(m for m in pricing if is_free(m, pricing))
-        marked = frozenset(m for m, p in pricing.items() if p and p.get("top_tier") is True and m not in free)
+        levels = usage_levels(list(pricing), pricing)  # same rule as the tags and agent.plan_limits.is_top_tier
+        free = frozenset(m for m, level in levels.items() if level == "free")
+        marked = frozenset(m for m, level in levels.items() if level == "top_tier")
         from dataclasses import replace
         return replace(self, top_tier_ids=marked, free_ids=free)
 
@@ -405,22 +405,18 @@ def nous_picker_usage(*, warm: bool = False, any_age: bool = False) -> Optional[
         return None
 
 
-def _nous_catalog(base_url: str = "", *, fetch: bool = False) -> dict[str, dict[str, Any]]:
-    """The caller's Nous ``/v1/models`` rows: resident cache first, one fetch only when ``fetch``."""
-    from hermes_cli.models_pricing import get_pricing_for_provider, peek_cached_pricing
+def _nous_catalog(*, fetch: bool = False) -> dict[str, dict[str, Any]]:
+    """This profile's Nous ``/v1/models`` rows: its resident cache, one fetch only when ``fetch``. Never a
+    catalog cached for another credential (another profile's plan marks different models Large)."""
+    from hermes_cli.models_pricing import get_pricing_for_provider
     rows = get_pricing_for_provider("nous", cached_only=True) or {}
-    if not rows:
-        if not base_url:
-            from hermes_cli.auth import DEFAULT_NOUS_INFERENCE_URL, _nous_inference_env_override
-            base_url = _nous_inference_env_override() or DEFAULT_NOUS_INFERENCE_URL
-        rows = peek_cached_pricing(base_url) or {}
     if not rows and fetch:
         rows = get_pricing_for_provider("nous") or {}
     return rows
 
 
 def large_model_notice(
-    model_id: str, provider: str, *, base_url: str = "", fetch: bool = False, lang: Optional[str] = None,
+    model_id: str, provider: str, *, fetch: bool = False, lang: Optional[str] = None,
 ) -> Optional[str]:
     """Warning line for a switch to a Large model, or None. Window plans only. The gateway decides "Large"
     (``usage_level: top_tier``; older gateways ``top_tier: true``) and stamps it ONLY on a usage-window
@@ -432,7 +428,7 @@ def large_model_notice(
             return None
         fresh = nous_picker_usage()
         usage = fresh or nous_picker_usage(any_age=True)
-        rows = _nous_catalog(base_url, fetch=fetch and usage is not None)
+        rows = _nous_catalog(fetch=fetch and usage is not None)
         row = rows.get(model_id)
         if not row:
             return None
@@ -475,7 +471,9 @@ def _gauge_name(g: UsageGauge) -> str:
 def plan_gauge_lines(usage: PickerUsage) -> list[str]:
     """Stacked plan summary: one line per server allowance, in the server's order, so the picker header
     stays readable at a normal terminal width."""
-    head = (usage.plan or "Hermes plan") + (" (paused: renewal unpaid)" if usage.paused_reason else "")
+    from agent.usage_gauges import paused_for_payment
+    paused = (" (paused: renewal unpaid)" if paused_for_payment(usage.paused_reason) else " (paused)") if usage.paused_reason else ""
+    head = (usage.plan or "Hermes plan") + paused
     label_w = max((len(_gauge_name(g)) for g in usage.gauges), default=4)
     return [head, *(
         f"{_gauge_name(g):<{label_w}}  {g.bar}  {g.percent_used + ' used':<9}  {format_resets_in(g.resets_at_ms)}"

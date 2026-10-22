@@ -31,6 +31,11 @@ _MAX_SUGGESTIONS = 2
 NOTE_FREE = "free"
 NOTE_INCLUDED = "included"
 
+# Past a limit, the credits step (:func:`credits_action`).
+USE_CREDITS = "use_credits"                                # Keep going off, balance: turn it on
+ADD_CREDITS = "add_credits"                                # Keep going on/unknown, no balance: top up
+ADD_CREDITS_AND_KEEP_GOING = "add_credits_and_keep_going"  # Keep going off, no balance: both
+
 
 @dataclass(frozen=True)
 class ModelSuggestion:
@@ -45,13 +50,10 @@ class ModelSuggestion:
 
 @dataclass(frozen=True)
 class CreditsOption:
-    """The second way on, past a limit: spend top-up credits.
-
-    ``use_credits``: Keep going on credits is off and there is a balance, so turning it on lets the
-    request through. ``add_credits``: no balance (or the setting is already on), so the way on is a
-    top-up. Interactive surfaces render it as a button; messaging points at the Portal (a chat button
-    could spend the owner's money for anyone in the room)."""
-    action: str     # "use_credits" | "add_credits"
+    """The second way on, past a limit: spend top-up credits (the action comes from :func:`credits_action`).
+    Interactive surfaces render it as a button; messaging points at the Portal (a chat button could spend
+    the owner's money for anyone in the room)."""
+    action: str     # USE_CREDITS | ADD_CREDITS | ADD_CREDITS_AND_KEEP_GOING
 
     def to_payload(self) -> dict[str, str]:
         return {"action": self.action}
@@ -80,10 +82,13 @@ class LimitHit:
 
 # ── catalog reads ────────────────────────────────────────────────────────────────────────────────
 
-def cached_pricing(base_url: str) -> dict:
+def cached_pricing(base_url: str = "") -> dict:
+    """The calling profile's own cached Nous catalog (never fetches); ``base_url`` is not needed for it. Only
+    the profile-keyed read: a process serving several profiles holds their catalogs side by side, and a
+    usage level (Large / Free) is per plan, so another profile's catalog must never answer."""
     try:
-        from hermes_cli.models_pricing import peek_cached_pricing
-        return peek_cached_pricing(base_url) or {}
+        from hermes_cli.models_pricing import get_pricing_for_provider
+        return get_pricing_for_provider(PROVIDER, cached_only=True) or {}
     except Exception:
         logger.debug("Cached pricing unavailable", exc_info=True)
         return {}
@@ -113,11 +118,16 @@ def is_free(model: str, pricing: Optional[dict]) -> bool:
 
 
 def is_top_tier(model: str, pricing: Optional[dict]) -> bool:
-    """The gateway's ``top_tier`` mark. Unmarked or no catalog: not top tier."""
-    entry = (pricing or {}).get(model) if model else None
-    if is_free(model, pricing):
+    """The gateway marks the model top tier (``usage_level: top_tier``, or an older gateway's ``top_tier:
+    true``), read by the same rule as the picker tags. Unmarked or no catalog: not top tier."""
+    if not model:
         return False
-    return isinstance(entry, dict) and entry.get("top_tier") is True
+    try:
+        from hermes_cli.model_picker_usage import usage_levels
+        return usage_levels([model], pricing).get(model) == "top_tier"
+    except Exception:
+        logger.debug("Usage level lookup failed", exc_info=True)
+        return False
 
 
 def model_label(model: str, pricing: Optional[dict]) -> str:
@@ -207,15 +217,23 @@ def suggest_models(
     return tuple(out)
 
 
+def credits_action(keep_going_on_credits: Optional[bool], purchased_micros: Optional[int]) -> str:
+    """The credits step past a limit; every surface's copy reads this one rule. With Keep going on credits
+    off, the gateway refuses whatever the balance, so a balance alone is not enough and neither is the
+    setting alone: off with no balance needs both steps. An unknown balance counts as none."""
+    has_balance = int(purchased_micros or 0) > 0
+    if keep_going_on_credits is False:
+        return USE_CREDITS if has_balance else ADD_CREDITS_AND_KEEP_GOING
+    return ADD_CREDITS
+
+
 def credits_option(state: Any) -> Optional[CreditsOption]:
-    """How credits could carry on past the limit (see :class:`CreditsOption`). None while paused (a card
+    """How credits could carry on past the limit (see :func:`credits_action`). None while paused (a card
     update restores included usage; the paused copy says so)."""
     if state is None or getattr(state, "paused_reason", None):
         return None
-    purchased = int(getattr(state, "purchased_micros", 0) or 0)
-    if getattr(state, "keep_going_on_credits", None) is False and purchased > 0:
-        return CreditsOption("use_credits")
-    return CreditsOption("add_credits")
+    return CreditsOption(credits_action(getattr(state, "keep_going_on_credits", None),
+                                        getattr(state, "purchased_micros", 0)))
 
 
 def limit_hit(agent: Any, *, message: str, needed_tokens: Optional[int] = None) -> Optional[LimitHit]:
@@ -257,8 +275,25 @@ def limit_hit(agent: Any, *, message: str, needed_tokens: Optional[int] = None) 
 def portal_wording(text: str) -> str:
     """A refusal line for a surface without ``/topup`` (messaging): point its credits steps at the Portal."""
     return (text.replace("turn on Keep going in /topup", "turn on Keep going in the Portal")
+            .replace("(turn on in /topup)", "(turn on in the Portal)")
             .replace("/topup to add credits", "add credits in the Portal")
             .replace("add credits in /topup", "add credits in the Portal"))
+
+
+def chat_refusal_wording(text: str, resets_at: Any = None) -> str:
+    """A refusal sent to a chat: credits steps point at the Portal (:func:`portal_wording`), and the reset
+    reads as a duration ("resets in 3h"), since the gateway's clock is not the reader's time zone."""
+    text = portal_wording(text)
+    if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
+        try:
+            from agent.credits_tracker import format_window_reset
+            from hermes_cli.model_picker_usage import compact_duration
+            ms = round(resets_at * 1000)  # the epoch seconds came from these ms: round, never truncate
+            if left := compact_duration(ms):
+                text = text.replace(f"resets {format_window_reset(ms)}", f"resets in {left}")
+        except Exception:
+            logger.debug("chat reset wording failed", exc_info=True)
+    return text
 
 
 def suggestion_phrase(s: ModelSuggestion) -> str:
@@ -277,12 +312,13 @@ def next_steps_text(hit: LimitHit, *, model_command: str = "/model", topup_comma
     else:
         parts.append(f"Pick another model with {model_command}")
     if hit.credits is not None:
-        if portal or not topup_command:
-            parts.append("turn on Keep going in the Portal to use credits" if hit.credits.action == "use_credits"
-                         else "add credits in the Portal")
+        where = "the Portal" if portal or not topup_command else topup_command
+        if hit.credits.action == USE_CREDITS:
+            parts.append(f"turn on Keep going in {where} to use credits")
+        elif hit.credits.action == ADD_CREDITS_AND_KEEP_GOING:
+            parts.append(f"add credits and turn on Keep going in {where}")
         else:
-            parts.append(f"turn on Keep going in {topup_command} to use credits" if hit.credits.action == "use_credits"
-                         else f"add credits with {topup_command}")
+            parts.append(f"add credits {'in' if where == 'the Portal' else 'with'} {where}")
     return ", or ".join(parts) + "."
 
 

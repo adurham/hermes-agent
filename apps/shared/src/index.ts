@@ -106,6 +106,7 @@ export {
   gaugeScope,
   gaugeTitle,
   hasTopTier,
+  PAYMENT_PAUSE_REASON,
   planBlocks,
   planLimit,
   sectionAt,

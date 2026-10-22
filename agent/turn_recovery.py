@@ -617,7 +617,29 @@ def _reject_all_turns(agent: Any, api_error: Exception) -> bool:
     return bool(reject(api_error)) if callable(reject) else False
 
 
-# health: allow CC -- usage-window 402: skip the credential refresh and hand the pool a model-scoped bench context; this recovery ladder was over target on main
+def _pool_error_context(agent, classified: Any, error_context: Any) -> Any:
+    """What the credential pool sees: a plan limit (usage-window 402) benches only the refused model on the
+    credential, until its reset; every other failure passes the error context through unchanged."""
+    if not (getattr(classified, "error_context", None) or {}).get("usage_window"):
+        return error_context
+    return {**(error_context if isinstance(error_context, dict) else {}), "usage_window": True,
+            **_usage_window_reset_context(agent)}
+
+
+def _usage_window_reset_context(agent) -> dict[str, float]:
+    """``{"reset_at": epoch s}`` for a usage-window 402: when the refused allowance frees up, from the usage
+    headers the 402 carried (the API's error body has no reset). Empty when the state names none, so the
+    pool keeps its default bench."""
+    try:
+        from agent.credits_tracker import window_stop_resets_at_ms
+        state = getattr(agent, "_credits_state", None)
+        resets_ms = window_stop_resets_at_ms(state) if state is not None else None
+    except Exception:
+        logger.debug("usage-window reset unavailable for the pool", exc_info=True)
+        return {}
+    return {"reset_at": resets_ms / 1000} if isinstance(resets_ms, (int, float)) and resets_ms > 0 else {}
+
+
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: list[dict[str, Any]],
@@ -663,13 +685,9 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
-    _pool_context = error_context
-    if (getattr(classified, "error_context", None) or {}).get("usage_window"):
-        # A plan limit benches only the refused model on the credential, until its reset.
-        _pool_context = {**(error_context if isinstance(error_context, dict) else {}), "usage_window": True}
     recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
         status_code=status_code, has_retried_429=_retry.has_retried_429,
-        classified_reason=classified.reason, error_context=_pool_context,
+        classified_reason=classified.reason, error_context=_pool_error_context(agent, classified, error_context),
         billing_unverified=classified.billing_unverified,
     )
     if recovered_with_pool:
@@ -850,6 +868,8 @@ def _print_nonretryable_auth_guidance(
     agent: Any, classified: Any, *, status_code: Optional[int], provider: Any, base_url: Any, model: Any,
 ) -> None:
     """Actionable guidance for a terminal auth / billing error."""
+    if (getattr(classified, "error_context", None) or {}).get("usage_window"):
+        return  # a plan limit's refusal line and limit panel are its guidance: no second copy, no portal fetch
     from agent.conversation_loop import _print_billing_or_entitlement_guidance, _print_nous_entitlement_guidance
 
     if classified.reason == FailoverReason.billing and _print_billing_or_entitlement_guidance(
@@ -1162,8 +1182,10 @@ def max_retries_exhausted_result(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=classified.billing_unverified,
         )
-        _billing_guidance = _billing_or_entitlement_message(**_billing_kw)
-        _print_billing_or_entitlement_guidance(agent, **_billing_kw)
+        # A plan limit (usage-window 402) carries its own refusal line: no portal fetch, no second copy.
+        if not (classified.error_context or {}).get("usage_window"):
+            _billing_guidance = _billing_or_entitlement_message(**_billing_kw)
+            _print_billing_or_entitlement_guidance(agent, **_billing_kw)
     elif is_rate_limited:
         _reset = reset_hint(api_error)
         agent._emit_diagnostic_status(
