@@ -97,4 +97,13 @@ describe('keepWarmNousRow', () => {
     expect(keepWarmNousRow(pending, warm)).toEqual(warm)
     expect(keepWarmNousRow(undefined, pending)).toEqual(pending)
   })
+
+  it('keeps the warm tags across several pending replies in a row', () => {
+    const once = keepWarmNousRow(warm, pending)
+    const twice = keepWarmNousRow(once, structuredClone(pending)) as ModelOptionsResult
+    const row = twice.providers?.[0]
+
+    expect(row?.usage_levels).toEqual(warm.providers?.[0].usage_levels)
+    expect(row?.unavailable_models).toEqual([])
+  })
 })

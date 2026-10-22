@@ -23,10 +23,17 @@ const WARM_NOUS_FIELDS = ['usage_levels', 'pricing', 'unavailable_models', 'free
 const isPendingNous = (row: ModelOptionProvider) =>
   row.slug === 'nous' && Boolean(row.pricing_pending || row.free_tier_pending)
 
+// A merged result keeps its pending flags, so its own row no longer reads as warm: remember which warm row
+// it was built from, or a second pending reply in a row would drop the tags again.
+const warmSource = new WeakMap<object, ModelOptionProvider>()
+
 export function keepWarmNousRow(oldData: unknown, newData: unknown): unknown {
   const prev = oldData as ModelOptionsResult | undefined
   const next = newData as ModelOptionsResult | undefined
-  const warm = prev?.providers?.find(row => row.slug === 'nous' && row.usage_levels && !isPendingNous(row))
+
+  const warm =
+    (prev && warmSource.get(prev)) ??
+    prev?.providers?.find(row => row.slug === 'nous' && row.usage_levels && !isPendingNous(row))
 
   if (!warm || !next?.providers?.some(isPendingNous)) {
     return replaceEqualDeep(oldData, newData)
@@ -47,7 +54,11 @@ export function keepWarmNousRow(oldData: unknown, newData: unknown): unknown {
     return { ...row, ...kept } as ModelOptionProvider
   })
 
-  return replaceEqualDeep(oldData, { ...next, providers })
+  const merged = replaceEqualDeep(oldData, { ...next, providers })
+
+  warmSource.set(merged, warm)
+
+  return merged
 }
 
 queryClient.setQueryDefaults(['model-options'], { structuralSharing: keepWarmNousRow })
