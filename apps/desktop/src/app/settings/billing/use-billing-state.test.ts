@@ -61,6 +61,24 @@ function monthlyCapRowForSpent(spent: string) {
   return view.usageRows.find(row => row.id === 'monthly_cap')
 }
 
+// The account setting rides on billing.state; `credits_pay` (setting on AND a top-up balance left) rides on
+// plan_usage, which the page reads from subscription.state first.
+function withKeepGoing(
+  { billing, subscription }: (typeof windowFixtures)['window-low'],
+  { credits_pay, keep_going_on_credits }: { credits_pay: boolean; keep_going_on_credits: boolean }
+) {
+  const planUsage = subscription.ok ? subscription.data.plan_usage : null
+
+  if (!billing.ok || !subscription.ok || !planUsage) {
+    throw new Error('window fixtures are ok and carry plan_usage')
+  }
+
+  return [
+    okBilling({ ...billing.data, keep_going_on_credits, plan_usage: { ...planUsage, credits_pay } }),
+    okSubscription({ ...subscription.data, plan_usage: { ...planUsage, credits_pay } })
+  ] as const
+}
+
 describe('deriveBillingView (usage-window plans)', () => {
   it('replaces the subscription credits row with today / week / month / large-model gauges', () => {
     const fixture = windowFixtures['window-healthy']
@@ -98,10 +116,8 @@ describe('deriveBillingView (usage-window plans)', () => {
 
   it('colours a running-down window yellow then red, and names an exhausted large-model allowance', () => {
     const fixture = windowFixtures['window-low']
-    const billing = fixture.billing?.ok
-      ? { ...fixture.billing, data: { ...fixture.billing.data, keep_going_on_credits: true } }
-      : fixture.billing
-    const view = deriveBillingView(billing, fixture.subscription)
+    // What the server sends with Keep going on credits on and a top-up balance left.
+    const view = deriveBillingView(...withKeepGoing(fixture, { credits_pay: true, keep_going_on_credits: true }))
 
     expect(view.usageRows[0]).toMatchObject({ bar: { state: 'danger' }, value: '88% used' })
     expect(view.usageRows[1]).toMatchObject({ bar: { state: 'warn' }, value: '59% used' })
@@ -120,10 +136,19 @@ describe('deriveBillingView (usage-window plans)', () => {
       const billing = fixture.billing?.ok
         ? { ...fixture.billing, data: { ...fixture.billing.data, keep_going_on_credits } }
         : fixture.billing
+
       const view = deriveBillingView(billing, fixture.subscription)
 
       expect(view.usageRows[2]?.caption).toBe('Monthly allowance used up, other included models still work')
     }
+  })
+
+  it('never says credits cover a used-up large-model allowance when no top-up balance is left', () => {
+    const fixture = windowFixtures['window-low']
+    // Keep going on credits is on, but the balance is $0: the server answers credits_pay false.
+    const view = deriveBillingView(...withKeepGoing(fixture, { credits_pay: false, keep_going_on_credits: true }))
+
+    expect(view.usageRows[2]?.caption).toBe('Monthly allowance used up, other included models still work')
   })
 
   it('captions every gauge as paused when the renewal payment failed', () => {

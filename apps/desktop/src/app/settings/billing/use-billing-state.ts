@@ -781,10 +781,7 @@ function deriveUsageRows(
   // A usage-window plan shows each allowance as percent used. Those gauges replace
   // the subscription-credits row; the top-up balance still follows below.
   if (planUsage?.kind === 'usage_window') {
-    // "Credits cover the rest" only when the setting is known to be on: members
-    // (and older portals) don't get it, and "other included models still work"
-    // is true either way.
-    rows.push(...deriveWindowRows(planUsage, b, billing.keep_going_on_credits !== true))
+    rows.push(...deriveWindowRows(planUsage, b))
   } else {
     const remaining = parseAmount(current?.credits_remaining)
     const monthly = parseAmount(current?.monthly_credits)
@@ -875,14 +872,13 @@ function deriveUsageRows(
  * top-tier today; a new allowance just appears). Known ids keep their translated titles; any other id
  * shows the server's title. Mirrors the CLI/TUI `/usage` block and the portal: `NN% used` +
  * `resets in …`, the bar fills as the allowance is used, coloured by the gateway's `style`
- * (green → yellow → red). `keepGoingOff`: the account's "Keep going on
- * credits" is off, so a used-up top-tier allowance is not covered by credits (the other included
- * models still work).
+ * (green → yellow → red). A used-up top-tier allowance says credits cover the rest only when the
+ * server says they pay (`credits_pay`: Keep going on credits is on AND a top-up balance is left; with
+ * the setting on and $0 the next request is refused too); otherwise the other included models still work.
  */
 function deriveWindowRows(
   planUsage: PlanUsage,
-  b: Translations['settings']['billing'],
-  keepGoingOff: boolean
+  b: Translations['settings']['billing']
 ): BillingUsageRowView[] {
   const copy = b.state.usage.window
   const words = { day: copy.today, month: copy.month, top_tier: copy.topTier, week: copy.week }
@@ -913,9 +909,9 @@ function deriveWindowRows(
           ? copy.captionPaused
           : copy.captionPausedOther
         : gaugeScope(gauge) === 'top_tier' && exhausted
-          ? keepGoingOff
-            ? copy.captionTopTierUsedUpKeepGoingOff
-            : copy.captionTopTierUsedUp
+          ? planUsage.credits_pay === true
+            ? copy.captionTopTierUsedUp
+            : copy.captionTopTierUsedUpKeepGoingOff
           : resets
             ? copy.captionResetsIn(resets)
             : copy.captionIncluded,
