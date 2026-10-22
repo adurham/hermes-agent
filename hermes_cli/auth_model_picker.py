@@ -196,10 +196,10 @@ class _ModelPickerRows:
             lines.append(header)
         return lines
 
-    def menu_title(self) -> str:
-        """``Select default model:`` plus the description lines (headers / gauges), newline-joined."""
+    def menu_title(self, title: str = "Select default model:") -> str:
+        """*title* plus the description lines (headers / gauges), newline-joined."""
         lines = self.description_lines()
-        return "Select default model:" + ("\n" + "\n".join(lines) if lines else "")
+        return title + ("\n" + "\n".join(lines) if lines else "")
 
     def footnote(self) -> str:
         """Window plan with a Large row listed: the one line that says what Large means."""
@@ -259,9 +259,10 @@ def _prompt_model_selection(
     unavailable_models: Optional[list[str]] = None, portal_url: str = "",
     unavailable_message: str = "", confirm_provider: str = "", confirm_base_url: str = "",
     confirm_api_key: str = "", usage=None,
-    notes: Optional[dict[str, str]] = None,
+    notes: Optional[dict[str, str]] = None, title: str = "Select default model:",
 ) -> Optional[str]:
-    """Interactive model picker; current_model listed first. Returns the chosen model ID or None.
+    """Interactive model picker; current_model listed first. Returns the chosen model ID or None. *title* heads
+    the menu (a plugin picking a model for something other than the default says so).
 
     With *pricing* (``{model_id: {prompt, completion}}``) a compact price column is shown; models in
     *unavailable_models* render grayed out and unselectable with an upgrade link to *portal_url*.
@@ -300,7 +301,7 @@ def _prompt_model_selection(
     _DIM = "\033[2m"
     _RESET = "\033[0m"
 
-    menu_title = rows.menu_title()
+    menu_title = rows.menu_title(title)
     _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
     n = len(ordered)
 
@@ -331,7 +332,7 @@ def _prompt_model_selection(
         model_search_labels += [_CUSTOM_LABEL, _SKIP_LABEL]
 
         idx = curses_radiolist(
-            "Select default model:",
+            title,
             choices,
             selected=start,  # cursor on the current model
             cancel_returns=-1,
@@ -405,3 +406,7 @@ def _save_model_choice(model_id: str) -> None:
     from hermes_cli.observability.shared_metrics_setup import note_provider_setup_saved
 
     note_provider_setup_saved()
+
+
+# Public for plugins (catalog rule 9): the interactive model picker under a caller's title.
+prompt_model_selection = _prompt_model_selection
