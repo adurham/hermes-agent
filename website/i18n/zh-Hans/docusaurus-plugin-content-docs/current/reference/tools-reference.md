@@ -16,13 +16,13 @@ description: "Hermes 内置工具权威参考，按工具集分组"
 
 ## `browser` 工具集
 
-这四个工具驱动同一个浏览器会话——Hermes 启动的 Chromium、云端浏览器，或通过 `/browser connect` 连接的浏览器。参见[浏览器自动化](../user-guide/features/browser.md)。
+`browser_exec` 和 `browser_vault` 驱动浏览器会话——Hermes 启动的 Chromium、云端浏览器，或通过 `/browser connect` 连接的浏览器。`browser_cdp` 和 `browser_dialog` 仅在配置了 CDP 端点（`/browser connect`、`BROWSER_CDP_URL` 或 `browser.cdp_url`）时提供，并作用于该浏览器；Hermes 启动的会话和云端会话中没有这两个工具。参见[浏览器自动化](../user-guide/features/browser.md)。
 
 | 工具 | 描述 | 所需环境 |
 |------|------|----------|
 | `browser_exec` | 通过运行预导入辅助函数（`new_tab`、`goto_url`、`wait_for_load`、`page_info`、`js`、`fill_input`、`click_at_xy`、`capture_screenshot`、`cdp`、`ensure_real_tab`）的 Python 驱动真实浏览器。浏览器状态在调用之间保持，Python 变量不保留。`session` 用于隔离并发任务；`timeout_s` 默认 300（最大 1800）。 | `terminal` 工具集 |
-| `browser_cdp` | 发送原始 Chrome DevTools Protocol 命令。用于 `browser_exec` 辅助函数未覆盖的浏览器操作的逃生舱口。参见 https://chromedevtools.github.io/devtools-protocol/ | — |
-| `browser_dialog` | 响应阻塞页面的原生 JavaScript 对话框（alert / confirm / prompt / beforeunload）：`browser_dialog(action='accept'\|'dismiss')`，`prompt()` 使用 `prompt_text`，多个对话框排队时使用 `dialog_id`。 | — |
+| `browser_cdp` | 发送原始 Chrome DevTools Protocol 命令。用于 `browser_exec` 辅助函数未覆盖的浏览器操作的逃生舱口。参见 https://chromedevtools.github.io/devtools-protocol/ | CDP 端点 |
+| `browser_dialog` | 响应阻塞页面的原生 JavaScript 对话框（alert / confirm / prompt / beforeunload）：`browser_dialog(action='accept'\|'dismiss')`，`prompt()` 使用 `prompt_text`，多个对话框排队时使用 `dialog_id`。 | CDP 端点 |
 | `browser_vault` | 在当前页面使用已保存的登录信息、密码、银行卡、地址和一次性验证码，机密信息不会进入对话。操作：`list`、`fill`、`save_login`、`enter_code`、`unlock`。 | — |
 
 ## `clarify` 工具集

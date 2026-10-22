@@ -7,7 +7,7 @@ sidebar_position: 5
 
 # 浏览器自动化
 
-`browser` 工具集为 Agent 提供一个真实的网页浏览器。真正负责驱动的只有一个工具——**`browser_exec`**，它通过 Chrome DevTools Protocol（CDP）在浏览器上运行模型编写的 Python；另外三个配套工具作用于同一个浏览器会话：
+`browser` 工具集为 Agent 提供一个真实的网页浏览器。真正负责驱动的只有一个工具——**`browser_exec`**，它通过 Chrome DevTools Protocol（CDP）在浏览器上运行模型编写的 Python；另有三个配套工具（`browser_cdp` 和 `browser_dialog` 仅在配置了 CDP 端点时提供，见[配套工具](#配套工具)）：
 
 | 工具 | 用途 |
 |------|------|
@@ -334,7 +334,7 @@ google-chrome \
 
 ## 配套工具
 
-`browser_cdp`、`browser_dialog` 和 `browser_vault` 作用于 `browser_exec` 正在驱动的同一个浏览器会话——本地 Chromium、云端浏览器，或通过 `/browser connect` 连接的浏览器。
+`browser_vault` 作用于 `browser_exec` 正在驱动的同一个浏览器会话——本地 Chromium、云端浏览器，或通过 `/browser connect` 连接的浏览器。`browser_cdp` 和 `browser_dialog` 仅在配置了 CDP 端点（`/browser connect`、`BROWSER_CDP_URL` 或 `browser.cdp_url`）时提供，并作用于该浏览器；Hermes 启动的本地会话或云端会话不会带来这两个工具。
 
 ### `browser_cdp`
 

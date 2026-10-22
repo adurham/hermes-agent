@@ -9,8 +9,9 @@ sidebar_position: 5
 
 The `browser` toolset gives the agent a real web browser. One tool does the
 driving — **`browser_exec`**, which runs model-written Python against the
-browser over the Chrome DevTools Protocol (CDP) — and three companion tools
-work on the same browser session:
+browser over the Chrome DevTools Protocol (CDP) — with three companion tools
+(`browser_cdp` and `browser_dialog` only while a CDP endpoint is configured, see
+[Companion tools](#companion-tools)):
 
 | Tool | Purpose |
 |------|---------|
@@ -523,9 +524,11 @@ the session back to the agent. See that page for the profile location and how
 
 ## Companion tools
 
-`browser_cdp`, `browser_dialog` and `browser_vault` operate on the same browser
-session `browser_exec` drives — local Chromium, a cloud browser, or the browser
-attached with `/browser connect`.
+`browser_vault` operates on the same browser session `browser_exec` drives —
+local Chromium, a cloud browser, or the browser attached with `/browser connect`.
+`browser_cdp` and `browser_dialog` are offered only while a CDP endpoint is
+configured — `/browser connect`, `BROWSER_CDP_URL` or `browser.cdp_url` — and act
+on that browser; a launched local or cloud session does not bring them.
 
 ### `browser_cdp`
 
