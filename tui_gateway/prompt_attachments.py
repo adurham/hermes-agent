@@ -14,7 +14,9 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 
-# Match the native desktop file reader; image/browser inputs retain tighter caps.
+# Bytes sent inline in a data URL: the native Desktop reader's own attach cap (Electron reads at most
+# 256 MiB), which also bounds the base64 text and its decoded copy held in memory. A host file named
+# by path is copied in chunks and has no cap; a browser upload's copy has the tighter browser cap.
 _ATTACHMENT_MAX_BYTES = 256 * 1024 * 1024
 _ATTACH_BYTES_MAX_BYTES = 25 * 1024 * 1024
 _PDF_ATTACH_MAX_BYTES = 50 * 1024 * 1024
@@ -242,8 +244,9 @@ def _stage_session_file_attachment(
     """Make a desktop file attachment available to the gateway agent: ``(stored_path, uploaded)``.
     Inside the workspace -> as-is; gateway-visible but outside -> copied into ``attachments/``
     (bind-mounted into container backends so ``@file:`` resolves in the sandbox); not on the
-    gateway -> ``data_url`` bytes decoded into ``attachments/``."""
-    max_bytes = min(max_bytes, _ATTACHMENT_MAX_BYTES) if max_bytes is not None else _ATTACHMENT_MAX_BYTES
+    gateway -> ``data_url`` bytes decoded into ``attachments/``. ``max_bytes`` caps the copy of a
+    browser upload; a host file is copied whatever its size, inline bytes up to
+    ``_ATTACHMENT_MAX_BYTES``."""
     workspace = Path(_session_cwd(session)).resolve()
     resolved = None
     if raw_path:
@@ -264,7 +267,8 @@ def _stage_session_file_attachment(
             resolved.relative_to(workspace)
             return resolved, False
         except ValueError:
-            payload = _read_attachment_bytes(resolved, max_bytes)
+            # Without a cap the copy below streams the file, so its size never reaches memory.
+            payload = None if max_bytes is None else _read_attachment_bytes(resolved, max_bytes)
             filename = resolved.name
     else:
         if not data_url:
@@ -272,10 +276,11 @@ def _stage_session_file_attachment(
         # Any media type (unlike the image-specific decoder); bare base64 also accepted.
         import binascii as _binascii
         import re as _re
+        inline_max = _ATTACHMENT_MAX_BYTES if max_bytes is None else min(max_bytes, _ATTACHMENT_MAX_BYTES)
         try:
             payload = _b64_payload(
                 data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.IGNORECASE,
-                max_bytes=max_bytes)
+                max_bytes=inline_max)
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
@@ -301,7 +306,12 @@ def _stage_session_file_attachment(
             break
     try:
         with upload:
-            upload.write(payload)
+            if payload is None:
+                import shutil as _shutil
+                with resolved.open("rb") as source:
+                    _shutil.copyfileobj(source, upload, 1024 * 1024)
+            else:
+                upload.write(payload)
     except Exception:
         target.unlink(missing_ok=True)
         raise
