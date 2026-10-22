@@ -10,6 +10,7 @@ one-use link cannot be redeemed, it prints the gateway's private link for the us
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -30,6 +31,18 @@ def _gateway_home(home: Path) -> Path:
     route native Desktop takes), else the profile's own."""
     from hermes_cli.gateway_runtime_multiplex import implied_host_root
     return implied_host_root(home) or home
+
+
+def _deleted_profile_refusal(home: Path) -> str | None:
+    """What ``-p <name>`` says when *home* is a named profile that was deleted or never created, else
+    None. ``HERMES_HOME`` set to such a home skips that check, and its gateway would be the default
+    one, so the command refuses it the same way rather than act on the default profile."""
+    from hermes_cli.profiles import _missing_profile_error
+    from hermes_constants import named_profile_home, named_profile_is_live
+    profile = named_profile_home(home)
+    if profile is None or named_profile_is_live(profile):
+        return None
+    return str(_missing_profile_error(profile.name))
 
 
 def _build(args):
@@ -198,6 +211,9 @@ def cmd_webapp(args) -> int:
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()
+    if (refusal := _deleted_profile_refusal(home)) is not None:
+        print(f"Error: {refusal}", file=sys.stderr)
+        return 1
     target = _gateway_home(home)
     if args.status:
         return _status(target)

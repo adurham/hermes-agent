@@ -300,6 +300,28 @@ def test_a_home_whose_gateway_never_ran_reads_as_having_none(tmp_path):
     assert launcher._gateway_state(_home(tmp_path / "idle")) == "absent"
 
 
+@pytest.mark.parametrize("deleted", ["removed", "tombstoned"])
+@pytest.mark.parametrize("action", [{"sign_out": True}, {"status": True}, {}])
+def test_a_hermes_home_at_a_deleted_profile_is_refused_like_its_profile_flag(world, capsys, deleted, action):
+    """``HERMES_HOME`` naming a deleted profile is refused exactly as ``-p <name>`` is, so signing
+    out never replaces the default gateway's credential instead."""
+    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    from hermes_constants import mark_named_profile_deleted
+
+    gone = world["root"] / "profiles" / "gone"
+    if deleted == "tombstoned":
+        _home(gone)
+        mark_named_profile_deleted(gone)
+    before = browser_session_token(world["root"])
+    _use_home(world, gone)
+    assert launcher.cmd_webapp(_args(**action)) == 1
+    refused = capsys.readouterr()
+    assert "Error: Profile 'gone' does not exist. Create it with: hermes profile create gone" in refused.err
+    assert "Signed out" not in refused.out
+    assert (world["calls"]["control"], world["calls"]["ensure"], world["calls"]["build"]) == ([], [], 0)
+    assert (world["root"] / TOKEN_PATH).read_text().strip() == before
+
+
 def test_the_webapp_command_takes_one_action_at_a_time():
     import argparse
     from hermes_cli.subcommands.webapp import build_webapp_parser
