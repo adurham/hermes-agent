@@ -9,11 +9,9 @@ import process from 'node:process'
 
 import { CDP, sleep } from './perf/lib/cdp.mjs'
 import { shownStartupTitlesExpression, startupScreenFailures } from './smoke-browser-host-screens.mjs'
+import { ViewportTab } from './smoke-browser-host-tab.mjs'
 
 const url = process.env.HERMES_BROWSER_HOST_URL || process.argv[2] || 'http://127.0.0.1:9120/'
-// Navigation keeps the private launch fragment; HTTP responses never contain it.
-const documentUrl = new URL(url)
-documentUrl.hash = ''
 const allowGatewayFailure = process.env.HERMES_BROWSER_ALLOW_GATEWAY_FAILURE === '1'
 const requireTerminal = process.env.HERMES_BROWSER_REQUIRE_TERMINAL === '1'
 // The gateway serving the page is already up, so its socket opens shortly after the shell paints.
@@ -289,57 +287,64 @@ try {
     browserControl = await CDP.open(browserVersion.webSocketDebuggerUrl)
   }
 
+  // One tab for every viewport: a launch link signs in only the tab that spends it (ViewportTab).
+  const target = await createTarget(debugPort)
+  const client = await CDP.open(target.webSocketDebuggerUrl)
+  const evaluate = expression => client.eval(expression, { userGesture: true })
+  const tab = new ViewportTab(client, url)
+
+  // What the current viewport's page load did; each load starts a new one. A request is counted
+  // against the load that sent it.
+  let page = null
+  const requests = new Map()
+
+  client.on('Runtime.consoleAPICalled', params => {
+    if (params.type !== 'error') return
+    const text = consoleText(params)
+    if (!ignoredConsoleError(text)) page?.consoleErrors.push(text)
+  })
+  client.on('Runtime.exceptionThrown', params => {
+    const error = params.exceptionDetails?.exception?.description || params.exceptionDetails?.text || 'page exception'
+    page?.pageErrors.push(error)
+  })
+  client.on('Network.requestWillBeSent', params => {
+    requests.set(params.requestId, { page, url: params.request?.url || '' })
+  })
+  client.on('Network.webSocketCreated', params => {
+    if (String(params.url || '').includes('/api/ws')) page?.gatewaySockets.push(new URL(params.url))
+  })
+  client.on('Network.responseReceived', params => {
+    if (page && params.type === 'Document' && params.response?.url === page.documentUrl) {
+      page.httpStatus = params.response.status
+    }
+  })
+  client.on('Network.loadingFailed', params => {
+    const request = requests.get(params.requestId)
+    const requestUrl = request?.url || ''
+    if (allowGatewayFailure && requestUrl.includes('/api/ws')) return
+    const owner = request ? request.page : page
+    owner?.failedRequests.push(`${requestUrl || params.requestId} (${params.errorText || 'request failed'})`)
+  })
+
+  await Promise.all([client.send('Page.enable'), client.send('Runtime.enable'), client.send('Network.enable')])
+
   for (const viewport of [
     { width: 844, height: 390, mobile: true, smallViewportHeightDifference: 120 },
     { width: 1280, height: 800 },
     { width: 390, height: 844 },
     { width: 320, height: 568 }
   ]) {
-    const target = await createTarget(debugPort)
-    const client = await CDP.open(target.webSocketDebuggerUrl)
-    const evaluate = expression => client.eval(expression, { userGesture: true })
-
-    const consoleErrors = []
-    const pageErrors = []
-    const failedRequests = []
-    const requestUrls = new Map()
-    let httpStatus = null
-
-    client.on('Runtime.consoleAPICalled', params => {
-      if (params.type !== 'error') return
-      const text = consoleText(params)
-      if (!ignoredConsoleError(text)) consoleErrors.push(text)
+    await tab.open(viewport, documentUrl => {
+      page = {
+        consoleErrors: [],
+        documentUrl,
+        failedRequests: [],
+        gatewaySockets: [],
+        httpStatus: null,
+        pageErrors: []
+      }
     })
-    client.on('Runtime.exceptionThrown', params => {
-      const error = params.exceptionDetails?.exception?.description || params.exceptionDetails?.text || 'page exception'
-      pageErrors.push(error)
-    })
-    client.on('Network.requestWillBeSent', params => {
-      requestUrls.set(params.requestId, params.request?.url || '')
-    })
-    const gatewaySockets = []
-    client.on('Network.webSocketCreated', params => {
-      if (String(params.url || '').includes('/api/ws')) gatewaySockets.push(new URL(params.url))
-    })
-    client.on('Network.responseReceived', params => {
-      if (params.type === 'Document' && params.response?.url === documentUrl.href) httpStatus = params.response.status
-    })
-    client.on('Network.loadingFailed', params => {
-      const requestUrl = requestUrls.get(params.requestId) || ''
-      if (allowGatewayFailure && requestUrl.includes('/api/ws')) return
-      failedRequests.push(`${requestUrl || params.requestId} (${params.errorText || 'request failed'})`)
-    })
-
-    await Promise.all([client.send('Page.enable'), client.send('Runtime.enable'), client.send('Network.enable')])
-    await client.send('Emulation.setDeviceMetricsOverride', {
-      width: viewport.width,
-      height: viewport.height,
-      deviceScaleFactor: 1,
-      mobile: viewport.mobile ?? false
-    })
-    const domReady = client.waitFor('Page.domContentEventFired', 30_000)
-    await client.send('Page.navigate', { url })
-    await domReady
+    const { consoleErrors, failedRequests, gatewaySockets, pageErrors } = page
     await sleep(4_000)
     const socketDeadline = Date.now() + GATEWAY_SOCKET_TIMEOUT_MS
     while (
@@ -375,6 +380,7 @@ try {
     if (viewport.smallViewportHeightDifference) mobileViewportState = await evaluate(mobileViewportExpression)
     if (requireTerminal && viewport.width === 1280) terminalState = await evaluate(terminalExpression)
 
+    const httpStatus = page.httpStatus
     const failures = []
     if (httpStatus === null || httpStatus >= 400) failures.push(`HTTP ${httpStatus ?? 'no response'}`)
     if (state.host !== 'browser' || !state.bridge) failures.push('browser Desktop bridge did not install')
@@ -431,18 +437,20 @@ try {
         2
       )
     )
-    try {
-      await client.send('Page.close')
-    } catch {
-      /* target may already be closing */
-    }
-    client.close()
 
     if (failures.length) {
       process.exitCode = 1
       break
     }
+    await tab.settle(evaluate)
   }
+
+  try {
+    await client.send('Page.close')
+  } catch {
+    /* target may already be closing */
+  }
+  client.close()
 } finally {
   // Ask Chromium to shut down through its own browser-level CDP endpoint first.
   // This lets profile writers and helper processes flush before we remove the
