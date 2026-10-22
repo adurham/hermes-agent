@@ -818,7 +818,9 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
     return false
   }
 
-  const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+  // With nothing set up the check's sentence restates the picker in terminal terms (CLI commands, the
+  // home path), so the default stands.
+  const reason = (runtime.unconfigured ? null : runtime.reason) || state.reason || DEFAULT_ONBOARDING_REASON
 
   if (shouldPreserveConfiguredOnBootRace(runtime, state)) {
     // The backend answered inside its boot window with a not-ready that is
