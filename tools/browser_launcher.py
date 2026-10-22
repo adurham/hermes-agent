@@ -3,10 +3,11 @@
 One browser per launcher key (the session layer's cache key, or ``profile:<dir>`` for a persistent
 profile shared by every key). Chromium picks its own DevTools port (``--remote-debugging-port=0``)
 and writes it to ``<user-data-dir>/DevToolsActivePort``; the CDP URL comes from that file, so there
-is no port race. Every owned launch leaves a record in its profile's private launcher state dir
-(``<HERMES_HOME>/cache/browser/chromium-records``, 0700) so a later Hermes process serving that profile
-can reap the Chromium of an owner that crashed, after proving the pid is still that browser. A shared-profile
-Chromium other Hermes processes attached to is stopped only by its last holder
+is no port race. Every owned launch leaves a record in a private (0700) launcher state dir so a later
+Hermes process can reap the Chromium of an owner that crashed, after proving the pid is still that browser:
+a throwaway profile's in its home (``<HERMES_HOME>/cache/browser/chromium-records``), a persistent profile's
+in that profile's own dir under :func:`_shared_profiles_root` (per OS user: every home pinning the dir shares
+it). A shared-profile Chromium other Hermes processes attached to is stopped only by its last holder
 (``tools/browser_launcher_holders.py``).
 
 Stop is always parent-first (``ProcessRegistry._terminate_host_pid``): Chromium reaps its own
@@ -512,17 +513,32 @@ def get_browser(key: str) -> Optional[LaunchedBrowser]:
     return None
 
 
+def _heir_key(browser: LaunchedBrowser) -> Optional[str]:
+    """Another key of this process on the same shared-profile Chromium (one dir reached by two paths, e.g. a
+    symlink): it inherits this process's hold, so dropping ``browser``'s key must neither drop the lease nor
+    stop the browser."""
+    if browser.ephemeral:
+        return None
+    with _lock:
+        return next((k for k, b in _browsers.items() if b is not browser and not b.ephemeral
+                     and b.pid == browser.pid and b.start_time == browser.start_time), None)
+
+
 def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> None:
     proc = None
+    heir = _heir_key(browser)
     if _browsers.get(key) is browser:  # a replacement registered since is not this browser's to drop
         _browsers.pop(key)
         proc = _procs.pop(key, None)
+    if proc is not None and heir is not None:
+        _procs.setdefault(heir, proc)  # the heir stops (and reaps) it when it is the last one out
+        proc = None
     if proc is not None:
         try:
             proc.wait(timeout=0)  # reap the zombie
         except subprocess.TimeoutExpired:
             pass
-    if not browser.ephemeral:
+    if not browser.ephemeral and heir is None:
         record = _record_path(browser)
         if record is not None:
             from tools.browser_launcher_holders import drop_lease
@@ -572,12 +588,12 @@ def _stop_locked(key: str) -> None:
             _forget(key, browser)
         return
     from tools.browser_launcher_holders import records_lock
-    with records_lock(record.parent):
-        if _last_holder_out(record, browser):
+    with records_lock(record.parent):  # the decision and the forget are one step: another key may be the heir
+        if _heir_key(browser) is None and _last_holder_out(record, browser):
             _terminate(browser.pid, browser.start_time, proc)
             record.unlink(missing_ok=True)
-    with _lock:
-        _forget(key, browser, drop_record=False)
+        with _lock:
+            _forget(key, browser, drop_record=False)
 
 
 def _last_holder_out(record: Path, browser: LaunchedBrowser) -> bool:
@@ -614,8 +630,8 @@ def _ephemeral_root(home: str) -> Path:
 
 
 def _records_dir(home: str) -> Path:
-    """Per-profile (``home``'s, not the process's): a crashed owner's Chromium is reaped by the next Hermes
-    process serving that profile. Read only after ``_private_dir`` vouches for it."""
+    """``home``'s throwaway-profile records (not the process's home): a crashed owner's Chromium is reaped by the
+    next Hermes process serving that profile. Read only after ``_private_dir`` vouches for it."""
     return Path(home) / "cache" / "browser" / "chromium-records"
 
 
@@ -644,10 +660,31 @@ def _private_dir(path: Path) -> Optional[Path]:
     return None
 
 
+def _shared_profiles_root() -> Path:
+    """Launcher state of persistent (shared) profiles, per OS user rather than per HERMES_HOME: two homes pinning
+    one ``browser.user_data_dir`` drive its one Chromium, so they must see one launch record, one lease set and
+    one lock. The host rendezvous root the gateway's own cross-profile locks use."""
+    from gateway.status import _get_lock_dir
+    return _get_lock_dir() / "browser-shared-profiles"
+
+
+def _profile_digest(user_data_dir: str) -> str:
+    """One profile dir, however it is spelled (a symlink, a trailing slash)."""
+    return hashlib.sha256(os.path.realpath(user_data_dir).encode()).hexdigest()
+
+
+def _state_dir(browser: LaunchedBrowser) -> Optional[Path]:
+    """The private dir holding ``browser``'s launch record, leases and lock: its home's records dir for a
+    throwaway profile, else the shared profile's own dir under :func:`_shared_profiles_root`."""
+    if browser.ephemeral:
+        return _private_dir(_records_dir(browser.home_key))
+    root = _private_dir(_shared_profiles_root())
+    return _private_dir(root / _profile_digest(browser.user_data_dir)[:32]) if root is not None else None
+
+
 def _record_path(browser: LaunchedBrowser) -> Optional[Path]:
-    records = _private_dir(_records_dir(browser.home_key))
-    digest = hashlib.sha256(browser.user_data_dir.encode()).hexdigest()[:16]
-    return records / f"{digest}-{browser.pid}.json" if records is not None else None
+    records = _state_dir(browser)
+    return records / f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}.json" if records is not None else None
 
 
 def _write_record(browser: LaunchedBrowser) -> None:
@@ -692,7 +729,9 @@ def _cmdline_names_dir(pid: int, user_data_dir: str) -> bool:
                for tok in argv)
 
 
-def _inside_ephemeral_root(user_data_dir: str, home: str) -> bool:
+def _inside_ephemeral_root(user_data_dir: str, home: Optional[str]) -> bool:
+    if home is None:  # a shared-profile state dir holds no throwaway profiles
+        return False
     try:
         rel = Path(user_data_dir).resolve().relative_to(_ephemeral_root(home).resolve())
     except (OSError, ValueError):
@@ -700,7 +739,7 @@ def _inside_ephemeral_root(user_data_dir: str, home: str) -> bool:
     return bool(rel.parts)
 
 
-def _is_recorded_browser(record: dict, home: str) -> bool:
+def _is_recorded_browser(record: dict, home: Optional[str]) -> bool:
     pid, udd = record.get("pid"), record.get("user_data_dir")
     if not isinstance(pid, int) or not isinstance(udd, str) or not _pid_alive(pid):
         return False
@@ -744,7 +783,7 @@ def _load_record(path: Path) -> Optional[dict]:
     return None
 
 
-def _reap_record(path: Path, home: str) -> bool:
+def _reap_record(path: Path, home: Optional[str]) -> bool:
     """Caller holds the records lock."""
     record = _load_record(path)
     if record is None:
@@ -773,7 +812,24 @@ def _reap_record(path: Path, home: str) -> bool:
 
 
 def _reap_home(home: str) -> int:
-    records = _records_dir(home)
+    return _reap_state_dir(_records_dir(home), home)
+
+
+def _reap_shared_profiles() -> int:
+    """Every shared profile's records, whichever home launched its browser."""
+    root = _shared_profiles_root()
+    if not os.path.lexists(root) or not _is_private_dir(root):
+        return 0
+    try:
+        states = sorted(root.iterdir())
+    except OSError as exc:
+        logger.debug("browser: shared-profile launcher state unavailable in %s: %s", root, exc)
+        return 0
+    return sum(_reap_state_dir(state, None) for state in states)
+
+
+def _reap_state_dir(records: Path, home: Optional[str]) -> int:
+    """Reap one launcher state dir (``home``'s records, or a shared profile's dir when ``home`` is None)."""
     if not os.path.lexists(records):
         return 0
     if not _is_private_dir(records):
@@ -835,7 +891,7 @@ def reap_orphaned_browsers(homes=()) -> int:
     (``_served_home_keys``; the janitor and atexit run outside any profile scope, so each home's records
     are read by path); returns the count. A pid is signalled only after its start time AND its
     ``--user-data-dir`` argv token match the record. Throwaway profiles of owners that are gone go too."""
-    reaped = 0
+    reaped = _reap_shared_profiles()
     for home in sorted(_served_home_keys(homes)):
         reaped += _reap_home(home)
         _reclaim_throwaway_dirs(home)

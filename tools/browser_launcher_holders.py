@@ -2,7 +2,8 @@
 
 A persistent profile (``browser.user_data_dir``, the Bot Desktop profile, the real-profile copy) has ONE
 Chromium, launched by whichever Hermes process got there first; every other process attaches to it. Each
-attacher leaves a lease beside the launch record in the profile's private records dir. The process holding
+attacher leaves a lease beside the launch record in the profile's private state dir (per OS user, so every
+Hermes home pinning the dir sees the same leases: ``browser_launcher._shared_profiles_root``). The process holding
 the record (the launcher, or whoever it was handed to) stops the browser on exit only when no other live
 Hermes process holds a lease; otherwise it hands the record to one of them, so the LAST holder stops it. A
 holder that crashed is dropped once its pid and start time no longer match, never on the pid alone.
