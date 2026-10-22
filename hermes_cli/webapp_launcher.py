@@ -10,12 +10,15 @@ one-use link cannot be redeemed, it prints the gateway's private link for the us
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 RESTART_COMMAND = "hermes gateway restart"
 # The gateway reads the Webapp's settings and sign-in providers only when it starts.
 RETRY_AFTER_FIX = f"The gateway reads these settings when it starts: after fixing them, run {RESTART_COMMAND}."
 STARTED_BEFORE_ON = f"The gateway started before the Webapp was turned on. Restart it to serve the Webapp: {RESTART_COMMAND}"
+# How long --sign-out waits for a gateway that is still starting to answer (30 s).
+_START_WAIT_ATTEMPTS, _START_WAIT_INTERVAL = 60, 0.5
 
 
 class GatewayUnreachable(Exception):
@@ -139,20 +142,40 @@ def _signed_out_summary(result: dict) -> str:
 
 def _sign_out(target: Path) -> int:
     from gateway.webapp_listener import browser_session_token
-    try:
-        response = _control(target, "webapp-sign-out")
-    except GatewayUnreachable:
-        # No gateway is running: replace the stored credential so no browser can use the old one
-        # when one starts. Behind the sign-in gate, logins bound to it end too.
-        browser_session_token(target, rotate=True)
-        print("No gateway is running for this profile. Replaced the stored Webapp credential: every browser "
-              "must sign in again when the gateway next serves the Webapp.")
-        return 0
-    if not response.get("ok"):
-        print(f"Nobody was signed out: {_refusal(response)}")
-        return 1
-    print(_signed_out_summary(response.get("result") or {}))
-    return 0
+    for attempt in range(_START_WAIT_ATTEMPTS + 1):
+        try:
+            response = _control(target, "webapp-sign-out")
+        except GatewayUnreachable:
+            response = None
+        if response is not None and response.get("ok"):
+            print(_signed_out_summary(response.get("result") or {}))
+            return 0
+        state = _gateway_state(target)
+        if response is None and state == "absent":
+            # No gateway is running: replace the stored credential so no browser can use the old one
+            # when one starts. Behind the sign-in gate, logins bound to it end too.
+            browser_session_token(target, rotate=True)
+            print("No gateway is running for this profile. Replaced the stored Webapp credential: every browser "
+                  "must sign in again when the gateway next serves the Webapp.")
+            return 0
+        if state != "starting":
+            reason = _refusal(response) if response is not None else f"the gateway did not answer (state: {state})"
+            print(f"Nobody was signed out: {reason}")
+            return 1
+        # A starting gateway may already hold the stored credential in memory, where rewriting the file
+        # never reaches it: wait until it answers the sign-out itself.
+        if attempt < _START_WAIT_ATTEMPTS:
+            time.sleep(_START_WAIT_INTERVAL)
+    print(f"The gateway is still starting, so nobody was signed out. Run hermes webapp --sign-out again once "
+          f"it is up ({RESTART_COMMAND} if it never comes up).")
+    return 1
+
+
+def _gateway_state(home: Path) -> str:
+    """What *home*'s gateway lock and control socket say: ``absent`` (none running), ``starting``,
+    ``ready``, or why it cannot be reached."""
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    return discover_gateway_endpoint(home).state
 
 
 def _explain_refused_launch(target: Path, response: dict) -> int:

@@ -2,7 +2,9 @@
 
 It builds the Webapp bundle when stale, starts the gateway that serves the current profile (the default
 gateway for a profile it serves, else the profile's own), asks that gateway for a one-use launch link
-over the control socket and opens it. It never serves anything itself.
+over the control socket and opens it. It never serves anything itself. ``--sign-out`` reports what
+the gateway did, waits for a gateway that is still starting, and replaces the stored credential
+itself only when no gateway runs.
 """
 from argparse import Namespace
 from pathlib import Path
@@ -44,6 +46,8 @@ def world(monkeypatch, tmp_path):
         calls["control"].append((Path(home), verb))
         calls.setdefault("params", []).append(params or {})
         answer = answers[verb]
+        if isinstance(answer, list):  # one answer per call, in order
+            answer = answer.pop(0) if len(answer) > 1 else answer[0]
         if isinstance(answer, Exception):
             raise answer
         return answer
@@ -52,9 +56,14 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "_ensure", lambda home: calls["ensure"].append(Path(home)))
     monkeypatch.setattr(launcher, "_control", control)
     monkeypatch.setattr(launcher, "_open", lambda url: calls["opened"].append(url) or True)
+    states = ["absent"]  # what the gateway's lock and control socket say when it does not answer
+    monkeypatch.setattr(launcher, "_gateway_state", lambda home: states.pop(0) if len(states) > 1 else states[0],
+                        raising=False)
+    monkeypatch.setattr("time.sleep", lambda seconds: calls.setdefault("slept", []).append(seconds))
     root = _home(tmp_path / "root", "webapp:\n  enabled: true\n")
     monkeypatch.setenv("HERMES_HOME", str(root))
-    return {"calls": calls, "answers": answers, "root": root, "tmp": tmp_path, "monkeypatch": monkeypatch}
+    return {"calls": calls, "answers": answers, "root": root, "tmp": tmp_path, "monkeypatch": monkeypatch,
+            "states": states}
 
 
 def _use_home(world, home):
@@ -241,6 +250,54 @@ def test_signing_out_with_no_gateway_running_still_replaces_the_stored_credentia
     assert (world["root"] / TOKEN_PATH).read_text().strip() != before
     out = capsys.readouterr().out
     assert "No gateway is running" in out and "sign in again" in out
+
+
+STARTING = {"ok": False, "error": "unknown verb: 'webapp-sign-out'"}  # its verbs register once it is up
+SIGNED_OUT = {"ok": True, "result": {"signed_out": True, "serving": True, "sign_in_gate": False,
+                                     "connections_closed": 1}}
+
+
+@pytest.mark.parametrize("first", [STARTING, launcher.GatewayUnreachable("control socket not up yet")])
+def test_sign_out_waits_for_a_starting_gateway_and_signs_out_there(world, capsys, first):
+    """A starting gateway may already hold the stored credential in memory, so rewriting the file
+    would sign nobody out: the command waits for the gateway to answer instead."""
+    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    before = browser_session_token(world["root"])
+    world["answers"]["webapp-sign-out"] = [first, first, SIGNED_OUT]
+    world["states"][:] = ["starting"]
+    assert launcher.cmd_webapp(_args(sign_out=True)) == 0
+    out = capsys.readouterr().out
+    assert "Signed out of every Webapp tab: closed 1 browser connection." in out
+    assert [verb for _, verb in world["calls"]["control"]] == ["webapp-sign-out"] * 3
+    assert (world["root"] / TOKEN_PATH).read_text().strip() == before
+
+
+def test_sign_out_on_a_gateway_that_stays_starting_says_nobody_was_signed_out(world, capsys):
+    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    before = browser_session_token(world["root"])
+    world["answers"]["webapp-sign-out"] = [STARTING]
+    world["states"][:] = ["starting"]
+    assert launcher.cmd_webapp(_args(sign_out=True)) == 1
+    out = capsys.readouterr().out
+    assert "still starting" in out and "nobody was signed out" in out.lower() and "Signed out" not in out
+    assert (world["root"] / TOKEN_PATH).read_text().strip() == before
+    assert sum(world["calls"]["slept"]) >= 20  # it waited before giving up
+
+
+def test_sign_out_on_a_gateway_that_does_not_answer_signs_nobody_out(world, capsys):
+    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    before = browser_session_token(world["root"])
+    world["answers"]["webapp-sign-out"] = launcher.GatewayUnreachable("timed out")
+    world["states"][:] = ["inaccessible"]
+    assert launcher.cmd_webapp(_args(sign_out=True)) == 1
+    out = capsys.readouterr().out
+    assert "nobody was signed out" in out.lower() and "Signed out" not in out
+    assert (world["root"] / TOKEN_PATH).read_text().strip() == before
+
+
+def test_a_home_whose_gateway_never_ran_reads_as_having_none(tmp_path):
+    # Read from the home's real gateway lock and control socket, as --sign-out does.
+    assert launcher._gateway_state(_home(tmp_path / "idle")) == "absent"
 
 
 def test_the_webapp_command_takes_one_action_at_a_time():
