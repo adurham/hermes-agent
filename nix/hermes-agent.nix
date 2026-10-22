@@ -31,6 +31,8 @@
   pyproject-nix,
   pyproject-build-systems,
   npm-lockfile-fix,
+  # nix/pm-packages.nix output: every pm/lock.json pin as a derivation.
+  pmPackages,
   # Locked git revision of the flake source — embedded so banner.py can
   # check for updates without needing a local .git directory. Null for
   # impure / dirty builds where flakes can't determine a rev.
@@ -105,7 +107,13 @@ let
   };
 
   hermesNpmLib = callPackage ./lib.nix {
-    inherit npm-lockfile-fix;
+    inherit npm-lockfile-fix pmPackages;
+  };
+
+  # npm 12.0.2 from the lock, wrapped onto the pm-pinned node so the dev
+  # shell's `npm` and `node` are the same generation.
+  npmPinned = callPackage ./npm-pinned.nix {
+    nodejs = pmPackages.node;
   };
 
   hermesTui = callPackage ./tui.nix {
@@ -313,6 +321,12 @@ stdenv.mkDerivation (finalAttrs: {
   passthru =
     let
       devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+      # The shell's interpreter: the exact build pm/lock.json installs, not
+      # nixpkgs'. uv2nix structurally needs a nixpkgs interpreter to BUILD the
+      # venv, so the site-packages stay Nix-owned and only the interpreter the
+      # shell runs (and `hermes` uses) comes from the lock.
+      devSitePackages = "${devPython}/${sitePackagesPath}";
+      pmPython = pythonLock.pinned;
       pm = writeShellApplication {
         name = "pm";
         text = ''
@@ -333,6 +347,9 @@ stdenv.mkDerivation (finalAttrs: {
         installStampFile
         pmRuntime
         python
+        devPython
+        devSitePackages
+        pmPython
         ;
 
       # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
@@ -354,17 +371,42 @@ stdenv.mkDerivation (finalAttrs: {
       };
 
       devShellHook = ''
-        export HERMES_PYTHON=${devPython}/bin/python3
+        export HERMES_PYTHON=${pmPython}/bin/python3
+        # Dependencies come from the Nix-built editable venv; only the
+        # interpreter is the lock's own build. PYTHONPATH rather than the
+        # venv's bin/python3, which is the nixpkgs interpreter.
+        export PYTHONPATH=${devSitePackages}:$HERMES_PYTHON_SRC_ROOT
       '';
 
       devDeps =
-        runtimeDeps
-        ++ [
-          devPython
-          pm
+        # The pinned tool set, straight from pm/lock.json: the shell runs the
+        # same uv, node, npm, ripgrep and ffmpeg `hermes pm install` provisions
+        # on a non-Nix host. nixpkgs still supplies what pm ships no Linux
+        # artifact for — git and openssh are win32-only pins — plus the
+        # platform tools Nix owns. package order matters: makeBinPath keeps
+        # the list order, and the pinned npm must win over the npm bundled
+        # inside the node artifact.
+        [
+          npmPinned
+          pmPackages.node
+          pmPackages.uv
+          pmPackages.ripgrep
+          pmPackages.ffmpeg
+          git
+          openssh
         ]
         ++ lib.optionals stdenv.isLinux [
+          wl-clipboard
+          xclip
           cage # for running e2e tests without popping windows
+        ]
+        ++ [
+          # The lock's interpreter first: `python` in the shell is the build a
+          # real install runs. devPython stays on PATH for its console scripts
+          # (pytest, debugpy), which are bound to the Nix-built venv.
+          pmPython
+          devPython
+          pm
         ];
     };
 
