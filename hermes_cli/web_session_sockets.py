@@ -38,7 +38,7 @@ OWN_TICKET_SOCKETS = frozenset({HOST_TERMINAL_SOCKET})
 SIGNED_OUT_CODE = 4401
 
 _lock = threading.Lock()
-_live: dict[int, tuple[weakref.ref, asyncio.AbstractEventLoop]] = {}
+_live: dict[int, tuple[weakref.ref, asyncio.AbstractEventLoop, str]] = {}
 
 
 def token_digest(token: str) -> str:
@@ -90,11 +90,19 @@ def track(ws, admitted_with: str) -> None:
     with _lock:
         # Ended sockets are dropped here rather than from a weakref callback, which garbage
         # collection could run while this thread already holds the lock.
-        for key in [key for key, (ref, _loop) in _live.items() if ref() is None]:
+        for key in [key for key, (ref, *_rest) in _live.items() if ref() is None]:
             del _live[key]
-        _live[id(ws)] = (weakref.ref(ws), loop)
+        _live[id(ws)] = (weakref.ref(ws), loop, admitted_with)
     if not hmac.compare_digest(admitted_with, current_digest()):
         _close_on(ws, loop)
+
+
+def admission_of(ws) -> Optional[str]:
+    """The digest live socket *ws* was tracked under, or None when signing out does not close it.
+    A socket it opens on the browser's behalf (a screen viewer) is tracked under the same one."""
+    with _lock:
+        entry = _live.get(id(ws))
+    return entry[2] if entry is not None and entry[0]() is ws else None
 
 
 async def _close(ws) -> None:
@@ -117,6 +125,6 @@ def close_all() -> int:
     with _lock:
         live = list(_live.values())
         _live.clear()
-    closing = sum(_close_on(ws, loop) for ref, loop in live if (ws := ref()) is not None)
+    closing = sum(_close_on(ws, loop) for ref, loop, _digest in live if (ws := ref()) is not None)
     _log.info("Closing %d browser sockets opened with the replaced session token", closing)
     return closing
