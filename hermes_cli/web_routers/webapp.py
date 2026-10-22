@@ -124,14 +124,16 @@ def _loopback_peer_uid(client: tuple[str, int], server: tuple[str, int]) -> int 
 def _peer_is_server_user(request: Request) -> bool:
     """Whether this request's connection belongs to the OS user running the server.
 
-    Linux authenticates the connection owner. macOS has no authenticated
-    launch handoff here, so an argv-carried launch ticket cannot be redeemed.
-    Authenticated child-window tickets do not use this launcher channel.
+    Linux authenticates the connection owner. Windows needs no check: a process's command line,
+    where the launch ticket travels, is readable only by its own user, SYSTEM and elevated
+    administrators. Elsewhere (macOS, the BSDs) every local user can read the launcher's argv
+    and nothing here identifies the connection's owner, so an argv-carried launch ticket cannot
+    be redeemed. Authenticated child-window tickets do not use this launcher channel.
     """
-    if sys.platform == "darwin":
-        return False
-    if sys.platform != "linux":
+    if sys.platform == "win32":
         return True
+    if sys.platform != "linux":
+        return False
     client, server = request.client, request.scope.get("server")
     if client is None or not server:
         return False

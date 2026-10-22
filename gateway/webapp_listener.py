@@ -222,9 +222,10 @@ def _close_to_other_users(folder: Path) -> None:
 
 def _one_use_links_work() -> bool:
     """Whether a browser can redeem a one-use launch link here. Redemption needs proof that the
-    browser's connection belongs to the gateway's OS user (``web_routers.webapp._peer_is_server_user``),
-    which macOS cannot give, and a browser launcher's arguments are not private to the user there."""
-    return sys.platform != "darwin"
+    browser's connection belongs to the gateway's OS user (``web_routers.webapp._peer_is_server_user``)
+    on Linux, or a browser launcher whose arguments other users cannot read (Windows). macOS and the
+    BSDs offer neither."""
+    return sys.platform in ("linux", "win32")
 
 
 #: How every missing-bundle reason starts; ``hermes webapp --status`` asks for no restart after it.

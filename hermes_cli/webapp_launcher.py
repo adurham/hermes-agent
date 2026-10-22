@@ -3,8 +3,8 @@
 The gateway serves the Webapp on its own listener when its home's config sets ``webapp.enabled``
 (``gateway.webapp_listener``). This command builds the bundle when it is stale, starts the gateway that
 serves the current profile, asks it for a one-use launch link over the control socket (same OS user
-only) and opens that link, so the credential appears in no argv, output or link. On macOS, where a
-one-use link cannot be redeemed, it prints the gateway's private link for the user to open instead.
+only) and opens that link, so the credential appears in no argv, output or link. On macOS and the
+BSDs, where a one-use link cannot be redeemed, it prints the gateway's private link for the user to open instead.
 ``--status`` and ``--sign-out`` talk to a running gateway and never start one.
 """
 from __future__ import annotations
@@ -249,7 +249,7 @@ def cmd_webapp(args) -> int:
             print(f"Open the Webapp and sign in with your dashboard account: {link['url']}")
         return 0
     if link.get("private"):
-        # The gateway's own credential (macOS, where a one-use link cannot be redeemed): for the user
+        # The gateway's own credential (macOS, the BSDs: a one-use link cannot be redeemed): for the user
         # to open, never for a browser launcher whose arguments other processes can read.
         print("Open this link in your browser. It signs the browser in as you, so keep it private:")
         print(f"  {link['url']}")
