@@ -13,7 +13,8 @@
  *  - `hermes webapp --sign-out` cuts that tab off.
  *
  * A second test puts the Webapp and Electron Desktop on one chat: Electron answers the approval a
- * Webapp turn raised, and the Webapp stops a turn Electron started.
+ * Webapp turn raised, and the Webapp stops a turn Electron started. A third puts the Webapp behind
+ * the sign-in gate: `hermes webapp --sign-out` signs out a browser that signed in with a password.
  *
  * Linux (the /proc ancestry walk); needs the Webapp renderer (`npm run build:webapp`) and a
  * Chromium Playwright can launch (`npx playwright install chromium`, or HERMES_E2E_CHROMIUM).
@@ -356,6 +357,115 @@ test("the Webapp and Electron Desktop answer and stop each other's turns on one 
   } finally {
     hold.open()
     await desktop?.app.close().catch(() => undefined)
+    await browser?.close().catch(() => undefined)
+
+    for (const proc of sandboxProcesses(sandbox)) {
+      try {
+        process.kill(proc.pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+
+    await provider.close()
+    sandbox.cleanup()
+  }
+})
+
+/**
+ * The config.yaml lines that serve the Webapp on a loopback port behind the sign-in gate (the URL
+ * browsers reach it at) with the bundled password provider. The one place this spec names those settings.
+ */
+function signInGateYaml(port: number, publicUrl: string, user: string, passwordHash: string, secret: string): string {
+  return (
+    `\nwebapp:\n  enabled: true\n  port: ${port}\n  public_url: ${publicUrl}\n` +
+    `dashboard:\n  basic_auth:\n    username: ${user}\n    password_hash: '${passwordHash}'\n    secret: '${secret}'\n`
+  )
+}
+
+/** A Python one-liner in the sandbox, as the gateway's own interpreter runs it. */
+function python(sandbox: CoreSandbox, code: string, ...args: string[]): string {
+  const result = spawnSync(PYTHON, ['-c', code, ...args], {
+    cwd: REPO_ROOT,
+    env: coreAppEnv(sandbox),
+    encoding: 'utf8'
+  })
+
+  expect(result.status, result.stderr).toBe(0)
+
+  return result.stdout.trim()
+}
+
+/**
+ * Behind the sign-in gate the browser signs in with the dashboard's password, not the browser
+ * credential `hermes webapp` hands out; `hermes webapp --sign-out` must still sign it out: the open
+ * tab is cut off, a reload lands on the sign-in page, and signing in again works.
+ */
+test('signing out of a Webapp behind sign-in signs the browser out', async () => {
+  test.skip(process.platform !== 'linux', 'runs with the other Webapp journeys (Linux CI)')
+  expect(
+    fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
+    'the Webapp renderer is built (npm run build:webapp)'
+  ).toBe(true)
+
+  const provider = await startScriptedProvider()
+  const sandbox = createCoreSandbox('webapp-gated')
+  writeProviderHome(sandbox.hermesHome, provider.url)
+  const port = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const password = python(sandbox, 'import secrets; print("throwaway-" + secrets.token_urlsafe(12))')
+
+  const hash = python(
+    sandbox,
+    'import sys; from plugins.dashboard_auth.basic import hash_password; print(hash_password(sys.argv[1]))',
+    password
+  )
+
+  const secret = python(sandbox, 'import secrets; print(secrets.token_hex(32))')
+  fs.appendFileSync(
+    path.join(sandbox.hermesHome, 'config.yaml'),
+    signInGateYaml(port, `http://hermes-webapp.test:${port}`, 'owner', hash, secret)
+  )
+  let browser: Browser | null = null
+
+  try {
+    const started = hermesWebapp(sandbox, '--no-open', '--skip-build')
+    expect(started.code, started.output).toBe(0)
+    expect(started.output).toContain('sign in with your dashboard account')
+    browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
+    const page: Page = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage()
+    const ws = recordWebSockets(page)
+
+    const signIn = () =>
+      page.request.post(`${origin}/auth/password-login`, {
+        headers: { Origin: origin },
+        data: { provider: 'basic', username: 'owner', password }
+      })
+
+    expect((await signIn()).status()).toBe(200)
+    await page.goto(`${origin}/`)
+    await expect(composer(page)).toBeVisible({ timeout: 180_000 })
+    await expect
+      .poll(() => ws.sockets.some(socket => socket.url.startsWith(`ws://127.0.0.1:${port}/api/ws`)))
+      .toBe(true)
+
+    const open = ws.sockets.filter(socket => !socket.closed)
+    const signedOut = hermesWebapp(sandbox, '--sign-out')
+    expect(signedOut.code, signedOut.output).toBe(0)
+    await expect
+      .poll(() => open.every(socket => socket.closed), { timeout: 30_000, message: "sign-out closed the tab's socket" })
+      .toBe(true)
+    expect(signedOut.output).toMatch(/closed [1-9]\d* browser connections?\./)
+    expect(signedOut.output).toContain('Browsers behind sign-in must sign in again')
+    expect((await page.request.get(`${origin}/api/sessions`)).status()).toBe(401)
+    await page.reload()
+    await expect(page).toHaveURL(/\/login/, { timeout: 60_000 })
+    await expect(composer(page)).toBeHidden()
+
+    expect((await signIn()).status()).toBe(200)
+    await page.goto(`${origin}/`)
+    await expect(composer(page)).toBeVisible({ timeout: 120_000 })
+  } finally {
     await browser?.close().catch(() => undefined)
 
     for (const proc of sandboxProcesses(sandbox)) {
