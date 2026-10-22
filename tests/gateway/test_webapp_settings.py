@@ -43,6 +43,20 @@ def test_a_webapp_block_that_is_off_or_valid_has_no_reason(tmp_path, block):
     assert webapp.webapp_settings(_home(tmp_path, block)).reason is None
 
 
+@pytest.mark.parametrize(("host", "bind_host"), [("'[::1]'", "::1"), ("'[::]'", "::"), ("' ::1 '", "::1")])
+def test_a_bracketed_ipv6_host_is_read_as_the_address(tmp_path, host, bind_host):
+    # Brackets belong to URLs; the bind address and the address native clients dial carry none.
+    settings = webapp.webapp_settings(_home(tmp_path, f"webapp:\n  enabled: true\n  host: {host}\n"))
+    assert settings.bind == (bind_host, webapp.DEFAULT_PORT)
+    assert webapp.dial_origin(settings.host, 9120) == "http://[::1]:9120"
+
+
+@pytest.mark.parametrize("host", ["'[127.0.0.1]'", "'[localhost]'", "'[::1'", "'::1]'", "'[[::1]]'"])
+def test_brackets_around_anything_but_an_ipv6_address_keep_the_webapp_off(tmp_path, host):
+    settings = webapp.webapp_settings(_home(tmp_path, f"webapp:\n  enabled: true\n  host: {host}\n"))
+    assert settings.enabled is False and "webapp.host" in settings.reason
+
+
 def _gateway(monkeypatch, tmp_path, config):
     """The runtime's listener start for *config*, with the listener itself replaced by a stand-in."""
     from gateway import run_api, run_runtime

@@ -97,7 +97,8 @@ def webapp_settings(home) -> WebappSettings:
         return off(f"webapp.enabled must be true or false in {path}")
     host = block.get("host", DEFAULT_HOST)
     port = block.get("port", DEFAULT_PORT)
-    if not isinstance(host, str) or not (_is_loopback(host.strip()) or _is_wildcard(host.strip())):
+    host = _bare_host(host) if isinstance(host, str) else None
+    if host is None or not (_is_loopback(host) or _is_wildcard(host)):
         return off(f"webapp.host must be a loopback address, 0.0.0.0 or :: in {path}")
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         return off(f"webapp.port must be a port number (1-65535) in {path}")
@@ -105,7 +106,16 @@ def webapp_settings(home) -> WebappSettings:
     if public_url is None:
         return off(f"webapp.public_url must be an http:// or https:// address with no credentials, "
                    f"query or fragment in {path}")
-    return WebappSettings(enabled=True, host=host.strip(), port=port, public_url=public_url)
+    return WebappSettings(enabled=True, host=host, port=port, public_url=public_url)
+
+
+def _bare_host(host: str) -> str:
+    """*host* without surrounding space or the brackets a URL puts around an IPv6 address
+    (``[::1]`` is ``::1``); brackets around anything else stay and fail the host check."""
+    host = host.strip()
+    if host.startswith("[") and host.endswith("]") and ":" in host[1:-1] and "[" not in host[1:-1]:
+        return host[1:-1]
+    return host
 
 
 def _public_url(value) -> str | None:
@@ -128,7 +138,7 @@ def _is_loopback(host: str) -> bool:
     if host == "localhost":
         return True
     try:
-        return ipaddress.ip_address(host.strip("[]")).is_loopback
+        return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
 
