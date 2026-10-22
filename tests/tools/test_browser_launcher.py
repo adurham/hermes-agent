@@ -287,11 +287,14 @@ def test_orphan_reap_refuses_a_pid_whose_cmdline_lacks_the_recorded_user_data_di
 @pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass  # the fake browser's reparented helper is ours to stop
 def test_orphan_reap_stops_a_crashed_owners_browser(tmp_path, fake_chromium):
-    udd = tmp_path / "orphan-profile"
-    proc = subprocess.Popen([str(fake_chromium), f"--user-data-dir={udd}"], start_new_session=True)
-    deadline = time.monotonic() + 10
-    while not (udd / "DevToolsActivePort").exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
+    from tests.waiting import wait_until
+    udd, log = tmp_path / "orphan-profile", tmp_path / "orphan-chromium.log"
+    with open(log, "wb") as out:
+        proc = subprocess.Popen([str(fake_chromium), f"--user-data-dir={udd}"], start_new_session=True,
+                                stdout=out, stderr=out)
+    wait_until(lambda: (udd / "DevToolsActivePort").exists() or proc.poll() is not None, timeout=10,
+               what="the fake browser to write DevToolsActivePort")
+    assert proc.poll() is None, f"the fake browser exited during startup ({proc.returncode}): {log.read_text()[-2000:]}"
     _write_orphan_record(_records(), proc.pid, str(udd))
     assert launcher.reap_orphaned_browsers() == 1
     proc.wait(timeout=10)
@@ -334,10 +337,8 @@ def _shared_profile_user(fake_chromium, udd, running: int = 0) -> tuple[subproce
 
 
 def _gone(pid: int, timeout: float = 15) -> bool:
-    deadline = time.monotonic() + timeout
-    while launcher._pid_alive(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    return not launcher._pid_alive(pid)
+    from tests.waiting import wait_until
+    return wait_until(lambda: not launcher._pid_alive(pid), timeout=timeout, what=f"pid {pid} to exit")
 
 
 def _kill_fake(pid: int, fake_chromium) -> None:
