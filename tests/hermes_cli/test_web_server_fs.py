@@ -411,6 +411,35 @@ def test_fs_read_text_keeps_literal_percent_filename_verbatim(client, tmp_path):
     assert response.json()["text"] == "literal percent name"
 
 
+@pytest.mark.parametrize("name", ["..%252fsecret.md", "%252e%252e%252fsecret.md", "..%255csecret.md"])
+def test_fs_read_text_decodes_a_file_url_once(client, tmp_path, name):
+    """A ``file:`` URL is percent-decoded once. ``..%252f`` is then the name ``..%2f`` inside the
+    folder the URL names, which does not exist; a second decode would turn it into ``../`` and read
+    a file outside that folder."""
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (tmp_path / "secret.md").write_text("outside the named folder")
+
+    response = client.get("/api/fs/read-text", params={"path": f"{folder.as_uri()}/{name}"})
+
+    assert response.status_code == 404
+    assert "outside the named folder" not in response.text
+
+
+@pytest.mark.parametrize("name", ["..%2fsecret.md", "%2e%2e/secret.md", "%2E%2E%2Fsecret.md"])
+def test_fs_read_text_decode_fallback_stays_in_the_named_folder(client, tmp_path, name):
+    """The one-decode rescue for a doubly encoded path (issue #103425) never leaves the folder the
+    path names: when decoding would add a ``..`` segment, the path is read as written."""
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (tmp_path / "secret.md").write_text("outside the named folder")
+
+    response = client.get("/api/fs/read-text", params={"path": f"{folder}/{name}"})
+
+    assert response.status_code == 404
+    assert "outside the named folder" not in response.text
+
+
 def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
     sibling = tmp_path / "report v2.md"
     sibling.write_text("existing")

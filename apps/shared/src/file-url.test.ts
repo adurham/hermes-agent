@@ -50,6 +50,30 @@ describe('fileUrlToNativePath', () => {
     expect(fileUrlToNativePath(url)).toBeNull()
   })
 
+  // A reader that decodes the path once more (the gateway does, for a path missing as written)
+  // must not find another folder in it: a separator or a dot-segment still encoded after decoding
+  // is refused like an encoded one.
+  it.each([
+    'file:///srv/project/..%252f..%252fetc/passwd',
+    'file:///srv/project/..%252F..%252Fetc/passwd',
+    'file:///srv/project/%252e%252e/etc/passwd',
+    'file:///srv/project/%252E%252E%252Fetc/passwd',
+    'file:///srv/project/%252e/report.html',
+    'file:///C:/work/..%255c..%255cWindows/win.ini',
+    'file:///C:/work/%252e%252e/Windows/win.ini',
+    'file://server/share/%252e%252e/secret.txt'
+  ])('refuses %s, whose decoded path still encodes a separator or a dot-segment', url => {
+    expect(fileUrlToNativePath(url)).toBeNull()
+  })
+
+  it.each([
+    ['file:///srv/100%2525.txt', '/srv/100%25.txt'],
+    ['file:///srv/a%252eb.txt', '/srv/a%2eb.txt'],
+    ['file:///srv/name%255Cdraft.html', '/srv/name%5Cdraft.html']
+  ])('keeps a POSIX name that only spells a percent sequence: %s', (url, path) => {
+    expect(fileUrlToNativePath(url)).toBe(path)
+  })
+
   it.each(['file:///tmp/100%.txt', 'file:///tmp/%E0%A4%A.txt', 'file://%invalid/clip.mp4', 'not a url', '', 'file'])(
     'refuses malformed input %j',
     value => {
