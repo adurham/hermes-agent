@@ -24,10 +24,12 @@ _LAUNCH_TIMEOUT_S = 60.0
 # teardown outside the owner's scope hits the right sandbox.
 _launched: dict[str, tuple[Any, int]] = {}
 _launched_lock = threading.Lock()
-# Endpoints a liveness probe confirmed: ``cdp_url -> (id(env), sandbox port, forward failures then)``. A browser
-# call re-probes only after a connection through its forward failed (or the sandbox was replaced), so a
-# healthy call spends no exec in the sandbox.
-_confirmed: dict[str, tuple[int, int, int]] = {}
+# Endpoints a liveness probe confirmed: ``cdp_url -> (id(env), sandbox port, forward failures then, when)``. A
+# browser call re-probes after a connection through its forward failed, the sandbox was replaced, or the
+# confirmation is older than _CONFIRMED_TTL_S (a relaunch on the same port that nothing connected to yet
+# leaves no failure behind), so a healthy call spends no exec in the sandbox.
+_confirmed: dict[str, tuple[int, int, int, float]] = {}
+_CONFIRMED_TTL_S = 30.0
 # Exit code of the liveness script when the sandbox answers "not running": no DevTools port file, or nothing
 # listens on its port. Any other failure (docker/ssh transport error, timeout) says nothing about Chromium.
 _GONE_RC = 3
@@ -139,17 +141,22 @@ def create_sandbox_session(cache_key: str) -> dict[str, Any]:
             _launched[key] = (env, pid)
     local_port = streams.forward_port(env, found[0], user=user)
     info = _session_record("sb", f"ws://127.0.0.1:{local_port}{found[1]}", {"local": True, "sandbox": True})
-    _confirmed[info["cdp_url"]] = (id(env), found[0], streams.forward_failures(env, found[0]))
+    _confirm(info["cdp_url"], env, found[0])
     info.update(shared_profile=True, launcher_key=key)
     logger.info("Created sandbox browser session %s for %s", info["session_name"], cache_key)
     return info
 
 
+def _confirm(cdp_url: str, env, port: int) -> None:
+    from tools.environments import streams
+    _confirmed[cdp_url] = (id(env), port, streams.forward_failures(env, port), time.monotonic())
+
+
 def sandbox_browser_alive(session_info: dict[str, Any]) -> bool:
     """The sandbox Chromium still serves this session's endpoint through the current port forward: False once
     the sandbox answers that it died, was relaunched (new DevTools path) or the sandbox was replaced (new
-    forward). Re-probed only after a connection through the forward failed; a probe that cannot reach the
-    sandbox keeps the session."""
+    forward). Re-probed only after a connection through the forward failed or the last confirmation expired;
+    a probe that cannot reach the sandbox keeps the session."""
     from tools.bot_desktop import runtime as _bd_runtime, sandbox_host
     from tools.environments import streams
     env = _bd_runtime._sandbox_env(create=False)
@@ -157,7 +164,8 @@ def sandbox_browser_alive(session_info: dict[str, Any]) -> bool:
         return False
     cdp_url = session_info.get("cdp_url") or ""
     confirmed = _confirmed.get(cdp_url)
-    if confirmed and confirmed[0] == id(env) and streams.forward_failures(env, confirmed[1]) == confirmed[2]:
+    if (confirmed and confirmed[0] == id(env) and streams.forward_failures(env, confirmed[1]) == confirmed[2]
+            and time.monotonic() - confirmed[3] < _CONFIRMED_TTL_S):
         return True
     try:
         user = sandbox_host._user_for(env)
@@ -171,7 +179,7 @@ def sandbox_browser_alive(session_info: dict[str, Any]) -> bool:
     if found is GONE or cdp_url != f"ws://127.0.0.1:{streams.forward_port(env, found[0], user=user)}{found[1]}":
         _confirmed.pop(cdp_url, None)
         return False
-    _confirmed[cdp_url] = (id(env), found[0], streams.forward_failures(env, found[0]))
+    _confirm(cdp_url, env, found[0])
     return True
 
 

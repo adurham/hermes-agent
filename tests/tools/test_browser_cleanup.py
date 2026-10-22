@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -229,11 +230,14 @@ class _FakeSandbox:
         self.probes = 0  # liveness execs (the /dev/tcp check)
         self.probe_failure = None  # "exit-255" (docker/ssh transport error) or "timeout"
         self.forward_failures = 0  # connections through the port forward that never reached Chromium
+        self.browser_id = "abc"  # a relaunch on the same port gets a new /devtools/browser/<id>
+        self.launches = 0
 
     def run_in(self, env, argv, **kw):
         cmd = " ".join(argv)
         if "setsid" in cmd:
             self.running = 4242
+            self.launches += 1
             return _Completed(0, b"4242\n")
         if "/dev/tcp" in cmd:
             self.probes += 1
@@ -242,7 +246,8 @@ class _FakeSandbox:
             if self.probe_failure == "timeout":
                 raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
         if "/dev/tcp" in cmd or argv[0] == "cat":
-            return _Completed(0, b"9222\n/devtools/browser/abc\n") if self.running else _Completed(3)
+            found = f"9222\n/devtools/browser/{self.browser_id}\n".encode()
+            return _Completed(0, found) if self.running else _Completed(3)
         if argv[0] == "kill":
             self.killed.append(int(argv[-1]))
             self.running = None
@@ -321,6 +326,23 @@ class TestSandboxSharedBrowser:
         for _ in range(5):
             assert bs.get_session_info("task-A") is first
         assert fake_sandbox.probes == 0
+
+    def test_a_browser_relaunched_on_the_same_port_is_rechecked_once_the_confirmation_expires(
+            self, fake_sandbox, monkeypatch):
+        """No forward failure surfaces for a relaunch the harness never connected through, so the confirmed
+        answer is only trusted for a short while: healthy calls inside it spend no exec."""
+        from tools import browser_session_sandbox
+        from tools.browser_session_sandbox import create_sandbox_session
+        clock = [1000.0]
+        monkeypatch.setattr(browser_session_sandbox, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+        info = create_sandbox_session("task-A")
+        fake_sandbox.browser_id = "relaunched"  # another process relaunched it on the same port
+        fake_sandbox.probes = 0
+        clock[0] += 5
+        assert bs._backend_dead(info) is False and fake_sandbox.probes == 0, "inside the TTL: no exec"
+        clock[0] += 60
+        assert bs._backend_dead(info) is True
+        assert fake_sandbox.probes == 1
 
 
 class _FakeContainers:

@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from tests.waiting import wait_until
 from tools.environments import streams
 
 
@@ -31,7 +32,7 @@ def _closed_port() -> int:
         return s.getsockname()[1]
 
 
-def _one_shot_server(reply: bytes) -> int:
+def _one_shot_server(reply: bytes, *, read_request: bool = False) -> int:
     srv = socket.socket()
     srv.bind(("127.0.0.1", 0))
     srv.listen(1)
@@ -39,14 +40,17 @@ def _one_shot_server(reply: bytes) -> int:
     def serve():
         conn, _ = srv.accept()
         with conn, srv:
+            if read_request:
+                conn.recv(65536)
             conn.sendall(reply)
     threading.Thread(target=serve, daemon=True).start()
     return srv.getsockname()[1]
 
 
-def _relay(local_port: int) -> bytes:
+def _relay(local_port: int, request: bytes = b"") -> bytes:
     with socket.create_connection(("127.0.0.1", local_port), timeout=10) as conn:
         conn.settimeout(10)
+        conn.sendall(request)
         conn.shutdown(socket.SHUT_WR)  # the client is done sending; the relay ends with the target's reply
         chunks = []
         while chunk := conn.recv(65536):
@@ -69,3 +73,25 @@ def test_only_a_connection_that_never_reaches_its_target_counts_as_a_forward_fai
         time.sleep(0.05)
     assert streams.forward_failures(env, dead) == 1
     assert streams.forward_failures(env, live) == 0
+
+
+_NOT_FOUND = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+
+
+def test_a_404_on_the_old_browser_path_counts_as_a_forward_failure(local_relay):
+    """Chromium relaunched on the same port answers the cached ``/devtools/browser/<id>`` with 404: the
+    endpoint the session holds is gone although the port relayed bytes."""
+    env = object()
+    stale = _one_shot_server(_NOT_FOUND, read_request=True)
+    local_relay.append((env, stale))
+    request = b"GET /devtools/browser/old-id HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n\r\n"
+    assert _relay(streams.forward_port(env, stale), request).startswith(b"HTTP/1.1 404")
+    wait_until(lambda: streams.forward_failures(env, stale) == 1, what="the stale-path 404 counted as a failure")
+
+    other = _one_shot_server(_NOT_FOUND, read_request=True)  # a dev server's own 404 is a relayed reply
+    local_relay.append((env, other))
+    assert _relay(streams.forward_port(env, other), b"GET /missing HTTP/1.1\r\n\r\n").startswith(b"HTTP/1.1 404")
+    live = _one_shot_server(b"HTTP/1.1 101 Switching Protocols\r\n\r\n", read_request=True)
+    local_relay.append((env, live))
+    assert _relay(streams.forward_port(env, live), request).startswith(b"HTTP/1.1 101")
+    assert streams.forward_failures(env, other) == 0 and streams.forward_failures(env, live) == 0

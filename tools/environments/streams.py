@@ -170,8 +170,9 @@ class PortForward:
         self._server.listen(16)
         self.local_port: int = self._server.getsockname()[1]
         self._closed = False
-        # Connections that never reached the target (relay not started, or it exited non-zero before
-        # relaying a byte back): the one cheap signal that whatever listened there may be gone.
+        # Connections that never reached the target (relay not started, it exited non-zero before
+        # relaying a byte back, or the browser path it asked for is gone): the one cheap signal that
+        # whatever listened there may be gone.
         self.failures = 0
         threading.Thread(target=self._accept_loop, name=f"port-forward-{self.local_port}", daemon=True).start()
 
@@ -192,12 +193,16 @@ class PortForward:
             self.failures += 1
             return
 
+        request: list[bytes] = []
+
         def to_remote() -> None:
             try:
                 while True:
                     data = conn.recv(65536)
                     if not data:
                         break
+                    if not request:
+                        request.append(data)
                     proc.stdin.write(data)
                     proc.stdin.flush()
             except (OSError, ValueError):
@@ -209,13 +214,13 @@ class PortForward:
                     pass
 
         threading.Thread(target=to_remote, daemon=True).start()
-        relayed = False
+        reply = b""
         try:
             while True:
                 data = proc.stdout.read1(65536) if hasattr(proc.stdout, "read1") else proc.stdout.read(65536)
                 if not data:
                     break
-                relayed = True
+                reply = reply or data
                 conn.sendall(data)
         except OSError:
             pass
@@ -223,7 +228,7 @@ class PortForward:
             try:
                 conn.close()
             finally:
-                if not relayed and _exited_nonzero(proc):
+                if (not reply and _exited_nonzero(proc)) or _stale_browser_path(request, reply):
                     self.failures += 1
                 proc.kill()
 
@@ -233,6 +238,13 @@ class PortForward:
             self._server.close()
         except OSError:
             pass
+
+
+def _stale_browser_path(request: list[bytes], reply: bytes) -> bool:
+    """A Chromium relaunched on the same port answers the old ``/devtools/browser/<id>`` with 404: the
+    endpoint the caller cached is gone even though the port relayed a reply."""
+    return (bool(request) and request[0].startswith(b"GET /devtools/browser/")
+            and reply.startswith((b"HTTP/1.1 404 ", b"HTTP/1.0 404 ")))
 
 
 def _exited_nonzero(proc: subprocess.Popen) -> bool:
