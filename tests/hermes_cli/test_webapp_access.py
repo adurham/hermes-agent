@@ -282,3 +282,44 @@ def test_a_restart_refused_by_a_running_chat_is_reported_as_busy(client, nous, m
     assert response.json()["restart_started"] is False
     assert response.json()["restart_busy"] is True
     assert response.json()["enabled"] is True
+
+
+def test_the_portal_is_asked_again_only_when_the_callback_or_client_changed(monkeypatch):
+    """Registering posts the callback under the dashboard's shared OAuth client id, and the Portal
+    may replace that client's redirect URI, so Web Access does not post the same callback for the
+    same client and Portal twice. A new LAN address, a new client id, or a registration made by
+    ``hermes dashboard register`` in between makes the next start register again."""
+    import argparse
+
+    from hermes_cli import auth, dashboard_register, webapp_access
+    from hermes_cli.config import save_env_value
+
+    posts: list[tuple] = []
+
+    def portal(*, access_token, portal_base_url, name, custom_redirect_uri, existing_client_id, timeout=15.0):
+        posts.append((custom_redirect_uri, existing_client_id))
+        return {"client_id": existing_client_id or "client-1", "name": name or "kept"}
+
+    monkeypatch.delenv("HERMES_DASHBOARD_PORTAL_URL", raising=False)
+    monkeypatch.setattr(dashboard_register, "_register_self_hosted_client", portal)
+    monkeypatch.setattr(dashboard_register, "_resolve_portal_base_url", lambda _override=None: "https://portal.example.test")
+    monkeypatch.setattr(auth, "resolve_nous_access_token", lambda: "token")
+    lan = "http://192.168.1.50:9120/auth/callback"
+
+    webapp_access.register(lan)
+    webapp_access.register(lan)
+    assert posts == [(lan, None)]
+
+    moved = "http://192.168.1.51:9120/auth/callback"
+    webapp_access.register(moved)
+    assert posts[-1] == (moved, "client-1")
+
+    save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "client-2")
+    webapp_access.register(moved)
+    assert posts[-1] == (moved, "client-2")
+
+    dashboard_register.cmd_dashboard_register(argparse.Namespace(
+        name=None, redirect_uri="https://dashboard.example.test/auth/callback", portal_url=None))
+    webapp_access.register(moved)
+    assert posts[-1] == (moved, "client-2")
+    assert len(posts) == 5

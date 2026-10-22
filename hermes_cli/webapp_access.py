@@ -16,6 +16,7 @@ standalone dashboard, which may sit behind its own tunnel or proxy.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 from pathlib import Path
@@ -26,6 +27,7 @@ from gateway.webapp_listener import DEFAULT_PORT
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _CLIENT_ID_ENV = "HERMES_DASHBOARD_OAUTH_CLIENT_ID"
+_REGISTRATION_PATH = Path("webapp") / "sign-in-registration.json"
 
 
 class WebappAccessError(RuntimeError):
@@ -72,9 +74,34 @@ def nous_signed_in() -> bool:
     return bool(status.get("logged_in") and not status.get("free_tier"))
 
 
+def _registration_path() -> Path:
+    """Where this home records the sign-in callback Web Access last registered with the Portal."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / _REGISTRATION_PATH
+
+
+def forget_registration() -> None:
+    """Drop the record of the callback Web Access registered, so its next start registers again.
+    ``hermes dashboard register`` calls this: it updates the same Portal client, and the Portal may
+    replace that client's redirect URI."""
+    _registration_path().unlink(missing_ok=True)
+
+
+def _registered(record: dict) -> bool:
+    try:
+        return json.loads(_registration_path().read_text(encoding="utf-8-sig")) == record
+    except (OSError, ValueError):
+        return False
+
+
 def _register_nous_sign_in(callback_url: str) -> None:
     """Register (or update in place) this home's portal client with *callback_url*, as
-    ``hermes dashboard register --redirect-uri`` does."""
+    ``hermes dashboard register --redirect-uri`` does.
+
+    The client is the dashboard's (``HERMES_DASHBOARD_OAUTH_CLIENT_ID``) and the Portal may replace
+    its redirect URI on every registration, so the same callback for the same client and Portal is
+    never posted twice: a start with nothing changed asks the Portal nothing."""
     from hermes_cli.auth import resolve_nous_access_token
     from hermes_cli.config import save_env_value
     from hermes_cli.dashboard_register import (
@@ -83,17 +110,26 @@ def _register_nous_sign_in(callback_url: str) -> None:
         _register_self_hosted_client,
         _resolve_portal_base_url,
     )
+    from utils import atomic_write_text
 
     existing = (_env_value(_CLIENT_ID_ENV) or "").strip() or None
+    portal = _resolve_portal_base_url(os.environ.get("HERMES_DASHBOARD_PORTAL_URL"))
+    if existing and _registered({"portal": portal, "client_id": existing, "callback": callback_url}):
+        return
     try:
         result = _register_self_hosted_client(
             access_token=resolve_nous_access_token(),
-            portal_base_url=_resolve_portal_base_url(os.environ.get("HERMES_DASHBOARD_PORTAL_URL")),
+            portal_base_url=portal,
             name=None if existing else _generate_dashboard_name(),
             custom_redirect_uri=callback_url, existing_client_id=existing)
     except Exception as exc:
         raise WebappAccessError(f"Couldn't register Nous sign-in: {exc}") from exc
-    save_env_value(_CLIENT_ID_ENV, str(result["client_id"]))
+    client_id = str(result["client_id"])
+    save_env_value(_CLIENT_ID_ENV, client_id)
+    path = _registration_path()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    record = {"portal": portal, "client_id": client_id, "callback": callback_url}
+    atomic_write_text(path, json.dumps(record) + "\n", mode=0o600)
 
 
 def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, str, str]:
@@ -129,10 +165,9 @@ def build_bundle() -> None:
 
 
 def register(callback_url: str) -> None:
-    """Register Nous sign-in for *callback_url*.
-
-    Re-registered on every start, so the callback follows a changed LAN address or URL. Writes no
-    config: it waits on the portal, so callers do it before taking the config lock."""
+    """Register Nous sign-in for *callback_url*, unless Web Access already registered it for this
+    client and Portal, so the callback follows a changed LAN address or URL. Writes no config: it
+    waits on the portal, so callers do it before taking the config lock."""
     _register_nous_sign_in(callback_url)
 
 
