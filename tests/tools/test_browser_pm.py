@@ -4,13 +4,13 @@ Chromium (or the user's explicit override), acquired through PM at most once per
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 import pm
 from pm import paths
+from tests.waiting import wait_until
 from tools import browser_launcher as launcher
 
 
@@ -225,9 +225,7 @@ def test_exact_pm_child_receives_composed_scrubbed_environment(browser_store, mo
     try:
         assert err is None
         child_file = Path(browser.user_data_dir, "child.json")
-        deadline = time.monotonic() + 5
-        while not child_file.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        wait_until(child_file.exists, what="the fake Chromium to write child.json")
         child = json.loads(child_file.read_text())
     finally:
         launcher.stop_browser("pm-child")

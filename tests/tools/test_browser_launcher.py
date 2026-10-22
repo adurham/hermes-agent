@@ -16,7 +16,6 @@ import subprocess
 import sys
 import textwrap
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -157,9 +156,8 @@ def test_a_bare_consumer_exiting_normally_stops_its_browser(fake_chromium):
                           cwd=Path(__file__).resolve().parents[2],
                           env=dict(os.environ), capture_output=True, text=True, timeout=120)
     pid = int(done.stdout.strip().splitlines()[0])
-    deadline = time.monotonic() + 10
-    while launcher._pid_alive(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
+    with contextlib.suppress(AssertionError):  # a survivor is killed, then reported with its stderr below
+        _gone(pid, timeout=10)
     survived = launcher._pid_alive(pid)
     if survived and str(fake_chromium) in Path(f"/proc/{pid}/cmdline").read_text(errors="replace"):
         os.kill(pid, signal.SIGKILL)

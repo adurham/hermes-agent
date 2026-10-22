@@ -7,13 +7,13 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from tests.waiting import wait_until
 from tools import browser_launcher as launcher
 from tools.browser_launcher_holders import ns_identity
 from tools import browser_session as bs
@@ -288,10 +288,8 @@ class TestPrivatePerProfileRecords:
         (outside / "Default").mkdir(parents=True)
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)", f"--user-data-dir={outside}"])
         try:
-            deadline = time.monotonic() + 10
-            while launcher._start_time(proc.pid) is None and time.monotonic() < deadline:
-                time.sleep(0.05)
-            _record(records, pid=proc.pid, udd=str(outside), start_time=launcher._start_time(proc.pid))
+            start_time = wait_until(lambda: launcher._start_time(proc.pid), what="the stand-in's start time")
+            _record(records, pid=proc.pid, udd=str(outside), start_time=start_time)
 
             assert launcher.reap_orphaned_browsers() == 0
             assert records.terminated == []

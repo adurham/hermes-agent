@@ -5,7 +5,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 
 import pytest
 
@@ -68,9 +67,7 @@ def test_only_a_connection_that_never_reaches_its_target_counts_as_a_forward_fai
     local_relay.append((env, dead))
     assert _relay(streams.forward_port(env, dead)) == b""
 
-    deadline = time.monotonic() + 10
-    while streams.forward_failures(env, dead) == 0 and time.monotonic() < deadline:
-        time.sleep(0.05)
+    wait_until(lambda: streams.forward_failures(env, dead), what="the dead port's forward failure")
     assert streams.forward_failures(env, dead) == 1
     assert streams.forward_failures(env, live) == 0
 
