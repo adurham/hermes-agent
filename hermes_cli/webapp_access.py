@@ -8,7 +8,10 @@ callback); a gated bind without it would keep the Webapp off. Two shapes:
 - ``lan``: ``webapp.host: 0.0.0.0``, opened at ``http://<this machine's LAN address>:<port>``; the
   wildcard bind engages the sign-in gate and the callback is rebuilt from each request.
 - ``public``: an HTTPS URL the user already runs that forwards to ``127.0.0.1:<port>``.
-  ``dashboard.public_url`` engages the gate on the loopback bind and fixes the callback.
+  ``webapp.public_url`` engages the gate on the loopback bind and fixes the callback.
+
+It writes only the ``webapp:`` block: ``dashboard.public_url`` and the ``.env`` values belong to the
+standalone dashboard, which may sit behind its own tunnel or proxy.
 """
 
 from __future__ import annotations
@@ -22,7 +25,6 @@ from urllib.parse import urlsplit
 from gateway.webapp_listener import DEFAULT_PORT
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
-_PUBLIC_URL_ENV = "HERMES_DASHBOARD_PUBLIC_URL"
 _CLIENT_ID_ENV = "HERMES_DASHBOARD_OAUTH_CLIENT_ID"
 
 
@@ -126,21 +128,36 @@ def turn_off() -> None:
 
 
 def _write_config(*, enabled: bool, host: str = "", public_url: str = "") -> None:
-    """The ``webapp:`` block and ``dashboard.public_url``, which gates the gateway's listener and so goes
-    with the Webapp. A ``.env`` copy of the URL would shadow it (env wins), so that goes too."""
-    from hermes_cli.config import load_config, remove_env_value, save_config
+    """The ``webapp:`` block, and nothing outside it. Starting pins ``webapp.public_url`` for the
+    own-URL mode and drops it for LAN, where the callback follows each request; stopping changes
+    only ``enabled``, so the next start offers the same address."""
+    from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     webapp = cfg.get("webapp") if isinstance(cfg.get("webapp"), dict) else {}
     webapp.update(enabled=enabled, **({"host": host, "port": DEFAULT_PORT} if enabled else {}))
+    if enabled and public_url:
+        webapp["public_url"] = public_url
+    elif enabled:
+        webapp.pop("public_url", None)
     cfg["webapp"] = webapp
-    dashboard = cfg.setdefault("dashboard", {})
-    if public_url:
-        dashboard["public_url"] = public_url
-    else:
-        dashboard.pop("public_url", None)
     save_config(cfg)
-    remove_env_value(_PUBLIC_URL_ENV)
+
+
+def _configured_public_url(home: Path) -> str:
+    """``webapp.public_url`` from *home*'s config, or ``""`` (``webapp_settings`` reports an
+    unreadable config)."""
+    from ruamel.yaml.error import YAMLError
+
+    from gateway.webapp_listener import _config_document
+
+    try:
+        document = _config_document(home)
+    except (OSError, ValueError, YAMLError):
+        return ""
+    block = document.get("webapp") if isinstance(document, dict) else None
+    value = block.get("public_url") if isinstance(block, dict) else None
+    return value.strip().rstrip("/") if isinstance(value, str) else ""
 
 
 def _gateway_state(home: Path) -> dict:
@@ -160,11 +177,10 @@ def _gateway_state(home: Path) -> dict:
 def access_status() -> dict:
     """Everything the Web Access pane shows, read for the gateway home in scope."""
     from gateway.webapp_listener import _is_wildcard, webapp_settings
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
 
     home = gateway_home()
     settings = webapp_settings(home)
-    public_url = resolve_public_url()
+    public_url = _configured_public_url(home)
     return {
         "enabled": settings.enabled,
         "mode": ("lan" if _is_wildcard(settings.host) else "public") if settings.enabled else None,

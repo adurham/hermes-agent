@@ -1,8 +1,8 @@
 """Remote Webapp access (``hermes_cli.webapp_access``, ``/api/webapp-access/*``).
 
-Contracts: a public URL gates the gateway's loopback bind until Web Access is stopped, LAN access
-registers the LAN callback and unpins a public URL, and nothing is written or restarted without a
-Nous account to sign in with.
+Contracts: Web Access writes only the ``webapp:`` block (the own-URL mode's URL in
+``webapp.public_url``), LAN access registers the LAN callback, and nothing is written or restarted
+without a Nous account to sign in with.
 """
 
 from __future__ import annotations
@@ -55,38 +55,42 @@ def _config() -> dict:
     return load_config()
 
 
-def test_public_url_gates_the_loopback_bind_until_stopped(client, restarts, nous):
-    from hermes_cli.web_server_boundary import _dashboard_public_hosts, listener_auth_required
+def _dashboard_setup() -> tuple[object, object]:
+    """The standalone dashboard's own public URL, in config.yaml and in .env, as Web Access found it."""
+    from hermes_cli.config import load_env, read_raw_config
+
+    return read_raw_config().get("dashboard", {}).get("public_url"), load_env().get("HERMES_DASHBOARD_PUBLIC_URL")
+
+
+def test_web_access_keeps_its_url_in_the_webapp_block_and_leaves_the_dashboard_alone(client, restarts, nous):
+    """Start and stop write only ``webapp.*``: the own-URL mode pins ``webapp.public_url``, LAN mode
+    drops it (its callback follows each request), and the standalone dashboard's
+    ``dashboard.public_url`` and ``.env`` pin, which a tunnelled dashboard needs after a restart,
+    stay exactly as the user set them."""
+    from hermes_cli.config import save_config, save_env_value
+
+    save_config({**_config(), "dashboard": {"public_url": "https://dashboard.example.test"}})
+    save_env_value("HERMES_DASHBOARD_PUBLIC_URL", "https://dashboard.example.test")
+    dashboard = _dashboard_setup()
 
     response = client.post("/api/webapp-access/start", json={"mode": "public", "public_url": "https://hermes.example.test"})
-
     assert response.status_code == 200, response.text
-    assert _config()["webapp"] == {"enabled": True, "host": "127.0.0.1", "port": 9120}
     assert nous == ["https://hermes.example.test/auth/callback"]
-    # What the restarted gateway decides for its listener (gateway.run_api.start_gateway_api).
-    assert listener_auth_required("127.0.0.1", _dashboard_public_hosts())
+    assert {key: _config()["webapp"].get(key) for key in ("enabled", "host", "public_url")} == {
+        "enabled": True, "host": "127.0.0.1", "public_url": "https://hermes.example.test"}
+    assert response.json()["public_url"] == "https://hermes.example.test"
+    assert _dashboard_setup() == dashboard
 
-    # Stop takes the public URL with it: it would keep gating the gateway's private listener.
     assert client.post("/api/webapp-access/stop").status_code == 200
     assert _config()["webapp"]["enabled"] is False
-    assert not listener_auth_required("127.0.0.1", _dashboard_public_hosts())
-    assert restarts == ["turning on Web Access", "turning off Web Access"]
-
-
-def test_lan_access_registers_the_lan_callback_and_unpins_a_public_url(client, restarts, nous):
-    from hermes_cli.config import load_env, save_config, save_env_value
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
-
-    # A public URL from an earlier "own URL" setup, and an older .env pin that would shadow it.
-    save_config({**_config(), "dashboard": {"public_url": "https://old.example.test"}})
-    save_env_value("HERMES_DASHBOARD_PUBLIC_URL", "https://older.example.test")
+    assert _dashboard_setup() == dashboard
 
     assert client.post("/api/webapp-access/start", json={"mode": "lan"}).status_code == 200
-
-    assert nous == ["http://192.168.1.50:9120/auth/callback"]
+    assert nous[-1] == "http://192.168.1.50:9120/auth/callback"
     assert _config()["webapp"]["host"] == "0.0.0.0"
-    assert resolve_public_url() == ""
-    assert "HERMES_DASHBOARD_PUBLIC_URL" not in load_env()
+    assert not _config()["webapp"].get("public_url")
+    assert _dashboard_setup() == dashboard
+    assert restarts == ["turning on Web Access", "turning off Web Access", "turning on Web Access"]
 
 
 def test_start_without_a_nous_account_writes_and_restarts_nothing(client, restarts, nous, monkeypatch):
