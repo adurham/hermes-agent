@@ -301,6 +301,11 @@ def register_control_verbs(runner, home) -> None:
 
     def webapp_sign_out(_params, _peer):
         from hermes_cli import web_server_file_tickets, web_session_sockets
+        if runner.webapp_status["state"] != "serving":
+            # No browser reaches this gateway's Webapp and it holds no browser credential: replacing
+            # the stored one is the whole sign-out, and the next start serves the new one.
+            browser_session_token(home, rotate=True)
+            return {"signed_out": True, "serving": False, "sign_in_gate": False, "connections_closed": 0}
         _, web = serving()
         web._SESSION_TOKEN = browser_session_token(home, rotate=True)
         # Every tab loses access at once: the sockets and media links the old credential opened end
@@ -309,7 +314,8 @@ def register_control_verbs(runner, home) -> None:
         # close too. Native clients never held it and stay connected.
         closed = web_session_sockets.close_all()
         web_server_file_tickets.revoke_all()
-        return {"signed_out": True, "sign_in_gate": bool(getattr(web.app.state, "auth_required", False)),
+        return {"signed_out": True, "serving": True,
+                "sign_in_gate": bool(getattr(web.app.state, "auth_required", False)),
                 "connections_closed": closed}
 
     server.private_handlers.update({

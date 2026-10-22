@@ -180,10 +180,47 @@ def test_status_with_no_gateway_running_and_the_webapp_off_says_how_to_turn_it_o
 
 
 def test_sign_out_replaces_the_browser_credential_on_the_running_gateway(world, capsys):
+    world["answers"]["webapp-sign-out"]["result"] = {
+        "signed_out": True, "serving": True, "sign_in_gate": False, "connections_closed": 3}
     assert launcher.cmd_webapp(_args(sign_out=True)) == 0
     assert world["calls"]["control"] == [(world["root"], "webapp-sign-out")]
     assert world["calls"]["ensure"] == []
-    assert "Signed out" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Signed out of every Webapp tab" in out and "closed 3 browser connections" in out
+
+
+def test_sign_out_behind_the_sign_in_gate_says_browsers_must_sign_in_again(world, capsys):
+    world["answers"]["webapp-sign-out"]["result"] = {
+        "signed_out": True, "serving": True, "sign_in_gate": True, "connections_closed": 1}
+    assert launcher.cmd_webapp(_args(sign_out=True)) == 0
+    out = capsys.readouterr().out
+    assert "closed 1 browser connection." in out and "must sign in again" in out
+
+
+def test_sign_out_on_a_gateway_not_serving_the_webapp_says_no_browser_was_connected(world, capsys):
+    world["answers"]["webapp-sign-out"]["result"] = {
+        "signed_out": True, "serving": False, "sign_in_gate": False, "connections_closed": 0}
+    assert launcher.cmd_webapp(_args(sign_out=True)) == 0
+    out = capsys.readouterr().out
+    assert "not serving the Webapp" in out and "Signed out of every" not in out
+
+
+def test_sign_out_on_a_gateway_that_does_not_report_what_it_closed_asks_for_a_restart(world, capsys):
+    # A gateway started before this Hermes signs out loopback tabs only.
+    world["answers"]["webapp-sign-out"]["result"] = {"signed_out": True}
+    assert launcher.cmd_webapp(_args(sign_out=True)) == 0
+    out = capsys.readouterr().out
+    assert launcher.RESTART_COMMAND in out and "Signed out of every" not in out
+
+
+def test_a_sign_out_the_gateway_refuses_is_reported_as_not_done(world, capsys):
+    from gateway.webapp_listener import TOKEN_PATH, browser_session_token
+    before = browser_session_token(world["root"])
+    world["answers"]["webapp-sign-out"] = {"ok": False, "error": "PermissionError: authenticated private request required"}
+    assert launcher.cmd_webapp(_args(sign_out=True)) == 1
+    out = capsys.readouterr().out
+    assert "authenticated private request required" in out and "Signed out" not in out
+    assert (world["root"] / TOKEN_PATH).read_text().strip() == before
 
 
 def test_a_gateway_that_will_not_start_is_reported(world, capsys):
@@ -202,7 +239,8 @@ def test_signing_out_with_no_gateway_running_still_replaces_the_stored_credentia
     world["answers"]["webapp-sign-out"] = launcher.GatewayUnreachable("no gateway")
     assert launcher.cmd_webapp(_args(sign_out=True)) == 0
     assert (world["root"] / TOKEN_PATH).read_text().strip() != before
-    assert "Signed out" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "No gateway is running" in out and "sign in again" in out
 
 
 def test_the_webapp_command_takes_one_action_at_a_time():

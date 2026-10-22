@@ -120,17 +120,38 @@ def _status(target: Path) -> int:
     return 0
 
 
+def _signed_out_summary(result: dict) -> str:
+    """What a gateway's ``webapp-sign-out`` answer says it did, for the user."""
+    if not result.get("serving", True):
+        return ("The gateway is not serving the Webapp, so no browser is connected to it. Replaced its stored "
+                "browser credential: every browser must sign in again once it serves the Webapp.")
+    if "connections_closed" not in result:
+        # A gateway started before this Hermes: it replaced the credential and closed the sockets that
+        # credential opened, but logins behind the sign-in gate outlive it.
+        return (f"Replaced the Webapp's browser credential. Restart the gateway ({RESTART_COMMAND}) to sign "
+                "out browsers that signed in with a password or an account too.")
+    closed = result["connections_closed"]
+    connections = f"closed {closed} browser connection{'' if closed == 1 else 's'}"
+    if result.get("sign_in_gate"):
+        return f"Signed out every browser: {connections}. Browsers behind sign-in must sign in again."
+    return f"Signed out of every Webapp tab: {connections}. Run hermes webapp to open it again."
+
+
 def _sign_out(target: Path) -> int:
     from gateway.webapp_listener import browser_session_token
     try:
         response = _control(target, "webapp-sign-out")
     except GatewayUnreachable:
-        response = {"ok": False}
-    if not response.get("ok"):
-        # No gateway is serving the Webapp right now: replace the stored credential so no tab can
-        # use the old one when it does.
+        # No gateway is running: replace the stored credential so no browser can use the old one
+        # when one starts. Behind the sign-in gate, logins bound to it end too.
         browser_session_token(target, rotate=True)
-    print("Signed out of every Webapp tab.")
+        print("No gateway is running for this profile. Replaced the stored Webapp credential: every browser "
+              "must sign in again when the gateway next serves the Webapp.")
+        return 0
+    if not response.get("ok"):
+        print(f"Nobody was signed out: {_refusal(response)}")
+        return 1
+    print(_signed_out_summary(response.get("result") or {}))
     return 0
 
 

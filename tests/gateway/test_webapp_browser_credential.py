@@ -4,7 +4,9 @@ The gateway keeps the browser credential in ``webapp/session-token`` inside its 
 survive a restart. On POSIX the folder is user-only (0700) and the file owner-read/write (0600). A
 folder found open to other users is closed again before the credential is used, and a credential
 file other users could read is treated as exposed: it is replaced, which signs the open tabs out,
-rather than reused. Windows homes keep their own ACL, so this applies to POSIX only.
+rather than reused. Windows homes keep their own ACL, so this applies to POSIX only. A gateway that
+is not serving the Webapp holds no browser credential in memory: signing out of it replaces the
+stored one, and its answer says that nothing else was closed.
 """
 import os
 import stat
@@ -58,3 +60,26 @@ def test_signing_out_closes_an_open_credential_folder_too(tmp_path):
 def test_a_private_credential_is_reused(tmp_path):
     first = webapp.browser_session_token(tmp_path)
     assert webapp.browser_session_token(tmp_path) == first
+
+
+@pytest.mark.parametrize("status", [
+    {"state": "off", "url": None, "reason": None},
+    {"state": "unavailable", "url": None, "reason": "could not listen on 127.0.0.1:9120 (in use)"},
+])
+def test_signing_out_of_a_gateway_not_serving_the_webapp_replaces_the_stored_credential(tmp_path, status):
+    """No browser reaches that gateway's Webapp, so replacing the stored credential is the whole
+    sign-out; it says so instead of claiming it closed anything."""
+    import json
+    from types import SimpleNamespace
+
+    from gateway.control_socket import GatewayControlServer
+
+    before = webapp.browser_session_token(tmp_path)
+    runner = SimpleNamespace(session_control_server=GatewayControlServer(tmp_path), webapp_status=status,
+                             session_api=SimpleNamespace(app=SimpleNamespace(web=None)))
+    webapp.register_control_verbs(runner, tmp_path)
+    raw = json.dumps({"protocol": 1, "verb": "webapp-sign-out", "id": 1, "params": {}}).encode()
+    answer = json.loads(runner.session_control_server.handle_request_line(raw, "same-user"))
+    assert answer["ok"], answer
+    assert answer["result"] == {"signed_out": True, "serving": False, "sign_in_gate": False, "connections_closed": 0}
+    assert webapp.browser_session_token(tmp_path) != before
