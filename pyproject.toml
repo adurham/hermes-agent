@@ -631,7 +631,8 @@ override-dependencies = [
   # equal to the direct dependency (uv overrides replace that requirement
   # too). PM's install-time `uv pip check` accepts the resulting mismatch
   # because uv.lock records this override (pm/pip_check.py).
-  # Remove this line when browser-harness allows Pillow 13.
+  # Remove this line when browser-harness allows Pillow 13. Plugin workspaces
+  # inherit [tool.uv], so a plugin requiring pillow<13 also gets 13.0.0.
   "Pillow==13.0.0",
   # misaki[en] (pulled by [kittentts]) lists spacy-curated-transformers.
   # The newest release that fits spacy 3.8 (2.x needs thinc 9), 0.3.1, caps

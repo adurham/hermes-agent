@@ -17,7 +17,7 @@ import sys
 import pytest
 
 from pm.package import InstallError
-from pm.pip_check import overridden_versions, unexpected_incompatibilities
+from pm.pip_check import override_requirements, overridden_versions, unexpected_incompatibilities
 from tests.pm._fixtures import _run, _wheel
 
 REPO_LOCK = Path(__file__).resolve().parents[2] / "uv.lock"
@@ -98,11 +98,17 @@ def test_unrecognised_report_is_never_read_as_clean(lock, report):
     assert unexpected_incompatibilities(report, lock) is None
 
 
+def test_overrides_round_trip_as_requirement_lines(lock):
+    assert override_requirements(lock) == ["Shared_Dep==2.0", "unused ; sys_platform == 'never'"]
+
+
 def test_stdlib_fallback_reads_the_real_lock_like_tomllib(monkeypatch):
     """The bootstrap runner may lack tomllib; its parser must agree on Hermes's own lock."""
     with_tomllib = overridden_versions(REPO_LOCK)
+    requirements = override_requirements(REPO_LOCK)
     monkeypatch.setitem(sys.modules, "tomllib", None)
     assert overridden_versions(REPO_LOCK) == with_tomllib
+    assert override_requirements(REPO_LOCK) == requirements
     assert with_tomllib, "Hermes's lock declares overrides; an empty read means the parser missed them"
 
 
@@ -143,11 +149,14 @@ def _overridden_project(tmp_path, overridden, extra_wheels=(), extra_dependencie
     return source, env
 
 
-def test_build_accepts_the_override_and_check_still_rejects_what_it_does_not_cover(overridden_project, tmp_path):
+@pytest.mark.parametrize("color", [{}, {"FORCE_COLOR": "1", "CLICOLOR_FORCE": "1"}], ids=["plain", "forced-color"])
+def test_build_accepts_the_override_and_check_still_rejects_what_it_does_not_cover(overridden_project, tmp_path, color):
     from pm import build_environment
     from pm.environment import managed_environment
 
     source, env = overridden_project
+    # Forced colour must not turn uv's report into ANSI the parser cannot read.
+    env = {**env, **color}
     out = tmp_path / "environment"
     executable = build_environment(explicit=True, source=source, python=Path(sys.executable), out=out,
                                    cache=tmp_path / "cache", env=env, offline=True, frozen=True)
@@ -167,6 +176,36 @@ def test_build_accepts_the_override_and_check_still_rejects_what_it_does_not_cov
     assert overridden_versions(stale) == {"shared-dep": {"1.0"}}
     with pytest.raises(InstallError, match="dependency validation failed"):
         environment.check(stale)
+
+
+def test_requirements_builds_from_an_overridden_lock_apply_its_overrides(overridden_project, tmp_path):
+    """Termux and the PM runtime install the lock's export with `uv pip install`, which
+    re-resolves: without the lock's overrides it rejects the graph the lock resolved."""
+    from pm import build_requirements_environment, export_requirements
+    from pm.environment import ResolutionConflict, managed_environment
+
+    source, env = overridden_project
+    wheels = tmp_path / "wheels"
+    exported = tmp_path / "requirements.txt"
+    export_requirements(source, exported, cache=tmp_path / "cache", env=env, explicit=True)
+    requirements = exported.read_text(encoding="utf-8").splitlines()
+    assert "shared-dep==2.0" in requirements
+
+    def build(out, **kwargs):
+        return build_requirements_environment(requirements, out=tmp_path / out, python=Path(sys.executable),
+                                              wheelhouse=wheels, cache=tmp_path / "cache", env=env,
+                                              offline=True, explicit=True, **kwargs)
+
+    with pytest.raises(ResolutionConflict, match="shared-dep"):
+        build("without-lock")
+    executable = build("with-lock", lock=source / "uv.lock")
+    assert _run([str(executable), "-I", "-c", "import shared_dep; print(shared_dep.__version__)"],
+                cwd=tmp_path, env=env) == "2.0"
+
+    environment = managed_environment(tmp_path / "wheelhouse-install", python=Path(sys.executable),
+                                      cache=tmp_path / "cache", env=env, offline=True, explicit=True)
+    environment.create()
+    environment.install_wheelhouse(source, wheels)
 
 
 def test_streamed_check_still_sees_failures_ahead_of_a_long_expected_report(tmp_path):

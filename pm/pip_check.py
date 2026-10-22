@@ -7,6 +7,9 @@ the overrides it applied (`[manifest] overrides`) and the version it resolved fo
 each, so a report line is expected exactly when it names an overridden
 dependency installed at the locked version. Everything else still fails.
 
+Installs from the lock's requirements export (`uv pip install`) re-resolve, so they
+need the same overrides back (override_requirements) to reach the locked graph.
+
 Stdlib only: the bootstrap runner loads pm.environment on a system python that
 may predate tomllib.
 """
@@ -28,26 +31,42 @@ def _normalize(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _parse_lock(text: str) -> tuple[list[str], list[tuple[str, str]]]:
-    """Override names and (name, version) packages from uv.lock text."""
+def _parse_lock(text: str) -> tuple[list[dict[str, str]], list[tuple[str, str]]]:
+    """Manifest overrides ({name, specifier?, marker?}) and (name, version) packages from uv.lock text."""
     try:
         import tomllib
     except ModuleNotFoundError:
         manifest = re.search(r"(?ms)^\[manifest\]\s*$(.*?)(?=^\[)", text + "\n[")
         overrides = re.search(r"(?ms)^overrides\s*=\s*\[(.*?)^\]", manifest.group(1)) if manifest else None
-        names = re.findall(r'\{\s*name\s*=\s*"([^"]+)"', overrides.group(1)) if overrides else []
+        tables = re.findall(r"\{([^}]*)\}", overrides.group(1)) if overrides else []
+        entries = [dict(re.findall(r'(\w+)\s*=\s*"([^"]*)"', table)) for table in tables]
         packages = re.findall(r'(?m)^\[\[package\]\]\s*\nname = "([^"]+)"\s*\nversion = "([^"]+)"', text)
-        return names, packages
+        return entries, packages
     data = tomllib.loads(text)
-    names = [override["name"] for override in data.get("manifest", {}).get("overrides", [])]
+    entries = data.get("manifest", {}).get("overrides", [])
     packages = [(package["name"], package["version"]) for package in data.get("package", []) if "version" in package]
-    return names, packages
+    return entries, packages
+
+
+def override_requirements(lock: Path) -> list[str]:
+    """The lock's manifest overrides as requirement lines for `uv pip install --overrides`."""
+    entries, _ = _parse_lock(lock.read_text(encoding="utf-8"))
+    lines = []
+    for entry in entries:
+        if set(entry) - {"name", "specifier", "marker"}:
+            # A source override (URL, path, git) has no requirement-line form here.
+            raise ValueError(f"unsupported uv.lock override: {entry}")
+        line = entry["name"] + entry.get("specifier", "")
+        if entry.get("marker"):
+            line += " ; " + entry["marker"]
+        lines.append(line)
+    return lines
 
 
 def overridden_versions(lock: Path) -> dict[str, set[str]]:
     """Locked versions of every dependency the lock's manifest overrides."""
-    names, packages = _parse_lock(lock.read_text(encoding="utf-8"))
-    overridden = {_normalize(name) for name in names}
+    entries, packages = _parse_lock(lock.read_text(encoding="utf-8"))
+    overridden = {_normalize(entry["name"]) for entry in entries}
     versions: dict[str, set[str]] = {}
     for name, version in packages:
         if _normalize(name) in overridden:
