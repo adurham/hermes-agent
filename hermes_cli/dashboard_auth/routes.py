@@ -30,6 +30,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from hermes_cli import webapp_sign_in
 from hermes_cli.dashboard_auth import (
     get_provider, list_providers, list_session_providers, native_flow)
 from hermes_cli.dashboard_auth import prefix as _prefix_mod
@@ -106,6 +107,7 @@ def _set_session(resp, request: Request, session: Session) -> None:
         resp, access_token=session.access_token, refresh_token=session.refresh_token,
         access_token_expires_in=access_token_max_age(session), use_https=detect_https(request),
         prefix=_prefix(request), provider=session.provider)
+    webapp_sign_in.bind(resp, request)
 
 
 def _bearer_payload(session: Session) -> dict[str, Any]:
@@ -559,7 +561,11 @@ async def api_auth_ws_ticket(request: Request):
     ``Authorization`` on the upgrade); one ticket per WS."""
     sess = _require_session(request)
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, issuer=sess.issuer)
+    # On the gateway's Webapp the ticket carries the login's sign-in binding, so the socket it opens
+    # closes at sign-out (``hermes_cli.webapp_sign_in``).
+    signed_in = webapp_sign_in.sign_in_of(request)
+    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, issuer=sess.issuer,
+                         extra={"sign_in": signed_in} if signed_in else None)
     _audit(request, AuditEvent.WS_TICKET_MINTED, provider=sess.provider, user_id=sess.user_id)
     return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
 

@@ -4,7 +4,9 @@ Engaged when ``app.state.auth_required is True``; a no-op otherwise (loopback
 mode is handled by the legacy ``_SESSION_TOKEN`` ``auth_middleware``). Allows
 the auth-bootstrap routes and static assets through unauthenticated; for
 everything else demands a bearer token or a valid session cookie and attaches
-the verified :class:`Session` to ``request.state.session``. HTML routes are
+the verified :class:`Session` to ``request.state.session``. On the gateway's
+Webapp a cookie session also needs its sign-in binding to the browser credential
+(``hermes_cli.webapp_sign_in``). HTML routes are
 redirected to ``/login``; ``/api/*`` routes get a 401 JSON envelope.
 """
 from __future__ import annotations
@@ -17,6 +19,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
+from hermes_cli import webapp_sign_in
 from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import ProviderError
@@ -152,6 +155,7 @@ async def _serve_refreshed(request: Request, call_next, new_session, provider: s
         response, access_token=new_session.access_token, refresh_token=new_session.refresh_token,
         access_token_expires_in=_expires_in_seconds(new_session), use_https=detect_https(request),
         prefix=prefix_from_request(request), provider=provider)
+    webapp_sign_in.renew(response, request)
     audit_log(AuditEvent.REFRESH_SUCCESS, provider=provider, user_id=new_session.user_id,
               ip=_client_ip(request))
     return response
@@ -209,6 +213,10 @@ async def gated_auth_middleware(
         # No session at all: try the silent portal bounce before /login.
         auto = _auto_sso_response(request)
         return auto if auto is not None else _unauth_response(request, reason="no_cookie")
+    if webapp_sign_in.applies(request) and not webapp_sign_in.check(request):
+        # A login on the gateway's Webapp holds only while the browser credential it was bound to is
+        # in use; signing out replaced it. The cookies stay: another surface on this host may use them.
+        return _unauth_response(request, reason="signed_out")
     # An absent AT with a present RT is the COMMON expiry case (the AT cookie's Max-Age tracks
     # the token TTL, so the browser evicts it first) — skip straight to refresh.
     session = None

@@ -73,7 +73,7 @@ def test_signing_out_closes_the_terminal_and_streams_the_session_token_opened(we
             client.websocket_connect(f"ws://localhost/api/events?channel=kept&ticket={other}") as kept:
         metadata(shell)
         assert _close_code(shell, 0.2) is None and _close_code(events, 0.2) is None
-        assert sign_out() == {"signed_out": True}
+        assert sign_out() == {"signed_out": True, "sign_in_gate": False, "connections_closed": 2}
         assert _close_code(shell) == 4401
         assert _close_code(events) == 4401
         assert _close_code(kept, 0.5) is None
@@ -83,7 +83,7 @@ def test_signing_out_closes_the_terminal_and_streams_the_session_token_opened(we
 
 def test_signing_out_with_no_open_tabs_still_replaces_the_credential(webapp, sign_out):
     client = webapp.client
-    assert sign_out() == {"signed_out": True}
+    assert sign_out() == {"signed_out": True, "sign_in_gate": False, "connections_closed": 0}
     assert client.post("/api/webapp/gateway-ticket", headers={"X-Hermes-Session-Token": _TOKEN}).status_code == 401
 
 

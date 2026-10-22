@@ -250,7 +250,8 @@ def register_control_verbs(runner, home) -> None:
     reaches them. ``webapp-launch`` returns a one-use launch link, so the credential crosses neither
     the socket nor a browser's argv; where such a link cannot be redeemed (macOS) it returns the
     private credential link instead, for the user to open by hand. ``webapp-sign-out`` replaces the
-    browser credential and closes the browser sockets it opened."""
+    browser credential, which also ends every login bound to it behind the sign-in gate, closes the
+    browser sockets those opened, and reports how many it closed."""
     server = getattr(runner, "session_control_server", None)
     if server is None:
         return
@@ -303,10 +304,13 @@ def register_control_verbs(runner, home) -> None:
         _, web = serving()
         web._SESSION_TOKEN = browser_session_token(home, rotate=True)
         # Every tab loses access at once: the sockets and media links the old credential opened end
-        # now, not when each tab next reconnects. Native clients never held it and stay connected.
-        web_session_sockets.close_all()
+        # now, not when each tab next reconnects. Behind the sign-in gate every login is bound to the
+        # credential (hermes_cli.webapp_sign_in), so those browsers are signed out and their sockets
+        # close too. Native clients never held it and stay connected.
+        closed = web_session_sockets.close_all()
         web_server_file_tickets.revoke_all()
-        return {"signed_out": True}
+        return {"signed_out": True, "sign_in_gate": bool(getattr(web.app.state, "auth_required", False)),
+                "connections_closed": closed}
 
     server.private_handlers.update({
         "webapp-status": webapp_status, "webapp-launch": webapp_launch, "webapp-sign-out": webapp_sign_out})

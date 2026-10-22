@@ -355,9 +355,9 @@ def _consume_ws_ticket(ws: WebSocket, reject, socket: Optional[str] = None, *,
     ``(reason, credential)`` once judged, or None when the upgrade presents none. An accepted ticket
     stamps the server-minted identity onto the socket; the client never supplies it through RPC
     params. *socket* is the route's socket (``web_session_sockets.ticket_refusal``); a socket a
-    session-token ticket opens is tracked so signing out closes it."""
+    session-token ticket, or a Webapp login's ticket, opens is tracked so signing out closes it."""
     from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
-    from hermes_cli.web_session_sockets import ticket_refusal, track
+    from hermes_cli.web_session_sockets import admitted_with, ticket_refusal, track
     protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
     if protocol_reason == "invalid":
         return "ticket_invalid", "ticket-subprotocol"
@@ -382,8 +382,8 @@ def _consume_ws_ticket(ws: WebSocket, reject, socket: Optional[str] = None, *,
     ws._hermes_auth_identity = {"user_id": info.get("user_id"), "provider": info.get("provider")}
     if info.get("issuer"):
         ws._hermes_auth_identity["issuer"] = info["issuer"]
-    if "session_token" in info:
-        track(ws, info["session_token"])
+    if (admitted := admitted_with(info)) is not None:
+        track(ws, admitted)
     if not protocol_ticket:
         return None, "ticket"
     # Select only the stable public protocol during accept. The ticket-bearing protocol is a

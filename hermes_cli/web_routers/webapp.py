@@ -165,24 +165,30 @@ def _ticket_principal(request: Request) -> tuple[dict, str | None]:
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None = None) -> str:
+def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None = None,
+                       sign_in: str | None = None) -> str:
     """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET`` or
-    ``HOST_TERMINAL_SOCKET``) as *identity*. Minted with *session_token*, it opens nothing once that
-    token is replaced, and the socket it opens closes when the browser signs out."""
+    ``HOST_TERMINAL_SOCKET``) as *identity*. Minted with *session_token*, or by a login whose
+    sign-in binding was checked against the credential with digest *sign_in*
+    (``hermes_cli.webapp_sign_in``), it opens nothing once that credential is replaced, and the
+    socket it opens closes when the browser signs out."""
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from hermes_cli.web_session_sockets import token_digest
 
     extra = {"socket": socket}
     if session_token is not None:
         extra["session_token"] = token_digest(session_token)
+    if sign_in is not None:
+        extra["sign_in"] = sign_in
     return mint_ticket(user_id=identity["user_id"], provider=identity["provider"],
                        issuer=identity.get("issuer", ""), extra=extra)
 
 
-def _socket_ticket_response(identity: dict, socket: str, session_token: str | None) -> JSONResponse:
+def _socket_ticket_response(request: Request, identity: dict, socket: str, session_token: str | None) -> JSONResponse:
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
+    from hermes_cli.webapp_sign_in import sign_in_of
 
-    ticket = mint_socket_ticket(identity, socket, session_token=session_token)
+    ticket = mint_socket_ticket(identity, socket, session_token=session_token, sign_in=sign_in_of(request))
     return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers={"Cache-Control": "no-store"})
 
 
@@ -200,7 +206,7 @@ async def issue_gateway_ticket(request: Request, profile: str | None = None):
         raise HTTPException(404, "Webapp gateway tickets are unavailable on this surface")
     identity, session_token = _ticket_principal(request)
     _cron_profile_home(profile)
-    return _socket_ticket_response(identity, GATEWAY_SOCKET, session_token)
+    return _socket_ticket_response(request, identity, GATEWAY_SOCKET, session_token)
 
 
 @router.post("/api/webapp/terminal-ticket")
@@ -210,7 +216,7 @@ async def issue_terminal_ticket(request: Request):
     if not policy(request.app.state).host_terminal:
         raise HTTPException(404, "The host terminal is unavailable on this surface")
     identity, session_token = _ticket_principal(request)
-    return _socket_ticket_response(identity, HOST_TERMINAL_SOCKET, session_token)
+    return _socket_ticket_response(request, identity, HOST_TERMINAL_SOCKET, session_token)
 
 
 @router.post("/webapp/window-session")

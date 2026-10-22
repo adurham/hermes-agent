@@ -6,10 +6,14 @@ request mints a one-use ticket for one socket instead: ``GATEWAY_SOCKET`` (``/ap
 the host terminal opens only with its own ticket. A ticket minted with the session token records that
 token's digest and opens nothing once the token is replaced.
 
+Behind the sign-in gate the Webapp's browsers sign in instead, and each login is bound to the session
+token (``hermes_cli.webapp_sign_in``): a ticket such a login mints records the token's digest as
+``sign_in`` and likewise opens nothing once the token is replaced.
+
 Every socket the session token admits, directly or through such a ticket, is tracked here until it
 ends, so ``close_all`` (run when ``hermes webapp --sign-out`` replaces the token) closes them all at
-once. Sockets admitted on any other credential (a signed-in login, a native client's grant) are never
-tracked.
+once. Sockets admitted on any other credential (a native client's grant, a dashboard login off the
+Webapp, a provider token presented directly) are never tracked.
 """
 from __future__ import annotations
 
@@ -52,7 +56,8 @@ def ticket_refusal(info: dict[str, Any], socket: Optional[str], *, auth_required
 
     A ticket named for a socket opens only that socket; an unnamed ticket opens any socket except
     one that takes only its own ticket. A ticket minted with the session token opens nothing behind
-    the sign-in gate, nor once that token is replaced.
+    the sign-in gate, nor once that token is replaced; one minted by a Webapp login opens nothing
+    once the token that login was bound to is replaced.
     """
     named = info.get("socket")
     if named != socket and (named is not None or socket in OWN_TICKET_SOCKETS):
@@ -60,7 +65,16 @@ def ticket_refusal(info: dict[str, Any], socket: Optional[str], *, auth_required
     minted_with = info.get("session_token")
     if minted_with is not None and (auth_required or not hmac.compare_digest(minted_with, current_digest())):
         return "ticket minted with a replaced session token"
+    signed_in = info.get("sign_in")
+    if signed_in is not None and not hmac.compare_digest(signed_in, current_digest()):
+        return "ticket minted by a login that has since been signed out"
     return None
+
+
+def admitted_with(info: dict[str, Any]) -> Optional[str]:
+    """The session token digest a redeemed ticket's socket is tracked under, or None when it was
+    minted with another credential."""
+    return info.get("session_token") or info.get("sign_in")
 
 
 def track(ws, admitted_with: str) -> None:
@@ -97,8 +111,9 @@ def _close_on(ws, loop: asyncio.AbstractEventLoop) -> bool:
 
 
 def close_all() -> int:
-    """Close every live socket the session token admitted, each on its own event loop. Safe from any
-    thread; returns how many were asked to close."""
+    """Close every live socket the session token admitted, directly, through a ticket or through a
+    login bound to it, each on its own event loop. Safe from any thread; returns how many were asked
+    to close."""
     with _lock:
         live = list(_live.values())
         _live.clear()
