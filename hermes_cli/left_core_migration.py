@@ -515,6 +515,7 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     from hermes_cli.config import atomic_config_write, read_user_config_raw
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
     path = home / "config.yaml"
+    created = not path.exists()
     config = read_user_config_raw(path)
     installed = plugin_present(feature.plugin, home) and not _marked(config, _INSTALLED_KEY, feature)
     if _scope_kept(config, feature) and not installed:
@@ -542,7 +543,19 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
         if feature.replaces_toolsets:
             _turn_off_replaced(config, feature)
         _mark(config, _SCOPED_KEY, feature)
+    if created:
+        _stamp_created(home, config)
     atomic_config_write(path, config)
+
+
+def _stamp_created(home: Path, config: dict) -> None:
+    """A missing config.yaml reads as the current schema, so no config step ever ran on this home: the file
+    the conversion creates carries that stamp (unstamped, every boot warns it predates the support floor)
+    and, as a plain save's first stamp does, the rows in use, or the stamp makes the home look post-split."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.config_version_stamp import note_first_stamp
+    config["_config_version"] = DEFAULT_CONFIG["_config_version"]
+    note_first_stamp(home, {}, config)
 
 
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False,

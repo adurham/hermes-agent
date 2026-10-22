@@ -283,6 +283,30 @@ def test_an_unversioned_camofox_home_is_converted(tmp_path, monkeypatch, config)
     assert _config(home)["agent"]["disabled_toolsets"] == ["browser"]
 
 
+def test_the_config_yaml_an_env_only_conversion_creates_is_stamped(tmp_path, monkeypatch, caplog):
+    """An env-only Camofox home has no config.yaml; the conversion creates one. It carries the current
+    stamp (a missing file read as current) and the row in use, so the next boot's config step neither
+    warns that the file predates the support floor nor makes the home look newer than the split."""
+    import logging
+
+    from hermes_cli import post_update
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    home = _home(tmp_path, env=_SPLIT_ENV)
+    assert _boot(home, monkeypatch) == ["camofox"]
+    with caplog.at_level(logging.WARNING):
+        assert post_update.step_migrate_config() == {"ok": True, "skipped": "up-to-date"}
+    assert "predates version" not in caplog.text
+    config = _config(home)
+    assert config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+    assert config["_left_core_used"] == ["camofox"]
+
+    monkeypatch.setattr(lcm, "_attempted", set())  # the next process
+    said = []
+    assert _boot(home, monkeypatch, said) == []
+    assert said == []
+
+
 def test_a_plain_save_stamping_an_unversioned_camofox_home_keeps_its_conversion(tmp_path, monkeypatch):
     """Any config write before the first left-core pass (`hermes config set`, a model switch) stamps an
     unstamped config.yaml at the current version without running the v52 step; the home still converts."""
