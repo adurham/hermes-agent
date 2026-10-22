@@ -57,6 +57,35 @@ def test_brackets_around_anything_but_an_ipv6_address_keep_the_webapp_off(tmp_pa
     assert settings.enabled is False and "webapp.host" in settings.reason
 
 
+@pytest.mark.parametrize(("host", "bind_host"), [
+    ("127.0.0.1", "127.0.0.1"),
+    ("'::1'", "::1"),
+    ("localhost", "localhost"),
+    ("LocalHost", "localhost"),
+    ("'0:0:0:0:0:0:0:1'", "::1"),
+    ("'0000::0001'", "::1"),
+    ("0.0.0.0", "0.0.0.0"),
+    ("'0:0:0:0:0:0:0:0'", "::"),
+    ("127.0.0.2", None),
+    ("127.255.255.254", None),
+    ("'::ffff:127.0.0.1'", None),
+])
+def test_the_webapp_and_its_sign_in_gate_agree_on_which_hosts_stay_on_this_machine(tmp_path, host, bind_host):
+    """A webapp.host the settings accept as local-only is one the listener's sign-in gate leaves
+    open, and only a wildcard bind needs sign-in. Another spelling of 127.0.0.1, ::1 or localhost
+    binds that address; any other loopback address, which the gate would treat as public, keeps the
+    Webapp off and says which hosts work."""
+    from hermes_cli.web_server_boundary import should_require_auth
+
+    settings = webapp.webapp_settings(_home(tmp_path, f"webapp:\n  enabled: true\n  host: {host}\n"))
+    if bind_host is None:
+        assert settings.bind == ("127.0.0.1", 0)
+        assert "webapp.host must be 127.0.0.1, ::1, localhost, 0.0.0.0 or ::" in settings.reason
+        return
+    assert settings.bind == (bind_host, webapp.DEFAULT_PORT)
+    assert should_require_auth(settings.host) is webapp._is_wildcard(settings.host)
+
+
 def _gateway(monkeypatch, tmp_path, config):
     """The runtime's listener start for *config*, with the listener itself replaced by a stand-in."""
     from gateway import run_api, run_runtime

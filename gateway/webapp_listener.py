@@ -2,8 +2,9 @@
 
 ``webapp.enabled`` in the gateway home's ``config.yaml`` turns it on. The gateway then binds its one
 listener to ``webapp.host``/``webapp.port`` (a stable port, so the browser's URL survives restarts) and
-its dashboard mount serves the Webapp bundle. ``webapp.host`` is a loopback address or a wildcard
-(``0.0.0.0``/``::``), and a wildcard bind is gated by dashboard sign-in like any non-loopback listener.
+its dashboard mount serves the Webapp bundle. ``webapp.host`` is ``127.0.0.1``, ``::1`` or ``localhost``
+(the binds the sign-in gate leaves local-only) or a wildcard (``0.0.0.0``/``::``), and a wildcard bind
+is gated by dashboard sign-in like any non-loopback listener.
 ``webapp.public_url`` is the address a reverse proxy or tunnel serves the Webapp at: it engages the same
 sign-in on a loopback bind, and ``dashboard.public_url`` (``hermes dashboard``'s) never applies here.
 Native clients (Desktop, the CLI, Ink) dial the loopback address this module derives from the bind.
@@ -98,9 +99,9 @@ def webapp_settings(home) -> WebappSettings:
         return off(f"webapp.enabled must be true or false in {path}")
     host = block.get("host", DEFAULT_HOST)
     port = block.get("port", DEFAULT_PORT)
-    host = _bare_host(host) if isinstance(host, str) else None
-    if host is None or not (_is_loopback(host) or _is_wildcard(host)):
-        return off(f"webapp.host must be a loopback address, 0.0.0.0 or :: in {path}")
+    host = _canonical_host(_bare_host(host)) if isinstance(host, str) else None
+    if host is None or not (_local_only(host) or _is_wildcard(host)):
+        return off(f"webapp.host must be 127.0.0.1, ::1, localhost, 0.0.0.0 or :: in {path}")
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         return off(f"webapp.port must be a port number (1-65535) in {path}")
     public_url = _public_url(block.get("public_url"))
@@ -117,6 +118,24 @@ def _bare_host(host: str) -> str:
     if host.startswith("[") and host.endswith("]") and ":" in host[1:-1] and "[" not in host[1:-1]:
         return host[1:-1]
     return host
+
+
+def _canonical_host(host: str) -> str:
+    """*host* spelled as the listener's sign-in gate compares it: an IP address in its short form
+    (``0:0:0:0:0:0:0:1`` is ``::1``), a name in lower case."""
+    try:
+        return ipaddress.ip_address(host).compressed
+    except ValueError:
+        return host.lower()
+
+
+def _local_only(host: str) -> bool:
+    """Whether the listener's sign-in gate leaves a bind to *host* open as local-only. It knows
+    ``127.0.0.1``, ``::1`` and ``localhost``; any other address, another loopback one included,
+    engages sign-in like a public bind."""
+    from hermes_cli.web_server_boundary import should_require_auth
+
+    return not should_require_auth(host)
 
 
 def _public_url(value) -> str | None:
@@ -136,6 +155,8 @@ def _public_url(value) -> str | None:
 
 
 def _is_loopback(host: str) -> bool:
+    """Whether native clients can dial *host* itself (any loopback address); which binds the
+    sign-in gate leaves open is :func:`_local_only`."""
     if host == "localhost":
         return True
     try:
