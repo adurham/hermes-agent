@@ -2861,8 +2861,11 @@ toolset with `hermes tools` (or `hermes tools disable browser [--platform NAME]`
 See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
 **Removed keys (migrated automatically).** `browser.backend` is gone — `browser_exec` is the
-only browser path. An old `backend: off` (quoted or not) is removed on update with a one-time notice to
-disable the `browser` toolset instead; any other value is removed silently.
+only browser path. An old `backend: off` (quoted or not) is removed with a one-time notice to
+disable the `browser` toolset instead, shown by `hermes update` or, when Hermes migrated the config as it
+started, as a warning at the start of the first session. Any other value is removed with a note naming it
+and what replaced it (`camofox`: the Camofox plugin, `local`: the packaged Chromium browser_exec launches,
+a cloud name: `browser.cloud_provider`).
 `snapshot_threshold`, `record_sessions`, `allow_unsafe_evaluate` and `restrict_evaluate`
 belonged to the removed built-in browser tools and no longer have an effect. The
 `browser.camofox.*` keys are read by the Camofox plugin (`hermes plugins install camofox`), not by core.
@@ -2872,7 +2875,8 @@ are copied from the profile's `.env` into the matching keys when those keys are 
 `AGENT_BROWSER_ARGS` → `chromium_args`, `AGENT_BROWSER_HEADED` → `headed`, `AGENT_BROWSER_ENGINE` → `engine`).
 `engine: auto` and `headed: false` count as unset, because the environment variable overrode them
 before. A relative `AGENT_BROWSER_PROFILE` was resolved against the working directory, so it is
-written as that absolute path (the working directory at update time).
+written as that absolute path (the working directory of the process that migrated the config), with a
+notice, shown the same way, naming the path it pinned so you can check your browser logins are there.
 
 ## Timezone
 
