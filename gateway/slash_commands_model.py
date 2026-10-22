@@ -662,7 +662,8 @@ class GatewayModelCommandsMixin:
                     if generation is not None and self._usage_limit_offer_is_stale(session_key, generation):
                         # A newer turn ran since the refusal: /retry would re-run that one, not the refused one.
                         return t("platform.discord.picker.choice_expired")
-                    return await self._accept_usage_limit_switch(event, value)
+                    return await self._accept_usage_limit_switch(
+                        event, value, offer=None if generation is None else (session_key, generation))
 
                 choices = [{"value": str(s["model"]),
                             "label": t("gateway.usage_limit.switch_choice", model=str(s.get("label") or s["model"]),
@@ -685,8 +686,10 @@ class GatewayModelCommandsMixin:
         except (AttributeError, KeyError, TypeError, ValueError):
             return False
 
-    async def _accept_usage_limit_switch(self, event: MessageEvent, model_id: str) -> str:
-        """The tap: switch this session to *model_id* on Nous, then re-send the refused message."""
+    async def _accept_usage_limit_switch(self, event: MessageEvent, model_id: str, *,
+                                         offer: Optional[tuple[str, int]] = None) -> str:
+        """The tap: switch this session to *model_id* on Nous, then re-send the refused message.
+        ``offer`` is the refused turn's ``(session_key, run_generation)``."""
         from gateway.run import _hermes_home
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
@@ -717,13 +720,15 @@ class GatewayModelCommandsMixin:
             # Only after the switch landed (an error reply leaves the override unchanged). Exactly a typed /retry from the same sender (rewinds the refused turn, runs the message
             # again, and the adapter delivers the reply). Called directly, the re-run's reply would be
             # returned to nobody.
-            self._track_background_task(self._dispatch_usage_limit_retry(event))
+            self._track_background_task(self._dispatch_usage_limit_retry(event, offer))
         return reply
 
-    async def _dispatch_usage_limit_retry(self, event: MessageEvent) -> None:
+    async def _dispatch_usage_limit_retry(self, event: MessageEvent, offer: Optional[tuple[str, int]] = None) -> None:
         from gateway.platforms.event import MessageType
         adapter = self._delivery_adapter_for(event.source)
-        if adapter is None:
+        # Re-checked here, with no await before the /retry: the switch awaited model resolution, and a
+        # turn that ran meanwhile is what /retry would rewind. The switch itself stands.
+        if adapter is None or (offer is not None and self._usage_limit_offer_is_stale(*offer)):
             return
         try:
             await adapter.handle_message(MessageEvent(

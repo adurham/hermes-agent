@@ -223,6 +223,44 @@ async def test_a_tap_after_a_newer_turn_changes_nothing():
     assert await on_choice("c1", "example/model-free:free") == "switched"
 
 
+@pytest.mark.asyncio
+async def test_a_turn_that_ran_during_the_switch_is_not_retried(monkeypatch):
+    """The tap was current, but a newer turn ran while the switch awaited model resolution: the
+    /retry would rewind that turn, so it is not sent."""
+    from gateway import slash_commands_model as scm
+
+    adapter = _ButtonAdapter()
+    adapter.handle_message = AsyncMock()
+    runner = _runner(adapter)
+    runner.config = SimpleNamespace(multiplex_profiles=False)
+    runner._session_model_overrides = {}
+    runner._normalize_source_for_session_key = lambda source: source
+    state = runner._session_state("chat:c1")
+    state.persistent.run_generation = 7
+
+    async def _perform(ctx, target, provider, source):
+        state.persistent.run_generation = 8  # another message's turn ran during this await
+        return SimpleNamespace(new_model=target), None
+
+    async def _commit(result, ctx, *, source, picker):
+        runner._session_model_overrides[ctx.session_key] = {"model": result.new_model, "provider": "nous"}
+        return "✓ Model switched to Model Free"
+
+    tasks = []
+    runner._perform_model_switch = _perform
+    runner._commit_model_switch = _commit
+    runner._track_background_task = lambda coro: tasks.append(coro)
+    monkeypatch.setattr(scm._ModelSwitchContext, "read_config", lambda self: None)
+    monkeypatch.setattr(scm._ModelSwitchContext, "apply_override", lambda self, override: None)
+
+    await runner._offer_usage_limit_switch(_event(), LIMIT, 7)
+    on_choice = runner._try_send_choice_picker.await_args.kwargs["on_choice_selected"]
+    assert (await on_choice("c1", "example/model-free:free")).startswith("✓")
+    for task in tasks:
+        await task
+    adapter.handle_message.assert_not_awaited()
+
+
 def test_a_messaging_refusal_points_at_the_portal_not_topup():
     from agent.plan_limits import portal_wording
     assert portal_wording("You've hit your daily limit · resets 15:56 · turn on Keep going in /topup") == (
