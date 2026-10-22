@@ -24,6 +24,10 @@ export interface WebAccessChange extends WebAccessStatus {
   restart_started: boolean
 }
 
+/** Start builds the Webapp bundle first, as `hermes webapp` does; that build waits up to 30 minutes
+ *  for another build of it. */
+const START_REQUEST_TIMEOUT_MS = 35 * 60_000
+
 export function getWebAccessStatus(): Promise<WebAccessStatus> {
   return hermesApi<WebAccessStatus>({ ...profileScoped(), path: '/api/webapp-access/status' })
 }
@@ -33,7 +37,8 @@ export function startWebAccess(mode: WebAccessMode, publicUrl?: string): Promise
     ...profileScoped(),
     body: { mode, public_url: publicUrl },
     method: 'POST',
-    path: '/api/webapp-access/start'
+    path: '/api/webapp-access/start',
+    timeoutMs: START_REQUEST_TIMEOUT_MS
   })
 }
 

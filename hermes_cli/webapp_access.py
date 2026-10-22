@@ -96,11 +96,10 @@ def _register_nous_sign_in(callback_url: str) -> None:
     save_env_value(_CLIENT_ID_ENV, str(result["client_id"]))
 
 
-def register(mode: str, public_url: Optional[str] = None) -> tuple[str, str]:
-    """Register Nous sign-in for *mode*; returns the ``(host, public_url)`` for :func:`serve`.
-
-    Re-registered on every start, so the callback follows a changed LAN address or URL. Writes no
-    config: it waits on the portal, so callers do it before taking the config lock."""
+def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, str, str]:
+    """Check that *mode* can be served and signed in to; returns ``(host, public_url, callback)``:
+    the bind host and the URL to pin for :func:`serve`, and the sign-in callback for
+    :func:`register`. Changes nothing, so Start runs it before any slow or lasting step."""
     if mode == "lan":
         address = lan_address()
         if address is None:
@@ -113,8 +112,28 @@ def register(mode: str, public_url: Optional[str] = None) -> tuple[str, str]:
         raise WebappAccessError(f"Unknown access mode {mode!r}.")
     if not nous_signed_in():
         raise WebappAccessError("Sign in to your Nous account under Providers first.")
-    _register_nous_sign_in(f"{url}/auth/callback")
-    return host, pinned
+    return host, pinned, f"{url}/auth/callback"
+
+
+def build_bundle() -> None:
+    """Build the Webapp bundle the gateway serves, with the function ``hermes webapp`` uses (it
+    reuses a current bundle), so Start never turns on a Webapp with nothing to serve."""
+    from hermes_cli.config import get_project_root
+    from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
+
+    try:
+        prepare_webapp_renderer(get_project_root())
+    except WebappBuildError as exc:
+        raise WebappAccessError(
+            f"{str(exc).rstrip('.')}. Run hermes webapp --build-only to see the full output, then start again.") from exc
+
+
+def register(callback_url: str) -> None:
+    """Register Nous sign-in for *callback_url*.
+
+    Re-registered on every start, so the callback follows a changed LAN address or URL. Writes no
+    config: it waits on the portal, so callers do it before taking the config lock."""
+    _register_nous_sign_in(callback_url)
 
 
 def serve(host: str, public_url: str) -> None:

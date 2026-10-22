@@ -49,6 +49,22 @@ def nous(monkeypatch):
     return callbacks
 
 
+@pytest.fixture(autouse=True)
+def builds(monkeypatch):
+    """Capture the Webapp bundle builds (``hermes_cli.webapp.prepare_webapp_renderer``) instead of
+    compiling the renderer."""
+    from hermes_cli import webapp
+
+    roots: list = []
+
+    def prepare(project_root, **_options):
+        roots.append(project_root)
+        return webapp.webapp_dist_dir(project_root)
+
+    monkeypatch.setattr(webapp, "prepare_webapp_renderer", prepare)
+    return roots
+
+
 def _config() -> dict:
     from hermes_cli.config import load_config
 
@@ -201,3 +217,33 @@ def test_web_access_answers_the_native_app_and_the_loopback_token_only():
     with pytest.raises(HTTPException) as refused:
         owner_on_this_machine(request(gated=True, native=False))
     assert refused.value.status_code == 403
+
+
+def test_start_builds_the_webapp_bundle_before_turning_it_on(client, restarts, nous, builds):
+    """Start builds the bundle the gateway serves (``apps/desktop/dist-webapp``) with the function
+    ``hermes webapp`` uses, reusing it when current, so it never reports a Webapp with nothing to
+    serve as running."""
+    from hermes_cli.config import get_project_root
+
+    assert client.post("/api/webapp-access/start", json={"mode": "lan"}).status_code == 200
+    assert builds == [get_project_root()]
+    assert restarts == ["turning on Web Access"]
+
+
+def test_a_failed_build_turns_nothing_on_and_says_how_to_build(client, restarts, nous, monkeypatch):
+    """When the bundle cannot be built, Start registers nothing with the Portal, writes nothing and
+    restarts nothing, and its error names the command that builds the bundle."""
+    from hermes_cli import webapp
+
+    def fail(_project_root, **_options):
+        raise webapp.WebappBuildError("Browser-hosted Desktop build failed: npm exited 1")
+
+    monkeypatch.setattr(webapp, "prepare_webapp_renderer", fail)
+
+    response = client.post("/api/webapp-access/start", json={"mode": "lan"})
+    assert response.status_code == 400
+    assert "npm exited 1" in response.json()["detail"]
+    assert "hermes webapp --build-only" in response.json()["detail"]
+    assert nous == []
+    assert restarts == []
+    assert not _config()["webapp"]["enabled"]

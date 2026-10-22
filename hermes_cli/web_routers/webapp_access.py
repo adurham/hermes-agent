@@ -81,7 +81,11 @@ async def webapp_access_status(profile: Optional[str] = None):
 @router.post("/api/webapp-access/start")
 async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
     profile = destructive_profile(profile, "POST /api/webapp-access/start")
-    host, public_url = await _scoped(profile, lambda _gateway: webapp_access.register(body.mode, body.public_url))
+    host, public_url, callback = await _scoped(
+        profile, lambda _gateway: webapp_access.plan(body.mode, body.public_url))
+    # The bundle before anything lasting: a failed build registers, writes and restarts nothing.
+    await _scoped(profile, lambda _gateway: webapp_access.build_bundle())
+    await _scoped(profile, lambda _gateway: webapp_access.register(callback))
 
     def _start(gateway):
         webapp_access.serve(host, public_url)
