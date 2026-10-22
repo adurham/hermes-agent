@@ -41,7 +41,7 @@ export function billingDialogCopy(block: BillingBlock): BillingDialogCopy {
 }
 
 export interface UsageLimitDialog extends BillingDialogCopy {
-  /** `config.set model` value for the switch (this session only), or null: open /topup instead. */
+  /** `/model` argument for the switch (this session only), or null: open /topup instead. */
   switchValue: null | string
 }
 

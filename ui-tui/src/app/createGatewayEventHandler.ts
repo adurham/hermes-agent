@@ -48,7 +48,11 @@ import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
-import { mutateCanonicalSession, openModelConfirmation } from './slash/canonicalSessionControls.js'
+import {
+  mutateCanonicalSession,
+  openModelConfirmation,
+  switchCanonicalModel
+} from './slash/canonicalSessionControls.js'
 import { loadSlashCatalog, refreshSlashCatalogOnSkillsChange } from './slashCatalog.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { markNextSubmitVoice } from './submissionCore.js'
@@ -740,7 +744,7 @@ function confirmBillingWall(
 /** A window plan's limit: one ask, switch to the plan's recommended model (this session) and re-send,
  *  or dismiss. The sentence is already in the transcript. */
 function confirmUsageLimit(usageLimit: UsageLimit, ctx: GatewayEventHandlerContext): void {
-  const { rpc } = ctx.gateway
+  const { gw, rpc } = ctx.gateway
   const { sys } = ctx.system
   const { submitRef } = ctx.submission
   const dialog = usageLimitDialog(usageLimit)
@@ -757,10 +761,21 @@ function confirmUsageLimit(usageLimit: UsageLimit, ctx: GatewayEventHandlerConte
           return
         }
 
+        const sid = getUiState().sid
+
+        // The owner refuses `config.set model`: a pick is the session-scoped `session.mutate`.
+        if (gw.isCanonical && sid) {
+          void switchCanonicalModel(gw, sid, dialog.switchValue, sys, () => submitRef.current('/retry')).catch(
+            (e: unknown) => sys(`error: ${rpcErrorMessage(e)}`)
+          )
+
+          return
+        }
+
         // Switch first; re-send only once it landed (or was queued for the next turn).
         void rpc<{ deferred?: boolean; value?: string }>('config.set', {
           key: 'model',
-          session_id: getUiState().sid,
+          session_id: sid,
           value: dialog.switchValue
         })
           .then(r => {
