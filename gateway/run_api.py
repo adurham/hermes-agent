@@ -30,6 +30,9 @@ _ACTIVE_RUNNER: Any = None
 # TIME_WAIT. POSIX allows that with SO_REUSEADDR; on Windows that option lets another process bind
 # the same port, and a rebind there does not wait on TIME_WAIT anyway.
 _REUSE_FIXED_PORT = os.name != "nt"
+# On Windows a fixed port is held for exclusive use instead: otherwise another process may bind it with
+# SO_REUSEADDR, and a more specific address (127.0.0.1 under a 0.0.0.0 bind) then takes its connections.
+_EXCLUSIVE_FIXED_PORT = os.name == "nt"
 
 
 @dataclass
@@ -168,10 +171,13 @@ class GatewayDashboardMount:
 
 
 def _listener_socket(family, kind, proto, port: int) -> socket.socket:
-    """The listener's unbound socket; a fixed *port* may bind again at once (``_REUSE_FIXED_PORT``)."""
+    """The listener's unbound socket; a fixed *port* may bind again at once (``_REUSE_FIXED_PORT``)
+    or is held exclusively (``_EXCLUSIVE_FIXED_PORT``)."""
     listener = socket.socket(family, kind, proto)
     if port and _REUSE_FIXED_PORT:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    elif port and _EXCLUSIVE_FIXED_PORT:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
     return listener
 
 
