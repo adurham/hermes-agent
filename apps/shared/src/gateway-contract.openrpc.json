@@ -27255,6 +27255,43 @@
         "title": "PingResult",
         "type": "object"
       },
+      "PlanGauge": {
+        "additionalProperties": false,
+        "description": "``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "used_bp": {
+            "title": "Used Bp",
+            "type": "integer"
+          },
+          "resets_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At Ms"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "used_bp"
+        ],
+        "title": "PlanGauge",
+        "type": "object"
+      },
       "PlanUsage": {
         "additionalProperties": false,
         "description": "``hermes_cli/model_picker_usage.py::PickerUsage.to_payload`` \u2014 usage-window plan chrome.",
@@ -38736,6 +38773,17 @@
             ],
             "default": null,
             "title": "Fallback Model"
+          },
+          "plan_gauge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanGauge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39277,6 +39325,17 @@
             ],
             "default": null,
             "title": "Fallback Model"
+          },
+          "plan_gauge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanGauge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "SessionUsagePayload",
@@ -39504,6 +39563,17 @@
             ],
             "default": null,
             "title": "Cost Status"
+          },
+          "plan_gauge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanGauge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "credits_lines": {
             "anyOf": [
@@ -45147,6 +45217,17 @@
             ],
             "default": null,
             "title": "Cost Status"
+          },
+          "plan_gauge": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanGauge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "Usage",

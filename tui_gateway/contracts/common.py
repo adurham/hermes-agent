@@ -16,6 +16,15 @@ class OpenModel(Result):
     model_config = Result.model_config | {"extra": "allow"}
 
 
+class PlanGauge(Result):
+    """``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar."""
+
+    id: str
+    label: str
+    used_bp: int
+    resets_at_ms: int | None = None
+
+
 class Usage(OpenModel):
     """``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``."""
 
@@ -42,6 +51,7 @@ class Usage(OpenModel):
     dev_credits_spent_micros: int | None = None
     cost_usd: float | None = None
     cost_status: str | None = None
+    plan_gauge: PlanGauge | None = None
 
 
 class ProjectRef(Result):

@@ -605,7 +605,15 @@ export interface Usage {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  plan_gauge?: PlanGauge | null
   [key: string]: unknown
+}
+/** ``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar. */
+export interface PlanGauge {
+  id: string
+  label: string
+  used_bp: number
+  resets_at_ms?: number | null
 }
 export interface McpServerStatus {
   name?: string
@@ -3510,6 +3518,7 @@ export interface SessionUsageResult {
   dev_credits_spent_micros?: number | null
   cost_usd?: number | null
   cost_status?: string | null
+  plan_gauge?: PlanGauge | null
   credits_lines?: string[] | null
   credits_usage_window?: boolean | null
   [key: string]: unknown
@@ -4711,6 +4720,7 @@ export interface SessionStats {
   model: string
   provider: string
   fallback_model?: string | null
+  plan_gauge?: PlanGauge | null
 }
 export interface RollbackSessionDiffParams {
   session_id: string
@@ -5755,6 +5765,7 @@ export interface SessionUsagePayload {
   model?: string | null
   provider?: string | null
   fallback_model?: string | null
+  plan_gauge?: PlanGauge | null
 }
 /** ``prompt_turn._invoke_agent`` ``_on_session_title`` hook. */
 export interface SessionTitlePayload {
