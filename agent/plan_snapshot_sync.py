@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -18,9 +19,11 @@ logger = logging.getLogger(__name__)
 _lock = threading.Lock()
 # Both keyed by Hermes home: one process can serve several profiles, each with its own account.
 _inflight: set[str] = set()
-# What the headers said the last time a refresh ran. The portal can trail the gateway by a few minutes
-# (usage is ingested in batches), so the same mismatch is refreshed once, not on every reply meanwhile.
-_last_attempt: dict[str, tuple[bool, frozenset[str]]] = {}
+# What the headers said the last time a refresh ran, and when. The portal can trail the gateway by a few
+# minutes (usage is ingested in batches), so the same mismatch is refreshed once per retry interval, not on
+# every reply meanwhile, and not never again: a refresh that read the portal before it caught up retries.
+_last_attempt: dict[str, tuple[tuple[bool, frozenset[str]], float]] = {}
+_RETRY_AFTER_S = 120.0
 
 
 def _profile_key() -> str:
@@ -56,7 +59,8 @@ def plan_snapshot_is_stale(state: Any, snapshot: Any) -> bool:
 def _refresh(plan_changed: bool, key: str) -> None:
     try:
         from hermes_cli.nous_account import get_nous_portal_account_info
-        get_nous_portal_account_info(force_fresh=True)
+        if getattr(get_nous_portal_account_info(force_fresh=True), "source", None) == "error":
+            _last_attempt.pop(key, None)  # a failed fetch (reported, not raised) is no attempt either
         if plan_changed:
             # The per-model levels (Large / Free tags) come with the catalog; refetch so they move with the plan.
             from hermes_cli.models_pricing import get_pricing_for_provider
@@ -91,11 +95,13 @@ def sync_plan_snapshot(state: Any) -> bool:
         on_window = bool(getattr(state, "is_usage_window", False))
         seen = (on_window, frozenset(g.id for g in getattr(state, "gauges", ()) if g.full))
         plan_changed = on_window != (_snapshot_full_ids(snapshot) is not None)
+        now = time.monotonic()
         with _lock:
-            if key in _inflight or _last_attempt.get(key) == seen:
+            last = _last_attempt.get(key)
+            if key in _inflight or (last is not None and last[0] == seen and now - last[1] < _RETRY_AFTER_S):
                 return False
             _inflight.add(key)
-            _last_attempt[key] = seen
+            _last_attempt[key] = (seen, now)
         # Under this profile's contextvars (its Hermes home and auth store), as the credits seed thread does.
         from agent.memory_provider import spawn_context_thread
         spawn_context_thread(_refresh, args=(plan_changed, key), name="nous-plan-sync").start()

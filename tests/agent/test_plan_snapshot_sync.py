@@ -77,6 +77,27 @@ def test_a_limit_change_refreshes_only_the_account(wired):
     assert calls == ["account"]
 
 
+def test_a_mismatch_the_refresh_did_not_fix_retries(wired, monkeypatch):
+    """A refresh that read a lagging portal (same stale gauges back) or a failed fetch reported as
+    ``source="error"`` must not end re-syncing for that mismatch: an error rearms at once, a lag after the
+    retry interval."""
+    import hermes_cli.nous_account as na
+    calls, box = wired
+    box["snap"] = ON_PLAN
+    monkeypatch.setattr(na, "get_nous_portal_account_info",
+                        lambda force_fresh=False: calls.append("account") or _snap(None, "error"))
+    assert sync.sync_plan_snapshot(_state(True, ["day"])) is True
+    assert sync.sync_plan_snapshot(_state(True, ["day"])) is True  # the fetch failed: try again
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(sync.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(na, "get_nous_portal_account_info", lambda force_fresh=False: calls.append("account") or ON_PLAN)
+    assert sync.sync_plan_snapshot(_state(True, ["day"])) is True
+    assert sync.sync_plan_snapshot(_state(True, ["day"])) is False  # the portal lags: not on every reply
+    clock["now"] += sync._RETRY_AFTER_S
+    assert sync.sync_plan_snapshot(_state(True, ["day"])) is True
+    assert calls == ["account"] * 4
+
+
 def test_back_in_step_rearms(wired):
     _calls, box = wired
     assert sync.sync_plan_snapshot(_state(True)) is True
