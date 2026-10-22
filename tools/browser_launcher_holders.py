@@ -14,15 +14,48 @@ missed. Siblings late-import the facade (its ``_pid_alive`` / ``_start_time`` ar
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
 _LOCK_NAME = ".holders.lock"
+
+
+# msvcrt.locking reports a lock another process holds as EDEADLOCK (LK_LOCK, after its own ~10 s of retries)
+# or EACCES (LK_NBLCK); anything else is a real error.
+_NT_LOCK_CONTENDED = frozenset({errno.EACCES, errno.EDEADLK, getattr(errno, "EDEADLOCK", errno.EDEADLK)})
+_NT_LOCK_TIMEOUT_S = 30.0
+
+
+def nt_lock_failure(exc: OSError, records: Path, expired: bool) -> Optional[OSError]:
+    """What a failed ``msvcrt.locking`` attempt means: None to retry (the lock is held and time is left), else
+    the error to raise. Bounded, so a lock leaked by a hung process fails the caller instead of hanging it."""
+    if exc.errno not in _NT_LOCK_CONTENDED:
+        return exc
+    if expired:
+        return TimeoutError(f"browser launcher state {records} stayed locked for {_NT_LOCK_TIMEOUT_S:.0f} s")
+    return None
+
+
+def _lock_nt(fd: int, records: Path) -> None:
+    import msvcrt
+    deadline = time.monotonic() + _NT_LOCK_TIMEOUT_S
+    while True:
+        try:
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            return
+        except OSError as exc:
+            failure = nt_lock_failure(exc, records, time.monotonic() >= deadline)
+            if failure is exc:
+                raise
+            if failure is not None:
+                raise failure from exc
 
 
 @contextlib.contextmanager
@@ -33,13 +66,7 @@ def records_lock(records: Path) -> Iterator[None]:
     fd = os.open(records / _LOCK_NAME, flags, 0o600)
     try:
         if os.name == "nt":
-            import msvcrt
-            while True:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # retries for ~10 s, then raises
-                    break
-                except OSError:
-                    continue
+            _lock_nt(fd, records)
         else:
             import fcntl  # windows-footgun: ok — the nt branch above
             fcntl.flock(fd, fcntl.LOCK_EX)
