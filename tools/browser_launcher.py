@@ -16,6 +16,7 @@ zygotes and renderers on SIGTERM, and killing a zygote first turns a clean exit 
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -370,9 +371,8 @@ def _spawn(argv: list[str], env: dict, user_data_dir: str) -> subprocess.Popen:
                                 **_spawn_kwargs())
 
 
-def _attach_running(key: str, user_data_dir: str, ephemeral: bool, home_key: str) -> Optional[LaunchedBrowser]:
-    if ephemeral:
-        return None
+def _attach_running(key: str, user_data_dir: str, home_key: str) -> Optional[LaunchedBrowser]:
+    """The live Chromium already on shared profile ``user_data_dir``, leased (caller holds its lock)."""
     running = running_instance(user_data_dir)
     if running is None:
         return None
@@ -383,10 +383,27 @@ def _attach_running(key: str, user_data_dir: str, ephemeral: bool, home_key: str
     record = _record_path(browser)
     if record is not None:
         from tools import browser_launcher_holders as holders
-        with holders.records_lock(record.parent):
-            _adopt_record(browser)
-            holders.write_lease(record, browser)  # its launcher's exit must not stop it under us
+        _adopt_record(browser)
+        holders.write_lease(record, browser)  # its launcher's exit must not stop it under us
     return browser
+
+
+def _start_shared(key: str, executable: str, udd: str, home_key: str,
+                  **launch) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
+    """Attach to, or launch, shared profile ``udd``'s one Chromium as ONE step under the profile's cross-process
+    lock: of two processes starting it at once the later waits, then attaches (a second launch would wipe the
+    first's DevToolsActivePort and lose Chromium's singleton), and an owner's stop cannot fall between the live
+    probe and the lease. A first launch holds the lock for its whole readiness wait; the reaper skips a busy
+    profile instead of waiting (:func:`_reap_shared_profiles`)."""
+    from tools import browser_launcher_holders as holders
+    state = _shared_state_dir(udd)
+    with holders.records_lock(state) if state is not None else contextlib.nullcontext():
+        attached = _attach_running(key, udd, home_key)
+        if attached is None:
+            return _launch_owned(key, executable, udd, ephemeral=False, home_key=home_key, **launch)
+        with _lock:  # registered under the lock too: another key's stop must see this key as its heir
+            _browsers[key] = attached
+    return attached, None
 
 
 def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir: Optional[str] = None,
@@ -419,14 +436,11 @@ def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir
                 return None, hint
             executable = _resolve_executable()
         udd = user_data_dir or _default_user_data_dir(key, home_key)
-        attached = _attach_running(key, udd, ephemeral, home_key)
-        if attached is not None:
-            with _lock:
-                _browsers[key] = attached
-            return attached, None
-        return _launch_owned(key, executable, udd, ephemeral=ephemeral, packaged=packaged, headed=headed,
-                             extra_args=extra_args, env=env, timeout=timeout, home_key=home_key,
-                             sandbox_bypass=sandbox_bypass)
+        launch = dict(packaged=packaged, headed=headed, extra_args=extra_args, env=env, timeout=timeout,
+                      sandbox_bypass=sandbox_bypass)
+        if ephemeral:  # a per-process dir: nobody else starts or attaches to it
+            return _launch_owned(key, executable, udd, ephemeral=True, home_key=home_key, **launch)
+        return _start_shared(key, executable, udd, home_key, **launch)
 
 
 def _key_lock(key: str) -> threading.Lock:
@@ -673,13 +687,18 @@ def _profile_digest(user_data_dir: str) -> str:
     return hashlib.sha256(os.path.realpath(user_data_dir).encode()).hexdigest()
 
 
+def _shared_state_dir(user_data_dir: str) -> Optional[Path]:
+    """Shared profile ``user_data_dir``'s own private dir (its launch record, leases and lock)."""
+    root = _private_dir(_shared_profiles_root())
+    return _private_dir(root / _profile_digest(user_data_dir)[:32]) if root is not None else None
+
+
 def _state_dir(browser: LaunchedBrowser) -> Optional[Path]:
     """The private dir holding ``browser``'s launch record, leases and lock: its home's records dir for a
     throwaway profile, else the shared profile's own dir under :func:`_shared_profiles_root`."""
     if browser.ephemeral:
         return _private_dir(_records_dir(browser.home_key))
-    root = _private_dir(_shared_profiles_root())
-    return _private_dir(root / _profile_digest(browser.user_data_dir)[:32]) if root is not None else None
+    return _shared_state_dir(browser.user_data_dir)
 
 
 def _record_path(browser: LaunchedBrowser) -> Optional[Path]:
@@ -829,14 +848,19 @@ def _reap_shared_profiles() -> int:
 
 
 def _reap_state_dir(records: Path, home: Optional[str]) -> int:
-    """Reap one launcher state dir (``home``'s records, or a shared profile's dir when ``home`` is None)."""
+    """Reap one launcher state dir (``home``'s records, or a shared profile's dir when ``home`` is None). A
+    shared profile whose lock is taken (a first launch holds it for up to its whole readiness wait) is left
+    to the next pass."""
     if not os.path.lexists(records):
         return 0
     if not _is_private_dir(records):
         logger.debug("browser: not reaping from %s: not a private directory of this user", records)
         return 0
     from tools import browser_launcher_holders as holders
-    with holders.records_lock(records):
+    with holders.records_lock(records, blocking=home is not None) as locked:
+        if not locked:
+            logger.debug("browser: %s is busy (a launch or stop holds it); reaping it next pass", records)
+            return 0
         try:
             paths = sorted(records.glob("*.json"))
         except OSError as exc:

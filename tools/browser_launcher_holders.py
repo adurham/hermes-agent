@@ -44,36 +44,45 @@ def nt_lock_failure(exc: OSError, records: Path, expired: bool) -> Optional[OSEr
     return None
 
 
-def _lock_nt(fd: int, records: Path) -> None:
+def _lock_nt(fd: int, records: Path, blocking: bool) -> bool:
     import msvcrt
     deadline = time.monotonic() + _NT_LOCK_TIMEOUT_S
     while True:
         try:
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-            return
+            msvcrt.locking(fd, msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK, 1)
+            return True
         except OSError as exc:
-            failure = nt_lock_failure(exc, records, time.monotonic() >= deadline)
+            failure = nt_lock_failure(exc, records, not blocking or time.monotonic() >= deadline)
             if failure is exc:
                 raise
+            if not blocking:
+                return False
             if failure is not None:
                 raise failure from exc
 
 
+def _lock_posix(fd: int, blocking: bool) -> bool:
+    import fcntl  # windows-footgun: ok — POSIX only (records_lock's nt branch takes _lock_nt)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
 @contextlib.contextmanager
-def records_lock(records: Path) -> Iterator[None]:
-    """Exclusive, cross-process lock on ``records`` (the profile's private launcher state dir). Never nested:
-    two locks on one file in one process are two open file descriptions, and the second would wait forever."""
+def records_lock(records: Path, *, blocking: bool = True) -> Iterator[bool]:
+    """Exclusive, cross-process lock on ``records`` (a private launcher state dir); yields whether it is held
+    (always True when ``blocking``). Never nested: two locks on one file in one process are two open file
+    descriptions, and the second would wait forever."""
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(records / _LOCK_NAME, flags, 0o600)
+    held = False
     try:
-        if os.name == "nt":
-            _lock_nt(fd, records)
-        else:
-            import fcntl  # windows-footgun: ok — the nt branch above
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        yield
+        held = _lock_nt(fd, records, blocking) if os.name == "nt" else _lock_posix(fd, blocking)
+        yield held
     finally:
-        if os.name == "nt":
+        if held and os.name == "nt":
             import msvcrt
             with contextlib.suppress(OSError):
                 msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
