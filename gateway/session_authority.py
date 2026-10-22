@@ -322,6 +322,8 @@ class SessionAuthority:
 
     async def attach(self, actor, ref):
         self.authorize(actor, ref, 'session:read')
+        from gateway.session_onboarding import keep_from_discard
+        await keep_from_discard(self, ref.session_id)  # a delete already past it answers not_found below
         from gateway.session_local_recovery import local_history, prepare_history
         prepared = await prepare_history(self, ref)  # the lineage read stays off the loop and the lock
         # A delete or eviction can land during that await: re-check, so it answers not_found, never a KeyError.

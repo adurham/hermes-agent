@@ -317,3 +317,41 @@ async def test_onboarding_start_from_a_client_that_is_not_the_local_desktop_chan
         assert desktop.authority.sessions == {}
     finally:
         await desktop.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_window_that_reopens_the_old_chat_while_a_fresh_launch_starts_keeps_it(tmp_path, monkeypatch):
+    """The start decided the old chat had no viewer, then another window resumed it before the delete
+    ran: the chat stays with its messages, and its run ends as replaced."""
+    from agent import onboarding_record
+    from gateway.session_controls import AuthorityConnection
+    turns = []
+    desktop = await _desktop(tmp_path, monkeypatch, turns)
+    first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
+    await async_wait_until(lambda: turns, timeout=10)
+    await _settled(desktop, first)
+    desktop.db.append_message(first, "user", "Call me Sid.")  # the answer the user gave the name card
+    messages = desktop.db.get_messages(first)
+    await desktop.connection.close()
+    identity = {"user_id": "uid:1", "provider": "local", "profile_id": desktop.authority.profile_id,
+                "instance_id": "owner"}
+    desktop.connection = AuthorityConnection(desktop.authority, desktop.transport, identity)
+    other = AuthorityConnection(desktop.authority, _Transport(), identity)
+    loop, resumed, record_new_run = asyncio.get_running_loop(), [], onboarding_record.start
+
+    def new_run_then_another_window_resumes(db, stored, facts):
+        record_new_run(db, stored, facts)
+        resumed.append(asyncio.run_coroutine_threadsafe(other.dispatch({
+            "jsonrpc": "2.0", "id": 9, "method": "session.resume", "params": {"session_id": first}}),
+            loop).result(timeout=20))
+    monkeypatch.setattr(onboarding_record, "start", new_run_then_another_window_resumes)
+    try:
+        second = (await _request(desktop, 2, "onboarding.start", {"fresh_launch": True}))["result"]
+        assert second["stored_session_id"] != first
+        assert "result" in resumed[0], resumed
+        assert desktop.db.get_messages(first) == messages
+        assert (onboarding_record.load(desktop.db, first) or {}).get("ended_by") == "replaced"
+        assert first in desktop.authority.sessions
+    finally:
+        await other.close()
+        await desktop.connection.close()
