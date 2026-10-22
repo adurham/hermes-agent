@@ -393,10 +393,12 @@ class ToolCallGuardrailController:
             if self._progress_since_failure.pop(signature, False):
                 self._exact_failure_counts.pop(signature, None)
             # A throttled call retried after its cooldown is the correct move, not a replay:
-            # keep it out of the exact-args streak (whose warning says "stop retrying unchanged").
+            # keep it out of the exact-args streak and never give it that streak's "stop retrying
+            # unchanged" warning, even after earlier ordinary failures with the same args.
             # It still counts per tool below, so same_tool_failure_halt bounds a dead endpoint.
+            throttled = is_rate_limited(result)
             exact_count = self._exact_failure_counts.get(signature, 0)
-            if not is_rate_limited(result):
+            if not throttled:
                 exact_count = self._exact_failure_counts[signature] = exact_count + 1
             same_count = self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._no_progress.pop(signature, None)
@@ -414,7 +416,7 @@ class ToolCallGuardrailController:
                 and same_count >= self.config.same_tool_failure_halt_after
             ):
                 return self._decide("halt", "same_tool_failure_halt", tool_name, same_count, signature)
-            if warnings and exact_count >= self.config.exact_failure_warn_after:
+            if warnings and not throttled and exact_count >= self.config.exact_failure_warn_after:
                 return self._decide("warn", "repeated_exact_failure_warning", tool_name, exact_count, signature)
             if warnings and same_count >= self.config.same_tool_failure_warn_after:
                 return self._decide(
