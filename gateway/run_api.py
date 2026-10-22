@@ -94,8 +94,11 @@ class GatewayDashboardMount:
             self.web.app.state.session_authority = None
             self.web.app.state.withhold_session_token = False
             if self._replaced_session_token is not None:
-                self.web.app.state.ui_surface = None
-                self.web.app.state.web_dist = None
+                # Removed, not cleared: a listener mounted next (the private one the gateway falls back
+                # to) must find the app as main's listener does, with no surface and no bundle set.
+                for name in ("ui_surface", "web_dist"):
+                    if hasattr(self.web.app.state, name):
+                        delattr(self.web.app.state, name)
                 self.web._SESSION_TOKEN, self._replaced_session_token = self._replaced_session_token, None
 
     async def ensure(self):

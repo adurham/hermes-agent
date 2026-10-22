@@ -1,0 +1,197 @@
+"""Start the gateway's listener the way the runtime does and report what native clients and a browser get.
+
+Run as ``python webapp_fallback_peer.py '<spec json>'`` with an isolated ``HERMES_HOME``. The spec:
+
+- ``webapp``: the ``webapp:`` block written to config.yaml, or null for none;
+- ``dashboard_public_url``: ``dashboard.public_url``, or null;
+- ``basic_auth``: register the bundled password sign-in provider (a throwaway account);
+- ``fail_after_mount``: the listener's startup fails once, after the dashboard mount is up, as when
+  another process starts listening on the port first;
+- ``hold_port``: another socket already listens on the Webapp's port;
+- ``built``: whether the Webapp bundle has its ``index.html``;
+- ``probe_host``: a Host header to send (a public hostname), or null.
+
+Writes ``receipt.json`` into ``HERMES_HOME`` (the gateway redirects stdout). No inference: the model points
+at a closed port and no turn is submitted.
+"""
+import asyncio
+import errno
+import json
+import os
+from pathlib import Path
+import socket
+import sys
+import traceback
+
+SEEDED_TOKEN = "seeded-browser-credential-from-an-earlier-0"  # 43 URL-safe characters
+INDEX = "<!doctype html><html><body>WEBAPP_BUNDLE</body></html>"
+
+
+def _config(spec) -> str:
+    document = {"gateway": {"multiplex_profiles": False},
+                "model": {"provider": "custom", "default": "no-inference", "base_url": "http://127.0.0.1:1/v1"},
+                "auxiliary": {"title_generation": {"enabled": False}}}
+    dashboard = {}
+    if spec.get("dashboard_public_url"):
+        dashboard["public_url"] = spec["dashboard_public_url"]
+    if spec.get("basic_auth"):
+        dashboard["basic_auth"] = {"username": "fixture-user", "password": "throwaway-fixture-password"}
+    if dashboard:
+        document["dashboard"] = dashboard
+    if spec.get("webapp") is not None:
+        document["webapp"] = spec["webapp"]
+    return json.dumps(document, indent=2)  # JSON is YAML
+
+
+def _fail_startup_once():
+    """The listener's first startup raises the error a lost listen() race gives."""
+    import uvicorn
+
+    real = uvicorn.Server.startup
+    calls = []
+
+    async def startup(self, sockets=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError(errno.EADDRINUSE, "Address already in use")
+        return await real(self, sockets=sockets)
+
+    uvicorn.Server.startup = startup
+
+
+async def _native_session_list(runner, origin) -> bool:
+    from websockets.asyncio.client import connect
+
+    from gateway.runtime_bootstrap import TicketStore
+    from tests.gateway.fixtures.local_recovery_probe import rpc
+
+    authority = runner.session_authority
+    runner.session_ticket_store = TicketStore("webapp-fallback", frozenset({authority.profile_id}))
+    ticket = runner.session_ticket_store.mint(
+        profile_id=authority.profile_id, subject="fixture-same-user", purpose="interactive")
+    url = origin.replace("http:", "ws:") + "/api/ws"
+    async with connect(url, subprotocols=["hermes-gateway-v1", f"hermes-gateway-ticket.{ticket}"]) as ws:
+        return "result" in await rpc(ws, "session.list")
+
+
+def _mounted_state(home):
+    web = sys.modules.get("hermes_cli.web_server")
+    if web is None:
+        return {"mounted": False}
+    state = web.app.state
+    try:
+        stored = (home / "webapp" / "session-token").read_text(encoding="utf-8").strip()
+    except OSError:
+        stored = ""
+    return {
+        "mounted": True,
+        "surface": getattr(state, "ui_surface", "<absent>"),
+        "web_dist_set": hasattr(state, "web_dist"),
+        "auth_required": bool(getattr(state, "auth_required", False)),
+        "trusted_public_hosts": sorted(getattr(state, "trusted_public_hosts", frozenset()) or ()),
+        "session_token_is_browser_credential": bool(stored) and web._SESSION_TOKEN == stored,
+    }
+
+
+def _redirect_uri(host_header: str):
+    """The sign-in callback the listener's dashboard routes hand an identity provider."""
+    from starlette.requests import Request
+
+    from hermes_cli import web_server
+    from hermes_cli.dashboard_auth.routes import _redirect_uri
+
+    scope = {"type": "http", "method": "GET", "path": "/auth/login", "raw_path": b"/auth/login",
+             "query_string": b"", "headers": [(b"host", host_header.encode())], "scheme": "http",
+             "server": (host_header.split(":")[0], 80), "root_path": "", "app": web_server.app,
+             "router": web_server.app.router}
+    return _redirect_uri(Request(scope))
+
+
+async def probe(spec):
+    import httpx
+
+    from gateway.control_socket import GatewayControlServer
+    from gateway.run import GatewayRunner
+    from gateway.run_api import stop_gateway_api
+    from gateway.run_runtime import start_gateway_runtime_api
+    from gateway.session_authority import initialize_session_authority
+    import hermes_cli.webapp
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(_config(spec), encoding="utf-8")
+    # Seeded user-only, as the gateway writes it: a stored token other users can read is replaced.
+    (home / "webapp").mkdir(mode=0o700, exist_ok=True)
+    (home / "webapp" / "session-token").write_text(SEEDED_TOKEN + "\n", encoding="utf-8")
+    (home / "webapp" / "session-token").chmod(0o600)
+    dist = home.parent / "dist-webapp"
+    dist.mkdir(exist_ok=True)
+    if spec.get("built", True):
+        (dist / "index.html").write_text(INDEX, encoding="utf-8")
+    hermes_cli.webapp.webapp_dist_dir = lambda _root: dist  # the bundle, without a build
+    if spec.get("fail_after_mount"):
+        _fail_startup_once()
+    rival = None
+    port = (spec.get("webapp") or {}).get("port")
+    if spec.get("hold_port"):
+        rival = socket.socket()
+        rival.bind(("127.0.0.1", port))
+        rival.listen()
+
+    runner = GatewayRunner()
+    runner.session_control_server = GatewayControlServer(home)  # verbs only; not listening
+    runner.session_runtime_descriptor = {"runtime_protocol": 1, "state": "ready", "capabilities": [],
+                                         "served_profiles": []}
+    await initialize_session_authority(runner, profile_id=str(home), instance_id="webapp-fallback")
+
+    def ask(verb):
+        raw = json.dumps({"protocol": 1, "verb": verb, "id": 1, "params": {}}).encode()
+        answer = json.loads(runner.session_control_server.handle_request_line(raw, "fixture-same-user"))
+        return answer.get("result") if answer.get("ok") else {"refused": answer.get("error")}
+
+    report = {"start_error": None}
+    try:
+        await start_gateway_runtime_api(runner)
+    except BaseException as exc:  # what would take the whole gateway down
+        report["start_error"] = f"{type(exc).__name__}: {exc}"
+        report["start_traceback"] = traceback.format_exc()
+        return report
+    api = runner.session_api
+    origin = api.api_origin
+    report.update(api_origin=origin, status=ask("webapp-status"), launch=ask("webapp-launch"))
+    try:
+        async with httpx.AsyncClient(base_url=origin, timeout=20) as client:
+            loopback = await client.get("/api/status")  # mounts the dashboard on the private listener
+            report["loopback_status_code"] = loopback.status_code
+            index = await client.get("/")
+            report["index"] = {"status": index.status_code, "body": index.text[:300]}
+            if spec.get("probe_host"):
+                foreign = await client.get("/api/status", headers={"Host": spec["probe_host"]})
+                report["probe_host_status_code"] = foreign.status_code
+                report["redirect_uri_for_probe_host"] = _redirect_uri(spec["probe_host"])
+            report["state"] = _mounted_state(home)
+            report["native_session_list"] = await _native_session_list(runner, origin)
+            if not spec.get("built", True):
+                (dist / "index.html").write_text(INDEX, encoding="utf-8")
+                report["status_once_built"] = ask("webapp-status")
+                built = await client.get("/")
+                report["index_once_built"] = {"status": built.status_code,
+                                              "is_webapp": "WEBAPP_BUNDLE" in built.text}
+        report["token_rotated"] = (home / "webapp" / "session-token").read_text().strip() != SEEDED_TOKEN
+    finally:
+        await stop_gateway_api(api)
+        if rival is not None:
+            rival.close()
+    return report
+
+
+def main():
+    receipt = Path(os.environ["HERMES_HOME"]) / "receipt.json"
+    try:
+        receipt.write_text(json.dumps(asyncio.run(probe(json.loads(sys.argv[1])))))
+    except BaseException:
+        receipt.write_text(json.dumps({"error": traceback.format_exc()}))
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
