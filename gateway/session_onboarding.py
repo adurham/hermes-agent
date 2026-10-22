@@ -179,14 +179,21 @@ def _discards(authority):
 
 
 async def keep_from_discard(authority, session_id):
-    """``attach``, before the viewer joins: a chat a fresh launch was about to delete is kept. Off the loop,
-    since a delete in flight holds the lock across its write."""
+    """``attach``, after its last other await: a chat a fresh launch was about to delete is kept. The
+    take-back itself never yields, so the viewer joins in the same loop step and a later start sees it
+    watched; a start claims only on the loop. A delete in flight holds the lock across its write, so
+    that wait runs off the loop and the take-back is retried after it."""
     discards = getattr(authority, '_onboarding_discards', None)
-    if discards is not None and session_id in discards.ids:
-        def keep():
+    while discards is not None and session_id in discards.ids:
+        if discards.lock.acquire(blocking=False):
+            discards.ids.discard(session_id)
+            discards.lock.release()
+            return
+
+        def delete_finished():
             with discards.lock:
-                discards.ids.discard(session_id)
-        await asyncio.to_thread(keep)
+                pass
+        await asyncio.to_thread(delete_finished)
 
 
 def _settle_runs(authority, request, plan, stored, discards):

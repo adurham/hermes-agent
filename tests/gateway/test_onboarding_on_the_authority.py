@@ -366,3 +366,59 @@ async def test_a_window_that_reopens_the_old_chat_while_a_fresh_launch_starts_ke
     finally:
         await other.close()
         await desktop.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_a_window_whose_resume_reads_history_while_a_fresh_launch_claims_the_chat_keeps_it(tmp_path, monkeypatch):
+    """Another window's resume was reading the old chat's history when the fresh launch's start found
+    the chat unwatched and claimed it; the resume finished before the delete ran. The chat stays with its
+    messages, and its run ends as replaced."""
+    import threading
+    from agent import onboarding_record
+    from gateway import session_local_recovery
+    from gateway.session_controls import AuthorityConnection
+    turns = []
+    desktop = await _desktop(tmp_path, monkeypatch, turns)
+    first = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
+    await async_wait_until(lambda: turns, timeout=10)
+    await _settled(desktop, first)
+    desktop.db.append_message(first, "user", "Call me Sid.")
+    messages = desktop.db.get_messages(first)
+    await desktop.connection.close()
+    identity = {"user_id": "uid:1", "provider": "local", "profile_id": desktop.authority.profile_id,
+                "instance_id": "owner"}
+    desktop.connection = AuthorityConnection(desktop.authority, desktop.transport, identity)
+    other = AuthorityConnection(desktop.authority, _Transport(), identity)
+    reading, release, resume_done = threading.Event(), threading.Event(), threading.Event()
+    read_rows = session_local_recovery.display_rows
+
+    def history_read_held_open(db, target):
+        if not reading.is_set():
+            reading.set()
+            assert release.wait(timeout=20), "the history read was never released"
+        return read_rows(db, target)
+
+    record_new_run = onboarding_record.start
+
+    def new_run_then_the_resume_finishes(db, stored, facts):
+        record_new_run(db, stored, facts)
+        release.set()
+        assert resume_done.wait(timeout=20), "the resume never finished"
+
+    monkeypatch.setattr(session_local_recovery, "display_rows", history_read_held_open)
+    resume = asyncio.ensure_future(other.dispatch({
+        "jsonrpc": "2.0", "id": 9, "method": "session.resume", "params": {"session_id": first}}))
+    resume.add_done_callback(lambda _: resume_done.set())
+    try:
+        await async_wait_until(reading.is_set, timeout=10)
+        monkeypatch.setattr(onboarding_record, "start", new_run_then_the_resume_finishes)
+        second = (await _request(desktop, 2, "onboarding.start", {"fresh_launch": True}))["result"]
+        assert second["stored_session_id"] != first
+        assert "result" in (await resume), resume.result()
+        assert desktop.db.get_messages(first) == messages
+        assert (onboarding_record.load(desktop.db, first) or {}).get("ended_by") == "replaced"
+        assert first in desktop.authority.sessions
+    finally:
+        release.set()
+        await other.close()
+        await desktop.connection.close()
