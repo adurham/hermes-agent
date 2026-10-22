@@ -418,3 +418,36 @@ def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypat
     receipt_current["value"] = True
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "two"], check=True)
     assert not reused()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_update_rebuilds_the_webapp_bundle_a_home_serves(tmp_path, monkeypatch, enabled):
+    """``hermes update`` rebuilds ``apps/desktop/dist-webapp``, with the function ``hermes webapp``
+    uses, when any home sharing this install has ``webapp.enabled``: that home's gateway serves the
+    bundle as built, so an old one would talk to the updated backend. Otherwise it is left alone."""
+    import hermes_cli.left_core_migration as left_core
+    import hermes_cli.main_install_repair as install_repair
+    import hermes_cli.memory_provider_migration as memory_migration
+    from hermes_cli import update_stage, webapp
+    from hermes_cli.source_build import build_update_products
+    from pm import plugins_state
+
+    root = tmp_path / "checkout"
+    (root / "apps/desktop/scripts").mkdir(parents=True)
+    (root / "apps/desktop/scripts/build-webapp.mjs").write_text("", encoding="utf-8")
+    homes = [tmp_path / "default", tmp_path / "profiles" / "work"]
+    for home in homes:
+        home.mkdir(parents=True)
+    (homes[1] / "config.yaml").write_text(f"webapp:\n  enabled: {str(enabled).lower()}\n", encoding="utf-8")
+    builds = []
+    monkeypatch.setattr(install_repair, "_install_configured_features_missing_deps", lambda _root: None)
+    monkeypatch.setattr(memory_migration, "migrate_all_homes", list)
+    monkeypatch.setattr(left_core, "migrate_all_homes", list)
+    monkeypatch.setattr(update_stage, "publish_stage", lambda _stage: None)
+    monkeypatch.setattr(plugins_state, "dependency_homes", lambda: homes)
+    monkeypatch.setattr(webapp, "prepare_webapp_renderer",
+                        lambda project_root, **options: builds.append((project_root, options)))
+
+    build_update_products(root, desktop=False)
+
+    assert builds == ([(root, {"explicit": True})] if enabled else [])
