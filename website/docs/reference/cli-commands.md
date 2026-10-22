@@ -1937,9 +1937,9 @@ use. See [Desktop App → Use the Desktop workspace from a browser](../user-guid
 
 The link is valid for 60 seconds and works once; the browser exchanges it for the sign-in it keeps in
 that tab. Only your own OS user can get a link: the gateway answers this command over its private
-control socket. On macOS, where a one-use link cannot be checked against your OS user, the command
-prints the gateway's private link instead and never passes it to a browser launcher. That link signs a
-browser in as you until you run `hermes webapp --sign-out`; keep it private.
+control socket. On macOS and the BSDs, where a one-use link cannot be checked against your OS user,
+the command prints the gateway's private link instead and never passes it to a browser launcher. That
+link signs a browser in as you until you run `hermes webapp --sign-out`; keep it private.
 
 For a named profile served by the default gateway (`hermes -p work webapp`), the Webapp opens on that
 profile.
@@ -1957,7 +1957,7 @@ is not built yet is the exception: this command builds it, and the running gatew
 | `--force-build` | Rebuild the bundle even when its build receipt is current |
 | `--build-only` | Build the bundle and stop |
 | `--status` | Show whether the running gateway serves the Webapp, and at which address |
-| `--sign-out` | Sign out every tab a link signed in; their connections close and each needs a new link |
+| `--sign-out` | Sign out every browser: tabs a link signed in need a new link, and behind the sign-in gate every login must sign in again. Their connections close and the command reports how many. Waits for a gateway that is still starting; with none running, replaces the stored credential |
 
 ```bash
 # Turn it on once, then open it

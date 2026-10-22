@@ -51,7 +51,10 @@ The server issues `session:operator` only at these existing trusted boundaries:
   session token is the browser-hosted Desktop's credential: the gateway keeps it in its home so
   Webapp tabs survive a restart, hands it out only through a one-use link minted for a same-user
   control-socket peer, and replaces it on `hermes webapp --sign-out` and whenever the Webapp's
-  listener fails to start, since its port then belongs to someone else.
+  listener fails to start, since its port then belongs to someone else. Behind the sign-in gate a
+  Webapp login is bound to that token by the `hermes_webapp_signin` cookie (HMAC-SHA256 of
+  `webapp-sign-in` keyed with the token), so replacing it ends those logins too; sign-out closes
+  every socket the token or a bound login opened, Bot Desktop viewers included.
 - The HTTP mutation gate, after a verified dashboard Session, native HTTP owner grant,
   or permitted legacy session token has been accepted.
 
