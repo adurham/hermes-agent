@@ -64,3 +64,24 @@ def test_the_private_listener_after_a_failed_webapp_mount_is_mains(lost_listen_r
     assert report["state"]["web_dist_set"] is False
     assert report["state"]["session_token_is_browser_credential"] is False
     assert "WEBAPP_BUNDLE" not in report["index"]["body"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="only Linux lets two SO_REUSEADDR sockets bind one address")
+def test_the_webapp_owns_its_port_before_mounting_the_dashboard(tmp_path):
+    # Two processes may both bind the Webapp's port under SO_REUSEADDR; the first to listen owns it.
+    # The gateway listens as soon as it binds, so a rival that tries while the dashboard mounts loses.
+    port = _free_port()
+    spec = {"webapp": {"enabled": True, "port": port}, "rival_listens_during_mount": True}
+    report = _run(tmp_path, spec)
+    assert report["start_error"] is None, report.get("start_traceback")
+    assert report["rival_listen"] == "EADDRINUSE"
+    assert report["status"] == {"state": "serving", "url": f"http://127.0.0.1:{port}", "reason": None}
+
+
+def test_the_webapp_port_accepts_connections_before_the_dashboard_mounts(tmp_path):
+    # Listening right after the bind settles who owns the port before the slow mount starts.
+    port = _free_port()
+    report = _run(tmp_path, {"webapp": {"enabled": True, "port": port}, "connect_during_mount": True})
+    assert report["start_error"] is None, report.get("start_traceback")
+    assert report["connect_during_mount"] == "connected"
+    assert report["status"]["state"] == "serving"

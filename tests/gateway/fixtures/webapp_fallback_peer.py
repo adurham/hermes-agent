@@ -8,6 +8,9 @@ Run as ``python webapp_fallback_peer.py '<spec json>'`` with an isolated ``HERME
 - ``fail_after_mount``: the listener's startup fails once, after the dashboard mount is up, as when
   another process starts listening on the port first;
 - ``hold_port``: another socket already listens on the Webapp's port;
+- ``rival_listens_during_mount``: another socket bound the port with SO_REUSEADDR before the gateway
+  and starts listening while the gateway mounts the dashboard (Linux only);
+- ``connect_during_mount``: a client connects to the Webapp's port while the dashboard mounts;
 - ``built``: whether the Webapp bundle has its ``index.html``;
 - ``probe_host``: a Host header to send (a public hostname), or null.
 
@@ -136,6 +139,34 @@ async def probe(spec):
         rival = socket.socket()
         rival.bind(("127.0.0.1", port))
         rival.listen()
+    if spec.get("rival_listens_during_mount") or spec.get("connect_during_mount"):
+        # Another process that bound the port with SO_REUSEADDR and starts listening while the
+        # gateway mounts the dashboard (Linux lets both bind until one listens); or a client that
+        # connects then.
+        from gateway.run_api import GatewayDashboardMount
+
+        if spec.get("rival_listens_during_mount"):
+            rival = socket.socket()
+            rival.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            rival.bind(("127.0.0.1", port))
+        real_ensure = GatewayDashboardMount.ensure
+
+        async def ensure(self):
+            if rival is not None and "rival_listen" not in report:
+                try:
+                    rival.listen()
+                    report["rival_listen"] = "listening"
+                except OSError as exc:
+                    report["rival_listen"] = errno.errorcode.get(exc.errno, str(exc.errno))
+            if spec.get("connect_during_mount") and "connect_during_mount" not in report:
+                try:
+                    socket.create_connection(("127.0.0.1", port), timeout=5).close()
+                    report["connect_during_mount"] = "connected"
+                except OSError as exc:
+                    report["connect_during_mount"] = errno.errorcode.get(exc.errno, str(exc))
+            return await real_ensure(self)
+
+        GatewayDashboardMount.ensure = ensure
 
     runner = GatewayRunner()
     runner.session_control_server = GatewayControlServer(home)  # verbs only; not listening

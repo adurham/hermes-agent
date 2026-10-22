@@ -195,6 +195,11 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     _ACTIVE_RUNNER = runner
     try:
         listener.bind(address)
+        if port:
+            # Under SO_REUSEADDR another socket may bind a fixed port too, and the first to listen
+            # owns it. Listening now settles that before the dashboard mounts, so a lost race falls
+            # back at once instead of after the mount is up.
+            listener.listen(config.backlog)
         listener.setblocking(False)
         state.bound_port = listener.getsockname()[1]
         # Loading the ASGI graph may fail too; it owns the same bound socket.
