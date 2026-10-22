@@ -482,7 +482,8 @@ def _mark(config: dict, key: str, feature: LeftCoreFeature) -> None:
 def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
     """Turn *feature*'s ``replaces_toolsets`` off in *config*: every saved platform list naming one names
     the plugin's toolsets instead (so turning core's toolset back on later stays that platform's choice),
-    and ``agent.disabled_toolsets`` takes them, which also covers platforms on a default composite."""
+    and ``agent.disabled_toolsets`` takes them, which also covers platforms on a default composite. One the
+    user had already disabled there disables the plugin's toolsets too (they are on by default)."""
     from agent.skill_utils import parse_config_string_list
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
     replaced = set(feature.replaces_toolsets)
@@ -494,7 +495,8 @@ def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
             saved[platform] = kept + [ts for ts in feature.toolsets if ts not in map(str, kept)]
     agent = config.get("agent") if isinstance(config.get("agent"), dict) else {}
     disabled = parse_config_string_list(agent.get("disabled_toolsets")) if agent.get("disabled_toolsets") else []
-    agent["disabled_toolsets"] = [*disabled, *sorted(replaced - set(disabled))]
+    turned_off = replaced if replaced.isdisjoint(disabled) else replaced | set(feature.toolsets)
+    agent["disabled_toolsets"] = [*disabled, *sorted(turned_off - set(disabled))]
     config["agent"] = agent
 
 

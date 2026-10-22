@@ -153,6 +153,23 @@ def test_browser_becomes_camofox_where_core_carried_it(tmp_path, monkeypatch):
         assert "camofox" not in enabled and "browser" not in enabled, platform
 
 
+def test_globally_disabled_browsing_stays_off_after_the_conversion(tmp_path, monkeypatch):
+    """A Camofox home that had turned browsing off everywhere (``agent.disabled_toolsets: [browser]``): its
+    saved lists still become ``camofox``, but the plugin's toolset is disabled too, so browsing stays off."""
+    home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n", config={
+        "_config_version": 51,
+        "platform_toolsets": {"cli": ["terminal", "browser", "file"]},
+        "agent": {"disabled_toolsets": ["browser"]},
+    })
+    assert lcm.migrate_home(home, install=_installer(home, []), say=lambda _m: None) == ["camofox"]
+    config = _config(home)
+    assert config["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
+    assert set(config["agent"]["disabled_toolsets"]) == {"browser", "camofox"}
+    for platform in ("cli", "telegram"):
+        enabled = _resolved(home, platform, monkeypatch)
+        assert "camofox" not in enabled and "browser" not in enabled, platform
+
+
 def test_conversion_is_never_undone(tmp_path):
     home = _home(tmp_path, env="CAMOFOX_URL=http://localhost:9377\n",
                  config={"_config_version": 51, "platform_toolsets": {"cli": ["terminal", "browser"]}})
