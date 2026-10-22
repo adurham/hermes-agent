@@ -117,6 +117,21 @@ def _wait_for_port(env, user, udd: str) -> tuple[int, str]:
     raise RuntimeError("Chromium in the sandbox did not expose a DevTools endpoint in time")
 
 
+def _spawn_owned(env, user, udd: str, key: str, published: dict) -> int:
+    """Launch the sandbox Chromium and own it under ``key`` from the moment it exists, before its port is
+    up, so stop_sandbox_browser can always stop it; returns its sandbox pid."""
+    from tools.bot_desktop import sandbox_host
+    from tools.environments import streams
+    exe = sandbox_host.chromium_executable(env)
+    if not exe:
+        raise RuntimeError("the sandbox image has no Chromium to run the browser")
+    child_env = {**published, "TMPDIR": streams.sandbox_temp_dir(env)}
+    pid = _start_chromium(env, user, exe, udd, child_env)
+    with _launched_lock:
+        _launched[key] = (env, pid)
+    return pid
+
+
 def create_sandbox_session(cache_key: str) -> dict[str, Any]:
     """Session on the sandbox Chromium (attach to the running one, else launch it)."""
     from tools.bot_desktop import sandbox_host
@@ -130,16 +145,16 @@ def create_sandbox_session(cache_key: str) -> dict[str, Any]:
     if found is None:
         # Launching blind would wipe a live browser's DevToolsActivePort and lose to its singleton.
         raise RuntimeError("the terminal backend's sandbox did not answer whether its browser is running; try again")
-    if found is GONE:
-        exe = sandbox_host.chromium_executable(env)
-        if not exe:
-            raise RuntimeError("the sandbox image has no Chromium to run the browser")
-        child_env = {**published, "TMPDIR": streams.sandbox_temp_dir(env)}
-        pid = _start_chromium(env, user, exe, udd, child_env)
-        found = _wait_for_port(env, user, udd)
-        with _launched_lock:
-            _launched[key] = (env, pid)
-    local_port = streams.forward_port(env, found[0], user=user)
+    spawned: Optional[int] = None
+    try:
+        if found is GONE:
+            spawned = _spawn_owned(env, user, udd, key, published)
+            found = _wait_for_port(env, user, udd)
+        local_port = streams.forward_port(env, found[0], user=user)
+    except BaseException:
+        if spawned is not None:  # a timeout, a failed forward or an interrupt must not leave it running unowned
+            _stop_launched(key)
+        raise
     info = _session_record("sb", f"ws://127.0.0.1:{local_port}{found[1]}", {"local": True, "sandbox": True})
     _confirm(info["cdp_url"], env, found[0])
     info.update(shared_profile=True, launcher_key=key)
@@ -187,8 +202,12 @@ def stop_sandbox_browser(session_info: dict[str, Any]) -> None:
     """SIGTERM the sandbox Chromium this process launched on the session's shared key (best effort; the
     sandbox's lifetime bounds it). The caller guarantees no other live session uses it."""
     _confirmed.pop(session_info.get("cdp_url") or "", None)
+    _stop_launched(session_info.get("launcher_key") or "")
+
+
+def _stop_launched(key: str) -> None:
     with _launched_lock:
-        launched = _launched.pop(session_info.get("launcher_key") or "", None)
+        launched = _launched.pop(key, None)
     if launched is None:
         return
     from tools.bot_desktop import sandbox_host

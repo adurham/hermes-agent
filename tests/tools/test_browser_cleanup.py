@@ -1,8 +1,10 @@
 """Regression tests for browser session cleanup (tools/browser_session_lifecycle.py)."""
 
+import contextlib
 import os
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -232,15 +234,25 @@ class _FakeSandbox:
         self.forward_failures = 0  # connections through the port forward that never reached Chromium
         self.browser_id = "abc"  # a relaunch on the same port gets a new /devtools/browser/<id>
         self.launches = 0
+        self.port_published = True  # False: the launched Chromium never writes DevToolsActivePort
+        self.timeouts = set()  # argv[0] of execs ("cat", "kill") whose docker/ssh exec times out
+        self.probe_barrier = None  # holds each liveness probe until a rival session probes too
 
     def run_in(self, env, argv, **kw):
         cmd = " ".join(argv)
+        if argv[0] in self.timeouts:
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
         if "setsid" in cmd:
             self.running = 4242
             self.launches += 1
             return _Completed(0, b"4242\n")
+        if argv[0] == "cat" and not self.port_published:
+            return _Completed(1)
         if "/dev/tcp" in cmd:
             self.probes += 1
+            if self.probe_barrier is not None:
+                with contextlib.suppress(threading.BrokenBarrierError):
+                    self.probe_barrier.wait(timeout=1.0)
             if self.probe_failure == "exit-255":
                 return _Completed(255)
             if self.probe_failure == "timeout":
@@ -343,6 +355,29 @@ class TestSandboxSharedBrowser:
         clock[0] += 60
         assert bs._backend_dead(info) is True
         assert fake_sandbox.probes == 1
+
+
+class TestSandboxBrowserOwnership:
+    """A sandbox Chromium this process spawned is always stoppable, and one container gets one launch."""
+
+    @pytest.mark.parametrize("failure", ["never-ready", "interrupted"])
+    def test_a_failed_start_stops_the_chromium_it_spawned(self, fake_sandbox, monkeypatch, failure):
+        from tools import browser_session_sandbox
+        from tools.browser_session_sandbox import create_sandbox_session
+        from tools.environments import streams
+        if failure == "never-ready":
+            fake_sandbox.port_published = False
+            monkeypatch.setattr(browser_session_sandbox, "_LAUNCH_TIMEOUT_S", 0.0)
+            expected = RuntimeError
+        else:
+            def interrupted(env, port, user=None):
+                raise KeyboardInterrupt
+            monkeypatch.setattr(streams, "forward_port", interrupted)
+            expected = KeyboardInterrupt
+        with pytest.raises(expected):
+            create_sandbox_session("task-A")
+        assert fake_sandbox.killed == [4242]
+        assert browser_session_sandbox._launched == {}
 
 
 class _FakeContainers:
