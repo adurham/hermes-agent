@@ -78,6 +78,26 @@ def _config_decided(key: str, current: Any) -> bool:
     return current not in (None, "", [])
 
 
+# browser.backend chose Browser Use mode (browser_exec) or the built-in browser_* tools; any value but
+# ``browser-use`` meant the built-in tools, on whatever browser the value named.
+_BACKEND_REASONS = {
+    "browser-use": "browser_exec (Browser Use mode) is the only browser now",
+    "agent-browser": "agent-browser left Hermes; browser_exec is the browser now",
+    "camofox": "Camofox is now the camofox plugin (`hermes plugins install camofox`)",
+    "local": "browser_exec launches Hermes's packaged Chromium itself (browser.cloud_provider: local)",
+    **dict.fromkeys(("browserbase", "firecrawl", "nous"),
+                    "a cloud browser is chosen with browser.cloud_provider (`hermes tools` → Browser Automation)"),
+}
+
+
+def _backend_removed_note(backend: Any) -> str:
+    value = "" if backend is None or isinstance(backend, bool) else str(backend).strip()
+    if not value:
+        return "removed browser.backend (unset)"
+    reason = _BACKEND_REASONS.get(value.lower(), "browser_exec is the only browser now")
+    return f"removed browser.backend: {value} — {reason}"
+
+
 def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     # 51 -> 52: agent-browser and the built-in browser_* tools left Hermes; browser_exec is the only
     # browser. `browser.backend` chose between the two, so it is dropped (an `off`, the opt-out of
@@ -108,7 +128,7 @@ def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
             messages.append(f"  ✓ {note[0].upper()}{note[1:]}.")
             notices.append(f"{note[0].upper()}{note[1:]}.")
         else:
-            added.append("removed browser.backend")
+            added.append(_backend_removed_note(backend))
     if "extension_control" in browser:
         browser.pop("extension_control")
         added.append("removed browser.extension_control")

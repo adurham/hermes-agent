@@ -94,6 +94,23 @@ def test_boot_migration_shows_the_off_notice_at_the_first_agent_start_once(tmp_p
     assert _boot_agents(home, monkeypatch, starts=1) == []
 
 
+@pytest.mark.parametrize(("value", "reason"), [
+    ("camofox", "Camofox is now the camofox plugin (`hermes plugins install camofox`)"),
+    ("local", "browser_exec launches Hermes's packaged Chromium itself"),
+    ("browserbase", "a cloud browser is chosen with browser.cloud_provider"),
+    ("Browser-Use", "browser_exec (Browser Use mode) is the only browser now"),
+    ("agent-browser", "agent-browser left Hermes"),
+    ("lynx", "browser_exec is the only browser now"),
+])
+def test_a_removed_backend_value_is_named_with_its_reason(tmp_path, monkeypatch, value, reason):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    home = _home(tmp_path / "a", {"_config_version": 51, "browser": {"backend": value}})
+    results = _migrate(home, quiet=True)
+    assert "backend" not in _raw(home)["browser"]
+    note = next(note for note in results["config_added"] if "browser.backend" in note)
+    assert note.startswith(f"removed browser.backend: {value} — ") and reason in note
+
+
 @pytest.mark.parametrize("value", ["", "browser-use", "Browser-Use", None])
 def test_other_backend_values_are_dropped_silently(tmp_path, monkeypatch, capsys, value):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
