@@ -64,6 +64,36 @@ def test_quiet_migration_hands_the_notice_to_the_caller(tmp_path, monkeypatch, c
                for note in results["config_added"])
 
 
+def _boot_agents(home, monkeypatch, starts: int) -> list[str]:
+    """Boot maintenance for *home* (its config step), then *starts* agents in that process; the startup
+    warnings they show."""
+    import hermes_cli.left_core_migration as lcm
+    from hermes_cli import post_update
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(lcm, "_attempted", set())
+    post_update.step_migrate_config()
+    said = []
+    for _ in range(starts):
+        lcm.recover_at_startup(say=said.append)
+    return said
+
+
+def test_boot_migration_shows_the_off_notice_at_the_first_agent_start_once(tmp_path, monkeypatch):
+    """Boot migrates 51 -> 52 quietly, before any agent exists: the ``off`` notice reaches the first
+    agent's startup warnings once, and neither a second agent nor the next boot repeats it."""
+    import hermes_cli.left_core_migration as lcm
+
+    monkeypatch.setattr(lcm, "_undelivered", {})
+    monkeypatch.delenv("CAMOFOX_URL", raising=False)
+    home = _home(tmp_path / "a", {"_config_version": 51, "browser": {"backend": "off"}})
+    said = _boot_agents(home, monkeypatch, starts=2)
+    assert _raw(home)["_config_version"] == 52
+    assert len(said) == 1
+    assert "browser_exec is the browser now" in said[0] and "`browser` toolset in `hermes tools`" in said[0]
+    assert _boot_agents(home, monkeypatch, starts=1) == []
+
+
 @pytest.mark.parametrize("value", ["", "browser-use", "Browser-Use", None])
 def test_other_backend_values_are_dropped_silently(tmp_path, monkeypatch, capsys, value):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))

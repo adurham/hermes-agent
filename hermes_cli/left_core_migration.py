@@ -412,6 +412,14 @@ _attempted: set[str] = set()
 _undelivered: dict[str, list[str]] = {}
 
 
+def defer_startup_notice(message: str) -> None:
+    """Hand *message* to the active home's first agent (its startup-warning sink, through
+    :func:`recover_at_startup`), once. For boot-path work that runs before any agent exists."""
+    from hermes_constants import get_hermes_home, hermes_home_key
+    logger.warning(message)
+    _undelivered.setdefault(hermes_home_key(Path(get_hermes_home())), []).append(message)
+
+
 def plugin_present(plugin: str, home: Path) -> bool:
     """Installed in *home* (enabled or not: a user who disabled it chose to). Read-only."""
     return (home / "plugins" / plugin).is_dir()
@@ -720,7 +728,8 @@ def _gateway_serves(home: Path) -> bool:
 def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[str]:
     """Agent/gateway start hook for the active home: one attempt per process per home. With *say*
     (an agent's startup-warning sink) outcomes are delivered now, together with any a gateway-start
-    attempt queued for this home; without it they are logged and queued for the home's first agent.
+    attempt or boot maintenance (:func:`defer_startup_notice`) queued for this home; without it they are
+    logged and queued for the home's first agent.
     Returns installed plugin names."""
     from agent.safe_worker_policy import worker_config_snapshot
     if worker_config_snapshot() is not None:

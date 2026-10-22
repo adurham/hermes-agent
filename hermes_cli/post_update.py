@@ -87,7 +87,7 @@ def step_migrate_config() -> dict:
 
     backups = _backup_existing((get_config_path(), get_env_path()))
     try:
-        migrate_config(interactive=False, quiet=True)
+        results = migrate_config(interactive=False, quiet=True)
     except Exception:
         _restore_backups(backups)
         raise
@@ -99,6 +99,10 @@ def step_migrate_config() -> dict:
             f"(still {post_ver}); restored: "
             + (", ".join(str(p) for p in restored) if restored else "none")
         )
+    # `hermes update` prints what a quiet migration changed; boot has no terminal to print it to.
+    from hermes_cli.left_core_migration import defer_startup_notice
+    for notice in results.get("notices") or ():
+        defer_startup_notice(notice)
     return {"ok": True, "migrated": f"{current_ver}->{latest_ver}"}
 
 

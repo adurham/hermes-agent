@@ -95,7 +95,8 @@ def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
 
     config = read_raw_config()
     browser = config.get("browser") if isinstance(config.get("browser"), dict) else {}
-    added, messages = [], []
+    # notices: what the user must read even when nothing prints this migration (boot runs it quietly).
+    added, messages, notices = [], [], []
     if "backend" in browser:
         backend = browser.pop("backend")
         # YAML 1.1 reads an unquoted `off` as False; core treated that as off too.
@@ -105,6 +106,7 @@ def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
                     "browser now; to turn browsing off, disable the `browser` toolset in `hermes tools`")
             added.append(note)
             messages.append(f"  ✓ {note[0].upper()}{note[1:]}.")
+            notices.append(f"{note[0].upper()}{note[1:]}.")
         else:
             added.append("removed browser.backend")
     if "extension_control" in browser:
@@ -129,6 +131,7 @@ def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
         config["browser"] = browser
     _persist_migration(config)
     results["config_added"].extend(added)
+    results.setdefault("notices", []).extend(notices)
     if not quiet:
         for message in messages:
             print(message)
