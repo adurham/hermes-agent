@@ -1,4 +1,4 @@
-"""Bound Webapp attachment ingestion before FastAPI parses/spools multipart."""
+"""Bound chat upload request bodies before FastAPI parses, spools or buffers them."""
 
 from __future__ import annotations
 
@@ -13,8 +13,22 @@ from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 # and boundaries without letting arbitrary extra parts consume unbounded disk.
 CHAT_FILE_BODY_MAX_BYTES = WEBAPP_ATTACHMENT_MAX_BYTES + 64 * 1024
 
+# Largest decoded image /api/chat/image-upload stores. The image arrives base64-encoded in a JSON
+# body, which FastAPI reads whole before the handler checks the image: bound the body to that
+# image's base64 length plus room for the JSON around it, so an oversized paste is never buffered.
+CHAT_IMAGE_MAX_BYTES = 25 * 1024 * 1024
+CHAT_IMAGE_BODY_MAX_BYTES = 4 * -(-CHAT_IMAGE_MAX_BYTES // 3) + 64 * 1024
+
+_BODY_MAX_BYTES = {
+    "/api/chat/file-upload": CHAT_FILE_BODY_MAX_BYTES,
+    "/api/chat/image-upload": CHAT_IMAGE_BODY_MAX_BYTES,
+}
+
 
 class ChatFileUploadLimitMiddleware:
+    """Refuse a chat file or image upload with 413 once its body passes the route's cap: at once
+    when Content-Length declares more, else at the first chunk past it."""
+
     def __init__(self, app: ASGIApp):
         self.app = app
 
@@ -23,7 +37,8 @@ class ChatFileUploadLimitMiddleware:
         root = scope.get("root_path", "")
         if root and path.startswith(root + "/"):
             path = path[len(root) :]
-        if scope["type"] != "http" or scope["method"] != "POST" or path != "/api/chat/file-upload":
+        body_max = _BODY_MAX_BYTES.get(path)
+        if scope["type"] != "http" or scope["method"] != "POST" or body_max is None:
             await self.app(scope, receive, send)
             return
 
@@ -32,7 +47,7 @@ class ChatFileUploadLimitMiddleware:
         if (
             length.isascii()
             and length.isdecimal()
-            and (len(length) > len(str(CHAT_FILE_BODY_MAX_BYTES)) or int(length) > CHAT_FILE_BODY_MAX_BYTES)
+            and (len(length) > len(str(body_max)) or int(length) > body_max)
         ):
             await rejection(scope, receive, send)
             return
@@ -45,12 +60,13 @@ class ChatFileUploadLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > CHAT_FILE_BODY_MAX_BYTES:
+                if received > body_max:
                     exceeded = True
                     # This exception is deliberate: Starlette's multipart parser
                     # closes *all* open spools on MultiPartException, unlike an
                     # HTTPException or cancellation. The rejected chunk never
-                    # reaches the parser. Request._get_form converts it to 400.
+                    # reaches the parser. Request._get_form converts it to 400,
+                    # as FastAPI does for a JSON body whose read fails.
                     raise MultiPartException("Upload request is too large")
             return message
 

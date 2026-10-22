@@ -129,6 +129,53 @@ def test_upload_bound_stops_parser_and_closes_spools(upload_app, monkeypatch, de
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("declared_length", [None, "1", "oversize"])
+def test_an_oversized_image_paste_is_refused_before_its_body_is_read(upload_app, monkeypatch, declared_length):
+    """``/api/chat/image-upload`` carries the image as a base64 data URL in a JSON body. A body
+    longer than the largest image it may carry is refused with 413 at once when Content-Length
+    declares it, and otherwise near the cap while it streams in: never read whole into memory,
+    and the handler never runs."""
+    from hermes_cli.web_routers import files
+
+    home, _spools = upload_app
+    # The base64 length of the largest image the route accepts, plus room for the JSON around it.
+    allowed = 4 * -(-files._CHAT_IMAGE_UPLOAD_MAX_BYTES // 3) + 1024 * 1024
+    prefix = b'{"filename": "huge.png", "data_url": "data:image/png;base64,'
+    received = 0
+
+    async def body():
+        nonlocal received
+        received += len(prefix)
+        yield prefix
+        while received <= allowed:
+            chunk = b"A" * (256 * 1024)
+            received += len(chunk)
+            yield chunk
+        pytest.fail("image upload body was read past its cap")
+        yield b'"}'
+
+    def handler_must_not_run(*args, **kwargs):
+        pytest.fail("image upload handler ran on an oversized body")
+
+    monkeypatch.setattr(files, "resolve_upload_home", handler_must_not_run)
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=web_server.app), base_url="https://dashboard.example.com"
+        ) as client:
+            token = await _login(client)
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            if declared_length is not None:
+                headers["Content-Length"] = str(2 * allowed) if declared_length == "oversize" else declared_length
+            response = await client.post("/api/chat/image-upload", content=body(), headers=headers)
+            assert response.status_code == 413, response.text
+            assert not (home / "cache").exists()
+            if declared_length == "oversize":
+                assert received == 0
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("chunked", [False, True])
 def test_exact_cap_file_survives_multipart_framing(upload_app, chunked):
     _, spools = upload_app
