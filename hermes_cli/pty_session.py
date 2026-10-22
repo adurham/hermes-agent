@@ -32,6 +32,10 @@ _VIEWER_SEND_TIMEOUT_SECONDS = 5.0
 # to cross a link this slow (about 256 kbit/s; 37 s for 1 MiB). A replay that misses that deadline is
 # halved for the session's next attach, so a viewer on a slower link redials onto a replay it carries.
 _REPLAY_MIN_BYTES_PER_SECOND = 32 * 1024
+# The smallest replay a timed-out one shrinks to, so a reattach always shows the newest output. Its
+# deadline needs about 3 KB/s, less than a link needs to keep up with live output (one frame per
+# stall limit).
+_REPLAY_FLOOR_BYTES = 16 * 1024
 # A viewer send that fails because the browser is gone: Starlette raises WebSocketDisconnect for a
 # dead transport and RuntimeError for a socket already closed; OSError covers the TimeoutError of
 # a viewer that stopped reading.
@@ -98,7 +102,9 @@ class PtySession:
         self.active_session_file = active_session_file
         self.active_session_cleanup: Optional[Callable[[], None]] = None
         self.buffer = RingBuffer(buffer_cap)
-        # How many of the buffer's newest bytes a reattach replays; a replay that times out halves it.
+        # How many of the buffer's newest bytes a reattach replays: a replay that times out halves it
+        # (down to _REPLAY_FLOOR_BYTES), one that arrives well inside its deadline doubles it back.
+        self._buffer_cap = buffer_cap
         self._replay_limit = buffer_cap
         self.alive = True
         self.attached = False
@@ -201,11 +207,16 @@ class PtySession:
         if self._ws is ws and self.alive:
             self.bridge.resize(cols=cols, rows=rows)
 
-    async def attach(self, ws, *, force_redraw: bool = False, initial_text: Optional[str] = None) -> bool:
+    async def attach(
+        self, ws, *, force_redraw: bool = False,
+        initial_text: Optional[str | Callable[[bool], str]] = None,
+    ) -> bool:
         """Attach a browser terminal and replay buffered PTY output.
 
         The TUI renders differentially on an alternate screen, so a bounded ANSI tail is not a
         self-contained frame; ``force_redraw`` asks the live TUI for one full redraw after replay.
+        ``initial_text`` is sent before the replay; given as a function, it is called with whether
+        the replay leaves out older output (dropped from the buffer or past the replay limit).
         """
         self._attach_generation += 1
         generation = self._attach_generation
@@ -231,14 +242,16 @@ class PtySession:
             self._viewer_lock.release()
         try:
             async with output_lock:
-                snap = self.buffer.snapshot()
-                snap = snap[len(snap) - min(len(snap), self._replay_limit):]
+                held = self.buffer.snapshot()
+                snap = held[len(held) - min(len(held), self._replay_limit):]
+                trimmed = self.buffer.truncated or len(snap) < len(held)
                 if old_ws is not ws:
                     await _close_ws(old_ws, WS_CLOSE_SUPERSEDED)
                 if self._ws is not ws:
                     return False
                 if initial_text is not None:
-                    await asyncio.wait_for(ws.send_text(initial_text), timeout=_VIEWER_SEND_TIMEOUT_SECONDS)
+                    text = initial_text(trimmed) if callable(initial_text) else initial_text
+                    await asyncio.wait_for(ws.send_text(text), timeout=_VIEWER_SEND_TIMEOUT_SECONDS)
                 if self._ws is not ws:
                     return False
                 # Metadata-bearing host clients treat exactly the next binary
@@ -246,11 +259,16 @@ class PtySession:
                 # frame never loses terminal-query replies on an empty history.
                 if snap or initial_text is not None:
                     replay_timeout = _VIEWER_SEND_TIMEOUT_SECONDS + len(snap) / _REPLAY_MIN_BYTES_PER_SECOND
+                    started = time.monotonic()
                     try:
                         await asyncio.wait_for(ws.send_bytes(snap), timeout=replay_timeout)
                     except TimeoutError:
-                        self._replay_limit = len(snap) // 2
+                        self._replay_limit = max(_REPLAY_FLOOR_BYTES, len(snap) // 2)
                         raise
+                    # A replay that arrived within half its deadline means twice as much fits in
+                    # the larger replay's deadline, so a limit an earlier slow viewer cut grows back.
+                    if len(snap) < len(held) and time.monotonic() - started <= replay_timeout / 2:
+                        self._replay_limit = min(self._buffer_cap, 2 * len(snap))
         except _VIEWER_SEND_ERRORS:
             self.detach(ws)
             return False

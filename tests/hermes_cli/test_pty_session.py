@@ -238,6 +238,7 @@ async def test_redials_over_a_link_too_slow_for_the_whole_replay_reach_a_replay_
 
     monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    monkeypatch.setattr(pty_session, "_REPLAY_FLOOR_BYTES", 1024, raising=False)
     history = bytes(range(256)) * 256
     session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
     session.buffer.append(history)
@@ -257,6 +258,101 @@ async def test_redials_over_a_link_too_slow_for_the_whole_replay_reach_a_replay_
     replay = viewer.sent[0][1]
     assert 0 < len(replay) <= 4096 and history.endswith(replay)
     assert session._ws is viewer and viewer.close_code is None
+
+
+@pytest.mark.asyncio
+async def test_a_shrunk_replay_keeps_a_floor_and_grows_back_once_viewers_keep_up(monkeypatch):
+    """Replays that keep timing out shrink the next one only down to a floor, so a reattach still
+    shows the newest output instead of nothing. Replays that arrive well inside their deadline grow
+    it back, so a viewer on a good link gets the whole retained history again after a few
+    reattaches."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySession
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    monkeypatch.setattr(pty_session, "_REPLAY_FLOOR_BYTES", 1024, raising=False)
+    history = bytes(range(256)) * 256
+    session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
+    session.buffer.append(history)
+
+    for _stall in range(20):
+        await session.attach(NarrowLinkWS(0))  # never finishes a frame of output
+
+    replays = []
+    for _reattach in range(10):
+        viewer = FakeWS()
+        assert await session.attach(viewer)
+        replays.append(viewer.sent[0][1] if viewer.sent else b"")
+        if replays[-1] == history:
+            break
+    assert replays[0] == history[-1024:]
+    assert all(history.endswith(replay) for replay in replays)
+    assert [len(replay) for replay in replays] == sorted(len(replay) for replay in replays)
+    assert replays[-1] == history
+
+
+@pytest.mark.asyncio
+async def test_a_reattach_that_replays_part_of_the_history_says_output_was_trimmed(tmp_path, monkeypatch):
+    """The host terminal's metadata frame tells the browser ``truncated: true`` whenever the replay
+    after it leaves out older output, including output the session still holds but a shrunk replay
+    omits, so the "output was trimmed" notice shows. A replay of everything says ``false``."""
+    import json
+    import secrets
+    from types import SimpleNamespace
+
+    from hermes_cli import pty_session
+    from hermes_cli.web_host_terminal import META_PREFIX
+    from hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry, host_terminal
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    history = bytes(range(256)) * 256
+    registry = HostTerminalRegistry()
+    token = secrets.token_urlsafe(32)
+    session = pty_session.PtySession(token, FakeBridge([]), buffer_cap=1024 * 1024, read_timeout=0.01)
+    session.buffer.append(history)
+    registry._sessions[token] = session
+    registry.owners[token] = HostOwner(("local", "owner"), home.resolve(), "sh", str(tmp_path))
+    app = SimpleNamespace(state=SimpleNamespace(host_terminals=registry))
+
+    class Viewer(NarrowLinkWS):
+        """A browser tab reattaching to the shell, then closing."""
+
+        def __init__(self, capacity):
+            super().__init__(capacity)
+            self.app = app
+            self.query_params = {"attach": token}
+            self._hermes_auth_identity = {"user_id": "owner", "provider": "local"}
+
+        async def receive(self):
+            return {"type": "websocket.disconnect"}
+
+    def metadata(viewer):
+        kind, text = viewer.sent[0]
+        assert kind == "text" and text.startswith(META_PREFIX)
+        return json.loads(text.removeprefix(META_PREFIX))
+
+    try:
+        stalled = Viewer(0)
+        await host_terminal(stalled)
+        assert stalled.close_code == 1001 and metadata(stalled)["truncated"] is False
+
+        partial = Viewer(len(history))
+        await host_terminal(partial)
+        kind, replay = partial.sent[1]
+        assert kind == "bytes" and len(replay) < len(history) and history.endswith(replay)
+        assert metadata(partial)["truncated"] is True
+
+        whole = Viewer(len(history))
+        await host_terminal(whole)
+        assert whole.sent[1] == ("bytes", history)
+        assert metadata(whole)["truncated"] is False
+    finally:
+        await registry.close_all()
 
 
 @pytest.mark.asyncio

@@ -219,11 +219,11 @@ async def host_terminal_lifespan(app):
         await registry.close_all()
 
 
-def _metadata(token, owner, session, registry, *, reconnected):
+def _metadata(token, owner, registry, *, reconnected, truncated):
     return META_PREFIX + json.dumps({
         "shell": owner.shell, "terminalId": token, "cwd": owner.cwd,
         "reconnected": reconnected, "retentionSeconds": registry._ttl,
-        "truncated": session.buffer.truncated,
+        "truncated": truncated,
     }, separators=(",", ":"))
 
 
@@ -358,8 +358,12 @@ async def host_terminal(ws: WebSocket) -> None:
             return
         session, owner = admitted
         token = session.key
-        initial_text = _metadata(
-            token, owner, session, registry, reconnected=ws.query_params.get("attach") is not None)
+        reconnected = ws.query_params.get("attach") is not None
+
+        def initial_text(truncated: bool) -> str:
+            # Says whether the replay that follows leaves out older output.
+            return _metadata(token, owner, registry, reconnected=reconnected, truncated=truncated)
+
         if not await session.attach(ws, initial_text=initial_text):
             if session._ws is None:
                 await _close_ws(ws, WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON)
