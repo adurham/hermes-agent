@@ -215,3 +215,30 @@ async def test_the_first_local_desktop_connection_runs_the_desktop_boot_work(tmp
     finally:
         await conn.connection.close()
         free_tier_bootstrap.reset_for_tests()
+
+
+def test_the_desktop_boot_work_runs_for_the_launch_profile_whichever_profile_connects_first(tmp_path, monkeypatch):
+    """The setup record and the first-install latch belong to the launch profile. On a multiplexing
+    gateway a Desktop connection runs in its own profile's scope, so a first connection for another
+    profile must not build the launch record from that profile's home."""
+    from agent import secret_scope
+    from hermes_cli import free_tier_bootstrap, onboarding_run
+    from hermes_constants import get_hermes_home, get_process_hermes_home, set_hermes_home_override
+    from tui_gateway import server
+    launch = get_process_hermes_home()
+    secondary = tmp_path / "profiles" / "work"
+    secondary.mkdir(parents=True)
+    seen = []
+    monkeypatch.setattr(onboarding_run, "latch_first_install", lambda: seen.append(get_hermes_home()))
+    monkeypatch.setattr(server, "_local_desktop_boot_started", False)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    free_tier_bootstrap.reset_for_tests()
+    token = set_hermes_home_override(secondary)
+    try:
+        server.begin_local_desktop_boot()
+        assert free_tier_bootstrap.wait_for_record(timeout=20) is not None
+    finally:
+        from hermes_constants import reset_hermes_home_override
+        reset_hermes_home_override(token)
+        free_tier_bootstrap.reset_for_tests()
+    assert seen == [launch]

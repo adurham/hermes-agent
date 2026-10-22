@@ -115,12 +115,14 @@ def begin_local_desktop_boot() -> None:
     global _local_desktop_boot_started
     from hermes_cli import free_tier_bootstrap
     from hermes_cli.process_identity import serving_local_desktop
+    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
     with _local_desktop_boot_lock:
         if _local_desktop_boot_started:
             return
         _local_desktop_boot_started = True
-    with serving_local_desktop(True):  # the threads below copy this context
+    # The record and the latch are the launch profile's; the connecting profile may be another one.
+    with launch_profile_scope_if_multiplexed(), serving_local_desktop(True):  # threads copy this context
         free_tier_bootstrap.start_background_bootstrap()
         start_due_boot()
 
