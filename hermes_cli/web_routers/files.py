@@ -242,10 +242,25 @@ def _fs_find_git_root(start: Path) -> str | None:
     return None
 
 
-def _fs_default_cwd() -> str:
-    cfg_terminal = load_config().get("terminal") or {}
-    # A placeholder terminal.cwd counts as unset, so TERMINAL_CWD names the folder.
-    for raw in (cfg_terminal.get("cwd"), os.environ.get("TERMINAL_CWD")):
+def _fs_default_cwd(profile: Optional[str] = None) -> str:
+    """The host folder a new session or browser terminal of *profile* starts in: its
+    ``terminal.cwd`` when that names a folder, else the home folder."""
+    from tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope
+
+    with _profile_scope(profile) as scoped:
+        if scoped is None:
+            # The serving process's own profile: its startup bridged terminal.cwd into
+            # TERMINAL_CWD. A placeholder terminal.cwd counts as unset, so TERMINAL_CWD answers.
+            cfg_terminal = load_config().get("terminal") or {}
+            candidates = (cfg_terminal.get("cwd"), os.environ.get("TERMINAL_CWD"))
+        else:
+            # Another profile served by this process: the TERMINAL_CWD its own turns run under
+            # (config.yaml over .env), never this process's environment.
+            try:
+                candidates = (build_profile_terminal_scope(scoped).get("TERMINAL_CWD"),)
+            except TerminalPolicyUnavailable:
+                candidates = ()
+    for raw in candidates:
         raw = str(raw or "").strip()
         if raw in {"", ".", "auto", "cwd"}:
             continue
@@ -255,7 +270,7 @@ def _fs_default_cwd() -> str:
                 return str(candidate)
         except (OSError, RuntimeError):
             pass
-    return str(Path.cwd())
+    return str(Path.home())
 
 
 def _fs_git_branch(cwd: str) -> str:
@@ -1156,5 +1171,5 @@ async def fs_default_cwd(profile: Optional[str] = None):
         except Exception as exc:
             _raise_fs_backend_error(exc)
         return {"cwd": cwd, "branch": branch}
-    cwd = _fs_default_cwd()
+    cwd = await asyncio.to_thread(_fs_default_cwd, profile)
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}

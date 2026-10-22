@@ -385,6 +385,64 @@ def test_fs_default_cwd_leaves_a_placeholder_terminal_cwd_to_terminal_cwd(client
     assert response.json()["cwd"] == str(home.resolve())
 
 
+def test_fs_default_cwd_answers_each_profile_with_its_own_start_folder(client, monkeypatch, tmp_path):
+    """``/api/fs/default-cwd?profile=<name>`` answers with that profile's ``terminal.cwd``, so a
+    gateway serving several profiles starts each one's sessions and browser terminals in its own
+    folder. A profile without one starts in the home folder: never another profile's folder and
+    never the folder the serving process was started from."""
+    from hermes_cli import profiles
+
+    default_home = tmp_path / "default-home"
+    work_home = default_home / "profiles" / "work"
+    plain_home = default_home / "profiles" / "plain"
+    default_project = tmp_path / "default-project"
+    work_project = tmp_path / "work-project"
+    user_home = tmp_path / "user"
+    launch_dir = tmp_path / "launch-dir"
+    for folder in (work_home, plain_home, default_project, work_project, user_home, launch_dir):
+        folder.mkdir(parents=True)
+    (default_home / "config.yaml").write_text(
+        f"terminal:\n  cwd: {default_project.as_posix()}\n", encoding="utf-8")
+    (work_home / "config.yaml").write_text(
+        f"terminal:\n  cwd: {work_project.as_posix()}\n", encoding="utf-8")
+    (plain_home / "config.yaml").write_text("terminal:\n  cwd: .\n", encoding="utf-8")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    # What the gateway's startup leaves in its own environment for its own profile.
+    monkeypatch.setenv("TERMINAL_CWD", str(default_project))
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: user_home)
+    monkeypatch.chdir(launch_dir)
+
+    def start_folder(**params):
+        response = client.get("/api/fs/default-cwd", params=params)
+        assert response.status_code == 200, response.text
+        return response.json()["cwd"]
+
+    assert start_folder(profile="work") == str(work_project.resolve())
+    assert start_folder(profile="plain") == str(user_home.resolve())
+    assert start_folder() == str(default_project.resolve())
+    assert start_folder(profile="default") == str(default_project.resolve())
+
+
+def test_fs_default_cwd_falls_back_to_the_home_folder(client, monkeypatch, tmp_path):
+    """With neither ``terminal.cwd`` nor ``TERMINAL_CWD`` naming a folder, the serving profile's
+    start folder is the home folder, not the folder the gateway was started from."""
+    user_home = tmp_path / "user"
+    launch_dir = tmp_path / "launch-dir"
+    user_home.mkdir()
+    launch_dir.mkdir()
+    monkeypatch.setattr(file_routes, "load_config", lambda: {"terminal": {"cwd": "."}})
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: user_home)
+    monkeypatch.chdir(launch_dir)
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert response.json()["cwd"] == str(user_home.resolve())
+
+
 def test_fs_read_text_decodes_double_encoded_non_ascii_path(client, tmp_path):
     target = tmp_path / "半导体行业运营分享会纪要.md"
     target.write_text("hello")
