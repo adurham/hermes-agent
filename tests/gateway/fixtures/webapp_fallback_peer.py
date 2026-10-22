@@ -15,7 +15,7 @@ Run as ``python webapp_fallback_peer.py '<spec json>'`` with an isolated ``HERME
 - ``probe_host``: a Host header to send (a public hostname), or null.
 
 Writes ``receipt.json`` into ``HERMES_HOME`` (the gateway redirects stdout). No inference: the model points
-at a closed port and no turn is submitted.
+at a closed port and no turn is submitted. Tests start it with :func:`run`.
 """
 import asyncio
 import errno
@@ -23,11 +23,36 @@ import json
 import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 import traceback
 
 SEEDED_TOKEN = "seeded-browser-credential-from-an-earlier-0"  # 43 URL-safe characters
 INDEX = "<!doctype html><html><body>WEBAPP_BUNDLE</body></html>"
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def run(tmp_path, spec) -> dict:
+    """Run this peer for *spec* in a fresh home under *tmp_path*; returns its receipt."""
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+
+    root = Path(__file__).resolve().parents[3]
+    home, user = tmp_path / "state", tmp_path / "user"
+    for path in (home, user):
+        path.mkdir()
+    env = child_env()
+    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
+               PYTHONUNBUFFERED="1")
+    result = subprocess.run([sys.executable, __file__, json.dumps(spec)], cwd=root, env=env,
+                            capture_output=True, text=True, timeout=120, check=False)
+    receipt = home / "receipt.json"
+    assert result.returncode == 0, result.stdout + result.stderr + (receipt.read_text() if receipt.exists() else "")
+    return json.loads(receipt.read_text())
 
 
 def _config(spec) -> str:

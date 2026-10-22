@@ -4,6 +4,8 @@
 listener to ``webapp.host``/``webapp.port`` (a stable port, so the browser's URL survives restarts) and
 its dashboard mount serves the Webapp bundle. ``webapp.host`` is a loopback address or a wildcard
 (``0.0.0.0``/``::``), and a wildcard bind is gated by dashboard sign-in like any non-loopback listener.
+``webapp.public_url`` is the address a reverse proxy or tunnel serves the Webapp at: it engages the same
+sign-in on a loopback bind, and ``dashboard.public_url`` (``hermes dashboard``'s) never applies here.
 Native clients (Desktop, the CLI, Ink) dial the loopback address this module derives from the bind.
 
 The browser's credential is the dashboard session token. With the Webapp on, the gateway keeps that
@@ -19,6 +21,7 @@ import secrets
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,8 @@ class WebappSettings:
     enabled: bool = False
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    #: ``webapp.public_url``: the address a reverse proxy or tunnel serves the Webapp at, or "" for none.
+    public_url: str = ""
 
     @property
     def bind(self) -> tuple[str, int]:
@@ -44,10 +49,11 @@ class WebappSettings:
 
 @dataclass(frozen=True)
 class WebappMount:
-    """What the gateway's dashboard mount needs to serve the Webapp: the built bundle and the home
-    whose browser credential it uses."""
+    """What the gateway's dashboard mount needs to serve the Webapp: the built bundle, the home
+    whose browser credential it uses and the Webapp's own public URL ("" for none)."""
     dist: Path
     home: Path
+    public_url: str = ""
 
 
 def _config_document(home: Path) -> dict:
@@ -93,7 +99,28 @@ def webapp_settings(home) -> WebappSettings:
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         logger.warning("Webapp stays off: webapp.port must be a port number (1-65535) in %s", path)
         return WebappSettings()
-    return WebappSettings(enabled=True, host=host.strip(), port=port)
+    public_url = _public_url(block.get("public_url"))
+    if public_url is None:
+        logger.warning("Webapp stays off: webapp.public_url must be an http:// or https:// address with no "
+                       "credentials, query or fragment in %s", path)
+        return WebappSettings()
+    return WebappSettings(enabled=True, host=host.strip(), port=port, public_url=public_url)
+
+
+def _public_url(value) -> str | None:
+    """``webapp.public_url`` without a trailing slash, "" when unset, None when malformed (not an
+    http(s) address, or one carrying credentials, a query or a fragment)."""
+    if value is None or value == "":
+        return ""
+    if not isinstance(value, str) or any(c in value for c in "\"'<> \t\r\n?#@\\"):
+        return None
+    url = value.rstrip("/")
+    try:
+        parts = urlsplit(url)
+        port = parts.port  # raises ValueError on a malformed port
+    except ValueError:
+        return None
+    return url if parts.scheme in {"http", "https"} and parts.hostname and port != 0 else None
 
 
 def _is_loopback(host: str) -> bool:
@@ -129,7 +156,8 @@ def listener_plan(home) -> tuple[str, int, WebappMount | None]:
         return (*settings.bind, None)
     from hermes_cli.config import get_project_root
     from hermes_cli.webapp import webapp_dist_dir
-    return (*settings.bind, WebappMount(dist=webapp_dist_dir(get_project_root()), home=Path(home)))
+    mount = WebappMount(dist=webapp_dist_dir(get_project_root()), home=Path(home), public_url=settings.public_url)
+    return (*settings.bind, mount)
 
 
 def browser_session_token(home, *, rotate: bool = False) -> str:

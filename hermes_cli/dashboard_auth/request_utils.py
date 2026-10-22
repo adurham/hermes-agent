@@ -87,7 +87,7 @@ def cookie_origin_is_allowed(request: Request) -> bool:
         return False
     if fetch_sites:
         return fetch_sites == ["same-origin"]
-    target = urlsplit(resolve_public_url() or str(request.url))
+    target = urlsplit(resolve_public_url(request.app.state) or str(request.url))
     return origin == _http_origin(f"{target.scheme}://{target.netloc}")
 
 

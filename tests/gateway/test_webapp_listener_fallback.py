@@ -6,37 +6,11 @@ Desktop, CLI and TUI clients still connect, the mount carries none of the Webapp
 ``hermes webapp --status`` says why the Webapp is not served. Each case runs a real gateway listener
 in a child process (``fixtures/webapp_fallback_peer.py``) with its own ``HERMES_HOME``.
 """
-import json
-from pathlib import Path
-import socket
-import subprocess
 import sys
 
 import pytest
 
-from tests.gateway.fixtures.local_recovery_probe import child_env
-
-
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
-def _run(tmp_path, spec):
-    root = Path(__file__).resolve().parents[2]
-    home, user = tmp_path / "state", tmp_path / "user"
-    for path in (home, user):
-        path.mkdir()
-    env = child_env()
-    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
-               PYTHONUNBUFFERED="1")
-    result = subprocess.run(
-        [sys.executable, str(root / "tests/gateway/fixtures/webapp_fallback_peer.py"), json.dumps(spec)],
-        cwd=root, env=env, capture_output=True, text=True, timeout=120, check=False)
-    receipt = home / "receipt.json"
-    assert result.returncode == 0, result.stdout + result.stderr + (receipt.read_text() if receipt.exists() else "")
-    return json.loads(receipt.read_text())
+from tests.gateway.fixtures.webapp_fallback_peer import free_port as _free_port, run as _run
 
 
 @pytest.fixture(scope="module")

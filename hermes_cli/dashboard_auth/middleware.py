@@ -69,6 +69,16 @@ def _safe_next_target(request: Request) -> str:
     return quote(f"{path}?{query}" if query else path, safe="")
 
 
+def _cross_origin_write_detail(state: object) -> str:
+    """The 403 detail for a cookie write from another origin, naming the public URL setting the
+    listener reads: ``webapp.public_url`` on the gateway's Webapp, ``dashboard.public_url`` elsewhere."""
+    if getattr(state, "ui_surface", None) == "webapp":
+        return ("Cookie-authenticated writes must come from the Webapp's own origin. "
+                "Behind a reverse proxy, set webapp.public_url to the URL the browser uses.")
+    return ("Cookie-authenticated writes must come from the dashboard's own origin. "
+            "Behind a reverse proxy, set dashboard.public_url to the URL the browser uses.")
+
+
 def _unauth_response(request: Request, *, reason: str) -> Response:
     """API routes -> 401 JSON with ``login_url``; HTML routes -> 302 -> /login. fetch() follows a
     302 opaquely into the cross-origin OAuth dance, so API routes never get redirects; the SPA's
@@ -192,9 +202,7 @@ async def gated_auth_middleware(
     at, _rt = read_session_cookies(request)
     provider_hint = read_session_provider(request)
     if (at or _rt) and request.method not in {"GET", "HEAD", "OPTIONS", "TRACE"} and not cookie_origin_is_allowed(request):
-        return JSONResponse(status_code=403, content={
-            "detail": "Cookie-authenticated writes must come from the dashboard's own origin. "
-                      "Behind a reverse proxy, set dashboard.public_url to the URL the browser uses."})
+        return JSONResponse(status_code=403, content={"detail": _cross_origin_write_detail(request.app.state)})
     if cookie_logout:
         return await call_next(request)
     if not at and not _rt:

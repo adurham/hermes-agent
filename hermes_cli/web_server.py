@@ -361,6 +361,7 @@ from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> s
     _host_header_hostname,
     _is_accepted_host,
     public_hosts_engage_gate,
+    public_url_hosts,
     should_require_auth,
 )
 
@@ -851,8 +852,9 @@ mount_spa(app)
 def _no_auth_provider_message(host: str) -> str:
     """Actionable SystemExit text for a gated bind with no registered auth provider.
 
-    Names the exact trigger: on a loopback bind the ONLY trigger is
-    dashboard.public_url, so print the offending URL and the remove-it exit.
+    Names the exact trigger: on a loopback bind the ONLY trigger is the public URL
+    (dashboard.public_url, or webapp.public_url for the gateway's Webapp listener),
+    so print the offending URL and the remove-it exit.
     Bundled providers expose ``LAST_SKIP_REASON`` so an installed-but-
     unconfigured provider is not reported as merely "no providers".
     """
@@ -865,25 +867,30 @@ def _no_auth_provider_message(host: str) -> str:
     except Exception:
         pass
 
+    # A listener that declares its own public URL (the gateway's Webapp: webapp.public_url) is
+    # gated by that setting, never by dashboard.public_url.
+    own_url = getattr(app.state, "listener_public_url", None)
+    setting = "dashboard.public_url" if own_url is None else "webapp.public_url"
     if host in _LOOPBACK_HOST_VALUES:
-        public_url = ""
-        try:
-            from hermes_cli.dashboard_auth.prefix import resolve_public_url
+        public_url = own_url or ""
+        if own_url is None:
+            try:
+                from hermes_cli.dashboard_auth.prefix import resolve_public_url
 
-            public_url = resolve_public_url()
-        except Exception:
-            pass
+                public_url = resolve_public_url()
+            except Exception:
+                pass
         gate_reason = (
-            f"dashboard.public_url is set to "
+            f"{setting} is set to "
             f"{public_url or '<a non-loopback URL>'} — an "
             f"operator-declared external URL engages the auth gate "
             f"even on a loopback bind"
         )
         fix_hint = (
             "If this dashboard should be LOCAL-ONLY (no reverse "
-            "proxy), remove dashboard.public_url from config.yaml "
-            "(and unset HERMES_DASHBOARD_PUBLIC_URL) to restore the "
-            "unauthenticated loopback mode.\n"
+            f"proxy), remove {setting} from config.yaml "
+            + ("(and unset HERMES_DASHBOARD_PUBLIC_URL) " if own_url is None else "")
+            + "to restore the unauthenticated loopback mode.\n"
         )
     else:
         gate_reason = f"the auth gate engages on non-loopback binds ({host})"
@@ -899,7 +906,7 @@ def _no_auth_provider_message(host: str) -> str:
         "  • OAuth: run `hermes dashboard register` (Nous Portal) or "
         "install a DashboardAuthProvider plugin.\n"
         "There is no unauthenticated public-dashboard option. For "
-        "local-only use, bind 127.0.0.1 and leave dashboard.public_url "
+        f"local-only use, bind 127.0.0.1 and leave {setting} "
         "unset; a configured external public URL requires auth even "
         "when a local reverse proxy reaches a loopback backend."
     )
@@ -948,10 +955,14 @@ def _configure_auth_gate(
     # reverse-proxy deployments; resolved once so middleware never reloads
     # config. A non-loopback public hostname engages the gate even on a loopback
     # backend, else the SPA's local session token becomes remotely reachable.
-    app.state.trusted_public_hosts = _dashboard_public_hosts()
+    # A listener that declares its own public URL (``listener_public_url``: the
+    # gateway's, from webapp.public_url) is judged by that one instead.
+    own_url = getattr(app.state, "listener_public_url", None)
+    app.state.trusted_public_hosts = (
+        _dashboard_public_hosts() if own_url is None else public_url_hosts(own_url))
     # auth_required drives middleware, SPA-token injection, WS auth, the
     # startup refusal, the gate-on banner and uvicorn proxy_headers.
-    if _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):
+    if own_url is None and _desktop_loopback_auth_exempt(host, ssh_session_token, ssh_owner_nonce):
         # public_url describes the operator's PUBLIC deployment, not this
         # Desktop-owned loopback backend (#96490), which authenticates with the
         # per-spawn session token the ticket-only gate would refuse.

@@ -72,7 +72,7 @@ def _redirect_uri(request: Request) -> str:
     complete authority (``X-Forwarded-Prefix`` ignored so a baked-in prefix is not doubled);
     otherwise ``url_for`` (honours ``X-Forwarded-Host/Proto`` under uvicorn ``proxy_headers``)
     with the prefix prepended, which Starlette does not do."""
-    public_url = _prefix_mod.resolve_public_url()
+    public_url = _prefix_mod.resolve_public_url(request.app.state)
     if public_url:
         return f"{public_url}/auth/callback"
     base = str(request.url_for("auth_callback"))
