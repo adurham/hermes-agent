@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import re
 import secrets
 import sys
@@ -175,21 +176,48 @@ def listener_plan(home) -> tuple[str, int, WebappMount | None, str | None]:
 def browser_session_token(home, *, rotate: bool = False) -> str:
     """The dashboard session token a Webapp browser holds, kept user-only in *home*.
 
-    Created on first use; *rotate* replaces it, which signs every open tab out."""
+    Created on first use; *rotate* replaces it, which signs every open tab out. A stored token other
+    users could read is replaced the same way, and its folder is closed to them again (POSIX)."""
     from utils import atomic_write_text
 
     path = Path(home) / TOKEN_PATH
+    _close_to_other_users(path.parent)
     if not rotate:
         try:
             token = path.read_text(encoding="utf-8-sig").strip()
         except OSError:
             token = ""
-        if _TOKEN_FORMAT.fullmatch(token):
+        if _TOKEN_FORMAT.fullmatch(token) and not _readable_by_other_users(path):
             return token
     token = secrets.token_urlsafe(32)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     atomic_write_text(path, token + "\n", mode=0o600)
     return token
+
+
+def _readable_by_other_users(path: Path) -> bool:
+    """POSIX: whether *path* grants group or other access, or belongs to another user. Windows homes
+    keep their own ACL."""
+    if os.name == "nt":
+        return False
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    return bool(info.st_mode & 0o077) or info.st_uid != os.geteuid()  # windows-footgun: ok — POSIX-only branch
+
+
+def _close_to_other_users(folder: Path) -> None:
+    """POSIX: make an existing credential folder user-only (0700) again."""
+    if os.name == "nt":
+        return
+    try:
+        if folder.stat().st_mode & 0o077:
+            folder.chmod(0o700)
+    except FileNotFoundError:
+        return
+    except OSError as exc:  # the token file itself stays 0600
+        logger.warning("Could not make %s user-only: %s", folder, exc)
 
 
 def _one_use_links_work() -> bool:

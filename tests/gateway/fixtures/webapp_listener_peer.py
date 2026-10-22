@@ -105,8 +105,10 @@ async def probe(mode, port, dist):
         "gateway:\n  multiplex_profiles: false\nmodel:\n  provider: custom\n  default: no-inference\n"
         "  base_url: http://127.0.0.1:1/v1\nauxiliary:\n  title_generation:\n    enabled: false\n" + webapp_block)
     if mode == "on":
-        (home / TOKEN_PATH).parent.mkdir(parents=True, exist_ok=True)
+        # Seeded user-only, as the gateway writes it: a stored token other users can read is replaced.
+        (home / TOKEN_PATH).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         (home / TOKEN_PATH).write_text(SEEDED_TOKEN + "\n", encoding="utf-8")
+        (home / TOKEN_PATH).chmod(0o600)
     hermes_cli.webapp.webapp_dist_dir = lambda _root: Path(dist)  # the built bundle, without a build
     runner = GatewayRunner()
     runner.session_control_server = GatewayControlServer(home)  # verbs only; not listening
