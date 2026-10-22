@@ -207,6 +207,37 @@ describe('usage-window plan rows', () => {
   })
 })
 
+describe('usage-window plan sections', () => {
+  it('a pinned current model the catalog omits goes under Other models, never under Recommended', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          authenticated: true,
+          models: ['example/model-a', 'example/model-b'],
+          name: 'Nous',
+          plan_usage: {
+            featured_model_ids: ['example/model-a'],
+            gauges: [{ label: 'day', left_fraction: 0.5, scope: 'all', style: 'green' }],
+            kind: 'usage_window'
+          },
+          slug: 'nous'
+        }
+      ]
+    })
+    renderMenu({ model: 'custom/model-x', provider: 'nous' })
+
+    const recommended = await screen.findByText('Recommended')
+    const other = screen.getByText('Other models')
+    const pick = screen.getByText(/model[- ]a/i)
+    const pinned = screen.getByText(/model[- ]x/i)
+    const follows = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+    expect(follows(recommended, pick)).toBe(true)
+    expect(follows(pick, other)).toBe(true)
+    expect(follows(other, pinned)).toBe(true)
+  })
+})
+
 describe('the reasoning-effort badge (#51833)', () => {
   it('renders the effort as its own Badge chip beside the name, never inside it', async () => {
     renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })

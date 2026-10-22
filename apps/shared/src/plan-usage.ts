@@ -69,7 +69,8 @@ export function splitRecommended(
 }
 
 /** The section title a window-plan picker shows above row *idx* of *models* (no query): `recommended`
- *  above the first featured pick, `other` above the first row after them, else null. */
+ *  above the first featured pick, `other` above the first row after them, else null. *models* must be in
+ *  `splitRecommended` order (picks first): a caller that pins an extra row re-orders after the pin. */
 export function sectionAt(
   provider: PlanProvider,
   models: readonly string[],

@@ -1,5 +1,12 @@
 import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
-import { DEFAULT_REASONING_EFFORT, planBlocks, sectionAt, usageLevel, usageTag } from '@hermes/shared'
+import {
+  DEFAULT_REASONING_EFFORT,
+  planBlocks,
+  sectionAt,
+  splitRecommended,
+  usageLevel,
+  usageTag
+} from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -1364,7 +1371,7 @@ function groupModels(
       current.model &&
       !allFamilies.some(family => family.id === current.model || family.fastId === current.model)
     ) {
-      allFamilies = [{ fastId: null, id: current.model }, ...allFamilies]
+      allFamilies = recommendedFirst(provider, [{ fastId: null, id: current.model }, ...allFamilies])
     }
 
     if (allFamilies.length === 0) {
@@ -1438,6 +1445,21 @@ function nousRefetchOnMount(data: ModelOptionsResult | undefined): 'always' | tr
 // poll forever. Only runs while the menu is mounted and a row is pending.
 function nousPricingPoll(data: ModelOptionsResult | undefined, updates: number): false | number {
   return updates < 6 && data?.providers?.some(p => isNous(p) && p.pricing_pending) ? 2_000 : false
+}
+
+// Window plans: the plan's featured picks lead (the backend lists them first). Re-applied after the
+// current-model pin above, so a pinned custom model lands under "Other models" instead of taking the
+// first pick's "Recommended" heading.
+function recommendedFirst(provider: ModelOptionProvider, families: ModelFamily[]): ModelFamily[] {
+  const split = splitRecommended(provider, families.map(family => family.id))
+
+  if (!split) {
+    return families
+  }
+
+  const byId = new Map(families.map(family => [family.id, family]))
+
+  return [...split.recommended, ...split.other].flatMap(id => byId.get(id) ?? [])
 }
 
 // Window plans, no query: "Recommended" above the first of the plan's featured families and
