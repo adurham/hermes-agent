@@ -161,4 +161,11 @@ describe('WebAccessSettings', () => {
     expect(mocked.getWebAccessStatus).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
   })
+
+  it('treats a gateway address it cannot parse as not serving this config', async () => {
+    // The gateway reports its own URL; a malformed one must not take the pane down.
+    renderPane({ ...OFF, enabled: true, gateway: { reason: null, state: 'serving', url: 'http://[::1' }, mode: 'lan' })
+
+    expect(await screen.findByText('Restart needed')).toBeTruthy()
+  })
 })

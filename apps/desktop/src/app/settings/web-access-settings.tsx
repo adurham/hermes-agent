@@ -41,7 +41,16 @@ type Busy = 'restart' | 'start' | 'stop' | null
 function servesConfig(status: WebAccessStatus): boolean {
   const { state, url } = status.gateway
 
-  return status.enabled && state === 'serving' && url !== null && new URL(url).port === String(status.port)
+  if (!status.enabled || state !== 'serving' || url === null) {
+    return false
+  }
+
+  try {
+    return new URL(url).port === String(status.port)
+  } catch {
+    // An address the pane cannot read is not one it can confirm.
+    return false
+  }
 }
 
 function phaseOf(status: WebAccessStatus): Phase {
