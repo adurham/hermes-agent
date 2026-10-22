@@ -1105,15 +1105,42 @@ class TestBlockedResponseCapture:
             assert not ct.response_is_usage_window(SimpleNamespace(headers=headers))
         assert not ct.response_is_usage_window(None)
 
-    def test_handle_api_error_hook_is_gated_to_window_402_403(self):
-        """The hook in turn_api_error only fires for Nous on 402/403 with usage-window headers —
-        read the source contract."""
-        import inspect
-        from agent import turn_api_error
-        src = inspect.getsource(turn_api_error.handle_api_error)
-        assert 'status_code in (402, 403) and getattr(agent, "provider", "") == "nous"' in src
-        assert "if response_is_usage_window(response):" in src
-        assert "agent._capture_credits(response, refused=True)" in src
+    @pytest.mark.parametrize("provider, status, headers, captured", [
+        ("nous", 402, "window", True),
+        ("nous", 403, "window", True),
+        ("openrouter", 402, "window", False),  # window headers from any other provider: main's behaviour
+        ("nous", 402, "grant", False),         # a credit-grant account: main's behaviour
+        ("nous", 500, "window", False),
+    ])
+    def test_handle_api_error_captures_only_a_nous_window_refusal(self, provider, status, headers, captured):
+        """A refused (402/403) Nous request's usage-window headers reach the credits capture, marked refused;
+        nothing else does. The turn is stopped right after the capture (interpreter shutdown) so only the
+        hook runs."""
+        from unittest.mock import patch
+
+        from agent.turn_api_error import handle_api_error
+        from run_agent import AIAgent
+        with patch("model_tools.get_tool_definitions", return_value=[]), \
+                patch("model_tools.check_toolset_requirements", return_value={}), \
+                patch("agent.process_bootstrap.OpenAI"):
+            agent = AIAgent(api_key="test-key-1234567890", base_url="https://inference-api.nousresearch.com/v1",
+                            quiet_mode=True, skip_context_files=True, skip_memory=True)
+        agent.provider = provider
+        h = _window_headers(10_000, source=None)
+        if headers == "grant":
+            h = {**h, "x-nous-credits-denominator-kind": "subscription_cap"}
+        error = type("_Err", (Exception,), {"status_code": status})("refused")
+        error.response = SimpleNamespace(headers=h, status_code=status)
+        seen = []
+        with patch.object(agent, "_capture_credits", lambda r, **kw: seen.append((r, kw))), \
+                patch("tools.interpreter_shutdown.interpreter_shutting_down", return_value=True):
+            verdict = handle_api_error(
+                agent, api_error=error, _retry=None, thinking_spinner=None, messages=[], api_messages=[],
+                api_kwargs={}, system_message="", active_system_prompt="", conversation_history=[],
+                approx_tokens=0, retry_count=0, max_retries=1, compression_attempts=0, max_compression_attempts=1,
+                api_call_count=1, api_request_id="r", api_start_time=0.0, effective_task_id="t", turn_id="u")
+        assert verdict.action == "return"
+        assert seen == ([(error.response, {"refused": True})] if captured else [])
 
 
 # ── picker ────────────────────────────────────────────────────────────────────
