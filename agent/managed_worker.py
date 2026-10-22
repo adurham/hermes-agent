@@ -397,7 +397,9 @@ def execute(frame, channel):
                 frame = {**frame, 'text': content}
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
-            result = run_worker_turns(agent, frame, history)
+            # Most failed results name no provider or model; the owner's error card needs the agent's.
+            result = {'provider': getattr(agent, 'provider', None), 'model': getattr(agent, 'model', None),
+                      **run_worker_turns(agent, frame, history)}
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
             retire_agent(agent)

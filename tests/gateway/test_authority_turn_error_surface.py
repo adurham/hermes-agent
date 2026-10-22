@@ -14,8 +14,9 @@ _RATE_LIMITED = {'failure_reason': 'rate_limit', 'failure_retryable': True, 'fai
                  'error': 'HTTP 429: slow down'}
 
 
-def _authority_turn(platform, failure):
-    """Run one failed turn through the authority's in-process TurnRunner: ``(response, captured)``."""
+def _authority_turn(platform, failure, identity=None):
+    """Run one failed turn through the authority's in-process TurnRunner: ``(response, captured)``.
+    ``identity`` replaces the result's provider/model with the agent's own attributes."""
     from gateway.run_turn_runner import TurnRunner
     from gateway.session import SessionSource
     from gateway.session_results import execution_result
@@ -23,9 +24,13 @@ def _authority_turn(platform, failure):
     from tests.gateway.test_local_viewer_events_submit import _gateway_runner, _RecordingAgent
 
     class _FailingAgent(_RecordingAgent):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            vars(self).update(identity or {})
+
         def run_conversation(self, message, **kwargs):
             return {'final_response': '', 'messages': [], 'failed': True, 'completed': False,
-                    'provider': 'nous', 'model': 'free-model', **failure}
+                    **({} if identity else {'provider': 'nous', 'model': 'free-model'}), **failure}
 
     ctx = TurnContext(
         source=SessionSource(platform=platform, chat_id='sid', user_id='u'),
@@ -80,6 +85,38 @@ def test_a_managed_worker_turn_carries_the_free_tier_failure_to_the_owner():
     # The owner's projection of a finished worker turn (``session_managed_worker``).
     complete = _complete('', {'result': {**accepted, 'local_viewer': True}, 'usage': usage})
     assert complete['error_surface']['code'] == 'free_tier_at_capacity'
+
+
+_AUTH_FAILED = {'failure_reason': 'auth', 'failure_retryable': False, 'error': 'HTTP 401: invalid api key'}
+_OPENROUTER = {'provider': 'openrouter', 'model': 'anthropic/claude-sonnet-4'}
+
+
+def _assert_update_key_card(complete):
+    surface = complete['error_surface']
+    assert (surface['layer'], surface['auth_kind'], surface['api_key_env']) == ('auth', 'api_key', 'OPENROUTER_API_KEY')
+    assert (surface['provider'], surface['model']) == (_OPENROUTER['provider'], _OPENROUTER['model'])
+
+
+def test_an_auth_failure_offers_the_agents_key_action_when_the_result_names_no_provider():
+    """Real failed results (``agent/turn_recovery._failed_turn_result``) carry no provider or model;
+    the card's sign-in / update-key action comes from the agent that ran, as on the TUI path."""
+    _assert_update_key_card(_complete(*_authority_turn(Platform.LOCAL, _AUTH_FAILED, identity=_OPENROUTER)))
+
+
+def test_a_managed_worker_auth_failure_offers_the_agents_key_action(tmp_path, monkeypatch):
+    from agent.managed_worker import accept_result
+    from tests.gateway.test_managed_worker_route_key import _execute, _minimax_frame
+
+    class Identity:
+        def __init__(self, **kwargs):
+            vars(self).update(_OPENROUTER)
+
+    sent = []
+    _execute(_minimax_frame(tmp_path, monkeypatch), monkeypatch, base=Identity, sent=sent,
+             result={'final_response': '', 'failed': True, 'completed': False, **_AUTH_FAILED})
+    frame = next(payload['result'] for kind, payload in sent if kind == 'result')
+    accepted, usage = accept_result(frame)
+    _assert_update_key_card(_complete('', {'result': {**accepted, 'local_viewer': True}, 'usage': usage}))
 
 
 def test_a_successful_turn_completes_without_a_surface():
