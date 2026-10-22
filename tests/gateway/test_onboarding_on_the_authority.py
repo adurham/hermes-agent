@@ -56,7 +56,9 @@ async def _desktop(tmp_path, monkeypatch, turns):
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = await initialize_session_authority(runner, profile_id=str(home), instance_id="owner")
     transport = _Transport()
-    identity = {"user_id": "uid:1", "provider": "local", "profile_id": str(home), "instance_id": "owner"}
+    identity = {"user_id": "uid:1", "provider": "local", "profile_id": str(home), "instance_id": "owner",
+                "native_bootstrap": True}
+    transport.desktop_local = True  # the Desktop's accepted ``client.capabilities {desktop_local}``
     connection = AuthorityConnection(authority, transport, identity)
     from gateway.session_local_migration import bind_native_transport
     bind_native_transport(authority, connection.actor, identity)
@@ -229,7 +231,9 @@ async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_pat
         "user_id": "uid:1", "provider": "local", "profile_id": str(work), "instance_id": "owner",
         "profile_scope": "host"})
     try:
-        started = await connection.dispatch({"jsonrpc": "2.0", "id": 1, "method": "onboarding.start", "params": {}})
+        from hermes_cli.process_identity import serving_local_desktop
+        with serving_local_desktop(True):  # what ws._dispatch_request binds for the declared Desktop socket
+            started = await connection.dispatch({"jsonrpc": "2.0", "id": 1, "method": "onboarding.start", "params": {}})
         assert "result" in started, started
         assert claims == [home]
         assert started["result"]["stored_session_id"] in desktop.authority.sessions
@@ -295,5 +299,21 @@ async def test_a_fresh_launch_deletes_the_chat_the_last_launch_left_with_no_view
         assert second["stored_session_id"] != first
         assert desktop.db.get_session(first) is None
         assert first not in desktop.authority.sessions
+    finally:
+        await desktop.connection.close()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_start_from_a_client_that_is_not_the_local_desktop_changes_nothing(tmp_path, monkeypatch):
+    """A CLI or TUI holds a native ticket too. Its ``onboarding.start`` is refused before the install
+    flag is written, so it never schedules first-run onboarding for the Desktop."""
+    from hermes_cli.onboarding_run import _explicit_run
+    desktop = await _desktop(tmp_path, monkeypatch, [])
+    desktop.transport.desktop_local = False
+    try:
+        refused = await _request(desktop, 1, "onboarding.start", {"facts_source": "local", "locale": "en"})
+        assert "error" in refused, refused
+        assert _explicit_run() is None
+        assert desktop.authority.sessions == {}
     finally:
         await desktop.connection.close()

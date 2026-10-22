@@ -238,7 +238,7 @@ def staged_creation_follows(authority, actor, request_id):
 def _welcome_trial_model():
     """The free model for a chat that has no configured one, while the welcome trial carries this
     activity (the local Desktop, a claimed guest): what the agent pins on the welcome host anyway
-    (``anon_auth.pin_model_for_route``). Else None, and the create refuses."""
+    (``anon_auth.pin_model_for_route``). Else None, and the create refuses as before."""
     from hermes_cli import anon_auth
     return anon_auth.GUEST_MODEL if anon_auth.free_inference_active() else None
 
@@ -255,7 +255,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         raise RuntimeStoreError('profile_mismatch')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    from gateway.session_policy import build_policy, BYPASS_FIELDS
+    from gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
     from gateway.run import _resolve_gateway_model
     from dataclasses import replace
     private_secrets = dict(trusted_secrets or {})
@@ -282,12 +282,17 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
             policy = replace(policy, request_json=json.dumps(
                 {**json.loads(policy.request_json), 'model_requested': raw_model, 'route_derived': derived},
                 sort_keys=True))
-        if desktop_local and policy.source == 'gui':
-            import json
-            policy = replace(policy, request_json=json.dumps(
-                {**json.loads(policy.request_json), 'desktop_local': True}, sort_keys=True))
+        marks = {LOCAL_DESKTOP_CHAT: True} if desktop_local and policy.source == 'gui' else {}
         if policy.model is None:
-            policy = replace(policy, model=_resolve_gateway_model(policy.config()) or _welcome_trial_model())
+            configured = _resolve_gateway_model(policy.config())
+            model = configured or _welcome_trial_model()
+            if model and not configured:
+                # Follows its profile, so the provider the user connects later replaces the trial model.
+                marks[FOLLOW_ADOPTED] = True
+            policy = replace(policy, model=model)
+        if marks:
+            import json
+            policy = replace(policy, config_json=json.dumps({**json.loads(policy.config_json), **marks}))
     request_id = params.get('request_id', uuid.uuid4().hex)
     if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
         raise RuntimeStoreError('invalid_params', field='request_id',

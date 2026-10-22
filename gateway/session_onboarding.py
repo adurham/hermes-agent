@@ -129,6 +129,10 @@ def _claim_before_run(*, assume_fresh):
     from hermes_cli import anon_auth
     from hermes_cli.onboarding_run import set_run
     from hermes_cli.welcome_trial import claim_desktop_free_tier, provider_configured
+    if not anon_auth.on_local_desktop_backend():
+        # A CLI or TUI holds a native ticket too: its start schedules nothing. A rerun (Settings, any
+        # Desktop) never claims and never reaches here.
+        raise _NoModelForTheRun('First-run onboarding starts only in the Desktop app on this machine.')
     set_run(True)
     claimed = claim_desktop_free_tier(assume_fresh=assume_fresh)
     if claimed is None and not (anon_auth.free_inference_active() or provider_configured()):
