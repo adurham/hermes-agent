@@ -4,7 +4,9 @@ import { type BrowserBootstrap, browserFetch } from '@/lib/browser-transport'
 
 const STAGED_UPLOAD_CACHE_LIMIT = 256
 
-/** The largest file the browser stages on the host; mirrors WEBAPP_ATTACHMENT_MAX_BYTES (hermes_constants.py). */
+/** The largest file the browser stages on the host, and the largest image it can send: sending reads
+ *  a staged image back through /api/fs/read-data-url. Mirrors WEBAPP_ATTACHMENT_MAX_BYTES
+ *  (hermes_constants.py), the cap on both. */
 export const BROWSER_UPLOAD_MAX_BYTES = 16 * 1024 * 1024
 
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
@@ -200,6 +202,14 @@ export function createBrowserUploadsBridge({
 
     const extension = normalizedExtension(ext)
     const imageMime = IMAGE_MIME_BY_EXTENSION[extension]
+
+    // /api/chat/image-upload stores images up to 25 MiB, but the send reads the staged image back
+    // with the 16 MiB file-read cap: refuse a larger one here, before it shows as attached.
+    if (imageMime && bytes.byteLength > BROWSER_UPLOAD_MAX_BYTES) {
+      throw new Error(
+        `The image is larger than ${BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024)} MiB, the largest image the browser can send.`
+      )
+    }
 
     if (imageMime) {
       // Route by the profile active at the paste, not after the encode.

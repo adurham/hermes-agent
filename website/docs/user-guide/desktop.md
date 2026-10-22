@@ -85,9 +85,10 @@ Webapp's sign-in, so open tabs need `hermes webapp` again. When the Webapp's bun
 yet, the status says so instead: `hermes webapp` builds it, and the running gateway serves it without a
 restart.
 
-Browser-selected files are staged under the active profile before they enter the normal attachment
-flow, with a **16 MiB** limit per file. Host files download through the browser's download manager, and
-supported audio and video play inline using the server's file-access rules. **Save Image** for
+Browser-selected files and pasted or dropped images are staged under the active profile before they
+enter the normal attachment flow, with a **16 MiB** limit per file. Host files download through the
+browser's download manager, and supported audio and video play inline using the server's file-access
+rules. **Save Image** for
 cross-origin URLs needs CORS, with a **25 MiB** limit and a **30-second** deadline. Website links open
 in a separate tab; explicit URL previews use a sandboxed iframe that cannot open popups, so use **Open
 in browser** for sites that refuse embedding. Native-only features stay in Electron: global shortcuts,
