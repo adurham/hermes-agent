@@ -4,7 +4,7 @@ import type { HermesApiRequest } from '@/global'
 import { translateNow } from '@/i18n'
 import { requireBrowserConnection } from '@/lib/browser-connection'
 import { fetchBrowserImage } from '@/lib/browser-image-download'
-import { type BrowserBootstrap, fileEndpointUrl } from '@/lib/browser-transport'
+import { type BrowserBootstrap, FILE_ENDPOINTS, fileEndpointUrl } from '@/lib/browser-transport'
 import { clickDownloadLink, downloadBlob, downloadFilename } from '@/lib/download'
 import { notifyError } from '@/store/notifications'
 
@@ -92,7 +92,7 @@ export function createBrowserFilesBridge({
       // large downloads out of renderer memory.
       await api({
         method: 'HEAD',
-        path: queryPath('/api/files/download', { path: query.path, session_id: query.session_id }),
+        path: queryPath(FILE_ENDPOINTS.download, { path: query.path, session_id: query.session_id }),
         profile: query.profile
       })
 

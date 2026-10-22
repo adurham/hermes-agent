@@ -1,4 +1,4 @@
-"""Path-bound tickets for browser file URLs (``/api/files/download|stream``).
+"""Path-bound tickets for browser file URLs (``/api/fs/download``, ``/api/files/stream``).
 
 A download link or an ``<audio>``/``<video>`` source cannot send the session
 header, and the session token grants host shells and file access, so it must
@@ -7,7 +7,8 @@ address"). An authenticated ``POST /api/files/ticket`` mints a ticket that lets
 the loopback token gate admit GET/HEAD of exactly one route + query and nothing
 else. A download is one request, so its ticket is single-use; a media element
 issues many Range requests for one source, so a stream ticket is reusable until
-it expires. Each ticket captures the resolved file and the named profile homes it
+it expires. Each ticket captures the resolved file (on the profile's SSH workspace
+when it has one, as for native Desktop's download) and the named profile homes it
 belongs to; the resource opener refuses it once one of those homes is missing or
 deleted (``hermes_constants.assert_named_profile_home_live``). A ticket minted for
 a request that presented the browser session token redeems only while that token
@@ -22,8 +23,8 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Mapping
+from pathlib import Path, PurePath
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -34,7 +35,9 @@ DOWNLOAD_TTL_SECONDS = 60
 STREAM_TTL_SECONDS = 60 * 60
 _MAX_TICKETS = 1024
 
-ROUTES: Mapping[str, str] = {"download": "/api/files/download", "stream": "/api/files/stream"}
+#: A download reads the file where the profile's workspace is, like native Desktop's download;
+#: media plays through the managed stream route.
+ROUTES: Mapping[str, str] = {"download": "/api/fs/download", "stream": "/api/files/stream"}
 
 _Scope = tuple[str, tuple[tuple[str, str], ...]]
 
@@ -43,8 +46,11 @@ _Scope = tuple[str, tuple[tuple[str, str], ...]]
 class FileAuthority:
     """Private, resolved resource identity; none of this is supplied by a ticket holder."""
 
-    target: Path
+    target: PurePath
     homes: tuple[Path, ...]
+    #: The SSH workspace reader the file is read through (``target`` is then a path on that
+    #: machine), or None for a file on this host.
+    workspace: Any = None
 
     def check_live(self) -> None:
         """``FileNotFoundError`` once a named profile home this file belongs to is missing or deleted."""

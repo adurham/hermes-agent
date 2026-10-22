@@ -607,7 +607,9 @@ describe('browser-hosted Desktop bridge', () => {
     await expect(pending).resolves.toMatchObject({ saved: true })
 
     const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
-    expect(requestUrl.pathname).toBe('/hermes/api/files/download')
+    // The workspace download route native Desktop uses: it reads an SSH-backed profile's files on
+    // that machine, like the file tree that listed them, not a same-named file on the gateway host.
+    expect(requestUrl.pathname).toBe('/hermes/api/fs/download')
     expect(requestUrl.searchParams.get('path')).toBe('file:///srv/reports/a%20b.pdf')
     expect(requestUrl.searchParams.get('profile')).toBe('research')
     expect(requestUrl.searchParams.get('session_id')).toBe('origin-session')

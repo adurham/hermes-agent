@@ -19,11 +19,11 @@ import sys
 import tempfile
 import urllib.parse
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -690,22 +690,32 @@ async def _managed_file_response(
 
 def _open_ticket_file(request: Request, authority: file_tickets.FileAuthority, *, media_only: bool):
     """Check the ticket's profile homes are still live and pin the file the ticket names."""
-    try:
-        authority.check_live()
+    def checked():
         _policy, target, _display, max_bytes, _mime = _managed_readable_file(
             request, str(authority.target), create_root=False,
         )
-        if target != authority.target:
-            raise HTTPException(status_code=403, detail="File ticket target changed")
         if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
             raise HTTPException(status_code=415, detail="Unsupported media type")
+        return target, max_bytes
+
+    return _pin_ticket_file(authority, checked)
+
+
+def _pin_ticket_file(authority: file_tickets.FileAuthority, checked):
+    """Open the host file *authority* names once its profile homes are still live and ``checked()``
+    (the route's own read rules) returns that same file and its size cap (None: no cap)."""
+    try:
+        authority.check_live()
+        target, max_bytes = checked()
+        if target != authority.target:
+            raise HTTPException(status_code=403, detail="File ticket target changed")
         _refuse_live_database(target)
         handle = target.open("rb")
         try:
             opened = os.fstat(handle.fileno())
             if not stat.S_ISREG(opened.st_mode):
                 raise HTTPException(status_code=400, detail="Only regular files can be read")
-            if opened.st_size > max_bytes:
+            if max_bytes is not None and opened.st_size > max_bytes:
                 raise HTTPException(status_code=413, detail="File is too large")
             return handle
         except BaseException:
@@ -740,10 +750,15 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
         # Capture the session/profile owner BEFORE looking up its cwd. The file
         # may be outside that home, but the ticket must still die with its owner.
         owner = await asyncio.to_thread(owner_home)
-        path = payload.path
-        if payload.session_id is not None or path.lower().startswith("file:"):
-            path = str(await _fs_download_path(path, payload.profile, payload.session_id))
-        authority = await asyncio.to_thread(capture)
+        if payload.route == "download":
+            authority = await _fs_download_authority(
+                request, payload.path, payload.profile, payload.session_id, owner,
+            )
+        else:
+            path = payload.path
+            if payload.session_id is not None or path.lower().startswith("file:"):
+                path = str(await _fs_download_path(path, payload.profile, payload.session_id))
+            authority = await asyncio.to_thread(capture)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="File ticket profile is unavailable") from exc
     query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
@@ -755,26 +770,15 @@ async def issue_file_ticket(payload: FileTicketRequest, request: Request):
 
 
 @router.get("/api/files/download")
-@router.head("/api/files/download")
-async def download_managed_file(
-    request: Request, path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
-):
+async def download_managed_file(request: Request, path: str):
     """Stream a managed file as an attachment download.
 
-    ``auth_middleware`` also accepts a path-bound ``?ticket=`` (browsers) or the
-    session token as ``?token=`` (Electron's remote external link) here so a
-    download without the session header still authenticates.
+    ``auth_middleware`` also accepts the session token as ``?token=`` here so a
+    shell/browser-opened download (no session header) still authenticates.
     Chromium marks ``<audio>``/``<video>`` subresource requests via
     ``Sec-Fetch-Dest``; those are served inline for Desktop builds that still
     use this route as their player source, attachment semantics otherwise.
     """
-    # Match Desktop's session/host-OS path resolution, then retain the managed
-    # root, sensitive-file and size checks. Unscoped managed-relative paths
-    # still resolve under the configured files root, not the server cwd.
-    if getattr(request.state, "file_ticket_authority", None) is None and (
-        session_id is not None or path.lower().startswith("file:")
-    ):
-        path = str(await _fs_download_path(path, profile, session_id))
     fetch_destination = request.headers.get("sec-fetch-dest", "").lower()
     is_media_subresource = fetch_destination in {"audio", "video"}
     return await _managed_file_response(
@@ -1114,25 +1118,103 @@ async def fs_read_data_url(
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
+def _remote_download_target(backend, path: str) -> tuple[str, int]:
+    """*path* resolved on the SSH workspace to a regular file a download may read, and its size."""
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    try:
+        target, size = backend.inspect_file(path)
+    except SshWorkspaceFsError as exc:
+        _raise_fs_backend_error(exc)
+    if _is_sensitive_path(Path(target)):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    return target, size
+
+
+def _remote_download_response(request: Optional[Request], backend, target: str, size: int) -> Response:
+    """*target* streamed from the SSH workspace as an attachment; a HEAD reads none of it."""
+    target_path = Path(target)
+    filename = urllib.parse.quote(target_path.name)
+    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+    media_type = _fs_mime_type(target_path)
+    if request is not None and request.method == "HEAD":
+        return Response(media_type=media_type, headers={**headers, "Content-Length": str(size)})
+    return StreamingResponse(backend.stream_file(target), media_type=media_type, headers=headers)
+
+
+async def _fs_download_authority(
+    request: Request, path: str, profile: Optional[str], session_id: Optional[str], owner: Path,
+) -> file_tickets.FileAuthority:
+    """The file ``/api/fs/download`` serves for this query, captured for a download ticket: on the
+    profile's SSH workspace when it has one, else on this host under the same read rules."""
+    from hermes_constants import named_profile_home
+
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
+    if backend is not None:
+        target, _size = await asyncio.to_thread(_remote_download_target, backend, path)
+        authority = file_tickets.FileAuthority(PurePosixPath(target), (owner,), workspace=backend)
+        await asyncio.to_thread(authority.check_live)
+        return authority
+    local = await _fs_download_path(path, profile, session_id)
+
+    def capture():
+        _hosted_fs_read_guard(local, request)
+        target, _st = _fs_regular_file(local, _fs_profile_home(profile))
+        homes = [owner]
+        target_home = named_profile_home(target)
+        if target_home is not None and target_home not in homes:
+            homes.append(target_home)
+        authority = file_tickets.FileAuthority(target, tuple(homes))
+        authority.check_live()
+        return authority
+
+    return await asyncio.to_thread(capture)
+
+
+async def _ticketed_fs_download(
+    request: Request, authority: file_tickets.FileAuthority, profile: Optional[str],
+) -> Response:
+    """Serve the file a download ticket captured while its profile homes are still live."""
+    if authority.workspace is not None:
+        try:
+            await asyncio.to_thread(authority.check_live)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="File ticket profile or resource is unavailable") from exc
+        target, size = await asyncio.to_thread(_remote_download_target, authority.workspace, str(authority.target))
+        if target != str(authority.target):
+            raise HTTPException(status_code=403, detail="File ticket target changed")
+        return _remote_download_response(request, authority.workspace, target, size)
+
+    from hermes_cli.web_server_file_response import OpenedFileResponse
+
+    def checked():
+        _hosted_fs_read_guard(authority.target, request)
+        target, _st = _fs_regular_file(authority.target, _fs_profile_home(profile))
+        return target, None
+
+    return OpenedFileResponse(
+        path=str(authority.target),
+        opener=lambda: _pin_ticket_file(authority, checked),
+        media_type=_fs_mime_type(authority.target),
+        filename=authority.target.name,
+        content_disposition_type="attachment",
+    )
+
+
 @router.get("/api/fs/download")
+@router.head("/api/fs/download")
 async def fs_download(
     path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
+    """A workspace file as an attachment: from the profile's SSH workspace when it has one, else
+    from this host. A browser download link authenticates with a path-bound ``?ticket=``."""
+    authority = getattr(getattr(request, "state", None), "file_ticket_authority", None)
+    if authority is not None:
+        return await _ticketed_fs_download(request, authority, profile)
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
-        try:
-            target, _size = await asyncio.to_thread(backend.inspect_file, path)
-        except Exception as exc:
-            _raise_fs_backend_error(exc)
-        target_path = Path(target)
-        if _is_sensitive_path(target_path):
-            raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
-        filename = urllib.parse.quote(target_path.name)
-        return StreamingResponse(
-            backend.stream_file(target),
-            media_type=_fs_mime_type(target_path),
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
-        )
+        target, size = await asyncio.to_thread(_remote_download_target, backend, path)
+        return _remote_download_response(request, backend, target, size)
     target = await _fs_download_path(path, profile, session_id)
     _hosted_fs_read_guard(target, request)
     target, _st = _fs_regular_file(target, _fs_profile_home(profile))

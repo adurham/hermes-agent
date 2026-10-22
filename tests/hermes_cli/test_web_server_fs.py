@@ -254,6 +254,65 @@ def test_fs_download_streams_ssh_files_without_preview_cap(client, monkeypatch):
     assert response.content == b"123456"
 
 
+def test_a_browser_download_reads_the_ssh_workspace_file_it_listed(client, monkeypatch, tmp_path):
+    """The browser lists an SSH workspace through ``/api/fs/list``. Its Download checks the file
+    with a HEAD, then hands the browser the URL a download ticket authorizes (an anchor cannot send
+    the session header). Both read the file on the SSH machine, as native Desktop's download does,
+    never a file at the same path on the gateway's own disk. The ticket is single-use and dies
+    with its profile."""
+    from hermes_cli import web_server_file_tickets as file_tickets
+    from hermes_constants import mark_named_profile_deleted
+
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "remote-dev"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    same_path = tmp_path / "srv" / "report.txt"
+    same_path.parent.mkdir()
+    same_path.write_bytes(b"gateway copy")
+    remote_only = str(tmp_path / "srv" / "only-remote.txt")
+    streamed = []
+
+    class FakeSshFs:
+        def inspect_file(self, path):
+            return path, len(b"remote copy")
+
+        def stream_file(self, path):
+            streamed.append(path)
+            yield b"remote copy"
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: FakeSshFs())
+    route = file_tickets.ROUTES["download"]
+    anchor = TestClient(web_server.app)  # a download link sends no session header
+
+    def ticketed(query):
+        minted = client.post("/api/files/ticket", json={"route": "download", **query})
+        assert minted.status_code == 200, (query, minted.text)
+        return {**query, "ticket": minted.json()["ticket"]}
+
+    try:
+        for path in (str(same_path), remote_only):
+            query = {"path": path, "profile": "remote-dev"}
+            checked = client.head(route, params=query)
+            assert (checked.status_code, checked.content) == (200, b""), (path, checked.text)
+            params = ticketed(query)
+            saved = anchor.get(route, params=params)
+            assert (saved.status_code, saved.content) == (200, b"remote copy"), path
+            assert saved.headers["content-disposition"].startswith("attachment;")
+            assert anchor.get(route, params=params).status_code == 401
+        assert streamed == [str(same_path), remote_only]  # the HEAD checks read nothing
+
+        params = ticketed({"path": remote_only, "profile": "remote-dev"})
+        mark_named_profile_deleted(profile)
+        assert anchor.get(route, params=params).status_code in (401, 403, 404)
+        assert streamed == [str(same_path), remote_only]
+    finally:
+        anchor.close()
+
+
 def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_FS_DATA_URL_MAX_BYTES", 3)
     target = tmp_path / "image.png"

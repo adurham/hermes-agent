@@ -19,7 +19,7 @@ import pytest
 import uvicorn
 from starlette.responses import FileResponse
 
-from hermes_cli import web_server
+from hermes_cli import web_server, web_server_file_tickets
 from hermes_cli.web_routers import files
 from hermes_constants import mark_named_profile_deleted
 
@@ -115,8 +115,11 @@ def test_http_tickets_die_with_their_profile_or_session_owner(file_server, scope
     route, query = _TICKET_SCOPES[scope](home, profile)
 
     params = _ticket(client, route, query)
-    unused_download = _ticket(client, "download", query)
-    endpoint = f"/api/files/{route}"
+    # A download reads through the workspace route, which names a file by its host path, not by a
+    # path under the managed files root.
+    download_query = {**query, "path": str(profile / "clip.mp4")} if scope == "managed-relative" else query
+    unused_download = _ticket(client, "download", download_query)
+    endpoint = web_server_file_tickets.ROUTES[route]
     for _ in range(2 if route == "stream" else 1):
         response = client.get(endpoint, params=params, headers={"Range": "bytes=0-2"})
         assert (response.status_code, response.content) == (206, b"old")
@@ -133,7 +136,8 @@ def test_http_tickets_die_with_their_profile_or_session_owner(file_server, scope
     _delete(profile, remove=remove)
     stale = client.get(endpoint, params=params, headers={"Range": "bytes=0-2"})
     assert stale.status_code in (401, 403, 404), stale.content
-    assert client.get("/api/files/download", params=unused_download).status_code in (401, 403, 404)
+    assert client.get(web_server_file_tickets.ROUTES["download"], params=unused_download).status_code in (
+        401, 403, 404)
     refused = client.post("/api/files/ticket", json={"route": route, **query}, headers={
         web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN,
     })

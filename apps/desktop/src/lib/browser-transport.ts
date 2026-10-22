@@ -226,6 +226,13 @@ export interface FileEndpointQuery {
 }
 
 /**
+ * Where each ticketed file URL reads. A download uses the workspace route native Desktop downloads
+ * with, which reads an SSH-backed profile's files on that machine, like the file tree that lists
+ * them; media plays through the managed stream route.
+ */
+export const FILE_ENDPOINTS = { download: '/api/fs/download', stream: '/api/files/stream' } as const
+
+/**
  * URL for a download link or media element, which cannot send the session
  * header. Gated hosts authenticate it with the same-origin cookie. A token
  * session mints a ticket bound to this exact route and query: the session
@@ -238,7 +245,7 @@ export async function fileEndpointUrl(
   query: FileEndpointQuery
 ): Promise<URL> {
   const params = Object.fromEntries(Object.entries(query).filter(([, value]) => value)) as Record<string, string>
-  const url = endpointUrl(`/api/files/${route}`, bootstrap.basePath)
+  const url = endpointUrl(FILE_ENDPOINTS[route], bootstrap.basePath)
 
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value))
 

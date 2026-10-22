@@ -154,7 +154,7 @@ def test_download_authenticates_via_query_token(forced_files_client):
     ).status_code == 401
 
 
-@pytest.mark.parametrize("route", ["/api/fs/download", "/api/fs/read-data-url", "/api/files/download"])
+@pytest.mark.parametrize("route", ["/api/fs/download", "/api/fs/read-data-url"])
 def test_download_resolves_paths_in_the_originating_profile_session(
     local_files_client, monkeypatch, route,
 ):
@@ -197,29 +197,6 @@ def test_download_resolves_paths_in_the_originating_profile_session(
             "path": str(artifact), "profile": profile, "session_id": session_id,
         })
         assert response.status_code == 404, response.text
-
-
-@pytest.mark.parametrize("method", ["get", "head"])
-def test_managed_download_accepts_file_uris_without_bypassing_policy(
-    forced_files_client, monkeypatch, method,
-):
-    client, root = forced_files_client
-    artifact = _seed_file(client, root, name="out/a b.txt")
-    request = getattr(client, method)
-    response = request("/api/files/download", params={"path": artifact.as_uri()})
-    assert response.status_code == 200
-    assert response.headers["content-length"] == "5"
-    assert response.content == (b"hello" if method == "get" else b"")
-
-    outside = root.parent / "outside.txt"
-    outside.write_text("outside")
-    assert request("/api/files/download", params={"path": outside.as_uri()}).status_code == 403
-    sensitive = root / ".env"
-    sensitive.write_text("fixture-only")
-    assert request("/api/files/download", params={"path": sensitive.as_uri()}).status_code == 403
-
-    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
-    assert request("/api/files/download", params={"path": artifact.as_uri()}).status_code == 413
 
 
 def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
@@ -299,13 +276,14 @@ def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
         {**params, "path": [str(video), str(other)]},
     ):
         assert client.get("/api/files/stream", params=foreign).status_code == 401, foreign
-    assert client.get("/api/files/download", params=params).status_code == 401
+    download_route = web_server_file_tickets.ROUTES["download"]
+    assert client.get(download_route, params=params).status_code == 401
     assert client.get("/api/files/stream", params={"path": str(video), "ticket": expired}).status_code == 401
 
     once = {"path": str(video), "ticket": download}
     assert client.get("/api/files/stream", params=once).status_code == 401
-    assert client.get("/api/files/download", params=once).content == b"hello"
-    assert client.get("/api/files/download", params=once).status_code == 401
+    assert client.get(download_route, params=once).content == b"hello"
+    assert client.get(download_route, params=once).status_code == 401
 
 
 def test_stream_rejects_non_media_active_content(forced_files_client):
