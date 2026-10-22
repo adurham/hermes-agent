@@ -113,7 +113,10 @@ def _start_chromium(env, user, exe: str, udd: str, child_env: dict) -> int:
 def _wait_for_port(env, user, udd: str) -> tuple[int, str]:
     deadline = time.monotonic() + _LAUNCH_TIMEOUT_S
     while time.monotonic() < deadline:
-        found = _read_devtools(env, user, udd)
+        try:
+            found = _read_devtools(env, user, udd)
+        except subprocess.TimeoutExpired:
+            found = None  # one slow exec is another not-ready answer; the deadline decides readiness
         if found:
             return found
         time.sleep(0.5)
@@ -227,5 +230,5 @@ def _stop_launched(key: str) -> None:
     env, pid = launched
     try:
         streams.run_in(env, ["kill", "-TERM", str(int(pid))], user=sandbox_host._user_for(env), timeout=15)
-    except (OSError, RuntimeError) as exc:
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         logger.debug("sandbox browser stop for pid %s failed: %s", pid, exc)

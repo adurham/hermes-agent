@@ -380,6 +380,22 @@ class TestSandboxBrowserOwnership:
         assert fake_sandbox.killed == [4242]
         assert browser_session_sandbox._launched == {}
 
+    def test_a_timed_out_port_wait_is_a_readiness_failure(self, fake_sandbox, monkeypatch):
+        from tools import browser_session_sandbox
+        from tools.browser_session_sandbox import create_sandbox_session
+        fake_sandbox.timeouts.add("cat")
+        monkeypatch.setattr(browser_session_sandbox, "_LAUNCH_TIMEOUT_S", 0.01)
+        with pytest.raises(RuntimeError, match="did not expose a DevTools endpoint"):
+            create_sandbox_session("task-A")
+        assert fake_sandbox.killed == [4242]
+
+    def test_a_timed_out_stop_does_not_crash_the_teardown(self, fake_sandbox, isolated_sessions):
+        from tools.browser_session_sandbox import create_sandbox_session
+        isolated_sessions["task-A"] = create_sandbox_session("task-A")
+        fake_sandbox.timeouts.add("kill")
+        lifecycle.cleanup_single_session("task-A")
+        assert "task-A" not in isolated_sessions
+
     def test_sessions_racing_onto_one_container_launch_one_browser(self, fake_sandbox):
         from tools.browser_session_sandbox import create_sandbox_session
         fake_sandbox.probe_barrier = threading.Barrier(2)
