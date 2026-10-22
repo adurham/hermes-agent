@@ -499,8 +499,10 @@ async def start_gateway_runtime_api(runner):
     from gateway.webapp_listener import browser_session_token, dial_origin, listener_plan, register_control_verbs
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
-    host, port, webapp = listener_plan(home)
-    runner.webapp_status = {"state": "off", "url": None, "reason": None}
+    host, port, webapp, unusable = listener_plan(home)
+    # A webapp: block that asks for the Webapp but cannot be used is reported with its reason.
+    runner.webapp_status = ({"state": "unavailable", "url": None, "reason": unusable} if unusable
+                            else {"state": "off", "url": None, "reason": None})
     try:
         # Without the Webapp the listener is main's: the same call, a private ephemeral port.
         runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)

@@ -15,6 +15,7 @@ from pathlib import Path
 RESTART_COMMAND = "hermes gateway restart"
 # The gateway reads the Webapp's settings and sign-in providers only when it starts.
 RETRY_AFTER_FIX = f"The gateway reads these settings when it starts: after fixing them, run {RESTART_COMMAND}."
+STARTED_BEFORE_ON = f"The gateway started before the Webapp was turned on. Restart it to serve the Webapp: {RESTART_COMMAND}"
 
 
 class GatewayUnreachable(Exception):
@@ -81,6 +82,18 @@ def _refusal(response: dict) -> str:
     return message if kind.endswith("Error") and message else error
 
 
+def _off_message(target: Path, then: str) -> str:
+    """Why *target*'s config keeps the Webapp off and what to do about it, then *then*: the
+    ``webapp:`` block's own problem when it asks for the Webapp but cannot be used."""
+    from gateway.webapp_listener import webapp_settings
+    settings = webapp_settings(target)
+    if settings.reason:
+        return f"The Webapp is off: {settings.reason}. Fix it, then {then}."
+    if settings.enabled:
+        return STARTED_BEFORE_ON
+    return f"The Webapp is off. Set webapp.enabled: true in {target / 'config.yaml'}, then {then}."
+
+
 def _status(target: Path) -> int:
     try:
         response = _control(target, "webapp-status")
@@ -89,7 +102,7 @@ def _status(target: Path) -> int:
         if webapp_settings(target).enabled:
             print("The gateway is not running. Run hermes webapp to start it.")
         else:
-            print(f"The Webapp is off. Set webapp.enabled: true in {target / 'config.yaml'}, then run hermes webapp.")
+            print(_off_message(target, "run hermes webapp"))
         return 1
     if not response.get("ok"):
         print(_refusal(response))
@@ -98,7 +111,7 @@ def _status(target: Path) -> int:
     if status["state"] == "serving":
         print(f"Serving at {status['url']}")
     elif status["state"] == "off":
-        print(f"The Webapp is off. Set webapp.enabled: true in {target / 'config.yaml'}, then run {RESTART_COMMAND}.")
+        print(_off_message(target, f"run {RESTART_COMMAND}"))
     else:
         print(f"Unavailable: {status['reason']}")
         from gateway.webapp_listener import NOT_BUILT
@@ -127,7 +140,7 @@ def _explain_refused_launch(target: Path, response: dict) -> int:
     except GatewayUnreachable:
         state = None
     if state == "off":
-        print(f"The gateway started before the Webapp was turned on. Restart it to serve the Webapp: {RESTART_COMMAND}")
+        print(STARTED_BEFORE_ON)
     else:
         print(_refusal(response))
         if state == "unavailable":
@@ -147,7 +160,7 @@ def cmd_webapp(args) -> int:
     if args.sign_out:
         return _sign_out(target)
     if not args.build_only and not webapp_settings(target).enabled:
-        print(f"The Webapp is off. Set webapp.enabled: true in {target / 'config.yaml'}, then run hermes webapp again.")
+        print(_off_message(target, "run hermes webapp again"))
         return 1
     try:
         _build(args)

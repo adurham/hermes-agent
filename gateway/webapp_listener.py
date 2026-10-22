@@ -39,6 +39,8 @@ class WebappSettings:
     port: int = DEFAULT_PORT
     #: ``webapp.public_url``: the address a reverse proxy or tunnel serves the Webapp at, or "" for none.
     public_url: str = ""
+    #: Why a ``webapp:`` block that asks for the Webapp keeps it off (it cannot be used), else None.
+    reason: str | None = None
 
     @property
     def bind(self) -> tuple[str, int]:
@@ -71,39 +73,38 @@ def _config_document(home: Path) -> dict:
 
 def webapp_settings(home) -> WebappSettings:
     """``webapp:`` from *home*'s config. A missing, unreadable or malformed block reads as off, so a
-    typo never exposes the listener."""
+    typo never exposes the listener; a block that cannot be used carries the reason in ``reason``."""
     path = Path(home) / "config.yaml"
     from ruamel.yaml.error import YAMLError
+
+    def off(reason: str) -> WebappSettings:
+        logger.warning("Webapp stays off: %s", reason)
+        return WebappSettings(reason=reason)
+
     try:
         document = _config_document(Path(home))
     except (OSError, ValueError, YAMLError) as exc:  # the gateway's own config load reports it
-        logger.warning("Webapp stays off: %s could not be read (%s)", path, exc)
-        return WebappSettings()
+        return off(f"{path} could not be read ({exc})")
     block = document.get("webapp") if isinstance(document, dict) else None
     if block is None:
         return WebappSettings()
     if not isinstance(block, dict):
-        logger.warning("Webapp stays off: webapp in %s must be a mapping", path)
-        return WebappSettings()
+        return off(f"webapp in {path} must be a mapping")
     enabled = block.get("enabled", False)
     if enabled is False:
         return WebappSettings()
     if enabled is not True:
-        logger.warning("Webapp stays off: webapp.enabled must be true or false in %s", path)
-        return WebappSettings()
+        return off(f"webapp.enabled must be true or false in {path}")
     host = block.get("host", DEFAULT_HOST)
     port = block.get("port", DEFAULT_PORT)
     if not isinstance(host, str) or not (_is_loopback(host.strip()) or _is_wildcard(host.strip())):
-        logger.warning("Webapp stays off: webapp.host must be a loopback address, 0.0.0.0 or :: in %s", path)
-        return WebappSettings()
+        return off(f"webapp.host must be a loopback address, 0.0.0.0 or :: in {path}")
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-        logger.warning("Webapp stays off: webapp.port must be a port number (1-65535) in %s", path)
-        return WebappSettings()
+        return off(f"webapp.port must be a port number (1-65535) in {path}")
     public_url = _public_url(block.get("public_url"))
     if public_url is None:
-        logger.warning("Webapp stays off: webapp.public_url must be an http:// or https:// address with no "
-                       "credentials, query or fragment in %s", path)
-        return WebappSettings()
+        return off(f"webapp.public_url must be an http:// or https:// address with no credentials, "
+                   f"query or fragment in {path}")
     return WebappSettings(enabled=True, host=host.strip(), port=port, public_url=public_url)
 
 
@@ -149,15 +150,16 @@ def dial_origin(bind_host: str, port: int) -> str:
     return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
 
-def listener_plan(home) -> tuple[str, int, WebappMount | None]:
-    """The gateway listener's ``(host, port, webapp)`` for the gateway serving *home*."""
+def listener_plan(home) -> tuple[str, int, WebappMount | None, str | None]:
+    """The gateway listener's ``(host, port, webapp, reason)`` for the gateway serving *home*;
+    *reason* says why a ``webapp:`` block that asks for the Webapp cannot be used."""
     settings = webapp_settings(home)
     if not settings.enabled:
-        return (*settings.bind, None)
+        return (*settings.bind, None, settings.reason)
     from hermes_cli.config import get_project_root
     from hermes_cli.webapp import webapp_dist_dir
     mount = WebappMount(dist=webapp_dist_dir(get_project_root()), home=Path(home), public_url=settings.public_url)
-    return (*settings.bind, mount)
+    return (*settings.bind, mount, None)
 
 
 def browser_session_token(home, *, rotate: bool = False) -> str:
