@@ -24,6 +24,9 @@ _LAUNCH_TIMEOUT_S = 60.0
 # teardown outside the owner's scope hits the right sandbox.
 _launched: dict[str, tuple[Any, int]] = {}
 _launched_lock = threading.Lock()
+# Per shared key: held across "is a browser running?" + launch + claim, and across the stop, so two sessions
+# first using one container never both see no browser and both launch.
+_key_locks: dict[str, threading.Lock] = {}
 # Endpoints a liveness probe confirmed: ``cdp_url -> (id(env), sandbox port, forward failures then, when)``. A
 # browser call re-probes after a connection through its forward failed, the sandbox was replaced, or the
 # confirmation is older than _CONFIRMED_TTL_S (a relaunch on the same port that nothing connected to yet
@@ -117,6 +120,11 @@ def _wait_for_port(env, user, udd: str) -> tuple[int, str]:
     raise RuntimeError("Chromium in the sandbox did not expose a DevTools endpoint in time")
 
 
+def _key_lock(key: str) -> threading.Lock:
+    with _launched_lock:
+        return _key_locks.setdefault(key, threading.Lock())
+
+
 def _spawn_owned(env, user, udd: str, key: str, published: dict) -> int:
     """Launch the sandbox Chromium and own it under ``key`` from the moment it exists, before its port is
     up, so stop_sandbox_browser can always stop it; returns its sandbox pid."""
@@ -141,20 +149,22 @@ def create_sandbox_session(cache_key: str) -> dict[str, Any]:
     user = sandbox_host._user_for(env)
     udd = sandbox_host.browser_profile_dir(env)
     key = _shared_key(env, udd)
-    found = _live_devtools(env, user, udd)
-    if found is None:
-        # Launching blind would wipe a live browser's DevToolsActivePort and lose to its singleton.
-        raise RuntimeError("the terminal backend's sandbox did not answer whether its browser is running; try again")
-    spawned: Optional[int] = None
-    try:
-        if found is GONE:
-            spawned = _spawn_owned(env, user, udd, key, published)
-            found = _wait_for_port(env, user, udd)
-        local_port = streams.forward_port(env, found[0], user=user)
-    except BaseException:
-        if spawned is not None:  # a timeout, a failed forward or an interrupt must not leave it running unowned
-            _stop_launched(key)
-        raise
+    with _key_lock(key):
+        found = _live_devtools(env, user, udd)
+        if found is None:
+            # Launching blind would wipe a live browser's DevToolsActivePort and lose to its singleton.
+            raise RuntimeError("the terminal backend's sandbox did not answer whether its browser is running; "
+                               "try again")
+        spawned: Optional[int] = None
+        try:
+            if found is GONE:
+                spawned = _spawn_owned(env, user, udd, key, published)
+                found = _wait_for_port(env, user, udd)
+            local_port = streams.forward_port(env, found[0], user=user)
+        except BaseException:
+            if spawned is not None:  # a timeout, a failed forward or an interrupt must not leave it running unowned
+                _stop_launched(key)
+            raise
     info = _session_record("sb", f"ws://127.0.0.1:{local_port}{found[1]}", {"local": True, "sandbox": True})
     _confirm(info["cdp_url"], env, found[0])
     info.update(shared_profile=True, launcher_key=key)
@@ -202,7 +212,9 @@ def stop_sandbox_browser(session_info: dict[str, Any]) -> None:
     """SIGTERM the sandbox Chromium this process launched on the session's shared key (best effort; the
     sandbox's lifetime bounds it). The caller guarantees no other live session uses it."""
     _confirmed.pop(session_info.get("cdp_url") or "", None)
-    _stop_launched(session_info.get("launcher_key") or "")
+    key = session_info.get("launcher_key") or ""
+    with _key_lock(key):
+        _stop_launched(key)
 
 
 def _stop_launched(key: str) -> None:

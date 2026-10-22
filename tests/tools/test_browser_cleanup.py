@@ -250,16 +250,17 @@ class _FakeSandbox:
             return _Completed(1)
         if "/dev/tcp" in cmd:
             self.probes += 1
-            if self.probe_barrier is not None:
-                with contextlib.suppress(threading.BrokenBarrierError):
-                    self.probe_barrier.wait(timeout=1.0)
             if self.probe_failure == "exit-255":
                 return _Completed(255)
             if self.probe_failure == "timeout":
                 raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
         if "/dev/tcp" in cmd or argv[0] == "cat":
             found = f"9222\n/devtools/browser/{self.browser_id}\n".encode()
-            return _Completed(0, found) if self.running else _Completed(3)
+            answer = _Completed(0, found) if self.running else _Completed(3)
+            if "/dev/tcp" in cmd and self.probe_barrier is not None:  # answered, then held until the rival probes
+                with contextlib.suppress(threading.BrokenBarrierError):
+                    self.probe_barrier.wait(timeout=1.0)
+            return answer
         if argv[0] == "kill":
             self.killed.append(int(argv[-1]))
             self.running = None
@@ -378,6 +379,25 @@ class TestSandboxBrowserOwnership:
             create_sandbox_session("task-A")
         assert fake_sandbox.killed == [4242]
         assert browser_session_sandbox._launched == {}
+
+    def test_sessions_racing_onto_one_container_launch_one_browser(self, fake_sandbox):
+        from tools.browser_session_sandbox import create_sandbox_session
+        fake_sandbox.probe_barrier = threading.Barrier(2)
+        results, errors = [], []
+
+        def create(key):
+            try:
+                results.append(create_sandbox_session(key))
+            except Exception as exc:  # surfaced by the assertion below
+                errors.append(exc)
+        threads = [threading.Thread(target=create, args=(key,)) for key in ("task-A", "task-B")]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert errors == [] and len(results) == 2
+        assert fake_sandbox.launches == 1
+        assert {info["cdp_url"] for info in results} == {"ws://127.0.0.1:59222/devtools/browser/abc"}
 
 
 class _FakeContainers:
