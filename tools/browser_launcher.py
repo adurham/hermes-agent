@@ -598,10 +598,10 @@ def _last_holder_out(record: Path, browser: LaunchedBrowser) -> bool:
     return browser.owned or data is not None
 
 
-def stop_all_browsers(home_key: Optional[str] = None) -> None:
-    """Stop every browser this process launched (only ``home_key``'s when given). Idempotent."""
+def stop_all_browsers() -> None:
+    """Stop every browser this process launched. Idempotent."""
     with _lock:
-        keys = [k for k, b in _browsers.items() if home_key in (None, b.home_key)]
+        keys = list(_browsers)
     for key in keys:
         stop_browser(key)
 
