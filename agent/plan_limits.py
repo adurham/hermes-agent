@@ -149,9 +149,15 @@ def blocking_gauge(model: str, gauges: Iterable[Any], *, free: bool, top_tier: b
     return max(full, key=lambda g: g.resets_at_ms or 0) if full else None
 
 
-def current_model_is_top_tier(agent: Any) -> bool:
-    """*agent*'s current model is top tier, by its own profile's cached catalog (see :func:`is_top_tier`)."""
-    return is_top_tier(str(getattr(agent, "model", "") or ""), cached_pricing(str(getattr(agent, "base_url", "") or "")))
+def current_model_is_top_tier(agent: Any) -> Optional[bool]:
+    """*agent*'s current model is top tier, by its own profile's cached catalog (see :func:`is_top_tier`), or
+    None when the catalog has no row for it (cold, or its 300 s cache lapsed): the tier is unknown."""
+    model = str(getattr(agent, "model", "") or "")
+    return _top_tier_mark(model, cached_pricing(str(getattr(agent, "base_url", "") or "")))
+
+
+def _top_tier_mark(model: str, pricing: Optional[dict]) -> Optional[bool]:
+    return is_top_tier(model, pricing) if model in (pricing or {}) or is_free(model, pricing) else None
 
 
 def is_blocked(model: str, gauges: Iterable[Any], pricing: Optional[dict]) -> bool:
@@ -253,7 +259,9 @@ def limit_hit(agent: Any, *, message: str, needed_tokens: Optional[int] = None) 
         base_url = str(getattr(agent, "base_url", "") or "")
         pricing = cached_pricing(base_url)
         gauges = tuple(getattr(state, "gauges", ()) or ())
-        g = blocking_gauge(model, gauges, free=is_free(model, pricing), top_tier=is_top_tier(model, pricing))
+        # A model the cached catalog has no row for may be top tier: count its full top-tier gauge too, so
+        # the card never names an earlier reset than the one that frees it.
+        g = blocking_gauge(model, gauges, free=is_free(model, pricing), top_tier=_top_tier_mark(model, pricing) is not False)
         if g is None:
             # The 402 says this model was refused; without a top-tier mark in the cache a full top-tier
             # gauge is still the only explanation.
