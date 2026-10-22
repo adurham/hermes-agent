@@ -7,6 +7,7 @@ version are what make that line expected; nothing else may pass.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -90,6 +91,8 @@ def test_without_a_lock_every_line_fails(tmp_path):
     "error: failed to inspect the environment\n",
     # uv counted more incompatibilities than the parser recognised.
     "Found 2 incompatibilities\n" + OVERRIDDEN + "\nThe package `x` has an unreadable requirement\n",
+    # No count: the head of the report may be missing, taking unrelated failures with it.
+    OVERRIDDEN + "\n",
 ])
 def test_unrecognised_report_is_never_read_as_clean(lock, report):
     assert unexpected_incompatibilities(report, lock) is None
@@ -106,19 +109,28 @@ def test_stdlib_fallback_reads_the_real_lock_like_tomllib(monkeypatch):
 @pytest.fixture
 def overridden_project(tmp_path):
     """A real project whose dependency pins shared-dep==1.0, overridden to 2.0."""
+    return _overridden_project(tmp_path, ["shared_dep"])
+
+
+def _overridden_project(tmp_path, overridden, extra_wheels=(), extra_dependencies=()):
     uv = shutil.which("uv")
     assert uv, "environment construction tests require uv on PATH"
     source = tmp_path / "source"
     source.mkdir()
     wheels = tmp_path / "wheels"
     wheels.mkdir()
-    _wheel(wheels, "pinned_parent", requirements=("shared-dep==1.0",))
-    _wheel(wheels, "shared_dep", "1.0")
-    _wheel(wheels, "shared_dep", "2.0")
+    _wheel(wheels, "pinned_parent", requirements=[f"{name.replace('_', '-')}==1.0" for name in overridden])
+    for name in overridden:
+        _wheel(wheels, name, "1.0")
+        _wheel(wheels, name, "2.0")
+    for name, requirements in extra_wheels:
+        _wheel(wheels, name, requirements=requirements)
+    dependencies = json.dumps(["pinned-parent==1.0", *extra_dependencies])
+    overrides = json.dumps([f"{name.replace('_', '-')}==2.0" for name in overridden])
     (source / "pyproject.toml").write_text(
         '[project]\nname="override-root"\nversion="1"\nrequires-python=">=3.11"\n'
-        'dependencies=["pinned-parent==1.0"]\n'
-        '[tool.uv]\npackage=false\nno-index=true\noverride-dependencies=["shared-dep==2.0"]\n'
+        f'dependencies={dependencies}\n'
+        f'[tool.uv]\npackage=false\nno-index=true\noverride-dependencies={overrides}\n'
         f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8",
     )
     home = tmp_path / "isolated-home"
@@ -155,3 +167,26 @@ def test_build_accepts_the_override_and_check_still_rejects_what_it_does_not_cov
     assert overridden_versions(stale) == {"shared-dep": {"1.0"}}
     with pytest.raises(InstallError, match="dependency validation failed"):
         environment.check(stale)
+
+
+def test_streamed_check_still_sees_failures_ahead_of_a_long_expected_report(tmp_path):
+    """Interactive builds stream uv output and keep only its tail. An unrelated failure
+    reported before 2,000+ characters of override-covered lines must still fail the check."""
+    from pm import build_environment
+    from pm.environment import managed_environment
+    from pm.environments import site_packages
+
+    overridden = [f"shared_dep_{index:02d}" for index in range(30)]
+    source, env = _overridden_project(tmp_path, overridden,
+                                      extra_wheels=[("aa_parent", ["aa-dep==1.0"]), ("aa_dep", [])],
+                                      extra_dependencies=["aa-parent==1.0"])
+    out = tmp_path / "environment"
+    build_environment(explicit=True, source=source, python=Path(sys.executable), out=out,
+                      cache=tmp_path / "cache", env=env, offline=True, frozen=True)
+    # Break the environment in a way no override explains.
+    shutil.rmtree(next(site_packages(out).glob("aa_dep-1.0.dist-info")))
+
+    environment = managed_environment(out, python=Path(sys.executable), cache=tmp_path / "cache",
+                                      env=env, offline=True, explicit=True, output=io.StringIO())
+    with pytest.raises(InstallError, match="requires `aa-dep==1.0`, but it's not installed"):
+        environment.check(source / "uv.lock")

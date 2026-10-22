@@ -8,7 +8,7 @@ from __future__ import annotations
 import codecs
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import io
 import os
 from pathlib import Path
@@ -490,8 +490,10 @@ class PythonEnvironment:
         """`uv pip check` the environment; *lock* is the uv.lock it was installed from.
 
         Mismatches the lock's manifest overrides account for are expected (pm.pip_check).
+        The check is a quiet step, so it runs captured even for a streaming environment:
+        a streamed run keeps only the output's tail, which can drop the report's head.
         """
-        result = self._run(
+        result = replace(self, output=None)._run(
             ["pip", "check", "--no-config", "--python", str(self.executable)],
             cwd=self.destination.parent, timeout=60,
         )

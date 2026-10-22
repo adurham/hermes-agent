@@ -58,13 +58,14 @@ def overridden_versions(lock: Path) -> dict[str, set[str]]:
 def unexpected_incompatibilities(report: str, lock: Path | None) -> list[str] | None:
     """The report lines *lock* does not account for.
 
-    None when the report cannot be read line by line (no lines, or fewer than the
-    "Found N" total uv printed), so the caller fails on the raw output instead of
-    trusting a partial parse.
+    None when the report cannot be read line by line: no lines, or uv's "Found N"
+    total missing or different from the lines recognised (a truncated report loses
+    its head, and any failure printed there). The caller then fails on the raw output
+    instead of trusting a partial parse.
     """
     lines = [line.strip() for line in report.splitlines() if _REPORT_LINE.match(line.strip())]
     found = _FOUND.search(report)
-    if not lines or (found and int(found.group(1)) != len(lines)):
+    if not lines or not found or int(found.group(1)) != len(lines):
         return None
     if lock is None or not lock.is_file():
         return lines
