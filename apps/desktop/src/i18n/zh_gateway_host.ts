@@ -32,6 +32,7 @@ export const zhGatewayHost: GatewayHostTranslations = {
     restartGateway: '重启网关',
     modeLan: '当前网络',
     modeLanDetail: url => `你的 Wi-Fi 中的设备可打开 ${url}。仅在你信任的网络中使用。`,
+    lanUnencrypted: '连接未加密：同一网络中的其他人可能读取你发送和接收的内容。',
     noLan: '这台电脑没有其他设备可以访问的网络地址。',
     modePublic: '我自己的网址',
     modePublicDetail: port => `你已有的 HTTPS 地址（例如 Tailscale Serve 或隧道），并转发到 http://127.0.0.1:${port}。`

@@ -168,4 +168,11 @@ describe('WebAccessSettings', () => {
 
     expect(await screen.findByText('Restart needed')).toBeTruthy()
   })
+
+  it('says that network access is not encrypted', async () => {
+    // LAN mode is plain HTTP: anyone on the network can read the traffic.
+    renderPane(OFF)
+
+    expect(await screen.findByText(/The connection is not encrypted/)).toBeTruthy()
+  })
 })

@@ -32,6 +32,7 @@ export const deGatewayHost: GatewayHostTranslations = {
     restartGateway: 'Gateway neu starten',
     modeLan: 'Dieses Netzwerk',
     modeLanDetail: url => `Geräte in deinem WLAN öffnen ${url}. Nur in einem vertrauenswürdigen Netzwerk verwenden.`,
+    lanUnencrypted: 'Die Verbindung ist nicht verschlüsselt: Andere in diesem Netzwerk könnten mitlesen, was du sendest und empfängst.',
     noLan: 'Dieser Computer hat keine Netzwerkadresse, die andere Geräte erreichen können.',
     modePublic: 'Eigene URL',
     modePublicDetail: port => `Eine HTTPS-Adresse, die du bereits betreibst, etwa Tailscale Serve oder ein Tunnel, die an http://127.0.0.1:${port} weiterleitet.`

@@ -733,6 +733,7 @@ export const arSettings = {
         restartGateway: 'إعادة تشغيل البوابة',
         modeLan: 'هذه الشبكة',
         modeLanDetail: url => `تفتح الأجهزة على شبكة Wi-Fi العنوان ${url}. استخدمه على شبكة تثق بها فقط.`,
+        lanUnencrypted: 'الاتصال غير مشفّر: يمكن لآخرين على هذه الشبكة قراءة ما ترسله وتستقبله.',
         noLan: 'لا يملك هذا الحاسوب عنوان شبكة يمكن للأجهزة الأخرى الوصول إليه.',
         modePublic: 'عنواني الخاص',
         modePublicDetail: port => `عنوان HTTPS تديره بالفعل، مثل Tailscale Serve أو نفق، يحوّل إلى http://127.0.0.1:${port}.`

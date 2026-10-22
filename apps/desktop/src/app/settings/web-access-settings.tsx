@@ -238,7 +238,21 @@ function WhereRow({ lanUrl, locked, mode, onMode, onPublicUrl, port, publicUrl, 
           />
         )
       }
-      description={mode === 'lan' ? (lanUrl ? w.modeLanDetail(lanUrl) : w.noLan) : w.modePublicDetail(port)}
+      description={
+        mode === 'lan' ? (
+          lanUrl ? (
+            <>
+              {w.modeLanDetail(lanUrl)}
+              {/* Plain HTTP: anyone on the network can read the traffic, sign-in included. */}
+              <span className="block">{w.lanUnencrypted}</span>
+            </>
+          ) : (
+            w.noLan
+          )
+        ) : (
+          w.modePublicDetail(port)
+        )
+      }
       title={mode === 'lan' ? w.modeLan : w.modePublic}
     />
   )

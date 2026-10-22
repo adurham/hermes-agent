@@ -33,6 +33,7 @@ export const esGatewayHost: GatewayHostTranslations = {
     restartGateway: 'Reiniciar gateway',
     modeLan: 'Esta red',
     modeLanDetail: url => `Los dispositivos de tu wifi abren ${url}. Úsalo solo en una red de confianza.`,
+    lanUnencrypted: 'La conexión no está cifrada: otros en esta red podrían leer lo que envías y recibes.',
     noLan: 'Este ordenador no tiene una dirección de red a la que puedan llegar otros dispositivos.',
     modePublic: 'Mi propia URL',
     modePublicDetail: port => `Una dirección HTTPS que ya tengas, como Tailscale Serve o un túnel, que reenvíe a http://127.0.0.1:${port}.`

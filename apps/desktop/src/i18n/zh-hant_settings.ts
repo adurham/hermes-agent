@@ -1000,6 +1000,7 @@ export const zhHantSettings = {
         restartGateway: '重新啟動閘道',
         modeLan: '目前網路',
         modeLanDetail: url => `你的 Wi-Fi 中的裝置可開啟 ${url}。僅在你信任的網路中使用。`,
+        lanUnencrypted: '連線未加密：同一網路中的其他人可能讀取你傳送和接收的內容。',
         noLan: '這台電腦沒有其他裝置可以連到的網路位址。',
         modePublic: '我自己的網址',
         modePublicDetail: port => `你已有的 HTTPS 網址（例如 Tailscale Serve 或通道），並轉送到 http://127.0.0.1:${port}。`

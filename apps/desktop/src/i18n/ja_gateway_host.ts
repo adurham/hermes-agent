@@ -32,6 +32,7 @@ export const jaGatewayHost: GatewayHostTranslations = {
     restartGateway: 'ゲートウェイを再起動',
     modeLan: 'このネットワーク',
     modeLanDetail: url => `Wi-Fi 上のデバイスで ${url} を開きます。信頼できるネットワークでのみ使用してください。`,
+    lanUnencrypted: '接続は暗号化されていません。同じネットワーク上の他の人が送受信の内容を読み取れる可能性があります。',
     noLan: 'このコンピューターには、他のデバイスから到達できるネットワークアドレスがありません。',
     modePublic: '独自の URL',
     modePublicDetail: port => `Tailscale Serve やトンネルなど、すでに運用している HTTPS アドレスで、http://127.0.0.1:${port} に転送するもの。`

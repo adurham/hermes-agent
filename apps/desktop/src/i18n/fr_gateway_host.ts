@@ -32,6 +32,7 @@ export const frGatewayHost: GatewayHostTranslations = {
     restartGateway: 'Redémarrer la passerelle',
     modeLan: 'Ce réseau',
     modeLanDetail: url => `Les appareils de votre Wi-Fi ouvrent ${url}. À utiliser uniquement sur un réseau de confiance.`,
+    lanUnencrypted: "La connexion n'est pas chiffrée : d'autres personnes sur ce réseau pourraient lire ce que vous envoyez et recevez.",
     noLan: "Cet ordinateur n'a aucune adresse réseau accessible aux autres appareils.",
     modePublic: 'Ma propre URL',
     modePublicDetail: port => `Une adresse HTTPS que vous gérez déjà, comme Tailscale Serve ou un tunnel, redirigée vers http://127.0.0.1:${port}.`

@@ -32,6 +32,7 @@ export const ruGatewayHost: GatewayHostTranslations = {
     restartGateway: 'Перезапустить шлюз',
     modeLan: 'Эта сеть',
     modeLanDetail: url => `Устройства в вашей сети Wi-Fi открывают ${url}. Используйте только в доверенной сети.`,
+    lanUnencrypted: 'Соединение не зашифровано: другие в этой сети могут прочитать то, что вы отправляете и получаете.',
     noLan: 'У этого компьютера нет сетевого адреса, доступного другим устройствам.',
     modePublic: 'Мой собственный URL',
     modePublicDetail: port => `Уже работающий HTTPS-адрес, например Tailscale Serve или туннель, который перенаправляет на http://127.0.0.1:${port}.`

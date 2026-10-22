@@ -35,6 +35,7 @@ export interface WebAccessTranslations {
   restartGateway: string
   modeLan: string
   modeLanDetail: (url: string) => string
+  lanUnencrypted: string
   noLan: string
   modePublic: string
   modePublicDetail: (port: number) => string
