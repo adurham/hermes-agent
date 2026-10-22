@@ -115,6 +115,25 @@ export function WebAccessSettings(): ReactElement | null {
 
 type FormProps = { queryKey: readonly unknown[]; status: WebAccessStatus; w: WebAccessTranslations }
 
+/** The address the pane shows for the configured web app. */
+function addressOf(status: WebAccessStatus, lanUrl: null | string): string {
+  if (status.mode === 'public') {
+    return status.public_url
+  }
+
+  if (status.mode === 'local') {
+    return status.gateway.url ?? `http://127.0.0.1:${status.port}`
+  }
+
+  return lanUrl ?? ''
+}
+
+/** A change saved but not applied yet is not a failure: the pane shows it waiting for the restart,
+ *  and the notice says why, without the CLI's refusal text. */
+function notifyRestartHeld(result: WebAccessChange, w: WebAccessTranslations): void {
+  notify({ kind: 'warning', message: result.restart_busy ? w.restartBusy : w.restartFailed, title: w.restartNeeded })
+}
+
 function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
   const queryClient = useQueryClient()
   const [busy, setBusy] = useState<Busy>(null)
@@ -122,11 +141,7 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
   const [publicUrl, setPublicUrl] = useState(status.public_url)
   const phase = phaseOf(status)
   const lanUrl = status.lan_address ? `http://${status.lan_address}:${status.port}` : null
-  const localUrl = status.gateway.url ?? `http://127.0.0.1:${status.port}`
-
-  const url =
-    status.mode === 'public' ? status.public_url : status.mode === 'local' ? localUrl : (lanUrl ?? '')
-
+  const url = addressOf(status, lanUrl)
   const ready = status.nous_signed_in && (mode === 'lan' ? Boolean(lanUrl) : publicUrl.trim().startsWith('https://'))
 
   const apply = (next: WebAccessStatus): void => {
@@ -142,8 +157,7 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
       apply(result)
 
       if (!result.restart_started) {
-        // Not a failure: the pane now shows the saved change waiting for the restart.
-        notify({ kind: 'warning', message: result.restart_busy ? w.restartBusy : w.restartFailed, title: w.restartNeeded })
+        notifyRestartHeld(result, w)
 
         return
       }
