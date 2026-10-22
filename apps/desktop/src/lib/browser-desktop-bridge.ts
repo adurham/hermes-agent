@@ -5,7 +5,7 @@ import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
 import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
-import { watchWebappLaunchLink } from '@/lib/browser-launch-session'
+import { watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
@@ -13,6 +13,7 @@ import { authenticatedWebsocketUrl, browserApi, browserBootstrap } from '@/lib/b
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
+import { failDesktopBoot } from '@/store/boot'
 import { $connection } from '@/store/session'
 import { windowProfileOverride } from '@/store/windows'
 
@@ -130,7 +131,12 @@ export function installBrowserDesktopBridge(): boolean {
       basePath: bootstrap.basePath,
       currentProfile,
       websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
-      defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || ''
+      defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || '',
+      // The chat's sign-in view for a launch-link tab. Behind the sign-in gate the next ticket
+      // request already takes the tab to the login page.
+      onSignedOut: () => {
+        if (!bootstrap.authRequired) {failDesktopBoot(WEBAPP_LAUNCH_REQUIRED)}
+      }
     }),
     ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),
     zoom: createBrowserZoom(bootstrap.basePath)

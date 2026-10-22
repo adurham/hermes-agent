@@ -2,6 +2,8 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
+import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import { $desktopBoot } from '@/store/boot'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { $terminals, closeAllTerminals, closeOtherTerminals, createTerminal, updateTerminalReviveBuffer } from './terminals'
@@ -320,4 +322,26 @@ it('preserves saved tabs when page unload closes the browser socket', async () =
   act(() => window.dispatchEvent(new Event('beforeunload')))
   expect(Socket.instances[0].readyState).toBe(3)
   expect($terminals.get().find(tab => tab.id === id)?.reviveBuffer).toBe(SAVED_HISTORY)
+})
+
+// Sign-out closes the tab's sockets with 4401. The terminal keeps its tab and scrollback and says
+// how to get back in, instead of reconnecting against a refused credential.
+it('keeps a signed-out tab and says to sign in again instead of reconnecting', async () => {
+  seedWebappSession('test-token')
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const id = createTerminal('/work')
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+
+  act(() => Socket.instances[0].close(4401, 'signed out'))
+
+  await waitFor(() => expect(screen.getByText('closed')).toBeTruthy())
+  expect(emulator.output).toMatch(/Signed out of Hermes\. Sign this browser in again/)
+  expect(emulator.output).not.toMatch(/Reconnecting/)
+  expect(Socket.instances).toHaveLength(1)
+  expect($terminals.get().some(tab => tab.id === id)).toBe(true)
+  expect($desktopBoot.get().error).toBe(WEBAPP_LAUNCH_REQUIRED)
+  $desktopBoot.set({ ...$desktopBoot.get(), error: null, visible: false })
 })

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import { $desktopBoot } from '@/store/boot'
 import { $connection } from '@/store/session'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 
@@ -246,5 +249,87 @@ describe('persistent browser terminals', () => {
     installBrowserDesktopBridge()
     await window.hermesDesktop!.terminal.start({ cwd: '/original', restoreKey: 'tab-one' })
     expect(Socket.instances.at(-1)!.url.searchParams.has('attach')).toBe(false)
+  })
+})
+
+describe('host terminal after sign-out', () => {
+  /** A Webapp tab on the loopback bind, signed in by its launch link. */
+  function installWebapp() {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    Object.assign(window, { __HERMES_AUTH_REQUIRED__: false, __HERMES_BASE_PATH__: '/one' })
+    seedWebappSession('launch-link-session')
+    installBrowserDesktopBridge()
+
+    return window.hermesDesktop!.terminal
+  }
+
+  const signedOutTicket = () =>
+    vi.fn(async () => new Response(JSON.stringify({ detail: 'Unauthorized' }), { status: 401 }))
+
+  afterEach(() => {
+    clearWebappSession()
+    $desktopBoot.set({ ...$desktopBoot.get(), error: null, visible: false })
+  })
+
+  // `hermes webapp --sign-out` closes the tab's sockets with 4401. That is final: redialing only
+  // hits a ticket route that answers 401, so the terminal stops at once and the tab shows the
+  // sign-in view the chat shows.
+  it('stops on a 4401 close without redialing and shows the Webapp sign-in view', async () => {
+    const api = installWebapp()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+    const ticketsBefore = vi.mocked(fetch).mock.calls.length
+
+    Socket.instances[0].close(4401, 'signed out')
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(Socket.instances).toHaveLength(1)
+    expect(fetch).toHaveBeenCalledTimes(ticketsBefore)
+    expect(exit).toHaveBeenCalledExactlyOnceWith({ code: null, signal: 'signed-out' })
+    expect($desktopBoot.get().error).toBe(WEBAPP_LAUNCH_REQUIRED)
+  })
+
+  it('stops reconnecting once the ticket route answers 401', async () => {
+    const api = installWebapp()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+    const ticket = signedOutTicket()
+    vi.stubGlobal('fetch', ticket)
+
+    Socket.instances[0].close(1006)
+    await vi.advanceTimersByTimeAsync(120_000)
+
+    expect(ticket).toHaveBeenCalledTimes(1)
+    expect(Socket.instances).toHaveLength(1)
+    expect(exit).toHaveBeenCalledExactlyOnceWith({ code: null, signal: 'signed-out' })
+    expect($desktopBoot.get().error).toBe(WEBAPP_LAUNCH_REQUIRED)
+  })
+
+  it('shows the sign-in view when a new terminal cannot get a ticket', async () => {
+    const api = installWebapp()
+    vi.stubGlobal('fetch', signedOutTicket())
+
+    await expect(api.start({ cwd: '/original', restoreKey: 'tab-two' })).rejects.toThrow(WEBAPP_LAUNCH_REQUIRED)
+
+    expect(Socket.instances).toHaveLength(0)
+    expect($desktopBoot.get().error).toBe(WEBAPP_LAUNCH_REQUIRED)
+  })
+
+  // Behind the sign-in gate the chat's next ticket request takes the tab to the login page; the
+  // Webapp's launch-link view would name the wrong way to sign in, so the terminal only stops.
+  it('stops on a 4401 close behind the sign-in gate without the launch-link view', async () => {
+    const api = install()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+
+    Socket.instances[0].close(4401, 'signed out')
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(Socket.instances).toHaveLength(1)
+    expect(exit).toHaveBeenCalledExactlyOnceWith({ code: null, signal: 'signed-out' })
+    expect($desktopBoot.get().error).not.toBe(WEBAPP_LAUNCH_REQUIRED)
   })
 })

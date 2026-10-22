@@ -1,4 +1,4 @@
-import { isStableOpen, reconnectBackoffDelayMs } from '@hermes/shared'
+import { isGatewayReauthRequired, isStableOpen, reconnectBackoffDelayMs } from '@hermes/shared'
 
 import type { HermesTerminalExit, HermesTerminalSession, HermesTerminalState } from '@/global'
 
@@ -17,6 +17,8 @@ interface BrowserTerminalOptions {
   currentProfile: () => string | null
   websocketUrl: (profile: string | null) => Promise<string>
   defaultCwd: (profile: string | null) => Promise<string>
+  /** The tab's sign-in ended (a 4401 close or a 401 ticket): show the sign-in view. */
+  onSignedOut?: () => void
 }
 
 interface TerminalState {
@@ -48,7 +50,11 @@ const META = '\u0000HERMES_TERMINAL_META:'
 const MAX_RETRIES = 5
 const RETRY_BACKOFF = { baseDelayMs: 500, capMs: 8000 }
 const START_TIMEOUT = 10_000
-const CLOSE_SIGNALS: Record<number, string> = { 4403: 'denied', 4409: 'superseded', 4410: 'expired', 1013: 'capacity' }
+
+// 4401 is what sign-out closes a tab's sockets with; no redial succeeds until the tab signs in again.
+const CLOSE_SIGNALS: Record<number, string> = {
+  4401: 'signed-out', 4403: 'denied', 4409: 'superseded', 4410: 'expired', 1013: 'capacity'
+}
 
 class TerminalConnectionError extends Error {
   constructor(message: string, readonly signal = 'disconnected') {
@@ -330,6 +336,8 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     setStatus(state, 'disconnected')
     state.exit = { code: null, signal }
     state.exitListeners.forEach(listener => listener(state.exit!))
+
+    if (signal === 'signed-out') {options.onSignedOut?.()}
   }
 
   const reconnect = (state: TerminalState) => {
@@ -349,7 +357,10 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
         if (paused || state.stopped || generation !== state.generation) {return}
         stopSocket(state)
 
-        if (error instanceof TerminalConnectionError && error.signal !== 'disconnected') {
+        // A 401 from the ticket route: signed out, and every further attempt would be refused.
+        if (isGatewayReauthRequired(error)) {
+          finish(state, 'signed-out')
+        } else if (error instanceof TerminalConnectionError && error.signal !== 'disconnected') {
           finish(state, error.signal)
         } else {
           reconnect(state)
@@ -527,6 +538,11 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
       } catch (error) {
         stopSocket(state)
         terminals.delete(state.id)
+
+        if (isGatewayReauthRequired(error) || (error instanceof TerminalConnectionError && error.signal === 'signed-out')) {
+          options.onSignedOut?.()
+        }
+
         throw error
       }
     },
