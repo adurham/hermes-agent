@@ -501,7 +501,6 @@ def _mint_locked(client: httpx.Client, portal: str, auth_store: dict[str, Any], 
         "portal_base_url": portal.rstrip("/"),
         "user_id": minted.get("user_id"), "org_id": minted.get("org_id"),
         "idle_ttl_days": minted.get("idle_ttl_days"),
-        # Always present: True only for the welcome trial's own mint.
         WELCOME_CLAIM_FLAG: welcome_claim,
     }
     _store_provider_state(auth_store, "nous", state, set_active=False)

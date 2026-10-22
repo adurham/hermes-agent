@@ -106,9 +106,8 @@ _local_desktop_boot_started = False
 
 
 def begin_local_desktop_boot() -> None:
-    """The local Desktop's first accepted connection to this process. It no longer spawns its own
-    ``hermes serve``, so the boot work that ran there (record a fresh install, settle an interrupted
-    claim, the setup record and the due answer) runs here, once, as work for that Desktop."""
+    """The local Desktop's first accepted connection to this process: record a fresh install, settle an
+    interrupted claim, the setup record and the due answer, once, as work for that Desktop."""
     global _local_desktop_boot_started
     from hermes_cli import free_tier_bootstrap
     from hermes_cli.process_identity import serving_local_desktop

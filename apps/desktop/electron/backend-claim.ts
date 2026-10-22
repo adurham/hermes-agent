@@ -2,9 +2,7 @@
  * backend-claim.ts
  *
  * Process start-marker probes used to match backend ownership records against
- * live processes, extracted from main.ts so they are testable without booting
- * Electron — including on a Windows CI lane that drives the probe with REAL
- * PowerShell (`processStartMarker` shells out to powershell.exe).
+ * live processes.
  */
 
 import { execFile } from 'node:child_process'

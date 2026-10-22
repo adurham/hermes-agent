@@ -10,7 +10,6 @@ import WebSocket from 'ws'
 import { waitForDashboardPort } from './backend-ready'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
 
-// The argv the Desktop passes for a source-tree `hermes serve` backend.
 const SERVE_ARGS = ['serve', '--host', '127.0.0.1', '--port', '0']
 
 interface Fixture {

@@ -4092,10 +4092,6 @@ function writeBackendOwnership(contents) {
   }
 }
 
-// execText and processStartMarker moved to backend-claim.ts (#93608) so the
-// start-marker probe is testable — including on Windows CI with real
-// PowerShell — without booting Electron. main.ts calls through the module.
-
 async function backendCommandForPid(pid) {
   try {
     const command = IS_WINDOWS ? 'powershell.exe' : 'ps'

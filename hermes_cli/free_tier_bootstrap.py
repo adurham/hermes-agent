@@ -186,7 +186,7 @@ def _build_record(*, other: bool) -> SetupRecord:
 
 
 def run_bootstrap(*, announce: bool = True) -> SetupRecord:
-    """Grandfather an existing free-model guest -> inventory -> resolve inference -> record ->
+    """Settle an interrupted claim -> inventory -> resolve inference -> record ->
     broadcast. Idempotent per process: a second call returns the existing record. Never raises.
     ``announce=False`` skips the ``setup.ready`` event."""
     global _record, _started
