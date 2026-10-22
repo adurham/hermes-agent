@@ -82,6 +82,18 @@ def test_every_reader_skips_the_retired_fact(upgraded_store, monkeypatch):
     assert str(upgraded_store["retired_bin"]) not in os.environ["PATH"].split(os.pathsep)
 
 
+def test_ensure_rerecords_the_old_chromium_env_without_installing(upgraded_store, monkeypatch):
+    """`hermes update` skips installed defaults, so nothing reinstalls Chromium to re-record its env: an
+    ensure() that finds it installed re-derives the env from the package code, without a fetch."""
+    import pm.install
+
+    monkeypatch.setattr(pm.install, "_install", lambda *a, **k: pytest.fail("an installed package was installed"))
+    pm.install.ensure("chromium")
+    assert pm.install.env_for("chromium", base_env={}) == {"PLAYWRIGHT_BROWSERS_PATH": str(upgraded_store["store"])}
+    assert "AGENT_BROWSER_EXECUTABLE_PATH" not in Facts(paths.facts_path()).env_for("chromium", paths.store_root())
+    assert pm.installed_package("chromium").binary == upgraded_store["binary"]
+
+
 def test_gc_reclaims_the_retired_entry_and_keeps_chromium(upgraded_store):
     store = Store(paths.store_root())
     pm.cli._gc_store(store, Facts(paths.facts_path()))

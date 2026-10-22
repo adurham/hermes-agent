@@ -374,6 +374,22 @@ def _refresh_recorded_env(package, facts, store, entry, previous, target) -> Non
                      digest=previous.get("digest"))
 
 
+def _refresh_found_env(package, location, target, operation) -> None:
+    """:func:`_refresh_recorded_env` for an entry ``ensure`` found installed: `hermes update` skips
+    installed defaults, so no install would re-record it. Only the writable store is re-recorded, under
+    its install lock (a sealed store's facts ship with the artifact)."""
+    facts, store = location
+    entry = store.entry(facts.get(package.name)["entry"])
+    if (facts.env_for(package.name, store.root) == package.env(entry, target)
+            or store.root != Store(paths.writable_store_root()).root):
+        return
+    with nullcontext() if operation is not None else store.install_lock():
+        facts.reload()
+        previous = facts.get(package.name)
+        if previous and previous.get("entry") == entry.name:
+            _refresh_recorded_env(package, facts, store, entry, previous, target)
+
+
 def _copy_verified_source(package, lockfile, copy_from, staged, version, target) -> None:
     source_facts, source_store = copy_from
     source = source_facts.get(package.name)
@@ -570,9 +586,11 @@ def ensure(
                     json.dumps(_identity(lockfile, package.name, target), sort_keys=True))
         if identity in checked:
             continue
-        if _installed_location(package, lockfile, target, verify=explicit and verify) is None:
+        location = _installed_location(package, lockfile, target, verify=explicit and verify)
+        if location is None:
             missing.append(package)
         else:
+            _refresh_found_env(package, location, target, _operation)
             checked.add(identity)
     if missing and not explicit and not lazy_installs_allowed():
         raise _refuse_lazy(name, ", ".join(p.name for p in missing))
