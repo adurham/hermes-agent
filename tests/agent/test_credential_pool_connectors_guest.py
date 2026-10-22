@@ -6,7 +6,7 @@ drop that row instead of handing its welcome-host token to the runtime.
 """
 
 from hermes_cli import anon_auth
-from tests.hermes_cli.anon_portal import claimed_trial, install_portal
+from tests.hermes_cli.anon_portal import claimed_trial, install_portal, off_local_desktop
 
 
 def test_a_claimed_guest_pool_row_serves_every_surface(monkeypatch, tmp_path):
@@ -18,6 +18,6 @@ def test_a_claimed_guest_pool_row_serves_every_surface(monkeypatch, tmp_path):
     resolve_nous_runtime_credentials()  # the claimed guest now carries an inference token
     assert any(e.source == "device_code" for e in load_pool("nous").entries())
 
-    monkeypatch.delenv("HERMES_DESKTOP")  # cron, the CLI, a side agent: not the Desktop
+    off_local_desktop(monkeypatch)  # cron, the CLI, a side agent: not the Desktop
 
     assert any(e.source == "device_code" for e in load_pool("nous").entries())
