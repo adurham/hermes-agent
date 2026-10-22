@@ -198,8 +198,8 @@ def _create_chromium_session(cache_key: str) -> dict[str, Any]:
         from tools.browser_session_sandbox import create_sandbox_session
         return create_sandbox_session(cache_key)
     from tools.browser_launcher import launch_chromium
+    ensure_screen_for_headed_chromium()  # first: an auto-started screen selects the Bot Desktop profile
     launcher_key, kwargs, shared = _launch_target(cache_key)
-    ensure_screen_for_headed_chromium()
     browser, err = launch_chromium(launcher_key, **kwargs)
     if browser is None:
         raise RuntimeError(err or "the local browser could not be started")

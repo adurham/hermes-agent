@@ -129,6 +129,33 @@ class TestHeadedLaunch:
         assert not any(arg.startswith("--headless") for arg in captured[0])
 
 
+    def test_auto_started_screen_is_up_before_the_profile_is_chosen(self, monkeypatch):
+        """browser.headed + bot_desktop.auto_start on a headless host: the first local launch brings the screen
+        up and then uses the Bot Desktop profile (the dock Browser's cookie jar), not a throwaway one."""
+        from tools.bot_desktop import browser as bd_browser, placement, runtime
+        screen = {}
+        monkeypatch.setattr(bs_cloud, "is_headed_mode", lambda: True)
+        monkeypatch.setattr(runtime, "tool_placement", lambda: placement.GATEWAY)
+        monkeypatch.setattr(runtime, "published_env", lambda: dict(screen))
+        monkeypatch.setattr(runtime, "ensure_started_for_tool", lambda: screen.update(DISPLAY=":99"))
+        monkeypatch.setattr(bd_browser, "profile_dir", lambda: "/bot-desktop/browser-profile")
+        monkeypatch.setattr(bd_browser, "executable", lambda: "/usr/bin/chromium")
+        launches = []
+
+        def launch(key, **kwargs):
+            launches.append((key, kwargs))
+            return SimpleNamespace(cdp_url="ws://127.0.0.1:9/devtools/browser/x", pid=1), None
+
+        monkeypatch.setattr(launcher, "launch_chromium", launch)
+
+        bs._create_chromium_session("task1")
+
+        assert screen == {"DISPLAY": ":99"}
+        assert launches == [("profile:/bot-desktop/browser-profile", {
+            "executable": "/usr/bin/chromium", "user_data_dir": "/bot-desktop/browser-profile", "ephemeral": False,
+            "extra_args": bd_browser.SHARED_PROFILE_ARGS})]
+
+
     def test_headed_not_applied_in_cloud_mode(self, monkeypatch):
         """Cloud (CDP) sessions never launch a local (headed) Chromium: headed is a local-only knob."""
         monkeypatch.setattr(bs_cloud, "is_headed_mode", lambda: True)
