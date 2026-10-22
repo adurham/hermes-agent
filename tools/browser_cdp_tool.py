@@ -19,10 +19,12 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
-# Browser/target inspection that never reads page body/cookies/DOM/storage — stays
-# usable so the model can list tabs or navigate away from a blocked page.
+# Browser/target inspection and tab management that never reads page body/cookies/DOM/storage — stays
+# usable so the model can list, open, switch and close tabs or navigate away from a blocked page. Methods
+# that take a url (Page.navigate, Target.createTarget) are still held to _METHOD_PARAM_GUARDS.
 _CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
     "Browser.getVersion", "Target.getTargets", "Target.attachToTarget", "Target.detachFromTarget",
+    "Target.createTarget", "Target.activateTarget", "Target.closeTarget",
     "Page.navigate", "Page.reload", "Page.stopLoading",
 }
 
@@ -138,7 +140,7 @@ def _expression_private_target(params: dict[str, Any]) -> Optional[str]:
 
 
 def _navigate_private_target(params: dict[str, Any]) -> Optional[str]:
-    """Blocked URL literal for ``Page.navigate`` params, else ``None``."""
+    """Blocked URL literal for ``Page.navigate`` / ``Target.createTarget`` params, else ``None``."""
     from tools.browser_url_policy import url_blocked
     target_url = str(params.get("url") or "").strip()
     return target_url if target_url and url_blocked(target_url) else None
@@ -148,6 +150,8 @@ def _navigate_private_target(params: dict[str, Any]) -> Optional[str]:
 _METHOD_PARAM_GUARDS = {
     "Page.navigate": (_navigate_private_target,
                       "Blocked: CDP Page.navigate target is a private or internal address ({})."),
+    "Target.createTarget": (_navigate_private_target,
+                            "Blocked: CDP Target.createTarget url is a private or internal address ({})."),
     "Runtime.evaluate": (_expression_private_target,
                          "Blocked: CDP Runtime.evaluate expression targets a private or internal address ({})."),
 }

@@ -660,6 +660,37 @@ def test_unreadable_target_list_fails_closed(monkeypatch, cdp_server):
     assert not [m for m in cdp_server.received() if m.get("method") == "Runtime.evaluate"]
 
 
+LOCAL_TAB = "http://127.0.0.1:3000/"
+
+
+@pytest.mark.parametrize(("method", "params", "allowed"), [
+    ("Target.createTarget", {"url": PUBLIC_PAGE}, True),
+    ("Target.createTarget", {"url": "http://127.0.0.1:3000/admin"}, False),  # checked like Page.navigate
+    ("Target.createTarget", {"url": PRIVATE_URL}, False),
+    ("Target.activateTarget", {"targetId": "tab-public"}, True),
+    ("Target.closeTarget", {"targetId": "tab-public"}, True),
+    ("Network.getAllCookies", {}, False),  # every other target-less call stays fail-closed
+    ("Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": "/srv"}, False),
+])
+def test_tab_management_stays_usable_while_a_tab_is_private(monkeypatch, cdp_server, method, params, allowed):
+    """One private tab (a local dev server) must not stop the model opening, switching or closing tabs; a
+    new tab's url is held to Page.navigate's rule, and every other browser-level call is still refused."""
+    cdp_server.on("Target.getTargets", lambda params, sid: {"targetInfos": [
+        {"targetId": "tab-public", "type": "page", "url": PUBLIC_PAGE},
+        {"targetId": "tab-local", "type": "page", "url": LOCAL_TAB},
+    ]})
+    cdp_server.on(method, lambda params, sid: {"targetId": "new-tab"} if method == "Target.createTarget" else {})
+    monkeypatch.setattr(browser_url_policy, "eval_ssrf_guard_active", lambda: True)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method=method, params=params))
+
+    sent = [m for m in cdp_server.received() if m.get("method") == method]
+    if allowed:
+        assert result["success"] is True and len(sent) == 1
+    else:
+        assert "private or internal address" in result["error"] and sent == []
+
+
 def test_private_guard_inactive_does_not_probe(monkeypatch, cdp_server):
     cdp_server.on("Runtime.evaluate", lambda params, sid: {"result": {"value": "ok"}})
 
