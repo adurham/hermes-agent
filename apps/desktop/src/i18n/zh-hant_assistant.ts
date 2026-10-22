@@ -104,6 +104,10 @@ export const zhHantAssistant = {
         usage_window: {
           title: '包含用量已用完',
           body: '你的方案包含的用量已用完，將在重設後恢復。在 /topup 中新增額度即可繼續。'
+        },
+        workspace_unavailable: {
+          title: '此聊天的資料夾已不存在',
+          body: '此聊天使用的資料夾已被移動或刪除，因此你的訊息未被執行。請重新建立該資料夾，或使用「Move to project」為聊天指定其他資料夾，然後重試。'
         }
       },
       errorLayers: {
