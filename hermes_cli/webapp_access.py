@@ -105,7 +105,7 @@ def register(mode: str, public_url: Optional[str] = None) -> tuple[str, str]:
         address = lan_address()
         if address is None:
             raise WebappAccessError("This machine has no network address other devices can reach.")
-        host, url, pinned = "0.0.0.0", f"http://{address}:{DEFAULT_PORT}", ""
+        host, url, pinned = "0.0.0.0", f"http://{address}:{_configured_port(gateway_home())}", ""
     elif mode == "public":
         host, url = "127.0.0.1", _public_url(public_url)
         pinned = url
@@ -130,12 +130,13 @@ def turn_off() -> None:
 def _write_config(*, enabled: bool, host: str = "", public_url: str = "") -> None:
     """The ``webapp:`` block, and nothing outside it. Starting pins ``webapp.public_url`` for the
     own-URL mode and drops it for LAN, where the callback follows each request; stopping changes
-    only ``enabled``, so the next start offers the same address."""
+    only ``enabled``, so the next start offers the same address. ``webapp.port`` is the user's:
+    a second gateway on this machine needs a port of its own."""
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     webapp = cfg.get("webapp") if isinstance(cfg.get("webapp"), dict) else {}
-    webapp.update(enabled=enabled, **({"host": host, "port": DEFAULT_PORT} if enabled else {}))
+    webapp.update(enabled=enabled, **({"host": host} if enabled else {}))
     if enabled and public_url:
         webapp["public_url"] = public_url
     elif enabled:
@@ -144,9 +145,9 @@ def _write_config(*, enabled: bool, host: str = "", public_url: str = "") -> Non
     save_config(cfg)
 
 
-def _configured_public_url(home: Path) -> str:
-    """``webapp.public_url`` from *home*'s config, or ``""`` (``webapp_settings`` reports an
-    unreadable config)."""
+def _configured_block(home: Path) -> dict:
+    """The ``webapp:`` block of *home*'s config, or ``{}`` (``webapp_settings`` reports an unreadable
+    config)."""
     from ruamel.yaml.error import YAMLError
 
     from gateway.webapp_listener import _config_document
@@ -154,10 +155,23 @@ def _configured_public_url(home: Path) -> str:
     try:
         document = _config_document(home)
     except (OSError, ValueError, YAMLError):
-        return ""
+        return {}
     block = document.get("webapp") if isinstance(document, dict) else None
-    value = block.get("public_url") if isinstance(block, dict) else None
+    return block if isinstance(block, dict) else {}
+
+
+def _configured_public_url(home: Path) -> str:
+    """``webapp.public_url`` from *home*'s config, or ``""``."""
+    value = _configured_block(home).get("public_url")
     return value.strip().rstrip("/") if isinstance(value, str) else ""
+
+
+def _configured_port(home: Path) -> int:
+    """``webapp.port`` from *home*'s config, whether or not the Webapp is on (the default when unset
+    or invalid): the address Web Access shows and registers is the one the gateway will bind."""
+    port = _configured_block(home).get("port", DEFAULT_PORT)
+    valid = isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
+    return port if valid else DEFAULT_PORT
 
 
 def _gateway_state(home: Path) -> dict:
@@ -197,7 +211,7 @@ def access_status() -> dict:
     return {
         "enabled": settings.enabled,
         "mode": _mode(settings, public_url),
-        "port": settings.port,
+        "port": _configured_port(home),
         "gateway": _gateway_state(home),
         "lan_address": lan_address(),
         "public_url": public_url,

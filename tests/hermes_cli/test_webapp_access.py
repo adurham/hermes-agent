@@ -122,3 +122,22 @@ def test_status_names_the_mode_the_config_serves(client, webapp, mode):
     status = client.get("/api/webapp-access/status")
     assert status.status_code == 200, status.text
     assert status.json()["mode"] == mode
+
+
+def test_start_keeps_a_custom_port_and_builds_the_addresses_on_it(client, restarts, nous):
+    """A ``webapp.port`` the user chose (a second gateway on this machine needs its own) survives
+    every start and stop, and the status and the LAN callback use it, even while Web Access is off."""
+    from hermes_cli.config import save_config
+
+    save_config({**_config(), "webapp": {"enabled": False, "port": 9333}})
+    assert client.get("/api/webapp-access/status").json()["port"] == 9333
+
+    assert client.post("/api/webapp-access/start", json={"mode": "lan"}).status_code == 200
+    assert nous == ["http://192.168.1.50:9333/auth/callback"]
+    assert _config()["webapp"]["port"] == 9333
+
+    assert client.post("/api/webapp-access/stop").status_code == 200
+    response = client.post("/api/webapp-access/start", json={"mode": "public", "public_url": "https://hermes.example.test"})
+    assert response.status_code == 200, response.text
+    assert _config()["webapp"]["port"] == 9333
+    assert response.json()["port"] == 9333
