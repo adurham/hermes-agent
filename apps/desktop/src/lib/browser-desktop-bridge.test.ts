@@ -778,6 +778,30 @@ describe('browser-hosted Desktop bridge', () => {
     expect(stagedFile.type).toBe('text/plain')
   })
 
+  it('opens a 2 MB HTML page through srcdoc, byte-exact and inert to the wrapper, never through a frame URL', async () => {
+    const win = mutableWindow()
+    seedWebappSession('served-token')
+    const blobs: Blob[] = []
+
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(blob => {
+      blobs.push(blob as Blob)
+
+      return 'blob:http://127.0.0.1:9119/large'
+    })
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    // Chromium will not navigate a frame to a URL over 2 MiB: the old data: carrier left this blank.
+    const page = `<!doctype html><p title="a&amp;b">"q" &lt;x&gt;</p><!-- "></iframe><script>parent.x=1</script> --><script>/*${'x'.repeat(2_000_000)}*/</script>`
+    await win.hermesDesktop!.saveImageBuffer(new TextEncoder().encode(page), '.html')
+    const wrapper = new DOMParser().parseFromString(await blobs[0]!.text(), 'text/html')
+    const frame = wrapper.querySelector('iframe')!
+
+    expect(wrapper.querySelectorAll('iframe, script')).toHaveLength(1)
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(frame.hasAttribute('src')).toBe(false)
+    expect(frame.getAttribute('srcdoc')).toBe(page)
+  })
+
   it('stages non-image buffers as browser-local object URLs', async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
@@ -802,7 +826,8 @@ describe('browser-hosted Desktop bridge', () => {
     expect(wrapper).toContain('sandbox="allow-scripts"')
     expect(wrapper).not.toContain('allow-same-origin')
     expect(wrapper).not.toContain('<h1>preview</h1>')
-    expect(wrapper).toContain('data:text/html;charset=utf-8;base64,PGgxPnByZXZpZXc8L2gxPg==')
+    expect(wrapper).toContain('srcdoc="&lt;h1&gt;preview&lt;/h1&gt;"')
+    expect(wrapper).not.toMatch(/\ssrc="data:/)
 
     await win.hermesDesktop!.openPreviewInBrowser!(staged)
     expect(open).toHaveBeenCalledExactlyOnceWith(staged, '_blank', 'noopener,noreferrer')

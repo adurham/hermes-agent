@@ -1,5 +1,5 @@
 import type { HermesApiRequest, HermesSelectPathsOptions, HermesStagedUpload } from '@/global'
-import { blobToDataUrl, bytesToBase64 } from '@/lib/base64'
+import { blobToDataUrl } from '@/lib/base64'
 import { type BrowserBootstrap, browserFetch } from '@/lib/browser-transport'
 
 const STAGED_UPLOAD_CACHE_LIMIT = 256
@@ -46,15 +46,24 @@ function rememberBounded<K, V>(cache: Map<K, V>, key: K, value: V): void {
   }
 }
 
+// The page reaches its opaque-origin frame through srcdoc, never a URL: Chromium refuses to
+// navigate a frame to a URL over 2 MiB, so a base64 data URL left any page above ~1.5 MB blank.
+// Decoded as the data URL's charset=utf-8 did, and escaped for a double-quoted attribute (`&`
+// first) so no byte of the page parses as markup of this same-origin wrapper.
 function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
-  const source = `data:text/html;charset=utf-8;base64,${bytesToBase64(bytes)}`
+  const srcdoc = new TextDecoder('utf-8')
+    .decode(bytes)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
 
   const wrapper = [
     '<!doctype html>',
     '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
     '<style>html,body,iframe{box-sizing:border-box;width:100%;height:100%;margin:0;border:0}</style>',
     '</head><body>',
-    `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="${source}"></iframe>`,
+    `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" srcdoc="${srcdoc}"></iframe>`,
     '</body></html>'
   ].join('')
 
