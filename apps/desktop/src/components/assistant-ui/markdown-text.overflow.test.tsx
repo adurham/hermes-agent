@@ -104,10 +104,13 @@ describe('MarkdownTextContent overflow containment', () => {
     const codeCard = container.querySelector('[data-slot="code-card"]')!
     // The card's overlay scroller (ExpandableBlock's inner div).
     const codeScroller = codeCard.querySelector('.scrollbar-overlay')!
+    // The fence's own <pre> takes its longest line's width, so the scroller above scrolls it.
+    const fencePre = codeScroller.querySelector('pre')!
     const tableWrapper = container.querySelector('.aui-md-table')!
 
     expect(markdown.className).toContain('min-w-0')
     expect(codeScroller.className).toContain('overflow-x-auto')
+    expect(fencePre.className).toContain('min-w-max')
     expect(codeCard.textContent).toContain(longToken)
     expect(tableWrapper.className).toContain('overflow-x-auto')
   })

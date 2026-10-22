@@ -198,7 +198,8 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
         <ExpandableBlock>
-          <Pre className="aui-shiki m-0 bg-transparent p-0">
+          {/* Sized to the longest line, so ExpandableBlock scrolls it sideways and draws its fade. */}
+          <Pre className="aui-shiki m-0 min-w-max bg-transparent p-0">
             {plain ? (
               <PlainCode code={content} />
             ) : (
