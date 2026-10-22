@@ -421,6 +421,80 @@ def test_a_throwaway_profile_left_by_a_process_that_died_mid_launch_is_reclaimed
         alive.communicate("\n", timeout=30)
 
 
+# A Chromium that never becomes ready: records its pid, never writes DevToolsActivePort.
+_NEVER_READY_CHROMIUM = textwrap.dedent('''\
+    #!{python}
+    import os, sys, time
+    udd = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--user-data-dir="))
+    with open(os.path.join(udd, "pid.tmp"), "w") as f:
+        f.write(str(os.getpid()))
+    os.replace(os.path.join(udd, "pid.tmp"), os.path.join(udd, "pid"))
+    time.sleep(600)
+''')
+
+# A Hermes process waiting for that Chromium's readiness: prints its throwaway dir, then launches.
+_WAITING_LAUNCHER = textwrap.dedent("""\
+    import os, sys
+    from hermes_constants import hermes_home_key
+    from tools import browser_launcher as launcher
+    launcher.needs_chromium_sandbox_bypass = lambda: False
+    print(launcher._default_user_data_dir("slow", hermes_home_key()), flush=True)
+    launcher.launch_chromium("slow", executable=sys.argv[1], headed=False, env=dict(os.environ), timeout=300)
+""")
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass  # the never-ready fake browser is ours to stop if a leg failed
+def test_a_launcher_killed_during_the_readiness_wait_leaves_its_chromium_to_the_reaper(fake_chromium, tmp_path):
+    """Hermes dies (SIGKILL, a crash) while its new Chromium is still starting (a first launch may wait
+    120 s): that browser must already carry a launch record, so the next reap stops it."""
+    from tests.waiting import wait_until
+    slow = tmp_path / "never-ready-chromium"
+    slow.write_text(_NEVER_READY_CHROMIUM.format(python=sys.executable))
+    slow.chmod(0o755)
+    hermes = subprocess.Popen([sys.executable, "-c", _WAITING_LAUNCHER, str(slow)], text=True,
+                              cwd=Path(__file__).resolve().parents[2], env=dict(os.environ),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pid = None
+    try:
+        udd = Path(hermes.stdout.readline().strip())
+        pid = int(wait_until(lambda: (udd / "pid").exists() and (udd / "pid").read_text(), timeout=30,
+                             what="the launched Chromium to start"))
+        hermes.kill()
+        hermes.wait(timeout=10)
+        assert launcher._pid_alive(pid)
+
+        assert launcher.reap_orphaned_browsers() == 1, "a Chromium whose launcher died mid-launch has no record"
+        assert _gone(pid)
+    finally:
+        hermes.kill()
+        if pid is not None:
+            _kill_fake(pid, slow)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass  # the never-ready fake browser is ours to stop if a leg failed
+def test_a_reap_during_this_processs_own_readiness_wait_leaves_the_starting_chromium(fake_chromium, tmp_path):
+    from tests.waiting import wait_until
+    slow = tmp_path / "never-ready-chromium"
+    slow.write_text(_NEVER_READY_CHROMIUM.format(python=sys.executable))
+    slow.chmod(0o755)
+    result = {}
+    launch = threading.Thread(target=lambda: result.update(out=launcher.launch_chromium(
+        "slow", executable=str(slow), headed=False, env=dict(os.environ), timeout=4)))
+    launch.start()
+    try:
+        wait_until(lambda: launcher._launching and list(_records().glob("*.json")), timeout=30,
+                   what="the starting Chromium's launch record")
+        pid = next(iter(launcher._launching))
+        assert launcher.reap_orphaned_browsers() == 0
+        assert launcher._pid_alive(pid), "the janitor killed this process's own starting browser"
+    finally:
+        launch.join(timeout=60)
+    assert result["out"][0] is None and "in time" in result["out"][1]
+    assert not launcher._launching and not list(_records().glob("*.json"))
+
+
 @pytest.mark.parametrize("headed,display,expect_headless", [
     (False, ":1", True),
     (True, ":1", False),

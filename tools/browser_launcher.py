@@ -78,6 +78,7 @@ class LaunchedBrowser:
 
 _browsers: dict[str, LaunchedBrowser] = {}
 _procs: dict[str, subprocess.Popen] = {}
+_launching: dict[int, LaunchedBrowser] = {}  # pid -> a spawned Chromium still in its readiness wait
 _key_locks: dict[str, threading.Lock] = {}
 _lock = threading.RLock()
 _autoinstall_attempted = False
@@ -444,21 +445,40 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"Failed to launch Chromium ({executable}): {exc}"
     start_time = _start_time(proc.pid)
-    found, err = _wait_for_devtools(proc, udd, time.monotonic() + _launch_timeout(timeout))
+    starting = _make_browser(key, 0, "", pid=proc.pid, start_time=start_time, user_data_dir=udd, owned=True,
+                             ephemeral=ephemeral, home_key=home_key)
+    # Recorded before the readiness wait (a first launch may take 120 s): if this process dies in it, the
+    # record is what lets the next reaper stop this Chromium. Tracked as launching so this process's own
+    # reaper leaves it alone meanwhile.
+    with _lock:
+        _launching[proc.pid] = starting
+    _write_record(starting)
+    try:
+        found, err = _wait_for_devtools(proc, udd, time.monotonic() + _launch_timeout(timeout))
+    except BaseException:  # interrupted (Ctrl-C, shutdown): nobody else knows this browser exists
+        _abandon_launch(proc, starting)
+        raise
     if found is None:
-        if proc.poll() is None:  # one that already exited is reaped by poll(); its pid is no longer ours
-            _terminate(proc.pid, start_time, proc)
-        if ephemeral:
-            shutil.rmtree(udd, ignore_errors=True)
+        _abandon_launch(proc, starting)
         return None, err
     browser = _make_browser(key, found[0], found[1], pid=proc.pid, start_time=start_time, user_data_dir=udd,
                             owned=True, ephemeral=ephemeral, home_key=home_key)
     with _lock:
+        _launching.pop(proc.pid, None)
         _browsers[key] = browser
         _procs[key] = proc
-    _write_record(browser)
     logger.info("browser: launched Chromium pid %s for %s (port %s)", proc.pid, key, found[0])
     return browser, None
+
+
+def _abandon_launch(proc: subprocess.Popen, starting: LaunchedBrowser) -> None:
+    with _lock:
+        _launching.pop(proc.pid, None)
+    if proc.poll() is None:  # one that already exited is reaped by poll(); its pid is no longer ours
+        _terminate(proc.pid, starting.start_time, proc)
+    _remove_record(starting)
+    if starting.ephemeral:
+        shutil.rmtree(starting.user_data_dir, ignore_errors=True)
 
 
 # ── Lookup / stop ────────────────────────────────────────────────────────────────────────────────────
@@ -693,7 +713,7 @@ def _is_recorded_browser(record: dict, home: str) -> bool:
 
 def _tracked_browser(record: dict) -> Optional[LaunchedBrowser]:
     with _lock:
-        return next((b for b in _browsers.values() if b.pid == record.get("pid")), None)
+        return next((b for b in (*_browsers.values(), *_launching.values()) if b.pid == record.get("pid")), None)
 
 
 def _adopt_record(browser: LaunchedBrowser) -> None:
