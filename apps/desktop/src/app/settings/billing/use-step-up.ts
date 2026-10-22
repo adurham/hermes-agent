@@ -31,6 +31,21 @@ export interface StepUpMessage {
  */
 export const $stepUpInFlight = atom(false)
 
+// Billing mounts several step-up flows (the Remote Spending card, refusal inlines, Keep going on credits).
+// Each holds the pause under its own token, so one row dismissing its idle flow never resumes refetches
+// while another row's approval is still in flight.
+const stepUpHolders = new Set<object>()
+
+function holdStepUp(holder: object, held: boolean) {
+  if (held) {
+    stepUpHolders.add(holder)
+  } else {
+    stepUpHolders.delete(holder)
+  }
+
+  $stepUpInFlight.set(stepUpHolders.size > 0)
+}
+
 export function useStepUpFlow({ autoOpen = false }: { autoOpen?: boolean } = {}) {
   const { t } = useI18n()
   const b = t.settings.billing
@@ -56,7 +71,7 @@ export function useStepUpFlow({ autoOpen = false }: { autoOpen?: boolean } = {})
   const dismiss = useCallback(() => {
     runIdRef.current += 1
     runningRef.current = false
-    $stepUpInFlight.set(false)
+    holdStepUp(runningRef, false)
     unsubscribe()
     setMessage(null)
     setPhase('idle')
@@ -65,10 +80,7 @@ export function useStepUpFlow({ autoOpen = false }: { autoOpen?: boolean } = {})
 
   useEffect(
     () => () => {
-      if (runningRef.current) {
-        $stepUpInFlight.set(false)
-      }
-
+      holdStepUp(runningRef, false)
       runIdRef.current += 1
       runningRef.current = false
       unsubscribe()
@@ -91,7 +103,7 @@ export function useStepUpFlow({ autoOpen = false }: { autoOpen?: boolean } = {})
     }
 
     runningRef.current = true
-    $stepUpInFlight.set(true)
+    holdStepUp(runningRef, true)
     const runId = runIdRef.current + 1
 
     runIdRef.current = runId
@@ -129,7 +141,7 @@ export function useStepUpFlow({ autoOpen = false }: { autoOpen?: boolean } = {})
     }
 
     runningRef.current = false
-    $stepUpInFlight.set(false)
+    holdStepUp(runningRef, false)
     unsubscribe()
     setPhase('idle')
     setVerification(null)
