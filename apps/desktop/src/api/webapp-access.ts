@@ -18,8 +18,10 @@ export interface WebAccessStatus {
   public_url: string
 }
 
-/** Start/stop save the config and restart the gateway; a refused restart keeps the config. */
+/** Start/stop save the config and restart the gateway; a refused restart keeps the config.
+ *  `restart_busy`: a running chat refused it. `restart_error` is the CLI's text, for logs only. */
 export interface WebAccessChange extends WebAccessStatus {
+  restart_busy?: boolean
   restart_error?: string
   restart_started: boolean
 }

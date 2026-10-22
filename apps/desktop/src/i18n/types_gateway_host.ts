@@ -27,7 +27,8 @@ export interface WebAccessTranslations {
   pendingOn: string
   pendingOff: string
   unavailableDetail: (reason: string) => string
-  restartRefused: (reason: string) => string
+  restartBusy: string
+  restartFailed: string
   startTimedOut: string
   start: string
   stop: string

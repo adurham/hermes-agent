@@ -20,7 +20,7 @@ import type { WebAccessTranslations } from '@/i18n/types_gateway_host'
 import { ExternalLink } from '@/lib/external-link'
 import { Globe, Loader2, Network } from '@/lib/icons'
 import { isBrowserHostedDesktop } from '@/lib/platform'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
 import { CONTROL_TEXT } from './constants'
@@ -120,7 +120,10 @@ function WebAccessForm({ queryKey, status, w }: FormProps): ReactElement {
       apply(result)
 
       if (!result.restart_started) {
-        throw new Error(w.restartRefused(result.restart_error ?? ''))
+        // Not a failure: the pane now shows the saved change waiting for the restart.
+        notify({ kind: 'warning', message: result.restart_busy ? w.restartBusy : w.restartFailed, title: w.restartNeeded })
+
+        return
       }
 
       if (result.enabled && kind !== 'stop') {

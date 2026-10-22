@@ -266,3 +266,19 @@ def test_restart_applies_the_saved_config_and_does_nothing_else(client, restarts
     assert nous == []
     assert builds == []
     assert read_raw_config() == saved
+
+
+def test_a_restart_refused_by_a_running_chat_is_reported_as_busy(client, nous, monkeypatch):
+    """When a running chat refuses the gateway restart, the change stays saved and the answer says
+    so in a field the pane can word plainly (``restart_busy``), beside the CLI's own refusal text."""
+    import hermes_cli.web_server_gateway as gw
+
+    refusal = ("Refusing to restart the gateway: 1 live session(s) would be interrupted.\n"
+               "    POST /api/gateway/restart?interrupt=true   # interrupts 1 live session(s)")
+    monkeypatch.setattr(gw, "live_session_refusal", lambda _profile, _verb: refusal)
+
+    response = client.post("/api/webapp-access/start", json={"mode": "lan"})
+    assert response.status_code == 200, response.text
+    assert response.json()["restart_started"] is False
+    assert response.json()["restart_busy"] is True
+    assert response.json()["enabled"] is True

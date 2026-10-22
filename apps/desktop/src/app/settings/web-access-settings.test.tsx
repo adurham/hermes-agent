@@ -24,6 +24,7 @@ import type { WebAccessStatus } from '@/api/webapp-access'
 import * as hermes from '@/hermes'
 import { I18nProvider } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
+import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { WebAccessSettings } from './web-access-settings'
 
@@ -55,6 +56,7 @@ beforeEach(() => queryClient.clear())
 
 afterEach(() => {
   cleanup()
+  clearNotifications()
   vi.clearAllMocks()
 })
 
@@ -116,5 +118,30 @@ describe('WebAccessSettings', () => {
     await waitFor(() => expect(mocked.restartWebAccess).toHaveBeenCalledTimes(1))
     expect(mocked.startWebAccess).not.toHaveBeenCalled()
     expect(mocked.stopWebAccess).not.toHaveBeenCalled()
+  })
+
+  it('says plainly that a change was saved when a running chat holds off the restart', async () => {
+    const refusal =
+      'Refusing to restart the gateway: 1 live session(s) would be interrupted.\n' +
+      '    POST /api/gateway/restart?interrupt=true   # interrupts 1 live session(s)'
+
+    mocked.startWebAccess.mockResolvedValue({
+      ...OFF,
+      enabled: true,
+      mode: 'lan',
+      restart_busy: true,
+      restart_error: refusal,
+      restart_started: false
+    })
+    renderPane(OFF)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+
+    await waitFor(() => expect($notifications.get()).toHaveLength(1))
+    const [toast] = $notifications.get()
+    expect(toast.kind).toBe('warning')
+    expect(toast.title).toBe('Restart needed')
+    expect(toast.message).toMatch(/^Saved\. A chat is running/)
+    expect(JSON.stringify(toast)).not.toMatch(/Refusing|interrupt|Couldn't change/)
   })
 })
