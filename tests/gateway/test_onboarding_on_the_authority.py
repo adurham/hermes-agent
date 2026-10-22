@@ -266,11 +266,22 @@ async def test_deleting_the_onboarding_chat_from_the_sidebar_ends_the_run(tmp_pa
         stored = (await _request(desktop, 1, "onboarding.start", {"rerun": True}))["result"]["stored_session_id"]
         await async_wait_until(lambda: turns, timeout=10)
         await _settled(desktop, stored)
-        row = desktop.db.get_session(stored)
-        deleted = await _request(desktop, 2, "session.mutate", {
-            "session_id": stored, "request_id": "delete-onboarding", "expected_revision": row["runtime_revision"],
-            "expected_generation": row["runtime_generation"], "operation": "delete", "payload": {}})
-        assert "result" in deleted, deleted
+        replies = []
+
+        async def delete_at_the_current_revision():
+            # The settlement can still bump the revision after the lease releases; the Desktop
+            # re-reads and resends on a conflict, so the test does too.
+            row = desktop.db.get_session(stored)
+            replies.append(await _request(desktop, 2 + len(replies), "session.mutate", {
+                "session_id": stored, "request_id": f"delete-onboarding-{len(replies)}",
+                "expected_revision": row["runtime_revision"], "expected_generation": row["runtime_generation"],
+                "operation": "delete", "payload": {}}))
+            return "result" in replies[-1] or replies[-1].get("error", {}).get("data", {}).get("reason") != "revision_conflict"
+
+        for _ in range(5):
+            if await delete_at_the_current_revision():
+                break
+        assert "result" in replies[-1], replies
         assert [e["outcome"] for e in ended if e["stored_session_id"] == stored] == ["deleted"]
         assert read_user_config_raw(_root_config())["onboarding"]["run"] is False
     finally:
