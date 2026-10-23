@@ -7,7 +7,7 @@ dependencies = [
   "tomli-w==1.2.0",
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16",
-  "truststore==0.10.4",
+  "truststore==0.10.5",
 ]
 
 [tool.uv]

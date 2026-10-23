@@ -45,7 +45,7 @@ dependencies = [
   # it regardless; it is no longer OUR trust source.
   # ssl_verify uses truststore's private original SSLContext for explicit CA overrides.
   # Keep this exact until that path has a public-API replacement.
-  "truststore==0.10.4; python_version >= '3.14'",
+  "truststore==0.10.5; python_version >= '3.14'",
   "python-dotenv==1.2.4; python_version >= '3.14'",
   "fire==0.7.1; python_version >= '3.14'",
   "httpx[socks]==0.28.1; python_version >= '3.14'",
