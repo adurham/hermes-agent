@@ -1,10 +1,11 @@
 """Browser sockets the dashboard session token opens, and how they end when it is replaced.
 
 A browser on the loopback Webapp never puts the session token in a socket URL. An authenticated
-request mints a one-use ticket for one socket instead: ``GATEWAY_SOCKET`` (``/api/ws``) or
-``HOST_TERMINAL_SOCKET`` (``/api/host-terminal``). A ticket named for one socket opens no other, and
-the host terminal opens only with its own ticket. A ticket minted with the session token records that
-token's digest and opens nothing once the token is replaced.
+request mints a one-use ticket for one socket instead: ``GATEWAY_SOCKET`` (``/api/ws``),
+``HOST_TERMINAL_SOCKET`` (``/api/host-terminal``) or one of ``AUDIO_SOCKETS`` (the voice streams). A
+ticket named for one socket opens no other, and the host terminal opens only with its own ticket. A
+ticket minted with the session token records that token's digest and opens nothing once the token is
+replaced.
 
 Behind the sign-in gate the Webapp's browsers sign in instead, and each login is bound to the session
 token (``hermes_cli.webapp_sign_in``): a ticket such a login mints records the token's digest as
@@ -32,6 +33,10 @@ _log = logging.getLogger(__name__)
 
 GATEWAY_SOCKET = "gateway"
 HOST_TERMINAL_SOCKET = "host-terminal"
+#: The voice streams beside ``/api/ws``, each named for its route ``/api/audio/<name>``.
+SPEAK_STREAM_SOCKET = "speak-stream"
+TRANSCRIBE_STREAM_SOCKET = "transcribe-stream"
+AUDIO_SOCKETS = frozenset({SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET})
 #: Sockets that open only with a ticket minted for them, never with a standing credential.
 OWN_TICKET_SOCKETS = frozenset({HOST_TERMINAL_SOCKET})
 #: What a signed-out tab's sockets are closed with: the same code a refused credential gets.

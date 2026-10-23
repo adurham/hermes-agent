@@ -58,6 +58,14 @@ declare global {
         pluginId: string
         profile?: null | string
       }) => Promise<null | string | { refused: 'permission' }>
+      // One-use voice stream socket URL whose ticket opens that stream alone,
+      // for a host whose gateway ticket opens only `/api/ws` (the browser-hosted
+      // Desktop). Absent where the gateway URL's own credential opens the stream.
+      getAudioWsUrl?: (payload: {
+        connectionId?: null | string
+        path: '/api/audio/speak-stream' | '/api/audio/transcribe-stream'
+        profile?: null | string
+      }) => Promise<string>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
       // Credential-free routes across the union connection registry. The

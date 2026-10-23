@@ -1,11 +1,15 @@
 """Each Webapp socket ticket opens only the socket it was minted for.
 
 The browser never puts its session token in a socket URL. An authenticated request mints a one-use,
-short-lived ticket instead: ``POST /api/webapp/gateway-ticket`` for the chat socket (``/api/ws``) and
-``POST /api/webapp/terminal-ticket`` for the host terminal (``/api/host-terminal``). A host shell opens
-only with a terminal ticket, a chat ticket opens no host shell, a terminal ticket opens no chat socket,
-and a ticket minted with a session token that has since been replaced opens nothing.
+short-lived ticket instead: ``POST /api/webapp/gateway-ticket`` for the chat socket (``/api/ws``),
+``POST /api/webapp/terminal-ticket`` for the host terminal (``/api/host-terminal``) and
+``POST /api/webapp/audio-ticket?socket=`` for each voice stream (``/api/audio/speak-stream``,
+``/api/audio/transcribe-stream``). A host shell opens only with a terminal ticket, a chat ticket opens
+no host shell, a terminal ticket opens no chat socket, a voice stream opens with a ticket minted for
+that stream and no other, and a ticket minted with a session token that has since been replaced opens
+nothing.
 """
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -151,6 +155,134 @@ def test_a_signed_in_browser_opens_its_host_shell_with_a_terminal_ticket(webapp,
                 assert host.state.host_terminals.owners[shell].identity[0] == "stub"
             _refused(shells, url + generic)
         assert len(webapp.shells) == 1
+    finally:
+        clear_providers()
+        _reset_for_tests()
+
+
+_SPEAK = "/api/audio/speak-stream"
+_TRANSCRIBE = "/api/audio/transcribe-stream"
+
+
+def _mint_audio(client, socket, headers=_SESSION):
+    response = client.post("/api/webapp/audio-ticket", params={"socket": socket}, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert set(body) == {"ticket", "ttl_seconds"} and 0 < body["ttl_seconds"] <= 60
+    return body["ticket"]
+
+
+@pytest.fixture
+def voice(monkeypatch):
+    """Voice streams that answer once they admit a socket: speech yields one PCM frame, and live
+    dictation reports that no live STT is configured."""
+    class Streamer:
+        sample_rate = 24000
+        channels = 1
+
+        def stream(self, _text):
+            yield b"\x01\x02"
+
+    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: Streamer())
+    monkeypatch.setattr("tools.tts_tool._load_tts_config", dict)
+    monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "fake")
+    monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 4000)
+    monkeypatch.setattr("tools.transcription_streaming.open_streaming_session", lambda **_kwargs: None)
+
+
+def _speaks(client, url):
+    with client.websocket_connect(url) as ws:
+        ws.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        assert ws.receive_json() == {"type": "start", "sample_rate": 24000, "channels": 1}
+
+
+def _transcribes(client, url):
+    with client.websocket_connect(url) as ws:
+        # Admitted: the stream answers, here that no live STT is configured.
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_each_voice_stream_opens_once_with_a_ticket_minted_for_it(webapp, voice):
+    client = webapp.client
+    assert client.post("/api/webapp/audio-ticket", params={"socket": "speak-stream"}).status_code == 401
+    speak = _mint_audio(client, "speak-stream")
+    _speaks(client, f"ws://localhost{_SPEAK}?ticket={speak}")
+    _refused(client, f"ws://localhost{_SPEAK}?ticket={speak}")
+    transcribe = _mint_audio(client, "transcribe-stream")
+    _transcribes(client, f"ws://localhost{_TRANSCRIBE}?ticket={transcribe}")
+    _refused(client, f"ws://localhost{_TRANSCRIBE}?ticket={transcribe}")
+
+
+def test_a_voice_stream_refuses_a_ticket_minted_for_another_socket(webapp, voice):
+    """The chat socket's ticket, the host terminal's and the other voice stream's open neither voice
+    stream; a voice stream's ticket opens no chat socket and no host shell."""
+    client, host = webapp.client, webapp.host
+    for url, other in ((_SPEAK, "transcribe-stream"), (_TRANSCRIBE, "speak-stream")):
+        for ticket in (_mint(client, "gateway"), _mint(client, "terminal"), _mint_audio(client, other)):
+            _refused(client, f"ws://localhost{url}?ticket={ticket}")
+    _refused(client, f"ws://localhost/api/ws?ticket={_mint_audio(client, 'speak-stream')}")
+    protocols = ["hermes-gateway-v1", f"hermes-gateway-ticket.{_mint_audio(client, 'transcribe-stream')}"]
+    _refused(client, "ws://localhost/api/ws?native_dial=browser", subprotocols=protocols)
+    with TestClient(host) as shells:
+        _refused(shells, f"ws://localhost/api/host-terminal?ticket={_mint_audio(client, 'speak-stream')}")
+    assert webapp.shells == []
+
+
+def test_voice_tickets_minted_before_the_session_token_changed_open_nothing(webapp, voice, monkeypatch):
+    server, client = webapp.server, webapp.client
+    speak, transcribe = _mint_audio(client, "speak-stream"), _mint_audio(client, "transcribe-stream")
+    monkeypatch.setattr(server, "_SESSION_TOKEN", "b" * 43)
+    _refused(client, f"ws://localhost{_SPEAK}?ticket={speak}")
+    _refused(client, f"ws://localhost{_TRANSCRIBE}?ticket={transcribe}")
+
+
+def test_audio_tickets_are_minted_only_for_voice_streams_on_the_webapp(webapp, monkeypatch):
+    server, client = webapp.server, webapp.client
+    for socket in ("gateway", "host-terminal", "display", ""):
+        response = client.post("/api/webapp/audio-ticket", params={"socket": socket}, headers=_SESSION)
+        assert response.status_code == 400, socket
+    for surface in ("dashboard", "serve"):
+        monkeypatch.setattr(server.app.state, "ui_surface", surface)
+        response = client.post("/api/webapp/audio-ticket", params={"socket": "speak-stream"}, headers=_SESSION)
+        assert response.status_code == 404, surface
+
+
+def test_a_native_clients_unnamed_ticket_still_opens_a_voice_stream(webapp, voice):
+    """A ticket named for no socket, as ``/api/auth/ws-ticket`` mints for native Desktop, opens a
+    voice stream as it did before the streams had names."""
+    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+
+    client = webapp.client
+    _speaks(client, f"ws://localhost{_SPEAK}?ticket={mint_ticket(user_id='native', provider='stub')}")
+    _transcribes(client, f"ws://localhost{_TRANSCRIBE}?ticket={mint_ticket(user_id='native', provider='stub')}")
+
+
+def test_a_signed_in_browser_opens_its_voice_streams_with_their_own_tickets(webapp, voice, monkeypatch):
+    """Wildcard host: the sign-in cookie mints each voice stream's ticket; the chat socket's does not
+    open one."""
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests
+    from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
+    from tests.hermes_cli.test_dashboard_auth_ws_auth import _logged_in
+
+    server = webapp.server
+    _reset_for_tests()
+    clear_providers()
+    register_provider(StubAuthProvider())
+    monkeypatch.setattr(server.app.state, "bound_host", "fly-app.fly.dev")
+    monkeypatch.setattr(server.app.state, "bound_port", 443, raising=False)
+    monkeypatch.setattr(server.app.state, "auth_required", True)
+    try:
+        anonymous = TestClient(server.app, base_url="https://fly-app.fly.dev")
+        assert anonymous.post("/api/webapp/audio-ticket", params={"socket": "speak-stream"},
+                              follow_redirects=False).status_code in (302, 401)
+        gated = TestClient(server.app, base_url="https://fly-app.fly.dev")
+        _logged_in(gated)
+        _speaks(gated, f"wss://fly-app.fly.dev{_SPEAK}?ticket={_mint_audio(gated, 'speak-stream', headers={})}")
+        _transcribes(
+            gated, f"wss://fly-app.fly.dev{_TRANSCRIBE}?ticket={_mint_audio(gated, 'transcribe-stream', headers={})}")
+        _refused(gated, f"wss://fly-app.fly.dev{_SPEAK}?ticket={_mint(gated, 'gateway', headers={})}")
     finally:
         clear_providers()
         _reset_for_tests()

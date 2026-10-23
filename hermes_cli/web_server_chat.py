@@ -207,8 +207,8 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     ``reason`` is None when accepted, else a short token (``no_credential``,
     ``token_mismatch``, ``ticket_invalid``, ``internal_invalid``);
     ``credential`` names what was presented so the accept path can log *how*.
-    *socket* names the route's socket for its own tickets
-    (``web_session_sockets.GATEWAY_SOCKET`` / ``HOST_TERMINAL_SOCKET``): a ticket minted for
+    *socket* names the route's socket for its own tickets (``web_session_sockets.GATEWAY_SOCKET``,
+    ``HOST_TERMINAL_SOCKET`` or one of ``AUDIO_SOCKETS``): a ticket minted for
     one socket opens no other, and the host terminal opens only with its own ticket.
 
     Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared).

@@ -319,3 +319,32 @@ export async function authenticatedWebsocketUrl(
 
   return websocketUrl(bootstrap.basePath, path, { ticket }, profile)
 }
+
+/** The voice streams beside `/api/ws`, each opened only by a ticket minted under its socket name. */
+const AUDIO_SOCKETS = {
+  '/api/audio/speak-stream': 'speak-stream',
+  '/api/audio/transcribe-stream': 'transcribe-stream'
+} as const
+
+export type AudioSocketPath = keyof typeof AUDIO_SOCKETS
+
+/**
+ * A voice stream's socket URL for one dial. Its one-use ticket is minted for that stream alone: the
+ * gateway's ticket opens only `/api/ws`, so the stream cannot reuse it.
+ */
+export async function audioWebsocketUrl(
+  bootstrap: BrowserBootstrap,
+  path: AudioSocketPath,
+  profile?: null | string
+): Promise<string> {
+  const result = await browserApi<null | { ticket?: string }>(bootstrap, {
+    method: 'POST',
+    path: `/api/webapp/audio-ticket?socket=${AUDIO_SOCKETS[path]}`
+  })
+
+  const ticket = String(result?.ticket || '').trim()
+
+  if (!ticket) {throw new Error('Hermes did not return a voice stream ticket')}
+
+  return websocketUrl(bootstrap.basePath, path, { ticket }, profile)
+}

@@ -1,8 +1,8 @@
 """Webapp-only routes: the host terminal (loopback or authenticated binds), the
 one-use ticket each browser socket dial mints (``/api/webapp/gateway-ticket`` for
-``/api/ws`` on this same origin, ``/api/webapp/terminal-ticket`` for the host terminal),
-and the one-use handoffs (child window, auto-opened launch tab) for the private, loopback
-Webapp session."""
+``/api/ws`` on this same origin, ``/api/webapp/terminal-ticket`` for the host terminal,
+``/api/webapp/audio-ticket`` for each voice stream), and the one-use handoffs (child window,
+auto-opened launch tab) for the private, loopback Webapp session."""
 from __future__ import annotations
 
 import ipaddress
@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from hermes_cli.dashboard_auth.request_utils import _http_origin
 from hermes_cli.web_server_surface import policy, private_launch
-from hermes_cli.web_session_sockets import GATEWAY_SOCKET, HOST_TERMINAL_SOCKET
+from hermes_cli.web_session_sockets import AUDIO_SOCKETS, GATEWAY_SOCKET, HOST_TERMINAL_SOCKET
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -177,11 +177,11 @@ def _ticket_principal(request: Request) -> tuple[dict, str | None]:
 
 def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None = None,
                        sign_in: str | None = None) -> str:
-    """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET`` or
-    ``HOST_TERMINAL_SOCKET``) as *identity*. Minted with *session_token*, or by a login whose
-    sign-in binding was checked against the credential with digest *sign_in*
-    (``hermes_cli.webapp_sign_in``), it opens nothing once that credential is replaced, and the
-    socket it opens closes when the browser signs out."""
+    """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET``,
+    ``HOST_TERMINAL_SOCKET`` or one of ``AUDIO_SOCKETS``) as *identity*. Minted with
+    *session_token*, or by a login whose sign-in binding was checked against the credential with
+    digest *sign_in* (``hermes_cli.webapp_sign_in``), it opens nothing once that credential is
+    replaced, and the socket it opens closes when the browser signs out."""
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from hermes_cli.web_session_sockets import token_digest
 
@@ -227,6 +227,20 @@ async def issue_terminal_ticket(request: Request):
         raise HTTPException(404, "The host terminal is unavailable on this surface")
     identity, session_token = _ticket_principal(request)
     return _socket_ticket_response(request, identity, HOST_TERMINAL_SOCKET, session_token)
+
+
+@router.post("/api/webapp/audio-ticket")
+async def issue_audio_ticket(request: Request, socket: str = ""):
+    """The browser's one-use ticket for one voice stream dial, named by *socket*:
+    ``speak-stream`` for ``/api/audio/speak-stream``, ``transcribe-stream`` for
+    ``/api/audio/transcribe-stream``. It opens that stream and nothing else, and the gateway ticket
+    opens neither stream, so the browser mints one per dial beside the gateway's."""
+    if not policy(request.app.state).gateway_ticket:
+        raise HTTPException(404, "Webapp voice tickets are unavailable on this surface")
+    identity, session_token = _ticket_principal(request)
+    if socket not in AUDIO_SOCKETS:
+        raise HTTPException(400, "Unknown voice stream")
+    return _socket_ticket_response(request, identity, socket, session_token)
 
 
 @router.post("/webapp/window-session")

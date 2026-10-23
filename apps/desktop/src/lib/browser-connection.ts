@@ -3,6 +3,8 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
 import {
+  type AudioSocketPath,
+  audioWebsocketUrl,
   type BrowserBootstrap,
   BrowserReauthRequiredError,
   endpointUrl,
@@ -77,6 +79,7 @@ interface BrowserConnectionOptions {
 export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnectionOptions): Pick<
   Window['hermesDesktop'],
   | 'getAgentRoster'
+  | 'getAudioWsUrl'
   | 'getConnection'
   | 'getConnectionConfig'
   | 'getConnectionFor'
@@ -139,6 +142,16 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
           reachable: true
         }]
       }
+    },
+    // Each voice stream dial mints its own ticket: the gateway's opens only `/api/ws`.
+    getAudioWsUrl: async (payload: {
+      connectionId?: null | string
+      path: AudioSocketPath
+      profile?: null | string
+    }) => {
+      requireBrowserConnection(payload.connectionId)
+
+      return audioWebsocketUrl(bootstrap, payload.path, payload.profile)
     },
     // Reconnect belongs to the window, not whichever secondary profile is active.
     // Explicit null still selects the default backend.
