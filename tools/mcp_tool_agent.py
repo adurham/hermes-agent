@@ -146,7 +146,9 @@ def refresh_agent_mcp_tools(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
         staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
     backend_before = getattr(agent, "_delegation_backend", None)
-    if prefix_registered is None:  # a rebuild: the session now routes on the backend its new delegate_task is from
+    published_gen = getattr(agent, "_tool_snapshot_generation", -1)
+    stale = isinstance(published_gen, int) and snapshot_generation < published_gen  # a newer snapshot won
+    if prefix_registered is None and not stale:  # a rebuild: route on the backend its new delegate_task is from
         adopt_built_backend(agent, new_defs, built_backend)
     if added is None:
         if getattr(agent, "_delegation_backend", None) != backend_before:
