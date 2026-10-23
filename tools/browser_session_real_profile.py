@@ -92,25 +92,31 @@ def _consent_revoked() -> tuple[None, None]:
 
 def _launch(browser_name: str) -> tuple[Optional[str], Optional[str]]:
     from hermes_cli.browser_connect import chromium_executable, real_profile_copy_dir, snapshot_real_profile
-    from tools.browser_launcher import launch_chromium, running_instance
+    from tools.browser_launcher import launch_chromium
     from tools.browser_session import ensure_screen_for_headed_chromium
-    copy_dir = real_profile_copy_dir(browser_name)
-    # The snapshot overlay rewrites Cookies / Login Data: it must never run while a live copy-browser
-    # (maybe from an earlier Hermes process) holds the dir open. The launcher ATTACHES to such a browser.
-    if running_instance(copy_dir) is None:
-        copy_dir, err = snapshot_real_profile(browser_name)
-        if err or not copy_dir:
-            return None, _snapshot_error(err)
     real_binary = chromium_executable(browser_name)
     if real_binary is None:
         return None, f"{_RP}the real browser binary for '{browser_name}' could not be found. Reinstall it or turn the toggle off."
+    snapshot_failure: list[str] = []
+
+    def overlay() -> Optional[str]:
+        # The snapshot overlay rewrites Cookies / Login Data, so it runs inside the launcher's cross-process
+        # step on the copy dir: never beside another process's copy, never under a live copy-browser (maybe
+        # from an earlier Hermes process; the launcher ATTACHES to that one instead).
+        copied, err = snapshot_real_profile(browser_name)
+        if err or not copied:
+            snapshot_failure.append(_snapshot_error(err))
+            return snapshot_failure[0]
+        return None
+
     ensure_screen_for_headed_chromium()
-    launched, err = launch_chromium(real_profile_key(), executable=real_binary, user_data_dir=copy_dir,
-                                    ephemeral=False, extra_args=_REAL_PROFILE_EXTRA_FLAGS, timeout=30.0,
-                                    sandbox_bypass=False)
+    launched, err = launch_chromium(real_profile_key(), executable=real_binary,
+                                    user_data_dir=real_profile_copy_dir(browser_name), ephemeral=False,
+                                    extra_args=_REAL_PROFILE_EXTRA_FLAGS, timeout=30.0, sandbox_bypass=False,
+                                    prepare=overlay)
     if launched is None:
-        return None, f"{_RP}the real-profile browser failed to start: {err}"
-    logger.info("real-profile browser ready for %s at %s (%s)", browser_name, launched.http_url, copy_dir)
+        return None, snapshot_failure[0] if snapshot_failure else f"{_RP}the real-profile browser failed to start: {err}"
+    logger.info("real-profile browser ready for %s at %s (%s)", browser_name, launched.http_url, launched.user_data_dir)
     return launched.cdp_url, None
 
 

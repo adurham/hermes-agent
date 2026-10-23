@@ -203,6 +203,7 @@ class TestRealProfileCdpLaunch:
     def test_snapshot_failure_fails_closed(self):
         with patch.object(bs_cloud, "use_real_profile", return_value=True), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")):
             cdp, err = rp.real_profile_cdp()
         assert cdp is None

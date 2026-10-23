@@ -30,7 +30,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -407,7 +407,7 @@ def _launch_record_name(records: Path, browser: LaunchedBrowser) -> Optional[str
     return own if own in names else next(iter(names), None)
 
 
-def _start_shared(key: str, executable: str, udd: str, home_key: str,
+def _start_shared(key: str, executable: str, udd: str, home_key: str, prepare,
                   **launch) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
     """Attach to, or launch, shared profile ``udd``'s one Chromium as ONE step under the profile's cross-process
     lock: of two processes starting it at once the later waits, then attaches (a second launch would wipe the
@@ -419,6 +419,9 @@ def _start_shared(key: str, executable: str, udd: str, home_key: str,
     with holders.records_lock(state) if state is not None else contextlib.nullcontext():
         attached = _attach_running(key, udd, home_key)
         if attached is None:
+            failure = prepare() if prepare is not None else None
+            if failure:
+                return None, failure
             return _launch_owned(key, executable, udd, ephemeral=False, home_key=home_key, **launch)
         with _lock:  # registered under the lock too: another key's stop must see this key as its heir
             _browsers[key] = attached
@@ -428,6 +431,7 @@ def _start_shared(key: str, executable: str, udd: str, home_key: str,
 def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir: Optional[str] = None,
                     ephemeral: bool = True, headed: Optional[bool] = None, extra_args=(),
                     env: Optional[dict] = None, timeout: Optional[float] = None, sandbox_bypass: bool = True,
+                    prepare: Optional[Callable[[], Optional[str]]] = None,
                     ) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
     """Start (or reuse) the Chromium for ``key``; ``(browser, None)`` or ``(None, error)``.
 
@@ -435,7 +439,10 @@ def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir
     Bot Desktop's, the user's real browser) is used as given. ``user_data_dir=None`` is a fresh
     ephemeral profile under ``<HERMES_HOME>/cache/browser/chromium/``; a persistent dir that already has
     a live Chromium on it is ATTACHED (``owned=False``, never killed). ``sandbox_bypass=False`` (the
-    user's real browser) never gets the host's sandbox-bypass flags."""
+    user's real browser) never gets the host's sandbox-bypass flags. ``prepare`` (a persistent dir only) runs
+    right before a fresh launch, inside the same cross-process step, never when attaching: a profile copy
+    written there can neither race another process's copy nor land under a browser that just came up; a
+    message it returns is the launch's error, as is."""
     from hermes_constants import hermes_home_key
     # Loaded now, not first at teardown: stopping the browser from an atexit hook must not be this module's
     # first import (Python refuses new atexit registrations during shutdown, orphaning the browser). An
@@ -459,7 +466,7 @@ def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir
                       sandbox_bypass=sandbox_bypass)
         if ephemeral:  # a per-process dir: nobody else starts or attaches to it
             return _launch_owned(key, executable, udd, ephemeral=True, home_key=home_key, **launch)
-        return _start_shared(key, executable, udd, home_key, **launch)
+        return _start_shared(key, executable, udd, home_key, prepare, **launch)
 
 
 def _key_lock(key: str) -> threading.Lock:
