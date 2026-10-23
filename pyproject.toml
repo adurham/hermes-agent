@@ -307,7 +307,7 @@ voice = [
   # onnxruntime has no darwin-x64 wheel/sdist (darwin-x64). Gate the local
   # STT path off both; sounddevice/numpy still ship.
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
-  "sounddevice==0.5.5",
+  "sounddevice==0.5.6",
   "numpy==2.5.4",
 ]
 # Wake engines are optional. Bundles include the engines supported by their
@@ -327,7 +327,7 @@ wake = [
   "sentencepiece==0.2.2",
   "pypinyin==0.55.0",
   "pvporcupine==4.0.3",
-  "sounddevice==0.5.5",
+  "sounddevice==0.5.6",
   "numpy==2.5.4",
 ]
 # Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
@@ -341,7 +341,7 @@ discord = ["discord.py[voice]==2.7.1"]
 stt-whisper = [
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
 ]
-audio-io = ["sounddevice==0.5.5", "numpy==2.5.4"]
+audio-io = ["sounddevice==0.5.6", "numpy==2.5.4"]
 # WeChat voice decode (tools/transcription_tools.py self-heal path).
 silk = ["pilk==0.2.4"]
 # Wake-engine sub-extras — lazy per-engine installs so a user who only wants
