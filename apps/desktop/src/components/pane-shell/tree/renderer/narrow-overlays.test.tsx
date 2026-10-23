@@ -74,8 +74,33 @@ const revealPane = (id: string) => {
 
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
+// The page the browser-hosted Desktop serves (its bridge writes this marker).
+const asBrowserHost = () => {
+  window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+}
+
+// Native Desktop: the Electron preload's bridge exists and no browser marker is set.
+const asNativeDesktop = () => {
+  ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = {}
+}
+
+describe('narrow overlay in native Desktop', () => {
+  // A narrow native window keeps main's overlay: no full-window backdrop, so a
+  // click outside a pinned overlay reaches the app under it and the overlay
+  // stays open until Escape, the toggle or the edge hover closes it.
+  it('puts no outside-click backdrop over the app and keeps a pinned overlay open', () => {
+    asNativeDesktop()
+    render(<NarrowOverlays />)
+    revealPane('sessions')
+
+    expect(globalThis.document.querySelector('[data-narrow-overlay-backdrop]')).toBeNull()
+    expect(globalThis.document.querySelector('[data-narrow-overlay="sessions"]')).not.toBeNull()
+  })
+})
+
 describe('narrow overlay of a stacked zone', () => {
   it('dismisses an outside tap while preserving inside controls and cancelled gestures', () => {
+    asBrowserHost()
     render(<NarrowOverlays />)
     revealPane('sessions')
     fireEvent.pointerDown(overlayTab('bots')!, { button: 0 })

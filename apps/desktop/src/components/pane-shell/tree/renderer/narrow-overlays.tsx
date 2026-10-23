@@ -204,7 +204,10 @@ export function NarrowOverlays() {
 
   return (
     <>
-      {revealed && (
+      {/* A touch screen has no hover to leave the overlay by, so the browser
+          host closes it on a tap outside. Native Desktop lets that click reach
+          the app and keeps the overlay until Escape, the toggle or hover-out. */}
+      {revealed && isBrowserHostedDesktop() && (
         <div
           aria-hidden="true"
           className="absolute inset-0 z-30"

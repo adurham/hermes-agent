@@ -277,8 +277,10 @@ The voice engine split-button uses `--composer-voice-menu-size`: compact on
 desktop, matching `--composer-control-size` on touch surfaces.
 Narrow browser touch layouts show the current session tab with an open-tab
 count. Its menu exposes every tab, while the new-tab action remains beside it.
-Outside taps dismiss narrow sidebar overlays; cancelled or scrolling gestures
-do not. Touch transcript gestures select a pane without focusing its composer.
+In the browser-hosted Desktop, outside taps dismiss narrow sidebar overlays;
+cancelled or scrolling gestures do not. Native Desktop keeps its overlay until
+Escape, the toggle or hover-out. Touch transcript gestures select a pane without
+focusing its composer.
 
 - **Gutters:** `PAGE_INSET_X` (`src/app/layout-constants.ts`) for page side
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode
