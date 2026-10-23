@@ -165,7 +165,7 @@
     "get-windows": "9.3.0"
   },
   "devDependencies": {
-    "@babel/core": "8.0.1",
+    "@babel/core": "8.0.7",
     "@electron/rebuild": "4.2.0",
     "@playwright/test": "1.62.1",
     "@rolldown/plugin-babel": "0.2.3",
