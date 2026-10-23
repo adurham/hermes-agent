@@ -1431,9 +1431,9 @@ export function PreviewPane({
       // Buttons 3/4 are a mouse's back/forward. Chromium delivers them to
       // the renderer as a normal mouse event inside the app's own chrome (the
       // guest page gets its own via `app-command` in main), and unhandled they
-      // walk the HOST document's history.
+      // walk the HOST document's history. A browser tab keeps its own back button.
       onMouseDown={event => {
-        if (!usesWebview || (event.button !== 3 && event.button !== 4)) {
+        if (isBrowserHostedDesktop() || (event.button !== 3 && event.button !== 4)) {
           return
         }
 

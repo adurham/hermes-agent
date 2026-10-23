@@ -796,6 +796,45 @@ describe('PreviewPane console state', () => {
     expect(fireEvent.click(sourceLink!)).toBe(false)
   })
 
+  // A mouse's back/forward buttons over the pane would otherwise walk the app's
+  // own history. Native Desktop claims them over every preview, a remote HTML
+  // report or a file included, as on main; only a webview has history to walk.
+  it('native Desktop claims the mouse back and forward buttons over a preview without a webview', async () => {
+    const target = {
+      dataUrl: `data:text/html;base64,${btoa('<h1>remote</h1>')}`,
+      kind: 'file' as const,
+      label: 'report.html',
+      path: '/srv/report.html',
+      previewKind: 'html' as const,
+      source: '/srv/report.html',
+      url: 'file:///srv/report.html'
+    }
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(<PreviewPane target={target} />)
+    })
+
+    const pane = rendered.container.querySelector('aside')!
+
+    expect(fireEvent.mouseDown(pane, { button: 3 })).toBe(false)
+    expect(fireEvent.mouseDown(pane, { button: 4 })).toBe(false)
+    expect(fireEvent.mouseDown(pane, { button: 0 })).toBe(true)
+  })
+
+  // A browser tab's back button belongs to the tab: the pane leaves it alone.
+  it('leaves the mouse back button to the browser tab in browser-hosted Desktop', async () => {
+    globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    const target = { kind: 'url' as const, label: 'Example', source: 'https://example.com/', url: 'https://example.com/' }
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(<PreviewPane tabId="browser-back" target={target} />)
+    })
+
+    expect(fireEvent.mouseDown(rendered.container.querySelector('aside')!, { button: 3 })).toBe(true)
+  })
+
   it('renders PDF targets in an embedded viewer', async () => {
     const dataUrl = 'data:application/pdf;base64,JVBERi0xLjQ='
     const readFileDataUrl = vi.fn(async () => dataUrl)
