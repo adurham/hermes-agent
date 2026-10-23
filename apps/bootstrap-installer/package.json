@@ -41,7 +41,7 @@
     "tw-shimmer": "0.4.12"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.4",
+    "@tauri-apps/cli": "2.12.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
