@@ -364,7 +364,7 @@ wake-porcupine = ["pvporcupine==4.0.3"]
 # faster-whisper. The adapter's pubsub import is lazy, so this just makes the
 # google-chat platform unavailable on win32-arm64.
 google-chat = [
-  "google-cloud-pubsub==2.39.2; platform_machine != 'ARM64' or sys_platform != 'win32'",
+  "google-cloud-pubsub==2.43.0; platform_machine != 'ARM64' or sys_platform != 'win32'",
 ]
 # Document extraction (read_file anydoc converter self-heal) — core already
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
