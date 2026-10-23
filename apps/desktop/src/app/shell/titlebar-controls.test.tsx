@@ -9,7 +9,7 @@ import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-st
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
-import { CHAT_SIDEBAR_PANE_ID } from '@/store/layout'
+import { $fileBrowserOpen, $leftSideOpen, CHAT_SIDEBAR_PANE_ID, FILE_BROWSER_PANE_ID } from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
@@ -203,9 +203,46 @@ describe('titlebar app-action cluster', () => {
     setTitlebarAppActionsSide('right')
     cleanup()
     vi.unstubAllGlobals()
+    delete window.document.documentElement.dataset.hermesDesktopHost
+  })
+
+  // A narrow native window keeps main's titlebar: the side buttons read the
+  // docked sides and flip the overlay through the shared ⌘B/⌘J toggle, whatever
+  // the overlay shows, and carry no aria-expanded.
+  it('names and toggles the sides from docked state in a narrow native window, as on main', () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    )
+    $narrowViewport.set(true)
+    $narrowOverlayPaneIds.set(new Set([CHAT_SIDEBAR_PANE_ID, REVIEW_PANE_ID]))
+    const intents: unknown[] = []
+    const listener = (event: Event) => intents.push((event as CustomEvent).detail)
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/')
+      const sidebar = screen.getByRole('button', { name: $leftSideOpen.get() ? 'Hide sidebar' : 'Show sidebar' })
+
+      const rightSidebar = screen.getByRole('button', {
+        name: $fileBrowserOpen.get() ? 'Hide right sidebar' : 'Show right sidebar'
+      })
+
+      expect(sidebar.hasAttribute('aria-expanded')).toBe(false)
+      expect(rightSidebar.hasAttribute('aria-expanded')).toBe(false)
+      fireEvent.click(sidebar)
+      fireEvent.click(rightSidebar)
+      expect(intents).toEqual([
+        { id: CHAT_SIDEBAR_PANE_ID, mode: 'toggle' },
+        { id: FILE_BROWSER_PANE_ID, mode: 'toggle' }
+      ])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    }
   })
 
   it('names the narrow sidebar action from its visible overlay, not docked state', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     $narrowViewport.set(true)
     renderControls('/')
     const left = screen.getByLabelText('Window controls')
@@ -217,6 +254,7 @@ describe('titlebar app-action cluster', () => {
   })
 
   it('explicitly closes a visible overlay rather than pinning a hover reveal', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     vi.stubGlobal(
       'matchMedia',
       vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
@@ -237,6 +275,7 @@ describe('titlebar app-action cluster', () => {
   })
 
   it('hides a review-only right sidebar instead of opening files', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     $narrowViewport.set(true)
     $narrowOverlayPaneIds.set(new Set([REVIEW_PANE_ID]))
     const intents: unknown[] = []

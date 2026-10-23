@@ -17,6 +17,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { canUseHud, toggleHud } from '@/store/hud'
@@ -141,15 +142,52 @@ function useModifierHeld(): boolean {
   return held
 }
 
+interface SidebarEdge {
+  /** Whether the side reads as open, which picks the button's Show or Hide label. */
+  open: boolean
+  /** The button's aria-expanded; only the browser-hosted Desktop reports it. */
+  expanded?: boolean
+  toggle: () => void
+}
+
+/** The titlebar's two sidebar buttons. The browser-hosted Desktop's narrow layout has no hover to
+ * reveal by, so there the buttons read and drive the overlay itself, and they send an explicit open
+ * or close: a visible hover reveal is not pinned, and a generic toggle would pin it rather than
+ * perform the labelled Hide. A narrow native window keeps the docked toggles, which already route
+ * through the overlay's toggle. */
+function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
+  const fileBrowserOpen = useStore($fileBrowserOpen)
+  const leftSideOpen = useStore($leftSideOpen)
+  const narrow = useStore($narrowViewport)
+  const overlayPanes = useStore($narrowOverlayPaneIds)
+  const browserHost = isBrowserHostedDesktop()
+  const overlayChrome = narrow && browserHost
+  const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
+
+  const edge = (id: string, dockedOpen: boolean, toggleDocked: () => void): SidebarEdge => {
+    const open = overlayChrome ? overlayPanes.has(id) : dockedOpen
+    const revealMode = open ? 'close' : 'open'
+
+    return {
+      open,
+      expanded: browserHost ? open : undefined,
+      toggle: overlayChrome
+        ? () => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode: revealMode } }))
+        : toggleDocked
+    }
+  }
+
+  return {
+    left: edge(CHAT_SIDEBAR_PANE_ID, leftSideOpen, toggleLeftSide),
+    right: edge(rightOverlayId, fileBrowserOpen, toggleRightSide)
+  }
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const modHeld = useModifierHeld()
-  const fileBrowserOpen = useStore($fileBrowserOpen)
-  const leftSideOpen = useStore($leftSideOpen)
-  const narrow = useStore($narrowViewport)
-  const overlayPanes = useStore($narrowOverlayPaneIds)
   const panesFlipped = useStore($panesFlipped)
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
@@ -173,22 +211,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // from the live tree (see toggleLeftSide / toggleRightSide) — the browser
   // column, the sessions column, whatever is physically left / right. Never an
   // active highlight — plain show/hide affordances.
-  const leftEdge = { open: narrow ? overlayPanes.has(CHAT_SIDEBAR_PANE_ID) : leftSideOpen, toggle: toggleLeftSide }
-  const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
-  const rightEdge = { open: narrow ? overlayPanes.has(rightOverlayId) : fileBrowserOpen, toggle: toggleRightSide }
+  const { left: leftEdge, right: rightEdge } = useSidebarEdges()
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
-
-  // A visible hover reveal is not pinned: generic toggle would pin it rather
-  // than perform the labelled Hide action. Titlebar verbs are explicit;
-  // keyboard toggles retain their hover-to-pin behavior.
-  const toggleEdge = (id: string, open: boolean, toggleDocked: () => void) => {
-    if (narrow) {
-      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode: open ? 'close' : 'open' } }))
-    } else {
-      toggleDocked()
-    }
-  }
 
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
@@ -196,11 +221,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     badge: panesFlipped ? undefined : unreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
-    expanded: leftEdge.open,
+    expanded: leftEdge.expanded,
     label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
     onSelect: () => {
       triggerHaptic('tap')
-      toggleEdge(CHAT_SIDEBAR_PANE_ID, leftEdge.open, leftEdge.toggle)
+      leftEdge.toggle()
     }
   }
 
@@ -222,11 +247,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     badge: panesFlipped ? unreadBadge : undefined,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    expanded: rightEdge.open,
+    expanded: rightEdge.expanded,
     label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
-      toggleEdge(rightOverlayId, rightEdge.open, rightEdge.toggle)
+      rightEdge.toggle()
     },
     tour: 'right-pane-toggle'
   }

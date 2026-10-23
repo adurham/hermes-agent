@@ -96,6 +96,22 @@ describe('narrow overlay in native Desktop', () => {
     expect(globalThis.document.querySelector('[data-narrow-overlay-backdrop]')).toBeNull()
     expect(globalThis.document.querySelector('[data-narrow-overlay="sessions"]')).not.toBeNull()
   })
+
+  // Closing the sessions sidebar (⌘B's setter in a narrow window) closes the
+  // overlay only when it shows that pane, as on main; a zone mate it shows
+  // instead (Bots) stays open.
+  it('closes only the named pane, not the zone mate the overlay shows', () => {
+    asNativeDesktop()
+    const { queryByTestId } = render(<NarrowOverlays />)
+    revealPane('bots')
+    act(() =>
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'chat-sidebar', mode: 'close' } }))
+    )
+    expect(queryByTestId('bots-body')).toBeTruthy()
+
+    act(() => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'bots', mode: 'close' } })))
+    expect(queryByTestId('bots-body')).toBeNull()
+  })
 })
 
 describe('narrow overlay of a stacked zone', () => {
@@ -120,6 +136,7 @@ describe('narrow overlay of a stacked zone', () => {
   })
 
   it('closes the visible zone mate through the sessions sidebar alias', () => {
+    asBrowserHost()
     const { queryByTestId } = render(<NarrowOverlays />)
     revealPane('bots')
     expect(queryByTestId('bots-body')).toBeTruthy()
