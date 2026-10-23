@@ -52,8 +52,9 @@ The server issues `session:operator` only at these existing trusted boundaries:
   Webapp tabs survive a restart, hands it out only through a one-use link minted for a same-user
   control-socket peer, and replaces it on `hermes webapp --sign-out` and whenever the Webapp's
   listener fails to start, since its port then belongs to someone else. Behind the sign-in gate a
-  Webapp login is bound to that token by the `hermes_webapp_signin` cookie (HMAC-SHA256 of
-  `webapp-sign-in` keyed with the token), so replacing it ends those logins too; sign-out closes
+  Webapp login is bound to that token by the `hermes_webapp_signin_<gateway>` cookie (HMAC-SHA256 of
+  `webapp-sign-in` keyed with the token; `<gateway>` comes from a digest of the gateway home, so two
+  gateways' Webapps on one hostname keep their own), so replacing it ends those logins too; sign-out closes
   every socket the token or a bound login opened, Bot Desktop viewers included. The provider tokens
   such a login keeps in its cookies never work there on their own: the Webapp's listener accepts a
   bearer token, and renews a refresh token, only when it gave that token to a native app's RFC 8252

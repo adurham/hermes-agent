@@ -183,9 +183,35 @@ def test_the_standalone_dashboard_keeps_its_logins_as_on_main(gated, monkeypatch
     monkeypatch.setattr(gated.server.app.state, "ui_surface", "dashboard")
     browser = gated.browser()
     _sign_in_with_password(browser)
-    assert not any(name.endswith("hermes_webapp_signin") for name in browser.cookies.keys())
+    assert not any("hermes_webapp_signin" in name for name in browser.cookies.keys())
     monkeypatch.setattr(gated.server, "_SESSION_TOKEN", "n" * 43)
     assert browser.get("/api/auth/me").status_code == 200
+
+
+def test_two_gateways_on_one_hostname_keep_their_own_sign_ins(gated, monkeypatch, tmp_path):
+    """Cookies are not scoped to a port, so one browser sends the Webapps of two gateways on one host
+    the same cookies. Signing in to one leaves the other signed in (here both accept the same account
+    tokens, as two gateways sharing a sign-in provider do), and signing one out leaves the other."""
+    state = gated.server.app.state
+    gateways = {9120: (tmp_path / ".hermes", _TOKEN), 9121: (tmp_path / "other-home", "o" * 43)}
+    browser = gated.browser()  # one cookie jar for both
+
+    def at(port, path):
+        home, token = gateways[port]
+        monkeypatch.setattr(state, "webapp_home", home)
+        monkeypatch.setattr(state, "bound_port", port)
+        monkeypatch.setattr(gated.server, "_SESSION_TOKEN", token)
+        return f"http://hermes.lan:{port}{path}"
+
+    for port in (9120, 9121):
+        signed_in = browser.post(at(port, "/auth/password-login"),
+                                 json={"provider": "basic", "username": USER, "password": PASSWORD})
+        assert signed_in.status_code == 200
+    assert browser.get(at(9121, "/api/auth/me")).status_code == 200
+    assert browser.get(at(9120, "/api/auth/me")).status_code == 200
+    gateways[9121] = (gateways[9121][0], "r" * 43)  # the second gateway signs its browsers out
+    _signed_out(browser.get(at(9121, "/api/auth/me")))
+    assert browser.get(at(9120, "/api/auth/me")).status_code == 200
 
 
 # A browser's login keeps the sign-in provider's access and refresh token in its cookies. Copied out of

@@ -1,7 +1,9 @@
 """Behind the sign-in gate, a Webapp login lasts only while the browser credential it is bound to does.
 
 On the gateway's Webapp (``app.state.ui_surface == "webapp"``) with the sign-in gate engaged, every
-successful cookie login (a password login or an OAuth callback) also sets ``hermes_webapp_signin``: the
+successful cookie login (a password login or an OAuth callback) also sets the cookie
+``hermes_webapp_signin_<gateway>`` (``<gateway>`` from a digest of the gateway's home, so two gateways'
+Webapps on one hostname keep their own): the
 hex HMAC-SHA256 of ``"webapp-sign-in"`` keyed with the browser session token the gateway serves
 (``web_server._SESSION_TOKEN``, kept in the gateway home by ``gateway.webapp_listener``). The gate treats
 a cookie session without a matching value as signed out. Replacing that token (``hermes webapp
@@ -75,7 +77,7 @@ def check(request: Request) -> bool:
     from hermes_cli.web_session_sockets import token_digest
 
     token = _current_token()
-    presented = read_webapp_signin_cookie(request) or ""
+    presented = read_webapp_signin_cookie(request, _gateway(request)) or ""
     if not hmac.compare_digest(presented.encode(), binding(token).encode()):
         return False
     request.state.webapp_sign_in = token_digest(token)
@@ -93,7 +95,7 @@ def _set(response: Response, request: Request, token: str) -> None:
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     set_webapp_signin_cookie(response, value=binding(token), use_https=detect_https(request),
-                             prefix=prefix_from_request(request))
+                             prefix=prefix_from_request(request), gateway=_gateway(request))
 
 
 def bind(response: Response, request: Request) -> None:
@@ -151,6 +153,13 @@ def _digest(token: str) -> str:
 def _home(request: Request) -> Optional[Path]:
     home = getattr(request.app.state, "webapp_home", None)
     return Path(home) if home is not None else None
+
+
+def _gateway(request: Request) -> str:
+    """This gateway's name in its sign-in cookie: a digest of its home, the same across restarts and
+    different for every gateway on one machine (each home has its own); ``""`` without a home."""
+    home = _home(request)
+    return "" if home is None else hashlib.sha256(str(home.absolute()).encode()).hexdigest()[:16]
 
 
 def _loaded(home: Optional[Path]) -> dict[str, int]:
