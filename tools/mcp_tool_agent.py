@@ -145,9 +145,12 @@ def refresh_agent_mcp_tools(
     added = _publish_tool_snapshot(
         agent, new_defs, new_names, snapshot_generation=snapshot_generation,
         staged_engine_names=staged_engine_names, content_aware=content_aware, prefix_registered=prefix_registered)
+    backend_before = getattr(agent, "_delegation_backend", None)
     if prefix_registered is None:  # a rebuild: the session now routes on the backend its new delegate_task is from
         adopt_built_backend(agent, new_defs, built_backend)
     if added is None:
+        if getattr(agent, "_delegation_backend", None) != backend_before:
+            persist_agent_tool_names(agent)  # only the backend moved (two backends build one schema): pin it
         return set()
     persist_agent_tool_names(agent)  # re-pin so a rebuild after agent-cache eviction restores this order
     return added
