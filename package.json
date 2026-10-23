@@ -79,7 +79,6 @@
     "esbuild@0.28.2": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true,
     "lefthook@2.1.14": true
