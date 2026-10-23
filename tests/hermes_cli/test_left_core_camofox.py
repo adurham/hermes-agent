@@ -13,6 +13,7 @@ import pytest
 
 import hermes_cli.left_core_migration as lcm
 import hermes_yaml as yaml
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 
 _CATALOG_ENTRY = """\
 name: camofox
@@ -250,7 +251,7 @@ def test_upgrade_converts_after_the_config_step(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     home = _home(tmp_path, env=_SPLIT_ENV, config={"_config_version": 51, "platform_toolsets": _SPLIT_TOOLSETS})
     _migrate_config(home)
-    assert _config(home)["_config_version"] == 52
+    assert _config(home)["_config_version"] == DEFAULT_CONFIG["_config_version"]
     calls = []
     assert lcm.migrate_home(home, install=_installer(home, calls), say=lambda _m: None) == ["camofox"]
     config = _config(home)
@@ -290,7 +291,6 @@ def test_the_config_yaml_an_env_only_conversion_creates_is_stamped(tmp_path, mon
     import logging
 
     from hermes_cli import post_update
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
 
     home = _home(tmp_path, env=_SPLIT_ENV)
     assert _boot(home, monkeypatch) == ["camofox"]
@@ -319,7 +319,7 @@ def test_a_plain_save_stamping_an_unversioned_camofox_home_keeps_its_conversion(
         save_config(load_config())
     finally:
         reset_hermes_home_override(token)
-    assert _config(home)["_config_version"] == 52
+    assert _config(home)["_config_version"] == DEFAULT_CONFIG["_config_version"]
     calls = []
     assert lcm.migrate_home(home, install=_installer(home, calls), say=lambda _m: None) == ["camofox"]
     assert _config(home)["platform_toolsets"]["cli"] == ["terminal", "file", "camofox"]
