@@ -98,8 +98,18 @@ export function mediaProtocolDownloadName(rawUrl: string): null | string {
   return target.filePath.split(/[\\/]/).filter(Boolean).pop() || null
 }
 
+/**
+ * The native path a media `file:` URL names. Agents write these URLs by hand, and a name may hold a
+ * `%` that starts no escape (`100%.mp4`), which the gateway reads as written. That `%` is escaped
+ * before the shared parser reads the URL, so the name plays while an encoded separator (`%2f`,
+ * `%5c`, or one encoded twice) is still refused.
+ */
+function mediaFileUrlPath(fileUrl: string): null | string {
+  return fileUrlToNativePath(fileUrl.replace(/%(?![0-9a-f]{2})/gi, '%25'))
+}
+
 export function isStreamableMediaPath(filePath: string): boolean {
-  const mediaPath = /^file:/i.test(filePath) ? fileUrlToNativePath(filePath) : filePath
+  const mediaPath = /^file:/i.test(filePath) ? mediaFileUrlPath(filePath) : filePath
 
   if (mediaPath === null) {
     return false
@@ -133,7 +143,7 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
   }
 
   if (/^file:/i.test(filePath)) {
-    const nativePath = fileUrlToNativePath(filePath)
+    const nativePath = mediaFileUrlPath(filePath)
 
     if (nativePath === null) {
       throw new Error('Invalid media file URL')

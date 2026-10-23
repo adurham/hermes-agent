@@ -61,6 +61,44 @@ describe('media protocol helpers', () => {
     }
   )
 
+  // A file name may hold a `%` that starts no escape. Agents write such a file URL as is and the
+  // gateway reads it back as is, so it plays like any other name.
+  it.each([
+    ['file:///tmp/100%.mp4', '/tmp/100%.mp4'],
+    ['file:///tmp/50% off.mp4', '/tmp/50% off.mp4'],
+    ['file:///tmp/%zz%20mix.mp4', '/tmp/%zz mix.mp4'],
+    ['file:///C:/media/100%.mp4', 'file:///C:/media/100%.mp4']
+  ])('plays remote media whose name holds a bare %%: %s', async (url, expectedPath) => {
+    const deps = dependencies()
+
+    expect(isStreamableMediaPath(url)).toBe(true)
+
+    const response = await createMediaProtocolHandler(deps)(request(`hermes-media://remote/${encodeURIComponent(url)}`))
+
+    expect(response.status).toBe(206)
+    expect(deps.fetchRemote).toHaveBeenCalledOnce()
+    expect(new URL(vi.mocked(deps.fetchRemote).mock.calls[0][0]).searchParams.get('path')).toBe(expectedPath)
+  })
+
+  // Escaping a bare `%` must not let a separator through: one encoded beside it, once or twice,
+  // or spelled by the escape itself, is still refused.
+  it.each([
+    'file:///tmp/100%/..%2f..%2fetc/clip.mp4',
+    'file:///tmp/100%/..%252f..%252fetc/clip.mp4',
+    'file:///tmp/%%32%66etc/clip.mp4',
+    'file:///tmp/%2%66etc/clip.mp4',
+    'file:///C:/media/100%/..%5cclip.mp4',
+    'file://%invalid/clip.mp4'
+  ])('still refuses %s', async url => {
+    const deps = dependencies()
+
+    expect(isStreamableMediaPath(url)).toBe(false)
+    expect(
+      (await createMediaProtocolHandler(deps)(request(`hermes-media://remote/${encodeURIComponent(url)}`))).status
+    ).toBe(415)
+    expect(deps.fetchRemote).not.toHaveBeenCalled()
+  })
+
   it('forwards range/cache negotiation headers but strips renderer credentials', () => {
     const headers = mediaRequestHeaders(
       new Headers({
