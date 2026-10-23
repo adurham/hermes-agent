@@ -440,7 +440,7 @@ otlp = [
   "opentelemetry-exporter-otlp-proto-http==1.45.1",
 ]
 bedrock = ["boto3==1.43.115"]
-vertex = ["google-auth==2.55.1"]
+vertex = ["google-auth==2.62.0"]
 azure-identity = ["azure-identity==1.26.0"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
@@ -471,7 +471,7 @@ google = [
   # Sheets, Docs). Declared here so PM environments and independent
   # packagers can include them without mutating an application's runtime.
   "google-api-python-client==2.201.0",
-  "google-auth==2.55.1",
+  "google-auth==2.62.0",
   "google-auth-oauthlib==1.3.1",
   "google-auth-httplib2==0.3.1",
   # The Google SDKs permit older vulnerable transitives, so unlocked installs
