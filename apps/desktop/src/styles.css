@@ -1468,12 +1468,17 @@ textarea,
 [contenteditable]:not([contenteditable='false']),
 [data-slot='aui_user-message-root'],
 [data-slot='aui_assistant-message-content'],
-[data-slot='aui_assistant-message-content'] p,
-[data-slot='aui_assistant-message-content'] pre,
-[data-slot='aui_assistant-message-content'] code,
 [data-slot='aui_system-message-root'],
 [data-selectable-text='true'],
 [data-selectable-text='true'] * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* The browser host makes paragraphs and code in an assistant message
+   selectable even inside a clickable row, so a touch long-press selects them.
+   Native Desktop keeps text inside a clickable row part of the control. */
+html[data-hermes-desktop-host='browser'] [data-slot='aui_assistant-message-content'] :is(p, pre, code) {
   -webkit-user-select: text;
   user-select: text;
 }
