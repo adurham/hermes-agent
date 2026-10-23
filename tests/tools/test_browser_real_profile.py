@@ -318,22 +318,30 @@ class TestRealProfileCdpLaunch:
         owned, so never killed), never re-run the snapshot over its open databases. A DevToolsActivePort left
         by a crash whose port was recycled by ANOTHER CDP server (browser id mismatch) must not be attached
         to; the normal launch path runs."""
+        import socket
+        import subprocess
+
         (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n", encoding="utf-8")
-        os.symlink(f"host-{os.getpid()}", tmp_path / "SingletonLock")
+        chrome = subprocess.Popen([*_SLEEPER, f"--user-data-dir={tmp_path}"])  # the survivor holding the dir
+        os.symlink(f"{socket.gethostname()}-{chrome.pid}", tmp_path / "SingletonLock")
         version = Mock()
         version.json.return_value = {"webSocketDebuggerUrl": f"ws://127.0.0.1:41000{live_browser_id}"}
-        with patch.object(bs_cloud, "use_real_profile", return_value=True), \
-             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
-             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
-             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
-             patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")) as snapshot, \
-             patch("requests.get", return_value=version):
-            cdp, err = rp.real_profile_cdp()
+        try:
+            with patch.object(bs_cloud, "use_real_profile", return_value=True), \
+                 patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+                 patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+                 patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+                 patch("hermes_cli.browser_connect.snapshot_real_profile", return_value=(None, "boom")) as snapshot, \
+                 patch("requests.get", return_value=version):
+                cdp, err = rp.real_profile_cdp()
+            attached = launcher.get_browser(rp.real_profile_key())  # while the stand-in still runs
+        finally:
+            chrome.kill()
+            chrome.wait(timeout=30)
         if live_browser_id == "/devtools/browser/x":
             assert (cdp, err) == ("ws://127.0.0.1:41000/devtools/browser/x", None)
             snapshot.assert_not_called()
-            attached = launcher.get_browser(rp.real_profile_key())
-            assert attached is not None and attached.owned is False
+            assert attached is not None and attached.owned is False and attached.pid == chrome.pid
         else:
             snapshot.assert_called_once()
             assert cdp is None and "boom" in err

@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -79,6 +80,10 @@ class LaunchedBrowser:
     # File name of the launch record its leases are keyed by, when that is not this process's own name for
     # it: an attached browser keeps its launcher's record, whichever PID namespace wrote it.
     record_name: Optional[str] = None
+    # Held from an environment this process cannot verify (another PID namespace: a container's browser seen
+    # from the host, or the reverse): ``pid`` is that namespace's number, names nobody here and is never
+    # signalled; liveness is its DevTools endpoint.
+    foreign: bool = False
 
 
 _browsers: dict[str, LaunchedBrowser] = {}
@@ -290,12 +295,58 @@ def _wait_for_devtools(proc: subprocess.Popen, user_data_dir: str, deadline: flo
 def _singleton_pid(user_data_dir: str) -> Optional[int]:
     """Pid of the Chromium holding ``user_data_dir``: the ``SingletonLock`` symlink (POSIX), else (Windows
     has no symlink, only a locked ``lockfile``) the browser process whose argv names the dir."""
+    owner = _singleton_owner(user_data_dir)
+    if owner is None:
+        return _pid_naming_dir(user_data_dir) if os.name == "nt" else None
+    return owner[1]
+
+
+def _singleton_owner(user_data_dir: str) -> Optional[tuple[str, int]]:
+    """``(hostname, pid)`` Chromium wrote into ``user_data_dir``'s ``SingletonLock`` symlink (POSIX), else None."""
     try:
         target = os.readlink(os.path.join(user_data_dir, "SingletonLock"))
     except OSError:
-        return _pid_naming_dir(user_data_dir) if os.name == "nt" else None
-    pid_text = target.rpartition("-")[2]
-    return int(pid_text) if pid_text.isdigit() else None
+        return None
+    host, _, pid_text = target.rpartition("-")
+    return (host, int(pid_text)) if pid_text.isdigit() else None
+
+
+def _foreign_holder(user_data_dir: str) -> Optional[int]:
+    """The ``SingletonLock`` pid of a Chromium on ``user_data_dir`` that runs in an environment this process cannot
+    verify, else None. Foreign: the lock is not a live process here whose argv names the dir, and it was written
+    under another hostname (another host or container; Chromium too refuses such a lock) or names the browser
+    of a launch record from another PID namespace. A lock of this hostname with no such record is stale (this
+    environment's crashed browser): Chromium itself takes it over, and so does a launch."""
+    owner = _singleton_owner(user_data_dir)
+    if owner is None:
+        return None
+    host, pid = owner
+    if _pid_alive(pid) and _cmdline_names_dir(pid, user_data_dir):
+        return None
+    if host != socket.gethostname() or _foreign_record_names(user_data_dir, pid):
+        return pid
+    return None
+
+
+def _foreign_record_names(user_data_dir: str, pid: int) -> bool:
+    """A launch record from another PID namespace names ``pid`` as shared profile ``user_data_dir``'s browser."""
+    from tools.browser_launcher_holders import same_namespace
+    state = _shared_state_dir(user_data_dir)
+    if state is None:
+        return False
+    for name in _record_names(state, user_data_dir, pid):
+        record = _load_record(state / name)
+        if record is not None and record.get("pid") == pid and not same_namespace(record):
+            return True
+    return False
+
+
+def _record_names(records: Path, user_data_dir: str, pid) -> list[str]:
+    """Names of the launch records in ``records`` for profile ``user_data_dir``'s browser ``pid``, whichever PID
+    namespace wrote them (each carries its writer's ``ns_tag``), sorted."""
+    stem = f"{_profile_digest(user_data_dir)[:16]}-{pid}"
+    pattern = re.compile(rf"^{re.escape(stem)}(-n[0-9a-f]{{12}})?\.json$")
+    return sorted(p.name for p in records.glob(f"{stem}*.json") if pattern.match(p.name))
 
 
 def _pid_naming_dir(user_data_dir: str) -> Optional[int]:
@@ -400,11 +451,37 @@ def _launch_record_name(records: Path, browser: LaunchedBrowser) -> Optional[str
     host CLI attached to) would miss the lease and stop the browser under it. This namespace's record wins
     over another's on the same pid number; None when there is no record (a browser a human started)."""
     from tools.browser_launcher_holders import ns_tag
-    stem = f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}"
-    pattern = re.compile(rf"^{re.escape(stem)}(-n[0-9a-f]{{12}})?\.json$")
-    names = sorted(p.name for p in records.glob(f"{stem}*.json") if pattern.match(p.name))
-    own = f"{stem}{ns_tag()}.json"
+    names = _record_names(records, browser.user_data_dir, browser.pid)
+    own = f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}{ns_tag()}.json"
+    if browser.foreign:  # its pid number is another namespace's: a record of ours on that number is another browser
+        return next((name for name in names if name != own), None)
     return own if own in names else next(iter(names), None)
+
+
+def _attach_foreign(key: str, user_data_dir: str, home_key: str, pid: int) -> Optional[LaunchedBrowser]:
+    """The Chromium another environment holds on ``user_data_dir``, leased, when its DevTools endpoint answers here
+    (caller holds the profile's lock); None when it does not. Never adopted: its record is not ours to take."""
+    found = _read_devtools_file(user_data_dir)
+    if found is None or not _devtools_endpoint_live(*found):
+        return None
+    logger.info("browser: attaching to the Chromium another environment runs on %s (its pid %s there)",
+                user_data_dir, pid)
+    browser = _make_browser(key, found[0], found[1], pid=pid, start_time=None, user_data_dir=user_data_dir,
+                            owned=False, ephemeral=False, home_key=home_key)
+    browser.foreign = True
+    records = _state_dir(browser)
+    if records is not None:
+        from tools import browser_launcher_holders as holders
+        browser.record_name = _launch_record_name(records, browser)
+        holders.write_lease(_record_path(browser), browser)  # its launcher's exit must not stop it under us
+    return browser
+
+
+def _foreign_unreachable(user_data_dir: str) -> str:
+    return (f"The browser profile {user_data_dir} is in use by a Chromium in another environment (a container or "
+            "the host) that this process can neither reach nor verify, so Hermes will not start a second browser "
+            "on it. Stop that browser, or set browser.user_data_dir to another directory for this environment; if "
+            f"no browser runs there any more, delete {os.path.join(user_data_dir, 'SingletonLock')}.")
 
 
 def _start_shared(key: str, executable: str, udd: str, home_key: str, prepare,
@@ -413,11 +490,18 @@ def _start_shared(key: str, executable: str, udd: str, home_key: str, prepare,
     lock: of two processes starting it at once the later waits, then attaches (a second launch would wipe the
     first's DevToolsActivePort and lose Chromium's singleton), and an owner's stop cannot fall between the live
     probe and the lease. A first launch holds the lock for its whole readiness wait; the reaper skips a busy
-    profile instead of waiting (:func:`_reap_shared_profiles`)."""
+    profile instead of waiting (:func:`_reap_shared_profiles`). A browser another environment holds is attached
+    through its endpoint, or refused; never launched over."""
     from tools import browser_launcher_holders as holders
     state = _shared_state_dir(udd)
     with holders.records_lock(state) if state is not None else contextlib.nullcontext():
-        attached = _attach_running(key, udd, home_key)
+        foreign = _foreign_holder(udd)
+        if foreign is not None:
+            attached = _attach_foreign(key, udd, home_key, foreign)
+            if attached is None:
+                return None, _foreign_unreachable(udd)
+        else:
+            attached = _attach_running(key, udd, home_key)
         if attached is None:
             failure = prepare() if prepare is not None else None
             if failure:
@@ -546,11 +630,26 @@ def get_browser(key: str) -> Optional[LaunchedBrowser]:
         browser = _browsers.get(key)
         if browser is None:
             return None
-        if _alive(browser):
-            return browser
-        logger.info("browser: Chromium for %s (pid %s) is gone", key, browser.pid)
-        _forget(key, browser)
+        if not browser.foreign:
+            if _alive(browser):
+                return browser
+            logger.info("browser: Chromium for %s (pid %s) is gone", key, browser.pid)
+            _forget(key, browser)
+            return None
+    if _foreign_alive(browser):  # an HTTP probe: never under the process-wide lock
+        return browser
+    with _lock:
+        if _browsers.get(key) is browser:
+            logger.info("browser: the Chromium another environment ran for %s is gone", key)
+            _forget(key, browser)
     return None
+
+
+def _foreign_alive(browser: LaunchedBrowser) -> bool:
+    """A browser another environment holds is alive while its profile still names this endpoint and it answers."""
+    found = _read_devtools_file(browser.user_data_dir)
+    return (found is not None and browser.cdp_url == f"ws://127.0.0.1:{found[0]}{found[1]}"
+            and _devtools_endpoint_live(*found))
 
 
 def _heir_key(browser: LaunchedBrowser) -> Optional[str]:
@@ -561,7 +660,8 @@ def _heir_key(browser: LaunchedBrowser) -> Optional[str]:
         return None
     with _lock:
         return next((k for k, b in _browsers.items() if b is not browser and not b.ephemeral
-                     and b.pid == browser.pid and b.start_time == browser.start_time), None)
+                     and b.foreign == browser.foreign and b.pid == browser.pid
+                     and b.start_time == browser.start_time), None)
 
 
 def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> None:
@@ -642,6 +742,8 @@ def _last_holder_out(record: Path, browser: LaunchedBrowser) -> bool:
     it). Otherwise a record this process holds, or whose owner is gone, goes to a live holder."""
     from tools import browser_launcher_holders as holders
     holders.drop_lease(record)
+    if browser.foreign:  # its pid names nobody here: stopped (or reaped) only from its own environment
+        return False
     others = holders.other_live_holders(record, browser.start_time)
     data = _load_record(record) if record.exists() else None
     if data is not None and data.get("start_time") != browser.start_time:
@@ -812,8 +914,9 @@ def _is_recorded_browser(record: dict, home: Optional[str]) -> bool:
 
 
 def _tracked_browser(record: dict) -> Optional[LaunchedBrowser]:
-    with _lock:
-        return next((b for b in (*_browsers.values(), *_launching.values()) if b.pid == record.get("pid")), None)
+    with _lock:  # a browser another environment holds has a pid of THAT namespace: it tracks no record here
+        return next((b for b in (*_browsers.values(), *_launching.values())
+                     if not b.foreign and b.pid == record.get("pid")), None)
 
 
 def _adopt_record(browser: LaunchedBrowser) -> None:
