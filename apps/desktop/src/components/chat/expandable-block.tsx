@@ -4,6 +4,7 @@ import { type ReactNode, useCallback, useRef, useState } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { ChevronDown } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 
 interface ExpandableBlockProps {
@@ -26,7 +27,10 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
 
     if (el) {
       setOverflowing(el.scrollHeight > 121)
-      const hasHorizontalOverflow = el.scrollWidth > el.clientWidth + 1
+      // The sideways cue belongs to the browser host, whose code fences are
+      // sized to their longest line (shiki-highlighter.tsx) and whose touch
+      // screens show no scrollbar. Native Desktop keeps main's block.
+      const hasHorizontalOverflow = isBrowserHostedDesktop() && el.scrollWidth > el.clientWidth + 1
 
       setHorizontalOverflowing(hasHorizontalOverflow)
       setHorizontalAtEnd(!hasHorizontalOverflow || el.scrollLeft + el.clientWidth >= el.scrollWidth - 1)

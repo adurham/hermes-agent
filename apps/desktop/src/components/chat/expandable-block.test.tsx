@@ -24,6 +24,7 @@ class TestResizeObserver {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  delete window.document.documentElement.dataset.hermesDesktopHost
 })
 
 describe('ExpandableBlock', () => {
@@ -45,6 +46,7 @@ describe('ExpandableBlock', () => {
   })
 
   it('shows a non-blocking horizontal cue until a wide block reaches its end', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
 
     render(
@@ -70,5 +72,21 @@ describe('ExpandableBlock', () => {
         .getByTestId('content')
         .parentElement?.parentElement?.querySelector('[data-slot="expandable-horizontal-fade"]')
     ).toBeNull()
+  })
+
+  // Native Desktop draws no sideways cue on a wide block, as on main.
+  it('draws no horizontal cue on a wide block in native Desktop', () => {
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+
+    render(
+      <ExpandableBlock>
+        <pre data-testid="content">{'wide line\n'.repeat(2)}</pre>
+      </ExpandableBlock>
+    )
+
+    const block = screen.getByTestId('content').parentElement!
+
+    expect(block.hasAttribute('data-horizontal-overflow')).toBe(false)
+    expect(block.parentElement?.querySelector('[data-slot="expandable-horizontal-fade"]')).toBeNull()
   })
 })
