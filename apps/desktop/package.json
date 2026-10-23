@@ -99,7 +99,7 @@
     "@nous-research/ui": "0.19.1",
     "@simple-git/argv-parser": "2.0.1",
     "@streamdown/code": "1.1.1",
-    "@streamdown/math": "1.0.2",
+    "@streamdown/math": "1.0.3",
     "@tabler/icons-react": "3.44.0",
     "@tailwindcss/typography": "0.5.20",
     "@tailwindcss/vite": "4.3.3",
