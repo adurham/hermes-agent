@@ -953,14 +953,14 @@ def _owner_alive(record: dict) -> bool:
 
 
 def _cmdline_names_dir(pid: int, user_data_dir: str) -> bool:
-    """True only when ``pid``'s argv carries exactly ``--user-data-dir=<user_data_dir>``."""
+    """True only when ``pid``'s argv carries ``--user-data-dir=`` naming ``user_data_dir`` (however either is
+    spelled: a symlink, a trailing slash)."""
     try:
         import psutil
         argv = psutil.Process(pid).cmdline()
     except Exception:  # health: allow BLE001 -- unreadable identity fails closed (no kill)
         return False
-    want = os.path.normpath(user_data_dir)
-    return any(tok.startswith("--user-data-dir=") and os.path.normpath(tok.split("=", 1)[1]) == want
+    return any(tok.startswith("--user-data-dir=") and _same_profile(tok.split("=", 1)[1], user_data_dir)
                for tok in argv)
 
 
@@ -998,13 +998,16 @@ def _tracked_browser(record: dict) -> Optional[LaunchedBrowser]:
 
 def _adopt_record(browser: LaunchedBrowser) -> None:
     """A crashed owner's record still names the browser this process now uses (attached after the crash):
-    take the record over, or every reaper (this process's included) would kill it as an orphan."""
+    take the record over, or every reaper (this process's included) would kill it as an orphan. Only the owner
+    changes: the launch as recorded (its ``--user-data-dir`` spelling, DevTools id) stays what verifies it."""
+    from utils import atomic_json_write
     path = _record_path(browser)
     if path is None or not path.exists():
         return
     record = _load_record(path)
     if record is not None and _record_is(record, browser) and not _owner_alive(record):
-        _write_record(browser)
+        me = os.getpid()
+        atomic_json_write(path, {**record, "owner_pid": me, "owner_start_time": _start_time(me)}, indent=None)
 
 
 def _load_record(path: Path) -> Optional[dict]:
