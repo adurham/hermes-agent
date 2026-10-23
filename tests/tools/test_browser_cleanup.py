@@ -240,12 +240,14 @@ class _FakeSandbox:
 
     def run_in(self, env, argv, **kw):
         cmd = " ".join(argv)
+        if _stop_target(argv) is not None and "kill" in self.timeouts:
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
         if argv[0] in self.timeouts:
             raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
         if "setsid" in cmd:
             self.running = 4242
             self.launches += 1
-            return _Completed(0, b"4242\n")
+            return _Completed(0, b"4242 777\n")  # pid, start time
         if argv[0] == "cat" and not self.port_published:
             return _Completed(1)
         if "/dev/tcp" in cmd:
@@ -261,11 +263,18 @@ class _FakeSandbox:
                 with contextlib.suppress(threading.BrokenBarrierError):
                     self.probe_barrier.wait(timeout=1.0)
             return answer
-        if argv[0] == "kill":
-            self.killed.append(int(argv[-1]))
+        if _stop_target(argv) is not None:
+            self.killed.append(_stop_target(argv))
             self.running = None
             return _Completed(0)
         return _Completed(1)
+
+
+def _stop_target(argv):
+    """The pid a ``stop_sandbox_browser`` exec signals (its identity check passed), else None."""
+    if argv[:2] == ["bash", "-c"] and "kill -TERM" in argv[2] and len(argv) > 4:
+        return int(argv[4])
+    return None
 
 
 class _Completed:
@@ -430,13 +439,14 @@ class _FakeContainers:
         if "setsid" in cmd:
             self._next_pid += 1
             self.running.setdefault(env, self._next_pid)
-            return _Completed(0, f"{self._next_pid}\n".encode())
+            return _Completed(0, f"{self._next_pid} 777\n".encode())
         if "/dev/tcp" in cmd or argv[0] == "cat":
             pid = self.running.get(env)
             return _Completed(0, f"9222\n/devtools/browser/{pid}\n".encode()) if pid else _Completed(3)
-        if argv[0] == "kill":
-            self.killed.append((env, int(argv[-1])))
-            if self.running.get(env) == int(argv[-1]):
+        if _stop_target(argv) is not None:
+            pid = _stop_target(argv)
+            self.killed.append((env, pid))
+            if self.running.get(env) == pid:
                 del self.running[env]
             return _Completed(0)
         return _Completed(1)

@@ -18,11 +18,13 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _LAUNCH_TIMEOUT_S = 60.0
-# Sandbox Chromium this process launched, per shared key: ``(sandbox env, pid)``. Every session in that
-# container attaches to it, whichever profile it serves, so it is stopped only when the LAST of them tears
-# down (release_session_backend's in-use check on the shared ``launcher_key``); the env is kept so a
-# teardown outside the owner's scope hits the right sandbox.
-_launched: dict[str, tuple[Any, int]] = {}
+# Sandbox Chromium this process launched, per shared key: ``(sandbox env, pid, start time, user-data-dir)``.
+# Every session in that container attaches to it, whichever profile it serves, so it is stopped only when the
+# LAST of them tears down (release_session_backend's in-use check on the shared ``launcher_key``); the env is
+# kept so a teardown outside the owner's scope hits the right sandbox. The start time (``/proc/<pid>/stat``
+# field 22, read inside the sandbox at launch) and the ``--user-data-dir`` token are the identity a stop
+# re-checks there before signalling: a crashed Chromium's pid may name another job by then.
+_launched: dict[str, tuple[Any, int, Optional[str], str]] = {}
 _launched_lock = threading.Lock()
 # Per shared key: held across "is a browser running?" + launch + claim, and across the stop, so two sessions
 # first using one container never both see no browser and both launch.
@@ -91,8 +93,22 @@ def _shared_key(env, udd: str) -> str:
     return f"sandbox:{id(env):x}:{udd}"
 
 
-def _start_chromium(env, user, exe: str, udd: str, child_env: dict) -> int:
-    """Launch detached in the sandbox; returns the sandbox pid."""
+# ``$p``'s start time (clock ticks since boot): field 22 of /proc/<pid>/stat, counted after the ``(comm)``
+# field, which may itself hold spaces and parentheses. Empty when the sandbox has no /proc.
+_START_TIME_OF_P = 's=$(cat /proc/"$p"/stat 2>/dev/null) && s=${s##*")"} && set -- $s && printf %s "${20}"'
+# Exit code of the stop script when the pid is gone or no longer the browser this process launched.
+_NOT_OURS_RC = 4
+# Signal "$1" only while it is still the launched browser: same start time ("$2"), and its argv carries the
+# launch's exact --user-data-dir token ("$3"). Check and signal in one exec inside the sandbox.
+_STOP_SCRIPT = (
+    f'p=$1; t=$({_START_TIME_OF_P}); [ -n "$t" ] && [ "$t" = "$2" ] || exit {_NOT_OURS_RC}; '
+    f'ok=; while IFS= read -r -d "" a; do [ "$a" = "$3" ] && ok=1; done < /proc/"$p"/cmdline; '
+    f'[ -n "$ok" ] || exit {_NOT_OURS_RC}; kill -TERM "$p"'
+)
+
+
+def _start_chromium(env, user, exe: str, udd: str, child_env: dict) -> tuple[int, Optional[str]]:
+    """Launch detached in the sandbox; returns its sandbox pid and start time (None when unreadable)."""
     from tools.bot_desktop.browser import SHARED_PROFILE_ARGS
     from tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, build_chromium_argv
     from tools.environments import streams
@@ -101,13 +117,17 @@ def _start_chromium(env, user, exe: str, udd: str, child_env: dict) -> int:
     argv = build_chromium_argv(exe, udd, packaged=False, headed=True, sandbox_bypass=False,
                                extra_args=(*SHARED_PROFILE_ARGS, *CHROMIUM_SANDBOX_BYPASS_ARGS))
     argv = list(dict.fromkeys(argv))
+    # setsid execs in place (a background child of a non-interactive shell leads no process group), so $! is
+    # Chromium itself, and its start time is fixed from the fork on.
     script = (f"mkdir -p {shlex.quote(udd)} && rm -f {shlex.quote(udd)}/DevToolsActivePort && "
-              f"(setsid {shlex.join(argv)} >/dev/null 2>&1 & echo $!)")
+              f"(setsid {shlex.join(argv)} >/dev/null 2>&1 & p=$!; echo \"$p $({_START_TIME_OF_P})\")")
     proc = streams.run_in(env, ["bash", "-c", script], child_env=child_env, user=user, timeout=30)
-    pid_text = proc.stdout.decode("utf-8", "replace").strip().splitlines()[-1:] if proc.returncode == 0 else []
-    if not pid_text or not pid_text[0].isdigit():
+    last = proc.stdout.decode("utf-8", "replace").strip().splitlines()[-1:] if proc.returncode == 0 else []
+    words = last[0].split() if last else []
+    if not words or not words[0].isdigit():
         raise RuntimeError(f"Chromium could not be started in the sandbox: {proc.stderr.decode('utf-8', 'replace')[-500:]}")
-    return int(pid_text[0])
+    start = words[1] if len(words) > 1 and words[1].isdigit() else None
+    return int(words[0]), start
 
 
 def _wait_for_port(env, user, udd: str) -> tuple[int, str]:
@@ -137,9 +157,9 @@ def _spawn_owned(env, user, udd: str, key: str, published: dict) -> int:
     if not exe:
         raise RuntimeError("the sandbox image has no Chromium to run the browser")
     child_env = {**published, "TMPDIR": streams.sandbox_temp_dir(env)}
-    pid = _start_chromium(env, user, exe, udd, child_env)
+    pid, start = _start_chromium(env, user, exe, udd, child_env)
     with _launched_lock:
-        _launched[key] = (env, pid)
+        _launched[key] = (env, pid, start, udd)
     return pid
 
 
@@ -227,8 +247,19 @@ def _stop_launched(key: str) -> None:
         return
     from tools.bot_desktop import sandbox_host
     from tools.environments import streams
-    env, pid = launched
+    env, pid, start, udd = launched
+    if start is None:
+        logger.warning("browser: leaving sandbox Chromium pid %s running: its start time could not be read at "
+                       "launch, so the pid cannot be proven to still be that browser", pid)
+        return
+    argv = ["bash", "-c", _STOP_SCRIPT, "hermes-sandbox-browser-stop", str(int(pid)), start, f"--user-data-dir={udd}"]
     try:
-        streams.run_in(env, ["kill", "-TERM", str(int(pid))], user=sandbox_host._user_for(env), timeout=15)
+        proc = streams.run_in(env, argv, user=sandbox_host._user_for(env), timeout=15)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         logger.debug("sandbox browser stop for pid %s failed: %s", pid, exc)
+        return
+    if proc.returncode == _NOT_OURS_RC:
+        logger.info("browser: not signalling sandbox pid %s: it is gone or no longer the Chromium launched on %s",
+                    pid, udd)
+    elif proc.returncode != 0:
+        logger.debug("sandbox browser stop for pid %s exited %s", pid, proc.returncode)
