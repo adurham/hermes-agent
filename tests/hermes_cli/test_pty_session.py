@@ -261,11 +261,9 @@ async def test_redials_over_a_link_too_slow_for_the_whole_replay_reach_a_replay_
 
 
 @pytest.mark.asyncio
-async def test_a_shrunk_replay_keeps_a_floor_and_grows_back_once_viewers_keep_up(monkeypatch):
+async def test_a_shrunk_replay_keeps_a_floor(monkeypatch):
     """Replays that keep timing out shrink the next one only down to a floor, so a reattach still
-    shows the newest output instead of nothing. Replays that arrive well inside their deadline grow
-    it back, so a viewer on a good link gets the whole retained history again after a few
-    reattaches."""
+    shows the newest output instead of nothing."""
     from hermes_cli import pty_session
     from hermes_cli.pty_session import PtySession
 
@@ -279,17 +277,36 @@ async def test_a_shrunk_replay_keeps_a_floor_and_grows_back_once_viewers_keep_up
     for _stall in range(20):
         await session.attach(NarrowLinkWS(0))  # never finishes a frame of output
 
-    replays = []
-    for _reattach in range(10):
-        viewer = FakeWS()
-        assert await session.attach(viewer)
+    viewer = FakeWS()
+    assert await session.attach(viewer)
+    assert viewer.sent == [("bytes", history[-1024:])]
+
+
+@pytest.mark.asyncio
+async def test_a_replay_size_that_timed_out_is_not_replayed_again(monkeypatch):
+    """A replay send returns once the socket's buffers take the frame, so a quick send does not show
+    that the link carries more. After a replay times out, the session never replays that size again:
+    a viewer that keeps redialing over the same slow link gets the replay it carries every time,
+    instead of timing out on every second redial."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySession
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(pty_session, "_REPLAY_MIN_BYTES_PER_SECOND", 1024 ** 3)
+    monkeypatch.setattr(pty_session, "_REPLAY_FLOOR_BYTES", 1024)
+    history = bytes(range(256)) * 256
+    session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
+    session.buffer.append(history)
+
+    attached, replays = [], []
+    for _redial in range(6):
+        # The buffers take half the history at once; the whole of it never crosses in time.
+        viewer = NarrowLinkWS(len(history) // 2)
+        attached.append(await session.attach(viewer))
         replays.append(viewer.sent[0][1] if viewer.sent else b"")
-        if replays[-1] == history:
-            break
-    assert replays[0] == history[-1024:]
-    assert all(history.endswith(replay) for replay in replays)
-    assert [len(replay) for replay in replays] == sorted(len(replay) for replay in replays)
-    assert replays[-1] == history
+
+    assert attached == [False] + [True] * 5
+    assert replays[1:] == [history[len(history) // 2:]] * 5
 
 
 @pytest.mark.asyncio
@@ -337,6 +354,11 @@ async def test_a_reattach_that_replays_part_of_the_history_says_output_was_trimm
         return json.loads(text.removeprefix(META_PREFIX))
 
     try:
+        whole = Viewer(len(history))
+        await host_terminal(whole)
+        assert whole.sent[1] == ("bytes", history)
+        assert metadata(whole)["truncated"] is False
+
         stalled = Viewer(0)
         await host_terminal(stalled)
         assert stalled.close_code == 1001 and metadata(stalled)["truncated"] is False
@@ -346,11 +368,6 @@ async def test_a_reattach_that_replays_part_of_the_history_says_output_was_trimm
         kind, replay = partial.sent[1]
         assert kind == "bytes" and len(replay) < len(history) and history.endswith(replay)
         assert metadata(partial)["truncated"] is True
-
-        whole = Viewer(len(history))
-        await host_terminal(whole)
-        assert whole.sent[1] == ("bytes", history)
-        assert metadata(whole)["truncated"] is False
     finally:
         await registry.close_all()
 

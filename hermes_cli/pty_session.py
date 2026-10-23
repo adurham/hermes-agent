@@ -30,7 +30,9 @@ _VIEWER_SEND_TIMEOUT_SECONDS = 5.0
 # A reattach replay is a single frame of up to the 1 MiB buffer (host-terminal clients take exactly
 # the next binary frame as the replay, so it is not chunked). It gets the stall limit plus the time
 # to cross a link this slow (about 256 kbit/s; 37 s for 1 MiB). A replay that misses that deadline is
-# halved for the session's next attach, so a viewer on a slower link redials onto a replay it carries.
+# halved for the session's next attaches and never grows back: a send returns once the socket's buffers
+# take the frame, so a quick one does not show that the link carries more, and growing back would
+# replay a size that already timed out. A viewer on a slower link redials onto a replay it carries.
 _REPLAY_MIN_BYTES_PER_SECOND = 32 * 1024
 # The smallest replay a timed-out one shrinks to, so a reattach always shows the newest output. Its
 # deadline needs about 3 KB/s, less than a link needs to keep up with live output (one frame per
@@ -102,9 +104,8 @@ class PtySession:
         self.active_session_file = active_session_file
         self.active_session_cleanup: Optional[Callable[[], None]] = None
         self.buffer = RingBuffer(buffer_cap)
-        # How many of the buffer's newest bytes a reattach replays: a replay that times out halves it
-        # (down to _REPLAY_FLOOR_BYTES), one that arrives well inside its deadline doubles it back.
-        self._buffer_cap = buffer_cap
+        # How many of the buffer's newest bytes a reattach replays: a replay that times out halves it,
+        # down to _REPLAY_FLOOR_BYTES, for the rest of the session.
         self._replay_limit = buffer_cap
         self.alive = True
         self.attached = False
@@ -259,16 +260,11 @@ class PtySession:
                 # frame never loses terminal-query replies on an empty history.
                 if snap or initial_text is not None:
                     replay_timeout = _VIEWER_SEND_TIMEOUT_SECONDS + len(snap) / _REPLAY_MIN_BYTES_PER_SECOND
-                    started = time.monotonic()
                     try:
                         await asyncio.wait_for(ws.send_bytes(snap), timeout=replay_timeout)
                     except TimeoutError:
                         self._replay_limit = max(_REPLAY_FLOOR_BYTES, len(snap) // 2)
                         raise
-                    # A replay that arrived within half its deadline means twice as much fits in
-                    # the larger replay's deadline, so a limit an earlier slow viewer cut grows back.
-                    if len(snap) < len(held) and time.monotonic() - started <= replay_timeout / 2:
-                        self._replay_limit = min(self._buffer_cap, 2 * len(snap))
         except _VIEWER_SEND_ERRORS:
             self.detach(ws)
             return False
