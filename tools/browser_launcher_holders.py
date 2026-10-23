@@ -10,7 +10,9 @@ holder that crashed is dropped once its pid and start time no longer match, neve
 
 A pid means something only inside the PID namespace and boot that wrote it (a ``HERMES_HOME`` shared by a
 container gateway and a host CLI): every record, lease and throwaway-dir name carries the writer's
-:func:`ns_identity`, and one from another namespace or boot, or one lacking it, is never judged dead.
+:func:`ns_identity`, and one from another namespace or boot, or one lacking it, is never judged dead. A lease is
+keyed by the record of the browser it holds, whichever namespace wrote that record; only its holder part carries
+the lease writer's tag, so a launcher finds every holder whatever namespace it attached from.
 
 Every decision runs under the records dir's lock: a lease written while another process decides cannot be
 missed. Siblings late-import the facade (its ``_pid_alive`` / ``_start_time`` are the patched seams).

@@ -76,6 +76,9 @@ class LaunchedBrowser:
     owned: bool
     ephemeral: bool
     home_key: str
+    # File name of the launch record its leases are keyed by, when that is not this process's own name for
+    # it: an attached browser keeps its launcher's record, whichever PID namespace wrote it.
+    record_name: Optional[str] = None
 
 
 _browsers: dict[str, LaunchedBrowser] = {}
@@ -382,12 +385,26 @@ def _attach_running(key: str, user_data_dir: str, home_key: str) -> Optional[Lau
     logger.info("browser: attaching to the Chromium already running on %s (pid %s)", user_data_dir, pid)
     browser = _make_browser(key, port, path, pid=pid, start_time=_start_time(pid), user_data_dir=user_data_dir,
                             owned=False, ephemeral=False, home_key=home_key)
-    record = _record_path(browser)
-    if record is not None:
+    records = _state_dir(browser)
+    if records is not None:
         from tools import browser_launcher_holders as holders
+        browser.record_name = _launch_record_name(records, browser)
         _adopt_record(browser)
-        holders.write_lease(record, browser)  # its launcher's exit must not stop it under us
+        holders.write_lease(_record_path(browser), browser)  # its launcher's exit must not stop it under us
     return browser
+
+
+def _launch_record_name(records: Path, browser: LaunchedBrowser) -> Optional[str]:
+    """The launch record already naming ``browser`` in ``records``, written in ANY PID namespace: an attacher
+    leases the browser under its launcher's record, or a launcher in another namespace (a container gateway a
+    host CLI attached to) would miss the lease and stop the browser under it. This namespace's record wins
+    over another's on the same pid number; None when there is no record (a browser a human started)."""
+    from tools.browser_launcher_holders import ns_tag
+    stem = f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}"
+    pattern = re.compile(rf"^{re.escape(stem)}(-n[0-9a-f]{{12}})?\.json$")
+    names = sorted(p.name for p in records.glob(f"{stem}*.json") if pattern.match(p.name))
+    own = f"{stem}{ns_tag()}.json"
+    return own if own in names else next(iter(names), None)
 
 
 def _start_shared(key: str, executable: str, udd: str, home_key: str,
@@ -708,6 +725,8 @@ def _record_path(browser: LaunchedBrowser) -> Optional[Path]:
     records = _state_dir(browser)
     if records is None:
         return None
+    if browser.record_name:
+        return records / browser.record_name
     from tools.browser_launcher_holders import ns_tag
     return records / f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}{ns_tag()}.json"
 

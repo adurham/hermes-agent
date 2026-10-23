@@ -104,6 +104,48 @@ def test_a_holder_in_another_namespace_keeps_the_shared_browser_up(tmp_path):
         kill_fake(mine.pid, script)
 
 
+_FOREIGN_ATTACHER = textwrap.dedent("""\
+    import sys
+    from tools import browser_launcher_holders as holders
+    holders.ns_identity = lambda: sys.argv[3]  # this process writes as if from another pid namespace
+""") + _HOLDER + 'launcher.stop_browser("profile:" + udd)\n'
+
+
+@pytest.mark.live_system_guard_bypass  # the fake browser is ours to stop if a leg failed
+def test_an_attacher_from_another_namespace_is_seen_by_the_owner(tmp_path):
+    """A host CLI attaching to a container gateway's shared Chromium (one lock dir, one network) leases the
+    browser under the OWNER's record identity, its own namespace tag only on the holder part: the owner's stop
+    finds that lease and keeps the browser up. Once the attacher lets go, nothing of it is left behind."""
+    import hashlib
+    script = write_fake_chromium(tmp_path / "chromium")
+    udd, key = tmp_path / "pinned-profile", f"profile:{tmp_path / 'pinned-profile'}"
+    mine, err = launcher.launch_chromium(key, executable=str(script), user_data_dir=str(udd), ephemeral=False,
+                                         headed=False, env=dict(os.environ), timeout=30)
+    assert err is None and mine.owned
+    holder = subprocess.Popen([sys.executable, "-c", _FOREIGN_ATTACHER, str(script), str(udd), _FOREIGN],
+                              cwd=_REPO, env=dict(os.environ), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              text=True)
+    try:
+        assert holder.stdout.readline().split() == [str(mine.pid), "False"]
+        record = launcher._record_path(mine)
+        foreign_tag = f"-n{hashlib.sha256(_FOREIGN.encode()).hexdigest()[:12]}"
+        assert [p.name for p in record.parent.glob("*.lease")] == [f"{record.stem}@{holder.pid}{foreign_tag}.lease"]
+
+        launcher.stop_browser(key)
+        assert launcher._pid_alive(mine.pid), "the owner stopped a browser another namespace's holder still drives"
+        assert launcher.reap_orphaned_browsers() == 0 and launcher._pid_alive(mine.pid)
+
+        holder.stdin.write("\n")
+        holder.stdin.flush()
+        assert holder.wait(timeout=15) == 0
+        assert not list(record.parent.glob("*.lease")), "the attacher left its lease behind"
+        assert launcher.reap_orphaned_browsers() == 1
+        assert wait_until(lambda: not launcher._pid_alive(mine.pid), timeout=15, what="the browser to stop")
+    finally:
+        holder.kill()
+        kill_fake(mine.pid, script)
+
+
 @pytest.mark.live_system_guard_bypass  # the fake browser is ours to stop if a leg failed
 def test_a_dead_holder_in_this_namespace_is_still_dropped(tmp_path):
     """Same namespace, behaviour unchanged: the lease of a holder that crashed is dropped, so the launcher's
