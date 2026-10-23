@@ -402,7 +402,7 @@ pty = []
 mcp = [
   "mcp==2.3.0",
   "httpx2==2.15.1",
-  "starlette==1.3.1",
+  "starlette==1.9.0",
 ] # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
@@ -417,7 +417,7 @@ teams = [
 computer-use = [
   "mcp==2.3.0",
   "httpx2==2.15.1",
-  "starlette==1.3.1",
+  "starlette==1.9.0",
 ] # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
@@ -497,7 +497,7 @@ youtube = [
 web = [
   "fastapi==0.133.1",
   "uvicorn==0.41.0",
-  "starlette==1.3.1",
+  "starlette==1.9.0",
   "python-multipart==0.0.32",
 ]
 all = [
@@ -541,7 +541,7 @@ dev = [
   "pytest-asyncio==1.4.0",
   "mcp==2.3.0",
   "httpx2==2.15.1",
-  "starlette==1.3.1",
+  "starlette==1.9.0",
   "ty==0.0.82",
   "ruff==0.15.10",
   "setuptools==83.0.0",
