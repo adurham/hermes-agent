@@ -74,7 +74,7 @@ dependencies = [
   # codex_responses dispatch in agent/chat_completion_helpers.py:_call.
   "pydantic==2.13.4; python_version >= '3.14'",
   # Interactive CLI (prompt_toolkit is used directly by cli.py)
-  "prompt_toolkit==3.0.52; python_version >= '3.14'",
+  "prompt_toolkit==3.0.53; python_version >= '3.14'",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.2.4; python_version >= '3.14'",
   # Snowball stemming for tool_search's BM25 (tools/tool_search.py) —
