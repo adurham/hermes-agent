@@ -46,7 +46,7 @@ _REQUIRED_PACKAGES = [
     "google-cloud-pubsub==2.39.0",
     "google-api-python-client==2.201.0",
     "google-auth==2.62.0",
-    "google-auth-oauthlib==1.3.1",
+    "google-auth-oauthlib==1.5.0",
     "google-auth-httplib2==0.4.4",
     "httplib2==0.32.0",
     "pyasn1==0.6.4",
