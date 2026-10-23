@@ -9,6 +9,7 @@ import {
   setSurfaceVar
 } from '@/app/chat/surface-vars'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 
 import {
   COMPOSER_COMPACT_PILL_PX,
@@ -57,6 +58,26 @@ const sameFit = (a: ComposerFit, b: ComposerFit) =>
   a.minimal === b.minimal &&
   a.tight === b.tight &&
   a.singleColumn === b.singleColumn
+
+// The compact controls the collapse stages were sized for.
+const DESKTOP_CONTROL_PX = 24
+
+/** Collapse stages for a composer `width` wide. The browser host's touch layout
+ *  grows the controls to 44px (styles.css), so it budgets the live
+ *  `--composer-control-size` token and splits into one column below two
+ *  targets. Native Desktop keeps the compact stages and the row, as on main. */
+function composerFit(composer: HTMLElement, width: number): ComposerFit {
+  if (!isBrowserHostedDesktop()) {
+    return { ...fitForWidth(width, DESKTOP_CONTROL_PX), singleColumn: false }
+  }
+
+  const token = getComputedStyle(composer).getPropertyValue('--composer-control-size').trim()
+
+  const size =
+    parseFloat(token) * (token.endsWith('rem') ? parseFloat(getComputedStyle(document.documentElement).fontSize) : 1)
+
+  return fitForWidth(width, Number.isFinite(size) ? size : DESKTOP_CONTROL_PX)
+}
 
 interface UseComposerMetricsResult extends ComposerFit {
   stacked: boolean
@@ -142,13 +163,7 @@ export function useComposerMetrics({
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
 
     if (width > 0) {
-      const token = getComputedStyle(composer).getPropertyValue('--composer-control-size').trim()
-
-      const size =
-        parseFloat(token) *
-        (token.endsWith('rem') ? parseFloat(getComputedStyle(document.documentElement).fontSize) : 1)
-
-      const nextFit = fitForWidth(width, Number.isFinite(size) ? size : 24)
+      const nextFit = composerFit(composer, width)
 
       if (!sameFit(nextFit, lastFitRef.current)) {
         lastFitRef.current = nextFit

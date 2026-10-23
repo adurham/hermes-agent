@@ -107,9 +107,33 @@ describe('useComposerMetrics — published clearance survives an effect replay',
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+    delete window.document.documentElement.dataset.hermesDesktopHost
+  })
+
+  // Native Desktop collapses its composer at main's fixed widths and never
+  // splits the row into one column, whatever --composer-control-size resolves
+  // to (a theme's larger base font size grows that rem token).
+  it('keeps main\'s collapse widths in native Desktop whatever the control-size token measures', () => {
+    const fitAt = (width: number) => {
+      const style = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+        getPropertyValue: (name: string) => (name === '--composer-control-size' ? '30px' : '')
+      } as unknown as CSSStyleDeclaration)
+
+      const { getByTestId, unmount } = render(<Harness dockHeight={200} surfaceHeight={120} width={width} />)
+      const fit = JSON.parse(getByTestId('fit').textContent!) as { minimal: boolean; singleColumn: boolean }
+      unmount()
+      style.mockRestore()
+
+      return fit
+    }
+
+    expect(fitAt(COMPOSER_MINIMAL_PX + 1)).toMatchObject({ minimal: false, singleColumn: false })
+    expect(fitAt(COMPOSER_MINIMAL_PX - 1)).toMatchObject({ minimal: true, singleColumn: false })
+    expect(fitAt(60)).toMatchObject({ minimal: true, singleColumn: false })
   })
 
   it('uses a single control column below the two-touch-target budget', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     vi.spyOn(window, 'getComputedStyle').mockReturnValue({ getPropertyValue: () => '44px' } as unknown as CSSStyleDeclaration)
     const { getByTestId } = render(<Harness dockHeight={200} surfaceHeight={120} width={80} />)
     expect(JSON.parse(getByTestId('fit').textContent!)).toMatchObject({ minimal: true, singleColumn: true })
@@ -117,6 +141,8 @@ describe('useComposerMetrics — published clearance survives an effect replay',
   })
 
   it('collapses extra controls earlier when touch targets consume more width', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
     const minimalAt = (controlPx: number) => {
       const style = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
         getPropertyValue: (name: string) => (name === '--composer-control-size' ? `${controlPx}px` : '')

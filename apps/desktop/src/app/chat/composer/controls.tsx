@@ -134,10 +134,14 @@ export function ComposerControls({
     />
   )
 
+  // The browser host's touch-size controls can outgrow a minimal row, so there
+  // they pack to the end and wrap. Native Desktop keeps main's single row.
+  const browserHost = isBrowserHostedDesktop()
+
   return (
     <div
-      className="flex min-w-0 shrink items-center justify-end gap-(--composer-control-gap)"
-      style={{ flexWrap: minimal ? 'wrap' : undefined }}
+      className={cn('flex min-w-0 shrink items-center gap-(--composer-control-gap)', browserHost && 'justify-end')}
+      style={{ flexWrap: browserHost && minimal ? 'wrap' : undefined }}
     >
       {minimal ? null : (
         <>

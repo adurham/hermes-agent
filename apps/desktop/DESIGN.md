@@ -270,9 +270,11 @@ blurred backdrop.
 
 ## Layout
 
-Composer controls retain 44px targets on coarse-pointer surfaces. Collapse
-stages budget the actual control-size token; below the two-target width budget,
-the context menu and Send occupy separate rows rather than clipping or shrinking.
+In the browser-hosted Desktop, composer controls retain 44px targets on
+coarse-pointer surfaces. Its collapse stages budget the actual control-size
+token; below the two-target width budget, the context menu and Send occupy
+separate rows rather than clipping or shrinking. Native Desktop keeps the
+compact stages sized for 24px controls.
 The voice engine split-button uses `--composer-voice-menu-size`: compact on
 desktop, matching `--composer-control-size` on touch surfaces.
 Narrow browser touch layouts show the current session tab with an open-tab
