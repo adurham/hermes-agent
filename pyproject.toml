@@ -496,7 +496,7 @@ youtube = [
 # termux-all which includes it.
 web = [
   "fastapi==0.133.1",
-  "uvicorn==0.41.0",
+  "uvicorn==0.54.0",
   "starlette==1.9.0",
   "python-multipart==0.0.32",
 ]
