@@ -2650,7 +2650,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'trace-upload'", specifier = "==1.33.0" },
     { name = "jinja2", marker = "python_full_version >= '3.14'", specifier = "==3.1.6" },
     { name = "kittentts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'kittentts') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'kittentts') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'kittentts')", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
-    { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
+    { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.7.5" },
     { name = "markdown", marker = "python_full_version >= '3.14'", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.21.1" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==2.3.0" },
@@ -3194,7 +3194,7 @@ wheels = [
 
 [[package]]
 name = "lark-oapi"
-version = "1.6.8"
+version = "1.7.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -3203,8 +3203,9 @@ dependencies = [
     { name = "requests-toolbelt" },
     { name = "websockets" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/08/da/8dc51e0e808b7f84c4598869a057aa46f0c0f8d27872e0ff87a6512f3b93/lark_oapi-1.7.5.tar.gz", hash = "sha256:81258795e7cfc5ef797e71aff14435359a2abaf698ef0e6f9d3857fe08b719ab", size = 2351682, upload-time = "2026-10-15T08:49:18.901Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/ad/1ab04db5d549ad1a7a2cd33682b1c38dee1d65019cb24fd7a23270e6337d/lark_oapi-1.6.8-py3-none-any.whl", hash = "sha256:9b443a5d47a7d204dd42dc40896c8b75087cc35788e45c48c140806d7df7e5e8", size = 7798300, upload-time = "2026-06-02T07:40:05.492Z" },
+    { url = "https://files.pythonhosted.org/packages/21/7b/54d1df1f73ac1339b7df051982d386223202add5560a97839cf6326e6adc/lark_oapi-1.7.5-py3-none-any.whl", hash = "sha256:ff70fd5cdf436e26d80bf903fdd7a80cbdbd71981b87ce4c2aa49bb95fc96020", size = 7711907, upload-time = "2026-10-15T08:49:16.653Z" },
 ]
 
 [[package]]
