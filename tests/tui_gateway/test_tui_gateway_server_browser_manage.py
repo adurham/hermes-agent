@@ -79,10 +79,8 @@ def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
     config.yaml so users see what the next tool call will read."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
 
-    fake_cfg = types.SimpleNamespace(
-        read_raw_config=lambda: {"browser": {"cdp_url": "http://lan:9222"}}
-    )
-    with patch.dict(sys.modules, {"hermes_cli.config": fake_cfg}):
+    with patch("hermes_cli.config_effective.load_user_config_effective",
+               lambda: {"browser": {"cdp_url": "http://lan:9222"}}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
         )

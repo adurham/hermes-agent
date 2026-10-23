@@ -165,7 +165,7 @@ class TestVaultSupervisorAttach:
     def test_exec_attaches_supervisor_to_the_browser_it_drives(self, tmp_path, monkeypatch, _fake_supervisor_registry):
         """browser_vault_fill injects secrets only over the supervisor's CDP WebSocket. Without this attach the
         default (Browser Use) backend had no supervisor at all and every fill failed with supervisor_required."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {"browser": {}})
+        monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", lambda: {"browser": {}})
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho ok\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         monkeypatch.setattr("tools.browser_session_cdp.resolve_cdp_override", lambda url: url)
@@ -258,7 +258,7 @@ class TestLegacyCloudMigration:
 
 
     def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
+        monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", lambda: self._LEGACY)
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:$BU_AUTOSPAWN"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
@@ -267,7 +267,7 @@ class TestLegacyCloudMigration:
 
     def test_non_legacy_config_does_not_set_bu_autospawn(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
+            "hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {}},
         )
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "autospawn:[$BU_AUTOSPAWN]"\n')
@@ -988,7 +988,7 @@ class TestTimeoutProcessGroupKill:
         """A grandchild that outlives the direct child and holds the inherited stdout
         pipe must not keep browser_exec blocked past the timeout (it wedged permanently
         before the group kill)."""
-        monkeypatch.setattr("hermes_cli.config.read_raw_config", dict)
+        monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", dict)
         pid_file = tmp_path / "grandchild.pid"
         cli = _fake_cli(tmp_path, (
             "cat > /dev/null\n"

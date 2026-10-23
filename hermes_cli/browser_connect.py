@@ -537,10 +537,11 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
 
 
 def _browser_setting(key: str):
-    """Read ``browser.<key>`` from raw config; None when unset/unreadable."""
+    """``browser.<key>`` from the effective user config (managed overlay, ``${VAR}`` expanded); None when
+    unset/unreadable."""
     try:
-        from hermes_cli.config import read_raw_config
-        browser_cfg = read_raw_config().get("browser", {})
+        from hermes_cli.config_effective import load_user_config_effective
+        browser_cfg = load_user_config_effective().get("browser", {})
         return browser_cfg.get(key) if isinstance(browser_cfg, dict) else None
     except Exception as e:
         logger.debug("could not read %s: %s", key, e)

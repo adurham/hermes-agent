@@ -32,13 +32,19 @@ _cached_providers: dict[tuple[str, Any], Optional[BrowserProvider]] = {}
 _provider_lock = threading.RLock()
 
 
+def browser_section() -> dict:
+    """The active profile's ``browser:`` section as every runtime reader sees it: the user file, the managed
+    overlay winning, ``${VAR}`` expanded, no defaults (``load_user_config_effective``); ``{}`` when absent."""
+    from hermes_cli.config_effective import load_user_config_effective
+    section = load_user_config_effective().get("browser")
+    return section if isinstance(section, dict) else {}
+
+
 def browser_cfg(key: str, default, parse: Callable[[Any], Any] = lambda v: v):
-    """``parse(browser.<key>)`` from the RAW profile config (loader warnings must not leak into tool JSON);
-    ``default`` when absent, not a mapping, or unparseable."""
+    """``parse(browser.<key>)`` from :func:`browser_section`; ``default`` when absent or unparseable."""
     try:
-        from hermes_cli.config import read_raw_config
-        section = read_raw_config().get("browser", {})
-        if isinstance(section, dict) and key in section:
+        section = browser_section()
+        if key in section:
             return parse(section[key])
     except (OSError, ValueError, TypeError) as exc:
         logger.debug("Could not read browser.%s: %s", key, exc)
@@ -211,9 +217,8 @@ def _resolve_provider_uncached() -> tuple[Optional[BrowserProvider], bool]:
     cached; a transient None (unreadable config, missing credentials) is not, so it self-heals."""
     provider_key = None
     try:
-        from hermes_cli.config import read_raw_config
-        section = read_raw_config().get("browser", {})
-        if isinstance(section, dict) and "cloud_provider" in section:
+        section = browser_section()
+        if "cloud_provider" in section:
             provider_key = normalize_browser_cloud_provider(section.get("cloud_provider"))
     except (OSError, ValueError, TypeError) as exc:
         logger.debug("Could not read cloud_provider from config: %s", exc)

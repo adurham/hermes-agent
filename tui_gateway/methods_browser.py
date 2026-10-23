@@ -12,19 +12,11 @@ _CDP_SCHEMES = {"http", "https", "ws", "wss"}
 
 def _resolve_browser_cdp_url() -> str:
     """Configured browser CDP override without network I/O (``/browser status`` must be fast;
-    ``tools.browser_session_cdp.get_cdp_override`` HTTP-probes discovery URLs). Same precedence (this
-    profile's live connect, env, then ``browser.cdp_url``) minus WS resolution; the next browser
-    session normalizes it."""
-    from tools.browser_session_cdp import env_cdp_url, live_cdp_override
-    if env_url := live_cdp_override() or env_cdp_url():
-        return env_url
-    with contextlib.suppress(Exception):
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
-        if isinstance(browser_cfg, dict):
-            return str(browser_cfg.get("cdp_url", "") or "").strip()
-    return ""
+    ``tools.browser_session_cdp.get_cdp_override`` HTTP-probes discovery URLs): the browser session's own
+    read (this profile's live connect, env, then the effective ``browser.cdp_url``) minus WS resolution; the
+    next browser session normalizes it."""
+    from tools.browser_session_cdp import get_cdp_override_raw
+    return get_cdp_override_raw()
 
 
 def _is_default_local_cdp(parsed) -> bool:

@@ -387,15 +387,15 @@ class TestConsentConfigRead:
 
 
     def test_consent_default_off(self):
-        with patch("hermes_cli.config.read_raw_config", return_value={}):
+        with patch("hermes_cli.config_effective.load_user_config_effective", return_value={}):
             assert bs_cloud.use_real_profile() is False
 
     def test_consent_revocation_takes_effect_immediately(self):
         """No process-lifetime caching: consent is a per-use read."""
-        with patch("hermes_cli.config.read_raw_config",
+        with patch("hermes_cli.config_effective.load_user_config_effective",
                    return_value={"browser": {"use_real_profile": True}}):
             assert bs_cloud.use_real_profile() is True
-        with patch("hermes_cli.config.read_raw_config",
+        with patch("hermes_cli.config_effective.load_user_config_effective",
                    return_value={"browser": {"use_real_profile": False}}):
             assert bs_cloud.use_real_profile() is False
 
