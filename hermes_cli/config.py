@@ -608,7 +608,7 @@ from hermes_cli.personality import (
 # because callers and tests import these from hermes_cli.config)
 
 from hermes_cli.config_version_stamp import (
-    check_config_version, note_first_stamp, read_config_version_stamp)
+    check_config_version, note_first_stamp, read_config_version_stamp, stamp_missing_config)
 
 
 # ---- Config Migration System ----
@@ -1290,8 +1290,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
     """Migrate config to latest version, prompting for new required fields."""
     results = {"env_added": [], "config_added": [], "warnings": []}
 
-    # Validate config.yaml before any migration side effect: sanitize_env_file() rewrites .env,
-    # which must not happen when the migration will be refused for malformed YAML.
+    stamp_missing_config()  # a missing config.yaml reads as current below: stamp its legacy browser settings
+    # Validate before any side effect: sanitize_env_file() rewrites .env, never for refused (malformed) YAML.
     stamp, latest_ver = read_config_version_stamp(raise_on_parse_error=True)
     current_ver = 0 if stamp is None else stamp
 

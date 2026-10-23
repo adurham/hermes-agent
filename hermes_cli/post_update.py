@@ -75,13 +75,20 @@ def step_migrate_config() -> dict:
         SUPPORT_FLOOR_VERSION,
         support_floor_message,
     )
+    from hermes_cli.config_migrations_browser import agent_browser_env_pending
+    from hermes_cli.config_version_stamp import read_config_version_stamp, stamp_missing_config
 
-    current_ver, latest_ver = check_config_version()
+    stamp_missing_config()  # a missing config.yaml reads as current below
+    stamp, latest_ver = read_config_version_stamp()
+    current_ver = 0 if stamp is None else stamp
     if current_ver >= latest_ver:
         return {"ok": True, "skipped": "up-to-date"}
-    if current_ver < SUPPORT_FLOOR_VERSION:
+    if current_ver < SUPPORT_FLOOR_VERSION and not (stamp is None and agent_browser_env_pending()):
         # migrate_config() refuses sub-floor configs and leaves the file
-        # untouched; warn instead of failing the boot.
+        # untouched; warn instead of failing the boot. An unstamped config is
+        # left alone too, unless its .env still holds AGENT_BROWSER_* settings
+        # nothing reads any more: migrate_config() gives it the legacy-key
+        # steps (v52's move among them) and a stamp.
         logger.warning("config migration skipped: %s", support_floor_message())
         return {"ok": True, "skipped": "below-support-floor"}
 

@@ -98,6 +98,54 @@ def _backend_removed_note(backend: Any) -> str:
     return f"removed browser.backend: {value} — {reason}"
 
 
+def move_agent_browser_env(home, browser: dict) -> tuple[list[str], list[str]]:
+    """Move *home*'s AGENT_BROWSER_* settings into *browser* (its raw ``browser:`` section), never over a
+    value that already won over them (:func:`_config_decided`). Returns the ``NAME → browser.key`` moves and
+    the notes for a relative profile pinned to an absolute directory, which the user must read."""
+    moved, pinned = [], []
+    for name, value in _agent_browser_env(home).items():
+        key = dict(_AGENT_BROWSER_ENV_KEYS)[name]
+        if _config_decided(key, browser.get(key)):
+            continue
+        new = _browser_value_from_env(key, value)
+        if new is None:
+            continue
+        browser[key] = new
+        moved.append(f"{name} → browser.{key}")
+        if key == "user_data_dir" and new != value:
+            # Resolved against this process's cwd, which need not be where Hermes ran before.
+            pinned.append(f"pinned browser.user_data_dir to {new}: {name}={value} was relative to the directory "
+                          f"Hermes ran in; check that the browser logins are there")
+    return moved, pinned
+
+
+def agent_browser_env_pending() -> bool:
+    """The active home's config.yaml would still take AGENT_BROWSER_* settings from its .env (the v52 move)."""
+    from pathlib import Path
+
+    from hermes_cli.config import read_raw_config
+    from hermes_constants import get_hermes_home
+
+    config = read_raw_config()
+    browser = config.get("browser") if isinstance(config.get("browser"), dict) else {}
+    return bool(move_agent_browser_env(Path(get_hermes_home()), dict(browser))[0])
+
+
+def adopt_agent_browser_env(home, config: dict) -> list[str]:
+    """*config* is about to give *home* its first ``_config_version`` outside a config step, so the v52 step
+    will never move this home's AGENT_BROWSER_* settings: move them into *config* now. Once only, because
+    every later write carries the stamp. Returns the moves; a pinned profile becomes a startup notice."""
+    browser = config.get("browser") if isinstance(config.get("browser"), dict) else {}
+    moved, pinned = move_agent_browser_env(home, browser)
+    if moved:
+        config["browser"] = browser
+    if pinned:
+        from hermes_cli.left_core_migration import defer_startup_notice
+        for note in pinned:
+            defer_startup_notice(f"{note[0].upper()}{note[1:]}.")
+    return moved
+
+
 def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     # 51 -> 52: agent-browser and the built-in browser_* tools left Hermes; browser_exec is the only
     # browser. `browser.backend` chose between the two, so it is dropped (an `off`, the opt-out of
@@ -132,22 +180,11 @@ def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     if "extension_control" in browser:
         browser.pop("extension_control")
         added.append("removed browser.extension_control")
-    moved = []
-    for name, value in _agent_browser_env(Path(get_hermes_home())).items():
-        key = dict(_AGENT_BROWSER_ENV_KEYS)[name]
-        if _config_decided(key, browser.get(key)):
-            continue
-        new = _browser_value_from_env(key, value)
-        if new is not None:
-            browser[key] = new
-            moved.append(f"{name} → browser.{key}")
-            if key == "user_data_dir" and new != value:
-                # Resolved against this process's cwd, which need not be where Hermes ran before.
-                note = (f"pinned browser.user_data_dir to {new}: {name}={value} was relative to the directory "
-                        f"Hermes ran in; check that the browser logins are there")
-                added.append(note)
-                messages.append(f"  ✓ {note[0].upper()}{note[1:]}.")
-                notices.append(f"{note[0].upper()}{note[1:]}.")
+    moved, pinned = move_agent_browser_env(Path(get_hermes_home()), browser)
+    for note in pinned:
+        added.append(note)
+        messages.append(f"  ✓ {note[0].upper()}{note[1:]}.")
+        notices.append(f"{note[0].upper()}{note[1:]}.")
     if moved:
         added.append(f"browser: {', '.join(moved)}")
         messages.append(f"  ✓ Moved agent-browser settings from .env to config.yaml: {', '.join(moved)}")
