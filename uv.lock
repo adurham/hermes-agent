@@ -989,14 +989,14 @@ wheels = [
 
 [[package]]
 name = "concurrent-log-handler"
-version = "0.9.29"
+version = "0.9.30"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "portalocker" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9c/2c/ba185acc438cff6b58cd8f8dec27e7f4fcabf6968a1facbb6d0cacbde7fe/concurrent_log_handler-0.9.29.tar.gz", hash = "sha256:bc37a76d3f384cbf4a98f693ebd770543edc0f4cd5c6ab6bc70e9e1d7d582265", size = 42114, upload-time = "2026-02-22T18:18:25.758Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4c/55/cf8be5f2656a81eb96c2c5e879a9a7d96ffcc7bea49e9d69bd66d4abfcd7/concurrent_log_handler-0.9.30.tar.gz", hash = "sha256:163c97f72efce386065bf58b9d73a17c45f6d626c067c5f1fdb442184ee4c435", size = 46228, upload-time = "2026-10-08T20:33:39.141Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4a/f3/3e3188fdb3e53c6343fd1c7de41c55d4db626f07db3877eae77b28d58bd2/concurrent_log_handler-0.9.29-py3-none-any.whl", hash = "sha256:0d6c077fbaef2dae49a25975dcf72a602fe0a6a4ce80a3b7c37696d37e10459a", size = 32052, upload-time = "2026-02-22T18:18:24.558Z" },
+    { url = "https://files.pythonhosted.org/packages/88/84/40a531122bf8f97ae608dcdedfc2c770e790aea93f649c72453e409800b4/concurrent_log_handler-0.9.30-py3-none-any.whl", hash = "sha256:50c4c377d57d0f03743c923dfaed53fbd8c85617cbb7f40ed92b7144f49ea895", size = 35532, upload-time = "2026-10-08T20:33:38.152Z" },
 ]
 
 [[package]]
@@ -2554,7 +2554,7 @@ requires-dist = [
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.2" },
     { name = "browser-harness", marker = "python_full_version >= '3.14'", specifier = "==0.1.13" },
     { name = "certifi", marker = "python_full_version >= '3.14'", specifier = "==2026.10.19" },
-    { name = "concurrent-log-handler", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = "==0.9.29" },
+    { name = "concurrent-log-handler", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = "==0.9.30" },
     { name = "croniter", marker = "python_full_version >= '3.14'", specifier = "==6.0.0" },
     { name = "cryptography", marker = "python_full_version >= '3.14'", specifier = "==50.0.1" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.155.0" },
