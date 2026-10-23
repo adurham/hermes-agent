@@ -176,16 +176,25 @@ def test_webapp_verbs_answer_only_an_authenticated_same_user_peer(monkeypatch, t
     assert refused["ok"] is False and "PermissionError" in refused["error"]
 
 
-def test_where_one_use_links_cannot_be_redeemed_the_launcher_gets_the_private_link(monkeypatch, tmp_path):
+def test_where_one_use_links_cannot_be_checked_the_launcher_gets_one_to_open_by_hand(monkeypatch, tmp_path):
+    """Where the server cannot tell who redeems a launch link (macOS, the BSDs), the launcher still gets
+    a one-use link that lasts 60 seconds, never the long-lived browser credential: it spends without a
+    peer check, as a window ticket does, and the launcher prints it rather than opening it."""
+    from urllib.parse import parse_qs
+
     monkeypatch.setattr(webapp, "_one_use_links_work", lambda: False)  # macOS
     runner, _, _ = _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n  port: 9555\n")
     # The gateway mounts the dashboard app as the Webapp surface on a private (loopback) listener.
     web = SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=SimpleNamespace(ui_surface="webapp")))
     runner.session_api.app = SimpleNamespace(web=web)
     result = _ask(runner, "webapp-launch")["result"]
-    assert result == {"url": "http://127.0.0.1:9555/#hermes-session=" + "s" * 43, "private": True,
-                      "expires_in_seconds": None}
-    assert not getattr(web.app.state, "webapp_window_tickets", None)
+    page, fragment = result["url"].split("#", 1)
+    assert page == "http://127.0.0.1:9555/webapp/launch"
+    assert (result["private"], result["expires_in_seconds"]) == (True, 60)
+    assert "s" * 43 not in result["url"] and "hermes-session" not in result["url"]
+    [ticket] = parse_qs(fragment)["ticket"]
+    _expires, _token, peer_checked = web.app.state.webapp_window_tickets[ticket]
+    assert peer_checked is False
 
 
 def test_behind_the_dashboard_sign_in_the_launcher_gets_the_webapp_address(monkeypatch, tmp_path):
@@ -230,13 +239,12 @@ def _serving_runner(monkeypatch, tmp_path):
 def test_a_launch_link_for_a_named_profile_opens_that_profile(monkeypatch, tmp_path):
     from urllib.parse import parse_qs
     runner = _serving_runner(monkeypatch, tmp_path)
-    url = _ask(runner, "webapp-launch", params={"profile": "work"})["result"]["url"]
-    page, fragment = url.split("#", 1)
-    assert page == "http://127.0.0.1:9555/webapp/launch"
-    assert parse_qs(fragment)["query"] == ["?profile=work"]
-    monkeypatch.setattr(webapp, "_one_use_links_work", lambda: False)
-    private = _ask(runner, "webapp-launch", params={"profile": "work"})["result"]["url"]
-    assert private == "http://127.0.0.1:9555/?profile=work#hermes-session=" + "s" * 43
+    for checked in (True, False):  # Linux and Windows; macOS and the BSDs
+        monkeypatch.setattr(webapp, "_one_use_links_work", lambda checked=checked: checked)
+        url = _ask(runner, "webapp-launch", params={"profile": "work"})["result"]["url"]
+        page, fragment = url.split("#", 1)
+        assert page == "http://127.0.0.1:9555/webapp/launch"
+        assert parse_qs(fragment)["query"] == ["?profile=work"]
 
 
 @pytest.mark.parametrize("profile", ["../etc", "a b", "", "x" * 65, 7])

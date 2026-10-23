@@ -242,10 +242,11 @@ def _close_to_other_users(folder: Path) -> None:
 
 
 def _one_use_links_work() -> bool:
-    """Whether a browser can redeem a one-use launch link here. Redemption needs proof that the
-    browser's connection belongs to the gateway's OS user (``web_routers.webapp._peer_is_server_user``)
-    on Linux, or a browser launcher whose arguments other users cannot read (Windows). macOS and the
-    BSDs offer neither."""
+    """Whether a browser the server opens can redeem a one-use launch link here. Redemption needs
+    proof that the browser's connection belongs to the gateway's OS user
+    (``web_routers.webapp._peer_is_server_user``) on Linux, or a browser launcher whose arguments other
+    users cannot read (Windows). macOS and the BSDs offer neither, so there the link is printed for
+    the user to open by hand and spends without that proof."""
     return sys.platform in ("linux", "win32")
 
 
@@ -270,8 +271,8 @@ def _bundle_missing(web) -> str | None:
 def register_control_verbs(runner, home) -> None:
     """The private control-socket verbs ``hermes webapp`` uses; only an authenticated same-user peer
     reaches them. ``webapp-launch`` returns a one-use launch link, so the credential crosses neither
-    the socket nor a browser's argv; where such a link cannot be redeemed (macOS) it returns the
-    private credential link instead, for the user to open by hand. ``webapp-sign-out`` replaces the
+    the socket nor a browser's argv; where nothing can check who redeems such a link (macOS) it is
+    marked private, for the user to open by hand. ``webapp-sign-out`` replaces the
     browser credential, which also ends every login bound to it behind the sign-in gate, closes the
     browser sockets those opened, and reports how many it closed."""
     server = getattr(runner, "session_control_server", None)
@@ -300,7 +301,8 @@ def register_control_verbs(runner, home) -> None:
     def webapp_launch(params, _peer):
         from urllib.parse import urlencode
 
-        from hermes_cli.web_routers.webapp import LAUNCH_TICKET_TTL_SECONDS, mint_launch_ticket
+        from hermes_cli.web_routers.webapp import (
+            LAUNCH_TICKET_TTL_SECONDS, mint_launch_ticket, mint_printed_launch_ticket)
         from hermes_constants import PROFILE_ID_RE
         profile = params.get("profile")
         if profile is not None and not (isinstance(profile, str) and PROFILE_ID_RE.match(profile)):
@@ -318,11 +320,13 @@ def register_control_verbs(runner, home) -> None:
             # Native clients keep the loopback address.
             address = getattr(web.app.state, "listener_public_url", "") or status["url"]
             return {"url": f"{address}/{query}", "private": False, "expires_in_seconds": None, "sign_in": True}
-        if not _one_use_links_work():
-            return {"url": f"{status['url']}/{query}#hermes-session={web._SESSION_TOKEN}", "private": True,
-                    "expires_in_seconds": None}
-        fragment = urlencode({"ticket": mint_launch_ticket(web.app.state), **({"query": query} if query else {})})
-        return {"url": f"{status['url']}/webapp/launch#{fragment}", "private": False,
+        # Where the browser's connection cannot be checked (macOS, the BSDs), the link is for the user to
+        # open by hand ("private": printed, never passed to a browser launcher), and its ticket spends
+        # without that check. Either way it works once, for 60 seconds, and carries no lasting credential.
+        checked = _one_use_links_work()
+        ticket = mint_launch_ticket(web.app.state) if checked else mint_printed_launch_ticket(web.app.state)
+        fragment = urlencode({"ticket": ticket, **({"query": query} if query else {})})
+        return {"url": f"{status['url']}/webapp/launch#{fragment}", "private": not checked,
                 "expires_in_seconds": LAUNCH_TICKET_TTL_SECONDS}
 
     def webapp_sign_out(_params, _peer):

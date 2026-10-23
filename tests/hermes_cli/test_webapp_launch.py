@@ -70,6 +70,40 @@ def test_macos_launch_handoff_fails_closed_without_consuming_child_window_author
         client.close()
 
 
+def test_a_link_for_the_user_to_open_by_hand_spends_once_without_a_peer_check(monkeypatch):
+    """Where nothing identifies the connection's owner (macOS, the BSDs), ``hermes webapp`` prints a
+    link for the user to open by hand. Its ticket spends without the peer check, once and within 60
+    seconds, as a window ticket does; an argv launch ticket still never spends there."""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_server as server
+    from hermes_cli.web_routers import webapp
+
+    monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(server.app.state, "webapp_window_tickets", {}, raising=False)
+    monkeypatch.setattr(server, "_SESSION_TOKEN", "a" * 43)
+    monkeypatch.setattr(webapp, "_peer_is_server_user", lambda request: False)  # macOS
+    client = TestClient(server.app, base_url="http://127.0.0.1")
+
+    def redeem(ticket):
+        return client.post("/webapp/window-session", headers={"Origin": "http://127.0.0.1",
+                                                              "X-Hermes-Window-Ticket": ticket})
+    try:
+        printed = webapp.mint_printed_launch_ticket(server.app.state)
+        assert redeem(printed).json() == {"token": "a" * 43}
+        assert redeem(printed).status_code == 403
+        assert redeem(webapp.mint_launch_ticket(server.app.state)).status_code == 403
+        late = webapp.mint_printed_launch_ticket(server.app.state)
+        now = webapp.time.monotonic()
+        monkeypatch.setattr(webapp, "time", SimpleNamespace(monotonic=lambda: now + webapp.LAUNCH_TICKET_TTL_SECONDS + 1))
+        assert redeem(late).status_code == 403
+    finally:
+        client.close()
+
+
 def _loopback_request():
     from types import SimpleNamespace
     return SimpleNamespace(client=SimpleNamespace(host="127.0.0.1", port=50123),
@@ -79,8 +113,9 @@ def _loopback_request():
 @pytest.mark.parametrize("platform", ["freebsd14", "openbsd7", "sunos5"])
 def test_where_no_peer_check_exists_a_launch_ticket_is_never_spent(monkeypatch, platform):
     """Other Unixes show every process's argv to all local users by default and Hermes cannot tell
-    who owns a loopback connection there. As on macOS, the launcher hands out the private
-    credential link rather than a launch ticket, and a launch ticket is never spent."""
+    who owns a loopback connection there. As on macOS, the launcher prints a link for the user to open
+    by hand rather than passing a launch ticket to a browser launcher, and a launch ticket is never
+    spent."""
     import sys
 
     from gateway import webapp_listener

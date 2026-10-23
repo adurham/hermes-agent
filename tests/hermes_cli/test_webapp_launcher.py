@@ -339,11 +339,13 @@ def test_the_webapp_command_takes_one_action_at_a_time():
             parser.parse_args(["webapp", *clash])
 
 
-def test_a_private_link_is_printed_for_the_user_and_never_handed_to_a_browser_launcher(world, capsys):
-    private = "http://127.0.0.1:9120/#hermes-session=" + "s" * 43
-    world["answers"]["webapp-launch"] = {"ok": True, "result": {"url": private, "private": True,
-                                                                "expires_in_seconds": None}}
+def test_a_link_for_the_user_to_open_by_hand_is_printed_and_never_handed_to_a_browser_launcher(world, capsys):
+    """Where the gateway cannot check who redeems a launch link (macOS, the BSDs) it marks the link
+    private: the command prints it with its lifetime and never passes it to a browser launcher, whose
+    arguments other local users can read."""
+    world["answers"]["webapp-launch"] = {"ok": True, "result": {"url": LINK, "private": True,
+                                                                "expires_in_seconds": 60}}
     assert launcher.cmd_webapp(_args()) == 0
     assert world["calls"]["opened"] == []
     out = capsys.readouterr().out
-    assert private in out and "keep it private" in out
+    assert LINK in out and "keep it private" in out and "60 seconds" in out and "once" in out

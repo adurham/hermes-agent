@@ -82,6 +82,13 @@ def mint_launch_ticket(state) -> str:
     return _mint_handoff_ticket(state, LAUNCH_TICKET_TTL_SECONDS, launch=True)
 
 
+def mint_printed_launch_ticket(state) -> str:
+    """Ticket for a launch link the user opens by hand where nothing identifies the redeeming
+    connection's owner (macOS, the BSDs): it spends without that check, as a window ticket does, so
+    ``hermes webapp`` prints it and never passes it to a browser launcher."""
+    return _mint_handoff_ticket(state, LAUNCH_TICKET_TTL_SECONDS, launch=False)
+
+
 def _loopback_peer_uid(client: tuple[str, int], server: tuple[str, int]) -> int | None:
     """Owner UID of the client end of a local TCP connection, from Linux ``/proc/net/tcp*``.
 
@@ -128,7 +135,8 @@ def _peer_is_server_user(request: Request) -> bool:
     where the launch ticket travels, is readable only by its own user, SYSTEM and elevated
     administrators. Elsewhere (macOS, the BSDs) every local user can read the launcher's argv
     and nothing here identifies the connection's owner, so an argv-carried launch ticket cannot
-    be redeemed. Authenticated child-window tickets do not use this launcher channel.
+    be redeemed. Authenticated child-window tickets and the launch tickets ``hermes webapp`` prints for
+    the user to open by hand (``mint_printed_launch_ticket``) do not use this launcher channel.
     """
     if sys.platform == "win32":
         return True
