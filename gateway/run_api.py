@@ -94,6 +94,7 @@ class GatewayDashboardMount:
             from gateway.webapp_listener import browser_session_token
             web.app.state.ui_surface = "webapp"
             web.app.state.web_dist = webapp.dist
+            web.app.state.webapp_home = webapp.home
             self._replaced_session_token = web._SESSION_TOKEN
             web._SESSION_TOKEN = browser_session_token(webapp.home)
 
@@ -106,8 +107,8 @@ class GatewayDashboardMount:
                 delattr(self.web.app.state, "listener_public_url")
             if self._replaced_session_token is not None:
                 # Removed, not cleared: a listener mounted next (the private one the gateway falls back
-                # to) must find the app as main's listener does, with no surface and no bundle set.
-                for name in ("ui_surface", "web_dist"):
+                # to) must find the app as main's listener does, with no surface, bundle or home set.
+                for name in ("ui_surface", "web_dist", "webapp_home"):
                     if hasattr(self.web.app.state, name):
                         delattr(self.web.app.state, name)
                 self.web._SESSION_TOKEN, self._replaced_session_token = self._replaced_session_token, None

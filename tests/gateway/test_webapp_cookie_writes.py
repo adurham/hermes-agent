@@ -3,11 +3,14 @@
 ``webapp.host: 0.0.0.0`` gates the gateway's dashboard mount behind dashboard sign-in, and the browser
 keeps that sign-in in a cookie. A page on another site, or on another port of the same host, that makes
 the browser POST, PUT or DELETE with the cookie is refused before any route runs. The Webapp's own page
-writes normally, and native clients keep working: a bearer token, or Electron's cookie requests, which
-carry no Origin.
+writes normally, and native clients keep working: a bearer token from their own sign-in, or Electron's
+cookie requests, which carry no Origin.
 """
 import asyncio
+import base64
+import hashlib
 import types
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
@@ -33,11 +36,24 @@ async def _write_statuses(client: httpx.AsyncClient, headers: dict) -> tuple[int
     return ticket.status_code, config.status_code, job.status_code
 
 
+async def _native_app_token(client: httpx.AsyncClient) -> str:
+    """The access token a native app gets from its own sign-in (RFC 8252) on the Webapp's listener."""
+    verifier = "native-app-verifier-" + "v" * 40
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    started = await client.get("/auth/native/authorize", params={
+        "provider": "stub", "code_challenge": challenge, "code_challenge_method": "S256",
+        "redirect_uri": "http://127.0.0.1:53999/cb", "state": "desk"})
+    callback = parse_qs(urlsplit(started.headers["location"]).query)
+    landed = await client.get("/auth/callback", params={"code": callback["code"][0], "state": callback["state"][0]})
+    code = parse_qs(urlsplit(landed.headers["location"]).query)["code"][0]
+    tokens = await client.post("/auth/native/token", json={"code": code, "code_verifier": verifier})
+    return tokens.json()["access_token"]
+
+
 def test_a_wildcard_webapp_takes_cookie_writes_only_from_its_own_page(tmp_path, monkeypatch):
     from hermes_cli import web_server
     from hermes_cli.config import read_raw_config
     from hermes_cli.dashboard_auth import clear_providers, register_provider
-    from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
     from hermes_constants import get_hermes_home
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
@@ -59,7 +75,6 @@ def test_a_wildcard_webapp_takes_cookie_writes_only_from_its_own_page(tmp_path, 
             transport = httpx.ASGITransport(app=mount)
             async with httpx.AsyncClient(transport=transport, base_url=WEBAPP) as browser:
                 await browser.get("/auth/login?provider=stub", follow_redirects=True)
-                token = next(v for k, v in browser.cookies.items() if k.endswith(SESSION_AT_COOKIE))
                 for page in FOREIGN_PAGES:
                     assert await _write_statuses(browser, page) == (403, 403, 403), page
                 assert read_raw_config().get("display", {}).get("skin") != "mono"
@@ -73,7 +88,7 @@ def test_a_wildcard_webapp_takes_cookie_writes_only_from_its_own_page(tmp_path, 
                     native_ticket = await browser.post("/api/webapp/gateway-ticket", headers=native)
                     assert native_ticket.status_code == 200, native_ticket.text
             async with httpx.AsyncClient(transport=transport, base_url=WEBAPP) as native_app:
-                bearer = {"Authorization": f"Bearer {token}", "Origin": "null"}
+                bearer = {"Authorization": f"Bearer {await _native_app_token(native_app)}", "Origin": "null"}
                 ticket, config, job = await _write_statuses(native_app, bearer)
                 assert (ticket, config) == (200, 200)
                 assert job not in {401, 403}

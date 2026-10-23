@@ -1958,7 +1958,7 @@ exception: this command builds it, and the running gateway serves it at once.
 | `--force-build` | Rebuild the bundle even when its build receipt is current |
 | `--build-only` | Build the bundle and stop |
 | `--status` | Show whether the running gateway serves the Webapp, and at which address |
-| `--sign-out` | Sign out every browser: tabs a link signed in need a new link, and behind the sign-in gate every login must sign in again. Their connections close and the command reports how many. Waits for a gateway that is still starting; with none running, replaces the stored credential |
+| `--sign-out` | Sign out every browser: tabs a link signed in need a new link, and behind the sign-in gate every login must sign in again; the account tokens those logins held stop working on the Webapp too. Native apps that signed in on their own stay signed in. Their connections close and the command reports how many. Waits for a gateway that is still starting; with none running, replaces the stored credential |
 
 ```bash
 # Turn it on once, then open it

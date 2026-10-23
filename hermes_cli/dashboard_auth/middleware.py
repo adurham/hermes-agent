@@ -189,11 +189,14 @@ async def gated_auth_middleware(
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
     # stores, verified with the same provider stack, no cookie read or set. A presented-but-
     # invalid bearer gets the structured 401 so the desktop refreshes/re-logs instead of
-    # following a cookie redirect.
+    # following a cookie redirect. On the gateway's Webapp only tokens it gave a native app's
+    # sign-in work here: a browser login's tokens work only as its cookies, which sign-out ends.
     bearer = _extract_bearer(request)
     if bearer:
         if cookie_logout:
             return await call_next(request)
+        if not webapp_sign_in.token_works_alone(request, bearer):
+            return _unauth_response(request, reason="invalid_or_expired_session")
         try:
             bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
         except ProviderError as e:

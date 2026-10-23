@@ -12,17 +12,44 @@ A request that passes records the digest of the token it was checked against on
 ``request.state.webapp_sign_in``; the socket tickets it mints carry that digest, so the sockets they open
 are tracked (``web_session_sockets.track``) and close at sign-out, and a ticket minted before a sign-out
 opens nothing after it. The standalone dashboard never sets or checks the binding.
+
+Such a login's cookies also hold the sign-in provider's access and refresh token. Presented on their own
+(``Authorization: Bearer``, ``/auth/native/refresh``) they would skip the binding, and a list of tokens
+to refuse cannot catch them: a provider may accept many spellings of one token (the bundled password
+provider decodes base64 leniently, so the quoted cookie value verifies too). So on the gateway's Webapp
+behind the gate a provider token works on its own only when this listener gave it to a native app's
+sign-in (RFC 8252: ``/auth/native/token``, then ``/auth/native/refresh``). The listener keeps a digest of
+each such token until it expires, in ``RECORD_PATH`` under the gateway home (``app.state.webapp_home``),
+so native apps stay signed in across a restart and a sign-out. A browser login's tokens therefore work
+only as that login's cookies and end with it.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import logging
+import threading
+import time
+from pathlib import Path
 from typing import Optional
 
 from fastapi import Request
 from fastapi.responses import Response
 
 _MESSAGE = b"webapp-sign-in"
+_log = logging.getLogger(__name__)
+
+#: Where the gateway home keeps the digests of the provider tokens its listener gave native apps.
+RECORD_PATH = Path("webapp") / "native-sign-in-tokens.json"
+#: How long a refresh token stays recorded. Providers do not say when theirs expire; this is the longest
+#: the bundled providers issue (the password provider's 30 days) and how long a browser keeps one.
+REFRESH_TOKEN_LIFETIME = 30 * 24 * 60 * 60
+
+_records_lock = threading.Lock()
+#: Per gateway home: token digest -> expiry in Unix seconds. Read from the home's file once per
+#: process; this process is its only writer.
+_records: dict[Optional[Path], dict[str, int]] = {}
 
 
 def binding(token: str) -> str:
@@ -84,3 +111,78 @@ def renew(response: Response, request: Request) -> None:
     token = _current_token()
     if signed_in is not None and hmac.compare_digest(signed_in, token_digest(token)):
         _set(response, request, token)
+
+
+def token_works_alone(request: Request, token: str) -> bool:
+    """Whether provider token *token* may be used on its own (a bearer header, the refresh route) on
+    *request*'s listener: anywhere but the gateway's Webapp behind the gate, as on main; there, only
+    when this listener gave it to a native app's sign-in and it has not expired."""
+    if not applies(request):
+        return True
+    with _records_lock:
+        expires = _loaded(_home(request)).get(_digest(token))
+    return expires is not None and expires > time.time()
+
+
+def gave_native_app(request: Request, session) -> None:
+    """Record that this listener just gave *session*'s tokens to a native app's sign-in, so they work
+    on their own on the gateway's Webapp behind the gate (:func:`token_works_alone`)."""
+    if not applies(request):
+        return
+    now = int(time.time())
+    given = ((session.access_token, int(session.expires_at or 0) or now + REFRESH_TOKEN_LIFETIME),
+             (session.refresh_token, now + REFRESH_TOKEN_LIFETIME))
+    home = _home(request)
+    with _records_lock:
+        records = _loaded(home)
+        for token, expires in given:
+            if token:
+                records[_digest(token)] = expires
+        for key in [key for key, expires in records.items() if expires <= now]:
+            del records[key]
+        if home is not None:
+            _write(home / RECORD_PATH, records)
+
+
+def _digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _home(request: Request) -> Optional[Path]:
+    home = getattr(request.app.state, "webapp_home", None)
+    return Path(home) if home is not None else None
+
+
+def _loaded(home: Optional[Path]) -> dict[str, int]:
+    """*home*'s record, read from its file on first use (call with ``_records_lock`` held). Without a
+    home it lives in memory only."""
+    if home in _records:
+        return _records[home]
+    stored: object = {}
+    if home is not None:
+        try:
+            stored = json.loads((home / RECORD_PATH).read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as exc:  # native apps sign in again
+            _log.warning("Could not read the Webapp's record of native sign-ins: %s", exc)
+    records = ({key: value for key, value in stored.items() if isinstance(value, int)}
+               if isinstance(stored, dict) else {})
+    _records[home] = records
+    return records
+
+
+def _write(path: Path, records: dict[str, int]) -> None:
+    from utils import atomic_write_text
+
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps(records, separators=(",", ":")) + "\n", mode=0o600)
+    except OSError as exc:  # this process still accepts them; after a restart native apps sign in again
+        _log.warning("Could not save the Webapp's record of native sign-ins: %s", exc)
+
+
+def _reset_for_tests() -> None:
+    """Forget every loaded record, as a new process starts with only the files."""
+    with _records_lock:
+        _records.clear()

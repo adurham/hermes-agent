@@ -4,8 +4,11 @@ On a LAN or own-URL Webapp a browser signs in with the dashboard's sign-in (a pa
 provider) and keeps that login in cookies. Each login on the Webapp is bound to the gateway's browser
 credential, so ``hermes webapp --sign-out``, which replaces that credential, ends every one of them:
 the login's requests get 401 and the sign-in view, the sockets and host terminals it opened close with
-4401, tickets it minted open nothing, and its cookies replayed from anywhere get nothing. Signing in
-again works. The standalone dashboard has no browser credential and keeps its logins as on main.
+4401, tickets it minted open nothing, and its cookies replayed from anywhere get nothing. The provider
+tokens those cookies hold work only as those cookies: the Webapp's listener refuses them as a bearer
+token and on the refresh route, before and after sign-out and across a restart. Signing in again works,
+and a native app's own sign-in on the same listener stays signed in. The standalone dashboard has no
+browser credential and keeps its logins as on main.
 """
 import json
 from types import SimpleNamespace
@@ -25,6 +28,7 @@ USER, PASSWORD = "owner", "throwaway-test-password"
 @pytest.fixture
 def gated(tmp_path, monkeypatch):
     """The Webapp behind the sign-in gate with a password and an OAuth provider registered."""
+    from hermes_cli import webapp_sign_in
     from hermes_cli.dashboard_auth import clear_providers, register_provider
     from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
     from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests
@@ -36,7 +40,9 @@ def gated(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "bound_host", "hermes.lan")
     monkeypatch.setattr(state, "bound_port", 9120, raising=False)
     monkeypatch.setattr(state, "auth_required", True)
+    monkeypatch.setattr(state, "webapp_home", tmp_path / ".hermes", raising=False)
     _reset_for_tests()
+    webapp_sign_in._reset_for_tests()
     _reset_password_rate_limit()
     clear_providers()
     register_provider(BasicAuthProvider(username=USER, password_hash=hash_password(PASSWORD), secret=b"k" * 32))
@@ -47,6 +53,7 @@ def gated(tmp_path, monkeypatch):
     finally:
         clear_providers()
         _reset_for_tests()
+        webapp_sign_in._reset_for_tests()
         _reset_password_rate_limit()
 
 
@@ -179,3 +186,193 @@ def test_the_standalone_dashboard_keeps_its_logins_as_on_main(gated, monkeypatch
     assert not any(name.endswith("hermes_webapp_signin") for name in browser.cookies.keys())
     monkeypatch.setattr(gated.server, "_SESSION_TOKEN", "n" * 43)
     assert browser.get("/api/auth/me").status_code == 200
+
+
+# A browser's login keeps the sign-in provider's access and refresh token in its cookies. Copied out of
+# them they are the kind of token a native app presents as ``Authorization: Bearer`` and renews on
+# ``/auth/native/refresh``. On the Webapp's listener they work only as that login's cookies, so signing
+# out ends them everywhere there; a native app's own sign-in on the same listener stays signed in.
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Moves the password provider's clock forward. It signs each token's expiry in whole seconds, so
+    without this a renewal or a second login in the same second gets byte-identical tokens."""
+    import time
+
+    from plugins.dashboard_auth import basic
+
+    offset = [0]
+    monkeypatch.setattr(basic, "time", SimpleNamespace(time=lambda: time.time() + offset[0]))
+
+    def advance(seconds=5):
+        offset[0] += seconds
+    return advance
+
+
+def _tokens(client):
+    """The access and refresh token the cookie login on *client* holds, as a copy taken out of the
+    browser would present them (the cookie keeps them in quotes)."""
+    return tuple(client.cookies.get(name).strip('"') for name in ("hermes_session_at", "hermes_session_rt"))
+
+
+def _bearer(token):
+    return {"Authorization": "Bearer " + token}
+
+
+def _renew(gated, refresh_token):
+    """``/auth/native/refresh`` from a client holding nothing but *refresh_token*."""
+    return gated.browser().post("/auth/native/refresh", json={"refresh_token": refresh_token})
+
+
+def _refused(response):
+    assert (response.status_code, response.json().get("error")) == (401, "session_expired")
+
+
+def _refused_alone(gated, access, refresh):
+    """Neither token works on its own: the access token as a bearer, the refresh token on the
+    refresh route."""
+    stolen = gated.browser()
+    _refused(stolen.get("/api/auth/me", headers=_bearer(access)))
+    _refused(stolen.post("/api/webapp/terminal-ticket", headers=_bearer(access)))
+    _refused(stolen.post("/api/auth/ws-ticket", headers=_bearer(access)))
+    _refused(_renew(gated, refresh))
+
+
+def _restart(gated, monkeypatch, *, token=None):
+    """What a new gateway process starts from: nothing in memory but the files in its home, and the
+    browser credential stored there (*token* when the CLI replaced it while no gateway ran)."""
+    from hermes_cli import webapp_sign_in
+
+    webapp_sign_in._reset_for_tests()
+    if token is not None:
+        monkeypatch.setattr(gated.server, "_SESSION_TOKEN", token)
+
+
+@pytest.mark.parametrize("sign_in", SIGN_INS)
+def test_after_sign_out_a_logins_tokens_work_nowhere_on_the_webapp(gated, sign_out, sign_in):
+    browser = gated.browser()
+    SIGN_INS[sign_in](browser)
+    access, refresh = _tokens(browser)
+    sign_out()
+    _refused_alone(gated, access, refresh)
+
+
+@pytest.mark.parametrize("sign_in", SIGN_INS)
+def test_a_logins_tokens_work_only_as_its_cookies(gated, sign_in):
+    """Before any sign-out too: the tokens a browser login holds open nothing without its cookies, in
+    the spelling a copy would take from the browser or from the cookie as stored."""
+    browser = gated.browser()
+    SIGN_INS[sign_in](browser)
+    assert browser.get("/api/auth/me").status_code == 200
+    access, refresh = _tokens(browser)
+    _refused_alone(gated, access, refresh)
+    stored = browser.cookies.get("hermes_session_at"), browser.cookies.get("hermes_session_rt")
+    _refused_alone(gated, *stored)
+
+
+def test_a_pair_renewed_before_sign_out_is_refused_after_it(gated, sign_out, clock):
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    first = _tokens(browser)
+    # The gate renews the browser's pair once its access token lapses.
+    clock()
+    browser.cookies.delete("hermes_session_at")
+    assert browser.get("/api/auth/me").status_code == 200
+    renewed = _tokens(browser)
+    assert renewed[0] != first[0]
+    # The refresh route renews nothing from a browser login, before sign-out either.
+    _refused(_renew(gated, first[1]))
+    sign_out()
+    _refused_alone(gated, *renewed)
+
+
+def test_the_refusal_survives_a_gateway_restart(gated, sign_out, monkeypatch):
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    access, refresh = _tokens(browser)
+    sign_out()
+    _restart(gated, monkeypatch)
+    _refused_alone(gated, access, refresh)
+
+
+def test_a_credential_replaced_while_the_gateway_was_down_ends_its_logins_tokens(gated, monkeypatch, tmp_path):
+    from gateway.webapp_listener import browser_session_token
+
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    access, refresh = _tokens(browser)
+    # The gateway stops, hermes webapp --sign-out replaces the stored credential, a gateway starts.
+    _restart(gated, monkeypatch, token=browser_session_token(tmp_path / ".hermes", rotate=True))
+    _signed_out(browser.get("/api/auth/me"))
+    _refused_alone(gated, access, refresh)
+
+
+def test_a_login_after_sign_out_works(gated, sign_out, clock):
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    sign_out()
+    clock()
+    _sign_in_with_password(browser)
+    assert browser.get("/api/auth/me").status_code == 200
+    assert browser.post("/api/webapp/terminal-ticket").status_code == 200
+
+
+def _native_app_sign_in(gated):
+    """An RFC 8252 sign-in (the native Desktop's) on the Webapp's listener: authorize in the system
+    browser, then redeem the loopback code for bearer tokens. No cookie login takes part."""
+    import base64
+    import hashlib
+    from urllib.parse import parse_qs, urlsplit
+
+    verifier = "native-app-verifier-" + "v" * 40
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    system_browser = gated.browser()
+    started = system_browser.get("/auth/native/authorize", follow_redirects=False, params={
+        "provider": "stub", "code_challenge": challenge, "code_challenge_method": "S256",
+        "redirect_uri": "http://127.0.0.1:53999/cb", "state": "desk"})
+    callback = parse_qs(urlsplit(started.headers["location"]).query)
+    landed = system_browser.get("/auth/callback", follow_redirects=False,
+                                params={"code": callback["code"][0], "state": callback["state"][0]})
+    code = parse_qs(urlsplit(landed.headers["location"]).query)["code"][0]
+    tokens = gated.browser().post("/auth/native/token", json={"code": code, "code_verifier": verifier})
+    assert tokens.status_code == 200
+    return tokens.json()["access_token"], tokens.json()["refresh_token"]
+
+
+def test_a_native_app_signed_in_on_the_webapps_listener_stays_signed_in(gated, sign_out, monkeypatch):
+    """Signing the browsers out leaves a native app's own sign-in alone, across a restart too, and the
+    pair it renews keeps working."""
+    access, refresh = _native_app_sign_in(gated)
+    sign_out()
+    _restart(gated, monkeypatch)
+    assert gated.browser().get("/api/auth/me", headers=_bearer(access)).status_code == 200
+    renewed = _renew(gated, refresh)
+    assert renewed.status_code == 200
+    assert gated.browser().get("/api/auth/me", headers=_bearer(renewed.json()["access_token"])).status_code == 200
+    assert _renew(gated, renewed.json()["refresh_token"]).status_code == 200
+
+
+def test_only_the_spelling_given_to_a_native_app_works(gated):
+    """The providers accept other spellings of a token (the password provider and the test provider
+    decode base64 leniently); the listener takes only the one it gave out."""
+    access, refresh = _native_app_sign_in(gated)
+    _refused_alone(gated, f'"{access}"', f'"{refresh}"')
+
+
+def test_off_the_webapp_any_provider_token_works_on_its_own_as_on_main(gated, monkeypatch):
+    monkeypatch.setattr(gated.server.app.state, "ui_surface", "dashboard")
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    access, refresh = _tokens(browser)
+    assert gated.browser().get("/api/auth/me", headers=_bearer(access)).status_code == 200
+    assert _renew(gated, refresh).status_code == 200
+
+
+@pytest.mark.platforms("posix")
+def test_the_record_of_native_sign_ins_is_user_only(gated, tmp_path):
+    from hermes_cli.webapp_sign_in import RECORD_PATH
+
+    _native_app_sign_in(gated)
+    record = tmp_path / ".hermes" / RECORD_PATH
+    assert record.stat().st_mode & 0o777 == 0o600
+    assert record.parent.stat().st_mode & 0o777 == 0o700

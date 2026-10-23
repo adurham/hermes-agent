@@ -4,8 +4,9 @@ The gateway binds its Webapp on loopback with a public URL, which puts it behind
 the bundled password provider. A browser signs in, opens its chat socket and a host terminal, and a
 native client is attached. ``webapp-sign-out`` (what ``hermes webapp --sign-out`` asks for) then ends
 the browser's login: its sockets close with 4401, its requests get 401 and the page sends it to sign
-in, tickets it minted open nothing, and its cookies replayed elsewhere get nothing. The native client
-stays connected, and the browser can sign in again.
+in, tickets it minted open nothing, and its cookies replayed elsewhere get nothing, nor do the provider
+tokens they held, presented on their own. The native client stays connected, and the browser can sign
+in again.
 """
 import json
 from pathlib import Path
@@ -68,6 +69,11 @@ def test_after_sign_out_the_browser_must_sign_in_again(signed_out):
         assert signed_out[probe][:2] in ([401, "unauthenticated"], [401, "session_expired"]), probe
     assert signed_out["page_after"][0] == 302 and signed_out["page_after"][2] == "/login"
     assert signed_out["old_terminal_ticket_after"] == 403
+
+
+def test_after_sign_out_the_tokens_the_browsers_cookies_held_work_nowhere(signed_out):
+    assert signed_out["stolen_access_token_after"][:2] == [401, "session_expired"]
+    assert signed_out["stolen_refresh_token_after"][:2] == [401, "session_expired"]
 
 
 def test_the_browser_can_sign_in_again(signed_out):

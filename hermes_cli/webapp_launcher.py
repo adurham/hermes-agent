@@ -149,7 +149,9 @@ def _signed_out_summary(result: dict) -> str:
     closed = result["connections_closed"]
     connections = f"closed {closed} browser connection{'' if closed == 1 else 's'}"
     if result.get("sign_in_gate"):
-        return f"Signed out every browser: {connections}. Browsers behind sign-in must sign in again."
+        return (f"Signed out every browser: {connections}. Every browser login behind sign-in has ended, "
+                "and the account tokens it held no longer work here: browsers must sign in again. Native apps "
+                "signed in to this gateway with their own sign-in stay signed in.")
     return f"Signed out of every Webapp tab: {connections}. Run hermes webapp to open it again."
 
 

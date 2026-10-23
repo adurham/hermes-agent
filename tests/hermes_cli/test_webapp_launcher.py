@@ -199,11 +199,14 @@ def test_sign_out_replaces_the_browser_credential_on_the_running_gateway(world, 
 
 
 def test_sign_out_behind_the_sign_in_gate_says_browsers_must_sign_in_again(world, capsys):
+    """It says exactly what ended: every browser login and the account tokens it held, which work on
+    the Webapp only as that login. Native apps' own sign-ins stay."""
     world["answers"]["webapp-sign-out"]["result"] = {
         "signed_out": True, "serving": True, "sign_in_gate": True, "connections_closed": 1}
     assert launcher.cmd_webapp(_args(sign_out=True)) == 0
     out = capsys.readouterr().out
     assert "closed 1 browser connection." in out and "must sign in again" in out
+    assert "tokens" in out and "Native apps" in out and "stay signed in" in out
 
 
 def test_sign_out_on_a_gateway_not_serving_the_webapp_says_no_browser_was_connected(world, capsys):

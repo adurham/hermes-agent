@@ -131,6 +131,13 @@ async def across_sign_out(runner, origin, ask):
             f"{sockets}/api/host-terminal?ticket={unused_terminal_ticket}", origin=origin)
         async with httpx.AsyncClient(base_url=origin, timeout=20, cookies=stolen) as replay:
             report["replayed_cookies_after"] = _refusal(await replay.get("/api/sessions"))
+        # The provider tokens those cookies held, presented on their own as a native app would.
+        access, refresh = (stolen[name].strip('"') for name in ("hermes_session_at", "hermes_session_rt"))
+        async with httpx.AsyncClient(base_url=origin, timeout=20) as thief:
+            report["stolen_access_token_after"] = _refusal(
+                await thief.get("/api/sessions", headers={"Authorization": "Bearer " + access}))
+            report["stolen_refresh_token_after"] = _refusal(
+                await thief.post("/auth/native/refresh", json={"refresh_token": refresh}))
         report["sign_in_again_status"] = await sign_in(browser)
         report["sessions_after_sign_in_again"] = (await browser.get("/api/sessions")).status_code
     return report
