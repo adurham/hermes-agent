@@ -1,6 +1,6 @@
 name: traceverse-hermes-otel
 repo: https://github.com/Mandark-droid/hermes-otel-plugin
-sha: "cdf660c634843be0170e7b44d6c0d9d1cb5e46f7"
+sha: "701c021808c20b15017f7297a3577157e5faa401"
 description: "Hermes Agent OpenTelemetry traces and dashboard logs, with local-model cost estimates and optional in-process evaluation, GPU, energy, and CO2 metrics via genai-otel-instrument."
 maintainer: Mandark-droid
 tier: community
@@ -9,8 +9,8 @@ requires_hermes: ">=0.19"
 docs_url: https://github.com/Mandark-droid/hermes-otel-plugin/blob/main/README.md
 version: "2.0.0"
 screenshots:
-  - https://raw.githubusercontent.com/Mandark-droid/hermes-otel-plugin/cdf660c634843be0170e7b44d6c0d9d1cb5e46f7/docs/img/hermes-jaeger-waterfall.png
-  - https://raw.githubusercontent.com/Mandark-droid/hermes-otel-plugin/cdf660c634843be0170e7b44d6c0d9d1cb5e46f7/docs/img/genai-otel-hermes.png
+  - https://raw.githubusercontent.com/Mandark-droid/hermes-otel-plugin/701c021808c20b15017f7297a3577157e5faa401/docs/img/hermes-jaeger-waterfall.png
+  - https://raw.githubusercontent.com/Mandark-droid/hermes-otel-plugin/701c021808c20b15017f7297a3577157e5faa401/docs/img/genai-otel-hermes.png
 readme: true
 platforms: []
 title: "Hermes OTel + Eval Metrics"
