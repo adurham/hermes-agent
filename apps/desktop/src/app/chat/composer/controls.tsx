@@ -6,6 +6,7 @@ import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
@@ -25,8 +26,14 @@ import { VoiceMenu } from './voice-menu'
 export { ACTIVE_ICON_BTN, GHOST_ICON_BTN, ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 
 // iOS fires mousedown after touchend, and its default blurs the editor before
-// submit runs. Keep focus where it was so a send leaves the keyboard as it was.
-const keepEditorFocus = (event: { preventDefault: () => void }) => event.preventDefault()
+// submit runs. The browser-hosted Desktop keeps focus where it was so a send
+// leaves the keyboard as it was. Native Desktop keeps the press's blur, which
+// closes an open completion list and clears a composition the IME never ended.
+const keepEditorFocus = (event: { preventDefault: () => void }) => {
+  if (isBrowserHostedDesktop()) {
+    event.preventDefault()
+  }
+}
 
 interface ConversationProps {
   active: boolean

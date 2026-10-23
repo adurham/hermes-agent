@@ -1156,7 +1156,11 @@ export function ChatBar({
       hideModelPill={guidedChat}
       minimal={minimal || chatOnboardingSolo}
       onDictate={dictate}
-      onQueue={queueDraft}
+      onQueue={() => {
+        // Queueing clears the draft too, so the list over it closes with it.
+        closeTrigger()
+        queueDraft()
+      }}
       onSteer={canSteer ? () => steerDraft('steer') : undefined}
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
@@ -1405,6 +1409,9 @@ export function ChatBar({
                 return
               }
 
+              // The send clears the text an open completion list was built
+              // from; a list left open would take the next Enter or Tab.
+              closeTrigger()
               submitDraft()
             }}
             ref={composerRef}
