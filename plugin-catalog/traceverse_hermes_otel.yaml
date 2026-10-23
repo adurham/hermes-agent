@@ -1,7 +1,7 @@
-name: traceverse-hermes-otel
+name: traceverse_hermes_otel
 repo: https://github.com/Mandark-droid/hermes-otel-plugin
 sha: "701c021808c20b15017f7297a3577157e5faa401"
-description: "Hermes Agent OpenTelemetry traces and dashboard logs, with local-model cost estimates and optional in-process evaluation, GPU, energy, and CO2 metrics via genai-otel-instrument."
+description: "Hermes Agent OpenTelemetry traces and dashboard logs, with local-model cost estimates and optional in-process evaluation, GPU, energy, and CO2 metrics via genai-otel-instrument. Disclosure — Sends OpenTelemetry traces and log records for every turn, LLM call and tool call (session ids, models, token counts, costs, tool names, errors) to an OTLP endpoint, `http://localhost:4318` unless `HERMES_OTEL_ENDPOINT` points elsewhere; prompt, response and tool argument/result text is included only when `HERMES_OTEL_CAPTURE_CONTENT=true`; if `genai-otel-instrument` is installed it is activated in-process and instruments the LLM client libraries Hermes uses."
 maintainer: Mandark-droid
 tier: community
 category: general
