@@ -667,6 +667,12 @@ LOCAL_TAB = "http://127.0.0.1:3000/"
     ("Target.createTarget", {"url": PUBLIC_PAGE}, True),
     ("Target.createTarget", {"url": "http://127.0.0.1:3000/admin"}, False),  # checked like Page.navigate
     ("Target.createTarget", {"url": PRIVATE_URL}, False),
+    ("Target.createTarget", {"url": "about:blank"}, True),  # a blank tab, as Hermes's own helpers open
+    ("Target.createTarget", {"url": ""}, True),
+    ("Target.createTarget", {}, True),
+    ("Target.createTarget", {"url": "file:///etc/passwd"}, False),  # every other non-http scheme stays refused
+    ("Target.createTarget", {"url": "about:blank@127.0.0.1"}, False),
+    ("Target.createTarget", {"url": "data:text/html,<script>fetch('http://127.0.0.1:3000/')</script>"}, False),
     ("Target.activateTarget", {"targetId": "tab-public"}, True),
     ("Target.closeTarget", {"targetId": "tab-public"}, True),
     ("Network.getAllCookies", {}, False),  # every other target-less call stays fail-closed
@@ -674,7 +680,7 @@ LOCAL_TAB = "http://127.0.0.1:3000/"
 ])
 def test_tab_management_stays_usable_while_a_tab_is_private(monkeypatch, cdp_server, method, params, allowed):
     """One private tab (a local dev server) must not stop the model opening, switching or closing tabs; a
-    new tab's url is held to Page.navigate's rule, and every other browser-level call is still refused."""
+    new tab is blank or its url is held to Page.navigate's rule, and every other browser-level call is refused."""
     cdp_server.on("Target.getTargets", lambda params, sid: {"targetInfos": [
         {"targetId": "tab-public", "type": "page", "url": PUBLIC_PAGE},
         {"targetId": "tab-local", "type": "page", "url": LOCAL_TAB},

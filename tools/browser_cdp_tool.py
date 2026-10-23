@@ -140,17 +140,26 @@ def _expression_private_target(params: dict[str, Any]) -> Optional[str]:
 
 
 def _navigate_private_target(params: dict[str, Any]) -> Optional[str]:
-    """Blocked URL literal for ``Page.navigate`` / ``Target.createTarget`` params, else ``None``."""
+    """Blocked URL literal for ``Page.navigate`` params, else ``None``."""
     from tools.browser_url_policy import url_blocked
     target_url = str(params.get("url") or "").strip()
     return target_url if target_url and url_blocked(target_url) else None
+
+
+def _new_tab_private_target(params: dict[str, Any]) -> Optional[str]:
+    """``Target.createTarget``: a blank tab (``about:blank``, Chrome's default for no url) reaches nothing, so
+    it opens before scripts are installed or a page is chosen; any other url is held to ``Page.navigate``'s
+    rule (``url_blocked`` refuses every other non-http scheme)."""
+    if str(params.get("url") or "").strip().lower() == "about:blank":
+        return None
+    return _navigate_private_target(params)
 
 
 # method → (probe(params) -> blocked literal | None, error template)
 _METHOD_PARAM_GUARDS = {
     "Page.navigate": (_navigate_private_target,
                       "Blocked: CDP Page.navigate target is a private or internal address ({})."),
-    "Target.createTarget": (_navigate_private_target,
+    "Target.createTarget": (_new_tab_private_target,
                             "Blocked: CDP Target.createTarget url is a private or internal address ({})."),
     "Runtime.evaluate": (_expression_private_target,
                          "Blocked: CDP Runtime.evaluate expression targets a private or internal address ({})."),
