@@ -253,7 +253,7 @@ wheels = [
 
 [[package]]
 name = "alibabacloud-dingtalk"
-version = "2.2.42"
+version = "2.2.65"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "alibabacloud-endpoint-util" },
@@ -263,9 +263,9 @@ dependencies = [
     { name = "alibabacloud-tea-openapi" },
     { name = "alibabacloud-tea-util" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/38/66/36efc03a2a8ed16c2ce176fd5ab6ff9725d0048aef33eaf867e85e625401/alibabacloud_dingtalk-2.2.42.tar.gz", hash = "sha256:220b1d52f5ef82a23ea625d3c8a91a733a685417248e217cf5aa30fe0b3a8978", size = 2023797, upload-time = "2026-04-10T03:58:28.143Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/0f/40312cb59239b5383e98fa70082db8b9b18bbecf1151610254e23332440f/alibabacloud_dingtalk-2.2.65.tar.gz", hash = "sha256:28e3ff2836c632db66f8cc7d4085b9434e186e8cae23ad56817057c55ad824cf", size = 2164431, upload-time = "2026-10-15T09:44:45.431Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/80/7d1c1438e17c1fc90d037f1b73debe3fc2dfa348eb91e12818c2584d1865/alibabacloud_dingtalk-2.2.42-py3-none-any.whl", hash = "sha256:5f5c2ef3351b7926eb870af11089e14f802e4caa51d5f72920ad79a67f03d3e4", size = 2142688, upload-time = "2026-04-10T03:58:26.33Z" },
+    { url = "https://files.pythonhosted.org/packages/58/f5/692fa0f0718808e0831fa3d26632a9bc54524b89961c2fde0ce64e1432c7/alibabacloud_dingtalk-2.2.65-py3-none-any.whl", hash = "sha256:05834d82a53782fabf556049ac4b3f67259e1e87dfb3e9f0d231e33fdf70ddad", size = 2289799, upload-time = "2026-10-15T09:44:43.539Z" },
 ]
 
 [[package]]
@@ -2546,7 +2546,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'teams'", specifier = "==3.14.5" },
     { name = "aiohttp-socks", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.12.0" },
     { name = "aiosqlite", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.22.1" },
-    { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
+    { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.65" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.87.0" },
     { name = "asyncpg", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.31.0" },
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
