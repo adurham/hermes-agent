@@ -10,8 +10,10 @@ callback); a gated bind without it would keep the Webapp off. Two shapes:
 - ``public``: an HTTPS URL the user already runs that forwards to ``127.0.0.1:<port>``.
   ``webapp.public_url`` engages the gate on the loopback bind and fixes the callback.
 
-It writes only the ``webapp:`` block: ``dashboard.public_url`` and the ``.env`` values belong to the
-standalone dashboard, which may sit behind its own tunnel or proxy.
+Of the config it writes only the ``webapp:`` block; ``dashboard.public_url`` belongs to the standalone
+dashboard, which may sit behind its own tunnel or proxy. Registering a callback saves the portal
+client's id as ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` in ``.env``, the client the dashboard's Nous
+sign-in reads.
 """
 
 from __future__ import annotations
