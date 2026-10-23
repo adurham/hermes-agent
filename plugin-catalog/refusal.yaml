@@ -1,0 +1,21 @@
+name: refusal
+repo: https://github.com/0ldev/refusal
+sha: cfa74086b3724d1510c1ade8ed431d4b256c0e36
+version: "0.1.0"
+description: "Detects when a model refuses a request or deflects to an educational alternative, and retries the turn on the next model in your fallback_models chain. Detection is local and rule-based (regex patterns over the response prose); tool-calling responses, code blocks and partial answers are treated as genuine answers. Disclosure — an llm_execution middleware inspects every model response before the agent loop uses it, and when it detects a refusal it sets finish_reason to content_filter (Anthropic: stop_reason to refusal) so Hermes activates its fallback model; a triggered fallback resends the full conversation to the fallback provider and spends tokens there; with no fallback model configured, Hermes replaces the response with its standard safety-refusal notice, so a false positive discards a valid answer; no network calls, no files read or written outside the plugin package, no shell commands, no background processes, no stored credentials, no telemetry."
+maintainer: 0ldev
+tier: community
+category: models
+requires_hermes: ">=0.22.1"
+docs_url: https://github.com/0ldev/refusal/blob/cfa74086b3724d1510c1ade8ed431d4b256c0e36/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_execution
+  requires_env: []
+known_issues:
+  - "Detection is pattern-based, so an unusual refusal phrasing can be missed and a response that quotes refusal language can occasionally be flagged. Configure at least one fallback model so a false positive does not discard an answer."
+  - "A detected refusal appears under Hermes's own content_policy_blocked failover reason; plugins cannot register custom reasons."
