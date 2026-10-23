@@ -196,13 +196,20 @@ def cleanup_profile_browsers(home_key: str) -> None:
     reset_caches(home_key)
 
 
+def _cleanup_in_owner_scope(cache_key: str) -> None:
+    with _session_owner_scope(cache_key):
+        cleanup_single_session(cache_key)
+
+
 def cleanup_all_browsers() -> None:
-    """Close every session (gateway shutdown), stop every browser this process launched, reset caches."""
+    """Close every session (gateway shutdown), stop every browser this process launched, reset caches. Each
+    session is closed under its owning profile, as the janitor does: a cloud session belongs to that profile's
+    provider and credentials."""
     bs = _bs()
     with bs._cleanup_lock:
         keys = list(bs._active_sessions)
     for key in keys:
-        _best_effort(f"browser cleanup for {key}", lambda key=key: cleanup_single_session(key))
+        _best_effort(f"browser cleanup for {key}", lambda key=key: _cleanup_in_owner_scope(key))
 
     def _stop_supervisors():
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
