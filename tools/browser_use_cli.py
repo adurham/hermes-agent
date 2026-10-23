@@ -356,8 +356,8 @@ def _mark_local_browser(env: dict, session: dict, key: str) -> None:
     """Flags for a LOCAL session browser: it runs on the Bot Desktop display (lease fence), and unless a
     persistent profile / the real-profile browser is shared by every key, it is exclusive to this key (no
     own-tab preamble: nothing to share a tab with)."""
-    env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
     features = session.get("features") or {}
+    env[_BOT_DESKTOP_BROWSER_SENTINEL] = "lightpanda" if features.get("lightpanda") else "local"
     if not session.get("shared_profile") and not features.get("real_profile"):
         env[_PRIVATE_BROWSER_SENTINEL] = "1"
     _export_real_profile_note(env, key)
@@ -485,7 +485,7 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     cdp, err = real_profile_cdp()
     if cdp and not err:
         _set_cdp_env(env, cdp)
-        env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
+        env[_BOT_DESKTOP_BROWSER_SENTINEL] = "local"  # the user's real Chromium, whatever browser.engine says
     return err or None
 
 
@@ -710,8 +710,9 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if local_sidecar:
         env["BU_NAME"] = _sidecar_daemon_name(session)
     _exec_route_is_sidecar[route_key] = local_sidecar
-    bot_desktop_browser = bool(env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None))
-    _exec_ran_local.set(bot_desktop_browser)  # only local browsers carry the sentinel
+    local_engine = env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None)
+    bot_desktop_browser = bool(local_engine)
+    _exec_local_engine.set(local_engine)  # only local browsers carry the sentinel
 
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
@@ -890,24 +891,26 @@ BROWSER_EXEC_SCHEMA = {
 from tools.registry import registry
 
 
-# Whether this context's browser_exec call ran on a LOCAL browser: a configured cloud provider did not
-# serve a hybrid ::local sidecar, cloud-fallback or real-profile call, so its metrics row must not name it.
-_exec_ran_local: contextvars.ContextVar[bool] = contextvars.ContextVar("browser_exec_ran_local", default=False)
+# The LOCAL browser this context's browser_exec call ran on ("local" Chromium or "lightpanda", from its session),
+# else None: a configured cloud provider did not serve a hybrid ::local sidecar, cloud-fallback or real-profile
+# call, and browser.engine read afterwards may name another engine than the session's, so neither labels it.
+_exec_local_engine: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("browser_exec_local_engine",
+                                                                                   default=None)
 
 
 def _handle_browser_exec(args: dict, **kw):
     """Registry handler; each call counts against the backend that served it (shared metrics, opt-in)."""
     from hermes_cli.observability.shared_metrics_loop import record_browser_call
     from tools.browser_session_cloud import browser_backend_name
-    token = _exec_ran_local.set(False)
+    token = _exec_local_engine.set(None)
     try:
         return record_browser_call(lambda: browser_exec(
             code=args.get("code", ""), session=args.get("session", "") or "",
             timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S), task_id=kw.get("task_id"),
             local=bool(args.get("local", False)),
-        ), lambda: browser_backend_name(ran_local=_exec_ran_local.get()))
+        ), lambda: browser_backend_name(local_engine=_exec_local_engine.get()))
     finally:
-        _exec_ran_local.reset(token)
+        _exec_local_engine.reset(token)
 
 
 registry.register(

@@ -321,11 +321,11 @@ def browser_exec_route(monkeypatch):
     import tools.browser_supervisor as supervisor
     import tools.browser_use_cli as bu
 
-    route = SimpleNamespace(fallback=False)
+    route = SimpleNamespace(fallback=False, features={"local": True})
 
     def session_info(key):
         if bs.is_local_sidecar_key(key) or route.fallback:
-            return {"cdp_url": f"ws://127.0.0.1:47000/devtools/browser/{key}", "features": {"local": True},
+            return {"cdp_url": f"ws://127.0.0.1:47000/devtools/browser/{key}", "features": route.features,
                     **({"fallback_from_cloud": True, "fallback_reason": "429"} if route.fallback else {})}
         return {"cdp_url": "wss://cloud.example/x"}
 
@@ -365,6 +365,29 @@ def test_browser_exec_counts_against_the_browser_that_actually_served_it(home, m
 
     rows = {d["backend"]: v for d, v in _rows(home, "hermes.execution_backend.count") if d["outcome"] == "success"}
     assert rows == {"browserbase": 1, "local": 2, "cdp": 1}
+
+
+def test_a_local_call_names_the_engine_that_served_it_not_the_one_configured_now(home, browser_exec_route):
+    """The label comes from the session the call ran on, never from ``browser.engine`` read afterwards: a Chromium
+    session that outlived a switch to Lightpanda counts as Chromium, and a Lightpanda session as Lightpanda."""
+    import tools.browser_session_cloud as bs_cloud
+    from tools.browser_use_cli import _handle_browser_exec
+
+    def call_with_engine_configured(engine, task_id):
+        (home / "config.yaml").write_text(f"browser:\n  engine: {engine}\n")
+        bs_cloud.reset_caches()
+        assert bs_cloud.get_browser_engine() == engine
+        code = 'new_tab("https://example.com/")'
+        assert json.loads(_handle_browser_exec({"code": code}, task_id=task_id))["success"] is True
+
+    browser_exec_route.fallback = True
+    call_with_engine_configured("lightpanda", "chromium-session")
+    call_with_engine_configured("lightpanda", "chromium-session")
+    browser_exec_route.features = {"local": True, "lightpanda": True}
+    call_with_engine_configured("auto", "lightpanda-session")
+
+    rows = {d["backend"]: v for d, v in _rows(home, "hermes.execution_backend.count") if d["outcome"] == "success"}
+    assert rows == {"local": 2, "lightpanda": 1}
 
 
 def _raise():
