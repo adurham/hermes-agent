@@ -125,9 +125,9 @@ def apply_requested_tool_rebuild(agent: Any) -> bool:
     from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
     from tools.mcp_tool_agent import persist_agent_tool_names, refresh_agent_mcp_tools
     before = getattr(agent, "tools", None)
-    refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)  # adopts the saved backend
-    persist_agent_tool_names(agent)  # also when only the backend moved (two backends, one schema)
+    refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)  # adopts the saved backend, re-pins a change
     if agent.tools is before:
+        persist_agent_tool_names(agent)  # only the backend moved (two backends, one schema): pin it
         return False
     record_cache_break(agent, "toolset_change")
     return True

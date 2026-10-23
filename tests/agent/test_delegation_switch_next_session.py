@@ -81,19 +81,21 @@ def test_a_now_switch_rebuilds_this_sessions_delegate_task_and_routing_for_the_n
     agent = _agent(srv, home, "chat-now")
     history = _turn(agent, "hello", [])
     assert "option" in _sent_task_fields(srv) and _routed_on(agent) == "probe-options"
-
-    set_global_backend("default", session_key="chat-now", apply_now=True)
-    history = _turn(agent, "and now", history)
-    assert "option" not in _sent_task_fields(srv) and _routed_on(agent) == "default"
     agent.close()
 
-    # The rebuilt tools and their backend are the session's pin: a fresh agent on it (gateway, --resume) restores
-    # both, whatever config.yaml says by then.
-    set_global_backend("probe-options")
+    # The gateway's next turn is a fresh agent: it restores the session's pinned tools, then takes the request.
+    set_global_backend("default", session_key="chat-now", apply_now=True)
     fresh = _agent(srv, home, "chat-now")
-    _turn(fresh, "still here", history)
+    history = _turn(fresh, "and now", history)
     assert "option" not in _sent_task_fields(srv) and _routed_on(fresh) == "default"
     fresh.close()
+
+    # The rebuilt tools and their backend are the session's pin now, whatever config.yaml says by then.
+    set_global_backend("probe-options")
+    resumed = _agent(srv, home, "chat-now")
+    _turn(resumed, "still here", history)
+    assert "option" not in _sent_task_fields(srv) and _routed_on(resumed) == "default"
+    resumed.close()
 
 
 def test_a_plain_switch_changes_nothing_in_this_session_and_new_sessions_take_the_saved_backend(options_backend):
