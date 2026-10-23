@@ -370,7 +370,7 @@ google-chat = [
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
-trace-upload = ["huggingface-hub==1.24.0"]
+trace-upload = ["huggingface-hub==1.33.0"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency
