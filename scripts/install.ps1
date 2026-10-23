@@ -1286,7 +1286,9 @@ function Invoke-BootstrapPm {
         # Bare $SkipBrowser, like $InstallDir: under iex/scriptblock entry the
         # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
         $pmArgs = @('install')
-        if ($SkipBrowser) { $pmArgs += @('--without', 'chromium') }
+        # Legacy spelling on purpose: the stable PM this script installs by
+        # default rejects 'chromium', and newer PMs read 'agent-browser' as 'chromium'.
+        if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
         if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
         if ($LASTEXITCODE) { Fail "dependency install failed" deps_install_failed }

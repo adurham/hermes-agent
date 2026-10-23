@@ -23,8 +23,9 @@ DECLINED_FILENAME = "declined-packages.json"
 
 # A retired default whose opt-out carries over to the package that took its
 # place: `--without agent-browser` declined the browser, which is Chromium now.
-# Read through on every load, so a record written by an older installer (or an
-# old installer script passing the old name) keeps skipping the browser.
+# Read through on every load, so a record written by an older installer keeps
+# skipping the browser. The installers still pass the old name on purpose: the
+# stable PM they install by default accepts only `agent-browser`.
 RETIRED_DEFAULTS = {"agent-browser": "chromium"}
 
 

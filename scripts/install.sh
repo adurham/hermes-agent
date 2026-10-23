@@ -1024,7 +1024,9 @@ bootstrap_pm() {
     local pm_args=(install)
     # PM records the opt-outs, so later installs and `hermes update` keep the
     # tools off until `hermes pm install <name>` opts back in.
-    [ "$SKIP_BROWSER" = true ] && pm_args+=(--without chromium)
+    # Legacy spelling on purpose: the stable PM this script installs by default
+    # rejects `chromium`, and newer PMs read `agent-browser` as `chromium`.
+    [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
     [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python
     # Refresh the sudo ticket cached in prerequisites (never prompts): the

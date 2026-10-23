@@ -2,8 +2,8 @@
 
 The store, its facts and the recorded opt-outs of such an install still name
 agent-browser. Every reader must skip that fact, `pm gc` reclaims its entry, and
-an opt-out recorded as `--without agent-browser` (the installers' old
-`--skip-browser`) keeps skipping the browser, which is Chromium alone now.
+an opt-out recorded as `--without agent-browser` (what the installers'
+`--skip-browser` passes) keeps skipping the browser, which is Chromium alone now.
 
 Real pm code paths over a fixture store under a scratch HERMES_HOME and
 HERMES_RUNTIME_DIR; the real registry and pm/lock.json.
