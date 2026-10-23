@@ -345,3 +345,34 @@ it('keeps a signed-out tab and says to sign in again instead of reconnecting', a
   expect($desktopBoot.get().error).toBe(WEBAPP_LAUNCH_REQUIRED)
   $desktopBoot.set({ ...$desktopBoot.get(), error: null, visible: false })
 })
+
+// Native Desktop's shell is a local process (node-pty over IPC). A failed spawn prints main's error
+// line and leaves the tab closed: no retry hint, and Enter starts no second shell.
+it('native Desktop: a failed start shows main\'s error and Enter does not start another shell', async () => {
+  const start = vi.fn().mockRejectedValue(new Error('spawn /bin/nope ENOENT'))
+
+  delete window.document.documentElement.dataset.hermesDesktopHost
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    terminal: {
+      attach: vi.fn(),
+      cwd: vi.fn(async () => null),
+      dispose: vi.fn(async () => true),
+      onData: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {}),
+      resize: vi.fn(async () => true),
+      start,
+      write: vi.fn(async () => true)
+    }
+  }
+  const id = createTerminal('/work')
+  render(<Harness id={id} />)
+
+  await waitFor(() => expect(emulator.output).toContain('Terminal failed to start: spawn /bin/nope ENOENT\r\n'))
+  expect(screen.getByText('closed')).toBeTruthy()
+  expect(emulator.output).not.toMatch(/Press Enter/)
+
+  act(() => emulator.input('\r'))
+  await act(async () => {})
+  expect(start).toHaveBeenCalledTimes(1)
+  expect(screen.getByText('closed')).toBeTruthy()
+})

@@ -2,6 +2,7 @@ import type { Terminal } from '@xterm/xterm'
 import type { RefObject } from 'react'
 
 import type { HermesTerminalSession } from '@/global'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 
 import { $terminals, markTerminalPersistent, removeExitedTerminal } from './terminals'
 
@@ -68,8 +69,9 @@ export interface SessionAttemptController {
 }
 
 // One shell attachment per terminal tab at a time. Each start supersedes the
-// previous attempt; an attempt that fails, disconnects or loses its persistent
-// stream arms Enter to start (or resume) the next one in the same scrollback.
+// previous attempt; an attempt that disconnects or loses its persistent stream,
+// or a browser-host start that fails, arms Enter to start (or resume) the next
+// one in the same scrollback.
 export function createSessionAttemptController(
   id: string,
   {
@@ -242,14 +244,18 @@ export function createSessionAttemptController(
 
         release()
         const expired = error && typeof error === 'object' && 'signal' in error && error.signal === 'expired'
+        const message = error instanceof Error ? error.message : String(error)
 
         if (expired) {
           resumeOnly = false
           armRetry(TERMINAL_EXIT_MESSAGES.expired)
+        } else if (isBrowserHostedDesktop()) {
+          armRetry(`Terminal failed to start: ${message}. Press Enter to retry.`)
         } else {
-          armRetry(
-            `Terminal failed to start: ${error instanceof Error ? error.message : String(error)}. Press Enter to retry.`
-          )
+          // Native Desktop spawns a local shell: a failed spawn shows its error
+          // and the tab stays closed, as on main. Retrying it fails the same way.
+          setStatus('closed')
+          term.write(`Terminal failed to start: ${message}\r\n`)
         }
       })
   }
