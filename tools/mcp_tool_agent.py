@@ -181,7 +181,7 @@ def persist_agent_tool_names(agent) -> None:
         return
     try:
         pin = {"version": tool_pin_version(), "tools": _agent_tool_defs(agent)}
-        if backend := getattr(agent, "_delegation_backend", None):
+        if isinstance(backend := getattr(agent, "_delegation_backend", None), str) and backend:
             pin["delegation_backend"] = backend  # what its delegate_task was built from: the session routes on it
         db.update_session_tool_names(session_id, pin)
     except Exception:
