@@ -166,7 +166,7 @@
   },
   "devDependencies": {
     "@babel/core": "8.0.7",
-    "@electron/rebuild": "4.2.0",
+    "@electron/rebuild": "4.2.1",
     "@playwright/test": "1.62.1",
     "@rolldown/plugin-babel": "0.2.3",
     "@testing-library/dom": "10.4.1",
