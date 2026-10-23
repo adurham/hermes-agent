@@ -543,6 +543,31 @@ def test_fs_read_text_decodes_a_file_url_once(client, tmp_path, name):
     assert "outside the named folder" not in response.text
 
 
+@pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
+def test_a_file_url_is_decoded_once_by_every_read(client, tmp_path, endpoint):
+    """A ``file:`` URL is percent-decoded once on every read, the regular-file check included.
+    ``report%252fsecret.txt`` names the file ``report%2fsecret.txt`` in the folder the URL names;
+    a second decode would read ``report/secret.txt``, a file the URL never named."""
+    folder = tmp_path / "docs"
+    (folder / "report").mkdir(parents=True)
+    (folder / "report" / "secret.txt").write_text("a file the URL never named")
+    url = f"{folder.as_uri()}/report%252fsecret.txt"
+
+    unnamed = client.get(f"/api/fs/{endpoint}", params={"path": url})
+    (folder / "report%2fsecret.txt").write_text("the file the URL names")
+    named = client.get(f"/api/fs/{endpoint}", params={"path": url})
+
+    assert unnamed.status_code == 404, unnamed.text
+    assert named.status_code == 200, named.text
+    if endpoint == "read-text":
+        body = named.json()["text"]
+    elif endpoint == "read-data-url":
+        body = base64.b64decode(named.json()["dataUrl"].split(",", 1)[1]).decode()
+    else:
+        body = named.text
+    assert body == "the file the URL names"
+
+
 @pytest.mark.parametrize("name", ["..%2fsecret.md", "%2e%2e/secret.md", "%2E%2E%2Fsecret.md"])
 def test_fs_read_text_decode_fallback_stays_in_the_named_folder(client, tmp_path, name):
     """The one-decode rescue for a doubly encoded path (issue #103425) never leaves the folder the
