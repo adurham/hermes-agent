@@ -187,7 +187,7 @@
     "cross-env": "10.1.0",
     "electron": "44.9.3",
     "electron-builder": "27.0.0-alpha.6",
-    "esbuild": "0.28.1",
+    "esbuild": "0.28.2",
     "jsdom": "29.1.1",
     "prettier": "3.9.5",
     "rcedit": "5.0.2",
