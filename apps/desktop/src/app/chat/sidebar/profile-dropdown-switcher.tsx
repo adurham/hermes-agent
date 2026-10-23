@@ -18,6 +18,7 @@ import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import {
@@ -61,10 +62,10 @@ import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-act
  * The profile picker that sits beside the gateway switcher in the statusbar
  * while the colored rail is hidden — the same choices the rail offers (this
  * gateway's profiles, every other gateway's agents in fleet mode, new / import
- * / manage, right-click open-in-new-window / set-as-default) in a dropdown that
- * reads like its neighbour. The rail keeps the gestures that need squares
- * (drag-order, hold-to-recolor); this is the plain-dropdown door for people who
- * run profiles as bots and don't want a strip of them.
+ * / manage; in the Webapp also right-click open-in-new-window / set-as-default)
+ * in a dropdown that reads like its neighbour. The rail keeps the gestures that
+ * need squares (drag-order, hold-to-recolor); this is the plain-dropdown door
+ * for people who run profiles as bots and don't want a strip of them.
  */
 export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const { t } = useI18n()
@@ -84,8 +85,11 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const { dialog: localDeviceDialog, request: requestLocalDevice } = useLocalDeviceSwitch()
 
   useFleetRoster(multipleConnections)
-  // Stands in for the rail, so it keeps the list fresh the same way.
-  useProfileRailRefreshOnActive()
+  // The Webapp always takes this dropdown in place of the rail's squares
+  // (profile-switcher.tsx), so there it keeps the list fresh the same way and
+  // carries the rail's right-click launch menu. Native Desktop's picker is main's.
+  const browserHost = isBrowserHostedDesktop()
+  useProfileRailRefreshOnActive(browserHost)
 
   // The `profile.create` hotkey bumps this request atom; the rail answers it
   // while mounted, so with the rail hidden this picker owns the dialog instead.
@@ -219,6 +223,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
                 isDefault={profile.is_default}
                 key={profile.name}
                 label={profileLabel(profile)}
+                launchMenu={browserHost}
                 name={profile.name}
               />
             ))}
@@ -239,16 +244,20 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
               key={group.connectionId}
               onSelect={switchToRest}
               slot="profile-switcher-gateway"
-              wrapRow={(row, agent, label) => (
-                <ProfileLaunchContextMenu
-                  connectionId={agent.connectionId}
-                  key={agent.profile}
-                  label={label}
-                  profile={agent.profile}
-                >
-                  {row}
-                </ProfileLaunchContextMenu>
-              )}
+              wrapRow={
+                browserHost
+                  ? (row, agent, label) => (
+                      <ProfileLaunchContextMenu
+                        connectionId={agent.connectionId}
+                        key={agent.profile}
+                        label={label}
+                        profile={agent.profile}
+                      >
+                        {row}
+                      </ProfileLaunchContextMenu>
+                    )
+                  : undefined
+              }
             />
           ))}
           <DropdownMenuSeparator />
@@ -286,26 +295,34 @@ interface ProfileItemProps {
   connectionId: null | string
   isDefault: boolean
   label: string
+  /** Wrap the row in the rail's right-click launch menu (the Webapp's picker). */
+  launchMenu: boolean
   name: string
 }
 
-function ProfileItem({ color, connectionId, isDefault, label, name }: ProfileItemProps) {
+function ProfileItem({ color, connectionId, isDefault, label, launchMenu, name }: ProfileItemProps) {
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
 
-  return (
+  const row = (
+    <DropdownMenuRadioItem
+      className="min-w-0"
+      onPointerEnter={startPrewarm}
+      onPointerLeave={cancelPrewarm}
+      onPointerMove={notePointerMove}
+      value={name}
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
+        <span className="truncate">{label}</span>
+      </span>
+    </DropdownMenuRadioItem>
+  )
+
+  return launchMenu ? (
     <ProfileLaunchContextMenu connectionId={connectionId} label={label} profile={name}>
-      <DropdownMenuRadioItem
-        className="min-w-0"
-        onPointerEnter={startPrewarm}
-        onPointerLeave={cancelPrewarm}
-        onPointerMove={notePointerMove}
-        value={name}
-      >
-        <span className="flex min-w-0 items-center gap-1.5">
-          <ProfileGlyph aria-hidden="true" color={color} isDefault={isDefault} name={name} />
-          <span className="truncate">{label}</span>
-        </span>
-      </DropdownMenuRadioItem>
+      {row}
     </ProfileLaunchContextMenu>
+  ) : (
+    row
   )
 }
