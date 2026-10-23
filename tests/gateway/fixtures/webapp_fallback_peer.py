@@ -12,6 +12,8 @@ Run as ``python webapp_fallback_peer.py '<spec json>'`` with an isolated ``HERME
   and starts listening while the gateway mounts the dashboard (Linux only);
 - ``connect_during_mount``: a client connects to the Webapp's port while the dashboard mounts;
 - ``built``: whether the Webapp bundle has its ``index.html``;
+- ``update_fails``: before the gateway starts, ``hermes update``'s Webapp step runs for this home and its
+  build fails; once the gateway serves, ``hermes webapp``'s build succeeds;
 - ``probe_host``: a Host header to send (a public hostname), or null.
 
 Writes ``receipt.json`` into ``HERMES_HOME`` (the gateway redirects stdout). No inference: the model points
@@ -87,6 +89,42 @@ def _fail_startup_once():
     uvicorn.Server.startup = startup
 
 
+def _fail_webapp_update(home, checkout):
+    """``hermes update``'s Webapp step for an install whose only home is *home*, with a build that
+    fails as a broken npm install would."""
+    import hermes_cli.webapp
+    from hermes_cli import source_build
+    from pm import plugins_state
+
+    def fail(_project_root, **_options):
+        raise hermes_cli.webapp.WebappBuildError("Browser-hosted Desktop build failed: npm ci exited 1")
+
+    plugins_state.dependency_homes = lambda: [home]
+    real, hermes_cli.webapp.prepare_webapp_renderer = hermes_cli.webapp.prepare_webapp_renderer, fail
+    try:
+        source_build._rebuild_served_webapp(checkout, lambda _stage: None)
+    except hermes_cli.webapp.WebappBuildError:
+        pass
+    else:
+        raise AssertionError("the update's failing Webapp build did not fail")
+    finally:
+        hermes_cli.webapp.prepare_webapp_renderer = real
+
+
+def _rebuild_webapp(checkout, dist):
+    """``hermes webapp``'s build, with the compiler stood in by one that writes a new bundle."""
+    import hermes_cli.webapp
+    from hermes_cli import source_build
+
+    def compile_bundle(_root, *, env, explicit):
+        (dist / "index.html").write_text(INDEX.replace("WEBAPP_BUNDLE", "WEBAPP_BUNDLE rebuilt"), encoding="utf-8")
+
+    source_build.source_product_current = lambda *_args: False
+    source_build.source_build_env = lambda *, explicit=False: {}
+    source_build.build_source_webapp = compile_bundle
+    hermes_cli.webapp.prepare_webapp_renderer(checkout, explicit=True)
+
+
 async def _native_session_list(runner, origin) -> bool:
     from websockets.asyncio.client import connect
 
@@ -156,6 +194,9 @@ async def probe(spec):
     if spec.get("built", True):
         (dist / "index.html").write_text(INDEX, encoding="utf-8")
     hermes_cli.webapp.webapp_dist_dir = lambda _root: dist  # the bundle, without a build
+    checkout = home.parent / "checkout"
+    if spec.get("update_fails"):
+        _fail_webapp_update(home, checkout)
     if spec.get("fail_after_mount"):
         _fail_startup_once()
     rival = None
@@ -232,6 +273,12 @@ async def probe(spec):
                 built = await client.get("/")
                 report["index_once_built"] = {"status": built.status_code,
                                               "is_webapp": "WEBAPP_BUNDLE" in built.text}
+            elif spec.get("update_fails"):
+                _rebuild_webapp(checkout, dist)
+                report["status_once_built"] = ask("webapp-status")
+                built = await client.get("/")
+                report["index_once_built"] = {"status": built.status_code,
+                                              "is_webapp": "WEBAPP_BUNDLE rebuilt" in built.text}
         report["token_rotated"] = (home / "webapp" / "session-token").read_text().strip() != SEEDED_TOKEN
     finally:
         await stop_gateway_api(api)

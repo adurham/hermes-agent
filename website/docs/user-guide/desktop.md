@@ -128,6 +128,8 @@ Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It 
 `dashboard.public_url` and `.env` alone, so a standalone dashboard you publish separately keeps its
 own address. A standalone profile with its own gateway needs its own `webapp.port` to serve a Webapp
 beside the default gateway's. `hermes update` rebuilds the Webapp whenever a profile has it turned on.
+If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
+`hermes webapp` rebuilds it.
 
 ### Terminal in the Webapp
 

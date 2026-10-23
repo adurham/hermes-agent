@@ -252,13 +252,23 @@ def _one_use_links_work() -> bool:
 
 #: How every missing-bundle reason starts; ``hermes webapp --status`` asks for no restart after it.
 NOT_BUILT = "The Webapp is not built"
+#: Why a bundle ``hermes update`` could not rebuild is not served (``hermes_cli.webapp.mark_webapp_stale``).
+NOT_REBUILT = (f"{NOT_BUILT} for this version of Hermes: hermes update could not rebuild it. "
+               "Run hermes webapp to rebuild it.")
+
+
+def bundle_stale_reason(dist) -> str | None:
+    """:data:`NOT_REBUILT` while the bundle in *dist* is marked out of date, else None."""
+    from hermes_cli.webapp import webapp_bundle_stale
+    return NOT_REBUILT if webapp_bundle_stale(dist) else None
 
 
 def bundle_missing_reason(dist) -> str | None:
-    """Why the Webapp cannot be served from *dist*, or None once its bundle is built. The listener
-    serves a bundle the moment it appears, so building it needs no gateway restart."""
+    """Why the Webapp cannot be served from *dist* (no bundle, or one ``hermes update`` could not
+    rebuild), or None once it is built. The listener serves a bundle the moment it appears or is
+    rebuilt, so building it needs no gateway restart."""
     if (Path(dist) / "index.html").is_file():
-        return None
+        return bundle_stale_reason(dist)
     return f"{NOT_BUILT} ({Path(dist) / 'index.html'} is missing). Run hermes webapp to build it."
 
 

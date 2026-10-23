@@ -176,6 +176,13 @@ def mount_spa(application: FastAPI):
             missing = ("The Webapp is not built. Run: hermes webapp" if webapp
                        else "Frontend not built. Run: cd web && npm run build")
             return JSONResponse({"error": missing}, status_code=404)
+        if getattr(application.state, "ui_surface", "dashboard") == "webapp":
+            # A bundle `hermes update` could not rebuild was built for the code before the update:
+            # refuse it until `hermes webapp` rebuilds it.
+            from gateway.webapp_listener import bundle_stale_reason
+            stale = bundle_stale_reason(web_dist())
+            if stale:
+                return JSONResponse({"error": stale}, status_code=503, headers=_NO_STORE)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(application.state, "auth_required", False))
         surface = getattr(application.state, "ui_surface", "dashboard")

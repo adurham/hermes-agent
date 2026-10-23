@@ -127,6 +127,47 @@ def test_renderer_build_failures_are_reported_not_raised_raw(tmp_path: Path, mon
         webapp.prepare_webapp_renderer(tmp_path)
 
 
+def test_a_build_or_a_current_bundle_clears_the_out_of_date_mark(tmp_path: Path, monkeypatch):
+    """``hermes update`` marks the bundle out of date when it cannot rebuild it, and the gateway
+    reports the Webapp unavailable while the mark is there. The next build that succeeds (``hermes
+    webapp``, Web Access Start or the next update), or that finds the bundle current, clears it.
+    Reusing the bundle with ``--skip-build`` writes nothing and leaves it marked."""
+    from gateway.webapp_listener import bundle_missing_reason
+    from hermes_cli import source_build
+
+    _workspace_tree(tmp_path)
+    dist = webapp.webapp_dist_dir(tmp_path)
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    receipt_current = False
+    monkeypatch.setattr(source_build, "source_product_current", lambda *_a: receipt_current)
+    monkeypatch.setattr(source_build, "source_build_env", lambda *, explicit=False: {})
+    monkeypatch.setattr(source_build, "build_source_webapp", lambda _root, *, env, explicit: None)
+
+    assert webapp.mark_webapp_stale(tmp_path) is True
+    assert bundle_missing_reason(dist) is not None
+    webapp.prepare_webapp_renderer(tmp_path, skip_build=True)
+    assert bundle_missing_reason(dist) is not None
+
+    webapp.prepare_webapp_renderer(tmp_path)
+    assert bundle_missing_reason(dist) is None
+
+    assert webapp.mark_webapp_stale(tmp_path) is True
+    receipt_current = True
+    webapp.prepare_webapp_renderer(tmp_path)
+    assert bundle_missing_reason(dist) is None
+
+
+def test_no_bundle_is_marked_out_of_date_before_one_is_built(tmp_path: Path):
+    """A failed rebuild with no bundle built leaves nothing to mark: the gateway already reports the
+    Webapp as not built, and the build output folder is left for the builder to create."""
+    _workspace_tree(tmp_path)
+    install_tree = sorted(tmp_path.rglob("*"))
+
+    assert webapp.mark_webapp_stale(tmp_path) is False
+    assert sorted(tmp_path.rglob("*")) == install_tree
+
+
 def test_dashboard_and_webapp_builds_share_the_workspace_lock(tmp_path: Path, monkeypatch):
     """While the Dashboard builder holds its lock, the Webapp build lock on the same checkout is taken."""
     from pm.filesystem import lock_fd
