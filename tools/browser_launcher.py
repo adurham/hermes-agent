@@ -59,6 +59,7 @@ _MACOS_PACKAGED_ONLY_FLAGS: tuple[str, ...] = ("--use-mock-keychain",)
 _DEVTOOLS_FILE = "DevToolsActivePort"
 _LAUNCH_LOG = "hermes-chromium.log"
 _MIN_FIRST_LAUNCH_TIMEOUT_S = 120
+_UNRESPONSIVE_WAIT_S = 10  # how long a live browser whose endpoint went silent (paused, swapped out) is waited for
 _POLL_INTERVAL_S = 0.1
 _STDERR_TAIL_CHARS = 1500
 
@@ -486,6 +487,35 @@ def _attach_foreign(key: str, user_data_dir: str, home_key: str, pid: int) -> Op
     return browser
 
 
+def _live_local_holder(user_data_dir: str) -> Optional[int]:
+    """Pid of the live Chromium of this environment holding ``user_data_dir`` (its ``SingletonLock`` names a live
+    process whose argv carries the dir), else None: no browser, or a stale lock a launch may take over."""
+    pid = _singleton_pid(user_data_dir)
+    return pid if pid is not None and _pid_alive(pid) and _cmdline_names_dir(pid, user_data_dir) else None
+
+
+def _attach_local(key: str, user_data_dir: str, home_key: str,
+                  timeout: Optional[float]) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
+    """Attach to this environment's live Chromium on ``user_data_dir``; ``(None, None)`` when none holds it (a
+    launch may start one). A live holder whose endpoint does not answer (paused, hung) is waited for, then
+    refused: a launch over it would only wipe its ``DevToolsActivePort`` and lose it for every later attach."""
+    attached = _attach_running(key, user_data_dir, home_key)
+    pid = _live_local_holder(user_data_dir) if attached is None else None
+    if pid is None:
+        return attached, None
+    deadline = time.monotonic() + min(_UNRESPONSIVE_WAIT_S, _launch_timeout(timeout))
+    delay = 0.25
+    while attached is None and _live_local_holder(user_data_dir) == pid:
+        if time.monotonic() >= deadline:
+            return None, (f"The browser profile {user_data_dir} is in use by Chromium pid {pid}, which is not "
+                          "responding on its DevTools endpoint (paused, hung, or started without remote debugging). "
+                          "Hermes will not start a second browser on it; try again once it responds, or stop it.")
+        time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+        delay *= 2
+        attached = _attach_running(key, user_data_dir, home_key)
+    return attached, None
+
+
 def _foreign_unreachable(user_data_dir: str) -> str:
     return (f"The browser profile {user_data_dir} is in use by a Chromium in another environment (a container or "
             "the host) that this process can neither reach nor verify, so Hermes will not start a second browser "
@@ -510,7 +540,9 @@ def _start_shared(key: str, executable: str, udd: str, home_key: str, prepare,
             if attached is None:
                 return None, _foreign_unreachable(udd)
         else:
-            attached = _attach_running(key, udd, home_key)
+            attached, refused = _attach_local(key, udd, home_key, launch.get("timeout"))
+            if refused:
+                return None, refused
         if attached is None:
             failure = prepare() if prepare is not None else None
             if failure:

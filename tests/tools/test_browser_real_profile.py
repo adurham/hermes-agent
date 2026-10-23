@@ -324,6 +324,9 @@ class TestRealProfileCdpLaunch:
         (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n", encoding="utf-8")
         chrome = subprocess.Popen([*_SLEEPER, f"--user-data-dir={tmp_path}"])  # the survivor holding the dir
         os.symlink(f"{socket.gethostname()}-{chrome.pid}", tmp_path / "SingletonLock")
+        if live_browser_id != "/devtools/browser/x":  # the crash case: the dir's browser is gone, its lock stale
+            chrome.kill()
+            chrome.wait(timeout=30)
         version = Mock()
         version.json.return_value = {"webSocketDebuggerUrl": f"ws://127.0.0.1:41000{live_browser_id}"}
         try:
