@@ -315,10 +315,14 @@ def register_control_verbs(runner, home) -> None:
         from hermes_cli.web_server_surface import private_launch
         if not private_launch(web.app.state):
             # Behind the dashboard's sign-in the page asks for it; a launch link opens only a private Webapp.
-            # With webapp.public_url set (the listener's own public URL), sign-in returns to a callback on
-            # that URL and checks a state cookie set where it started, so the browser starts there too.
+            # Sign-in returns to a callback the provider must know and checks a state cookie set where it
+            # started, so the browser starts at that callback's origin: webapp.public_url when set (the
+            # listener's own public URL), else on the LAN the address Web Access registered Nous sign-in
+            # for, else the loopback address (a password provider, or sign-in set up by hand for it).
             # Native clients keep the loopback address.
-            address = getattr(web.app.state, "listener_public_url", "") or status["url"]
+            from hermes_cli.webapp_access import registered_lan_origin
+            address = (getattr(web.app.state, "listener_public_url", "")
+                       or registered_lan_origin(home, urlsplit(status["url"]).port) or status["url"])
             return {"url": f"{address}/{query}", "private": False, "expires_in_seconds": None, "sign_in": True}
         # Where the browser's connection cannot be checked (macOS, the BSDs), the link is for the user to
         # open by hand ("private": printed, never passed to a browser launcher), and its ticket spends

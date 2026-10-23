@@ -209,6 +209,58 @@ def test_behind_the_dashboard_sign_in_the_launcher_gets_the_webapp_address(monke
     assert not getattr(state, "webapp_window_tickets", None)
 
 
+LAN = "192.168.1.20"
+
+
+def _lan_webapp(monkeypatch, tmp_path, *, registered=None, address=LAN, public_url=""):
+    """A gateway serving the Webapp on every interface (``webapp.host: 0.0.0.0``) behind the sign-in
+    gate, this machine's LAN address being *address*, after Web Access Start registered Nous sign-in
+    for the callback *registered* (None: never)."""
+    from hermes_cli import webapp_access
+
+    config = "webapp:\n  enabled: true\n  host: 0.0.0.0\n  port: 9555\n"
+    runner, _, home = _start_runtime_api(monkeypatch, tmp_path, config)
+    if registered is not None:
+        record = home / "webapp" / "sign-in-registration.json"
+        record.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        record.write_text(json.dumps({"portal": "https://portal.example", "client_id": "agent:x",
+                                      "callback": registered}) + "\n", encoding="utf-8")
+        record.chmod(0o600)
+    monkeypatch.setattr(webapp_access, "lan_address", lambda: address)
+    state = SimpleNamespace(ui_surface="webapp", auth_required=True, **(
+        {"listener_public_url": public_url} if public_url else {}))
+    runner.session_api.app = SimpleNamespace(web=SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=state)))
+    return runner
+
+
+def test_on_the_lan_the_launcher_opens_the_address_web_access_registered_for_sign_in(monkeypatch, tmp_path):
+    """Nous sign-in returns to the callback Web Access Start registered with the Portal, the LAN
+    address's. Opened at the loopback address, sign-in would send a callback the Portal never saw,
+    so the launcher opens the registered address."""
+    runner = _lan_webapp(monkeypatch, tmp_path, registered=f"http://{LAN}:9555/auth/callback")
+    result = _ask(runner, "webapp-launch", params={"profile": "work"})["result"]
+    assert result == {"url": f"http://{LAN}:9555/?profile=work", "private": False,
+                      "expires_in_seconds": None, "sign_in": True}
+
+
+@pytest.mark.parametrize(("registered", "address"), [
+    (None, LAN),  # set up by hand: a password provider, or a client registered for this address
+    (f"http://{LAN}:9120/auth/callback", LAN),  # registered before webapp.port changed
+    (f"http://{LAN}:9555/auth/callback", "192.168.1.77"),  # this machine's LAN address changed since
+    ("https://webapp.example.net/auth/callback", LAN),  # registered for a public URL no longer set
+])
+def test_on_the_lan_without_a_current_registration_the_launcher_opens_the_loopback_address(
+        monkeypatch, tmp_path, registered, address):
+    runner = _lan_webapp(monkeypatch, tmp_path, registered=registered, address=address)
+    assert _ask(runner, "webapp-launch")["result"]["url"] == "http://127.0.0.1:9555/"
+
+
+def test_the_webapps_own_public_url_wins_over_a_lan_registration(monkeypatch, tmp_path):
+    runner = _lan_webapp(monkeypatch, tmp_path, registered=f"http://{LAN}:9555/auth/callback",
+                         public_url="https://webapp.example.net")
+    assert _ask(runner, "webapp-launch")["result"]["url"] == "https://webapp.example.net/"
+
+
 @pytest.mark.parametrize(("public_url", "params", "opened"), [
     ("https://webapp.example.net", {}, "https://webapp.example.net/"),
     ("https://example.net:8443/hermes", {"profile": "work"}, "https://example.net:8443/hermes/?profile=work"),

@@ -95,6 +95,23 @@ def _registered(record: dict) -> bool:
         return False
 
 
+def registered_lan_origin(home: Path, port: int) -> Optional[str]:
+    """``http://<LAN address>:<port>`` when Web Access last registered Nous sign-in for *home*'s
+    Webapp on the LAN at that address and *port*, and the address is still this machine's; else None.
+    Sign-in returns only to the callback the Portal has, so ``hermes webapp`` opens this address."""
+    try:
+        record = json.loads((Path(home) / _REGISTRATION_PATH).read_text(encoding="utf-8-sig"))
+        parts = urlsplit(record["callback"])
+        recorded_port = parts.port
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if (parts.scheme, parts.path, parts.query, parts.fragment) != ("http", "/auth/callback", "", ""):
+        return None
+    if parts.username is not None or recorded_port != port or parts.hostname != lan_address():
+        return None
+    return f"http://{parts.hostname}:{port}"
+
+
 def _register_nous_sign_in(callback_url: str) -> None:
     """Register (or update in place) this home's portal client with *callback_url*, as
     ``hermes dashboard register --redirect-uri`` does.
