@@ -702,6 +702,11 @@ def auth_status_command(args) -> None:
         value = status.get(key)
         if value:
             print(f"  {key}: {value}")
+    if provider == "nous":
+        from hermes_cli.guest_handoff import drain, handoff_status, status_lines
+        drain()   # a move left retrying (or failed transiently by an older build) gets its next try now
+        for line in status_lines(handoff_status()):
+            print(f"  {line}")
 
 
 def auth_logout_command(args) -> None:

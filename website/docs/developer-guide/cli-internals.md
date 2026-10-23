@@ -141,6 +141,43 @@ promotion poller are renderers over it; a surface that needs the cancel check an
 atomic passes `persist_guard`. The desktop's plain "connect another Nous account" device-code login
 is a separate path (`_nous_plain_poller`) and must stay one.
 
+### Guest handoff after a sign-in
+
+When any writer saves a Nous account over a free-tier identity, `hermes_cli/guest_handoff.py` hands
+that identity's connected apps to the account: `POST /api/anonymous/claim {"token": "<anon_...>"}`
+with the account's own Bearer token. Nothing asks the user first; the result is shown afterwards
+(`hermes auth status nous`, `guest_handoff.handoff_status()` for the desktop). Sign-in code does not
+call it:
+
+- `note_replacement` runs at the two lowest write seams (`auth._store_provider_state` and
+  `auth_nous._write_shared_nous_state`) under the caller's auth-store locks and only writes a pending
+  record. Records live in `guest_handoff.json` beside the shared Nous store, keyed by a hash of the
+  `anon_` credential and bound to the destination account, so profiles sharing one free-tier
+  identity share one record and one claim.
+- `drain` runs the claim outside every lock, bounded to about 10 s (each record, lock wait, token
+  read and request counts against the budget): after a shared-store write, when a
+  `guest_handoff.deferred()` block exits (a surface that saves under its own lock, such as the desktop
+  poller, wraps the save in it), and after a free-tier reconcile. It only moves apps; config
+  completion (`settle_after_upgrade`) stays with the sign-in that saved the account.
+- Retries left by any process are finished by a retry worker that every long-lived Nous process
+  starts (`start_nous_auth_keepalive` starts it, guest or not). Each tick runs every due record
+  under its owning profile's home and secrets, so a named profile's move retries from a process
+  launched as another profile.
+- Every attempt is reserved in one locked read-modify-write that checks the record is still due,
+  inside its retry window, and bound to the account whose Bearer is about to be sent (the token's
+  `sub` must equal the record's destination). Apps never go to any other account.
+
+Answers: `claimed` records what moved (and refreshes the account token only when
+`cohort_carried`; an answer without `connectors` reads as unknown, never "nothing moved");
+`unknown_token` is Gone, read as "probably moved" after an earlier attempt (a lost success);
+`already_retired` is Gone too; a 401 refreshes the account token once. Only codes no later attempt
+can change are final (`client_not_allowed`, `account_locked`, `invalid_request`). Every other refusal,
+unknown codes included, and every transport failure retries with backoff (Retry-After honoured), the
+slowest rung repeating, until 13 days after the record was made: the service reaps an idle free-tier
+identity, apps included, after 14. A record an older build failed on a transient code re-arms on the
+next run (a sign-in, `hermes auth status`, `hermes auth upgrade`, the retry worker). A Claimed record
+is never reopened, and user copy never shows a server code.
+
 ## Process identity: never infer it from argv substrings
 
 The bug class behind ~10 fleet-update issues (#90778, #87594, #78089, #76129, #91964, ...):
