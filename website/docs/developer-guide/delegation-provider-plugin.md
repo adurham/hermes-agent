@@ -168,14 +168,15 @@ A plugin command that edits model routes can reuse the interactive model picker 
 `hermes_cli.auth_model_picker.prompt_model_selection(model_ids, current_model="", title="Select the model for this route:")`
 returns the chosen model id, or `None` when cancelled.
 
-`session_key` is the `session_key` a plugin command handler receives. `delegate_task` reads
-`delegation.backend` at every call, but its schema (your parameters) is part of the cached prompt, so a switch
-reaches a running session's tool list only from its next session (`/new`). `apply_now=True` (what
-`/delegation <backend> --now` passes) rebuilds that session's tools at its next turn instead, breaking the prompt
-cache once by the user's choice, the same opt-in as `/skills install --now`. Until one of those happens the model
-can still send the previous backend's parameters, so core refuses each task carrying a parameter the saved backend
-does not declare (fail closed per task, like any other refusal) instead of dropping it and running the task on the
-new backend's default route:
+`session_key` is the `session_key` a plugin command handler receives. A session routes on the backend its
+`delegate_task` schema (your parameters) was built from: core captures it with the session's tools and pins it
+with them to the session row, so a fresh agent continuing the session (gateway, `--resume`) restores both. The
+schema is part of the cached prompt, so a save, or a hand edit of `delegation.backend`, changes nothing in a running
+session and applies from its next session (`/new`). `apply_now=True` (what `/delegation <backend> --now` passes)
+rebuilds that session's tools at its next turn instead, and routing moves with them: one prompt-cache break by the
+user's choice, the same opt-in as `/skills install --now`. Context compression rebuilds the tools anyway and picks up
+the saved backend. A task carrying a parameter its session's backend does not declare (a model inventing one) is
+refused alone, never dropped and run on the default route:
 
 ```text
 Task 0: the delegation backend is 'profile_routes', which does not take 'option' (declared by 'model_map'), so

@@ -209,9 +209,9 @@ def test_a_backend_route_without_its_own_chain_inherits_delegation_fallback_prov
 
 
 def test_a_saved_switch_refuses_the_previous_backends_parameter_and_names_the_fix(tmp_path, monkeypatch, recorded):
-    """``/delegation <backend>`` saves config.yaml and routing follows it at once, while a running session's
-    schema (cached prompt) still offers the previous backend's parameters: a task sending one is refused alone,
-    naming the backend, the parameter and the fix; it never runs on the new backend's default route."""
+    """``/delegation <backend>`` saves config.yaml, and a parent with no tools of its own routes on it. A task
+    sending a parameter that backend does not declare is refused alone, naming the backend, the parameter and the
+    fix; it never runs on the backend's default route."""
     from agent.delegation_provider import DelegationProvider
     from agent.delegation_registry import _registry
 

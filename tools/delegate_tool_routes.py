@@ -266,9 +266,9 @@ def _check_backend_effort(index: int, route: Mapping[str, Any], config: Mapping[
 
 
 def _undeclared_error(provider: DelegationProvider, index: int, names: list[str], config: Mapping[str, Any]) -> str:
-    """Why a task carrying parameters the saved backend does not declare is refused. The schema is cached prompt,
-    so after a ``/delegation`` switch the session's tool list still offers the previous backend's parameters until
-    ``/new`` or ``/delegation <backend> --now``; dropping them would run the task on this backend's default route."""
+    """Why a task carrying parameters the session's backend does not declare is refused (a model inventing them, or
+    a session whose tools came from another build than its backend); dropping them would run the task on this
+    backend's default route. ``/delegation <backend> --now`` or ``/new`` rebuilds the tools and the backend together."""
     from agent.delegation_registry import _registry
     active = provider.name
     listed = ", ".join(f"'{name}'" for name in names)
@@ -308,10 +308,13 @@ def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]]
 
 def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, Any], parent_agent: Any,
                         ) -> tuple[list[TaskRoute], Optional[str]]:
-    """One :class:`TaskRoute` per task from ``delegation.backend``, or ``([], error)`` when that backend cannot
-    run (fails closed, never another backend). A task the backend cannot route gets a route with ``error`` set;
-    its siblings are unaffected. Identical routes resolve credentials once per call (the default backend
-    resolves exactly once)."""
+    """One :class:`TaskRoute` per task from the backend the session's ``delegate_task`` was built from (else
+    ``delegation.backend``), or ``([], error)`` when that backend cannot run (fails closed, never another backend).
+    A task the backend cannot route gets a route with ``error`` set; its siblings are unaffected. Identical routes
+    resolve credentials once per call (the default backend resolves exactly once)."""
+    from agent.delegation_backends import pinned_backend
+    if pinned := pinned_backend(parent_agent):
+        config = {**config, "backend": pinned}
     try:
         provider = _active_provider(config)
     except DelegationRouteError as exc:

@@ -1,11 +1,12 @@
 """Which delegation backend Hermes uses: the public API behind a ``/delegation`` command.
 
-``delegation.backend`` in config.yaml is the one choice; ``delegate_task`` reads it at every call. The
-``delegate_task`` schema (a backend's per-task parameters) is part of the cached prompt, so a switch reaches a
-session's tool list from its next session (``/new``). ``apply_now`` opts into rebuilding the calling session's
-tools at its next turn instead: one prompt-cache break, the rule every slash command that changes prompt state
-follows (``--now``). Until then a task carrying parameters the saved backend does not declare is refused
-(``tools/delegate_tool_routes.py``), never run on the new backend's default route.
+``delegation.backend`` in config.yaml is the saved choice. A session routes on the backend its ``delegate_task``
+schema was built from (``agent._delegation_backend``, captured with its tools and pinned with them to the session
+row), because that schema (a backend's per-task parameters) is cached prompt: a save, or a config.yaml edit,
+changes nothing in a running chat and applies from its next session (``/new``). ``apply_now`` opts into
+rebuilding the calling session's tools at its next turn instead, so routing and schema switch together there:
+one prompt-cache break, the rule every slash command that changes prompt state follows (``--now``). A task
+carrying parameters its session's backend does not declare is still refused (``tools/delegate_tool_routes.py``).
 
 Session keys are the ``session_key`` a plugin command handler receives: the gateway/TUI route key, or the
 session id on the classic in-process CLI. A turn resolves the same key from its session context, else from the
@@ -18,7 +19,7 @@ import threading
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from agent.delegation_registry import DEFAULT_BACKEND, _registry, backend_status
+from agent.delegation_registry import DEFAULT_BACKEND, _registry, backend_status, configured_backend
 from agent.provider_registry import lower_key
 
 _rebuild_requests: set[str] = set()
@@ -49,11 +50,36 @@ def list_backends() -> list[BackendInfo]:
     return [_info(name) for name in names]
 
 
+def saved_backend() -> str:
+    """``delegation.backend`` as config.yaml has it now: what a tool build reads."""
+    from tools.delegate_tool_config import _load_config
+    return configured_backend(_load_config())
+
+
+def _delegate_def(tools: Any) -> Any:
+    return next((t for t in tools or () if isinstance(t, dict)
+                 and (t.get("function") or {}).get("name") == "delegate_task"), None)
+
+
+def adopt_built_backend(agent: Any, defs: Any, backend: str) -> None:
+    """Record ``backend`` as the session's when the agent's ``delegate_task`` is the one ``defs`` carries (built
+    from ``backend``, or pinned with it); a kept older definition keeps the backend it was built from."""
+    if _delegate_def(getattr(agent, "tools", None)) == _delegate_def(defs):
+        agent._delegation_backend = backend
+
+
+def pinned_backend(agent: Any) -> str:
+    """The backend ``agent``'s ``delegate_task`` was built from; ``""`` for no agent (or one never built), whose
+    tasks route on config.yaml's."""
+    pinned = getattr(agent, "_delegation_backend", None)
+    return pinned if isinstance(pinned, str) else ""
+
+
 def set_global_backend(name: str, *, session_key: str = "", apply_now: bool = False) -> None:
     """Persist ``delegation.backend`` to the active profile's config.yaml (raw user config, never merged
-    defaults). ``apply_now`` also rebuilds ``session_key``'s tool list at that session's next turn, so its
-    ``delegate_task`` offers the new backend's parameters there (an opt-in prompt-cache break); otherwise a
-    session's tools pick the switch up from ``/new``. Raises ``PermissionError`` on a package-manager-managed
+    defaults). Running sessions keep routing on the backend their tools were built from; ``apply_now`` rebuilds
+    ``session_key``'s tools at that session's next turn, so it routes on and offers the new backend's parameters
+    from there (an opt-in prompt-cache break); otherwise sessions pick the switch up from ``/new``. Raises ``PermissionError`` on a package-manager-managed
     install (its config.yaml is not ours to write) and ``ValueError`` (with the reason) for a backend that cannot
     run or an ``apply_now`` without a session, before anything is written."""
     from hermes_cli.config import (
@@ -85,9 +111,9 @@ def _current_session_key(agent: Any) -> str:
 
 
 def apply_requested_tool_rebuild(agent: Any) -> bool:
-    """Turn start, after the session's tools are restored: rebuild ``agent.tools`` from the registry if
-    ``set_global_backend(apply_now=True)`` asked for this session, and pin the result to the session row so a
-    later fresh agent restores it. True when the tool list changed. Forks (background review, ``/btw``) and
+    """Turn start, after the session's tools are restored: rebuild ``agent.tools`` (and with it the backend the
+    session routes on) if ``set_global_backend(apply_now=True)`` asked for this session, and pin both to the
+    session row so a later fresh agent restores them. True when the tool list changed. Forks (background review, ``/btw``) and
     subagents share the session's key but never take its request."""
     if getattr(agent, "_turn_origin", None) or getattr(agent, "_delegate_depth", 0):
         return False
@@ -99,10 +125,10 @@ def apply_requested_tool_rebuild(agent: Any) -> bool:
     from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
     from tools.mcp_tool_agent import persist_agent_tool_names, refresh_agent_mcp_tools
     before = getattr(agent, "tools", None)
-    refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)
+    refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)  # adopts the saved backend
+    persist_agent_tool_names(agent)  # also when only the backend moved (two backends, one schema)
     if agent.tools is before:
         return False
-    persist_agent_tool_names(agent)
     record_cache_break(agent, "toolset_change")
     return True
 
