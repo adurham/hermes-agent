@@ -2655,7 +2655,7 @@ requires-dist = [
     { name = "mautrix", extras = ["encryption"], marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.21.1" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==2.3.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==2.3.0" },
-    { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.0.13.4" },
+    { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.1.1" },
     { name = "misaki", extras = ["en"], marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'kittentts') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'kittentts') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'kittentts')", git = "https://github.com/NousResearch/misaki.git?rev=f03fd2be7346952a83d3d4845c217fc7667f322d" },
     { name = "mistralai", marker = "extra == 'mistral'", specifier = "==2.10.1" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.5.5" },
@@ -3495,22 +3495,23 @@ wheels = [
 
 [[package]]
 name = "microsoft-teams-api"
-version = "2.0.16"
+version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "microsoft-teams-cards" },
     { name = "microsoft-teams-common" },
+    { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8a/ad/cfb38cbf20d596e47e6613fade663756f3e5e87f9d9f39a61a7a7b2cda3c/microsoft_teams_api-2.0.16.tar.gz", hash = "sha256:3f8a9cffda095ca48f58e9c28790a748780a723b2159c4fd56c31e837fc8cfc0", size = 55868, upload-time = "2026-08-19T20:51:16.292Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/ab/cd8e78d3aa2bde791493aae7477ac2be92a44284d52838c91784f6e94cd4/microsoft_teams_api-2.1.1.tar.gz", hash = "sha256:b477006fc070d5315edd2042736c78cf52f5008167d9662804b7a0c5f07ac780", size = 64496, upload-time = "2026-10-16T22:45:57.842Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/62/9b6c7ec0ce7e458abde158293864f3bfb5d1fae17ce9246dd697d7906286/microsoft_teams_api-2.0.16-py3-none-any.whl", hash = "sha256:96b3a55420aadaaeed6d33a6be2c406bdb0cd4b8246b56de587ba3ed322cff35", size = 159878, upload-time = "2026-08-19T20:51:22.132Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/dc/94accf394b6c74f343d415ee359b9aa846943e470963bbf5844a757773e0/microsoft_teams_api-2.1.1-py3-none-any.whl", hash = "sha256:795602d6abc97e4dca334f2478fc0b07968fcc78f3aa5718e2d42fdd8f94dad6", size = 174477, upload-time = "2026-10-16T22:46:05.193Z" },
 ]
 
 [[package]]
 name = "microsoft-teams-apps"
-version = "2.0.13.4"
+version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
@@ -3519,14 +3520,15 @@ dependencies = [
     { name = "microsoft-teams-api" },
     { name = "microsoft-teams-common" },
     { name = "msal" },
+    { name = "opentelemetry-api" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-dotenv" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/0a/733f05f8decee2da6e53ee38757e742520ae56363bc2d006b309cdbf9cfe/microsoft_teams_apps-2.0.13.4.tar.gz", hash = "sha256:d0b12e5e82024cffd3739b329b098b98a08803753eb5484bf96dbb6ce1237e04", size = 91366, upload-time = "2026-06-08T19:24:04.591Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/fc/d045e348f63a1abc6496c2cfd0ce4c9db309c91c945909a14b5d5dfde812/microsoft_teams_apps-2.1.1.tar.gz", hash = "sha256:d0ba52d41cdc44cc3dbe5ac549ee0a9dc84392884a69e7f4e29c2e0e688f57b3", size = 228707, upload-time = "2026-10-16T22:45:59.073Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3a/d4/3c4205258642035d160c09f598a302260776dcb6d5bdf659eea7c6066d5e/microsoft_teams_apps-2.0.13.4-py3-none-any.whl", hash = "sha256:db16f714ec658b592929c6386a29792e90bb73840732f8ae65a198cda1fea96c", size = 71406, upload-time = "2026-06-08T19:24:15.034Z" },
+    { url = "https://files.pythonhosted.org/packages/6d/65/da0ff6ade74ebba93e2a311b25b9249e0e799a8ebaa677485510d0c6d519/microsoft_teams_apps-2.1.1-py3-none-any.whl", hash = "sha256:91c1932bb22a88619ef7144c45e7023e09e05acc3c358c81d21b42f90792faeb", size = 146158, upload-time = "2026-10-16T22:46:06.442Z" },
 ]
 
 [[package]]
