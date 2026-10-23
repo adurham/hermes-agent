@@ -250,3 +250,30 @@ def test_a_manager_unlocked_on_a_tool_worker_is_released_with_its_session():
         assert not unlock.is_unlocked('test-backend-w')
     finally:
         unlock.lock('test-backend-w')
+
+
+def test_deleting_a_chat_locks_the_managers_it_unlocked(monkeypatch):
+    """Delete, the owner-run prune and onboarding cleanup retire the live session without the
+    viewer-close settle, so retiring it locks what the chat unlocked. Other chats keep theirs."""
+    from agent.vault_backends import unlock
+    from gateway import session_local_mcp, session_policy, session_worker_construct
+    from gateway.session_mutations import retire_live_sessions
+    from gateway.session_vault_prompt import vault_prompt_scope
+    from tools import async_delegation
+    for module, name in ((session_policy, 'release_launch_secrets'), (session_policy, 'release_session_workspaces'),
+                         (session_local_mcp, 'release_editor_mcp'),
+                         (session_worker_construct, 'release_session_prefill'), (async_delegation, 'allow_for_session')):
+        monkeypatch.setattr(module, name, lambda *args, **kwargs: None)
+    authority = SimpleNamespace(runner=SimpleNamespace(), profile_id='default', sessions={})
+    events, _ = _events()
+    try:
+        with vault_prompt_scope(_turn(events, session_id='s-del'), SimpleNamespace()):
+            assert unlock.store_session_token('test-backend-d', 'token-d')
+        with vault_prompt_scope(_turn(events, session_id='s-keep'), SimpleNamespace()):
+            assert unlock.store_session_token('test-backend-k', 'token-k')
+        retire_live_sessions(authority, ['s-del'])
+        assert not unlock.is_unlocked('test-backend-d')
+        assert unlock.is_unlocked('test-backend-k')
+    finally:
+        unlock.lock('test-backend-d')
+        unlock.lock('test-backend-k')
