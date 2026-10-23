@@ -3,7 +3,8 @@
 ``POST /api/chat/file-upload`` publishes a picked file at ``<profile home>/uploads/web-<hex>-<name>``
 and returns a ``staged_upload`` descriptor: that path, the profile home and this installation's id.
 The gateway's ``file.attach`` trusts the descriptor only after resolving it back to exactly that
-layout, so the writer and the reader of the layout live here together.
+layout, so the writer and the reader of the layout live here together. The file routes read a staged
+file back from this host by the same layout when the profile's workspace is an SSH machine.
 
 A named profile that is missing or deleted is refused on both sides by the rule every named-home
 write follows (``hermes_constants.assert_named_profile_home_live`` / ``mkdir_under_hermes_home``):
@@ -212,3 +213,13 @@ def resolve_staged_upload(home: Path, raw_path: str) -> Path:
     if source.stat().st_size > WEBAPP_ATTACHMENT_MAX_BYTES:
         raise ValueError("staged upload exceeds the browser attachment size limit")
     return source
+
+
+def is_staged_upload(home: Path, target: Path) -> bool:
+    """Whether the resolved *target* is a file the upload route staged for *home*: a regular file
+    directly in its uploads folder, named with the staged prefix."""
+    try:
+        uploads = (home / _UPLOADS_DIR).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return target.parent == uploads and target.name.startswith(_STAGED_PREFIX) and target.is_file()

@@ -28,7 +28,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-from hermes_cli.staged_uploads import ensure_profile_subdir, removed_on_failure, resolve_upload_home
+from hermes_cli.staged_uploads import (
+    ensure_profile_subdir, is_staged_upload, removed_on_failure, resolve_upload_home,
+)
 from hermes_cli.web_deps import late
 from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
 from hermes_cli.web_server_files import (
@@ -317,28 +319,35 @@ def _chat_image_dir(home: Path) -> Path:
     return get_hermes_dir("cache/images", "image_cache", home=home)
 
 
-def _is_host_image(path: str, profile: Optional[str]) -> bool:
-    """Whether *path* is in the profile's image cache, which lives on this host even when the
-    workspace is an SSH machine: a browser paste is saved there, then read back to be sent."""
+def _is_host_file(path: str, profile: Optional[str]) -> bool:
+    """Whether *path* is a file the profile keeps on this host even when its workspace is an SSH
+    machine, read back to be previewed and sent: a browser paste in its image cache, or a file the
+    browser's picker staged in its uploads folder. Only a file directly in one of those two folders
+    counts, after resolving symlinks and ``..``, so an SSH profile reads no other host file here."""
+    if not Path(path).is_absolute():
+        return False
     try:
         target = Path(path).resolve(strict=True)
     except (OSError, RuntimeError):
         return False  # not on this host: the workspace's to answer
     with _profile_scope(profile):
-        cache = _chat_image_dir(get_hermes_home())
+        home = get_hermes_home()
+        cache = _chat_image_dir(home)
     try:
-        return target.parent == cache.resolve(strict=True)
+        if target.parent == cache.resolve(strict=True):
+            return True
     except (OSError, RuntimeError):
-        return False
+        pass
+    return is_staged_upload(home, target)
 
 
 def _remote_fs_backend(path: str, profile: Optional[str]):
-    """The SSH workspace reader for *path*, or None when this host owns it. The host image cache is
-    checked before the SSH machine is dialed, so a paste reads back while that machine is down; other
-    paths answer 503 until it is back."""
+    """The SSH workspace reader for *path*, or None when this host owns it. The host's pastes and
+    staged uploads are checked before the SSH machine is dialed, so they read back while that
+    machine is down; other paths answer 503 until it is back."""
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
 
-    if _is_host_image(path, profile):
+    if _is_host_file(path, profile):
         return None
     try:
         return _fs_backend(profile)

@@ -1,4 +1,5 @@
 import base64
+import os
 import urllib.parse
 import json
 from contextlib import nullcontext
@@ -663,6 +664,95 @@ def test_a_browser_paste_reads_back_while_the_ssh_machine_is_unreachable(client,
     assert (saved.status_code, saved.content) == (200, base64.b64decode("iVBORw0KGgo="))
     for response in (remote_only, remote_download):
         assert (response.status_code, response.json()) == (503, {"detail": "SSH workspace is unavailable"})
+
+
+class _NotOnTheSshMachine:
+    """An SSH workspace that has none of the files a test asks it for; it records each ask."""
+
+    def __init__(self):
+        self.asked = []
+
+    def read_bytes(self, path, *, max_bytes, read_limit=None):
+        self.asked.append(path)
+        raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+    def inspect_file(self, path):
+        self.asked.append(path)
+        raise ssh_workspace_fs.SshWorkspaceFsError("ENOENT", f"{path} is not on the SSH machine")
+
+
+def _ssh_profiles(tmp_path, monkeypatch):
+    """A default home and a named profile ``remote-dev``, both with an SSH machine as workspace."""
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "remote-dev"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    workspace = _NotOnTheSshMachine()
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: workspace)
+    return profile, workspace
+
+
+def test_a_picked_image_reads_back_from_the_host_for_an_ssh_profile(client, monkeypatch, tmp_path):
+    """The browser's file picker stages a file in the profile's uploads folder on this host, even
+    when its workspace is an SSH machine. Previewing and sending a picked image read it back through
+    /api/fs/read-data-url (saving it, through /api/fs/download), so a file the upload route staged
+    for that profile is read on this host. Every other path still goes to the SSH machine: a staged
+    file of another profile, a file in the uploads folder the upload route did not name, one in a
+    folder below it, and a path that leaves the folder through ``..``."""
+    profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    image = base64.b64decode("iVBORw0KGgo=")
+
+    def pick(query):
+        staged = client.post("/api/chat/file-upload", params=query,
+                             files={"file": ("shot.png", image, "image/png")})
+        assert staged.status_code == 200, staged.text
+        return Path(staged.json()["path"])
+
+    remote_dev = {"profile": "remote-dev"}
+    staged, default_staged = pick(remote_dev), pick({})
+    unnamed = staged.parent / "shot.png"
+    nested = staged.parent / "below" / "web-shot.png"
+    nested.parent.mkdir()
+    (profile / "web-shot.png").write_bytes(image)
+    left_through_dots = f"{staged.parent}{os.sep}..{os.sep}web-shot.png"
+    for path in (unnamed, nested):
+        path.write_bytes(image)
+
+    for query, path in ((remote_dev, staged), ({}, default_staged)):
+        read_back = client.get("/api/fs/read-data-url", params={"path": str(path), **query})
+        saved = client.get("/api/fs/download", params={"path": str(path), **query})
+        assert read_back.status_code == 200, read_back.text
+        assert read_back.json()["dataUrl"] == "data:image/png;base64,iVBORw0KGgo="
+        assert (saved.status_code, saved.content) == (200, image)
+    assert workspace.asked == []
+
+    not_host_owned = [str(default_staged), str(unnamed), str(nested), left_through_dots]
+    for path in not_host_owned:
+        for route in ("read-data-url", "download"):
+            response = client.get(f"/api/fs/{route}", params={"path": path, **remote_dev})
+            assert response.status_code == 404, (route, path, response.text)
+    assert workspace.asked == [path for path in not_host_owned for _route in range(2)]
+
+
+@pytest.mark.platforms("posix")
+def test_a_link_staged_in_the_uploads_folder_is_not_read_from_the_host(client, monkeypatch, tmp_path):
+    """A staged name that links to another host file resolves outside the uploads folder, so an
+    SSH profile's read of it goes to the SSH machine and never returns the host file."""
+    profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    host_file = tmp_path / "host-only.png"
+    host_file.write_bytes(b"host only")
+    uploads = profile / "uploads"
+    uploads.mkdir(mode=0o700)
+    link = uploads / "web-0123456789abcdef-shot.png"
+    link.symlink_to(host_file)
+
+    response = client.get("/api/fs/read-data-url", params={"path": str(link), "profile": "remote-dev"})
+
+    assert response.status_code == 404, response.text
+    assert workspace.asked == [str(link)]
 
 
 @pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
