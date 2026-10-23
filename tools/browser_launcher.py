@@ -329,14 +329,19 @@ def _foreign_holder(user_data_dir: str) -> Optional[int]:
 
 
 def _foreign_record_names(user_data_dir: str, pid: int) -> bool:
-    """A launch record from another PID namespace names ``pid`` as shared profile ``user_data_dir``'s browser."""
+    """A launch record from another PID namespace names ``pid`` as shared profile ``user_data_dir``'s browser: the one
+    serving the profile's DevTools endpoint now, or one not yet up there (its record has no endpoint). An earlier
+    launch there that reached another endpoint is not that browser, whatever pid number it had."""
     from tools.browser_launcher_holders import same_namespace
     state = _shared_state_dir(user_data_dir)
     if state is None:
         return False
+    found = _read_devtools_file(user_data_dir)
     for name in _record_names(state, user_data_dir, pid):
         record = _load_record(state / name)
-        if record is not None and record.get("pid") == pid and not same_namespace(record):
+        if (record is not None and record.get("pid") == pid and not same_namespace(record)
+                and _same_profile(record.get("user_data_dir"), user_data_dir)
+                and record.get("devtools") in (None, found and found[1])):
             return True
     return False
 
@@ -439,23 +444,27 @@ def _attach_running(key: str, user_data_dir: str, home_key: str) -> Optional[Lau
     records = _state_dir(browser)
     if records is not None:
         from tools import browser_launcher_holders as holders
-        browser.record_name = _launch_record_name(records, browser)
+        _bind_launch_record(records, browser)
         _adopt_record(browser)
         holders.write_lease(_record_path(browser), browser)  # its launcher's exit must not stop it under us
     return browser
 
 
-def _launch_record_name(records: Path, browser: LaunchedBrowser) -> Optional[str]:
-    """The launch record already naming ``browser`` in ``records``, written in ANY PID namespace: an attacher
-    leases the browser under its launcher's record, or a launcher in another namespace (a container gateway a
-    host CLI attached to) would miss the lease and stop the browser under it. This namespace's record wins
-    over another's on the same pid number; None when there is no record (a browser a human started)."""
-    from tools.browser_launcher_holders import ns_tag
-    names = _record_names(records, browser.user_data_dir, browser.pid)
-    own = f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}{ns_tag()}.json"
-    if browser.foreign:  # its pid number is another namespace's: a record of ours on that number is another browser
-        return next((name for name in names if name != own), None)
-    return own if own in names else next(iter(names), None)
+def _bind_launch_record(records: Path, browser: LaunchedBrowser) -> None:
+    """Lease ``browser`` under the launch record that describes THIS launch of it (:func:`_record_is`), written in
+    ANY PID namespace: its launcher (a container gateway a host CLI attached to) finds its holders only there.
+    Records of earlier containers and boots are kept, so the pid number alone can name another browser's record.
+    This namespace's record wins; with none (a browser a human started) the lease goes under this namespace's
+    name. A browser of another environment takes its record's start time: its full identity from then on."""
+    own = _record_name(browser)
+    names = sorted(_record_names(records, browser.user_data_dir, browser.pid), key=lambda name: name != own)
+    for name in names:
+        record = _load_record(records / name)
+        if record is not None and _record_is(record, browser):
+            browser.record_name = name
+            if browser.foreign:
+                browser.start_time = record.get("start_time")
+            return
 
 
 def _attach_foreign(key: str, user_data_dir: str, home_key: str, pid: int) -> Optional[LaunchedBrowser]:
@@ -472,7 +481,7 @@ def _attach_foreign(key: str, user_data_dir: str, home_key: str, pid: int) -> Op
     records = _state_dir(browser)
     if records is not None:
         from tools import browser_launcher_holders as holders
-        browser.record_name = _launch_record_name(records, browser)
+        _bind_launch_record(records, browser)
         holders.write_lease(_record_path(browser), browser)  # its launcher's exit must not stop it under us
     return browser
 
@@ -593,6 +602,7 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
         return None, err
     browser = _make_browser(key, found[0], found[1], pid=proc.pid, start_time=start_time, user_data_dir=udd,
                             owned=True, ephemeral=ephemeral, home_key=home_key)
+    _write_record(browser)  # now with its DevTools browser id: how another environment tells this launch apart
     with _lock:
         _launching.pop(proc.pid, None)
         _browsers[key] = browser
@@ -660,8 +670,16 @@ def _heir_key(browser: LaunchedBrowser) -> Optional[str]:
         return None
     with _lock:
         return next((k for k, b in _browsers.items() if b is not browser and not b.ephemeral
-                     and b.foreign == browser.foreign and b.pid == browser.pid
-                     and b.start_time == browser.start_time), None)
+                     and _same_browser(b, browser)), None)
+
+
+def _same_browser(a: LaunchedBrowser, b: LaunchedBrowser) -> bool:
+    """One launch: same profile (realpath), pid, start time and launch record (whose name carries the PID namespace
+    and boot its pid belongs to); a browser of another environment also by the DevTools browser id it serves (two
+    containers can give two browsers one pid number, neither with a start time readable here)."""
+    return (a.foreign == b.foreign and a.pid == b.pid and a.start_time == b.start_time
+            and _record_name(a) == _record_name(b) and _same_profile(a.user_data_dir, b.user_data_dir)
+            and (not a.foreign or a.cdp_url == b.cdp_url))
 
 
 def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> None:
@@ -746,7 +764,7 @@ def _last_holder_out(record: Path, browser: LaunchedBrowser) -> bool:
         return False
     others = holders.other_live_holders(record, browser.start_time)
     data = _load_record(record) if record.exists() else None
-    if data is not None and data.get("start_time") != browser.start_time:
+    if data is not None and not _record_is(data, browser):
         data = None  # an earlier browser on a recycled pid
     held_elsewhere = data is not None and not holders.held_here(data, "owner_pid") and _owner_alive(data)
     heir = holders.successor(others)
@@ -816,6 +834,29 @@ def _profile_digest(user_data_dir: str) -> str:
     return hashlib.sha256(os.path.realpath(user_data_dir).encode()).hexdigest()
 
 
+def _same_profile(recorded, user_data_dir: str) -> bool:
+    return isinstance(recorded, str) and os.path.realpath(recorded) == os.path.realpath(user_data_dir)
+
+
+def _devtools_id(browser: LaunchedBrowser) -> Optional[str]:
+    """The ``/devtools/browser/<id>`` path of ``browser``'s endpoint (new per launch); None before it is up."""
+    at = browser.cdp_url.find("/devtools/browser/")
+    return browser.cdp_url[at:] if at >= 0 else None
+
+
+def _record_is(record: dict, browser: LaunchedBrowser) -> bool:
+    """``record`` describes this launch of ``browser``: same pid and profile, and its start time; for a browser of
+    another environment (its pid is another namespace's number and its start time unreadable here), a record from
+    another namespace naming the DevTools browser id its endpoint serves."""
+    from tools.browser_launcher_holders import same_namespace
+    if record.get("pid") != browser.pid or not _same_profile(record.get("user_data_dir"), browser.user_data_dir):
+        return False
+    if browser.foreign:
+        return not same_namespace(record) and record.get("devtools") is not None and (
+            record.get("devtools") == _devtools_id(browser))
+    return record.get("start_time") == browser.start_time
+
+
 def _shared_state_dir(user_data_dir: str) -> Optional[Path]:
     """Shared profile ``user_data_dir``'s own private dir (its launch record, leases and lock)."""
     root = _private_dir(_shared_profiles_root())
@@ -834,10 +875,13 @@ def _record_path(browser: LaunchedBrowser) -> Optional[Path]:
     records = _state_dir(browser)
     if records is None:
         return None
-    if browser.record_name:
-        return records / browser.record_name
+    return records / _record_name(browser)
+
+
+def _record_name(browser: LaunchedBrowser) -> str:
+    """The launch record ``browser``'s leases are keyed by: the one it was bound to, else this namespace's name."""
     from tools.browser_launcher_holders import ns_tag
-    return records / f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}{ns_tag()}.json"
+    return browser.record_name or f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}{ns_tag()}.json"
 
 
 def _write_record(browser: LaunchedBrowser) -> None:
@@ -845,7 +889,8 @@ def _write_record(browser: LaunchedBrowser) -> None:
     from utils import atomic_json_write
     record = {"owner_pid": os.getpid(), "owner_start_time": _start_time(os.getpid()), "pid": browser.pid,
               "start_time": browser.start_time, "user_data_dir": browser.user_data_dir,
-              "home_key": browser.home_key, "ephemeral": browser.ephemeral, "ns": holders.ns_identity()}
+              "home_key": browser.home_key, "ephemeral": browser.ephemeral, "ns": holders.ns_identity(),
+              "devtools": _devtools_id(browser)}
     try:
         path = _record_path(browser)
         if path is not None:
@@ -916,7 +961,7 @@ def _is_recorded_browser(record: dict, home: Optional[str]) -> bool:
 def _tracked_browser(record: dict) -> Optional[LaunchedBrowser]:
     with _lock:  # a browser another environment holds has a pid of THAT namespace: it tracks no record here
         return next((b for b in (*_browsers.values(), *_launching.values())
-                     if not b.foreign and b.pid == record.get("pid")), None)
+                     if not b.foreign and _record_is(record, b)), None)
 
 
 def _adopt_record(browser: LaunchedBrowser) -> None:
@@ -926,7 +971,7 @@ def _adopt_record(browser: LaunchedBrowser) -> None:
     if path is None or not path.exists():
         return
     record = _load_record(path)
-    if record is not None and record.get("start_time") == browser.start_time and not _owner_alive(record):
+    if record is not None and _record_is(record, browser) and not _owner_alive(record):
         _write_record(browser)
 
 

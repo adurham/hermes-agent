@@ -169,14 +169,17 @@ def _holder_gone(lease: dict) -> bool:
 
 def other_live_holders(record: Path, browser_start_time) -> list[dict]:
     """Leases of OTHER live processes on the browser ``record`` names (caller holds :func:`records_lock`).
-    A lease of a dead holder, or one naming an earlier browser on the same pid, is removed; one from another
-    namespace counts as live (its holder cannot be checked from here)."""
+    A lease of a dead holder, or one naming an earlier browser on the same pid (another start time, from whichever
+    namespace that knew it), is removed; one from another namespace counts as live (its holder cannot be checked
+    from here)."""
     holders = []
     for path in sorted(record.parent.glob(f"{record.stem}@*.lease")):
         lease = _load(path)
         if lease is None or held_here(lease, "holder_pid"):
             continue
-        if same_namespace(lease) and (lease.get("start_time") != browser_start_time or _holder_gone(lease)):
+        other_launch = lease.get("start_time") != browser_start_time and (
+            same_namespace(lease) or lease.get("start_time") is not None)
+        if other_launch or _holder_gone(lease):
             path.unlink(missing_ok=True)
             continue
         holders.append(lease)
