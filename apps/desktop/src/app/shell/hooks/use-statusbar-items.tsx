@@ -525,9 +525,11 @@ export function useStatusbarItems({
         // solid and set off by a gap instead of touching the label.
         detail: (
           <span className="inline-flex items-center gap-2">
-            <span className="font-mono text-[0.625rem] text-muted-foreground/70">
-              {freeTier?.model ?? FREE_TIER_MODEL}
-            </span>
+            {freeTier?.available && (
+              <span className="font-mono text-[0.625rem] text-muted-foreground/70">
+                {freeTier.model || FREE_TIER_MODEL}
+              </span>
+            )}
             {/* The class merger drops Badge's own leading-none behind the size's
                 font-size class, so the badge grows to the inherited 1.5 leading and
                 overhangs an 11px label. Restating it here keeps it 11.6px tall. */}
@@ -536,15 +538,15 @@ export function useStatusbarItems({
             </Badge>
           </span>
         ),
-        // Shown while a free-tier identity exists and the tier is on: it names the
-        // identity that carries the connectors (and inference when nothing else
-        // does), and it is the persistent way in to the sign-in.
+        // Shown while a guest identity exists (the trial, or connected apps without
+        // it): it names the identity that carries the connectors (and inference on
+        // the trial), and it is the persistent way in to the sign-in.
         hidden: !freeTierSignInOpen,
         icon: <Codicon name="account" size="0.75rem" />,
         id: 'free-tier',
         label: freeTierCopy.providerName,
         onSelect: () => openFreeTierSignIn(),
-        title: freeTierCopy.statusLabel(freeTier?.model ?? FREE_TIER_MODEL),
+        title: freeTier?.available ? freeTierCopy.statusLabel(freeTier.model || FREE_TIER_MODEL) : freeTierCopy.providerName,
         toggleLabel: copy.toggleFreeTier,
         variant: 'action'
       },
@@ -647,6 +649,7 @@ export function useStatusbarItems({
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
       offerLocalReveal,
+      freeTier?.available,
       freeTier?.model,
       freeTierSignInOpen,
       gatewayMenuContent,
