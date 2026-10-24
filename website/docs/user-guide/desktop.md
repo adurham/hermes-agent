@@ -53,9 +53,10 @@ serves the CLI, the native Desktop and messaging, so every surface sees one conv
 keeps in that tab, so reloading keeps you signed in, and so does a gateway restart. A fresh tab or a
 bare URL shows instructions instead of access: run `hermes webapp` again for a new link. **New
 Window**, profile windows and session pop-outs hand the sign-in over with their own one-use link. On
-macOS and the BSDs, where Hermes cannot check which OS user's browser opens the link, the command
-prints the one-use link for you to open instead of opening a browser; until it is used it signs a
-browser in as you, so keep it private. `hermes webapp --sign-out` signs out every
+macOS, the BSDs and WSL (where the Windows browser reaches the gateway through WSL's relay), Hermes
+cannot check which OS user's browser opens the link, so the command prints the one-use link for you
+to open instead of opening a browser; until it is used it signs a browser in as you, so keep it
+private. `hermes webapp --sign-out` signs out every
 tab at once: their open connections close, Bot Desktop viewers included, and each shows the sign-in
 instructions. Behind the sign-in gate (below) it also signs out every browser that signed in with a
 dashboard account; each must sign in again. The account tokens such a login keeps in its cookies work

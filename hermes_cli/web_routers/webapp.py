@@ -85,7 +85,7 @@ def mint_launch_ticket(state) -> str:
 
 def mint_printed_launch_ticket(state) -> str:
     """Ticket for a launch link the user opens by hand where nothing identifies the redeeming
-    connection's owner (macOS, the BSDs): it spends without that check, as a window ticket does, so
+    connection's owner (macOS, the BSDs, WSL): it spends without that check, as a window ticket does, so
     ``hermes webapp`` prints it and never passes it to a browser launcher."""
     return _mint_handoff_ticket(state, LAUNCH_TICKET_TTL_SECONDS, launch=False)
 

@@ -247,9 +247,13 @@ def _one_use_links_work(platform: str = sys.platform) -> bool:
     """Whether a browser the server opens can redeem a one-use launch link here. Redemption needs
     proof that the browser's connection belongs to the gateway's OS user
     (``web_routers.webapp._peer_is_server_user``) on Linux, or a browser launcher whose arguments other
-    users cannot read (Windows). macOS and the BSDs offer neither, so there the link is printed for
-    the user to open by hand and spends without that proof."""
-    return platform in ("linux", "win32")
+    users cannot read (Windows: no connection is checked there). macOS and the BSDs offer neither, and
+    neither does WSL: the Windows browser reaches the port through WSL's localhost relay, whose end of
+    the connection belongs to root, and so can any Windows account. There the link is printed for the
+    user to open by hand and spends without that proof."""
+    from hermes_constants import is_wsl
+
+    return platform == "win32" or (platform == "linux" and not is_wsl())
 
 
 #: How every missing-bundle reason starts; ``hermes webapp --status`` asks for no restart after it.
@@ -283,8 +287,8 @@ def _bundle_missing(web) -> str | None:
 def register_control_verbs(runner, home) -> None:
     """The private control-socket verbs ``hermes webapp`` uses; only an authenticated same-user peer
     reaches them. ``webapp-launch`` returns a one-use launch link, so the credential crosses neither
-    the socket nor a browser's argv; where nothing can check who redeems such a link (macOS) it is
-    marked private, for the user to open by hand. ``webapp-sign-out`` replaces the
+    the socket nor a browser's argv; where nothing can check who redeems such a link (macOS, the BSDs,
+    WSL) it is marked private, for the user to open by hand. ``webapp-sign-out`` replaces the
     browser credential, which also ends every login bound to it behind the sign-in gate, closes the
     browser sockets those opened, and reports how many it closed."""
     server = getattr(runner, "session_control_server", None)
@@ -336,8 +340,8 @@ def register_control_verbs(runner, home) -> None:
             address = (getattr(web.app.state, "listener_public_url", "")
                        or registered_lan_origin(home, urlsplit(status["url"]).port) or status["url"])
             return {"url": f"{address}/{query}", "private": False, "expires_in_seconds": None, "sign_in": True}
-        # Where the browser's connection cannot be checked (macOS, the BSDs), the link is for the user to
-        # open by hand ("private": printed, never passed to a browser launcher), and its ticket spends
+        # Where the browser's connection cannot be checked (macOS, the BSDs, WSL), the link is for the user
+        # to open by hand ("private": printed, never passed to a browser launcher), and its ticket spends
         # without that check. Either way it works once, for 60 seconds, and carries no lasting credential.
         checked = _one_use_links_work()
         ticket = mint_launch_ticket(web.app.state) if checked else mint_printed_launch_ticket(web.app.state)

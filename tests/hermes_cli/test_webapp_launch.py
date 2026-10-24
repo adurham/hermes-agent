@@ -156,3 +156,71 @@ def test_a_handoff_page_keeps_the_credential_out_of_every_url(monkeypatch, page)
     assert "a" * 43 not in served.text
     assert served.headers["cache-control"] == "no-store"
     assert served.headers["referrer-policy"] == "no-referrer"
+
+
+def _launch_link(tmp_path, monkeypatch):
+    """The loopback Webapp of a gateway serving *tmp_path*, and the ``webapp-launch`` answer its control
+    socket gives ``hermes webapp``."""
+    import json
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    from gateway.control_socket import GatewayControlServer
+    from gateway.webapp_listener import register_control_verbs
+    from hermes_cli import web_server as server
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(server.app.state, "webapp_window_tickets", {}, raising=False)
+    monkeypatch.setattr(server, "_SESSION_TOKEN", "a" * 43)
+    runner = SimpleNamespace(session_control_server=GatewayControlServer(home),
+                             webapp_status={"state": "serving", "url": "http://127.0.0.1:9120", "reason": None},
+                             session_api=SimpleNamespace(app=SimpleNamespace(web=server)))
+    register_control_verbs(runner, home)
+    raw = json.dumps({"protocol": 1, "verb": "webapp-launch", "id": 1, "params": {}}).encode()
+    answer = json.loads(runner.session_control_server.handle_request_line(raw, "same-user"))
+    assert answer["ok"], answer
+    return TestClient(server.app, base_url="http://127.0.0.1"), answer["result"]
+
+
+def _spend(client, link):
+    from urllib.parse import parse_qs, urlsplit
+
+    ticket = parse_qs(urlsplit(link["url"]).fragment)["ticket"][0]
+    return client.post("/webapp/window-session", headers={"Origin": "http://127.0.0.1", "X-Hermes-Window-Ticket": ticket})
+
+
+@pytest.mark.platforms("linux")
+def test_under_wsl_the_launch_link_is_printed_and_the_windows_browser_spends_it(tmp_path, monkeypatch):
+    """Under WSL2 the Windows browser reaches the gateway's loopback port through WSL's localhost relay,
+    so inside Linux its connection belongs to root (uid 0, measured live), and any Windows account can
+    reach that port. Nothing identifies the user's own browser, so, as on macOS, ``hermes webapp`` gets
+    a link marked private, to print for the user to open by hand, and that link spends without the
+    peer check instead of being refused every time."""
+    from hermes_cli.web_routers import webapp
+
+    monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
+    monkeypatch.setattr(webapp, "_loopback_peer_uid", lambda client, server: 0)  # WSL's localhost relay
+    client, link = _launch_link(tmp_path, monkeypatch)
+    assert link["private"] is True
+    spent = _spend(client, link)
+    assert spent.status_code == 200, f"the WSL user's own Windows browser cannot spend the link: {spent.text}"
+
+
+@pytest.mark.platforms("linux")
+def test_native_linux_keeps_the_peer_check_on_the_launch_link(tmp_path, monkeypatch):
+    """Outside WSL, Linux names the owner of the browser's loopback connection: ``hermes webapp`` opens
+    the link itself, and a connection another user owns cannot spend it."""
+    import os
+
+    from hermes_cli.web_routers import webapp
+
+    monkeypatch.setattr("hermes_constants.is_wsl", lambda: False)
+    monkeypatch.setattr(webapp, "_loopback_peer_uid", lambda client, server: os.getuid() + 1)  # windows-footgun: ok — platforms("linux") test
+    client, link = _launch_link(tmp_path, monkeypatch)
+    assert link["private"] is False
+    assert _spend(client, link).status_code == 403
