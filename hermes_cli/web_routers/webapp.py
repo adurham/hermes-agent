@@ -179,16 +179,17 @@ def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None
                        sign_in: str | None = None, profile_home: str | None = None) -> str:
     """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET``,
     ``HOST_TERMINAL_SOCKET`` or one of ``AUDIO_SOCKETS``) as *identity*. Minted with
-    *session_token*, or by a login whose sign-in binding was checked against the credential with
-    digest *sign_in* (``hermes_cli.webapp_sign_in``), it opens nothing once that credential is
-    replaced, and the socket it opens closes when the browser signs out. With *profile_home* the
-    socket it opens answers for that profile (``chat_ws.gateway_ws``)."""
+    *session_token*, or by a login whose sign-in binding was checked against the browser credential
+    of generation *sign_in* (``hermes_cli.webapp_sign_in``), it records that credential's generation
+    (``hermes_cli.browser_credential``): it opens nothing once that credential is replaced, and the
+    socket it opens closes when the browser signs out. With *profile_home* the socket it opens answers
+    for that profile (``chat_ws.gateway_ws``)."""
+    from hermes_cli.browser_credential import generation_of
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
-    from hermes_cli.web_session_sockets import token_digest
 
     extra = {"socket": socket}
     if session_token is not None:
-        extra["session_token"] = token_digest(session_token)
+        extra["session_token"] = generation_of(session_token)
     if sign_in is not None:
         extra["sign_in"] = sign_in
     if profile_home is not None:

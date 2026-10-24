@@ -10,10 +10,11 @@ a cookie session without a matching value as signed out. Replacing that token (`
 --sign-out``, or the CLI replacing the stored token while no gateway runs) therefore signs every browser
 out, whichever provider it signed in with.
 
-A request that passes records the digest of the token it was checked against on
-``request.state.webapp_sign_in``; the socket tickets it mints carry that digest, so the sockets they open
-are tracked (``web_session_sockets.track``) and close at sign-out, and a ticket minted before a sign-out
-opens nothing after it. The standalone dashboard never sets or checks the binding.
+A request that passes records the generation of the credential it was checked against
+(``hermes_cli.browser_credential``) on ``request.state.webapp_sign_in``; the socket tickets it mints
+carry that generation, so the sockets they open are tracked (``web_session_sockets.track``) and close
+at sign-out, and a ticket minted before a sign-out opens nothing after it. The standalone dashboard
+never sets or checks the binding.
 
 Such a login's cookies also hold the sign-in provider's access and refresh token. Presented on their own
 (``Authorization: Bearer``, a socket's ``?token=``, ``/auth/native/refresh``) they would skip the
@@ -38,6 +39,8 @@ from typing import Optional
 
 from fastapi import Request
 from fastapi.responses import Response
+
+from hermes_cli import browser_credential
 
 _MESSAGE = b"webapp-sign-in"
 _log = logging.getLogger(__name__)
@@ -65,28 +68,22 @@ def applies(request: Request) -> bool:
     return getattr(state, "ui_surface", None) == "webapp" and bool(getattr(state, "auth_required", False))
 
 
-def _current_token() -> str:
-    from hermes_cli.web_server import _SESSION_TOKEN
-    return _SESSION_TOKEN
-
-
 def check(request: Request) -> bool:
     """Whether the cookie login on *request* is bound to the browser credential in use now. When it
-    is, records that credential's digest on ``request.state.webapp_sign_in``."""
+    is, records that credential's generation on ``request.state.webapp_sign_in``."""
     from hermes_cli.dashboard_auth.cookies import read_webapp_signin_cookie
-    from hermes_cli.web_session_sockets import token_digest
 
-    token = _current_token()
+    token = browser_credential.current()
     presented = read_webapp_signin_cookie(request, _gateway(request)) or ""
     if not hmac.compare_digest(presented.encode(), binding(token).encode()):
         return False
-    request.state.webapp_sign_in = token_digest(token)
+    request.state.webapp_sign_in = browser_credential.generation_of(token)
     return True
 
 
 def sign_in_of(request: Request) -> Optional[str]:
-    """The browser credential digest *request*'s login was checked against, or None off the Webapp's
-    gate (the socket tickets it mints then carry no binding)."""
+    """The browser credential generation *request*'s login was checked against, or None off the
+    Webapp's gate (the socket tickets it mints then carry no binding)."""
     return getattr(request.state, "webapp_sign_in", None)
 
 
@@ -101,17 +98,17 @@ def _set(response: Response, request: Request, token: str) -> None:
 def bind(response: Response, request: Request) -> None:
     """Bind the login *request* just completed to the browser credential in use now."""
     if applies(request):
-        _set(response, request, _current_token())
+        _set(response, request, browser_credential.current())
 
 
 def renew(response: Response, request: Request) -> None:
     """Keep the binding as long-lived as the session cookies a refresh just rotated, unless the
     credential it was checked against was replaced while the request ran."""
-    from hermes_cli.web_session_sockets import token_digest
-
+    # One read of the credential: binding the login to a second read could bind it to a credential
+    # that replaced the one it was checked against.
+    token = browser_credential.current()
     signed_in = sign_in_of(request)
-    token = _current_token()
-    if signed_in is not None and hmac.compare_digest(signed_in, token_digest(token)):
+    if signed_in is not None and hmac.compare_digest(signed_in, browser_credential.generation_of(token)):
         _set(response, request, token)
 
 

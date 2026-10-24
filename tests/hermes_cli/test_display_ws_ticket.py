@@ -92,12 +92,12 @@ def test_signing_out_closes_a_screen_viewer_a_browser_tab_opened(monkeypatch):
     """A viewer opened from a signed-in tab watches, and while it holds the lease drives, the agent's
     screen: it closes with the tab's other sockets when the browser signs out. A viewer a native
     client opened (no browser credential on its ticket) stays."""
-    from hermes_cli import web_server, web_session_sockets
+    from hermes_cli import browser_credential, web_server, web_session_sockets
     from tests.hermes_cli.test_webapp_sign_out_sockets import _close_code
 
     ws_tickets._reset_for_tests()
     client = _viewer_app(monkeypatch)
-    tab = _viewer_ticket(admitted_with=web_session_sockets.token_digest("a" * 43))
+    tab = _viewer_ticket(admitted_with=browser_credential.generation_of("a" * 43))
     native = _viewer_ticket()
     with client.websocket_connect(f"/api/display/ws?display_ticket={tab}") as from_tab, \
             client.websocket_connect(f"/api/display/ws?display_ticket={native}") as from_native:
@@ -109,12 +109,12 @@ def test_signing_out_closes_a_screen_viewer_a_browser_tab_opened(monkeypatch):
 
 
 def test_a_screen_viewer_ticket_from_a_signed_out_tab_opens_nothing(monkeypatch):
-    from hermes_cli import web_server, web_session_sockets
+    from hermes_cli import browser_credential, web_server
     from tests.hermes_cli.test_webapp_sign_out_sockets import _close_code
 
     ws_tickets._reset_for_tests()
     client = _viewer_app(monkeypatch)
-    stale = _viewer_ticket(admitted_with=web_session_sockets.token_digest("a" * 43))
+    stale = _viewer_ticket(admitted_with=browser_credential.generation_of("a" * 43))
     monkeypatch.setattr(web_server, "_SESSION_TOKEN", "b" * 43)
     with client.websocket_connect(f"/api/display/ws?display_ticket={stale}") as conn:
         assert _close_code(conn, 2.0) == 4401

@@ -18,13 +18,14 @@ process, like the token.
 """
 from __future__ import annotations
 
-import hmac
 import secrets
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
+
+from hermes_cli import browser_credential
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -96,9 +97,8 @@ def session_token_of(request: Request) -> str | None:
 def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority,
          session_token: str | None = None) -> str:
     """Ticket for GET/HEAD of ``ROUTES[route]`` with exactly ``query`` (plus ``ticket``); minted for
-    a request admitted with *session_token*, it redeems only while that token is current."""
-    from hermes_cli.web_session_sockets import token_digest
-
+    a request admitted with *session_token*, it records that browser credential's generation and
+    redeems only while it is current."""
     route_path = ROUTES[route]
     single_use = route == "download"
     now = time.monotonic()
@@ -108,7 +108,7 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority,
         expires_at=now + (DOWNLOAD_TTL_SECONDS if single_use else STREAM_TTL_SECONDS),
         single_use=single_use,
         authority=authority,
-        session_token=None if session_token is None else token_digest(session_token),
+        session_token=None if session_token is None else browser_credential.generation_of(session_token),
     )
     with _lock:
         for stale in [key for key, value in _tickets.items() if value.expires_at <= now]:
@@ -119,17 +119,18 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority,
     return ticket
 
 
-def revoke_all() -> None:
-    """Drop every ticket: the session token that authorized them was replaced (sign-out)."""
+def revoke_all() -> int:
+    """Drop every ticket: the session token that authorized them was replaced (sign-out). Returns
+    how many were dropped."""
     with _lock:
+        dropped = len(_tickets)
         _tickets.clear()
+    return dropped
 
 
 def redeem(request: Request) -> bool:
     """True when ``?ticket=`` authorizes this exact request; consumes a download ticket. A ticket
     minted with a session token that has since been replaced is dropped instead."""
-    from hermes_cli.web_session_sockets import current_digest
-
     ticket = request.query_params.get("ticket", "")
     if not ticket or request.method not in ("GET", "HEAD"):
         return False
@@ -138,7 +139,7 @@ def redeem(request: Request) -> bool:
         entry = _tickets.get(ticket)
         if entry is None or entry.scope != scope or entry.expires_at <= time.monotonic():
             return False
-        if entry.session_token is not None and not hmac.compare_digest(entry.session_token, current_digest()):
+        if entry.session_token is not None and not browser_credential.is_current(entry.session_token):
             del _tickets[ticket]
             return False
         if entry.single_use:
@@ -147,3 +148,6 @@ def redeem(request: Request) -> bool:
     # A middleware-only check would race deletion before FileResponse opens it.
     request.state.file_ticket_authority = entry.authority
     return True
+
+
+browser_credential.on_rotate("file tickets", revoke_all)

@@ -132,7 +132,7 @@ def test_a_socket_admitted_while_the_token_is_replaced_closes_at_once(monkeypatc
     before this one was tracked: tracking it closes it."""
     import asyncio
 
-    from hermes_cli import web_server, web_session_sockets
+    from hermes_cli import browser_credential, web_server, web_session_sockets
 
     closed = []
 
@@ -146,7 +146,7 @@ def test_a_socket_admitted_while_the_token_is_replaced_closes_at_once(monkeypatc
 
     async def admit():
         socket = Socket()
-        web_session_sockets.track(socket, web_session_sockets.token_digest(_TOKEN))
+        web_session_sockets.track(socket, browser_credential.generation_of(_TOKEN))
         await asyncio.wait_for(socket.ended.wait(), timeout=5)
 
     monkeypatch.setattr(web_server, "_SESSION_TOKEN", "b" * 43)

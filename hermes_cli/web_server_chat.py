@@ -235,7 +235,8 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     """
     from hermes_cli.dashboard_auth.native_http import HEADER, authenticate_native_ws
     from hermes_cli.web_server import _SESSION_TOKEN, app
-    from hermes_cli.web_session_sockets import OWN_TICKET_SOCKETS, token_digest, track
+    from hermes_cli.browser_credential import generation_of
+    from hermes_cli.web_session_sockets import OWN_TICKET_SOCKETS, track
     auth_required = bool(getattr(app.state, "auth_required", False))
     if socket in OWN_TICKET_SOCKETS:
         # No standing credential (the session token, a native grant, a login's access token) opens it.
@@ -345,7 +346,7 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        track(ws, token_digest(token))
+        track(ws, generation_of(token))
         return None, "token"
     return "token_mismatch", "token"
 

@@ -95,16 +95,16 @@ async def display_ws(ws: WebSocket) -> None:
 
 
 def _signed_out(ws: WebSocket, info: dict) -> bool:
-    """True when the browser tab that asked for this viewer has signed out since; otherwise the
-    viewer is tracked with that tab's sockets, so signing out closes it too. A ticket a native
-    client minted carries no browser credential and is left alone."""
-    import hmac
-
-    from hermes_cli.web_session_sockets import current_digest, track
+    """True when the browser tab that asked for this viewer has signed out since (the ticket's
+    browser credential generation is no longer current); otherwise the viewer is tracked with that
+    tab's sockets, so signing out closes it too. A ticket a native client minted carries no browser
+    credential and is left alone."""
+    from hermes_cli.browser_credential import is_current
+    from hermes_cli.web_session_sockets import track
     admitted = info.get("admitted_with")
     if admitted is None:
         return False
-    if not hmac.compare_digest(admitted, current_digest()):
+    if not is_current(admitted):
         return True
     track(ws, admitted)
     return False
