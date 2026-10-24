@@ -117,6 +117,20 @@ def test_piped_verifier_without_pipeline_status_is_not_evidence(tmp_path, monkey
     ) is None
 
 
+@pytest.mark.parametrize("pipeline_status", [[0], [1]])
+def test_piped_verifier_with_single_pipeline_status_is_not_evidence(
+    tmp_path, monkeypatch, pipeline_status,
+):
+    """A one-element PIPESTATUS belongs to a compound command (``!``, ``if``), not a pipe."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    assert classify_verification_command(
+        "pytest -q 2>&1 | tail -20", cwd=tmp_path, session_id="s1",
+        exit_code=0, pipeline_status=pipeline_status,
+    ) is None
+
+
 @pytest.mark.parametrize(
     "command",
     [

@@ -169,8 +169,8 @@ def _wrap_command_script(
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         f"builtin cd -- {quoted_cwd} || exit 126",
-        f"eval '{escaped}\n__hermes_ps=(\"${{PIPESTATUS[@]}}\")'",
-        "__hermes_ec=${__hermes_ps[${#__hermes_ps[@]}-1]}",
+        f"eval '{escaped}\n\n__hermes_rc=$? __hermes_ps=(\"${{PIPESTATUS[@]}}\"); (exit $__hermes_rc)'",
+        "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready and persist_env:
         parts.append(

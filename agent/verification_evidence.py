@@ -244,7 +244,7 @@ def _segment_status(
             ),
             default=sequence_start,
         )
-        if pipeline_status and match_index == pipeline_start:
+        if pipeline_status and len(pipeline_status) >= 2 and match_index == pipeline_start:
             return pipeline_status[0]
         return None
     if not operators:

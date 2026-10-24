@@ -53,6 +53,7 @@ class TestWrapCommandAdvertisesHarness:
         env._snapshot_ready = False
         env._session_id = "testsession0"
         env._cwd_marker = "__HERMES_CWD_testsession0__"
+        env._pipe_marker = "__HERMES_PIPE_testsession0__"
         env._snapshot_path = "/tmp/hermes-snap-testsession0.sh"
         env._snapshot_passthrough_names = set()
         return env._wrap_command(command, "/tmp")

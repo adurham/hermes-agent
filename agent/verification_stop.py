@@ -16,9 +16,9 @@ _MAX_CHANGED_PATHS_IN_NUDGE = 8
 _MAX_STATUS_SUMMARY_CHARS = 1200
 
 _UNPIPED_RUN_WARNING = (
-    " Run the check bare: no `| tail`, `| head`, or `| grep` filter. A piped run's exit "
-    "status belongs to the filter, not the check, so it cannot count as evidence; the "
-    "terminal already truncates long output and spills the rest to a file."
+    " Run the check directly. If you pipe it, keep the check as the first command in "
+    "the pipeline so its exit status can be attributed; the terminal already truncates "
+    "long output and spills the rest to a file."
 )
 
 # Prose/data extensions and extension-less prose filenames (case-insensitive) with

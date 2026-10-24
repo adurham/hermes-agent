@@ -182,8 +182,8 @@ def test_path_under_a_deleted_directory_does_not_nudge(tmp_path, monkeypatch):
     assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[gone]) is None
 
 
-def test_nudge_demands_an_unpiped_verification_run(tmp_path, monkeypatch):
-    """A piped run reports the filter's exit status, so the ledger can never record it."""
+def test_nudge_asks_for_an_attributable_pipeline(tmp_path, monkeypatch):
+    """A piped run counts only when the check leads the pipeline."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
     changed = _edited(tmp_path, "src/app.ts")
@@ -192,7 +192,7 @@ def test_nudge_demands_an_unpiped_verification_run(tmp_path, monkeypatch):
     nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
 
     assert nudge is not None
-    assert "no `| tail`" in nudge
+    assert "keep the check as the first command in the pipeline" in nudge
 
 # ---------------------------------------------------------------------------
 # Fix C: documentation/prose edits carry no verifiable behavior and must never
