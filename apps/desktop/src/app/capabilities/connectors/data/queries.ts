@@ -119,13 +119,15 @@ export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
 
   // A list read is where the backend first sees an app this page never watched connect (an
   // authorization past the watch, a connect by link) and arms the sign-in offer; re-read when it is due.
+  // Only after a read from the backend: saved or cached rows arrive before the read that arms it.
   const anyConnected = list.data?.connectors.some(connector => connector.connected) ?? false
+  const readFromBackend = list.isFetchedAfterMount && !list.isFetching
 
   useEffect(() => {
-    if (anyConnected) {
+    if (anyConnected && readFromBackend) {
       noteFreeTierAppConnected()
     }
-  }, [anyConnected])
+  }, [anyConnected, readFromBackend, list.dataUpdatedAt])
 
   const policy = useQuery({
     ...read('policy'),

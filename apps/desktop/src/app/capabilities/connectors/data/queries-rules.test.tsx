@@ -7,6 +7,7 @@ import { queryClient } from '@/lib/query-client'
 import { $freeTierTurnCompleted, noteFreeTierTurnComplete } from '@/store/free-tier-sign-in'
 import { setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
 
+import { connectorsListQueryKey } from './keys'
 import { useHostedConnectors } from './queries'
 
 const row = { connected: false, connector: 'notion', enabled: true, gateway_disabled_tools: [] }
@@ -90,6 +91,18 @@ describe('a connected app first seen on a list read', () => {
 
     mount()
 
+    await waitFor(() => expect($freeTierTurnCompleted.get()).toBe(before + 1))
+  })
+
+  it('waits for the backend read when the page starts from saved connected rows', async () => {
+    const request = gateway([{ ...row, connected: true }])
+    queryClient.setQueryData(connectorsListQueryKey('default'), { available: true, connectors: [{ ...row, connected: true }] }, { updatedAt: 1 })
+    const before = $freeTierTurnCompleted.get()
+
+    mount()
+    expect($freeTierTurnCompleted.get()).toBe(before)
+
+    await waitFor(() => expect(asked(request, 'connectors.list')).toBe(true))
     await waitFor(() => expect($freeTierTurnCompleted.get()).toBe(before + 1))
   })
 
