@@ -1065,15 +1065,21 @@ def workspace_unavailable_result(policy) -> dict:
 def refused_turn_result(policy, exc) -> dict | None:
     """A failed, never-run turn for an owner refusal at scope entry that an unchanged resend repeats
     (gone working folder, changed launch key); None for any other refusal."""
-    if exc.reason == 'workspace_unavailable':
-        return workspace_unavailable_result(policy)
-    if exc.reason != 'launch_credentials_unavailable':
-        return None
+    from agent.error_surface import build_error_surface_from_result
     from agent.turn_failure_copy import launch_credentials_copy, stamp_failure
-    text = launch_credentials_copy(exc)
-    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
-                          "failed": True, "completed": False, "error": text},
-                         "launch_credentials_unavailable", False)
+    if exc.reason == 'workspace_unavailable':
+        result = workspace_unavailable_result(policy)
+    elif exc.reason == 'launch_credentials_unavailable':
+        text = launch_credentials_copy(exc)
+        result = stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                "failed": True, "completed": False, "error": text},
+                               "launch_credentials_unavailable", False)
+    else:
+        return None
+    # The descriptor makes settlement commit the explanation and its card as the transcript's
+    # failed-turn boundary (gateway_refusal_boundary), so a reopened chat still shows the way out.
+    result["error_surface"] = build_error_surface_from_result(result)
+    return result
 
 
 @contextmanager

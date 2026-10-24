@@ -36,6 +36,7 @@ def test_turn_on_a_chat_whose_route_key_changed_names_new_chat_not_retry(tmp_pat
     assert 'route-token' not in text and 'rotated-token' not in text
     assert captured['result'] == result  # what the classic CLI viewer reads off the receipt
     surface = build_error_surface_from_result(result)
+    assert result['error_surface'] == surface  # committed as the transcript's refusal card on settlement
     assert (surface['layer'], surface['code'], surface['retryable']) == ('gateway', 'launch_credentials_unavailable', False)
 
 
