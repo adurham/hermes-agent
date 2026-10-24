@@ -142,18 +142,38 @@ async function stageDroppedEntries(entries: DroppedEntry[]): Promise<string[]> {
   return paths.filter(Boolean)
 }
 
+// The path quoted so the terminal's shell reads it as one literal argument, whatever characters
+// the name holds: a name must never end the quoting and add a command for the next Enter. Shells
+// not named here get POSIX quoting.
 function quotePathForShell(path: string, shellName: string): string {
   const shell = shellName.toLowerCase()
 
   if (shell.includes('powershell') || shell.includes('pwsh')) {
-    return `'${path.replace(/'/g, "''")}'`
+    // PowerShell reads the typographic quotes U+2018..U+201B as single quotes too; doubling any of
+    // them keeps it literal.
+    return `'${path.replace(/['\u2018\u2019\u201a\u201b]/g, '$&$&')}'`
   }
 
   if (shell.includes('cmd')) {
-    return `"${path.replace(/"/g, '""')}"`
+    // cmd expands %NAME% inside double quotes before it reads them, and a value holding a quote
+    // would end the quoting. Each % goes outside the quotes as ^%, which no variable name matches.
+    return path
+      .split('%')
+      .map(part => `"${part.replace(/"/g, '""')}"`)
+      .join('^%')
   }
 
-  return `'${path.replace(/'/g, "'\\''")}'`
+  const name = shell.replace(/^.*[\\/]/, '').replace(/\.exe$/, '')
+
+  if (name === 'fish') {
+    // Inside fish's single quotes \' and \\ are escapes.
+    return `'${path.replace(/[\\']/g, '\\$&')}'`
+  }
+
+  const quoted = `'${path.replace(/'/g, "'\\''")}'`
+
+  // csh and tcsh expand !-history even inside single quotes; \! is the escape there.
+  return name === 'csh' || name === 'tcsh' ? quoted.replace(/!/g, '\\!') : quoted
 }
 
 // C0 controls, DEL and C1 controls. A line editor acts on them inside any quoting (^U erases the

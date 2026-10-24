@@ -242,3 +242,234 @@ describe('terminal drop never types keystrokes', () => {
     unbind()
   })
 })
+
+// How each shell the terminal can run reads the typed text, enough to see where a word ends and
+// where a new command starts. Each follows the shell's own manual.
+
+// PowerShell reads U+0027 and the typographic quotes U+2018, U+2019, U+201A, U+201B all as single
+// quotes (language spec, "single-quote-character"); inside a single-quoted string any of them
+// followed by any of them is one literal quote, and a lone one ends the string.
+const POWERSHELL_SINGLE_QUOTES = new Set(["'", '\u2018', '\u2019', '\u201a', '\u201b'])
+
+function powershellWords(text: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let i = 0
+
+  const flush = () => {
+    if (word) {
+      words.push(word)
+    }
+
+    word = ''
+  }
+
+  while (i < text.length) {
+    const c = text[i]
+
+    if (POWERSHELL_SINGLE_QUOTES.has(c)) {
+      i += 1
+
+      for (;;) {
+        if (i >= text.length) {
+          return [...words, `${word}<unterminated>`]
+        }
+
+        if (POWERSHELL_SINGLE_QUOTES.has(text[i])) {
+          if (!POWERSHELL_SINGLE_QUOTES.has(text[i + 1] ?? '')) {
+            break
+          }
+
+          i += 1
+        }
+
+        word += text[i]
+        i += 1
+      }
+
+      i += 1
+    } else if (c === ';') {
+      flush()
+      words.push(';')
+      i += 1
+    } else if (/\s/.test(c)) {
+      flush()
+      i += 1
+    } else {
+      word += c
+      i += 1
+    }
+  }
+
+  flush()
+
+  return words
+}
+
+// fish: inside '...' only \' and \\ are escapes (fish manual, "Quotes"); outside quotes a backslash
+// escapes the next character, ';' separates commands and '#' starts a comment.
+function fishWords(text: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let i = 0
+
+  const flush = () => {
+    if (word) {
+      words.push(word)
+    }
+
+    word = ''
+  }
+
+  while (i < text.length) {
+    const c = text[i]
+
+    if (c === "'") {
+      i += 1
+
+      while (i < text.length && text[i] !== "'") {
+        if (text[i] === '\\' && (text[i + 1] === "'" || text[i + 1] === '\\')) {
+          i += 1
+        }
+
+        word += text[i]
+        i += 1
+      }
+
+      if (i >= text.length) {
+        return [...words, `${word}<unterminated>`]
+      }
+
+      i += 1
+    } else if (c === '\\') {
+      word += text[i + 1] ?? ''
+      i += 2
+    } else if (c === ';') {
+      flush()
+      words.push(';')
+      i += 1
+    } else if (c === '#' && !word) {
+      words.push('#comment')
+
+      break
+    } else if (/\s/.test(c)) {
+      flush()
+      i += 1
+    } else {
+      word += c
+      i += 1
+    }
+  }
+
+  flush()
+
+  return words
+}
+
+// cmd.exe at its prompt first replaces %NAME% of every defined variable, inside double quotes too,
+// and leaves an undefined one as typed; then a '"' toggles quoting, '^' outside quotes takes the
+// next character literally and '&' outside quotes starts a new command.
+function cmdWords(text: string, env: Record<string, string>): string[] {
+  const expanded = text.replace(/%([^%]+)%/g, (whole, name: string) => env[name.toUpperCase()] ?? whole)
+  const words: string[] = []
+  let word = ''
+  let quoted = false
+
+  const flush = () => {
+    if (word) {
+      words.push(word)
+    }
+
+    word = ''
+  }
+
+  for (let i = 0; i < expanded.length; i += 1) {
+    const c = expanded[i]
+
+    if (c === '"') {
+      quoted = !quoted
+    } else if (quoted) {
+      word += c
+    } else if (c === '^') {
+      i += 1
+      word += expanded[i] ?? ''
+    } else if (c === '&') {
+      flush()
+      words.push('&')
+    } else if (/\s/.test(c)) {
+      flush()
+    } else {
+      word += c
+    }
+  }
+
+  flush()
+
+  return quoted ? [...words, '<unterminated>'] : words
+}
+
+function droppedText(shellName: string, path: string): string {
+  const { host, unbind, write } = bind(shellName)
+
+  drop(host, transfer([], [path]))
+  const typed = typedText(write)
+  unbind()
+
+  return typed
+}
+
+describe("terminal drop types each path as one literal word of the terminal's shell", () => {
+  // A file name comes from wherever the files did (a cloned repo, an unpacked archive, the agent),
+  // so its characters must never end the quoting the drop adds: what the user then runs with
+  // Enter is the command they typed, with the path as one argument. The Webapp's host terminal
+  // runs PowerShell on Windows and $SHELL elsewhere; native Desktop runs the same shells.
+  it.each(['pwsh.exe', 'powershell.exe'])('doubles every quote PowerShell reads as a single quote (%s)', shell => {
+    for (const path of [
+      'C:\\Users\\me\\Documents\\Jeff\u2019s notes.txt',
+      'C:\\work\\repo\\a\u2019; Start-Process calc; \u2019b.txt',
+      "C:\\work\\\u2018x\u201a'\u201b; calc; '.txt"
+    ]) {
+      expect(powershellWords(droppedText(shell, path))).toEqual([path])
+    }
+  })
+
+  it('escapes the backslashes and quotes fish reads inside single quotes', () => {
+    for (const path of [
+      "/home/me/repo/a\\'; touch PWNED; #",
+      '/home/me/trailing\\',
+      '/home/me/two\\\\b',
+      "/home/me/it's"
+    ]) {
+      expect(fishWords(droppedText('fish', path))).toEqual([path])
+    }
+  })
+
+  it('types each % outside the quotes so cmd expands no variable into the path', () => {
+    // A variable whose value holds a quote would turn the rest of the name into a command.
+    const env = { HERMESPROBE: 'X"&calc&"Y', PATH: 'C:\\Windows\\system32' }
+
+    for (const path of [
+      'C:\\work\\a%HERMESPROBE%b.txt',
+      'C:\\work\\a%PATH%b.txt',
+      'C:\\work\\my%20file%20name.pdf',
+      'C:\\work\\100%'
+    ]) {
+      expect(cmdWords(droppedText('cmd.exe', path), env)).toEqual([path])
+    }
+  })
+
+  it('keeps csh and tcsh from expanding history inside the quotes', () => {
+    // csh and tcsh expand !-history even inside single quotes; \! is the one escape there.
+    for (const shell of ['csh', 'tcsh']) {
+      expect(droppedText(shell, '/home/me/x!!:s^e^;touch PWNED;^.txt')).toBe(
+        "'/home/me/x\\!\\!:s^e^;touch PWNED;^.txt' "
+      )
+    }
+  })
+
+  it('keeps the POSIX quoting for sh, bash and zsh', () => {
+    for (const shell of ['sh', 'bash', 'zsh', '/usr/bin/zsh']) {
+      expect(droppedText(shell, "/work/it's \\ a\u2019b!.txt")).toBe("'/work/it'\\''s \\ a\u2019b!.txt' ")
+    }
+  })
+})
