@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $desktopBoot } from '@/store/boot'
-import { closeSecondaryGateways, isActivePrimary, requestGatewayForProfile } from '@/store/gateway'
+import { closeSecondaryGateways, isActivePrimary, requestGatewayForAgent, requestGatewayForProfile } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
@@ -150,6 +150,11 @@ it('a tab loaded on ?profile=<name> asks its socket for that profile, by name', 
 
   // The live-status poll and every other request for the tab's profile name it on the wire...
   expect(await sentFor('research', 'session.active_list')).toEqual({ profile: 'research' })
+  // ...through the owner door a session's silence probe takes as well...
+  frames.length = 0
+  void requestGatewayForAgent('local', 'research', 'session.active_list', {}).catch(() => undefined)
+  await flush()
+  expect(frames.find(frame => frame.method === 'session.active_list')?.params).toEqual({ profile: 'research' })
   // ...and the gateway's own profile is the one a request without `profile` reaches.
   expect(await sentFor('default', 'session.active_list')).toEqual({})
 
