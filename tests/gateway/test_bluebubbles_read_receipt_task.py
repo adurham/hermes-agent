@@ -19,7 +19,7 @@ class _Request:
 
 @pytest.mark.asyncio
 async def test_read_receipt_task_is_held_until_done(monkeypatch):
-    from gateway.platforms.bluebubbles import BlueBubblesAdapter
+    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
 
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={
         "server_url": "http://localhost:1234", "password": "secret", "send_read_receipts": True}))

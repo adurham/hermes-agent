@@ -328,18 +328,16 @@ class CLIStatusBarMixin:
         except Exception:
             pass
         try:
-            from tools.process_registry import process_registry
-            snapshot["active_background_processes"] = process_registry.count_running()
-        except Exception:
-            pass
-        # FORK: live background/async subagents (delegate_task batches + background single
-        # delegations). active_task_count() expands a batch to its actual child count (a
-        # 3-task fan-out contributes 3, not 1) so the ⛓ badge reflects how many subagents
-        # are truly working, not how many pool slots are occupied — the mixin's older
-        # active_count() (units) undercounted batches. Cheap in-memory read under a lock.
-        try:
-            from tools.async_delegation import active_task_count as _async_active_count
-            snapshot["active_background_subagents"] = _async_active_count()
+            from hermes_cli.gateway_tools import background_counts, process_view
+            snapshot.update(background_counts())
+            # FORK: live background/async subagents (delegate_task batches + background single
+            # delegations). active_task_count() expands a batch to its actual child count (a
+            # 3-task fan-out contributes 3, not 1) so the ⛓ badge reflects how many subagents
+            # are truly working, not how many pool slots are occupied — background_counts()'s
+            # local path uses active_count() (units), which undercounts batches.
+            if process_view() is None:
+                from tools.async_delegation import active_task_count as _async_active_count
+                snapshot["active_background_subagents"] = _async_active_count()
         except Exception:
             pass
 
@@ -708,14 +706,14 @@ class CLIStatusBarMixin:
 
     def _agent_spacer_height(self, width: Optional[int] = None) -> int:
         """Spacer height above the status bar while the agent runs."""
-        if not getattr(self, "_agent_running", False):
+        if not getattr(self, "_agent_running", False) or getattr(self, "_modern_layout", False):
             return 0
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
         """Visible height of the spinner/status line above the status bar."""
         spinner_line = self._render_spinner_text()
-        if not spinner_line or self._use_minimal_tui_chrome(width=width):
+        if not spinner_line or self._use_minimal_tui_chrome(width=width) or getattr(self, "_modern_layout", False):
             return 0
         width = width or self._get_tui_terminal_width()
         if width and width > 10:
@@ -785,7 +783,9 @@ class CLIStatusBarMixin:
         if getattr(self, "tool_progress_mode", "all") == "off":
             return False
         agent = getattr(self, "agent", None)
-        if agent is not None and getattr(agent, "quiet_mode", False):
+        # The interactive agent itself runs quiet unless --verbose, so in the classic layout this
+        # line only shows under --verbose; the glyph layout closes every interactive turn with it.
+        if agent is not None and getattr(agent, "quiet_mode", False) and not getattr(self, "_modern_layout", False):
             return False
         return bool(getattr(self, "_interactive_turn", False))
 
@@ -826,7 +826,10 @@ class CLIStatusBarMixin:
         try:
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
             line = collector.render(max(0.0, time.monotonic() - started) if started else 0.0)
-            if line:
+            if line and getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import turn_footer
+                _cprint(turn_footer(line))
+            elif line:
                 _cprint(f"  {_D}{line}{_RST}")
         except Exception:
             logger.debug("Turn summary render failed", exc_info=True)
@@ -1353,6 +1356,9 @@ class CLIStatusBarMixin:
             or getattr(self, "_model_picker_state", None)
             or getattr(self, "_command_palette_state", None)):
             return []
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import status_line_fragments
+            return status_line_fragments(self)
         try:
             snapshot = self._get_status_bar_snapshot()
             # prompt_toolkit's own width: shutil's can be stale (esp. over SSH) and an overflow

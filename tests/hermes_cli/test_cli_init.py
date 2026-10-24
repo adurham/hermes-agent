@@ -759,83 +759,23 @@ class TestRootLevelProviderOverride:
 
 
 class TestPluginToolsetStartupValidation:
-    """A toolset that is merely *not registered yet* must not be reported as unknown.
+    """Plugin toolsets are only known where plugins load (the gateway), so the CLI's toolset init
+    neither probes plugins nor judges names (#71650, PLG-7): the gateway refuses an unknown picked
+    name at session.create and reports a stale profile one with the session
+    (tests/hermes_cli/test_cli_profile_toolsets.py)."""
 
-    Plugins register their toolsets during background discovery, while the CLI validates
-    the configured list during construction -- i.e. before that thread has landed. Judging
-    by the live registry alone therefore flags every configured plugin toolset as a typo on
-    every launch, including one-shot/quiet runs whose stdout is machine-parsed.
-    """
-
-    @staticmethod
-    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys, portable_keys=()):
+    def test_init_probes_no_plugins_and_keeps_the_list(self, monkeypatch):
         import cli as _cli_mod
-        import toolsets as _toolsets_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
         printed: list[str] = []
         stub._console_print = printed.append
-        # _init_toolsets judges names through hermes_cli.toolset_validation.saved_toolset_resolver,
-        # which calls toolsets.validate_toolset and reads both plugin probes off hermes_cli.plugins.
-        monkeypatch.setattr(_toolsets_mod, "validate_toolset", lambda name: name in registry)
         monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
-        monkeypatch.setattr(
-            "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
-            lambda: set(plugin_keys),
-        )
-        monkeypatch.setattr(
-            "hermes_cli.plugins.get_portable_mcp_server_names_nowait",
-            lambda: set(portable_keys),
-        )
-        stub._init_toolsets(list(toolsets))
-        return stub, printed
-
-    def test_plugin_toolset_not_yet_registered_is_not_flagged(self, monkeypatch):
-        stub, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "voice_stack"],
-            registry={"terminal"},
-            plugin_keys={"voice_stack"},
-        )
+        for name in ("get_plugin_toolset_keys_nowait", "discover_plugins", "get_plugin_manager"):
+            monkeypatch.setattr(f"hermes_cli.plugins.{name}", lambda *_a: pytest.fail("probed plugins"))
+        stub._init_toolsets(["terminal", "voice_stack", "voice_stak"])
         assert printed == []
-        # The configured list is kept verbatim; only the false warning is silenced.
-        assert stub.enabled_toolsets == ["terminal", "voice_stack"]
-
-    def test_real_typo_still_warns(self, monkeypatch):
-        _, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "voice_stak"],
-            registry={"terminal"},
-            plugin_keys={"voice_stack"},
-        )
-        assert len(printed) == 1
-        assert "voice_stak" in printed[0]
-        assert "voice_stack" not in printed[0]
-
-    def test_portable_mcp_server_name_is_not_flagged(self, monkeypatch):
-        """A portable-plugin MCP server (the rea plugin ships one named `rea`) rides the resolved CLI
-        toolset list; it is not registered as a *toolset* until its plugin's MCP server connects, so an
-        allowlist built from registered toolsets + plugin toolset keys alone flagged it on every launch
-        (#71650's gap). The shared resolver consults get_portable_mcp_server_names_nowait()."""
-        stub, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "rea"],
-            registry={"terminal"},
-            plugin_keys=set(),
-            portable_keys={"rea"},
-        )
-        assert printed == []
-        assert stub.enabled_toolsets == ["terminal", "rea"]
-
-    def test_portable_mcp_server_name_via_mcp_alias_is_not_flagged(self, monkeypatch):
-        _, printed = self._init_toolsets(
-            monkeypatch,
-            ["terminal", "mcp-rea"],
-            registry={"terminal"},
-            plugin_keys=set(),
-            portable_keys={"rea"},
-        )
-        assert printed == []
+        assert stub.enabled_toolsets == ["terminal", "voice_stack", "voice_stak"]
 
 
 

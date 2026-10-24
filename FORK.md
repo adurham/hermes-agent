@@ -4,6 +4,119 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### Upstream sync — 2026-10-24 (v0.22.2 → v0.22.5, 3,291 commits, 4,690 changed files, 65 conflict files)
+
+Merged tag `v0.22.5` (tag object `56b6a31fede`, release commit `bf0203a794a`, released 2026-10-22) into
+`main` via the isolated clone `~/repos/hermes-agent-sync` (branch `sync/upstream-v0.22.5`). Range
+`v0.22.2..v0.22.5`: 3,291 upstream commits, 4,690 files changed (+395,922 / −84,172). The merge-base of
+the fork tip and the tag is exactly the previous sync tag `v0.22.2` (`d923a5eb487`), so this merge is the
+upstream delta since the last sync and nothing else. Pre-merge fork tip `2b8681d718c` was tagged
+`pre-upstream-sync-v0.22.5` (pushed to origin) as the rollback point.
+
+**What the range reshaped.** v0.22.3 alone carries 2,182 first-parent commits — a long-lived
+plugin-catalog branch lands in it, and four subsystems leave core for plugins: the messaging platform
+adapters (`gateway/platforms/*` → `plugins/platforms/*`), the Singularity terminal backend, the OpenClaw
+migration, and "Hermes as an MCP server" (`mcp_serve.py` deleted, now the `mcp-serve` plugin).
+`hermes_state.py` was split into ~15 `hermes_state_*.py` modules; `tui_gateway/server.py` and
+`gateway/run_turn.py` each shed 1,500–2,000 lines into siblings bound back onto the old module namespace
+through `register(namespace)`. Tag-family note: `rc.N-v0.22.x` / `abandoned-rc.N` are release bookkeeping
+and `v0.22.x+canary.<stamp>` are nightly build stamps — the release tag is the only sync target.
+
+**Conflicts: 65 files** (64 content + 1 modify/delete: `mcp_serve.py`). The parent resolved the
+manifests by hand (`pyproject.toml`, `package.json`, `.npmrc`, `website/docs/reference/slash-commands.md`,
+`uv.lock`) plus the four `agent/` files and `hermes_state_messages.py`; four edit-only resolver children
+(claude-opus-5-5) took tools+delegation, the CLI mixin set, gateway/tui/plugins/cron, and
+config/profiles/web, with a fifth wave for the desktop app and the three remaining test files. Every
+child logged per-file verdicts as JSONL; the parent re-verified the load-bearing claims and staged per
+wave.
+
+**Fork behaviour re-homed onto upstream's new shapes** (silent-loss check, not just the conflict hunks):
+
+- `hermes_cli/cli_panel.py` — new upstream file (the `_Panel` class moved out of `cli_tui_mixin.py`).
+  Upstream's copy dropped the fork's `normalize_for_chrome(title)` + `_panel_cwidth` sizing, so wide-glyph
+  titles (emoji, CJK) would detach the box's right corner. Re-applied in the new file.
+- `hermes_cli/portable_glyphs.py` — upstream's session dock introduces `↻` (U+21BB); added as
+  `ACCEPTED_RISK` (EAW=Ambiguous, same class as the other arrows) so the chrome lint passes with a
+  deliberate decision instead of a suppressed failure.
+- `tui_gateway/session_registry.py` — the fork's `open_tool_calls` map is now seeded in both
+  `_init_session` and `_deferred_session_record` (upstream moved those records here; `tool_progress`
+  already `setdefault`ed, so the feature worked but the session record shape had drifted).
+- `agent/auxiliary_task_config.py` — the fork's provider-first `_own_task_config` (task-pin precedence
+  over provider blocks) now sits inside upstream's new `_task_config` helper, and upstream's
+  `route_authoritative` route-field stripping is applied at the wrapper.
+- `agent/interrupt_control.py` — the fork's dropped-redirect/steer folding (`_drain_steer_locked`,
+  `_fold_dropped`) is kept, and upstream's "a shutdown stop never relabels a user Stop" guard is folded
+  into `_publish_interrupt_state`.
+- `agent/tool_executor.py` — the fork's per-call `owns_own_deadline` registry hook (consult) resolves the
+  base timeout, then upstream's `_extend_tool_timeout` applies a registered transport budget on top.
+- `agent/turn_context.py` — the fork's silence-guard and empty-fallback per-turn counters survive
+  alongside upstream's new `_lsp_turn_end_notes`.
+- `tools/delegate_tool_config.py` — `_inherited_child_max_tokens` (route-derived output caps must not
+  follow a child onto another route) is intact, and the per-role/agent-type reasoning precedence is
+  re-expressed over upstream's `ResolvedReasoning` / `override_reasoning_effort`.
+- `tools/delegate_tool.py` — upstream's per-task `TaskRoute` pipeline is the base; the fork's role
+  provider pins replace `route.creds` inside `_build_children`, `agent_type` is stripped before backend
+  routing, and the fork's max-tokens/fallback overrides are re-applied after `_resolve_child_runtime`.
+- `tools/registry.py` — `owns_own_deadline` lives beside upstream's `execution_timeout`.
+- `tools/tool_search.py` — the fork's `config=` deferral semantics survive next to upstream's
+  `session_tool_names()` / scope refusals.
+- `hermes_state_messages.py` — the fork's `anthropic_content_blocks` (assistant-role only) is kept
+  alongside upstream's `DATA_USE` merge into `display_metadata`.
+
+**Fork deltas dropped as undocumented or superseded** (the de-fork bar: no entry, no callers, upstream
+owns the same behaviour now):
+
+- `gateway/platforms/api_server_openai_routes.py` — the fork's `_stream_responses`/`_complete_responses`
+  split and its input/history helpers. Upstream moved that parsing to
+  `api_server_response_admissions.prepare_context`; the fork helpers had no FORK.md entry and no other
+  callers, so the file now matches the tag.
+- `cron/scheduler_delivery.py` — the fork's local `hermes chat` CLI fallback, its degraded-delivery
+  marker, the `_bot_chat` phase split and `_get_bot_chat_delivery_timeout`. Upstream admits to the target
+  gateway or parks the delivery via `bot_chat_legacy.defer`, and config migration 51 deletes the timeout
+  key. `cron/scheduler_delivery_bot_chat.py` (fork-only, now importing a deleted module) was deleted.
+- `cli.py` — `_prepare_deferred_agent_startup` (upstream removed the deferred-startup path; no caller
+  remained). The fork's cleanup skip handler stays.
+- `hermes_cli/cli_init_mixin.py` — the local unknown-toolset warning (`saved_toolset_resolver`). Upstream
+  refuses unknown toolsets gateway-side (PLG-7); the fork's test class was rewritten onto that behaviour.
+- `hermes_cli/cli_info_mixin.py` — the fork's inline `/toolsets` platform filter (upstream's
+  `cli_info_lines.toolsets_lines` owns the surface now).
+- `hermes_cli/config.py`, `hermes_cli/main.py` — `singularity_image` and the `claw` subcommand went with
+  upstream's plugin extractions. The fork's `wait_max_timeout` and `agents` subcommand stay.
+- `gateway/run_turn_model_resolution.py` (the fork's A-046 split) — deleted; upstream moved those
+  runtime-resolution methods to `run_turn_prepare.py` with new launch-policy routing.
+- `mcp_serve.py` — deleted upstream; the fork's 11-line exception-narrowing/logging delta had no entry and
+  no callers.
+
+**Defects caught by verification** (each was green-looking until the check ran):
+
+- Four fork tests still imported the deleted `gateway.platforms.{yuanbao,bluebubbles,qqbot,telegram}`
+  modules — a hard collection error that aborted the first full-suite run. Retargeted to
+  `plugins.platforms.*.adapter`; all four pass.
+- `tests/gateway/test_completion_delivery.py` imported the removed
+  `_MAX_CONSECUTIVE_COMPLETION_DELIVERY_FAILURES`; retargeted to upstream's
+  `_MAX_COMPLETION_INJECTION_ATTEMPTS` (8) and the watcher's give-up assertion holds.
+- The chrome-glyph lint failed on upstream's new `↻` (see above) — a merge-caused chrome regression that
+  no test-suite run would have attributed to this sync.
+
+**Verification.** Locks: `uv.lock` seeded from the tag, `pm.build_env --source . --lock-only` then
+`--check-lock` rc 0 (delta vs tag = exactly the fork pins). Static: Python AST parse clean across the
+tree; `import_resolve.py --tests` diffed 3-tree (merged / tag / pre) leaves exactly one NEW unresolved
+import — the completion-delivery constant, fixed above; `ruff F811/F821/F601` 3-tree diff shows no new
+findings beyond the known namespace-bound `logger` class in `tui_gateway/methods_prompt.py`;
+`fork_symbol_sweep.py` prod references triaged to aliases and locals (no silent drops).
+Desktop: `tsc --build` renderer and electron both rc 0; `vitest run --project ui` 11,584 passed with one
+failure in `src/store/dead-session-prune.test.ts`, a file byte-identical to the tag (upstream red under
+this Node/jsdom, not merge-caused). Python suite: see the close-out entry below.
+
+**Owner-visible behaviour changes** (adopted from upstream, reversible per the named revert):
+
+- Cron bot-chat delivery no longer falls back to the local `hermes chat` CLI when the target gateway is
+  unreachable; the delivery is parked instead. Restore = re-add the fallback in
+  `cron/scheduler_delivery.py::_deliver_to_bot_chat`.
+- `/stop <delegation_id>` still targets only local delegations; on a gateway-hosted CLI the delegation
+  lives in the gateway and this path will not find it.
+- `/toolsets` no longer hides other platforms' `hermes-<platform>` toolsets.
+
 ### Fix — 2026-10-18 (subagents died "Model used all output tokens on reasoning": an exo route's 8192 output cap followed the session onto ollama-cloud and into every delegated child)
 
 **Symptom (user screenshot):** delegated children on `deepseek-v4.1-flash` (ollama-cloud) failing with `Response truncated (finish_reason='length')` / "Thinking Budget Exhausted"; one finished its work but never wrote the file (reasoning ate the budget, the final answer was cut).

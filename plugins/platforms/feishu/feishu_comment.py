@@ -584,7 +584,25 @@ def _reap_reaction_task(task: asyncio.Future) -> None:
         logger.warning("[Feishu-Comment] Adding the OK reaction failed", exc_info=exc)
 
 
-async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: str = "") -> None:
+async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: str = "", secondary: bool = False) -> None:
+    """Run a drive-comment event in its adapter's profile scope (``secondary``: the adapter belongs
+    to a multiplexed secondary profile, so it never borrows the launch scope)."""
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
+
+    if current_secret_scope() is not None:
+        return await _handle_drive_comment_event(client, data, self_open_id=self_open_id)
+    if secondary and is_multiplex_active():
+        # Its connect-time scope was lost: fail closed instead of running on the launch credentials.
+        return logger.warning("[Feishu-Comment] Dropping unscoped comment event from a secondary profile adapter")
+    # SDK callbacks for the launch adapter can arrive without the connect-time
+    # context. Once multiplexing is active, bind the launch tenant explicitly
+    # before this path resolves comment rules, config, or model credentials.
+    from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+    async with async_launch_profile_scope_if_multiplexed():
+        await _handle_drive_comment_event(client, data, self_open_id=self_open_id)
+
+
+async def _handle_drive_comment_event(client: Any, data: Any, *, self_open_id: str = "") -> None:
     """Full orchestration for a drive comment event. Parse + filter (self-reply, receiver, notice_type) -> access rules -> OK reaction -> parallel fetch (doc meta +
     comment) -> build timeline/prompt by is_whole -> run agent -> deliver reply -> remove OK reaction."""
     logger.info("[Feishu-Comment] ========== handle_drive_comment_event START ==========")

@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.platforms.yuanbao import ConnectionManager, YuanbaoAdapter
+# Yuanbao moved out of core into its platform plugin (v0.22.3); the reconnect task fix moved with it.
+from plugins.platforms.yuanbao.adapter import ConnectionManager, YuanbaoAdapter
 
 
 def _make_manager() -> ConnectionManager:
