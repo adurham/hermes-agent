@@ -1,0 +1,28 @@
+{
+  "description": "Create or switch desktop Projects (named workspaces). create: one and switch this chat into it — pass path to anchor it to a repo/folder (the chat's workspace moves there, the sidebar follows). switch: move this chat into an existing project by name/slug/id — the intentional way to move the session, not `cd`. list: all projects + which one this chat is in.",
+  "name": "desktop_project",
+  "parameters": {
+    "properties": {
+      "action": {
+        "enum": [
+          "create",
+          "switch",
+          "list"
+        ],
+        "type": "string"
+      },
+      "name": {
+        "description": "create: human name. switch: name, slug, or id.",
+        "type": "string"
+      },
+      "path": {
+        "description": "create: repo/folder to anchor to.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  }
+}

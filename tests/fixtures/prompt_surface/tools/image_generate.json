@@ -1,0 +1,42 @@
+{
+  "description": "Generate high-quality images from text prompts, or edit / transform an existing image by passing image_url. Returns the result in the `image` field — a URL or an absolute file path; reference it in your response using the current platform's file-delivery convention.",
+  "name": "image_generate",
+  "parameters": {
+    "properties": {
+      "aspect_ratio": {
+        "default": "landscape",
+        "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
+        "enum": [
+          "landscape",
+          "square",
+          "portrait"
+        ],
+        "type": "string"
+      },
+      "image_url": {
+        "description": "Source image to edit/transform (image-to-image). A public URL or an absolute local file path from the conversation. Omit for text-to-image.",
+        "type": "string"
+      },
+      "prompt": {
+        "description": "The text prompt describing the desired image (text-to-image) or the edit to apply (image-to-image). Be detailed and descriptive.",
+        "type": "string"
+      },
+      "reference_image_urls": {
+        "description": "Up to 9 additional reference images (style, character, or composition) guiding an edit. URLs or absolute local paths.",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 9,
+        "type": "array"
+      },
+      "upscale": {
+        "description": "Post-generation high-resolution pass (~2x, extra cost/latency), off by default. A creative enhancer that can alter fine detail (rendered text, faces) — use only when resolution matters more than fidelity.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "prompt"
+    ],
+    "type": "object"
+  }
+}

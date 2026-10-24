@@ -1,0 +1,32 @@
+{
+  "description": "Highlight elements on the preview-pane page, lastingly (drive_preview's own marks fade; annotations stay until removed) — point at findings, flag what you're about to change, keep your place. Use the refs from drive_preview action='elements'. add: outline one element (optional short label — a word or two, drawn on the page). hold: freeze the whole visible field, every element outlined and named. remove/clear: take one/all down. Marks follow their element on scroll; navigation clears them.",
+  "name": "annotate_preview",
+  "parameters": {
+    "properties": {
+      "action": {
+        "description": "Defaults to 'add'.",
+        "enum": [
+          "add",
+          "hold",
+          "remove",
+          "clear"
+        ],
+        "type": "string"
+      },
+      "label": {
+        "description": "Optional caption, e.g. 'cheapest'.",
+        "type": "string"
+      },
+      "ref": {
+        "description": "Ref from drive_preview elements.",
+        "type": "string"
+      },
+      "selector": {
+        "description": "CSS selector fallback. Prefer ref.",
+        "type": "string"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "description": "Get a second opinion from a smarter/more capable reference model before committing to a risky or uncertain decision. Use it to sanity-check your own reasoning, review a plan or diff for structural issues you might be tunnel-visioned past, or ask a pointed question you're not fully confident about. NOT for routine work -- this costs one full call to a (usually more expensive, sometimes slower) model, so use it sparingly and only for genuinely uncertain judgment calls.\n\nThe reference model defaults to `auxiliary.consult` in config.yaml (e.g. Claude Fable 5) and may occasionally decline to answer -- safety refusal, empty response, or timeout are all expected outcomes, not errors. When that happens this tool returns unavailable=true with a reason; proceed using your own judgment instead of retrying immediately with the same model -- if the reason indicates a rate limit or exhausted credits (not a genuine refusal), retry ONCE with an explicit `model`/`provider` override naming a different model before giving up on getting a second opinion.\n\nAvailable to both the main agent and delegated subagents.",
+  "name": "consult",
+  "parameters": {
+    "properties": {
+      "context": {
+        "description": "Relevant background the reviewer needs to judge the question: code, a plan, a diff, a reasoning trace, or key facts. Keep it focused -- trim to what's actually relevant rather than pasting the whole conversation. 'Trim' means leave material OUT entirely, never means replace it with a placeholder like \"[truncated]\" or \"(cut off for length)\" -- the reviewer has no other source to fill the gap from, so a placeholder produces an unusable request that fails before the model is even called.",
+        "type": "string"
+      },
+      "effort": {
+        "description": "Optional: reasoning-effort override for this ONE call (e.g. \"low\", \"medium\", \"high\", \"max\", or \"none\"/\"off\" to disable thinking). Takes priority over the configured auxiliary.<provider>.consult.reasoning_effort for this call only -- config is untouched. Use this to save latency/cost with a lower effort on a simple sanity check, or force max effort on a genuinely hard judgment call regardless of the configured default.",
+        "type": "string"
+      },
+      "model": {
+        "description": "Optional: override the configured auxiliary.consult reference model for this ONE call, e.g. \"claude-opus-4-7\", \"deepseek-v4-pro\", \"gemini-3-pro\". Use this when the default consult model (usually Claude Fable 5) is rate-limited or its credits/quota are exhausted -- the reason string will say so explicitly. Config is untouched; this only affects the current call. Pair with `provider` when the model lives on a specific backend (e.g. provider=\"ollama-cloud\" for a locally-hosted frontier model).",
+        "type": "string"
+      },
+      "provider": {
+        "description": "Optional: provider to use with `model` (e.g. \"anthropic\", \"ollama-cloud\", \"openrouter\"). Only meaningful together with `model` -- a bare provider override with no model still uses the configured auxiliary.consult model for that provider (or that provider's default consult model when no consult model is configured).",
+        "type": "string"
+      },
+      "question": {
+        "description": "The specific question or judgment call you want a second opinion on. Be precise -- a vague question gets a vague answer. Write it out in full: the reviewer sees ONLY this string and `context`, nothing else from this conversation. Never write a placeholder like \"[truncated]\", \"(see above)\", or \"...\" in place of real content -- there is no \"above\" for the reviewer to see, so that produces a broken, wasted call.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "question"
+    ],
+    "type": "object"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "description": "Change how the Hermes desktop app looks: accent colour, light/dark mode, layout. Pass the values to apply them now; the result says what was applied. Pass picker instead to show the user an accent or layout picker card in the chat and wait for their pick. To reveal ONE pane, use focus_pane instead.",
+  "name": "set_theme",
+  "parameters": {
+    "properties": {
+      "accent": {
+        "description": "A swatch id (mono, green, cyan, nous, violet, pink, red, orange), 'theme' for the theme's own accent, or a hex colour '#rrggbb'.",
+        "type": "string"
+      },
+      "layout": {
+        "description": "Layout preset id. Simple mode: sidebar-left, sidebar-right. Advanced mode: default, basic, focus, terminal-deck, quad. The user's saved layouts by id.",
+        "type": "string"
+      },
+      "mode": {
+        "enum": [
+          "light",
+          "dark",
+          "system"
+        ],
+        "type": "string"
+      },
+      "picker": {
+        "description": "Show that picker card and wait for the user (up to 5 minutes). Pass it alone.",
+        "enum": [
+          "accent",
+          "layout"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

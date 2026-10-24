@@ -1,0 +1,35 @@
+{
+  "description": "Point at one thing in the desktop UI with a small arrow bubble (no dimming, no tour chrome) — for when a sentence is clearer with a finger on its subject. Get selectors from tour(action='targets'), prefer stable:true, never guess. One tip at a time (new replaces last); say the same thing in chat too — the bubble is a pointer, not the message. Sparingly: a bubble every turn stops being read.",
+  "name": "show_tip",
+  "parameters": {
+    "properties": {
+      "selector": {
+        "description": "Selector from tour targets.",
+        "type": "string"
+      },
+      "side": {
+        "description": "Omit for 'top'; flips at screen edges.",
+        "enum": [
+          "top",
+          "right",
+          "bottom",
+          "left"
+        ],
+        "type": "string"
+      },
+      "text": {
+        "description": "The one-sentence bubble text.",
+        "type": "string"
+      },
+      "title": {
+        "description": "Optional heading.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text",
+      "selector"
+    ],
+    "type": "object"
+  }
+}
