@@ -44,6 +44,10 @@ def _init(repo: Path) -> Path:
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "T")
+    # Hermetic: never inherit an ambient commit.gpgsign (a CI box or a user's global config that
+    # signs would make every fixture commit fail with exit 128 once the agent socket is stripped).
+    _git(repo, "config", "commit.gpgsign", "false")
+    _git(repo, "config", "tag.gpgsign", "false")
     (repo / "src").mkdir()
     (repo / "src" / "app.py").write_text("v1\n", encoding="utf-8")
     _git(repo, "add", "-A")

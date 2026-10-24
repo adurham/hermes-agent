@@ -103,7 +103,7 @@ async def test_a_chat_answers_the_plugin_command_choice_with_a_typed_number(monk
 _PLUGIN = f'''
 def register(ctx):
     choices = {json.dumps(_CHOICES)}
-    ctx.register_command("delegation", lambda arg: "MODE=" + str(ctx.ask_choice("Delegation mode", choices)),
+    ctx.register_command("pickmode", lambda arg: "MODE=" + str(ctx.ask_choice("Delegation mode", choices)),
                          description="Pick the delegation mode")
 '''
 
@@ -132,7 +132,7 @@ def test_a_local_viewer_answers_the_choice_while_its_slash_exec_waits(tmp_path):
                                 cwd=str(tmp_path))
             sid = created["result"]["session_id"]
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": "exec", "method": "slash.exec",
-                                      "params": {"session_id": sid, "command": "delegation"}}))
+                                      "params": {"session_id": sid, "command": "pickmode"}}))
             asked = None
             async with asyncio.timeout(40):
                 while True:
