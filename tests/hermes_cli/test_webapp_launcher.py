@@ -255,6 +255,18 @@ def test_signing_out_with_no_gateway_running_still_replaces_the_stored_credentia
     assert "No gateway is running" in out and "sign in again" in out
 
 
+def test_signing_out_with_no_gateway_and_a_credential_that_cannot_be_stored_says_nobody_was(world, capsys):
+    """With no gateway running, sign-out replaces the stored credential itself. When the home cannot
+    store one (a stray file where its folder goes, a folder another user owns), it says nobody was
+    signed out and names the file."""
+    from gateway.webapp_listener import TOKEN_PATH
+    (world["root"] / "webapp").write_text("not a folder\n", encoding="utf-8")
+    world["answers"]["webapp-sign-out"] = launcher.GatewayUnreachable("no gateway")
+    assert launcher.cmd_webapp(_args(sign_out=True)) == 1
+    out = capsys.readouterr().out
+    assert "Nobody was signed out" in out and str(world["root"] / TOKEN_PATH) in out
+
+
 STARTING = {"ok": False, "error": "unknown verb: 'webapp-sign-out'"}  # its verbs register once it is up
 SIGNED_OUT = {"ok": True, "result": {"signed_out": True, "serving": True, "sign_in_gate": False,
                                      "connections_closed": 1}}

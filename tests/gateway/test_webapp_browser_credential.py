@@ -62,6 +62,32 @@ def test_a_private_credential_is_reused(tmp_path):
     assert webapp.browser_session_token(tmp_path) == first
 
 
+def test_a_credential_file_that_is_not_text_is_replaced(tmp_path):
+    """A token file that is not UTF-8 (saved as UTF-16 by an editor, damaged on disk) is corrupt: it is
+    replaced like a malformed one, never raised to the gateway mounting the Webapp."""
+    path = tmp_path / webapp.TOKEN_PATH
+    path.parent.mkdir(parents=True)
+    path.write_bytes((STORED + "\n").encode("utf-16"))
+    token = webapp.browser_session_token(tmp_path)
+    assert token != STORED
+    assert path.read_text(encoding="utf-8").strip() == token
+
+
+@pytest.mark.parametrize("block", ["folder-is-a-file", "token-is-a-folder"])
+def test_a_credential_that_cannot_be_stored_names_its_file(tmp_path, block):
+    """A credential that can be neither read nor written (a stray file or folder at its path, a folder
+    another user owns, a full or read-only home) raises an OSError that names the file, so the gateway
+    reports that file as why the Webapp is unavailable."""
+    if block == "folder-is-a-file":
+        (tmp_path / "webapp").write_text("not a folder\n", encoding="utf-8")
+    else:
+        (tmp_path / webapp.TOKEN_PATH).mkdir(parents=True)
+    with pytest.raises(webapp.BrowserCredentialError) as raised:
+        webapp.browser_session_token(tmp_path)
+    assert isinstance(raised.value, OSError)
+    assert str(tmp_path / webapp.TOKEN_PATH) in str(raised.value)
+
+
 @pytest.mark.parametrize("status", [
     {"state": "off", "url": None, "reason": None},
     {"state": "unavailable", "url": None, "reason": "could not listen on 127.0.0.1:9120 (in use)"},

@@ -1,10 +1,11 @@
 """The gateway keeps a listener for native clients whatever happens to the Webapp's.
 
 When the Webapp's listener cannot start, even after its dashboard mount is up (another process won the
-race to listen on the port), the gateway comes up on main's private loopback listener instead: native
-Desktop, CLI and TUI clients still connect, the mount carries none of the Webapp's state, and
-``hermes webapp --status`` says why the Webapp is not served. Each case runs a real gateway listener
-in a child process (``fixtures/webapp_fallback_peer.py``) with its own ``HERMES_HOME``.
+race to listen on the port, or the browser credential in the home cannot be read or written), the
+gateway comes up on main's private loopback listener instead: native Desktop, CLI and TUI clients still
+connect, the mount carries none of the Webapp's state, and ``hermes webapp --status`` says why the
+Webapp is not served. Each case runs a real gateway listener in a child process
+(``fixtures/webapp_fallback_peer.py``) with its own ``HERMES_HOME``.
 """
 import ipaddress
 from urllib.parse import urlsplit
@@ -51,6 +52,41 @@ def test_a_webapp_that_loses_its_port_replaces_the_browser_credential(lost_liste
     assert held["status"]["state"] == "unavailable"
     assert held["native_session_list"] is True
     assert held["token_rotated"] is True
+
+
+@pytest.fixture(scope="module", params=["folder-is-a-file", "token-is-a-folder"])
+def unusable_credential(request, tmp_path_factory):
+    spec = {"webapp": {"enabled": True, "port": _free_port()}, "credential": request.param}
+    return _run(tmp_path_factory.mktemp(request.param), spec)
+
+
+def test_a_browser_credential_that_cannot_be_stored_leaves_native_clients_mains_listener(unusable_credential):
+    """A Webapp whose browser credential cannot be read or written (a stray file or folder at its path, a
+    folder another user owns, a full or read-only home) is unavailable, and the gateway still starts on
+    main's private listener with none of the Webapp's state, as for a taken port."""
+    report = unusable_credential
+    assert report["start_error"] is None, report.get("start_traceback")
+    assert report["native_session_list"] is True
+    assert report["status"]["state"] == "unavailable"
+    assert report["state"]["surface"] == "<absent>"
+    assert report["state"]["web_dist_set"] is False
+    assert "WEBAPP_BUNDLE" not in report["index"]["body"]
+
+
+def test_a_browser_credential_that_cannot_be_stored_is_the_reason_given(unusable_credential):
+    """The reason ``hermes webapp --status`` prints names the credential file, not the port."""
+    reason = unusable_credential["status"]["reason"]
+    assert "could not listen" not in reason, reason
+    assert "session-token" in reason and "credential" in reason, reason
+
+
+def test_a_browser_credential_that_is_not_text_is_replaced_and_served(tmp_path):
+    """A token file that is not UTF-8 (saved as UTF-16 by an editor, damaged on disk) is a corrupt
+    credential: like a malformed one it is replaced, and the Webapp is served with the new one."""
+    report = _run(tmp_path, {"webapp": {"enabled": True, "port": _free_port()}, "credential": "not-utf8"})
+    assert report["start_error"] is None, report.get("start_traceback")
+    assert report["status"]["state"] == "serving"
+    assert report["state"]["session_token_is_browser_credential"] is True
 
 
 def test_a_webapp_that_starts_keeps_the_browser_credential(tmp_path):

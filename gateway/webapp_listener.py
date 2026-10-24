@@ -222,11 +222,17 @@ def use_own_sign_in(webapp: WebappMount):
     return None if client is None else listener_client.use(*client)
 
 
+class BrowserCredentialError(OSError):
+    """The Webapp's browser credential cannot be stored in the home; ``str()`` names the file and why."""
+
+
 def browser_session_token(home, *, rotate: bool = False) -> str:
     """The dashboard session token a Webapp browser holds, kept user-only in *home*.
 
-    Created on first use; *rotate* replaces it, which signs every open tab out. A stored token other
-    users could read is replaced the same way, and its folder is closed to them again (POSIX)."""
+    Created on first use; *rotate* replaces it, which signs every open tab out. A stored token that
+    cannot be read, is not text or is malformed, or that other users could read, is replaced the same
+    way, and its folder is closed to them again (POSIX). Raises :class:`BrowserCredentialError` when
+    no token can be written there."""
     from utils import atomic_write_text
 
     path = Path(home) / TOKEN_PATH
@@ -234,13 +240,17 @@ def browser_session_token(home, *, rotate: bool = False) -> str:
     if not rotate:
         try:
             token = path.read_text(encoding="utf-8-sig").strip()
-        except OSError:
+        except (OSError, ValueError):  # missing, unreadable or not UTF-8: replaced below
             token = ""
         if _TOKEN_FORMAT.fullmatch(token) and not _readable_by_other_users(path):
             return token
     token = secrets.token_urlsafe(32)
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    atomic_write_text(path, token + "\n", mode=0o600)
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_write_text(path, token + "\n", mode=0o600)
+    except OSError as exc:
+        raise BrowserCredentialError(
+            f"could not store the Webapp's browser credential in {path} ({exc.strerror or exc})") from exc
     return token
 
 

@@ -158,7 +158,7 @@ def _signed_out_summary(result: dict) -> str:
 
 
 def _sign_out(target: Path) -> int:
-    from gateway.webapp_listener import browser_session_token
+    from gateway.webapp_listener import BrowserCredentialError, browser_session_token
     for attempt in range(_START_WAIT_ATTEMPTS + 1):
         try:
             response = _control(target, "webapp-sign-out")
@@ -171,7 +171,11 @@ def _sign_out(target: Path) -> int:
         if response is None and state == "absent":
             # No gateway is running: replace the stored credential so no browser can use the old one
             # when one starts. Behind the sign-in gate, logins bound to it end too.
-            browser_session_token(target, rotate=True)
+            try:
+                browser_session_token(target, rotate=True)
+            except BrowserCredentialError as exc:
+                print(f"Nobody was signed out: {exc}")
+                return 1
             print("No gateway is running for this profile. Replaced the stored Webapp credential: every browser "
                   "must sign in again when the gateway next serves the Webapp.")
             return 0

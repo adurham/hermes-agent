@@ -73,11 +73,17 @@ class GatewayDashboardMount:
         return self.web.app.state if self.web is not None else self._state
 
     def _bind_state(self, web) -> None:
+        webapp = getattr(self._state, "webapp", None)
+        # The browser credential before any app state: one the home cannot store fails the mount
+        # with nothing set, and the gateway falls back to its private listener.
+        token = None
+        if webapp is not None:
+            from gateway.webapp_listener import browser_session_token
+            token = browser_session_token(webapp.home)
         # Local clients authenticate with tickets minted on the owner-only control socket. The SPA
         # session token is a bearer credential any loopback peer (any OS user) could read from
         # GET /, so the gateway-hosted listener never publishes it.
         web.app.state.withhold_session_token = True
-        webapp = getattr(self._state, "webapp", None)
         own_url = _listener_public_url(webapp)
         if own_url is not None:
             web.app.state.listener_public_url = own_url
@@ -95,12 +101,11 @@ class GatewayDashboardMount:
             # The browser-hosted Desktop: its bundle at /, its routes (launch handoff, socket tickets,
             # host terminal) on, and the browser credential kept in the home so tabs survive a restart.
             # The page itself still never carries the credential (the webapp surface withholds it).
-            from gateway.webapp_listener import browser_session_token
             web.app.state.ui_surface = "webapp"
             web.app.state.web_dist = webapp.dist
             web.app.state.webapp_home = webapp.home
             self._replaced_session_token = web._SESSION_TOKEN
-            web._SESSION_TOKEN = browser_session_token(webapp.home)
+            web._SESSION_TOKEN = token
 
     def _unbind_state(self) -> None:
         undo_own_sign_in, self._undo_own_sign_in = self._undo_own_sign_in, None
@@ -139,8 +144,9 @@ class GatewayDashboardMount:
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):
                 raise RuntimeError("gateway API already started")
             try:
-                # Binding may fail too (the Webapp's browser credential cannot be read or written);
-                # its app state and swapped session token roll back with a failed lifespan's.
+                # A bind that fails partway (the auth gate refusing a gated bind, or the Webapp's
+                # browser credential that cannot be read or written) is undone like a failed lifespan:
+                # the listener the gateway falls back to finds the app as main's does.
                 self._bind_state(web)
                 lifespan = web.app.router.lifespan_context(web.app)
                 await lifespan.__aenter__()

@@ -496,7 +496,9 @@ async def recover_bot_mailbox(authority):
 
 async def start_gateway_runtime_api(runner):
     from gateway import run_api
-    from gateway.webapp_listener import browser_session_token, dial_origin, listener_plan, register_control_verbs
+    from gateway.webapp_listener import (
+        BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
+    )
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
     host, port, webapp, unusable = listener_plan(home)
@@ -510,11 +512,14 @@ async def start_gateway_runtime_api(runner):
     except (Exception, SystemExit) as exc:
         if webapp is None:
             raise
-        # The Webapp's listener could not start (port taken, address unavailable, or the dashboard's
-        # auth gate exiting on a wildcard bind with no sign-in provider): native clients still need
-        # this gateway, so it keeps main's private listener and reports why the Webapp is not served.
+        # The Webapp's listener could not start (port taken, address unavailable, its browser credential
+        # not storable in the home, or the dashboard's auth gate exiting on a wildcard bind with no
+        # sign-in provider): native clients still need this gateway, so it keeps main's private
+        # listener and reports why the Webapp is not served.
         if isinstance(exc, SystemExit):
             reason = str(exc.code).strip()  # the gate's own message names the fix
+        elif isinstance(exc, BrowserCredentialError):
+            reason = str(exc)  # names the file and why it cannot be stored
         elif isinstance(exc, OSError) and exc.filename:  # the browser credential's file, not the port
             reason = f"could not use {exc.filename} ({exc.strerror or exc})"
         else:

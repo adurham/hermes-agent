@@ -16,7 +16,11 @@ Run as ``python webapp_fallback_peer.py '<spec json>'`` with an isolated ``HERME
 - ``built``: whether the Webapp bundle has its ``index.html``;
 - ``update_fails``: before the gateway starts, ``hermes update``'s Webapp step runs for this home and its
   build fails; once the gateway serves, ``hermes webapp``'s build succeeds;
-- ``probe_host``: a Host header to send (a public hostname), or null.
+- ``probe_host``: a Host header to send (a public hostname), or null;
+- ``credential``: the stored browser credential this gateway finds: ``"folder-is-a-file"`` (a plain
+  file where the ``webapp/`` folder goes), ``"token-is-a-folder"`` (a folder where
+  ``webapp/session-token`` goes), ``"not-utf8"`` (the token saved as UTF-16), or null for a
+  readable token an earlier gateway stored.
 
 Writes ``receipt.json`` into ``HERMES_HOME`` (the gateway redirects stdout). No inference: the model points
 at a closed port and no turn is submitted. Tests start it with :func:`run`.
@@ -73,6 +77,32 @@ def _config(spec) -> str:
     if spec.get("webapp") is not None:
         document["webapp"] = spec["webapp"]
     return json.dumps(document, indent=2)  # JSON is YAML
+
+
+def _seed_credential(home, kind):
+    """The browser credential an earlier gateway stored, or (*kind*) one this gateway cannot use."""
+    folder = home / "webapp"
+    if kind == "folder-is-a-file":
+        folder.write_text("not a folder\n", encoding="utf-8")
+        return
+    # Seeded user-only, as the gateway writes it: a stored token other users can read is replaced.
+    folder.mkdir(mode=0o700, exist_ok=True)
+    token = folder / "session-token"
+    if kind == "token-is-a-folder":
+        token.mkdir()
+    elif kind == "not-utf8":
+        token.write_bytes((SEEDED_TOKEN + "\n").encode("utf-16"))
+    else:
+        token.write_text(SEEDED_TOKEN + "\n", encoding="utf-8")
+        token.chmod(0o600)
+
+
+def _stored_token(home):
+    """The browser credential stored in *home*, or None when it cannot be read as text."""
+    try:
+        return (home / "webapp" / "session-token").read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return None
 
 
 def _fail_startup_once():
@@ -147,10 +177,7 @@ def _mounted_state(home):
     if web is None:
         return {"mounted": False}
     state = web.app.state
-    try:
-        stored = (home / "webapp" / "session-token").read_text(encoding="utf-8").strip()
-    except OSError:
-        stored = ""
+    stored = _stored_token(home)
     return {
         "mounted": True,
         "surface": getattr(state, "ui_surface", "<absent>"),
@@ -187,13 +214,8 @@ async def probe(spec):
 
     home = Path(os.environ["HERMES_HOME"])
     (home / "config.yaml").write_text(_config(spec), encoding="utf-8")
-    # Seeded user-only, as the gateway writes it: a stored token other users can read is replaced.
-    if spec.get("credential_unusable"):
-        (home / "webapp").write_text("not a folder\n", encoding="utf-8")
-    else:
-        (home / "webapp").mkdir(mode=0o700, exist_ok=True)
-        (home / "webapp" / "session-token").write_text(SEEDED_TOKEN + "\n", encoding="utf-8")
-        (home / "webapp" / "session-token").chmod(0o600)
+    # A file where the folder belongs (``credential_unusable``) is the ``folder-is-a-file`` case.
+    _seed_credential(home, "folder-is-a-file" if spec.get("credential_unusable") else spec.get("credential"))
     dist = home.parent / "dist-webapp"
     dist.mkdir(exist_ok=True)
     if spec.get("built", True):
@@ -284,8 +306,7 @@ async def probe(spec):
                 built = await client.get("/")
                 report["index_once_built"] = {"status": built.status_code,
                                               "is_webapp": "WEBAPP_BUNDLE rebuilt" in built.text}
-        if not spec.get("credential_unusable"):
-            report["token_rotated"] = (home / "webapp" / "session-token").read_text().strip() != SEEDED_TOKEN
+        report["token_rotated"] = _stored_token(home) != SEEDED_TOKEN
     finally:
         await stop_gateway_api(api)
         if rival is not None:
