@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-104 registry commands: 29 control, 19 read, 56 refused.
+106 registry commands: 29 control, 19 read, 58 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -52,6 +52,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/cron` | read (bare / `list`; add/edit/pause/resume/run/remove control, from the classic CLI's own command socket only) | HermesCLI._handle_cron_command | slash.exec | unavailable: terminal | slash.exec | client-local (cli_only) |
 | `/curator` | control | HermesCLI._handle_curator_command | slash.exec | unavailable: advanced | slash.exec |  |
 | `/debug` | control | HermesCLI._handle_debug_command | slash.exec | slash.exec | slash.exec | uploads logs to a public paste |
+| `/delegation` | refused | HermesCLI._handle_delegation_command | slash.exec: refused | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/deny` | control | messaging-only: unknown command | slash.exec | slash.exec | slash.exec | messaging-only |
 | `/diff` | read | HermesCLI._handle_diff_command | slash.exec | slash.exec | slash.exec |  |
 | `/discard` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | prompt.resolve_unknown | messaging-only |
@@ -71,6 +72,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/indicator` | refused | HermesCLI._handle_indicator_command | config.get, config.set | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/init` | control | HermesCLI._handle_init_command | slash.exec | slash.exec | slash.exec |  |
 | `/insights` | read | HermesCLI._show_insights | slash.exec | unavailable: advanced | slash.exec |  |
+| `/interleaved` | refused | HermesCLI._handle_interleaved_command | slash.exec: refused | slash.exec: refused | slash.exec: refused |  |
 | `/journey` (/learning, /memory-graph) | refused | HermesCLI._handle_journey_command | local | action: journey | slash.exec: refused | client-local (cli_only) |
 | `/kanban` | read (list/show/stats/assignees/context/runs/log/diagnostics) | HermesCLI._handle_kanban_command | slash.exec | unavailable: advanced | slash.exec |  |
 | `/learn` | control | HermesCLI._handle_learn_command | slash.exec | slash.exec | slash.exec |  |
@@ -93,7 +95,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/prompt` (/compose) | refused | HermesCLI._handle_prompt_compose_command | local | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/queue` (/q) | refused | HermesCLI._cmd_queue | local | action: queue | prompt.submit |  |
 | `/quit` (/exit) | refused | HermesCLI._cmd_exit | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
-| `/reasoning` | control | HermesCLI._handle_reasoning_command | canonical route | action: reasoning | slash.exec | per-session setting (gateway handler) |
+| `/reasoning` (/effort) | control | HermesCLI._handle_reasoning_command | canonical route | action: reasoning | slash.exec | per-session setting (gateway handler) |
 | `/redraw` | refused | HermesCLI._cmd_redraw | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/refine` | control | HermesCLI._handle_refine_command | slash.exec | slash.exec | slash.exec |  |
 | `/reload` | refused | HermesCLI._cmd_reload | canonical route | unavailable: terminal | slash.exec: refused | client-local (cli_only) |

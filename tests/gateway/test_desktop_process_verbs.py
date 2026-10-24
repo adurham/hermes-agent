@@ -32,7 +32,10 @@ def test_desktop_process_kill_stop_and_mcp_reload_reach_only_this_session(tmp_pa
     assert set(receipt['tools_show']) == {'sections', 'total'}, receipt
     assert receipt['tools_show']['total'] == sum(len(s['tools']) for s in receipt['tools_show']['sections']), receipt
     # Scoped to THIS session's toolsets (created with toolsets=[]), not the launch profile's catalog.
-    assert receipt['tools_show']['total'] == 0, receipt
+    # FORK: ``consult`` is a non-configurable core toolset that survives an explicit empty list
+    # (tests/tui_gateway/test_gui_surface_toolsets.py pins that), so it is the ONLY tool shown.
+    shown_tools = [t['name'] for s in receipt['tools_show']['sections'] for t in s['tools']]
+    assert shown_tools == ['consult'], receipt
     assert receipt['skills_reload'] == ['zeta-skill'], receipt
     assert receipt['exited'] == [True, True, False], receipt
     assert receipt['reload_mcp'] == 'reloaded', receipt

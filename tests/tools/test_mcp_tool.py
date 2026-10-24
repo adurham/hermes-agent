@@ -2511,12 +2511,18 @@ class TestUtilitySchemas:
         from tools.mcp_tool_schema import _build_utility_schemas
 
         schemas = _build_utility_schemas("myserver")
-        assert len(schemas) == 4
+        # Four resource/prompt utilities plus upstream's three MCP-events utilities (v0.22.5),
+        # all under the fork's bare ``<server>_<tool>`` registered-name convention.
         names = [s["schema"]["name"] for s in schemas]
-        assert "myserver_list_resources" in names
-        assert "myserver_read_resource" in names
-        assert "myserver_list_prompts" in names
-        assert "myserver_get_prompt" in names
+        assert names == [
+            "myserver_list_resources",
+            "myserver_read_resource",
+            "myserver_list_prompts",
+            "myserver_get_prompt",
+            "myserver_list_event_types",
+            "myserver_subscribe_event",
+            "myserver_unsubscribe_event",
+        ]
 
     def test_hyphens_sanitized_in_utility_names(self):
         from tools.mcp_tool_schema import _build_utility_schemas

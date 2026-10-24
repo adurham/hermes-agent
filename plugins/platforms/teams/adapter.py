@@ -840,7 +840,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="teams", label="Microsoft Teams", adapter_factory=lambda cfg: TeamsAdapter(cfg),
         dashboard_description="Connect Hermes to Microsoft Teams chats via the Bot Framework.",
-        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
+        docs_url="https://github.com/adurham/hermes-agent/blob/main/website/docs/user-guide/messaging/teams.md",
         check_fn=check_requirements,  # PASSIVE probe — never installs
         ensure_deps_fn=check_teams_requirements,  # ACTIVE lazy-installer, run by create_adapter()
         validate_config=validate_config, is_connected=is_connected,

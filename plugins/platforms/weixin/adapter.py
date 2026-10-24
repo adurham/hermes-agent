@@ -1436,7 +1436,7 @@ def register(ctx) -> None:
         name="weixin", label="Weixin / WeChat", adapter_factory=WeixinAdapter, check_fn=check_weixin_requirements,
         dashboard_label="Weixin / WeChat (Personal)",
         dashboard_description="Connect a personal WeChat account through Tencent's iLink Bot API.",
-        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin/",
+        docs_url="https://github.com/adurham/hermes-agent/blob/main/website/docs/user-guide/messaging/weixin.md",
         dashboard_env_vars=("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"),
         is_connected=_is_connected, required_env=["WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"], install_hint=_INSTALL_HINT,
         config_connected_fn=_config_connected,

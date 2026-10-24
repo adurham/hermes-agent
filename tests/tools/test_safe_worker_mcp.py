@@ -66,5 +66,6 @@ def test_safe_worker_never_spawns_mcp_servers(tmp_path, mode):
         assert not spawned.exists()
     else:
         assert out["loaded"] == ["owned"], out
-        assert any(n.endswith("__echo") for n in out["explicit"]), out
+        # FORK: MCP tools register bare ``<server>_<tool>`` (mcp_tool_schema.mcp_registered_tool_name).
+        assert "editor_echo" in out["explicit"], out
         assert spawned.exists()

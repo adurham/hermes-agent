@@ -55,7 +55,8 @@ def test_canonical_admission_and_creation_models_leave_legacy_wire_unchanged():
 @pytest.mark.asyncio
 async def test_canonical_result_validation_catches_a_handler_contract_violation(tmp_path, monkeypatch):
     from tui_gateway.contracts import registry
-    monkeypatch.setattr(registry, 'STRICT', True)
+    # FORK: strict mode is read from HERMES_TEST_ISOLATION at report time (no import-time STRICT constant).
+    monkeypatch.setenv('HERMES_TEST_ISOLATION', '1')
     db = SessionDB(db_path=tmp_path / 'state.db')
     try:
         authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test', db=db,

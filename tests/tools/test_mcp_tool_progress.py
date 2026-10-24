@@ -41,16 +41,17 @@ def test_mcp_progress_notifications_reach_tool_progress_callback(monkeypatch, tm
 
     events = []
     try:
-        assert "mcp__prog__slow" in disc.discover_mcp_tools()
-        with bound_tool_progress(lambda *a, **kw: events.append((a, kw)), "mcp__prog__slow", "call-7"):
-            result = registry.dispatch("mcp__prog__slow", {})
+        # FORK: MCP tools register bare ``<server>_<tool>`` (mcp_tool_schema.mcp_registered_tool_name).
+        assert "prog_slow" in disc.discover_mcp_tools()
+        with bound_tool_progress(lambda *a, **kw: events.append((a, kw)), "prog_slow", "call-7"):
+            result = registry.dispatch("prog_slow", {})
         assert "done" in result
     finally:
         from tools.mcp_tool_lifecycle import shutdown_mcp_servers
         shutdown_mcp_servers()
         _loop._stop_mcp_loop()
 
-    assert events and all(a[0] == "tool.progress" and a[1] == "mcp__prog__slow" for a, _ in events)
+    assert events and all(a[0] == "tool.progress" and a[1] == "prog_slow" for a, _ in events)
     assert {kw["tool_call_id"] for _, kw in events} == {"call-7"}
     # 20 updates sent back to back: the throttle drops intermediates, never the final 100%. Exact
     # pacing is pinned below on a controlled clock.

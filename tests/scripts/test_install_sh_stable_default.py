@@ -58,8 +58,10 @@ def test_install_lands_on_the_latest_stable_release(tmp_path, side, start, args,
         '#!/bin/sh\ncase "$*" in *api.github.com*) printf \'{\\n  "tag_name": "v1.2.3",\\n}\\n\';; *) exit 22;; esac\n',
         encoding="utf-8")
     (bin_dir / "curl").chmod(0o755)
+    # FORK: install.sh's default REPO_URL is the fork (adurham/hermes-agent), which is_official_repo
+    # deliberately treats as a fork that follows its branch; select the official repository explicitly.
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(home), "NO_COLOR": "1",
-           "GIT_CONFIG_NOSYSTEM": "1"}
+           "GIT_CONFIG_NOSYSTEM": "1", "HERMES_REPO_URL": OFFICIAL}
     if start:
         install.parent.mkdir(parents=True)
         _git(tmp_path, "clone", "-q", OFFICIAL, str(install), env=env)

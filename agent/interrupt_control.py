@@ -226,7 +226,11 @@ class InterruptControlMixin:
 
         def _fold_dropped(_dropped_redirect, _dropped_steer):
             # Preserve an accepted-but-undelivered redirect and/or steer correction by merging it
-            # into the interrupt message instead of discarding it.
+            # into the interrupt message instead of discarding it. Not for a gateway restart/shutdown stop:
+            # its message IS the cause owner_stop_notice keys on (an exact match), the turn is never
+            # replayed, and the restart notice already tells the user to resend — the restart drops it.
+            if tool_reason == _REASON_GATEWAY_SHUTDOWN:
+                return message
             parts = [message] if message else []
             if _dropped_redirect:
                 parts.append(_dropped_redirect)

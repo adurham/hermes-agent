@@ -997,7 +997,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="line", label="LINE", adapter_factory=lambda cfg: LineAdapter(cfg), check_fn=check_requirements,
         dashboard_description="Use Hermes from LINE via the LINE Messaging API webhook.",
-        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line",
+        docs_url="https://github.com/adurham/hermes-agent/blob/main/website/docs/user-guide/messaging/line.md",
         validate_config=validate_config, is_connected=is_connected,
         required_env=["LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET"], install_hint="pip install aiohttp",
         setup_fn=interactive_setup, env_enablement_fn=_env_enablement, cron_deliver_env_var="LINE_HOME_CHANNEL",

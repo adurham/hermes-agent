@@ -85,6 +85,8 @@ def test_flush_stream_drains_deferred_messages_after_closing_box():
     """
     cli = _make_cli_stub()
     cli._stream_box_opened = True
+    # Opening the box also marks it live (``_emit_stream_text``); the closer is gated on it.
+    cli._stream_box_live = True
     # Pre-populate as if the user pressed Enter mid-stream
     cli._post_stream_messages.append("  Queued for the next turn: bar")
 

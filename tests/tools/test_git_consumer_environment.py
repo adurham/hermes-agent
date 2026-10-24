@@ -122,16 +122,20 @@ def test_git_consumers_answer_by_design_gaps_without_a_worker(tmp_path, monkeypa
         worker_requests.append(args)
         raise pm.InstallError("pm", "worker requested in test")
 
-    orig_gap = client._target_gap_error
+    # Upstream v0.22.5 answers the registry gap inside ``_missing_or_refuse`` (it raises the
+    # worker's own refusal before any lazy-policy check), so spy on that client-side boundary.
+    orig_missing = client._missing_or_refuse
 
-    def gap_spy(name, missing):
-        refusal = orig_gap(name, missing)
-        gap_refusals.append((name, list(missing), refusal is not None))
-        return refusal
+    def gap_spy(name):
+        try:
+            return orig_missing(name)
+        except pm.InstallError as refusal:
+            gap_refusals.append((name, str(refusal), "unavailable on" in str(refusal)))
+            raise
 
     monkeypatch.setattr(client, "is_runtime", lambda: False)
     monkeypatch.setattr(client, "_request", record_request)
-    monkeypatch.setattr(client, "_target_gap_error", gap_spy)
+    monkeypatch.setattr(client, "_missing_or_refuse", gap_spy)
     monkeypatch.setattr(installer, "lazy_installs_allowed", lambda: True)
     monkeypatch.setattr(checkpoint_manager, "CHECKPOINT_BASE", tmp_path / "checkpoints")
 
