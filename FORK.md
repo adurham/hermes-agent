@@ -154,10 +154,12 @@ merge (`51f17ea7b88`), and each names its detector so a future sync can run the 
 pristine tag): 89 merge-caused failures found, all fixed; 26 remain, none of them merge-caused — 14 are
 fork-only tests that were already red before the sync (`test_hot_tier_audit` 7,
 `test_reasoning_only_stop_persistence` 2, `test_malformed_tool_args_no_fallback` 2,
-`test_compress_focus` 1, `test_reasoning_disable_recovery` 1, `test_image_shrink_recovery` 1), 11 pass in
-isolation and fail only under batch load/order (`test_autostash_cleanup` 7, `test_mcp_serve_error_logging` 2,
-`test_browser_real_profile` 1, `test_plugin_command_choice` 1), and `test_pm_runtime_bootstrap_tls` fails
-identically on the tag.**
+`test_compress_focus` 1, `test_reasoning_disable_recovery` 1, `test_image_shrink_recovery` 1), 11 are
+Linux-only and unresolved — they fail under direct pytest on the workstation too, not just under load
+(`test_autostash_cleanup` 7 git-subprocess timeouts, `test_mcp_serve_error_logging` 2,
+`test_browser_real_profile::test_relaunch_path_does_snapshot`,
+`test_plugin_command_choice::test_a_local_viewer_answers_the_choice_while_its_slash_exec_waits`), and
+`test_pm_runtime_bootstrap_tls` fails identically on the tag.**
 
 **Residual, not merge-caused:** `tests/agent/test_compaction_prompt_rebuild.py` and
 `tests/ci/test_*publication*.py` / `test_prompt_surface.py` are red on the pristine tag in this workstation
