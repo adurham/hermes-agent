@@ -232,19 +232,36 @@ def _stage_browser_file_attachment(session: dict, staged_upload: object, name: s
 
     raw_home, raw_path = parse_staged_upload(staged_upload)
     source = resolve_staged_upload(Path(raw_home), raw_path)
-    # Keep the existing out-of-workspace copy into attachments/, which is visible to
-    # container/SSH terminal backends through cache mounts.
+    # Copied into attachments/ even inside the workspace: the upload route prunes its staging after
+    # 7 days. attachments/ is also visible to container/SSH terminal backends through cache mounts.
     return _stage_session_file_attachment(
-        session, raw_path=str(source), data_url="", name=name, max_bytes=WEBAPP_ATTACHMENT_MAX_BYTES)
+        session, raw_path=str(source), data_url="", name=name, max_bytes=WEBAPP_ATTACHMENT_MAX_BYTES,
+        staged=True)
+
+
+def _referenced_in_place(session: dict, path: Path, workspace: Path, *, staged: bool) -> bool:
+    """Whether an attached host file is referenced where it is: inside the workspace, and not a
+    browser upload staged in the profile's ``uploads/`` (pruned after 7 days, so always copied)."""
+    if staged or not path.is_relative_to(workspace):
+        return False
+    try:
+        from hermes_cli.staged_uploads import is_staged_upload
+    except ImportError:
+        # An install without the web stack (fastapi) has no upload route that could stage one.
+        return True
+    profile_home = session.get("profile_home")
+    return not is_staged_upload(Path(profile_home) if profile_home else _hermes_home, path)
 
 
 def _stage_session_file_attachment(
     session: dict, *, raw_path: str, data_url: str, name: str, max_bytes: int | None = None,
+    staged: bool = False,
 ) -> tuple[Path, bool]:
     """Make a desktop file attachment available to the gateway agent: ``(stored_path, uploaded)``.
     Inside the workspace -> as-is; gateway-visible but outside -> copied into ``attachments/``
     (bind-mounted into container backends so ``@file:`` resolves in the sandbox); not on the
-    gateway -> ``data_url`` bytes decoded into ``attachments/``. ``max_bytes`` caps the copy of a
+    gateway -> ``data_url`` bytes decoded into ``attachments/``. A browser upload (*staged*, or a
+    path in the profile's ``uploads/``) is always copied. ``max_bytes`` caps the copy of a
     browser upload; a host file is copied whatever its size, inline bytes up to
     ``_ATTACHMENT_MAX_BYTES``."""
     workspace = Path(_session_cwd(session)).resolve()
@@ -263,13 +280,11 @@ def _stage_session_file_attachment(
                 found = _resolve_attachment_path(path_token)
                 resolved = Path(found).resolve() if found is not None else None
     if resolved is not None:
-        try:
-            resolved.relative_to(workspace)
+        if _referenced_in_place(session, resolved, workspace, staged=staged):
             return resolved, False
-        except ValueError:
-            # Without a cap the copy below streams the file, so its size never reaches memory.
-            payload = None if max_bytes is None else _read_attachment_bytes(resolved, max_bytes)
-            filename = resolved.name
+        # Without a cap the copy below streams the file, so its size never reaches memory.
+        payload = None if max_bytes is None else _read_attachment_bytes(resolved, max_bytes)
+        filename = resolved.name
     else:
         if not data_url:
             raise ValueError("file not found on gateway and no data_url provided")

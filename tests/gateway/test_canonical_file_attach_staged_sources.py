@@ -11,6 +11,7 @@ import io
 import os
 from pathlib import Path
 import shutil
+import time
 from types import SimpleNamespace
 import uuid
 
@@ -158,3 +159,56 @@ async def test_an_upload_that_grew_past_the_browser_limit_is_not_copied(owner):
     os.truncate(receipt['path'], WEBAPP_ATTACHMENT_MAX_BYTES + 1)
     assert isinstance(await owner.attach(receipt), str)  # refused
     assert not owner.attachments.exists()
+
+
+@pytest_asyncio.fixture(params=['home-folder', 'profile-home'])
+async def home_in_workspace(request, tmp_path, monkeypatch):
+    """A chat whose workspace holds the profile home: the user's home folder (where sessions start
+    unless ``terminal.cwd`` says otherwise; a default profile home is ``~/.hermes``) or the profile
+    home itself."""
+    from gateway.runtime_bootstrap import TicketStore
+    from hermes_cli import install_identity
+
+    monkeypatch.setattr(install_identity, '_INSTALL_ID_CACHE', {'root': None, 'value': None})
+    home = tmp_path / '.hermes'
+    home.mkdir()
+    workspace = tmp_path if request.param == 'home-folder' else home
+    authority = await _authority_with_old_desktop_chat(home, monkeypatch, cwd=workspace)
+    host = _attach(authority, TicketStore('first', frozenset({authority.profile_id})), 'interactive', 'uid:1000')
+    resumed = await host.dispatch({'id': 'resume', 'method': 'session.resume', 'params': {'session_id': 'old-desktop'}})
+    assert 'result' in resumed, resumed
+
+    def upload(payload):
+        from hermes_cli.staged_uploads import publish_staged_upload, staged_upload_descriptor
+        path = publish_staged_upload(io.BytesIO(payload), home, 'notes.txt')
+        return staged_upload_descriptor(path, home)
+
+    async def attach(params):
+        reply = await host.dispatch({'id': 'attach', 'method': 'file.attach', 'params': {
+            'session_id': 'old-desktop', 'name': 'notes.txt', **params}})
+        return reply.get('result') or reply.get('error', {}).get('message')
+
+    return SimpleNamespace(home=home, upload=upload, attach=attach)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('by', ['receipt', 'path'])
+async def test_a_pick_in_a_workspace_holding_the_profile_home_outlives_upload_pruning(home_in_workspace, by):
+    """A staged upload is a temporary copy the upload route prunes after 7 days, never a workspace
+    file: a pick is copied into ``attachments/`` even when the session's workspace holds the profile
+    home, so its ``@file:`` ref still names the file after the next upload prunes ``uploads/``. That
+    holds for the receipt and for the staged path an install without an id attaches instead."""
+    receipt = home_in_workspace.upload(b'what the user picked')
+    params = {'staged_upload': receipt} if by == 'receipt' else {'path': receipt['path']}
+    attached = await home_in_workspace.attach(params)
+    assert isinstance(attached, dict) and attached['attached'] is True, attached
+    stored = Path(attached['path'])
+    assert attached['uploaded'] is True and stored.parent == (home_in_workspace.home / 'attachments').resolve(), attached
+
+    # Eight days on, the user picks another file in the browser: the upload prunes stale picks.
+    week_ago = time.time() - 8 * 24 * 60 * 60
+    os.utime(receipt['path'], (week_ago, week_ago))
+    home_in_workspace.upload(b'another pick')
+
+    assert not Path(receipt['path']).exists()
+    assert stored.read_bytes() == b'what the user picked'
