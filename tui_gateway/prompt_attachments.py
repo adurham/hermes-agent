@@ -32,8 +32,17 @@ _ATTACHMENT_REF_NEEDS_QUOTING_RE = _re.compile(r"""[\s()\[\]{}<>"'`]""")
 del _re  # bodies are rebound onto server globals: import inside functions only
 
 
-def _b64_payload(raw: str, data_url_re: str, flags: int, *, max_bytes: int) -> bytes:
-    """Strip an optional ``data:...;base64,`` wrapper and all whitespace, then strictly decode."""
+def _too_large(label: str, size: int, max_bytes: int) -> str:
+    """The refusal of a payload over its cap: ``image too large (31457280 bytes; cap is 25 MB)``."""
+    return f"{label} too large ({size} bytes; cap is {max_bytes // (1024 * 1024)} MB)"
+
+
+def _b64_payload(
+    raw: str, data_url_re: str, flags: int, *, max_bytes: int, label: str = "attachment",
+) -> bytes:
+    """Strip an optional ``data:...;base64,`` wrapper and all whitespace, then strictly decode.
+    Over *max_bytes* raises ``OverflowError`` with the refusal, before decoding when the base64
+    text is already too long."""
     import base64 as _base64
     import re as _re
     cleaned = (raw or "").strip()
@@ -41,20 +50,23 @@ def _b64_payload(raw: str, data_url_re: str, flags: int, *, max_bytes: int) -> b
         cleaned = m.group(1)
     cleaned = _re.sub(r"\s+", "", cleaned)
     if len(cleaned) > 4 * ((max_bytes + 2) // 3):
-        raise OverflowError(f"attachment too large; size limit is {max_bytes} bytes")
+        padding = len(cleaned) - len(cleaned.rstrip("="))
+        raise OverflowError(_too_large(label, len(cleaned) * 3 // 4 - padding, max_bytes))
     payload = _base64.b64decode(cleaned, validate=True)
     if len(payload) > max_bytes:
-        raise OverflowError(f"attachment too large; size limit is {max_bytes} bytes")
+        raise OverflowError(_too_large(label, len(payload), max_bytes))
     return payload
 
 
-def _decode_attach_base64(raw: str, *, mime_prefix: str, max_bytes: int) -> bytes | None:
+def _decode_attach_base64(
+    raw: str, *, mime_prefix: str, max_bytes: int, label: str = "attachment",
+) -> bytes | None:
     """Decode a (``data:<mime_prefix>...;base64,``-wrapped) payload; None when invalid."""
     import re as _re
     try:
         return _b64_payload(
             raw, rf"^data:{_re.escape(mime_prefix)}[a-zA-Z0-9.+-]*;base64,(.*)$", _re.DOTALL,
-            max_bytes=max_bytes)
+            max_bytes=max_bytes, label=label)
     except OverflowError:
         raise
     except Exception:
@@ -65,9 +77,10 @@ def _decode_attach_payload(
     rid, raw_b64: str, *, mime_prefix: str, max_bytes: int, label: str, empty_msg: str):
     """``(bytes, None)`` or ``(None, error)``: 4017 on bad/empty base64, 4018 over *max_bytes*."""
     try:
-        data = _decode_attach_base64(raw_b64, mime_prefix=mime_prefix, max_bytes=max_bytes)
+        data = _decode_attach_base64(
+            raw_b64, mime_prefix=mime_prefix, max_bytes=max_bytes, label=label)
     except OverflowError as exc:
-        return None, _err(rid, 4018, f"{label} too large: {exc}")
+        return None, _err(rid, 4018, str(exc))
     if data is None:
         return None, _err(rid, 4017, "data is not valid base64")
     if not data:
@@ -213,8 +226,8 @@ def _read_attachment_bytes(path: Path, max_bytes: int) -> bytes:
     # Bound the actual read, not just stat(): the source can grow after inspection.
     with path.open("rb") as source:
         payload = source.read(max_bytes + 1)
-    if len(payload) > max_bytes:
-        raise ValueError(f"attachment too large; size limit is {max_bytes} bytes")
+        if len(payload) > max_bytes:
+            raise ValueError(_too_large("attachment", os.fstat(source.fileno()).st_size, max_bytes))
     return payload
 
 
