@@ -964,12 +964,13 @@ DEFAULT_CONFIG = {
         # reasoning box text, and to the final-response Rich Panel's
         # horizontal padding. Upstream default was 4 spaces; changed to 0
         # (flush-left) in July 2026 specifically so mouse-selected/copied
-        # lines wouldn't carry leading whitespace. Restored to 4 as the
-        # fork default per user preference (2026-08-10) — /copy remains
-        # the clean-copy path regardless of this setting, since it writes
-        # the original message text via the native clipboard rather than
-        # scraping the rendered on-screen box. Set to 0 to go flush-left.
-        "response_indent_width": 4,
+        # lines wouldn't carry leading whitespace. This fork tracked 4 from
+        # 2026-08-10 and returned to upstream's flush-left 0 on 2026-10-24 so
+        # the transcript matches stock Hermes (owner: "they removed that
+        # upstream"). /copy is the clean-copy path either way — it writes the
+        # original message text via the native clipboard, not the rendered
+        # box. Set >0 to bring the indented framing back.
+        "response_indent_width": 0,
         # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
         # emulator misbehaves with replayed scrollback.
         "persistent_output": True,

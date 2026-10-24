@@ -76,7 +76,11 @@ def test_completed_long_line_is_hard_wrapped_to_multiple_prints(cli_stub):
     assert not any("word0" in p and "word19" in p for p in plain)
 
 
-def test_wrapped_lines_still_carry_the_left_indent(cli_stub):
+def test_wrapped_lines_still_carry_the_left_indent(cli_stub, monkeypatch):
+    """A configured indent (response_indent_width > 0) survives hard-wrapping."""
+    import cli as climod
+
+    monkeypatch.setattr(climod, "_STREAM_PAD", "    ")
     cli, emitted = cli_stub
     long_line = " ".join(f"word{i}" for i in range(20)) + "\n"
     cli._stream_delta(long_line)

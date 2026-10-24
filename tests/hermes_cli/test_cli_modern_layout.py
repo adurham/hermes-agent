@@ -248,7 +248,7 @@ def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
     climod._cprint(layout.completed_tool_line(cli, "terminal", {"command": "echo hi"}, 0.1))
     climod._cprint(layout.answer_label())
     climod._cprint("It is LINUX.")
-    climod._cprint(layout.closing_separator(True))
+    climod._cprint(layout.answer_closing_separator())
     climod._cprint(layout.turn_footer("1.0s"))
 
     rows = [r.rstrip() for r in out]
@@ -257,5 +257,5 @@ def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
     assert got == ["", "BAR", "❯", "BAR",          # user message
                    "", "BAR", "Plan", "∴", "BAR",  # reasoning
                    "", "📖", "💻",                  # tool rows, tight
-                   "", "BAR", "☤", "It", "BAR",    # answer
+                   "", "BAR", "☤", "", "It", "", "BAR",  # answer: header, blank, body, blank, bar
                    "", "─"], got                   # footer

@@ -703,8 +703,8 @@ class CLIStreamMixin:
         # Panel duplicate; _reset_stream_state() clears it next turn.
         if self._stream_box_opened and getattr(self, "_stream_box_live", False):
             if getattr(self, "_modern_layout", False):
-                from hermes_cli.cli_modern_layout import closing_separator
-                _cprint(closing_separator(True))
+                from hermes_cli.cli_modern_layout import answer_closing_separator
+                _cprint(answer_closing_separator())
             else:
                 w = self._scrollback_box_width()
                 _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")

@@ -106,10 +106,20 @@ def user_echo_markup(text: str, accent_hex: str, ts_suffix: str = "") -> str:
 
 
 def answer_label(timestamp: str = "") -> str:
-    """The rows that open an answer: the accent bar, then the skin's brand glyph + name."""
+    """The rows that open an answer: the accent bar, the skin's brand glyph + name, then the
+    blank line that sets the header off from the body (2026-10-24)."""
     glyph, name = _brand_glyph()
     stamp = f" {_DIM}{timestamp}{_RST}" if timestamp else ""
-    return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
+    return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}\n"
+
+
+def answer_closing_separator() -> str:
+    """The bar that closes an answer, preceded by the blank line that sets it off from the body.
+
+    Only the answer block gets this: a reasoning block already ends on its ``∴ Thought`` line,
+    and a user echo is one line, so both keep the tight ``closing_separator``.
+    """
+    return "\n" + closing_separator(True)
 
 
 def _full_title(text: str) -> str:
