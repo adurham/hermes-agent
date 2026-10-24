@@ -64,11 +64,12 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   // RPC: the gateway socket's one-use ticket is minted over REST with the same private session;
   // the session token itself never rides a socket URL.
   expect(new URL((await desktop.getConnection()).wsUrl).searchParams.has('token')).toBe(false)
-  // As the boot dial does (resolveGatewayWsUrl): mint for the descriptor's own profile.
+  // As the boot dial does (resolveGatewayWsUrl): mint for the tab's own socket, which names no
+  // profile; the tab's `?profile=coder` is selected on top of it once connected.
   const rpc = await desktop.getGatewayWsUrl((await desktop.getConnection()).profile)
   const rpcUrl = new URL(typeof rpc === 'string' ? rpc : rpc.ok ? rpc.wsUrl : '')
   expect(rpcUrl.searchParams.get('ticket')).toBe('rpc-ticket')
-  expect(rpcUrl.searchParams.get('profile')).toBe('coder')
+  expect(rpcUrl.searchParams.has('profile')).toBe(false)
 
   const mintFor = (socket: string) =>
     fetchMock.mock.calls.find(

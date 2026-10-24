@@ -246,15 +246,16 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-it('reconnects the window owner rather than the active secondary profile', async () => {
+it("reconnects the tab's own socket rather than the profile the tab is on", async () => {
   seedWebappSession('served-token')
   window.history.replaceState(null, '', '/?profile=window-owner#/session')
   expect(installBrowserDesktopBridge()).toBe(true)
-  const initial = await win.hermesDesktop.getConnection('window-owner')
   $connection.set({ profile: 'active-secondary' } as never)
+  // The tab's own socket names no profile: its gateway answers it for the profile it runs as, and
+  // `?profile=window-owner` is selected on top of it (requests for it carry `profile`).
   const reconnect = await win.hermesDesktop.getConnection()
-  expect(reconnect.profile).toBe(initial.profile)
-  expect(new URL(reconnect.wsUrl).searchParams.get('profile')).toBe('window-owner')
+  expect(reconnect.profile).toBeUndefined()
+  expect(new URL(reconnect.wsUrl).searchParams.has('profile')).toBe(false)
   const explicitDefault = await win.hermesDesktop.getConnection(null)
   expect(new URL(explicitDefault.wsUrl).searchParams.has('profile')).toBe(false)
   const namedDefault = await win.hermesDesktop.getConnection('default')

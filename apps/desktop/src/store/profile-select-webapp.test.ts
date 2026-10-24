@@ -6,8 +6,9 @@ import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 // A live profile switch in a Webapp tab is recorded in THAT tab's URL, so a
 // reload lands on the profile the user is in, and a generic New session
 // follows it. It is not the origin's saved default (only "Set as default"
-// writes that), no other tab hears about it, and the tab's own backend — the
-// one its primary socket reconnects to — stays the profile it booted on.
+// writes that), no other tab hears about it, and the tab's own socket — the
+// one boot and every reconnect dial — stays the one its gateway answers for
+// the profile it runs as; the URL's profile is selected on top of it.
 
 const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
@@ -75,6 +76,8 @@ it.each([
   expect(window.location.hash).toBe('#/')
   await expect(window.hermesDesktop.profile.getDefault()).resolves.toEqual(savedDefault)
   expect(defaultChanged).not.toHaveBeenCalled()
-  await expect(window.hermesDesktop.getConnection()).resolves.toMatchObject({ profile: 'arrived' })
+  const own = await window.hermesDesktop.getConnection()
+  expect(own.profile).toBeUndefined()
+  expect(own.sharedPrimary).toBe(false)
   unsubscribe()
 })

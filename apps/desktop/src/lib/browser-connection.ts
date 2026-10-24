@@ -11,7 +11,7 @@ import {
   navigateToBrowserLogin,
   ticketedWebsocketUrl
 } from '@/lib/browser-transport'
-import { windowProfileOverride } from '@/store/windows'
+import { browserLaunchProfile } from '@/lib/platform'
 
 /** The serving origin is the only connection a browser-hosted Desktop has. */
 export function requireBrowserConnection(connectionId?: null | string): void {
@@ -20,6 +20,14 @@ export function requireBrowserConnection(connectionId?: null | string): void {
   if (requested !== LOCAL_CONNECTION_ID) {
     throw new Error(`No connection with id "${requested}"`)
   }
+}
+
+// The tab's one socket answers for the profile the serving gateway runs as when a request names
+// none, as its REST does. Any other profile rides that socket with `profile` on every request.
+function ridesWithProfile(profile?: null | string): boolean {
+  const name = profile?.trim()
+
+  return Boolean(name) && name !== (browserLaunchProfile() || 'default')
 }
 
 function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): HermesConnection {
@@ -37,7 +45,7 @@ function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): He
     profile: profile || undefined,
     remoteHost: window.location.host,
     remoteKind: 'url',
-    sharedPrimary: Boolean(profile),
+    sharedPrimary: ridesWithProfile(profile),
     source: 'settings',
     token: bootstrap.token,
     windowButtonPosition: null,
@@ -89,11 +97,6 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
   | 'oauthLogoutConnectionConfig'
   | 'testConnectionConfig'
 > {
-  // The window's own backend is the profile this tab booted on. A live switch
-  // rewrites `?profile=` so a reload lands where the user is, but reconnecting
-  // the window's primary socket must not follow it onto another profile.
-  const windowProfile = windowProfileOverride()
-
   const getGatewayWsUrl = async (profile?: null | string) => {
     try {
       return {
@@ -152,9 +155,10 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
 
       return ticketedWebsocketUrl(bootstrap, payload.path, payload.profile)
     },
-    // Reconnect belongs to the window, not whichever secondary profile is active.
-    // Explicit null still selects the default backend.
-    getConnection: async (profile: null | string = windowProfile) => ({
+    // Without a profile: the tab's own socket, the one boot and every reconnect dial, whatever
+    // profile the tab is on. A named profile other than the gateway's own is a view of that same
+    // socket (sharedPrimary), so its requests carry `profile`.
+    getConnection: async (profile?: null | string) => ({
       ...connectionFor(bootstrap, profile),
       connectionId: LOCAL_CONNECTION_ID
     }),

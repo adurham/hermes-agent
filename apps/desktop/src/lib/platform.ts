@@ -25,7 +25,17 @@ export const isLinuxPlatform = (): boolean =>
 export interface BrowserHostGlobals {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
+  __HERMES_DASHBOARD_PROFILE__?: string
   __HERMES_UI_SURFACE__?: string
+}
+
+/**
+ * The profile the server that served this page runs as: its gateway socket and its REST answer for
+ * this profile when a request names none. Empty when the server cannot name its own home (a custom
+ * HERMES_HOME), which the browser host reads as `default`.
+ */
+export function browserLaunchProfile(): string {
+  return String((window as Window & BrowserHostGlobals).__HERMES_DASHBOARD_PROFILE__ ?? '').trim()
 }
 
 /**

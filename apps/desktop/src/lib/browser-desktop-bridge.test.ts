@@ -13,6 +13,7 @@ import { downloadGatewayMediaFile, resolveMediaPlaybackSrc } from './media'
 type MutableWindow = Window & {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
+  __HERMES_DASHBOARD_PROFILE__?: string
   hermesDesktop?: Window['hermesDesktop']
 }
 
@@ -22,6 +23,7 @@ afterEach(() => {
   const win = mutableWindow()
   delete win.__HERMES_AUTH_REQUIRED__
   delete win.__HERMES_BASE_PATH__
+  delete win.__HERMES_DASHBOARD_PROFILE__
   clearWebappSession()
   Reflect.deleteProperty(win, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
@@ -1041,6 +1043,38 @@ describe('browser-hosted Desktop bridge', () => {
     // The session token never rides the socket URL: every dial mints its own one-use ticket.
     expect(ws.searchParams.has('token')).toBe(false)
     expect(ws.searchParams.get('profile')).toBe('worker-a')
+  })
+
+  // A tab's own socket answers for the profile the serving gateway was launched as whenever a request
+  // names none, as its REST does. So that is the tab's own connection whatever `?profile=` the tab is on;
+  // every other profile is reached on that socket with `profile` on each request (sharedPrimary), the
+  // route a live switch takes.
+  it.each([
+    { launch: 'default', other: 'research' },
+    { launch: 'work', other: 'default' }
+  ])("keeps the $launch launch profile as the tab's own connection on ?profile=$other", async ({ launch, other }) => {
+    const win = mutableWindow()
+    win.__HERMES_DASHBOARD_PROFILE__ = launch
+    seedWebappSession('served-token')
+    window.history.replaceState(null, '', `/?profile=${other}#/`)
+    const fetchMock = vi.fn(async (_url: URL) => new Response(JSON.stringify({ ticket: 'one-use' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    const desktop = win.hermesDesktop!
+
+    const own = await desktop.getConnection()
+    expect(own.profile).toBeUndefined()
+    expect(own.sharedPrimary).toBeFalsy()
+    expect(new URL(own.wsUrl).searchParams.has('profile')).toBe(false)
+    await resolveDesktopGatewayWsUrl(desktop, own)
+    const mint = new URL(String(fetchMock.mock.calls[0][0]))
+    expect(mint.pathname).toBe('/api/webapp/socket-ticket')
+    expect(mint.searchParams.get('socket')).toBe('gateway')
+    expect(mint.searchParams.has('profile')).toBe(false)
+
+    await expect(desktop.getConnection(other)).resolves.toMatchObject({ profile: other, sharedPrimary: true })
+    await expect(desktop.getConnection(launch)).resolves.toMatchObject({ profile: launch, sharedPrimary: false })
   })
 
   // The serving gateway mints the ticket itself, so there is no gateway to start and no verdict to
