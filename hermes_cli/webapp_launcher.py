@@ -145,10 +145,17 @@ def _status(target: Path) -> int:
         print(_off_message(target, f"run {RESTART_COMMAND}"))
     else:
         print(f"Unavailable: {status['reason']}")
-        from gateway.webapp_listener import NOT_BUILT
-        if not str(status["reason"]).startswith(NOT_BUILT):  # a build is served without a restart
+        if _restart_applies(status["reason"]):
             print(RETRY_AFTER_FIX)
     return 0
+
+
+def _restart_applies(reason) -> bool:
+    """Whether fixing *reason* (why the gateway does not serve the Webapp) takes a gateway restart. A
+    missing or stale bundle does not: the gateway serves one as soon as it is built, and a restart
+    keeps the stale mark."""
+    from gateway.webapp_listener import NOT_BUILT
+    return not str(reason).startswith(NOT_BUILT)
 
 
 def _signed_out_summary(result: dict) -> str:
@@ -214,14 +221,14 @@ def _gateway_state(home: Path) -> str:
 
 def _explain_refused_launch(target: Path, response: dict) -> int:
     try:
-        state = (_control(target, "webapp-status").get("result") or {}).get("state")
+        status = _control(target, "webapp-status").get("result") or {}
     except GatewayUnreachable:
-        state = None
-    if state == "off":
+        status = {}
+    if status.get("state") == "off":
         print(STARTED_BEFORE_ON)
     else:
         print(_refusal(response))
-        if state == "unavailable":
+        if status.get("state") == "unavailable" and _restart_applies(status.get("reason")):
             print(RETRY_AFTER_FIX)
     return 1
 

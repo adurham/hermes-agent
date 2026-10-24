@@ -136,6 +136,19 @@ def test_a_webapp_the_gateway_could_not_serve_reports_why_and_how_to_retry(world
     assert reason in out and "hermes gateway restart" in out
 
 
+def test_a_launch_refused_for_a_stale_bundle_asks_for_a_build_not_a_restart(world, capsys):
+    """A bundle that is missing or that hermes update could not rebuild is served as soon as it is
+    built, and a restart keeps the stale mark: the refusal says to build it and never sends the user
+    to restart the gateway, as --status already does."""
+    from gateway.webapp_listener import NOT_REBUILT
+    world["answers"]["webapp-launch"] = {"ok": False, "error": f"RuntimeError: The Webapp is unavailable: {NOT_REBUILT}"}
+    world["answers"]["webapp-status"] = {"ok": True, "result": {"state": "unavailable", "url": None,
+                                                               "reason": NOT_REBUILT}}
+    assert launcher.cmd_webapp(_args(skip_build=True)) == 1
+    out = capsys.readouterr().out
+    assert "Run hermes webapp to rebuild it." in out and launcher.RESTART_COMMAND not in out
+
+
 def test_behind_the_dashboard_sign_in_the_launcher_opens_the_webapp_to_sign_in(world, capsys):
     url = "http://127.0.0.1:9120/"
     world["answers"]["webapp-launch"] = {"ok": True, "result": {
