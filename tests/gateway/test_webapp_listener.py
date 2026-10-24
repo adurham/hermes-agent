@@ -389,6 +389,40 @@ def test_on_windows_the_webapps_fixed_port_never_lets_another_process_bind_it():
     assert _reuse_address(0) is False  # main's private listener
 
 
+def test_a_dual_stack_listener_takes_ipv4_too():
+    """The ``::`` wildcard means every address, IPv4 included, on every platform: Windows otherwise
+    binds IPv6 only, so IPv4 clients (a LAN browser at http://192.168.x.y:<port>) never reach the
+    Webapp, and its exclusive hold on the port leaves 0.0.0.0 free for another program."""
+    import socket
+
+    from gateway import run_api
+    with run_api._listener_socket(socket.AF_INET6, socket.SOCK_STREAM, 0, webapp.DEFAULT_PORT,
+                                  dual_stack=True) as wildcard:
+        assert wildcard.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 0
+
+
+@pytest.mark.parametrize(("host", "dual_stack"), [("::", True), ("::1", False), ("127.0.0.1", False)])
+def test_the_webapp_listener_is_dual_stack_only_on_the_ipv6_wildcard(monkeypatch, host, dual_stack):
+    """Only a ``::`` bind takes IPv4 as well; ``::1`` stays the IPv6 loopback address it names."""
+    from gateway import run_api
+
+    asked = []
+
+    class Stop(Exception):
+        pass
+
+    def listener_socket(family, kind, proto, port, **options):
+        asked.append(options.get("dual_stack", False))
+        raise Stop
+
+    monkeypatch.setattr(run_api, "_listener_socket", listener_socket)
+    with pytest.raises(Stop):
+        asyncio.run(run_api.start_gateway_api(SimpleNamespace(), host=host, port=webapp.DEFAULT_PORT,
+                                              webapp=webapp.WebappMount(dist=None, home=None)))
+    assert asked == [dual_stack]
+
+
+
 def test_a_fixed_port_binds_again_while_the_last_gateways_connections_linger():
     # The server closing first leaves its side of the connection in TIME_WAIT on the fixed port.
     import socket

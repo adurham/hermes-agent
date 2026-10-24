@@ -186,10 +186,16 @@ class GatewayDashboardMount:
         await web.app(scope, receive, send)
 
 
-def _listener_socket(family, kind, proto, port: int) -> socket.socket:
+def _listener_socket(family, kind, proto, port: int, *, dual_stack: bool = False) -> socket.socket:
     """The listener's unbound socket; a fixed *port* may bind again at once (``_REUSE_FIXED_PORT``)
-    or is held exclusively (``_EXCLUSIVE_FIXED_PORT``)."""
+    or is held exclusively (``_EXCLUSIVE_FIXED_PORT``). A *dual_stack* IPv6 socket (the ``::``
+    wildcard) takes IPv4 connections too."""
     listener = socket.socket(family, kind, proto)
+    if dual_stack:
+        # "::" means every address, as Linux binds it by default. Windows binds IPv6 only otherwise:
+        # IPv4 clients would never reach the Webapp, and the exclusive hold below would cover the
+        # IPv6 port alone, leaving 0.0.0.0 on the same port to another program.
+        listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
     if port and _REUSE_FIXED_PORT:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     elif port and _EXCLUSIVE_FIXED_PORT:
@@ -238,7 +244,8 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
     family, kind, proto, _, address = socket.getaddrinfo(
         host, port, type=socket.SOCK_STREAM,
     )[0]
-    listener = _listener_socket(family, kind, proto, port)
+    listener = _listener_socket(family, kind, proto, port,
+                                dual_stack=family == socket.AF_INET6 and address[0] == "::")
     _ACTIVE_RUNNER = runner
     try:
         listener.bind(address)
