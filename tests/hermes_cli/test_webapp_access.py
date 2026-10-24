@@ -730,3 +730,74 @@ def test_the_gateway_restart_and_status_run_outside_the_config_lock(client, nous
     assert free_during == {"restart": True, "status": True}
 
 
+@pytest.mark.parametrize(("held", "second"), [("build", "stop"), ("registration", "public")])
+def test_web_access_changes_run_one_at_a_time(client, restarts, nous, monkeypatch, held, second):
+    """Start, Stop and Restart each build, register, write and restart as one change, and a second
+    change waits for the one in flight. A Stop sent while a Start builds therefore ends with the
+    Webapp off, and two windows starting different modes end with the Portal's callback and the
+    served mode both the last one's: never Nous sign-in returning to an address the Webapp does not
+    serve, nor the Webapp on the network after the user stopped it."""
+    import threading
+
+    from hermes_cli import webapp, webapp_access
+    from hermes_cli.web_routers import webapp_access as routes
+
+    class WatchedLock:
+        """The routes' change lock, noting when a change found it held."""
+
+        def __init__(self):
+            self.lock, self.found_held = threading.Lock(), threading.Event()
+
+        def acquire(self, blocking=True, timeout=-1):
+            taken = self.lock.acquire(blocking, timeout)
+            if not taken:
+                self.found_held.set()
+            return taken
+
+        def release(self):
+            self.lock.release()
+
+    watched = WatchedLock()
+    monkeypatch.setattr(routes, "_CHANGE_LOCK", watched)
+    entered, release = threading.Event(), threading.Event()
+
+    def hold(*_args, **_options):
+        if not entered.is_set():
+            entered.set()
+            release.wait(20)
+
+    if held == "build":
+        monkeypatch.setattr(webapp, "prepare_webapp_renderer", lambda root, **options: hold())
+    else:
+        monkeypatch.setattr(webapp_access, "_register_nous_sign_in",
+                            lambda callback: (hold(), nous.append(callback)))
+    public_url = "https://hermes.example.test"
+    requests = {"lan": ("/api/webapp-access/start", {"mode": "lan"}),
+                "stop": ("/api/webapp-access/stop", None),
+                "public": ("/api/webapp-access/start", {"mode": "public", "public_url": public_url})}
+    answers: dict[str, int] = {}
+
+    def send(name: str) -> None:
+        # Each thread needs its own client on the same native-Desktop app, which mints a grant per request.
+        other = TestClient(client.app, raise_server_exceptions=False)
+        path, body = requests[name]
+        answers[name] = other.post(path, json=body).status_code
+
+    first = threading.Thread(target=send, args=("lan",), daemon=True)
+    first.start()
+    assert entered.wait(20)
+    later = threading.Thread(target=send, args=(second,), daemon=True)
+    later.start()
+    assert watched.found_held.wait(20)
+    assert restarts == [] and answers == {}  # the second change waits for the first
+    release.set()
+    first.join(30)
+    later.join(30)
+    assert answers == {"lan": 200, second: 200}
+    block = _config()["webapp"]
+    if second == "stop":
+        assert restarts == ["turning on Web Access", "turning off Web Access"]
+        assert block["enabled"] is False
+    else:
+        assert nous == ["http://192.168.1.50:9120/auth/callback", f"{public_url}/auth/callback"]
+        assert (block["enabled"], block.get("public_url")) == (True, public_url)

@@ -2,14 +2,16 @@
 
 Thin HTTP over :mod:`hermes_cli.webapp_access`. Every handler acts on the home of the gateway that
 serves the requested profile; start and stop write its ``webapp:`` config and restart that gateway,
-which reads the config only when it starts. Only the machine's owner reaches them
-(:func:`owner_on_this_machine`), never a browser signed in over the network.
+which reads the config only when it starts. Start, Stop and Restart run one at a time. Only the
+machine's owner reaches them (:func:`owner_on_this_machine`), never a browser signed in over the
+network.
 """
 
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
+import threading
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,6 +27,11 @@ from hermes_cli.web_routers._common import (
 )
 
 _restart_gateway_after = late("_restart_gateway_after", "hermes_cli.web_server_gateway")
+# One Web Access change at a time in this backend (every Desktop window's pane talks to it): a
+# Start, Stop or Restart waits for the one in flight, from its build through the restart request,
+# so the Portal's callback, the config and the gateway all end on the last change asked for.
+_CHANGE_LOCK = threading.Lock()
+_CHANGE_POLL_SECONDS = 0.05
 
 
 def owner_on_this_machine(request: Request) -> None:
@@ -82,6 +89,18 @@ async def _in_gateway_home(gateway: Optional[str], fn: Callable[[], Any]) -> Any
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@asynccontextmanager
+async def _one_change_at_a_time():
+    """Hold :data:`_CHANGE_LOCK` for one change. Polled rather than awaited on a worker thread, so a
+    request cancelled while it waits never takes the lock, and the steps run on any event loop."""
+    while not _CHANGE_LOCK.acquire(blocking=False):
+        await asyncio.sleep(_CHANGE_POLL_SECONDS)
+    try:
+        yield
+    finally:
+        _CHANGE_LOCK.release()
+
+
 async def _restart(gateway: Optional[str], what: str) -> dict:
     """The status after asking the *gateway* profile's gateway to restart onto the saved config. Runs
     after the config write released the config lock, as main's config routes do: the restart spawn
@@ -99,13 +118,14 @@ async def webapp_access_status(profile: Optional[str] = None):
 @router.post("/api/webapp-access/start")
 async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
     profile = destructive_profile(profile, "POST /api/webapp-access/start")
-    gateway, (host, public_url, callback) = await _scoped(
-        profile, lambda gateway: (gateway, webapp_access.plan(body.mode, body.public_url)))
-    # The bundle before anything lasting: a failed build registers, writes and restarts nothing.
-    await _in_gateway_home(gateway, webapp_access.build_bundle)
-    await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
-    await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url), config_write=True)
-    return await _restart(gateway, "turning on Web Access")
+    async with _one_change_at_a_time():
+        gateway, (host, public_url, callback) = await _scoped(
+            profile, lambda gateway: (gateway, webapp_access.plan(body.mode, body.public_url)))
+        # The bundle before anything lasting: a failed build registers, writes and restarts nothing.
+        await _in_gateway_home(gateway, webapp_access.build_bundle)
+        await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
+        await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url), config_write=True)
+        return await _restart(gateway, "turning on Web Access")
 
 
 @router.post("/api/webapp-access/stop")
@@ -116,7 +136,8 @@ async def stop_webapp_access(profile: Optional[str] = None):
         webapp_access.turn_off()
         return gateway
 
-    return await _restart(await _scoped(profile, _stop, config_write=True), "turning off Web Access")
+    async with _one_change_at_a_time():
+        return await _restart(await _scoped(profile, _stop, config_write=True), "turning off Web Access")
 
 
 @router.post("/api/webapp-access/restart")
@@ -124,4 +145,5 @@ async def restart_webapp_access(profile: Optional[str] = None):
     """Apply the saved config to a gateway that has not restarted onto it yet: restart that gateway
     and nothing else (no Portal registration, no build, no config write)."""
     profile = destructive_profile(profile, "POST /api/webapp-access/restart")
-    return await _restart(await _scoped(profile, lambda gateway: gateway), "applying Web Access")
+    async with _one_change_at_a_time():
+        return await _restart(await _scoped(profile, lambda gateway: gateway), "applying Web Access")
