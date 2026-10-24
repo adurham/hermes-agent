@@ -16,14 +16,14 @@ are tracked (``web_session_sockets.track``) and close at sign-out, and a ticket 
 opens nothing after it. The standalone dashboard never sets or checks the binding.
 
 Such a login's cookies also hold the sign-in provider's access and refresh token. Presented on their own
-(``Authorization: Bearer``, ``/auth/native/refresh``) they would skip the binding, and a list of tokens
-to refuse cannot catch them: a provider may accept many spellings of one token (the bundled password
-provider decodes base64 leniently, so the quoted cookie value verifies too). So on the gateway's Webapp
-behind the gate a provider token works on its own only when this listener gave it to a native app's
-sign-in (RFC 8252: ``/auth/native/token``, then ``/auth/native/refresh``). The listener keeps a digest of
-each such token until it expires, in ``RECORD_PATH`` under the gateway home (``app.state.webapp_home``),
-so native apps stay signed in across a restart and a sign-out. A browser login's tokens therefore work
-only as that login's cookies and end with it.
+(``Authorization: Bearer``, a socket's ``?token=``, ``/auth/native/refresh``) they would skip the
+binding, and a list of tokens to refuse cannot catch them: a provider may accept many spellings of one
+token (the bundled password provider decodes base64 leniently, so the quoted cookie value verifies too).
+So on the gateway's Webapp behind the gate a provider token works on its own only when this listener
+gave it to a native app's sign-in (RFC 8252: ``/auth/native/token``, then ``/auth/native/refresh``). The
+listener keeps a digest of each such token until it expires, in ``RECORD_PATH`` under the gateway home
+(``app.state.webapp_home``), so native apps stay signed in across a restart and a sign-out. A browser
+login's tokens therefore work only as that login's cookies and end with it.
 """
 from __future__ import annotations
 
@@ -116,9 +116,10 @@ def renew(response: Response, request: Request) -> None:
 
 
 def token_works_alone(request: Request, token: str) -> bool:
-    """Whether provider token *token* may be used on its own (a bearer header, the refresh route) on
-    *request*'s listener: anywhere but the gateway's Webapp behind the gate, as on main; there, only
-    when this listener gave it to a native app's sign-in and it has not expired."""
+    """Whether provider token *token* may be used on its own (a bearer header, a socket's
+    ``?token=``, the refresh route) on *request*'s listener: anywhere but the gateway's Webapp behind
+    the gate, as on main; there, only when this listener gave it to a native app's sign-in and it has
+    not expired."""
     if not applies(request):
         return True
     with _records_lock:

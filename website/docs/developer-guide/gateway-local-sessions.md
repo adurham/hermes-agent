@@ -57,8 +57,8 @@ The server issues `session:operator` only at these existing trusted boundaries:
   gateways' Webapps on one hostname keep their own), so replacing it ends those logins too; sign-out closes
   every socket the token or a bound login opened, Bot Desktop viewers included. The provider tokens
   such a login keeps in its cookies never work there on their own: the Webapp's listener accepts a
-  bearer token, and renews a refresh token, only when it gave that token to a native app's RFC 8252
-  sign-in (digests kept in `webapp/native-sign-in-tokens.json` in the gateway home until they
+  bearer token or a socket's `?token=`, and renews a refresh token, only when it gave that token to a
+  native app's RFC 8252 sign-in (digests kept in `webapp/native-sign-in-tokens.json` in the gateway home until they
   expire), so native apps stay signed in across a sign-out and a restart.
 - The HTTP mutation gate, after a verified dashboard Session, native HTTP owner grant,
   or permitted legacy session token has been accepted.

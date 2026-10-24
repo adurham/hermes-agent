@@ -184,6 +184,7 @@ def _ws_request_view(ws: WebSocket, app) -> Request:
     ``request.app.state``, so a lightweight stand-in carrying *app* avoids
     constructing a real ASGI request inside the upgrade. ``scan_session_providers``
     itself never sees the request — only the provider callbacks do.
+    ``webapp_sign_in.token_works_alone`` reads the listener's state from *app*.
     """
     from fastapi import Request
 
@@ -219,7 +220,9 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     child can reconnect; never injected into the SPA), or ``?token=`` holding a
     user session access token (verified against the dashboard auth session
     providers — the same ``verify_session`` seam the native bearer REST leg
-    uses — e.g. a token-mode Remote desktop connection). The legacy in-process
+    uses — e.g. a token-mode Remote desktop connection; on the gateway's Webapp
+    only a token that listener gave a native app's sign-in, as for the bearer
+    header, ``webapp_sign_in.token_works_alone``). The legacy in-process
     ``_SESSION_TOKEN`` is rejected in gated mode: a leaked ``_SESSION_TOKEN``
     must not grant access.
 
@@ -288,7 +291,10 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
         # the WS upgrade 403'd forever. The legacy in-process
         # ``_SESSION_TOKEN`` never reaches this check: gated mode falls
         # through to the explicit rejection below (leaked-constant safety),
-        # and a provider-verified token is accepted on identity merit.
+        # and a provider-verified token is accepted on identity merit. On the
+        # gateway's Webapp it follows the bearer header's rule: only a token this
+        # listener gave a native app's sign-in works on its own, so a browser
+        # login's tokens work only as its cookies, which sign-out ends.
         token = ws.query_params.get("token", "")
         if token:
             from hermes_cli import webapp_sign_in

@@ -6,8 +6,9 @@ credential, so ``hermes webapp --sign-out``, which replaces that credential, end
 the login's requests get 401 and the sign-in view, the sockets and host terminals it opened close with
 4401, tickets it minted open nothing, and its cookies replayed from anywhere get nothing. The provider
 tokens those cookies hold work only as those cookies: the Webapp's listener refuses them as a bearer
-token and on the refresh route, before and after sign-out and across a restart. Signing in again works,
-and a native app's own sign-in on the same listener stays signed in. The standalone dashboard has no
+token, on the refresh route and as a socket's ``?token=``, before and after sign-out and across a
+restart. Signing in again works, and a native app's own sign-in on the same listener (and the sockets
+it opens) stays signed in. The standalone dashboard has no
 browser credential and keeps its logins as on main.
 """
 import json
@@ -391,6 +392,7 @@ def test_off_the_webapp_any_provider_token_works_on_its_own_as_on_main(gated, mo
     _sign_in_with_password(browser)
     access, refresh = _tokens(browser)
     assert gated.browser().get("/api/auth/me", headers=_bearer(access)).status_code == 200
+    assert _socket_close_code(gated.browser(), "/api/events?channel=tab-1", access) is None
     assert _renew(gated, refresh).status_code == 200
 
 
@@ -401,6 +403,23 @@ def _gateway_socket_with(gated, access):
 
     try:
         with gated.browser().websocket_connect(f"ws://hermes.lan:9120/api/ws?token={quote(access)}") as ws:
+            return _close_code(ws, 0.5)
+    except WebSocketDisconnect as closed:
+        return closed.code
+
+
+# Sockets on the Webapp's listener that take a provider token as ``?token=`` (the host terminal takes
+# only its own ticket); ``/api/console`` runs the same gate as ``/api/pty``.
+TOKEN_SOCKETS = ("/api/ws", "/api/events?channel=tab-1", "/api/pub?channel=tab-1", "/api/pty",
+                 "/api/audio/speak-stream", "/api/audio/transcribe-stream")
+
+
+def _socket_close_code(client, path, token):
+    """The code a dial of *path* presenting ``?token=`` *token* is closed with, or None while it
+    stays open."""
+    joiner = "&" if "?" in path else "?"
+    try:
+        with client.websocket_connect(f"ws://hermes.lan:9120{path}{joiner}token={token}") as ws:
             return _close_code(ws, 0.5)
     except WebSocketDisconnect as closed:
         return closed.code
@@ -417,6 +436,29 @@ def test_a_logins_access_token_opens_no_socket_on_its_own(gated, monkeypatch):
     assert _gateway_socket_with(gated, native_access) is None
     monkeypatch.setattr(gated.server.app.state, "ui_surface", "dashboard")
     assert _gateway_socket_with(gated, access) is None
+
+
+@pytest.mark.parametrize("path", TOKEN_SOCKETS)
+def test_a_logins_access_token_opens_none_of_the_token_sockets(gated, sign_out, path):
+    """A socket's ``?token=`` follows the bearer header's rule: a browser login's access token,
+    copied out of its cookie, opens no socket on the Webapp's listener, before sign-out or after it."""
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    access, _refresh = _tokens(browser)
+    assert _socket_close_code(gated.browser(), path, access) == 4401
+    sign_out()
+    assert _socket_close_code(gated.browser(), path, access) == 4401
+
+
+def test_a_native_apps_token_opens_a_socket_that_stays_open_across_sign_out(gated, sign_out):
+    """A token the listener gave a native app's sign-in opens a socket as ``?token=``; signing the
+    browsers out leaves that socket open and the token working."""
+    access, _refresh = _native_app_sign_in(gated)
+    with gated.browser().websocket_connect(f"ws://hermes.lan:9120/api/events?channel=desk&token={access}") as events:
+        assert _close_code(events, 0.2) is None
+        assert sign_out()["connections_closed"] == 0
+        assert _close_code(events, 0.5) is None
+    assert _socket_close_code(gated.browser(), "/api/events?channel=desk", access) is None
 
 
 @pytest.mark.platforms("posix")
