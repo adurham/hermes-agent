@@ -1682,7 +1682,13 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     * ``agent._cli_ref`` — the back-reference ``tools/delegate_tool_registry.py`` walks to
       find the CLI from a (sub)agent. Set last so a partially built agent is never reachable.
         """
-        if not super()._init_agent(
+        # FORK: call the mixin explicitly instead of ``super()._init_agent(...)``. Several tests
+        # drive this method as an UNBOUND function on a stub instance
+        # (``HermesCLI._init_agent(_StubCLI(), ...)``); a zero-arg ``super()`` raises TypeError for
+        # any object that is not a real HermesCLI, which turned every such test into a hard failure.
+        from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+        if not CLIAgentSetupMixin._init_agent(
+            self,
             model_override=model_override,
             runtime_override=runtime_override,
             request_overrides=request_overrides,
@@ -2423,7 +2429,10 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         """
         if getattr(self, "_last_turn_interrupted", False):
             return
-        super()._drain_process_notifications(consumer)
+        # FORK: explicit mixin call — stub instances drive this unbound in tests, where a zero-arg
+        # ``super()`` raises TypeError (same reason as ``_init_agent``).
+        from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
+        CLIProcessNotificationsMixin._drain_process_notifications(self, consumer)
 
     def _queue_skill_message(self, msg) -> None:
         if hasattr(self, '_pending_input'):
@@ -3414,7 +3423,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             self._turn_start_context_tokens = _base if isinstance(_base, int) and _base > 0 else None
         except Exception:
             self._turn_start_context_tokens = None
-        return super()._chat_run_agent(turn, message)
+        # FORK: explicit mixin call — see ``_init_agent`` (stub callers break on zero-arg super()).
+        from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
+        return CLIChatTurnMixin._chat_run_agent(self, turn, message)
 
     def _fire_attention_signals(self, summary: str) -> None:
         """Get the user's attention when an interactive prompt opens.
