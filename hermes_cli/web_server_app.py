@@ -132,7 +132,7 @@ async def standalone_lifespan(app: "FastAPI"):
 
     # Reap idle/dead keep-alive PTY sessions (30-min TTL). The registry is process-wide and
     # close_all() refuses new spawns, so a re-entered lifespan reopens it first.
-    PTY_REGISTRY._closed = False
+    PTY_REGISTRY.reopen()
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
     # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
@@ -210,7 +210,7 @@ async def http_lifespan(app: FastAPI):
     app.state.event_lock = asyncio.Lock()
     app.state.pty_active_session_files = {}
     app.state.chat_argv_lock = asyncio.Lock()
-    PTY_REGISTRY._closed = False  # a prior lifespan's close_all() refuses spawns until reopened
+    PTY_REGISTRY.reopen()  # a prior lifespan's close_all() refuses spawns until reopened
     tasks = [
         asyncio.create_task(run_reaper(PTY_REGISTRY), name="gateway-api-pty-reaper"),
         asyncio.create_task(_dashboard_selftest_loop(), name="gateway-api-selftest"),

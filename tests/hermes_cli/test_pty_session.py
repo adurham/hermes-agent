@@ -637,6 +637,22 @@ async def test_concurrent_reap_idle_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_a_closed_registry_refuses_spawns_until_reopened():
+    """``close_all`` (a lifespan shutting down) refuses new terminals, so none outlives it; the
+    process-wide registry takes spawns again once a new lifespan reopens it (the gateway falling back
+    from the Webapp's listener to its private one in the same process)."""
+    reg = make_registry()
+    await reg.close_all()
+    with pytest.raises(RegistryFull):
+        await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([]))
+
+    reg.reopen()
+    session, created = await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([b""]))
+    assert created and session.alive
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
 async def test_close_all_survives_key_popped_by_concurrent_reap():
     """close_all snapshots keys, then awaits each close(); a reap that runs
     during that await can remove a later key from the snapshot."""

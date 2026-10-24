@@ -561,6 +561,12 @@ class PtySessionRegistry:
         task.add_done_callback(self._background_closes.discard)
         return task
 
+    def reopen(self) -> None:
+        """Take spawns again after :meth:`close_all`: the registry is process-wide, and a lifespan can
+        start again in one process (the gateway falling back from the Webapp's listener to its
+        private one)."""
+        self._closed = False
+
     async def close_all(self) -> None:
         self._closed = True
         # Wait for any admitted spawn before snapshotting shutdown ownership.
