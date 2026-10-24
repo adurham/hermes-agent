@@ -100,6 +100,25 @@ async def test_stalled_input_closes_only_the_keepalive_socket(
     assert web_server.PTY_REGISTRY._sessions["TOK1"].alive is False
 
 
+def test_chat_without_a_pty_bridge_says_what_to_install_as_on_main(pty_keepalive_harness, monkeypatch):
+    """On a host whose PTY bridge cannot load, the dashboard's /chat tab prints main's message, which
+    says the rest of the dashboard works and where to install Hermes for chat, and closes 1011."""
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    monkeypatch.setattr(_web_server_chat, "_PTY_BRIDGE_AVAILABLE", False)
+    client = TestClient(web_server.app)
+    with client.websocket_connect("/api/pty?attach=TOK1") as ws:
+        text = ws.receive_text()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+
+    assert "Chat unavailable: the embedded terminal requires a POSIX PTY" in text
+    assert "Install Hermes inside WSL2 to use the dashboard's /chat tab" in text
+    assert closed.value.code == 1011
+    assert pty_keepalive_harness == []
+
+
 @pytest.mark.asyncio
 async def test_attach_token_reuses_same_resume(pty_keepalive_harness):
     from starlette.testclient import TestClient
