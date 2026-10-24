@@ -184,3 +184,12 @@ it('a bare tab opens on the saved default the same way, and records it in its ad
   // descriptor names none (a reconnect publishes the tab's own socket), so it must name this one.
   expect(new URLSearchParams(window.location.search).get('profile')).toBe('research')
 })
+
+it("a tab loaded on a profile the gateway no longer has stays on the gateway's own and names it in its address", async () => {
+  await bootWebappTab('/?profile=gone#/')
+
+  expect($activeGatewayProfile.get()).toBe('default')
+  expect(await sentFor('default', 'session.active_list')).toEqual({})
+  // A reload lands on the profile the tab is really on, not on the stale link's.
+  expect(new URLSearchParams(window.location.search).get('profile')).toBe('default')
+})
