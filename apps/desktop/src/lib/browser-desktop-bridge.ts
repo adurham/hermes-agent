@@ -5,7 +5,7 @@ import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
 import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
-import { watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
@@ -35,10 +35,6 @@ export function installBrowserDesktopBridge(): boolean {
   const bootstrap = browserBootstrap()
 
   if (!bootstrap) {return false}
-
-  if (bootstrap.privateSession) {
-    watchWebappLaunchLink(() => window.location.reload())
-  }
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
 

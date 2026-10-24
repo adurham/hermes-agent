@@ -1,7 +1,7 @@
 import { BROWSER_NATIVE_DIAL, buildHermesWebSocketUrl, normalizeBasePath } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
-import { consumeWebappSession, webappSignInRequired } from '@/lib/browser-launch-session'
+import { readWebappSession, webappSignInRequired } from '@/lib/browser-launch-session'
 import { type BrowserHostGlobals, hasBrowserHostBootstrap } from '@/lib/platform'
 
 export interface BrowserBootstrap {
@@ -34,7 +34,7 @@ export function browserBootstrap(): BrowserBootstrap | null {
   const authRequired = win.__HERMES_AUTH_REQUIRED__ === true
   const basePath = normalizeBasePath(win.__HERMES_BASE_PATH__)
   const privateSession = !authRequired && win.__HERMES_UI_SURFACE__ === 'webapp'
-  const token = privateSession ? consumeWebappSession(basePath) : ''
+  const token = privateSession ? readWebappSession(basePath) : ''
 
   return {
     authRequired,

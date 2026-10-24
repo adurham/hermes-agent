@@ -132,3 +132,27 @@ def test_windows_spends_a_launch_ticket_without_a_peer_check():
 
     assert webapp._peer_is_server_user(_loopback_request(), platform="win32") is True
     assert webapp_listener._one_use_links_work(platform="win32") is True
+
+
+@pytest.mark.parametrize("page", ["/webapp/launch", "/webapp/window"])
+def test_a_handoff_page_keeps_the_credential_out_of_every_url(monkeypatch, page):
+    """The browser records every address a tab navigates to in its history (and syncs it), and the
+    credential a handoff page receives lasts until ``hermes webapp --sign-out``. So the launch and
+    child-window pages put it in this tab's sessionStorage, under the key the Webapp reads at boot,
+    and then replace themselves with the Webapp's own address: no URL they navigate to carries it.
+    Each page is uncached and sends no Referer."""
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_server as server
+
+    monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(server, "_SESSION_TOKEN", "a" * 43)
+    served = TestClient(server.app, base_url="http://127.0.0.1").get(page)
+    assert served.status_code == 200
+    assert "hermes-session" not in served.text, "the page navigates with the credential in the URL"
+    assert "sessionStorage.setItem(`hermes.webapp.session.v1:${JSON.stringify([location.origin, basePath])}`, token)" \
+        in served.text
+    assert "a" * 43 not in served.text
+    assert served.headers["cache-control"] == "no-store"
+    assert served.headers["referrer-policy"] == "no-referrer"

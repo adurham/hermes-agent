@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { pluginSocket } from '@/api/plugins'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
-import { consumeWebappSession, watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from './browser-launch-session'
+import { readWebappSession, WEBAPP_LAUNCH_REQUIRED, webappSessionKey } from './browser-launch-session'
 
 const win = window as Window & {
   __HERMES_UI_SURFACE__?: string
@@ -29,7 +29,9 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   const token = 'a'.repeat(43)
   win.__HERMES_UI_SURFACE__ = 'webapp'
   win.__HERMES_BASE_PATH__ = '/one'
-  window.history.replaceState(null, '', `/one/?profile=coder#hermes-session=${token}`)
+  // Where /webapp/launch leaves the credential before it opens /one/?profile=coder.
+  sessionStorage.setItem(webappSessionKey('/one'), token)
+  window.history.replaceState(null, '', '/one/?profile=coder')
   const urls: URL[] = []
 
   class Socket {
@@ -96,7 +98,7 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   expect(installBrowserDesktopBridge()).toBe(true)
   expect((await window.hermesDesktop!.getConnection()).token).toBe(token)
   expect(window.location.hash).toBe('#/settings')
-  expect(consumeWebappSession('/other')).toBe('')
+  expect(readWebappSession('/other')).toBe('')
   expect(Object.values(localStorage)).not.toContain(token)
 })
 
@@ -110,31 +112,25 @@ it('fails closed with actionable launch instructions in a fresh tab and ignores 
   expect(fetchMock).not.toHaveBeenCalled()
   window.dispatchEvent(new Event('beforeunload'))
   Reflect.deleteProperty(window, 'hermesDesktop')
-  window.history.replaceState(null, '', `/#hermes-session=${'b'.repeat(43)}`)
-  expect(consumeWebappSession('')).toHaveLength(43)
-  window.history.replaceState(null, '', '/#hermes-session=invalid')
-  expect(consumeWebappSession('')).toBe('')
-  expect(consumeWebappSession('')).toBe('')
+  sessionStorage.setItem(webappSessionKey(''), 'b'.repeat(43))
+  expect(readWebappSession('')).toHaveLength(43)
+  sessionStorage.clear()
+  expect(readWebappSession('')).toBe('')
   win.__HERMES_AUTH_REQUIRED__ = true
   expect(installBrowserDesktopBridge()).toBe(true)
   expect((await window.hermesDesktop!.getConnection()).authMode).toBe('oauth')
   expect((await window.hermesDesktop!.getConnection()).token).toBe('')
 })
 
-it('reloads for a pasted launch fragment but not HashRouter navigation', () => {
-  const reload = vi.fn()
-  watchWebappLaunchLink(reload)
-  window.history.replaceState(null, '', '/#/settings')
-  window.dispatchEvent(new HashChangeEvent('hashchange'))
-  expect(reload).not.toHaveBeenCalled()
-  const fragment = `#hermes-session=${'c'.repeat(43)}`
-  window.history.replaceState(null, '', `/${fragment}`)
-  window.dispatchEvent(new HashChangeEvent('hashchange'))
-  expect(reload).toHaveBeenCalledOnce()
-  expect(window.location.hash).toBe(fragment)
-  window.dispatchEvent(new Event('beforeunload'))
-  window.dispatchEvent(new HashChangeEvent('hashchange'))
-  expect(reload).toHaveBeenCalledOnce()
+it('takes the credential only from the tab storage the launch page fills, never from the address', () => {
+  // The browser records every address in its history, where a credential would outlive the tab.
+  win.__HERMES_UI_SURFACE__ = 'webapp'
+  window.history.replaceState(null, '', `/?profile=coder#hermes-session=${'c'.repeat(43)}`)
+  expect(readWebappSession('')).toBe('')
+  expect(installBrowserDesktopBridge()).toBe(true)
+  expect(sessionStorage.length).toBe(0)
+  sessionStorage.setItem(webappSessionKey(''), 'd'.repeat(43))
+  expect(readWebappSession('')).toBe('d'.repeat(43))
 })
 
 it.each(['window', 'session'] as const)('hands off a private %s through a one-use ticket without sharing its session token', async kind => {
@@ -142,7 +138,8 @@ it.each(['window', 'session'] as const)('hands off a private %s through a one-us
   const ticket = 'b'.repeat(43)
   win.__HERMES_UI_SURFACE__ = 'webapp'
   win.__HERMES_BASE_PATH__ = '/one'
-  window.history.replaceState(null, '', `/one/?profile=coder#hermes-session=${token}`)
+  sessionStorage.setItem(webappSessionKey('/one'), token)
+  window.history.replaceState(null, '', '/one/?profile=coder')
   const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ticket })))
   vi.stubGlobal('fetch', fetchMock)
 
@@ -219,7 +216,7 @@ it('asks a tab without a working credential to sign in, so reconnecting stops', 
   // hermes webapp --sign-out replaced the credential this tab holds.
   window.dispatchEvent(new Event('beforeunload'))
   Reflect.deleteProperty(window, 'hermesDesktop')
-  window.history.replaceState(null, '', `/#hermes-session=${'d'.repeat(43)}`)
+  sessionStorage.setItem(webappSessionKey(''), 'd'.repeat(43))
   expect(installBrowserDesktopBridge()).toBe(true)
   const signedOut = await failure(window.hermesDesktop!.api({ path: '/api/status' }))
 

@@ -6,7 +6,7 @@ type WebappWindow = Window & { __HERMES_BASE_PATH__?: string; __HERMES_UI_SURFAC
 
 /**
  * A Webapp tab after its private launch link, on an unauthenticated bind: the browser host's only
- * credential, as `consumeWebappSession` reads it back. Seeds the grant for the base path the window
+ * credential, as `readWebappSession` reads it back. Seeds the grant for the base path the window
  * carries at call time, so set `__HERMES_BASE_PATH__` first.
  */
 export function seedWebappSession(token: string): void {

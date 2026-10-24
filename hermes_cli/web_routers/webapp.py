@@ -281,15 +281,15 @@ async def redeem_window_ticket(request: Request):
     return JSONResponse({"token": token}, headers={"Cache-Control": "no-store"})
 
 
+# The credential goes to this tab's sessionStorage, where the Webapp reads it at boot
+# (browser-launch-session.ts), never into a URL: the browser keeps every address it opens in its history.
 _LAUNCH_SCRIPT = r"""
 const basePath = __BASE_PATH__;
 const params = new URLSearchParams(location.hash.slice(1));
 history.replaceState(null, '', location.pathname);
 const ticket = params.get('ticket') || '';
-const fail = () => {
-  document.getElementById('status').textContent = 'This launch link was already used or has expired. '
-    + 'Run hermes webapp again for a new one.';
-};
+const show = message => { document.getElementById('status').textContent = message; };
+const fail = () => show('This launch link was already used or has expired. Run hermes webapp again for a new one.');
 if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
   fail();
 } else {
@@ -297,10 +297,15 @@ if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
     method: 'POST', credentials: 'same-origin', headers: {'X-Hermes-Window-Ticket': ticket}
   }).then(response => response.ok ? response.json() : Promise.reject()).then(({token}) => {
     if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error();
-    // The SPA consumes and strips this fragment exactly as it does for the printed link.
+    try {
+      sessionStorage.setItem(`hermes.webapp.session.v1:${JSON.stringify([location.origin, basePath])}`, token);
+    } catch {
+      show('This browser does not let the Webapp keep its sign-in in this tab. Allow site data for this '
+        + 'address, then run hermes webapp again.');
+      return;
+    }
     const target = new URL(`${basePath}/`, location.origin);
     target.search = params.get('query') || '';
-    target.hash = `hermes-session=${token}`;
     location.replace(target.href);
   }).catch(fail);
 }
@@ -329,7 +334,8 @@ def _handoff_page(request: Request, title: str, status: str, script: str) -> HTM
 @router.get("/webapp/launch")
 async def launch_page(request: Request):
     """Where the server's own browser-open lands: spends the one-use launch ticket from the
-    fragment (never sent to the server or kept in history) and enters the Webapp."""
+    fragment (never sent to the server), keeps the credential it receives in this tab's
+    sessionStorage and enters the Webapp at an address that carries neither."""
     _require_private_webapp(request)
     return _handoff_page(request, "Opening Hermes", "Opening Hermes Webapp…", _LAUNCH_SCRIPT)
 
