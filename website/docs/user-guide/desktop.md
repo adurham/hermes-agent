@@ -85,7 +85,8 @@ a sign-in provider. Prefer an SSH tunnel, Tailscale or another trusted VPN.
 :::
 
 `hermes webapp --status` shows whether the gateway serves the Webapp. When it cannot (the port is
-taken, or sign-in is required and no sign-in provider is set up), the gateway still serves native
+taken, sign-in is required and no sign-in provider is set up, or the Webapp's browser sign-in file
+`webapp/session-token` in the Hermes home cannot be read or written), the gateway still serves native
 clients and the status says why. The gateway reads these settings when it starts, so restart it after
 fixing the cause (`hermes gateway restart`). When the port was taken, the gateway also replaces the
 Webapp's sign-in, so open tabs need `hermes webapp` again. When the Webapp's bundle has not been built
