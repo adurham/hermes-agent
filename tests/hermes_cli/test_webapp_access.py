@@ -680,3 +680,53 @@ def test_a_webapp_without_a_web_access_client_signs_in_with_the_configured_one(p
             await webapp.close()
 
     asyncio.run(scenario())
+
+
+def _lock_is_free(lock) -> bool:
+    """Whether another thread can take *lock* now (the caller's own hold of an RLock does not count)."""
+    import threading
+
+    free: list[bool] = []
+
+    def probe() -> None:
+        taken = lock.acquire(timeout=1)
+        if taken:
+            lock.release()
+        free.append(taken)
+
+    other = threading.Thread(target=probe, daemon=True)
+    other.start()
+    other.join(5)
+    return free == [True]
+
+
+@pytest.mark.parametrize("action", ["start", "stop", "restart"])
+def test_the_gateway_restart_and_status_run_outside_the_config_lock(client, nous, monkeypatch, action):
+    """Start and Stop write the config under the config lock every config, skills and tools request
+    takes, then restart the gateway and read its status outside that lock: the restart spawn and the
+    status query (a control-socket round trip of up to 5 seconds) hold no other request up."""
+    import hermes_cli.web_server_gateway as gw
+    from hermes_cli import web_server, webapp_access
+
+    lock = web_server._CONFIG_MUTATION_LOCK
+    free_during: dict[str, bool] = {}
+
+    def restart(_profile, *, what, label):
+        free_during["restart"] = _lock_is_free(lock)
+        return {"restart_started": True}
+
+    real_state = webapp_access._gateway_state
+
+    def gateway_state(home):
+        free_during["status"] = _lock_is_free(lock)
+        return real_state(home)
+
+    monkeypatch.setattr(gw, "_restart_gateway_after", restart)
+    monkeypatch.setattr(webapp_access, "_gateway_state", gateway_state)
+    response = {"start": lambda: client.post("/api/webapp-access/start", json={"mode": "lan"}),
+                "stop": lambda: client.post("/api/webapp-access/stop"),
+                "restart": lambda: client.post("/api/webapp-access/restart")}[action]()
+    assert response.status_code == 200, response.text
+    assert free_during == {"restart": True, "status": True}
+
+

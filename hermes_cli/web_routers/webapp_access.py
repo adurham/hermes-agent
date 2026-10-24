@@ -82,11 +82,13 @@ async def _in_gateway_home(gateway: Optional[str], fn: Callable[[], Any]) -> Any
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _restart(gateway_profile: Optional[str], what: str) -> dict:
-    """The status after asking the gateway to restart onto the new config. A refused restart (a live
-    chat) keeps the saved config and reports ``restart_error``."""
-    restart = _restart_gateway_after(gateway_profile, what=what, label="Web Access")
-    return {**webapp_access.access_status(), **restart}
+async def _restart(gateway: Optional[str], what: str) -> dict:
+    """The status after asking the *gateway* profile's gateway to restart onto the saved config. Runs
+    after the config write released the config lock, as main's config routes do: the restart spawn
+    and the status query (a control-socket round trip) hold up no config, skills or tools request.
+    A refused restart (a live chat) keeps the saved config and reports ``restart_error``."""
+    restart = await asyncio.to_thread(_restart_gateway_after, gateway, what=what, label="Web Access")
+    return {**await _in_gateway_home(gateway, webapp_access.access_status), **restart}
 
 
 @router.get("/api/webapp-access/status")
@@ -102,12 +104,8 @@ async def start_webapp_access(body: StartBody, profile: Optional[str] = None):
     # The bundle before anything lasting: a failed build registers, writes and restarts nothing.
     await _in_gateway_home(gateway, webapp_access.build_bundle)
     await _in_gateway_home(gateway, lambda: webapp_access.register(callback))
-
-    def _start(gateway):
-        webapp_access.serve(host, public_url)
-        return _restart(gateway, "turning on Web Access")
-
-    return await _scoped(profile, _start, config_write=True)
+    await _scoped(profile, lambda _gateway: webapp_access.serve(host, public_url), config_write=True)
+    return await _restart(gateway, "turning on Web Access")
 
 
 @router.post("/api/webapp-access/stop")
@@ -116,9 +114,9 @@ async def stop_webapp_access(profile: Optional[str] = None):
 
     def _stop(gateway):
         webapp_access.turn_off()
-        return _restart(gateway, "turning off Web Access")
+        return gateway
 
-    return await _scoped(profile, _stop, config_write=True)
+    return await _restart(await _scoped(profile, _stop, config_write=True), "turning off Web Access")
 
 
 @router.post("/api/webapp-access/restart")
@@ -126,4 +124,4 @@ async def restart_webapp_access(profile: Optional[str] = None):
     """Apply the saved config to a gateway that has not restarted onto it yet: restart that gateway
     and nothing else (no Portal registration, no build, no config write)."""
     profile = destructive_profile(profile, "POST /api/webapp-access/restart")
-    return await _scoped(profile, lambda gateway: _restart(gateway, "applying Web Access"))
+    return await _restart(await _scoped(profile, lambda gateway: gateway), "applying Web Access")
