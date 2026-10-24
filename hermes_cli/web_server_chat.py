@@ -214,10 +214,12 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     ``HOST_TERMINAL_SOCKET`` or one of ``AUDIO_SOCKETS``): a ticket minted for
     one socket opens no other, and the host terminal opens only with its own ticket.
 
-    Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared).
+    Loopback / ``--insecure``: legacy ``?token=`` (constant-time compared); on the
+    gateway's Webapp a one-use socket ticket first (``/api/webapp/socket-ticket``).
     Gated: ``?ticket=`` (browser-minted, single-use, 30s TTL) or ``?internal=``
     (process-lifetime, multi-use, only for server-spawned WS clients so the PTY
-    child can reconnect; never injected into the SPA), or ``?token=`` holding a
+    child can reconnect; never injected into the SPA; on the gateway's Webapp it
+    opens only the sockets that pass *allow_internal*), or ``?token=`` holding a
     user session access token (verified against the dashboard auth session
     providers — the same ``verify_session`` seam the native bearer REST leg
     uses — e.g. a token-mode Remote desktop connection; on the gateway's Webapp
@@ -238,6 +240,9 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
     from hermes_cli.browser_credential import generation_of
     from hermes_cli.web_session_sockets import OWN_TICKET_SOCKETS, track
     auth_required = bool(getattr(app.state, "auth_required", False))
+    # The Webapp's own rules (socket tickets on the loopback gate, the server's credential only where
+    # its spawned clients dial) apply on its listener; the standalone dashboard and serve keep main's.
+    webapp = getattr(app.state, "ui_surface", None) == "webapp"
     if socket in OWN_TICKET_SOCKETS:
         # No standing credential (the session token, a native grant, a login's access token) opens it.
         reject = functools.partial(_audit_ws_rejection, ws) if auth_required else _ignore_rejection
@@ -269,7 +274,7 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
 
         internal = ws.query_params.get("internal", "")
         if internal:
-            if not allow_internal:
+            if webapp and not allow_internal:
                 _reject("internal: endpoint not allowed")
                 return "internal_not_allowed", "internal"
             try:
@@ -337,9 +342,9 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
 
         return "no_credential", "none"
 
-    # Loopback: a one-use ticket ``/api/webapp/socket-ticket`` minted for the session-token owner
-    # (the Webapp's live socket on this same origin), else the legacy ``?token=``.
-    consumed = _consume_ws_ticket(ws, _ignore_rejection, socket)
+    # Loopback: on the Webapp a one-use ticket ``/api/webapp/socket-ticket`` minted for the
+    # session-token owner (its sockets on this same origin), else the legacy ``?token=``.
+    consumed = _consume_ws_ticket(ws, _ignore_rejection, socket) if webapp else None
     if consumed is not None:
         return consumed
     token = ws.query_params.get("token", "")
