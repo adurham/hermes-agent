@@ -537,6 +537,25 @@ def _spawn_deferred_launchd_reload(
     return True
 
 
+def _bootout_drain_and_rebootstrap(domain, plist_path, label, old_pid, budget: float) -> bool:
+    """Boot the job out, wait out the old gateway's drain, then bootstrap until launchd registers it.
+
+    Bootstrap can fail silently under load during a drain, and KeepAlive can't revive an
+    unregistered job, so the retry runs to a deadline. Waiting for *old_pid* first keeps the
+    budget from burning on guaranteed EIO ("already loaded"). The bootout is best effort (the job
+    may already be unloaded) and captured to keep expected noise off the terminal.
+    """
+    target = f"{domain}/{label}"
+    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    if old_pid is not None and not _gw()._wait_for_pid_exit(old_pid, budget):
+        _gw()._append_launchd_reload_log(
+            f"old gateway pid {old_pid} still alive after "
+            f"{int(budget)}s drain wait — bootstrapping {target} anyway"
+        )
+    return _gw()._retry_launchctl_bootstrap_until_registered(
+        domain, plist_path, label, deadline=time.monotonic() + budget)
+
+
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
     re-reads it immediately."""
@@ -580,19 +599,9 @@ def refresh_launchd_plist_if_needed() -> bool:
         )
         return True
 
-    # Bootout/bootstrap so launchd reads the new definition; bootstrap can fail silently under load
-    # during a drain, and KeepAlive can't revive an unregistered job.
-    # Captured: best-effort (the job may already be unloaded), keep expected noise off the terminal.
-    subprocess.run(["launchctl", "bootout", target], check=False, timeout=90, **_gw()._CAPTURE_TEXT)
+    # Bootout/bootstrap so launchd reads the new definition.
     _reload_budget = _launchd_reload_budget()
-    # Wait out the old gateway's drain first so the budget isn't burned on guaranteed EIO ("already loaded").
-    if gateway_pid is not None and not _gw()._wait_for_pid_exit(gateway_pid, _reload_budget):
-        _gw()._append_launchd_reload_log(
-            f"old gateway pid {gateway_pid} still alive after "
-            f"{int(_reload_budget)}s drain wait — bootstrapping {target} anyway"
-        )
-    _deadline = time.monotonic() + _reload_budget
-    if not _gw()._retry_launchctl_bootstrap_until_registered(domain, plist_path, label, deadline=_deadline):
+    if not _bootout_drain_and_rebootstrap(domain, plist_path, label, gateway_pid, _reload_budget):
         _gw()._append_launchd_reload_log(
             f"FAILED launchd reload of {target} — service NOT registered after "
             f"retrying for {int(_reload_budget)}s (in-process fallback path)"
@@ -668,16 +677,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
         domain = _gw()._launchd_domain()
         target = f"{domain}/{label}"
         budget = _gw()._launchd_reload_budget()
-        subprocess.run(
-            ["launchctl", "bootout", target],
-            check=False, timeout=90, **_gw()._CAPTURE_TEXT)
-        if not _gw()._wait_for_pid_exit(force_old_pid, budget):
-            _gw()._append_launchd_reload_log(
-                f"old gateway pid {force_old_pid} still alive after "
-                f"{int(budget)}s forced-install drain wait — bootstrapping {target} anyway"
-            )
-        if not _gw()._retry_launchctl_bootstrap_until_registered(
-                domain, plist_path, label, deadline=time.monotonic() + budget):
+        if not _bootout_drain_and_rebootstrap(domain, plist_path, label, force_old_pid, budget):
             _gw()._append_launchd_reload_log(
                 f"FAILED forced launchd install of {target} — service NOT registered after "
                 f"retrying for {int(budget)}s"
