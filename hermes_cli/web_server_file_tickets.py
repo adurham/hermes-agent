@@ -11,10 +11,12 @@ it expires. Each ticket captures the resolved file (on the profile's SSH workspa
 when it has one, as for native Desktop's download) and the named profile homes it
 belongs to; the resource opener refuses it once one of those homes is missing or
 deleted (``hermes_constants.assert_named_profile_home_live``). A ticket minted for
-a request that presented the browser session token redeems only while that token
-is current, like a socket ticket, so signing out ends it even when the sign-out
-lands while the ticket is being minted. In-memory only: tickets die with the
-process, like the token.
+a request that presented the browser session token records that credential's
+generation (``hermes_cli.browser_credential``) and redeems only while it is
+current, like a socket ticket, so signing out ends it even when the sign-out lands
+while the ticket is being minted; signing out also drops it from the store. A
+ticket minted with any other credential outlives a sign-out. In-memory only:
+tickets die with the process, like the token.
 """
 from __future__ import annotations
 
@@ -67,10 +69,11 @@ class _Ticket:
     expires_at: float
     single_use: bool
     authority: FileAuthority
-    #: Digest of the browser session token the minting request presented (None for any other
-    #: credential): the ticket redeems only while that token is current, so a sign-out that lands
-    #: between the request's admission and the mint still ends it.
-    session_token: str | None = None
+    #: Generation of the browser credential the minting request presented
+    #: (``hermes_cli.browser_credential``; None for any other credential): the ticket redeems only
+    #: while it is current, so a sign-out that lands between the request's admission and the mint
+    #: still ends it.
+    generation: str | None = None
 
 
 _lock = threading.Lock()
@@ -108,7 +111,7 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority,
         expires_at=now + (DOWNLOAD_TTL_SECONDS if single_use else STREAM_TTL_SECONDS),
         single_use=single_use,
         authority=authority,
-        session_token=None if session_token is None else browser_credential.generation_of(session_token),
+        generation=None if session_token is None else browser_credential.generation_of(session_token),
     )
     with _lock:
         for stale in [key for key, value in _tickets.items() if value.expires_at <= now]:
@@ -119,18 +122,20 @@ def mint(route: str, query: Mapping[str, str], *, authority: FileAuthority,
     return ticket
 
 
-def revoke_all() -> int:
-    """Drop every ticket: the session token that authorized them was replaced (sign-out). Returns
-    how many were dropped."""
+def revoke_replaced() -> int:
+    """Drop every ticket minted under a browser credential that has since been replaced (sign-out);
+    tickets minted with any other credential stay. Returns how many were dropped."""
     with _lock:
-        dropped = len(_tickets)
-        _tickets.clear()
-    return dropped
+        replaced = [key for key, value in _tickets.items()
+                    if value.generation is not None and not browser_credential.is_current(value.generation)]
+        for key in replaced:
+            del _tickets[key]
+    return len(replaced)
 
 
 def redeem(request: Request) -> bool:
     """True when ``?ticket=`` authorizes this exact request; consumes a download ticket. A ticket
-    minted with a session token that has since been replaced is dropped instead."""
+    minted under a browser credential that has since been replaced is dropped instead."""
     ticket = request.query_params.get("ticket", "")
     if not ticket or request.method not in ("GET", "HEAD"):
         return False
@@ -139,7 +144,7 @@ def redeem(request: Request) -> bool:
         entry = _tickets.get(ticket)
         if entry is None or entry.scope != scope or entry.expires_at <= time.monotonic():
             return False
-        if entry.session_token is not None and not browser_credential.is_current(entry.session_token):
+        if entry.generation is not None and not browser_credential.is_current(entry.generation):
             del _tickets[ticket]
             return False
         if entry.single_use:
@@ -150,4 +155,4 @@ def redeem(request: Request) -> bool:
     return True
 
 
-browser_credential.on_rotate("file tickets", revoke_all)
+browser_credential.on_rotate("file tickets", revoke_replaced)
