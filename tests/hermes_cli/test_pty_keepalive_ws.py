@@ -120,6 +120,69 @@ def test_chat_without_a_pty_bridge_says_what_to_install_as_on_main(pty_keepalive
 
 
 @pytest.mark.asyncio
+async def test_a_takeover_during_input_leaves_the_chat_session_to_the_new_tab():
+    """Dashboard /chat keep-alive: when another tab takes the session over while this tab's input
+    waits on the PTY, that write is cancelled and the session stays alive for the new tab, which
+    closes this one as superseded (4409), never as stalled input (1013). Only the attached tab's
+    resize reaches the PTY."""
+    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
+    from hermes_cli.web_routers.chat_ws import _pump_keepalive_input
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class BlockingBridge(FakeBridge):
+        def __init__(self):
+            super().__init__()
+            self.resized = []
+
+        async def write(self, data):
+            if data == b"old":
+                entered.set()
+                await release.wait()
+            return await super().write(data)
+
+        def resize(self, cols, rows):
+            self.resized.append((cols, rows))
+
+    class Tab:
+        def __init__(self, *frames):
+            self.frames = asyncio.Queue()
+            for frame in frames:
+                self.frames.put_nowait(frame)
+            self.closes = []
+
+        async def receive(self):
+            return await self.frames.get()
+
+        async def send_bytes(self, data):
+            pass
+
+        async def close(self, code=1000, reason=None):
+            self.closes.append(code)
+
+    bridge = BlockingBridge()
+    session = PtySession("k", bridge, buffer_cap=64, read_timeout=0.01)
+    await session.start()
+    old = Tab({"type": "websocket.receive", "bytes": b"old"})
+    await session.attach(old)
+    pump = asyncio.create_task(_pump_keepalive_input(old, session))
+    await entered.wait()
+    new = Tab()
+    await session.attach(new)
+    release.set()
+    await asyncio.wait_for(pump, timeout=5)
+    session.resize(old, cols=5, rows=6)
+    session.resize(new, cols=80, rows=24)
+
+    assert session.alive
+    assert old.closes == [WS_CLOSE_SUPERSEDED]
+    assert bridge.resized == [(80, 24)]
+    assert await session.write(new, b"new")
+    assert bytes(bridge.written) == b"new"
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_attach_token_reuses_same_resume(pty_keepalive_harness):
     from starlette.testclient import TestClient
 
