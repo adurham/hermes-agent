@@ -146,7 +146,9 @@ def probe(tmp_path):
         assert sorted(texts) == sorted(['WARM_HISTORY', 'RESET_OLD', 'BLOCK_STARTED', 'RECOVER_SAFE', 'RECOVER_RESET']), texts
         for name in ('safe', 'reset'):
             request = next(r for r in peer.requests if any(isinstance(m.get('content'), str) and m['content'].endswith('RECOVER_' + name.upper()) for m in r['messages']))
-            assert request['model'] == params[name]['model'] and not request.get('tools')
+            # Frozen ``toolsets=[]`` still carries the fork's ``consult``, which every platform recovers
+            # (hermes_cli/tools_config._recover_platform_native_toolsets; FORK.md) — and nothing else.
+            assert request['model'] == params[name]['model'] and [t['function']['name'] for t in request.get('tools') or []] == ['consult']
             assert params[name]['cwd'] in json.dumps(request['messages']), request['messages']
         return {'pids': pids, 'epochs': epochs, 'logical_ids': sessions, 'physical_targets': targets,
                 'inference_texts': texts, 'raw_inference_texts': raw_texts, 'stable_receipts': True, 'policy_cwd_history_retained': True,

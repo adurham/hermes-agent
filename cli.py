@@ -609,10 +609,13 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     _cleanup_in_progress = True
     _restore_sigint = _install_cleanup_skip_handler()
     try:
-        print(
-            f"{_DIM}(cleaning up — press Ctrl+C to quit immediately){_RST}",
-            flush=True,
-        )
+        # Only a terminal user can act on the hint; a piped one-shot (`chat -q … -Q`) owns its stdout
+        # for the answer alone, so the (ANSI-dimmed) notice must not land there.
+        if sys.stdout is not None and sys.stdout.isatty():
+            print(
+                f"{_DIM}(cleaning up — press Ctrl+C to quit immediately){_RST}",
+                flush=True,
+            )
     except Exception:
         pass
 

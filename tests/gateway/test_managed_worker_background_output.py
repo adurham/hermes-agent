@@ -70,8 +70,11 @@ class Model(BaseHTTPRequestHandler):
             name, args = 'terminal', {'command': COMMAND, 'background': True}
         elif last['role'] == 'user' and last.get('content') == 'WAIT':
             proc = re.findall(r'proc_[0-9a-f]{12}', json.dumps(messages))[0]
-            name, args = 'tool_call', {'calls': [{'name': 'process_manage',
-                                                  'arguments': {'action': 'wait', 'session_id': proc, 'timeout': 30}}]}
+            name, args = 'process_manage', {'action': 'wait', 'session_id': proc, 'timeout': 30}
+            # The fork's ``tool_search: auto`` is budget-gated (tools/tool_search.should_activate), so a
+            # small toolset stays eager: call the tool directly when present, else through the bridge.
+            if name not in [t['function']['name'] for t in body.get('tools') or []]:
+                name, args = 'tool_call', {'calls': [{'name': name, 'arguments': args}]}
         else:
             name, args = None, {}
         message = ({'role': 'assistant', 'content': None, 'tool_calls': [{'id': f'c{len(messages)}', 'index': 0,

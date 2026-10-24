@@ -45,8 +45,14 @@ class Model(BaseHTTPRequestHandler):
             message = {'role': 'assistant', 'content': 'CRON_CHILD_DONE'}
         elif last['role'] == 'user':
             call = {'name': 'cronjob_manage', 'arguments': {'action': 'run', 'job_id': self.server.job_id}}
+            # The fork's ``tool_search: auto`` is budget-gated (tools/tool_search.should_activate), so a
+            # small toolset stays eager: call the tool directly when present, else through the bridge.
+            if call['name'] in [t['function']['name'] for t in body.get('tools') or []]:
+                name, args = call['name'], call['arguments']
+            else:
+                name, args = 'tool_call', {'calls': [call]}
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'run-1', 'index': 0, 'type': 'function',
-                       'function': {'name': 'tool_call', 'arguments': json.dumps({'calls': [call]})}}]}
+                       'function': {'name': name, 'arguments': json.dumps(args)}}]}
         else:
             message = {'role': 'assistant', 'content': 'PARENT_DONE'}
         choice = {'index': 0, 'delta': message, 'finish_reason': 'tool_calls' if message.get('tool_calls') else 'stop'}

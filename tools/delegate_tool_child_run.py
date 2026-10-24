@@ -492,7 +492,12 @@ def _register_durable_subagent(parent_agent: Any, subagent_id: str, goal: str) -
     if not owner_sid:
         return
     with _quiet("cross-process subagent registration failed: %s"):  # never block a spawn over bookkeeping
-        from tools.cross_session_integration import session_display_name, session_origin
+        from tools.cross_session_integration import _gateway_owned_worker, session_display_name, session_origin
+        # A managed worker must not open state.db (the gateway worker invariant; the owner keeps the registry
+        # for the sessions it runs). Its title read would also be a synchronous worker RPC, which a
+        # Relay-driven tool callback makes on a running loop — a refusal that is sticky for the whole turn.
+        if _gateway_owned_worker(parent_agent):
+            return
         from tools.cross_session_transport import heartbeat_registry, register_subagent
         from tools.delegate_tool import _resolve_workspace_hint
 
