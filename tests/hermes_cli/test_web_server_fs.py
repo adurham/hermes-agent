@@ -571,6 +571,23 @@ def test_a_file_url_is_decoded_once_by_every_read(client, tmp_path, endpoint):
     assert body == "the file the URL names"
 
 
+@pytest.mark.parametrize("name", ["..%2fsecret.md", "..%2Fsecret.md", "..%5csecret.md"])
+@pytest.mark.parametrize("endpoint", ["read-text", "read-data-url", "download"])
+def test_a_file_url_that_encodes_a_separator_is_refused(client, tmp_path, endpoint, name):
+    """A ``file:`` URL that percent-encodes a separator (``%2f``; ``%5c`` where it decodes to one)
+    is refused, as the shared parser in ``apps/shared/src/file-url.ts`` refuses it in the renderer
+    and Electron: decoding it would add a segment, and ``..%2fsecret.md`` would read a file outside
+    the folder the URL names."""
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (tmp_path / "secret.md").write_text("outside the named folder")
+
+    response = client.get(f"/api/fs/{endpoint}", params={"path": f"{folder.as_uri()}/{name}"})
+
+    assert response.status_code in {400, 404}, (endpoint, name, response.status_code)
+    assert "outside the named folder" not in response.text
+
+
 @pytest.mark.parametrize("name", ["..%2fsecret.md", "%2e%2e/secret.md", "%2E%2E%2Fsecret.md"])
 def test_fs_read_text_decode_fallback_stays_in_the_named_folder(client, tmp_path, name):
     """The one-decode rescue for a doubly encoded path (issue #103425) never leaves the folder the

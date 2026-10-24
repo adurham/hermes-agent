@@ -52,6 +52,28 @@ def _decoded_candidate(raw: str, *, cwd: str | None = None) -> Path | None:
     return _resolve_fs_candidate(decoded, cwd=cwd)
 
 
+def _file_url_path(url: str) -> str:
+    """The native path a ``file:`` URL names, percent-decoded once.
+
+    A URL that encodes a separator is refused (ValueError) as ``apps/shared/src/file-url.ts``
+    refuses it in the renderer and Electron: ``%2f``, and ``%5c`` on a Windows gateway or in a
+    Windows URL (a UNC host or a drive letter). Decoding it would add a segment, so ``..%2f`` would
+    name a file outside the folder the URL spells.
+    """
+    parsed = urllib.parse.urlparse(url)
+    uri_path = parsed.path
+    host = "" if parsed.netloc.lower() == "localhost" else parsed.netloc
+    drive = re.match(r"/[a-z]:", urllib.parse.unquote(uri_path), re.IGNORECASE)
+    windows = os.name == "nt" or bool(host) or drive is not None
+    if re.search(r"%2f", uri_path, re.IGNORECASE) or (windows and re.search(r"%5c", uri_path, re.IGNORECASE)):
+        raise ValueError("file: URL encodes a path separator")
+    if host:
+        if os.name != "nt":
+            raise ValueError("file: URL names another host")
+        uri_path = f"//{host}{uri_path}"
+    return urllib.request.url2pathname(uri_path)
+
+
 def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = True) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
@@ -61,13 +83,7 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
     try:
         from_url = raw.lower().startswith("file:")
         if from_url:
-            parsed = urllib.parse.urlparse(raw)
-            uri_path = parsed.path
-            if parsed.netloc and parsed.netloc.lower() != "localhost":
-                if os.name != "nt":
-                    raise ValueError
-                uri_path = f"//{parsed.netloc}{uri_path}"
-            raw = urllib.request.url2pathname(uri_path)
+            raw = _file_url_path(raw)
         elif os.name == "nt":
             # MEDIA links can reuse Git Bash paths; native Path would read /c/ as C:\c\.
             from tools.environments.local import _msys_to_windows_path
