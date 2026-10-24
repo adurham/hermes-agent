@@ -535,28 +535,48 @@ async def _login_client_id(mount, origin: str) -> str:
     return parse_qs(location.query)["client_id"][0]
 
 
+def _load_nous_plugin_as_discovery_does():
+    """The bundled Nous sign-in plugin imported as plugin discovery imports it: from its folder under
+    a module name of the loader's own (``hermes_plugins.<key>``), not as ``plugins.dashboard_auth.nous``,
+    so its module-level state is not that of any other import of it."""
+    import importlib.util
+    from pathlib import Path
+
+    import plugins.dashboard_auth.nous as source
+
+    folder = Path(source.__file__).parent
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins_test_f5.dashboard_auth__nous", folder / "__init__.py", submodule_search_locations=[str(folder)])
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.fixture()
 def gateway_listeners(tmp_path, monkeypatch):
     """The gateway's dashboard mount over the process's dashboard app, as the gateway builds it at
     start: ``listener(webapp=True)`` is the Webapp's listener (every interface, behind sign-in), else
     the private one. ``discover()`` runs the Nous plugin's registration as plugin discovery does at
-    gateway start (and on a plugin reload). The auth registry is emptied before and after."""
+    gateway start (and on a plugin reload), on the plugin imported the way discovery imports it. The
+    auth registry and the listener's sign-in client are reset before and after."""
     import types
 
-    import plugins.dashboard_auth.nous as nous_plugin
     from gateway.run_api import GatewayDashboardMount
     from gateway.webapp_listener import WebappMount
     from hermes_cli import web_server
-    from hermes_cli.dashboard_auth import clear_providers
+    from hermes_cli.dashboard_auth import clear_providers, listener_client
     from hermes_cli.dashboard_auth.registry import register_global_provider
     from hermes_constants import get_hermes_home
 
     for key in ("bound_host", "bound_port", "auth_required", "trusted_public_hosts"):
         monkeypatch.setattr(web_server.app.state, key, getattr(web_server.app.state, key, None), raising=False)
+    for name in ("_current", "_swap"):
+        monkeypatch.setattr(listener_client, name, None)
     dist = tmp_path / "dist-webapp"
     dist.mkdir()
     (dist / "index.html").write_text("<!doctype html><html><body>WEBAPP</body></html>", encoding="utf-8")
     discovery = types.SimpleNamespace(register_dashboard_auth_provider=register_global_provider)
+    nous_plugin = _load_nous_plugin_as_discovery_does()
 
     def listener(*, webapp: bool):
         state = types.SimpleNamespace(bound_host="0.0.0.0", bound_port=9120,
@@ -628,19 +648,16 @@ def test_a_plugin_reload_while_the_webapp_serves_keeps_its_own_client(portal, ga
     asyncio.run(scenario())
 
 
-def test_a_disabled_nous_plugin_keeps_nous_sign_in_off_the_webapp(portal, monkeypatch, tmp_path):
+def test_a_disabled_nous_plugin_keeps_nous_sign_in_off_the_webapp(portal, gateway_listeners, tmp_path):
     """Web Access's client signs the Webapp in only through the Nous sign-in plugin: where
     ``plugins.disabled`` keeps that plugin from loading (discovery never registered it), the Webapp
     gets no Nous sign-in from Web Access either."""
-    import plugins.dashboard_auth.nous as nous_plugin
     from gateway.webapp_listener import WebappMount, use_own_sign_in
     from hermes_cli import webapp_access
-    from hermes_cli.dashboard_auth import clear_providers, get_provider
+    from hermes_cli.dashboard_auth import get_provider
     from hermes_constants import get_hermes_home
 
     webapp_access.register(LAN_CALLBACK)
-    monkeypatch.setattr(nous_plugin, "_DISCOVERED", False)
-    clear_providers()
 
     assert use_own_sign_in(WebappMount(tmp_path, get_hermes_home())) is None
     assert get_provider("nous") is None
