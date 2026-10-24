@@ -33,7 +33,9 @@ def launch_credentials_copy(error: Any) -> str:
     field = getattr(error, "field", None) or data.get("field")
     detail = getattr(error, "detail", None) or data.get("detail")
     named = f" ({field}: {detail or 'unavailable'})" if field else ""
-    return t("gateway.errors.launch_credentials_unavailable", detail=named)
+    text = t("gateway.errors.launch_credentials_unavailable", detail=named)
+    # The raw code + field stay greppable for bug reports and log matching (untranslated, last line).
+    return f"{text}\n\nDetails: launch_credentials_unavailable{named}" if field else text
 
 
 def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[str, Any]:
