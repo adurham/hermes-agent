@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 from utils import base_url_hostname, is_truthy_value
 from hermes_cli.fallback_config import scoped_fallback_chain
 
@@ -267,7 +267,11 @@ def _resolve_child_credential_pool(
             )
             if parent_pool is not None and parent_provider == "custom" and parent_key is not None and parent_key == child_key:
                 return parent_pool
-            return _loaded_pool(child_key)
+            # The entry's slug may also be a same-named built-in's pool: lease only the rows the entry
+            # owns, or a fixed entry credential becomes the built-in's account on a shared endpoint.
+            from agent.custom_entry_pool import custom_entry_for_endpoint, entry_scoped_pool
+            owner = custom_entry_for_endpoint(effective_base_url, effective_requested_provider)
+            return entry_scoped_pool(_loaded_pool(child_key), child_key, owner[1] if owner else None)
         if effective_provider == parent_provider:
             # A same-provider parent with no pool is using a fixed credential.
             # Loading a separate provider pool here can replace the inherited
@@ -516,11 +520,55 @@ def _inherited_child_max_tokens(parent_agent) -> Optional[int]:
     return cap
 
 
+class ResolvedReasoning(NamedTuple):
+    """A route's FINAL reasoning config, used as-is (``None`` included = the route's own default): a profile route
+    resolves its profile's ``agent.reasoning_effort`` / ``reasoning_overrides``, so neither the launching profile's
+    ``delegation.reasoning_effort`` nor the parent's level may fill it in."""
+
+    config: Optional[dict]
+
+
+def _child_reasoning(parent_agent, delegation_cfg: dict, route_effort: Any, *,
+                     agent_type: Optional[str] = None, role: Optional[str] = None) -> Any:
+    """Child reasoning config: a :class:`ResolvedReasoning` route value as-is, else the route's raw effort >
+    ``delegation.reasoning_effort`` > the parent's level. Keep the raw value — a YAML ``false`` must disable
+    thinking, not coerce to "" and inherit.
+
+    FORK: ``delegation.reasoning_effort_by_role`` sits ahead of the global level — ``agent_type`` persona
+    (e.g. "coder") > spawn ``role`` (e.g. "orchestrator") > ``delegation.reasoning_effort`` > parent — so an
+    orchestrator child can run at max while its leaf workers run cheaper. The default route IS the
+    ``delegation`` section (``dict(config)``), so a route effort equal to the global value is the global
+    knob and the per-role map beats it; a backend route's own distinct effort stays the most specific."""
+    if isinstance(route_effort, ResolvedReasoning):
+        return route_effort.config
+    child_reasoning = getattr(parent_agent, "reasoning_config", None)
+    global_effort = (delegation_cfg or {}).get("reasoning_effort")
+    delegation_effort = route_effort
+    if not (delegation_effort or delegation_effort is False) or delegation_effort == global_effort:
+        role_effort = None
+        try:
+            from hermes_cli.personas import lookup_reasoning_for_role
+            role_effort = lookup_reasoning_for_role(agent_type) or (
+                lookup_reasoning_for_role(role) if role else None
+            )
+        except Exception:
+            logger.debug("Could not load delegation.reasoning_effort_by_role", exc_info=True)
+        delegation_effort = role_effort or global_effort
+    if delegation_effort or delegation_effort is False:
+        from hermes_constants import parse_reasoning_effort
+        parsed = parse_reasoning_effort(delegation_effort)
+        if parsed is None:
+            logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
+        else:
+            child_reasoning = parsed
+    return child_reasoning
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[list[str]],
-    routing_cfg: Optional[dict[str, Any]] = None,
+    routing_cfg: Optional[dict[str, Any]] = None, override_reasoning_effort: Any = None,
     agent_type: Optional[str] = None, role: Optional[str] = None,
 ) -> dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
@@ -597,33 +645,10 @@ def _resolve_child_runtime(
             getattr(parent_agent, "requested_provider", None) or effective_provider
         )
 
-    # Reasoning precedence: delegation.reasoning_effort_by_role[agent_type]
-    # (persona, e.g. "coder") > reasoning_effort_by_role[role] (spawn role,
-    # e.g. "orchestrator") > global delegation.reasoning_effort > parent
-    # inherit. Lets an orchestrator child run at max depth while the leaf
-    # workers it dispatches run cheaper. Keep the raw global value — a YAML
-    # ``false`` must disable thinking, not coerce to "" and inherit.
-    child_reasoning = getattr(parent_agent, "reasoning_config", None)
-    try:
-        delegation_effort = None
-        try:
-            from hermes_cli.personas import lookup_reasoning_for_role
-            delegation_effort = lookup_reasoning_for_role(agent_type) or (
-                lookup_reasoning_for_role(role) if role else None
-            )
-        except Exception:
-            logger.debug("Could not load delegation.reasoning_effort_by_role", exc_info=True)
-        if not delegation_effort:
-            delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is None:
-                logger.warning("Unknown delegation.reasoning_effort '%s', inheriting parent level", delegation_effort)
-            else:
-                child_reasoning = parsed
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    # Reasoning: a profile route's resolved config as-is; else the task route's effort (delegation provider) >
+    # FORK delegation.reasoning_effort_by_role (agent_type > role) > delegation.reasoning_effort > parent.
+    child_reasoning = _child_reasoning(parent_agent, delegation_cfg, override_reasoning_effort,
+                                       agent_type=agent_type, role=role)
 
     kwargs: dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,

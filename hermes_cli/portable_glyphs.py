@@ -90,6 +90,7 @@ PORTABLE_EXTRA_CODEPOINTS: dict[int, str] = {
     0x02191: ACCEPTED_RISK,  # ↑
     0x02192: ACCEPTED_RISK,  # →
     0x02193: ACCEPTED_RISK,  # ↓
+    0x021bb: ACCEPTED_RISK,  # ↻ (session dock: loop marker, upstream chrome)
     0x02299: ACCEPTED_RISK,  # ⊙
     0x02387: NARROW_SOLID,  # ⎇
     0x023ce: NARROW_SOLID,  # ⏎

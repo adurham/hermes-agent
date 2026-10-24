@@ -9,7 +9,7 @@ from gateway.config import PlatformConfig
 
 
 def _adapter():
-    from gateway.platforms.qqbot import QQAdapter
+    from plugins.platforms.qqbot.adapter import QQAdapter
     return QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))
 
 

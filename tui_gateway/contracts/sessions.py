@@ -289,6 +289,7 @@ class SessionActiveItem(Result):
     model: str
     preview: str
     session_key: str
+    source: str | None = None
     started_at: float
     status: LiveSessionStatus
     title: str
@@ -516,6 +517,7 @@ class SessionUsageParams(SessionParams):
 
 class SessionUsageResult(Usage):
     credits_lines: list[str] | None = None
+    credits_usage_window: bool | None = None
 
 
 method("session.usage", params=SessionUsageParams, result=SessionUsageResult,
@@ -732,6 +734,10 @@ method("terminal.resize", params=TerminalResizeParams, result=TerminalResizeResu
 
 class SessionEventsSinceParams(SessionParams):
     last_seen: int | None = None
+    # Accepted and ignored. Legacy seqs are per process, and the client compares the answer's
+    # ``epoch`` with the process epoch from ``gateway.ready``. Clients that still send that
+    # process epoch here must replay; any other unknown key stays refused.
+    replay_epoch: str | None = None
 
 
 class SessionEventsSinceResult(Result):

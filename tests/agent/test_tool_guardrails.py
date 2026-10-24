@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -574,3 +576,29 @@ def test_real_config_loader_defaults_hard_stop_on_and_honours_opt_out():
     assert section["hard_stop_enabled"] is False
     assert section["non_interactive_hard_stop_enabled"] is True
     assert ToolCallGuardrailConfig.from_mapping(section, platform="cli").hard_stop_enabled is False
+
+
+@pytest.mark.parametrize("prior_ordinary_failures", [0, 2])
+@pytest.mark.parametrize("result,throttled", [
+    (json.dumps({"error": "Slack API error: ratelimited. Retry after 1 seconds."}), True),
+    (json.dumps({"ok": False, "error": "busy", "retry_after": 30}), True),
+    (json.dumps({"error": "channel_not_found"}), False),  # control: a real replay still warns
+])
+def test_rate_limited_retry_is_not_a_replay_but_stays_bounded(result, throttled, prior_ordinary_failures):
+    """Retrying a throttled read after its cooldown must not draw the "stop retrying unchanged"
+    warning (even after earlier ordinary failures with the same args), yet an endpoint that never
+    recovers still halts unattended runs on the per-tool cap."""
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({}, platform="webhook"))
+    tool, args = "mcp_slack_history", {"channel": "C123"}
+    for _ in range(prior_ordinary_failures):
+        controller.after_call(tool, args, json.dumps({"error": "upstream timeout"}))
+    controller.after_call(tool, args, result)
+    retry = controller.after_call(tool, args, result)
+    assert (retry.code == "repeated_exact_failure_warning") is not throttled, retry
+    for _ in range(10):
+        if not controller.before_call(tool, args).allows_execution:
+            break
+        if controller.after_call(tool, args, result).action == "halt":
+            break
+    else:
+        raise AssertionError("a permanently failing endpoint must still halt or block")

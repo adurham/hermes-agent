@@ -1,0 +1,393 @@
+Auto-merging .env.example
+Auto-merging .github/workflows/ci.yaml
+Auto-merging .github/workflows/e2e-desktop-core.yml
+CONFLICT (content): Merge conflict in .github/workflows/e2e-desktop-core.yml
+Auto-merging .github/workflows/e2e-desktop.yml
+CONFLICT (content): Merge conflict in .github/workflows/e2e-desktop.yml
+Auto-merging .github/workflows/js-tests.yml
+CONFLICT (content): Merge conflict in .github/workflows/js-tests.yml
+Auto-merging .github/workflows/lint.yml
+Auto-merging .github/workflows/nix.yml
+Auto-merging .github/workflows/rust-tests.yml
+CONFLICT (content): Merge conflict in .github/workflows/rust-tests.yml
+Auto-merging .github/workflows/tests-os.yml
+Auto-merging .github/workflows/tests.yml
+CONFLICT (content): Merge conflict in .github/workflows/tests.yml
+Auto-merging .npmrc
+CONFLICT (content): Merge conflict in .npmrc
+Auto-merging CONTRIBUTING.md
+Auto-merging README.es.md
+Auto-merging README.md
+Auto-merging README.ur-pk.md
+Auto-merging README.zh-CN.md
+Auto-merging acp_adapter/entry.py
+Auto-merging acp_adapter/server.py
+Auto-merging acp_adapter/session.py
+Auto-merging agent/account_usage.py
+Auto-merging agent/activity_tracking.py
+Auto-merging agent/agent_init.py
+Auto-merging agent/agent_runtime_helpers.py
+Auto-merging agent/auxiliary_client.py
+Auto-merging agent/auxiliary_task_config.py
+CONFLICT (content): Merge conflict in agent/auxiliary_task_config.py
+Auto-merging agent/background_review.py
+Auto-merging agent/chat_completion_helpers.py
+Auto-merging agent/context_compressor.py
+Auto-merging agent/context_references.py
+Auto-merging agent/conversation_compression.py
+Auto-merging agent/conversation_compression_manual.py
+Auto-merging agent/conversation_loop.py
+Auto-merging agent/credential_pool.py
+Auto-merging agent/display.py
+Auto-merging agent/error_classifier.py
+Auto-merging agent/error_surface.py
+Auto-merging agent/inline_tool_executors.py
+Auto-merging agent/insights.py
+Auto-merging agent/interrupt_control.py
+CONFLICT (content): Merge conflict in agent/interrupt_control.py
+Auto-merging agent/moa_loop.py
+Auto-merging agent/model_metadata.py
+Auto-merging agent/process_bootstrap.py
+Auto-merging agent/prompt_builder.py
+Auto-merging agent/prompt_caching.py
+Auto-merging agent/session_persistence.py
+Auto-merging agent/system_prompt.py
+Auto-merging agent/tool_executor.py
+CONFLICT (content): Merge conflict in agent/tool_executor.py
+Auto-merging agent/tool_guardrails.py
+Auto-merging agent/transports/chat_completions.py
+Auto-merging agent/turn_api_error.py
+Auto-merging agent/turn_context.py
+CONFLICT (content): Merge conflict in agent/turn_context.py
+Auto-merging agent/turn_finalizer.py
+Auto-merging agent/turn_recovery.py
+Auto-merging apps/desktop/electron-builder.config.cjs
+Auto-merging apps/desktop/package.json
+Auto-merging apps/desktop/src/api/system.ts
+CONFLICT (content): Merge conflict in apps/desktop/src/api/system.ts
+Auto-merging apps/desktop/src/app/chat/session-drag.ts
+CONFLICT (content): Merge conflict in apps/desktop/src/app/chat/session-drag.ts
+Auto-merging apps/desktop/src/app/chat/sidebar/projects/workspace-groups.test.ts
+Auto-merging apps/desktop/src/app/chat/sidebar/projects/workspace-groups.ts
+Auto-merging apps/desktop/src/app/chat/sidebar/sessions-section.tsx
+Auto-merging apps/desktop/src/app/contrib/hooks/use-background-sync.test.ts
+Auto-merging apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.test.ts
+Auto-merging apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.ts
+CONFLICT (content): Merge conflict in apps/desktop/src/app/contrib/hooks/use-session-tile-delegate.ts
+Auto-merging apps/desktop/src/app/contrib/wiring.tsx
+Auto-merging apps/desktop/src/app/session/hooks/use-hermes-config.ts
+CONFLICT (content): Merge conflict in apps/desktop/src/app/session/hooks/use-hermes-config.ts
+Auto-merging apps/desktop/src/app/session/hooks/use-message-stream/gateway-event/message-stream.ts
+Auto-merging apps/desktop/src/app/session/hooks/use-prompt-actions/index.test.tsx
+CONFLICT (content): Merge conflict in apps/desktop/src/app/session/hooks/use-prompt-actions/index.test.tsx
+Auto-merging apps/desktop/src/app/session/hooks/use-session-actions.test.tsx
+Auto-merging apps/desktop/src/app/session/hooks/use-session-actions/index.ts
+Auto-merging apps/desktop/src/app/session/hooks/use-session-actions/utils.ts
+Auto-merging apps/desktop/src/i18n/en.ts
+Auto-merging apps/desktop/src/i18n/ja.ts
+Auto-merging apps/desktop/src/i18n/overlay-gaps.json
+Auto-merging apps/desktop/src/i18n/types.ts
+Auto-merging apps/desktop/src/i18n/zh-hant_settings.ts
+Auto-merging apps/desktop/src/i18n/zh.ts
+Auto-merging apps/desktop/src/lib/chat-messages/index.ts
+Auto-merging apps/desktop/src/lib/chat-messages/parts.ts
+Auto-merging apps/desktop/src/lib/desktop-slash-commands.ts
+Auto-merging apps/desktop/src/lib/desktop-slash-registry.json
+CONFLICT (content): Merge conflict in apps/desktop/src/lib/desktop-slash-registry.json
+Auto-merging apps/desktop/src/store/projects.ts
+Auto-merging apps/desktop/src/store/session-states.ts
+Auto-merging apps/desktop/src/store/shared-metrics.ts
+Auto-merging apps/desktop/src/types/hermes.ts
+CONFLICT (content): Merge conflict in apps/desktop/src/types/hermes.ts
+Auto-merging apps/shared/src/gateway-contract.generated.ts
+Auto-merging apps/shared/src/gateway-contract.openrpc.json
+Auto-merging cli-config.yaml.example
+Auto-merging cli.py
+CONFLICT (content): Merge conflict in cli.py
+Auto-merging cron/jobs.py
+Auto-merging cron/scheduler_delivery.py
+CONFLICT (content): Merge conflict in cron/scheduler_delivery.py
+Auto-merging gateway/authz_mixin.py
+Auto-merging gateway/platforms/api_server.py
+Auto-merging gateway/platforms/api_server_openai_routes.py
+CONFLICT (content): Merge conflict in gateway/platforms/api_server_openai_routes.py
+Auto-merging gateway/platforms/api_server_runs.py
+Auto-merging gateway/run.py
+Auto-merging gateway/run_agent_cache.py
+CONFLICT (content): Merge conflict in gateway/run_agent_cache.py
+Auto-merging gateway/run_notifications.py
+CONFLICT (content): Merge conflict in gateway/run_notifications.py
+Auto-merging gateway/run_turn.py
+CONFLICT (content): Merge conflict in gateway/run_turn.py
+Auto-merging gateway/session_state.py
+Auto-merging gateway/slash_commands.py
+Auto-merging hermes_cli/auth.py
+Auto-merging hermes_cli/banner.py
+Auto-merging hermes_cli/cli_agent_setup_mixin.py
+Auto-merging hermes_cli/cli_chat_turn_mixin.py
+Auto-merging hermes_cli/cli_commands_mixin.py
+Auto-merging hermes_cli/cli_commands_session_tools.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_commands_session_tools.py
+Auto-merging hermes_cli/cli_config_load.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_config_load.py
+Auto-merging hermes_cli/cli_info_mixin.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_info_mixin.py
+Auto-merging hermes_cli/cli_init_mixin.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_init_mixin.py
+Auto-merging hermes_cli/cli_modal_mixin.py
+Auto-merging hermes_cli/cli_process_dock.py
+Auto-merging hermes_cli/cli_render.py
+Auto-merging hermes_cli/cli_session_mixin.py
+Auto-merging hermes_cli/cli_shutdown.py
+Auto-merging hermes_cli/cli_single_query.py
+Auto-merging hermes_cli/cli_status_bar_mixin.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_status_bar_mixin.py
+Auto-merging hermes_cli/cli_stream_mixin.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_stream_mixin.py
+Auto-merging hermes_cli/cli_subagent_monitor.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_subagent_monitor.py
+Auto-merging hermes_cli/cli_tui_mixin.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_tui_mixin.py
+Auto-merging hermes_cli/cli_tui_runtime_mixin.py
+CONFLICT (content): Merge conflict in hermes_cli/cli_tui_runtime_mixin.py
+Auto-merging hermes_cli/commands.py
+Auto-merging hermes_cli/commands_platforms.py
+Auto-merging hermes_cli/config.py
+CONFLICT (content): Merge conflict in hermes_cli/config.py
+Auto-merging hermes_cli/config_defaults.py
+Auto-merging hermes_cli/config_migrations.py
+Auto-merging hermes_cli/cron.py
+Auto-merging hermes_cli/curator.py
+Auto-merging hermes_cli/doctor_tools.py
+Auto-merging hermes_cli/gateway.py
+CONFLICT (content): Merge conflict in hermes_cli/gateway.py
+Auto-merging hermes_cli/gateway_launchd.py
+Auto-merging hermes_cli/local_runtime/catalog.py
+Auto-merging hermes_cli/main.py
+CONFLICT (content): Merge conflict in hermes_cli/main.py
+Auto-merging hermes_cli/main_dashboard.py
+Auto-merging hermes_cli/main_desktop.py
+Auto-merging hermes_cli/model_switch.py
+CONFLICT (content): Merge conflict in hermes_cli/model_switch.py
+Auto-merging hermes_cli/models.py
+Auto-merging hermes_cli/models_catalog_static.py
+Auto-merging hermes_cli/observability/schemas/hermes.shared_metrics.v4.schema.json
+Auto-merging hermes_cli/observability/shared_metrics_consent.py
+Auto-merging hermes_cli/profiles.py
+CONFLICT (content): Merge conflict in hermes_cli/profiles.py
+Auto-merging hermes_cli/providers.py
+Auto-merging hermes_cli/session_schema_history.py
+Auto-merging hermes_cli/setup.py
+Auto-merging hermes_cli/setup_platforms.py
+Auto-merging hermes_cli/setup_quick.py
+Auto-merging hermes_cli/tools_config.py
+Auto-merging hermes_cli/update_cmd.py
+CONFLICT (content): Merge conflict in hermes_cli/update_cmd.py
+Auto-merging hermes_cli/update_cmd_drain_report.py
+Auto-merging hermes_cli/update_cmd_git.py
+Auto-merging hermes_cli/update_cmd_maint.py
+Auto-merging hermes_cli/web_models.py
+Auto-merging hermes_cli/web_routers/audio.py
+Auto-merging hermes_cli/web_routers/dashboard_ui.py
+CONFLICT (content): Merge conflict in hermes_cli/web_routers/dashboard_ui.py
+Auto-merging hermes_cli/web_routers/files.py
+Auto-merging hermes_cli/web_server_chat.py
+Auto-merging hermes_cli/web_server_config.py
+Auto-merging hermes_cli/web_server_messaging.py
+CONFLICT (content): Merge conflict in hermes_cli/web_server_messaging.py
+Auto-merging hermes_cli/web_server_oauth.py
+Auto-merging hermes_constants.py
+Auto-merging hermes_state.py
+Auto-merging hermes_state_common.py
+Auto-merging hermes_state_errors.py
+Auto-merging hermes_state_messages.py
+CONFLICT (content): Merge conflict in hermes_state_messages.py
+Auto-merging hermes_state_sessions.py
+Auto-merging locales/en.yaml
+CONFLICT (modify/delete): mcp_serve.py deleted in v0.22.5 and modified in HEAD.  Version HEAD of mcp_serve.py left in tree.
+Auto-merging model_tools.py
+Auto-merging nix/hermes-agent.nix
+Auto-merging package-lock.json
+Auto-merging package.json
+CONFLICT (content): Merge conflict in package.json
+Auto-merging plugin-catalog/README.md
+Auto-merging plugins/platforms/a2a/adapter.py
+Auto-merging plugins/platforms/a2a/security.py
+Auto-merging plugins/platforms/bluebubbles/adapter.py
+Auto-merging plugins/platforms/buzz/adapter.py
+Auto-merging plugins/platforms/dingtalk/adapter.py
+Auto-merging plugins/platforms/discord/adapter.py
+Auto-merging plugins/platforms/email/adapter.py
+Auto-merging plugins/platforms/feishu/adapter.py
+Auto-merging plugins/platforms/feishu/feishu_comment.py
+CONFLICT (content): Merge conflict in plugins/platforms/feishu/feishu_comment.py
+Auto-merging plugins/platforms/google_chat/adapter.py
+Auto-merging plugins/platforms/line/adapter.py
+Auto-merging plugins/platforms/matrix/adapter.py
+Auto-merging plugins/platforms/mattermost/adapter.py
+Auto-merging plugins/platforms/photon/adapter.py
+Auto-merging plugins/platforms/qqbot/adapter.py
+Auto-merging plugins/platforms/signal/adapter.py
+Auto-merging plugins/platforms/simplex/adapter.py
+Auto-merging plugins/platforms/slack/adapter.py
+CONFLICT (content): Merge conflict in plugins/platforms/slack/adapter.py
+Auto-merging plugins/platforms/telegram/adapter.py
+CONFLICT (content): Merge conflict in plugins/platforms/telegram/adapter.py
+Auto-merging plugins/platforms/wecom/adapter.py
+Auto-merging plugins/platforms/weixin/adapter.py
+Auto-merging plugins/platforms/whatsapp_cloud/adapter.py
+Auto-merging plugins/platforms/yuanbao/adapter.py
+Auto-merging pm/client.py
+Auto-merging providers/__init__.py
+Auto-merging providers/base.py
+Auto-merging pyproject.toml
+CONFLICT (content): Merge conflict in pyproject.toml
+Auto-merging run_agent.py
+Auto-merging scripts/install.ps1
+Auto-merging scripts/install.sh
+Auto-merging skills/autonomous-ai-agents/hermes-agent/references/cli-reference.md
+Auto-merging skills/autonomous-ai-agents/hermes-agent/references/configuration.md
+Auto-merging tests/agent/test_auxiliary_client.py
+Auto-merging tests/agent/test_insights.py
+CONFLICT (content): Merge conflict in tests/agent/test_insights.py
+Auto-merging tests/agent/test_retry_delay_parsers_shared.py
+Auto-merging tests/agent/test_run_agent.py
+Auto-merging tests/agent/test_steer.py
+Auto-merging tests/agent/test_thread_scoped_output.py
+Auto-merging tests/agent/test_tool_guardrails.py
+CONFLICT (content): Merge conflict in tests/agent/test_tool_guardrails.py
+Auto-merging tests/agent/transports/test_chat_completions.py
+Auto-merging tests/ci/test_update_ci_routing.py
+Auto-merging tests/conftest.py
+Auto-merging tests/cron/test_context_from_response_extraction.py
+Auto-merging tests/cron/test_cron_failure_deliver.py
+Auto-merging tests/fixtures/resolution_allowlist.json
+Auto-merging tests/gateway/test_completion_delivery.py
+Auto-merging tests/gateway/test_hosted_rooms.py
+Auto-merging tests/hermes_cli/test_apply_model_switch_result_context.py
+Auto-merging tests/hermes_cli/test_cli_clarify_batch.py
+Auto-merging tests/hermes_cli/test_cli_init.py
+CONFLICT (content): Merge conflict in tests/hermes_cli/test_cli_init.py
+Auto-merging tests/hermes_cli/test_cli_provider_resolution.py
+Auto-merging tests/hermes_cli/test_cli_session_store_shared_registry.py
+CONFLICT (content): Merge conflict in tests/hermes_cli/test_cli_session_store_shared_registry.py
+Auto-merging tests/hermes_cli/test_config.py
+Auto-merging tests/hermes_cli/test_gateway_service.py
+Auto-merging tests/hermes_cli/test_global_switch_persists_base_url_api_mode.py
+Auto-merging tests/hermes_cli/test_inventory.py
+Auto-merging tests/hermes_cli/test_kanban_db.py
+Auto-merging tests/hermes_cli/test_model_switch_confirm_thread.py
+Auto-merging tests/hermes_cli/test_plugin_validate.py
+Auto-merging tests/hermes_cli/test_profiles.py
+Auto-merging tests/hermes_cli/test_session_dock.py
+Auto-merging tests/hermes_cli/test_startup_fast_guards.py
+Auto-merging tests/hermes_cli/test_tools_config.py
+Auto-merging tests/hermes_cli/test_update_fetch_failure_classifier.py
+Auto-merging tests/hermes_cli/test_web_server.py
+Auto-merging tests/hermes_state/test_hermes_state.py
+Auto-merging tests/plugins/test_a2a_phase23.py
+Auto-merging tests/plugins/test_a2a_plugin.py
+Auto-merging tests/test_scratch_dir.py
+CONFLICT (content): Merge conflict in tests/test_scratch_dir.py
+Auto-merging tests/tools/test_approval.py
+Auto-merging tests/tools/test_async_delegation.py
+Auto-merging tests/tools/test_browser_real_profile.py
+Auto-merging tests/tools/test_clarify_gateway.py
+Auto-merging tests/tools/test_file_tools.py
+Auto-merging tests/tools/test_file_tools_cwd_resolution.py
+Auto-merging tests/tools/test_process_registry.py
+Auto-merging tests/tools/test_send_message_tool.py
+Auto-merging tests/tools/test_tool_result_storage.py
+Auto-merging tests/tui_gateway/test_compute_host.py
+Auto-merging tests/tui_gateway/test_tui_gateway_server.py
+Auto-merging tools/async_delegation.py
+CONFLICT (content): Merge conflict in tools/async_delegation.py
+Auto-merging tools/browser_tool.py
+Auto-merging tools/delegate_tool.py
+CONFLICT (content): Merge conflict in tools/delegate_tool.py
+Auto-merging tools/delegate_tool_child_run.py
+Auto-merging tools/delegate_tool_config.py
+CONFLICT (content): Merge conflict in tools/delegate_tool_config.py
+Auto-merging tools/delegate_tool_dispatch.py
+Auto-merging tools/delegate_tool_progress.py
+Auto-merging tools/delegate_tool_results.py
+Auto-merging tools/delegation_live_log.py
+CONFLICT (content): Merge conflict in tools/delegation_live_log.py
+Auto-merging tools/file_tools.py
+CONFLICT (content): Merge conflict in tools/file_tools.py
+Auto-merging tools/file_tools_paths.py
+Auto-merging tools/mcp_tool_agent.py
+Auto-merging tools/mcp_tool_discovery.py
+Auto-merging tools/mcp_tool_health.py
+Auto-merging tools/mcp_tool_schema.py
+Auto-merging tools/process_registry.py
+Auto-merging tools/process_registry_notifications.py
+Auto-merging tools/registry.py
+CONFLICT (content): Merge conflict in tools/registry.py
+Auto-merging tools/send_message_tool.py
+Auto-merging tools/skills_tool.py
+Auto-merging tools/tool_result_storage.py
+Auto-merging tools/tool_search.py
+CONFLICT (content): Merge conflict in tools/tool_search.py
+Auto-merging tools/vision_tools.py
+Auto-merging tools/yuanbao_tools.py
+Auto-merging tui_gateway/agent_callbacks.py
+Auto-merging tui_gateway/contracts/events.py
+Auto-merging tui_gateway/contracts/registry.py
+Auto-merging tui_gateway/contracts/sessions.py
+Auto-merging tui_gateway/host_supervisor.py
+Auto-merging tui_gateway/methods_prompt.py
+CONFLICT (content): Merge conflict in tui_gateway/methods_prompt.py
+Auto-merging tui_gateway/methods_session.py
+Auto-merging tui_gateway/methods_tools.py
+CONFLICT (content): Merge conflict in tui_gateway/methods_tools.py
+Auto-merging tui_gateway/server.py
+CONFLICT (content): Merge conflict in tui_gateway/server.py
+Auto-merging tui_gateway/session_notifications.py
+CONFLICT (content): Merge conflict in tui_gateway/session_notifications.py
+Auto-merging tui_gateway/tool_progress.py
+Auto-merging ui-tui/src/app/slash/commands/session.ts
+Auto-merging ui-tui/src/app/turnController.ts
+Auto-merging ui-tui/src/components/appLayout.tsx
+Auto-merging ui-tui/src/types.ts
+Auto-merging uv.lock
+CONFLICT (content): Merge conflict in uv.lock
+Auto-merging web/src/components/SharedMetricsConsentBanner.tsx
+Auto-merging web/src/lib/api-aux.ts
+Auto-merging website/docs/developer-guide/memory-provider-plugin.md
+Auto-merging website/docs/developer-guide/plugins/catalog-submission.md
+Auto-merging website/docs/developer-guide/plugins/index.md
+Auto-merging website/docs/developer-guide/session-storage.md
+Auto-merging website/docs/developer-guide/stable-releases.md
+Auto-merging website/docs/getting-started/nix-setup.md
+Auto-merging website/docs/getting-started/quickstart.md
+Auto-merging website/docs/getting-started/updating.md
+Auto-merging website/docs/guides/cron-troubleshooting.md
+Auto-merging website/docs/index.mdx
+Auto-merging website/docs/reference/cli-commands.md
+Auto-merging website/docs/reference/mcp-config-reference.md
+Auto-merging website/docs/reference/optional-skills-catalog.md
+Auto-merging website/docs/reference/package-management.md
+Auto-merging website/docs/reference/slash-commands.md
+CONFLICT (content): Merge conflict in website/docs/reference/slash-commands.md
+Auto-merging website/docs/user-guide/cli.md
+Auto-merging website/docs/user-guide/configuration.md
+Auto-merging website/docs/user-guide/desktop.md
+Auto-merging website/docs/user-guide/docker.md
+Auto-merging website/docs/user-guide/features/delegation.md
+Auto-merging website/docs/user-guide/features/kanban-worker-lanes.md
+Auto-merging website/docs/user-guide/features/kanban.md
+Auto-merging website/docs/user-guide/features/mcp.md
+Auto-merging website/docs/user-guide/features/plugin-catalog.md
+Auto-merging website/docs/user-guide/features/skills.md
+Auto-merging website/docs/user-guide/features/tool-search.md
+Auto-merging website/docs/user-guide/messaging/slack.md
+Auto-merging website/docs/user-guide/security.md
+Auto-merging website/docs/user-guide/tui.md
+Auto-merging website/docs/user-guide/windows-native.md
+Auto-merging website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md
+Auto-merging website/scripts/generate-llms-txt.py
+Auto-merging website/sidebars.ts
+Auto-merging website/static/api/model-catalog.json
+Automatic merge failed; fix conflicts and then commit the result.
+rc=1
