@@ -264,6 +264,8 @@ def test_a_browser_download_reads_the_ssh_workspace_file_it_listed(client, monke
     from hermes_cli import web_server_file_tickets as file_tickets
     from hermes_constants import mark_named_profile_deleted
 
+    # The Webapp: the browser's file routes (download tickets) exist only there.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
     home = tmp_path / ".hermes"
     profile = home / "profiles" / "remote-dev"
     profile.mkdir(parents=True)
@@ -703,6 +705,8 @@ def test_a_picked_image_reads_back_from_the_host_for_an_ssh_profile(client, monk
     file of another profile, a file in the uploads folder the upload route did not name, one in a
     folder below it, and a path that leaves the folder through ``..``."""
     profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    # The Webapp: the browser's file routes (the file picker's upload) exist only there.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
     image = base64.b64decode("iVBORw0KGgo=")
 
     def pick(query):

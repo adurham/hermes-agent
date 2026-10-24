@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from hermes_cli import web_server_file_tickets as file_tickets
@@ -33,6 +33,7 @@ from hermes_cli.staged_uploads import (
 )
 from hermes_cli.web_deps import late
 from hermes_cli.web_upload_limit import CHAT_IMAGE_MAX_BYTES
+from hermes_cli.web_server_surface import route_on
 from hermes_cli.web_server_files import (
     SANDBOX_NOT_FOUND, _agent_fs_path, _fs_path, _hosted_fs_read_guard, _is_unmapped_container_path,
     _managed_file_entry, _managed_response_meta, _resolve_managed_path,
@@ -738,7 +739,7 @@ def _pin_ticket_file(authority: file_tickets.FileAuthority, checked):
         raise HTTPException(status_code=403, detail="File is not readable") from exc
 
 
-@router.post("/api/files/ticket")
+@router.post("/api/files/ticket", dependencies=[Depends(route_on("browser_files"))])
 async def issue_file_ticket(payload: FileTicketRequest, request: Request):
     """Ticket a browser download/media URL instead of putting the session token in it."""
     from hermes_cli.web_routers.sessions import _history_profile_home

@@ -35,6 +35,8 @@ def _client(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setattr(web_server, "_SESSION_TOKEN", "webapp-test-token")
     monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
     monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    # The loopback Webapp: the only surface that serves the browser's file routes.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
     return TestClient(web_server.app, base_url="http://127.0.0.1")
 
 

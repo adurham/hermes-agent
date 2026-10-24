@@ -31,6 +31,9 @@ def upload_app(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
     monkeypatch.setattr(web_server.app.state, "bound_host", "0.0.0.0", raising=False)
     monkeypatch.setattr(web_server.app.state, "trusted_public_hosts", frozenset(), raising=False)
+    # The Webapp behind sign-in: the only surface that caps upload bodies before parsing them.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setattr(web_server.app.state, "listener_public_url", "", raising=False)
     clear_providers()
     register_provider(StubAuthProvider())
     # Observe the actual parser's open files, retaining references so GC cannot
@@ -51,9 +54,14 @@ def upload_app(tmp_path, monkeypatch):
 
 
 async def _login(client):
+    """Sign the browser in on the Webapp; returns what its own page's requests carry (its session
+    cookies and its Origin), so another client can send the same request. On the Webapp a browser
+    login's token never works alone as a bearer token."""
     response = await client.get("/auth/login?provider=stub", follow_redirects=True)
     assert response.status_code != 401
-    return next(v for k, v in client.cookies.items() if k.endswith(SESSION_AT_COOKIE))
+    assert any(k.endswith(SESSION_AT_COOKIE) for k in client.cookies)
+    return {"Cookie": "; ".join(f"{k}={v}" for k, v in client.cookies.items()),
+            "Origin": "https://dashboard.example.com"}
 
 
 @pytest.mark.parametrize(
@@ -99,9 +107,9 @@ def test_upload_bound_stops_parser_and_closes_spools(upload_app, monkeypatch, de
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=web_server.app), base_url="https://dashboard.example.com"
         ) as client:
-            token = await _login(client)
+            page = await _login(client)
             headers = {
-                "Authorization": f"Bearer {token}",
+                **page,
                 "Content-Type": "multipart/form-data; boundary=" + boundary.decode(),
             }
             if declared_length is not None:
@@ -163,8 +171,8 @@ def test_an_oversized_image_paste_is_refused_before_its_body_is_read(upload_app,
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=web_server.app), base_url="https://dashboard.example.com"
         ) as client:
-            token = await _login(client)
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            page = await _login(client)
+            headers = {**page, "Content-Type": "application/json"}
             if declared_length is not None:
                 headers["Content-Length"] = str(2 * allowed) if declared_length == "oversize" else declared_length
             response = await client.post("/api/chat/image-upload", content=body(), headers=headers)
@@ -226,8 +234,7 @@ def test_other_upload_routes_keep_their_larger_caps(upload_app, monkeypatch):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=web_server.app), base_url="https://dashboard.example.com"
         ) as client:
-            token = await _login(client)
-            headers = {"Authorization": f"Bearer {token}"}
+            headers = await _login(client)
             payload = b"x" * web_server._MANAGED_FILE_MAX_BYTES
             response = await client.post(
                 "/api/files/upload-stream",

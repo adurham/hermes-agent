@@ -249,6 +249,8 @@ def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
     from hermes_cli import web_server_file_tickets
 
     client, root = forced_files_client
+    # The Webapp mints file tickets: the browser's file routes exist only there.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
     video = _seed_file(client, root, name="out/demo.mp4")
     other = _seed_file(client, root, name="out/other.mp4")
 

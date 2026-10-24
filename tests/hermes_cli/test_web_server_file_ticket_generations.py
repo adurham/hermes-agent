@@ -34,7 +34,7 @@ def file_server(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server, "_SESSION_TOKEN", secrets.token_urlsafe(32))
     monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
     monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
-    monkeypatch.setattr(web_server.app.state, "ui_surface", "serve", raising=False)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     server = uvicorn.Server(uvicorn.Config(

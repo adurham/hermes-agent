@@ -802,9 +802,12 @@ from hermes_cli.web_routers import (
 )
 
 import hermes_cli.web_routers.uploads as _upload_routes
+from fastapi import Depends as _Depends
+from hermes_cli.web_server_surface import route_on as _route_on
 
 app.include_router(_files_routes.router)
-app.include_router(_upload_routes.router)
+# The Webapp's routes exist only on the surfaces whose policy names them (404 elsewhere).
+app.include_router(_upload_routes.router, dependencies=[_Depends(_route_on("browser_files"))])
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
@@ -837,7 +840,7 @@ app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
 app.include_router(_shared_metrics_routes.router)
 app.include_router(_delegation_routes.router)
-app.include_router(_webapp_access_routes.router)
+app.include_router(_webapp_access_routes.router, dependencies=[_Depends(_route_on("web_access"))])
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth

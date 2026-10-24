@@ -15,12 +15,12 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
-def client():
-    from hermes_cli import web_server
+def client(monkeypatch):
+    """Native Desktop on this computer, calling the gateway's own listener as its Web Access pane
+    does: one native grant per request."""
+    from tests.hermes_cli.native_gateway_client import native_desktop_client
 
-    c = TestClient(web_server.app, raise_server_exceptions=False)
-    c.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
-    return c
+    return native_desktop_client(monkeypatch)
 
 
 @pytest.fixture()
@@ -206,8 +206,8 @@ def test_start_takes_the_public_url_as_typed(client, restarts, nous):
 
 @pytest.fixture()
 def lan_browser(monkeypatch):
-    """This listener on all interfaces behind password sign-in, and a browser on the LAN signed in
-    with a cookie session."""
+    """The gateway's Webapp on all interfaces behind password sign-in, and a browser on the LAN
+    signed in with a cookie session."""
     import plugins.dashboard_auth.basic as basic_plugin
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth import clear_providers, register_provider
@@ -215,7 +215,8 @@ def lan_browser(monkeypatch):
 
     monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
     for key, value in (("bound_host", "0.0.0.0"), ("bound_port", 9120), ("auth_required", True),
-                       ("trusted_public_hosts", frozenset())):
+                       ("trusted_public_hosts", frozenset()), ("ui_surface", "webapp"),
+                       ("listener_public_url", "")):
         monkeypatch.setattr(web_server.app.state, key, value, raising=False)
     clear_providers()
     register_provider(basic_plugin.BasicAuthProvider(
@@ -301,13 +302,12 @@ def test_other_requests_answer_while_start_builds_and_registers(client, restarts
     the callback (a network round trip), a config request answers at once."""
     import threading
 
-    from hermes_cli import web_server, webapp, webapp_access
+    from hermes_cli import webapp, webapp_access
 
     answered_during_step: list[list[int]] = []
 
     def ask_for_config(answers: list[int]) -> None:
-        other = TestClient(web_server.app, raise_server_exceptions=False)
-        other.headers.update(client.headers)
+        other = TestClient(client.app, raise_server_exceptions=False)
         answers.append(other.get("/api/config").status_code)
 
     def slow_step(*_args, **_options):

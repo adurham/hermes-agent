@@ -7,6 +7,7 @@ from starlette.formparsers import MultiPartException
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from hermes_cli.web_server_surface import policy
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 
 # The file cap remains exact in the handler; allow ordinary multipart headers
@@ -27,7 +28,9 @@ _BODY_MAX_BYTES = {
 
 class ChatFileUploadLimitMiddleware:
     """Refuse a chat file or image upload with 413 once its body passes the route's cap: at once
-    when Content-Length declares more, else at the first chunk past it."""
+    when Content-Length declares more, else at the first chunk past it. Only on the surfaces whose
+    policy serves the browser's file routes (the Webapp); elsewhere uploads reach their handlers
+    as on main."""
 
     def __init__(self, app: ASGIApp):
         self.app = app
@@ -38,7 +41,8 @@ class ChatFileUploadLimitMiddleware:
         if root and path.startswith(root + "/"):
             path = path[len(root) :]
         body_max = _BODY_MAX_BYTES.get(path)
-        if scope["type"] != "http" or scope["method"] != "POST" or body_max is None:
+        if (scope["type"] != "http" or scope["method"] != "POST" or body_max is None
+                or not policy(getattr(scope.get("app"), "state", None)).browser_files):
             await self.app(scope, receive, send)
             return
 

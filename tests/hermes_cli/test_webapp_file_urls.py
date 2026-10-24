@@ -26,7 +26,7 @@ def webapp_client(monkeypatch, tmp_path):
     home.mkdir()
     monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
     monkeypatch.setenv("HOME", str(home))
-    for key, value in (("auth_required", False), ("bound_host", None)):
+    for key, value in (("auth_required", False), ("bound_host", None), ("ui_surface", "webapp")):
         monkeypatch.setattr(web_server.app.state, key, value, raising=False)
     client = TestClient(web_server.app)
     client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
