@@ -1,0 +1,16 @@
+{
+  "description": "Return ONLY the pitfalls / gotchas / known-issues sections of a skill — cheap (~500-3000 tokens, vs ~30k for skill_view) so you can re-check what NOT to do before any risky operation. Use this whenever you loaded a skill earlier in the session and now want a fast checklist refresh before a destructive command (cluster restart, file overwrite, bench launch, mass-edit, ssh ... pkill, etc.). If the skill has no recognizable pitfalls heading, returns a short intro fallback. Use skill_view for the full content.",
+  "name": "skill_pitfalls",
+  "parameters": {
+    "properties": {
+      "name": {
+        "description": "The skill name (same semantics as skill_view). For plugin-provided skills, use 'plugin:skill'.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  }
+}

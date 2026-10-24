@@ -1,0 +1,48 @@
+{
+  "description": "Poll, wait on, or kill background terminal processes (from terminal(background=true)). Completed results remain retrievable by session_id when resuming their owning conversation (up to 7 days, newest 64 results per profile; rolling output tail). poll: status + new output. log: full output, paged. wait: block until exit or timeout (partial output on timeout). write vs submit: submit appends Enter — use it to answer prompts; write sends raw bytes, no newline. close: EOF stdin. kill: terminate. handoff (subagents only): transfer a running process you started to your parent agent, which then receives its completion; `data` = one sentence on its purpose. Subagent-owned processes are otherwise killed when the subagent finishes and their notifications never reach the parent.",
+  "name": "process_manage",
+  "parameters": {
+    "properties": {
+      "action": {
+        "enum": [
+          "list",
+          "poll",
+          "log",
+          "wait",
+          "kill",
+          "write",
+          "submit",
+          "close",
+          "handoff"
+        ],
+        "type": "string"
+      },
+      "data": {
+        "description": "Stdin text for write/submit; purpose sentence for handoff.",
+        "type": "string"
+      },
+      "limit": {
+        "description": "Max log lines.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Log line offset (default: last 200).",
+        "type": "integer"
+      },
+      "session_id": {
+        "description": "From terminal background output; any unique prefix works ('4dae' for proc_4dae56ca81f6). Required except for 'list'.",
+        "type": "string"
+      },
+      "timeout": {
+        "description": "Max seconds to block for 'wait' action. Returns partial output on timeout. Pass the actual expected duration of a known long-running job (e.g. 5400 for a 90min benchmark stage) instead of polling repeatedly -- clamped to the configured terminal.wait_max_timeout ceiling (default 3600s).",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  }
+}

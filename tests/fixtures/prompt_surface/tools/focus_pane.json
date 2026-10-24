@@ -1,0 +1,23 @@
+{
+  "description": "Reveal and focus a Hermes desktop pane when the user asks to see it: chat, files, terminal, review (git diff), or sessions. For URLs/files use the desktop_preview tool instead.",
+  "name": "focus_pane",
+  "parameters": {
+    "properties": {
+      "pane": {
+        "description": "Which pane to reveal.",
+        "enum": [
+          "chat",
+          "files",
+          "terminal",
+          "review",
+          "sessions"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "pane"
+    ],
+    "type": "object"
+  }
+}

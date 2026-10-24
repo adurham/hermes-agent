@@ -1,0 +1,18 @@
+{
+  "description": "Read the in-app terminal pane beside this chat. No args = visible screen + total_lines; page scrollback with start_line (0 = oldest) + count. JSON: {total_lines, start, end, viewport_rows, cursor_row, text}.",
+  "name": "read_terminal",
+  "parameters": {
+    "properties": {
+      "count": {
+        "description": "Lines to read from start_line. Defaults to the visible row count.",
+        "type": "integer"
+      },
+      "start_line": {
+        "description": "0-indexed first line (0 = oldest). Omit for the visible screen.",
+        "type": "integer"
+      }
+    },
+    "required": [],
+    "type": "object"
+  }
+}

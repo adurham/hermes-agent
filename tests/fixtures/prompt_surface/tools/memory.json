@@ -1,31 +1,53 @@
 {
-  "description": "Save durable facts to persistent memory that survive across sessions. Memory is injected into every future turn, so keep entries compact and high-signal.\n\nHOW: make ALL your changes to one target in ONE call via an 'operations' array (each item: {action, content?, old_text?}). The batch applies atomically and the char limit is checked only on the FINAL result — so a single call can remove/patch stale entries to free room AND add new ones, even when an add alone would overflow. The response reports current/limit chars and confirms completion; one batch call finishes the update, so don't repeat it. Use the bare action/content/old_text fields only for a single lone change.\n\nWHEN: only for facts that apply to EVERY session regardless of task: who the user is, stable environment facts, standing conventions with no task home. Anything learned while doing a task (procedures, pitfalls, and the user's preferences and corrections for that kind of work) belongs in the task's skill via skill_manage, where it loads only when relevant; memory is injected into every turn and must stay small.\n\nIF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that removes or shortens enough stale entries and adds the new one together.\n\nTARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your notes (environment, conventions, tool quirks, lessons).\n\nSKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, completed-work logs, temporary TODO state (use session_search for those). Reusable procedures belong in a skill, not memory.",
+  "description": "Save durable information to persistent memory and recall it across sessions. TWO TIERS, ONE TOOL — pick the right tier per fact.\n\nHOT TIER (tier='hot', the default for add/patch/remove with target='memory' or 'user'):\n  - Always loaded into the system prompt at session start. Costs tokens every turn forever.\n  - SMALL CAP (~600+400 chars combined). Use only for facts that MUST influence every turn.\n  - Best fit: user preferences, recurring corrections, routing rules, hot environment quirks.\n  - Targets: 'memory' (your notes) or 'user' (who the user is).\n\nWARM TIER (tier='warm' on add, or use any warm-only action):\n  - Searchable via memory(action='recall', query='...'). Not in the prompt by default.\n  - UNBOUNDED. SQLite + FTS5 keyword search with trust scoring.\n  - Best fit: factual reference (TDS internals, MCP procedures), debugging notes, project conventions, lessons learned. Anything you'd otherwise jam into hot tier and run out of room.\n  - DEFAULT for new content unless it genuinely belongs in hot tier — when in doubt, warm.\n\nBATCH (hot tier): make multiple hot-tier changes in ONE call via an 'operations' array (each item: {action, content?, old_text?}). The batch applies atomically and the hot-tier char limit is checked only on the FINAL result — so a single call can remove/patch stale entries to free room AND add new ones, even when an add alone would overflow. Use the bare action/content/old_text fields only for a single lone change.\n\nWHEN TO SAVE (proactively, don't wait):\n- User corrects you or says 'remember this'\n- User shares a preference / personal detail → HOT (target='user')\n- You discover environment / project / API quirks → WARM\n- You learn a stable fact useful in future sessions → WARM unless it's a recurring correction\n\nACTIONS:\n  HOT-TIER: add (target+content), patch (target+old_text+content) — content replaces exactly the old_text span and the rest of the entry is kept, remove (target+old_text), read (target). 'replace' is NOT available on the hot tier: use 'patch' (set old_text to the whole entry to rewrite it). Batch via 'operations'.\n  WARM-TIER: add (content [+category +tags]), recall (query [+top_k +category]), recall_related (query OR fact_id), read ([+category +top_k]), replace (fact_id+content) — replaces a whole warm fact by id, remove (fact_id), feedback (fact_id+helpful) — train trust scores by rating retrieved facts.\n  SESSION-PIN: pin (fact_id) — keep a warm fact visible in the system prompt for the rest of THIS session; unpin (fact_id); pinned — list current pins. Use pin when a fact applies to your whole current investigation; gone on session restart.\n  CROSS-TIER: promote (fact_id [+target]) — move warm fact to hot tier (target='memory' or 'user', defaults to 'memory'); demote (old_text [+target +category]) — move hot entry to warm (target picks the source hot tier; category sets the new warm category).\n\nRECALL: use memory(action='recall', query='...') when the user references something cross-session, you suspect related context exists from prior work, or you're debugging a system covered in older notes. It's keyword search (BM25), so use exact terms / proper nouns when possible. ~50 tokens per call.\n\nIF FULL: a hot-tier add is rejected with the current entries shown. Reissue as ONE batch that removes or shortens enough stale entries and adds the new one together.\n\nDo NOT save task progress, session outcomes, completed-work logs, or temporary TODO state. Use session_search for those. If you've solved a non-trivial problem worth reusing, save it as a skill.\n\nSKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state.",
   "name": "memory",
   "parameters": {
     "properties": {
       "action": {
-        "description": "The action to perform (single-op shape). Omit when using 'operations'.",
+        "description": "The action to perform (single-op shape). Omit when using the hot-tier 'operations' batch array. Hot-tier edit actions are 'add'/'patch'/'remove' ('patch' replaces exactly the old_text span; set old_text to the whole entry to rewrite it). Hot 'replace' is not available — use 'patch'. The 'replace' enum member is WARM-tier only (fact_id + content).",
         "enum": [
           "add",
           "patch",
-          "remove"
+          "remove",
+          "read",
+          "recall",
+          "recall_related",
+          "feedback",
+          "promote",
+          "demote",
+          "pin",
+          "unpin",
+          "pinned",
+          "replace"
         ],
         "type": "string"
       },
-      "content": {
-        "description": "Required for 'add' and 'patch'. For 'add', the new entry. For 'patch', the text that replaces old_text; the rest of the entry is kept. Alias: 'new_text'.",
+      "category": {
+        "description": "Warm-tier category filter / assignment. Free-form string (e.g. 'tanium', 'debugging', 'preferences'). Defaults to 'general' on add.",
         "type": "string"
+      },
+      "content": {
+        "description": "The entry content. Required for 'add' and 'patch' (hot tier) and for warm 'add'/'replace'. For hot 'patch' it is the text that replaces the old_text span — the rest of the entry is kept. For warm 'replace' it is the COMPLETE new fact text, applied by fact_id. Alias: 'new_text' is also accepted.",
+        "type": "string"
+      },
+      "fact_id": {
+        "description": "Warm-tier fact id. Required for 'replace'/'remove'/'feedback'/'promote'. Returned by 'add'/'recall'.",
+        "type": "integer"
+      },
+      "helpful": {
+        "description": "Warm-tier feedback flag. True → trust+0.05, helpful_count+1. False → trust-0.10. Helps the recall ranker prefer reliable facts.",
+        "type": "boolean"
       },
       "new_text": {
         "description": "Alias for 'content'. If both are set, 'content' wins.",
         "type": "string"
       },
       "old_text": {
-        "description": "REQUIRED for 'patch' and 'remove': text from one entry. 'patch' replaces exactly this span (it must occur once in the entry); 'remove' deletes the whole entry. Omit for 'add'.",
+        "description": "REQUIRED for 'patch' and 'remove' (single-op shape). For 'patch': text from one entry that replaces exactly this span (the span must occur once in the entry). For 'remove': a short unique substring IDENTIFYING the entry to delete (it locates the entry, it is not spliced out). Omit only for 'add'. Hot tier (and cross-tier demote) use this substring; it is ignored for the warm tier (warm uses fact_id).",
         "type": "string"
       },
       "operations": {
-        "description": "Batch shape: a list of operations applied atomically in one call against the final char budget. Preferred when making multiple changes or consolidating to make room. Each item is {action, content?, old_text?}.",
+        "description": "Hot-tier batch shape: a list of operations applied atomically in one call against the final char budget. Preferred when making multiple hot-tier changes or consolidating to make room. Each item is {action, content?, old_text?}.",
         "items": {
           "additionalProperties": false,
           "properties": {
@@ -57,18 +79,36 @@
         },
         "type": "array"
       },
+      "query": {
+        "description": "Warm-tier search query. Required for 'recall'. Used as the seed for 'recall_related' if no fact_id is given. Plain text — keyword search.",
+        "type": "string"
+      },
+      "tags": {
+        "description": "Warm-tier tags on add/replace. Comma-separated free-form (e.g. 'tds,mcp,review').",
+        "type": "string"
+      },
       "target": {
-        "description": "Which memory store: 'memory' for personal notes, 'user' for user profile.",
+        "description": "'memory' for personal notes, 'user' for user profile. Hot tier (add/patch/remove/read): which file to operate on — REQUIRED for a hot write (a call that omits it is refused; retry with target='memory' or target='user'). Cross-tier promote: which hot file the fact lands in (defaults to 'memory'). Cross-tier demote: which hot file the fact comes from (defaults to 'memory'). Ignored for warm-tier-only actions (add/recall/recall_related/read/replace/remove/feedback).",
         "enum": [
           "memory",
           "user"
         ],
         "type": "string"
+      },
+      "tier": {
+        "description": "Which tier to write/read. Defaults to 'hot' for backward compat. Use 'warm' for new content unless it must be always-loaded. Warm-only actions (recall, recall_related, feedback, promote, demote) ignore this param.",
+        "enum": [
+          "hot",
+          "warm"
+        ],
+        "type": "string"
+      },
+      "top_k": {
+        "description": "Warm-tier max results (default 5, max 25). For 'read' max 200.",
+        "type": "integer"
       }
     },
-    "required": [
-      "target"
-    ],
+    "required": [],
     "type": "object"
   }
 }
