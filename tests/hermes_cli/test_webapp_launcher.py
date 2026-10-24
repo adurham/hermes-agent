@@ -173,6 +173,15 @@ def test_status_reads_the_running_gateway_without_starting_one(world, capsys):
     assert "http://127.0.0.1:9120" in capsys.readouterr().out
 
 
+def test_status_of_a_gateway_still_starting_the_webapp_says_so(world, capsys):
+    """A gateway answers ``starting`` until its Webapp listener settles: that is neither a failure nor a
+    reason to restart it."""
+    world["answers"]["webapp-status"] = {"ok": True, "result": {"state": "starting", "url": None, "reason": None}}
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    out = capsys.readouterr().out
+    assert "still starting" in out and "Unavailable" not in out and launcher.RESTART_COMMAND not in out
+
+
 def test_status_with_no_gateway_running_says_so(world, capsys):
     world["answers"]["webapp-status"] = launcher.GatewayUnreachable("no gateway")
     assert launcher.cmd_webapp(_args(status=True)) == 1
@@ -267,7 +276,7 @@ def test_signing_out_with_no_gateway_and_a_credential_that_cannot_be_stored_says
     assert "Nobody was signed out" in out and str(world["root"] / TOKEN_PATH) in out
 
 
-STARTING = {"ok": False, "error": "unknown verb: 'webapp-sign-out'"}  # its verbs register once it is up
+STARTING = {"ok": False, "error": "RuntimeError: The Webapp is still starting; try again in a moment."}
 SIGNED_OUT = {"ok": True, "result": {"signed_out": True, "serving": True, "sign_in_gate": False,
                                      "connections_closed": 1}}
 

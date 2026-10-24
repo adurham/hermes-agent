@@ -98,7 +98,9 @@ def test_a_credential_the_browser_would_refuse_is_replaced(tmp_path, stored):
     assert re.fullmatch(r"[A-Za-z0-9_-]{43}", token)
 
 
-def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None):
+def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None, while_starting=None):
+    """Start the runtime's listener for *config* with the listener itself stood in; *while_starting*
+    (a list) records what each Webapp verb answers while the Webapp's listener starts."""
     from gateway import run_api, run_runtime
     home = _home(tmp_path, config)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -106,6 +108,8 @@ def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None
 
     async def start(runner, *, host="127.0.0.1", port=0, webapp=None):
         calls.append((host, port, webapp))
+        if while_starting is not None and webapp is not None:
+            while_starting.append({verb: _ask(runner, verb) for verb in WEBAPP_VERBS})
         if busy and port:
             raise OSError(errno.EADDRINUSE, "Address already in use")
         if refuse is not None and webapp is not None:
@@ -120,9 +124,47 @@ def _start_runtime_api(monkeypatch, tmp_path, config, *, busy=False, refuse=None
     return runner, calls, home
 
 
-def _ask(runner, verb, peer="same-user-peer", params=None):
+WEBAPP_VERBS = ("webapp-status", "webapp-launch", "webapp-sign-out")
+
+
+def _ask(runner, verb, peer="same-user-peer", params=None, server=None):
     raw = json.dumps({"protocol": 1, "verb": verb, "id": 1, "params": params or {}}).encode()
-    return json.loads(runner.session_control_server.handle_request_line(raw, peer))
+    return json.loads((server or runner.session_control_server).handle_request_line(raw, peer))
+
+
+def test_the_webapp_verbs_answer_while_the_webapps_listener_starts(monkeypatch, tmp_path):
+    """While the Webapp's listener starts (the dashboard import and mount take seconds), its verbs
+    answer: status says ``starting``, which a client polling a restarting gateway keeps waiting on,
+    never an unknown verb it would show as a failure. Launch and sign-out refuse as still starting,
+    and sign-out leaves the stored credential alone (the starting listener may already hold it)."""
+    seen = []
+    runner, _, home = _start_runtime_api(
+        monkeypatch, tmp_path, "webapp:\n  enabled: true\n  port: 9555\n", while_starting=seen)
+    [answers] = seen
+    assert answers["webapp-status"]["result"] == {"state": "starting", "url": None, "reason": None}
+    for verb in ("webapp-launch", "webapp-sign-out"):
+        assert answers[verb]["ok"] is False and "still starting" in answers[verb]["error"], answers[verb]
+    assert not (home / webapp.TOKEN_PATH).exists()  # sign-out wrote no credential
+    assert runner.webapp_status["state"] == "serving"
+
+
+def test_the_gateway_registers_the_webapp_verbs_before_its_control_socket_answers(monkeypatch, tmp_path):
+    """The gateway's control socket answers from the moment it starts; the Webapp's verbs are on it
+    from that moment too (``starting`` until the listener settles), not only once the listener is up."""
+    from gateway import control_socket, run_bootstrap
+    home = _home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    seen = {}
+
+    async def start(server):
+        seen["status"] = _ask(None, "webapp-status", server=server)
+        return False  # nothing binds in this test
+
+    monkeypatch.setattr(control_socket.GatewayControlServer, "start", start)
+    runner = SimpleNamespace(session_runtime_descriptor={}, session_ticket_store=None)
+    assert asyncio.run(run_bootstrap._start_gateway_start_control_socket(runner)) is None
+    assert seen["status"]["ok"] is True, seen
+    assert seen["status"]["result"]["state"] == "starting"
 
 
 def test_the_gateway_listens_on_the_webapp_port_when_enabled(monkeypatch, tmp_path):

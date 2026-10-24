@@ -497,14 +497,18 @@ async def recover_bot_mailbox(authority):
 async def start_gateway_runtime_api(runner):
     from gateway import run_api
     from gateway.webapp_listener import (
-        BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
+        STARTING, BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
     )
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
+    # The bootstrap registered these before its control socket answered; a runner started without it
+    # (an embedded gateway) gets them here, before the listener's slow start.
+    register_control_verbs(runner, home)
     host, port, webapp, unusable = listener_plan(home)
     # A webapp: block that asks for the Webapp but cannot be used is reported with its reason.
     runner.webapp_status = ({"state": "unavailable", "url": None, "reason": unusable} if unusable
-                            else {"state": "off", "url": None, "reason": None})
+                            else {"state": "off", "url": None, "reason": None} if webapp is None
+                            else dict(STARTING))
     try:
         # Without the Webapp the listener is main's: the same call, a private ephemeral port.
         runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
@@ -538,7 +542,6 @@ async def start_gateway_runtime_api(runner):
     else:
         if webapp is not None:
             runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}
-    register_control_verbs(runner, home)
     runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
     for authority in _authorities(runner):
         await _recover_profile_bot_mailbox(runner, authority)

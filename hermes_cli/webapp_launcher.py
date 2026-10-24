@@ -128,6 +128,8 @@ def _status(target: Path) -> int:
     status = response["result"]
     if status["state"] == "serving":
         print(f"Serving at {status['url']}")
+    elif status["state"] == "starting":
+        print("The gateway is still starting the Webapp. Run hermes webapp --status again in a moment.")
     elif status["state"] == "off":
         print(_off_message(target, f"run {RESTART_COMMAND}"))
     else:

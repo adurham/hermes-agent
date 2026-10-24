@@ -320,26 +320,38 @@ def _bundle_missing(web) -> str | None:
     return None if dist is None else bundle_missing_reason(dist)
 
 
-def register_control_verbs(runner, home) -> None:
-    """The private control-socket verbs ``hermes webapp`` uses; only an authenticated same-user peer
-    reaches them. ``webapp-launch`` returns a one-use launch link, so the credential crosses neither
-    the socket nor a browser's argv; where nothing can check who redeems such a link (macOS, the BSDs,
-    WSL) it is marked private, for the user to open by hand. ``webapp-sign-out`` replaces the
-    browser credential, which also ends every login bound to it behind the sign-in gate, closes the
-    browser sockets those opened, and reports how many it closed."""
-    server = getattr(runner, "session_control_server", None)
+#: ``webapp-status`` from the control socket's start until the listener settles on serving, off or
+#: unavailable: Web Access keeps waiting on it, as on a gateway that has not restarted yet.
+STARTING = {"state": "starting", "url": None, "reason": None}
+_STILL_STARTING = "The Webapp is still starting; try again in a moment."
+
+
+def register_control_verbs(runner, home, server=None) -> None:
+    """The private control-socket verbs ``hermes webapp`` uses on *server* (the runner's control
+    server by default); only an authenticated same-user peer reaches them. The gateway registers them
+    before its control socket answers, so they answer from its first moment: :data:`STARTING` until
+    the listener sets ``runner.webapp_status``. ``webapp-launch`` returns a one-use launch link, so
+    the credential crosses neither the socket nor a browser's argv; where nothing can check who
+    redeems such a link (macOS, the BSDs, WSL) it is marked private, for the user to open by hand.
+    ``webapp-sign-out`` replaces the browser credential, which also ends every login bound to it
+    behind the sign-in gate, closes the browser sockets those opened, and reports how many it closed."""
+    server = server if server is not None else getattr(runner, "session_control_server", None)
     if server is None:
         return
+    if getattr(runner, "webapp_status", None) is None:
+        runner.webapp_status = dict(STARTING)
 
     def serving():
         status = runner.webapp_status
         if status["state"] == "off":
             raise RuntimeError("The Webapp is off. Set webapp.enabled: true in config.yaml and restart the gateway.")
+        if status["state"] == "starting":
+            raise RuntimeError(_STILL_STARTING)
         if status["state"] != "serving":
             raise RuntimeError(f"The Webapp is unavailable: {status['reason']}")
         web = getattr(getattr(getattr(runner, "session_api", None), "app", None), "web", None)
         if web is None:
-            raise RuntimeError("The Webapp is still starting; try again.")
+            raise RuntimeError(_STILL_STARTING)
         return status, web
 
     def webapp_status(_params, _peer):
@@ -387,6 +399,10 @@ def register_control_verbs(runner, home) -> None:
 
     def webapp_sign_out(_params, _peer):
         from hermes_cli import browser_credential
+        if runner.webapp_status["state"] == "starting":
+            # The starting listener may already hold the stored credential in memory, where replacing
+            # the file never reaches it: the caller waits for the listener to settle.
+            raise RuntimeError(_STILL_STARTING)
         if runner.webapp_status["state"] != "serving":
             # No browser reaches this gateway's Webapp and it holds no browser credential: replacing
             # the stored one is the whole sign-out, and the next start serves the new one.
