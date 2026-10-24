@@ -90,3 +90,19 @@ def test_child_handoff_is_bound_to_local_webapp_start(local_webapp, monkeypatch,
                          headers={"Origin": "http://127.0.0.1", "X-Hermes-Window-Ticket": ticket}, follow_redirects=False)
     assert denied.status_code in (302, 401, 403, 404)
     assert server._SESSION_TOKEN not in denied.text
+
+
+def test_pending_handoffs_keep_the_credentials_generation_not_the_credential(local_webapp):
+    """Window and launch tickets waiting to be spent record the browser credential's generation
+    (``hermes_cli.browser_credential``), never the credential itself, and still hand it over once."""
+    from hermes_cli.web_routers import webapp
+
+    server, client = local_webapp
+    token = server._SESSION_TOKEN
+    window = client.post("/api/webapp/window-ticket", headers={"X-Hermes-Session-Token": token}).json()["ticket"]
+    webapp.mint_launch_ticket(server.app.state)
+    webapp.mint_printed_launch_ticket(server.app.state)
+    stored = server.app.state.webapp_window_tickets
+    assert len(stored) == 3 and token not in repr(stored)
+    spent = client.post("/webapp/window-session", headers={"Origin": "http://127.0.0.1", "X-Hermes-Window-Ticket": window})
+    assert spent.json()["token"] == token

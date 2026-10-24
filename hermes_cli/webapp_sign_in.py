@@ -104,11 +104,8 @@ def bind(response: Response, request: Request) -> None:
 def renew(response: Response, request: Request) -> None:
     """Keep the binding as long-lived as the session cookies a refresh just rotated, unless the
     credential it was checked against was replaced while the request ran."""
-    # One read of the credential: binding the login to a second read could bind it to a credential
-    # that replaced the one it was checked against.
-    token = browser_credential.current()
-    signed_in = sign_in_of(request)
-    if signed_in is not None and hmac.compare_digest(signed_in, browser_credential.generation_of(token)):
+    token = browser_credential.current_if(sign_in_of(request))
+    if token is not None:
         _set(response, request, token)
 
 

@@ -47,7 +47,17 @@ def generation() -> str:
 
 def is_current(recorded: Optional[str]) -> bool:
     """Whether a grant that recorded generation *recorded* was made under the credential in use now."""
-    return recorded is not None and hmac.compare_digest(recorded, generation())
+    return current_if(recorded) is not None
+
+
+def current_if(recorded: Optional[str]) -> Optional[str]:
+    """The credential in use now when *recorded* is its generation, else None. For a grant that
+    hands the credential over or binds a login to it: one read, so a rotation between the check
+    and the use cannot pass on the credential that replaced the one the grant was made under."""
+    credential = current()
+    if recorded is None or not hmac.compare_digest(recorded, generation_of(credential)):
+        return None
+    return credential
 
 
 def on_rotate(name: str, revoker: Callable[[], int]) -> None:

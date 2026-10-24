@@ -61,19 +61,20 @@ async def host_terminal_ws(ws: WebSocket) -> None:
 
 
 def _mint_handoff_ticket(state, ttl: float, *, launch: bool) -> str:
-    """One-use ticket that ``/webapp/window-session`` exchanges for this start's session token."""
-    from hermes_cli.web_server import _SESSION_TOKEN
+    """One-use ticket that ``/webapp/window-session`` exchanges for this start's session token. The
+    store keeps ``(expiry, browser credential generation, launch)``, never the credential itself."""
+    from hermes_cli import browser_credential
 
     now = time.monotonic()
     with _ticket_lock:
         tickets = getattr(state, "webapp_window_tickets", {})
         tickets = {key: value for key, value in tickets.items()
-                   if value[0] > now and value[1] == _SESSION_TOKEN}
+                   if value[0] > now and browser_credential.is_current(value[1])}
         state.webapp_window_tickets = tickets
         if len(tickets) >= _MAX_WINDOW_TICKETS:
             raise HTTPException(429, "Too many pending Webapp windows; try again shortly")
         ticket = secrets.token_urlsafe(32)
-        tickets[ticket] = (now + ttl, _SESSION_TOKEN, launch)
+        tickets[ticket] = (now + ttl, browser_credential.generation(), launch)
     return ticket
 
 
@@ -253,7 +254,7 @@ async def issue_audio_ticket(request: Request, socket: str = ""):
 
 @router.post("/webapp/window-session")
 async def redeem_window_ticket(request: Request):
-    from hermes_cli.web_server import _SESSION_TOKEN
+    from hermes_cli import browser_credential
 
     _require_private_webapp(request)
     # This endpoint deliberately sits outside /api: the child window or launch
@@ -279,9 +280,10 @@ async def redeem_window_ticket(request: Request):
             entry = None
         elif entry is not None:
             del tickets[ticket]
-    if entry is None or entry[0] <= time.monotonic() or entry[1] != _SESSION_TOKEN:
+    token = browser_credential.current_if(entry[1]) if entry is not None and entry[0] > time.monotonic() else None
+    if token is None:
         raise HTTPException(403, "Webapp window link expired or was already used; open a new window")
-    return JSONResponse({"token": _SESSION_TOKEN}, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"token": token}, headers={"Cache-Control": "no-store"})
 
 
 _LAUNCH_SCRIPT = r"""
