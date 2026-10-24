@@ -139,6 +139,10 @@ def _status(target: Path) -> int:
     status = response["result"]
     if status["state"] == "serving":
         print(f"Serving at {status['url']}")
+        from gateway.webapp_listener import webapp_settings
+        if not webapp_settings(target).enabled:
+            print(f"{target / 'config.yaml'} no longer turns the Webapp on: it stops at the next gateway restart "
+                  f"({RESTART_COMMAND}).")
     elif status["state"] == "starting":
         print("The gateway is still starting the Webapp. Run hermes webapp --status again in a moment.")
     elif status["state"] == "off":
@@ -156,6 +160,20 @@ def _restart_applies(reason) -> bool:
     keeps the stale mark."""
     from gateway.webapp_listener import NOT_BUILT
     return not str(reason).startswith(NOT_BUILT)
+
+
+def _still_served(target: Path) -> str | None:
+    """What to say when *target*'s config no longer turns the Webapp on but its running gateway, which
+    reads the config only when it starts, still serves it; None otherwise. Never starts a gateway."""
+    try:
+        response = _control(target, "webapp-status")
+    except GatewayUnreachable:
+        return None
+    status = (response.get("result") or {}) if response.get("ok") else {}
+    if status.get("state") != "serving":
+        return None
+    return (f"{target / 'config.yaml'} no longer turns the Webapp on, but the running gateway still serves it at "
+            f"{status['url']} until it restarts. Run {RESTART_COMMAND} to apply the config.")
 
 
 def _signed_out_summary(result: dict) -> str:
@@ -248,7 +266,7 @@ def cmd_webapp(args) -> int:
     if args.sign_out:
         return _sign_out(target)
     if not args.build_only and not webapp_settings(target).enabled:
-        print(_off_message(target, "run hermes webapp again"))
+        print(_still_served(target) or _off_message(target, "run hermes webapp again"))
         return 1
     try:
         _build(args)

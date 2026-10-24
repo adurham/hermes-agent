@@ -106,6 +106,7 @@ def test_a_standalone_profile_opens_the_webapp_of_its_own_gateway(world):
 
 def test_the_launcher_says_how_to_turn_the_webapp_on(world, capsys):
     (world["root"] / "config.yaml").write_text("", encoding="utf-8")
+    world["answers"]["webapp-status"] = {"ok": True, "result": {"state": "off", "url": None, "reason": None}}
     assert launcher.cmd_webapp(_args()) == 1
     out = capsys.readouterr().out
     assert "webapp.enabled: true" in out and str(world["root"] / "config.yaml") in out
@@ -147,6 +148,30 @@ def test_a_launch_refused_for_a_stale_bundle_asks_for_a_build_not_a_restart(worl
     assert launcher.cmd_webapp(_args(skip_build=True)) == 1
     out = capsys.readouterr().out
     assert "Run hermes webapp to rebuild it." in out and launcher.RESTART_COMMAND not in out
+
+
+SERVING = {"ok": True, "result": {"state": "serving", "url": "http://127.0.0.1:9120", "reason": None}}
+
+
+def test_a_webapp_turned_off_in_config_but_still_served_says_a_restart_stops_it(world, capsys):
+    """The gateway reads webapp: only when it starts. After the config turns the Webapp off, the running
+    gateway still serves it (on the LAN for a wildcard host) until it restarts: hermes webapp says so,
+    instead of "The Webapp is off", and opens nothing."""
+    (world["root"] / "config.yaml").write_text("webapp:\n  enabled: false\n  host: 0.0.0.0\n", encoding="utf-8")
+    world["answers"]["webapp-status"] = SERVING
+    assert launcher.cmd_webapp(_args()) == 1
+    out = capsys.readouterr().out
+    assert "The Webapp is off" not in out
+    assert "http://127.0.0.1:9120" in out and launcher.RESTART_COMMAND in out
+    assert (world["calls"]["build"], world["calls"]["ensure"], world["calls"]["opened"]) == (0, [], [])
+
+
+def test_status_of_a_webapp_served_after_the_config_turned_it_off_says_a_restart_stops_it(world, capsys):
+    (world["root"] / "config.yaml").write_text("webapp:\n  enabled: false\n", encoding="utf-8")
+    world["answers"]["webapp-status"] = SERVING
+    assert launcher.cmd_webapp(_args(status=True)) == 0
+    out = capsys.readouterr().out
+    assert "Serving at http://127.0.0.1:9120" in out and launcher.RESTART_COMMAND in out
 
 
 def test_behind_the_dashboard_sign_in_the_launcher_opens_the_webapp_to_sign_in(world, capsys):
