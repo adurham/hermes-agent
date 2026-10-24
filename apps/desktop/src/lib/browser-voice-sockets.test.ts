@@ -24,11 +24,7 @@ function serveTickets() {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = new URL(String(input))
 
-    const ticket = url.pathname.endsWith('/api/webapp/audio-ticket')
-      ? `${url.searchParams.get('socket')}-ticket`
-      : url.pathname.endsWith('/api/webapp/gateway-ticket')
-        ? 'gateway-ticket'
-        : ''
+    const ticket = url.pathname.endsWith('/api/webapp/socket-ticket') ? `${url.searchParams.get('socket')}-ticket` : ''
 
     return new Response(JSON.stringify(ticket ? { ticket, ttl_seconds: 60 } : {}), {
       headers: { 'content-type': 'application/json' },
@@ -75,7 +71,7 @@ describe('browser-hosted Desktop voice streams', () => {
 
     const [mint, ...others] = minted(fetchMock)
     expect(others).toEqual([])
-    expect(mint.url.pathname).toBe('/hermes/api/webapp/audio-ticket')
+    expect(mint.url.pathname).toBe('/hermes/api/webapp/socket-ticket')
     expect(mint.url.searchParams.get('socket')).toBe('speak-stream')
     expect(mint.init?.method).toBe('POST')
     expect(mint.init?.credentials).toBe('same-origin')
@@ -95,7 +91,7 @@ describe('browser-hosted Desktop voice streams', () => {
 
     const [mint, ...others] = minted(fetchMock)
     expect(others).toEqual([])
-    expect(mint.url.pathname).toBe('/api/webapp/audio-ticket')
+    expect(mint.url.pathname).toBe('/api/webapp/socket-ticket')
     expect(mint.url.searchParams.get('socket')).toBe('transcribe-stream')
     expect(new Headers(mint.init?.headers).get('X-Hermes-Session-Token')).toBe('served-token')
   })
@@ -111,6 +107,8 @@ describe('browser-hosted Desktop voice streams', () => {
 
     expect(url.pathname).toBe('/api/ws')
     expect(url.searchParams.get('ticket')).toBe('gateway-ticket')
-    expect(minted(fetchMock).map(({ url }) => url.pathname)).toEqual(['/api/webapp/gateway-ticket'])
+    expect(minted(fetchMock).map(({ url }) => [url.pathname, url.searchParams.get('socket')])).toEqual([
+      ['/api/webapp/socket-ticket', 'gateway']
+    ])
   })
 })

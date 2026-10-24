@@ -107,7 +107,7 @@ def test_signing_out_ends_every_login_behind_the_gate(gated, sign_out, sign_in):
     assert browser.get("/api/auth/me").status_code == 200
     sign_out()
     _signed_out(browser.get("/api/auth/me"))
-    _signed_out(browser.post("/api/webapp/terminal-ticket"))
+    _signed_out(browser.post("/api/webapp/socket-ticket?socket=host-terminal"))
     _signed_out(browser.post("/api/auth/ws-ticket"))
     page = browser.get("/", follow_redirects=False)
     assert page.status_code == 302 and page.headers["location"].startswith("/login")
@@ -130,7 +130,7 @@ def test_signing_in_again_after_sign_out_works(gated, sign_out):
     _signed_out(browser.get("/api/auth/me"))
     _sign_in_with_password(browser)
     assert browser.get("/api/auth/me").status_code == 200
-    assert browser.post("/api/webapp/terminal-ticket").status_code == 200
+    assert browser.post("/api/webapp/socket-ticket?socket=host-terminal").status_code == 200
 
 
 def test_a_credential_replaced_while_the_gateway_was_down_signs_logins_out(gated, monkeypatch):
@@ -147,7 +147,7 @@ def test_signing_out_closes_the_sockets_and_host_terminal_a_login_opened(gated, 
 
     browser = gated.browser()
     _sign_in_with_password(browser)
-    terminal = browser.post("/api/webapp/terminal-ticket").json()["ticket"]
+    terminal = browser.post("/api/webapp/socket-ticket?socket=host-terminal").json()["ticket"]
     events = browser.post("/api/auth/ws-ticket").json()["ticket"]
     other = mint_ticket(user_id="someone-else", provider="stub")
     with TestClient(gated.host, base_url=WEBAPP) as shells, \
@@ -167,7 +167,7 @@ def test_signing_out_closes_the_sockets_and_host_terminal_a_login_opened(gated, 
 def test_tickets_a_login_minted_before_sign_out_open_nothing_after(gated, sign_out):
     browser = gated.browser()
     _sign_in_with_password(browser)
-    terminal = browser.post("/api/webapp/terminal-ticket").json()["ticket"]
+    terminal = browser.post("/api/webapp/socket-ticket?socket=host-terminal").json()["ticket"]
     events = browser.post("/api/auth/ws-ticket").json()["ticket"]
     sign_out()
     with TestClient(gated.host, base_url=WEBAPP) as shells:
@@ -260,7 +260,7 @@ def _refused_alone(gated, access, refresh):
     refresh route."""
     stolen = gated.browser()
     _refused(stolen.get("/api/auth/me", headers=_bearer(access)))
-    _refused(stolen.post("/api/webapp/terminal-ticket", headers=_bearer(access)))
+    _refused(stolen.post("/api/webapp/socket-ticket?socket=host-terminal", headers=_bearer(access)))
     _refused(stolen.post("/api/auth/ws-ticket", headers=_bearer(access)))
     _refused(_renew(gated, refresh))
 
@@ -341,7 +341,7 @@ def test_a_login_after_sign_out_works(gated, sign_out, clock):
     clock()
     _sign_in_with_password(browser)
     assert browser.get("/api/auth/me").status_code == 200
-    assert browser.post("/api/webapp/terminal-ticket").status_code == 200
+    assert browser.post("/api/webapp/socket-ticket?socket=host-terminal").status_code == 200
 
 
 def _native_app_sign_in(gated):

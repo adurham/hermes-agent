@@ -1,9 +1,9 @@
 """Each Webapp socket ticket opens only the socket it was minted for.
 
 The browser never puts its session token in a socket URL. An authenticated request mints a one-use,
-short-lived ticket instead: ``POST /api/webapp/gateway-ticket`` for the chat socket (``/api/ws``),
-``POST /api/webapp/terminal-ticket`` for the host terminal (``/api/host-terminal``) and
-``POST /api/webapp/audio-ticket?socket=`` for each voice stream (``/api/audio/speak-stream``,
+short-lived ticket instead, from one route, ``POST /api/webapp/socket-ticket?socket=``: ``gateway`` for
+the chat socket (``/api/ws``), ``host-terminal`` for the host terminal (``/api/host-terminal``),
+``speak-stream`` and ``transcribe-stream`` for the voice streams (``/api/audio/speak-stream``,
 ``/api/audio/transcribe-stream``). A host shell opens only with a terminal ticket, a chat ticket opens
 no host shell, a terminal ticket opens no chat socket, a voice stream opens with a ticket minted for
 that stream and no other, and a ticket minted with a session token that has since been replaced opens
@@ -61,8 +61,8 @@ def webapp(tmp_path, monkeypatch):
     return serve_webapp(tmp_path, monkeypatch)
 
 
-def _mint(client, kind, headers=_SESSION):
-    response = client.post(f"/api/webapp/{kind}-ticket", headers=headers)
+def _mint(client, socket, headers=_SESSION):
+    response = client.post("/api/webapp/socket-ticket", params={"socket": socket}, headers=headers)
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
     body = response.json()
@@ -79,8 +79,8 @@ def _refused(client, url, code=4401, **kwargs):
 
 def test_a_terminal_ticket_opens_one_host_shell_once(webapp):
     client, host = webapp.client, webapp.host
-    assert client.post("/api/webapp/terminal-ticket").status_code == 401
-    ticket = _mint(client, "terminal")
+    assert client.post("/api/webapp/socket-ticket", params={"socket": "host-terminal"}).status_code == 401
+    ticket = _mint(client, "host-terminal")
     with TestClient(host) as shells:
         with shells.websocket_connect(f"ws://localhost/api/host-terminal?ticket={ticket}") as ws:
             assert metadata(ws)["terminalId"]
@@ -104,14 +104,14 @@ def test_the_host_terminal_refuses_the_session_token_and_every_other_ticket(weba
 
 def test_a_terminal_ticket_does_not_open_the_chat_socket(webapp):
     client = webapp.client
-    protocols = ["hermes-gateway-v1", f"hermes-gateway-ticket.{_mint(client, 'terminal')}"]
+    protocols = ["hermes-gateway-v1", f"hermes-gateway-ticket.{_mint(client, 'host-terminal')}"]
     _refused(client, "ws://localhost/api/ws?native_dial=browser", subprotocols=protocols)
-    _refused(client, f"ws://localhost/api/ws?ticket={_mint(client, 'terminal')}")
+    _refused(client, f"ws://localhost/api/ws?ticket={_mint(client, 'host-terminal')}")
 
 
 def test_tickets_minted_before_the_session_token_changed_open_nothing(webapp, monkeypatch):
     server, client, host = webapp.server, webapp.client, webapp.host
-    terminal, chat = _mint(client, "terminal"), _mint(client, "gateway")
+    terminal, chat = _mint(client, "host-terminal"), _mint(client, "gateway")
     monkeypatch.setattr(server, "_SESSION_TOKEN", "b" * 43)
     with TestClient(host) as shells:
         _refused(shells, f"ws://localhost/api/host-terminal?ticket={terminal}")
@@ -123,7 +123,8 @@ def test_tickets_minted_before_the_session_token_changed_open_nothing(webapp, mo
 def test_other_surfaces_do_not_mint_terminal_tickets(webapp, monkeypatch, surface):
     server, client = webapp.server, webapp.client
     monkeypatch.setattr(server.app.state, "ui_surface", surface)
-    assert client.post("/api/webapp/terminal-ticket", headers=_SESSION).status_code == 404
+    minted = client.post("/api/webapp/socket-ticket", params={"socket": "host-terminal"}, headers=_SESSION)
+    assert minted.status_code == 404
 
 
 def test_a_signed_in_browser_opens_its_host_shell_with_a_terminal_ticket(webapp, monkeypatch):
@@ -142,11 +143,11 @@ def test_a_signed_in_browser_opens_its_host_shell_with_a_terminal_ticket(webapp,
     monkeypatch.setattr(server.app.state, "auth_required", True)
     try:
         anonymous = TestClient(server.app, base_url="https://fly-app.fly.dev")
-        assert anonymous.post("/api/webapp/terminal-ticket", headers=_SESSION,
+        assert anonymous.post("/api/webapp/socket-ticket", params={"socket": "host-terminal"}, headers=_SESSION,
                               follow_redirects=False).status_code in (302, 401)
         gated = TestClient(server.app, base_url="https://fly-app.fly.dev")
         _logged_in(gated)
-        ticket = _mint(gated, "terminal", headers={})
+        ticket = _mint(gated, "host-terminal", headers={})
         generic = gated.post("/api/auth/ws-ticket").json()["ticket"]
         with TestClient(host, base_url="https://fly-app.fly.dev") as shells:
             url = "wss://fly-app.fly.dev/api/host-terminal?ticket="
@@ -162,15 +163,6 @@ def test_a_signed_in_browser_opens_its_host_shell_with_a_terminal_ticket(webapp,
 
 _SPEAK = "/api/audio/speak-stream"
 _TRANSCRIBE = "/api/audio/transcribe-stream"
-
-
-def _mint_audio(client, socket, headers=_SESSION):
-    response = client.post("/api/webapp/audio-ticket", params={"socket": socket}, headers=headers)
-    assert response.status_code == 200, response.text
-    assert response.headers["cache-control"] == "no-store"
-    body = response.json()
-    assert set(body) == {"ticket", "ttl_seconds"} and 0 < body["ttl_seconds"] <= 60
-    return body["ticket"]
 
 
 @pytest.fixture
@@ -205,11 +197,11 @@ def _transcribes(client, url):
 
 def test_each_voice_stream_opens_once_with_a_ticket_minted_for_it(webapp, voice):
     client = webapp.client
-    assert client.post("/api/webapp/audio-ticket", params={"socket": "speak-stream"}).status_code == 401
-    speak = _mint_audio(client, "speak-stream")
+    assert client.post("/api/webapp/socket-ticket", params={"socket": "speak-stream"}).status_code == 401
+    speak = _mint(client, "speak-stream")
     _speaks(client, f"ws://localhost{_SPEAK}?ticket={speak}")
     _refused(client, f"ws://localhost{_SPEAK}?ticket={speak}")
-    transcribe = _mint_audio(client, "transcribe-stream")
+    transcribe = _mint(client, "transcribe-stream")
     _transcribes(client, f"ws://localhost{_TRANSCRIBE}?ticket={transcribe}")
     _refused(client, f"ws://localhost{_TRANSCRIBE}?ticket={transcribe}")
 
@@ -219,33 +211,36 @@ def test_a_voice_stream_refuses_a_ticket_minted_for_another_socket(webapp, voice
     stream; a voice stream's ticket opens no chat socket and no host shell."""
     client, host = webapp.client, webapp.host
     for url, other in ((_SPEAK, "transcribe-stream"), (_TRANSCRIBE, "speak-stream")):
-        for ticket in (_mint(client, "gateway"), _mint(client, "terminal"), _mint_audio(client, other)):
+        for ticket in (_mint(client, "gateway"), _mint(client, "host-terminal"), _mint(client, other)):
             _refused(client, f"ws://localhost{url}?ticket={ticket}")
-    _refused(client, f"ws://localhost/api/ws?ticket={_mint_audio(client, 'speak-stream')}")
-    protocols = ["hermes-gateway-v1", f"hermes-gateway-ticket.{_mint_audio(client, 'transcribe-stream')}"]
+    _refused(client, f"ws://localhost/api/ws?ticket={_mint(client, 'speak-stream')}")
+    protocols = ["hermes-gateway-v1", f"hermes-gateway-ticket.{_mint(client, 'transcribe-stream')}"]
     _refused(client, "ws://localhost/api/ws?native_dial=browser", subprotocols=protocols)
     with TestClient(host) as shells:
-        _refused(shells, f"ws://localhost/api/host-terminal?ticket={_mint_audio(client, 'speak-stream')}")
+        _refused(shells, f"ws://localhost/api/host-terminal?ticket={_mint(client, 'speak-stream')}")
     assert webapp.shells == []
 
 
 def test_voice_tickets_minted_before_the_session_token_changed_open_nothing(webapp, voice, monkeypatch):
     server, client = webapp.server, webapp.client
-    speak, transcribe = _mint_audio(client, "speak-stream"), _mint_audio(client, "transcribe-stream")
+    speak, transcribe = _mint(client, "speak-stream"), _mint(client, "transcribe-stream")
     monkeypatch.setattr(server, "_SESSION_TOKEN", "b" * 43)
     _refused(client, f"ws://localhost{_SPEAK}?ticket={speak}")
     _refused(client, f"ws://localhost{_TRANSCRIBE}?ticket={transcribe}")
 
 
-def test_audio_tickets_are_minted_only_for_voice_streams_on_the_webapp(webapp, monkeypatch):
+def test_socket_tickets_are_minted_only_for_the_webapps_sockets_on_the_webapp(webapp, monkeypatch):
+    """One route mints every socket ticket; it knows only the Webapp's four sockets, and the
+    standalone dashboard and ``hermes serve`` mint none."""
     server, client = webapp.server, webapp.client
-    for socket in ("gateway", "host-terminal", "display", ""):
-        response = client.post("/api/webapp/audio-ticket", params={"socket": socket}, headers=_SESSION)
+    for socket in ("display", "events", "speak", ""):
+        response = client.post("/api/webapp/socket-ticket", params={"socket": socket}, headers=_SESSION)
         assert response.status_code == 400, socket
     for surface in ("dashboard", "serve"):
         monkeypatch.setattr(server.app.state, "ui_surface", surface)
-        response = client.post("/api/webapp/audio-ticket", params={"socket": "speak-stream"}, headers=_SESSION)
-        assert response.status_code == 404, surface
+        for socket in ("gateway", "host-terminal", "speak-stream", "transcribe-stream"):
+            response = client.post("/api/webapp/socket-ticket", params={"socket": socket}, headers=_SESSION)
+            assert response.status_code == 404, (surface, socket)
 
 
 def test_a_native_clients_unnamed_ticket_still_opens_a_voice_stream(webapp, voice):
@@ -275,13 +270,13 @@ def test_a_signed_in_browser_opens_its_voice_streams_with_their_own_tickets(weba
     monkeypatch.setattr(server.app.state, "auth_required", True)
     try:
         anonymous = TestClient(server.app, base_url="https://fly-app.fly.dev")
-        assert anonymous.post("/api/webapp/audio-ticket", params={"socket": "speak-stream"},
+        assert anonymous.post("/api/webapp/socket-ticket", params={"socket": "speak-stream"},
                               follow_redirects=False).status_code in (302, 401)
         gated = TestClient(server.app, base_url="https://fly-app.fly.dev")
         _logged_in(gated)
-        _speaks(gated, f"wss://fly-app.fly.dev{_SPEAK}?ticket={_mint_audio(gated, 'speak-stream', headers={})}")
+        _speaks(gated, f"wss://fly-app.fly.dev{_SPEAK}?ticket={_mint(gated, 'speak-stream', headers={})}")
         _transcribes(
-            gated, f"wss://fly-app.fly.dev{_TRANSCRIBE}?ticket={_mint_audio(gated, 'transcribe-stream', headers={})}")
+            gated, f"wss://fly-app.fly.dev{_TRANSCRIBE}?ticket={_mint(gated, 'transcribe-stream', headers={})}")
         _refused(gated, f"wss://fly-app.fly.dev{_SPEAK}?ticket={_mint(gated, 'gateway', headers={})}")
     finally:
         clear_providers()

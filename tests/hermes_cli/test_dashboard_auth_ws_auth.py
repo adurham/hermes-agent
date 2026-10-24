@@ -236,7 +236,7 @@ class TestWsAuthOkLoopback:
 
     def test_webapp_socket_ticket_is_accepted_once(self, loopback_app):
         """The Webapp on a loopback bind mints the browser's one-use socket ticket
-        (``POST /api/webapp/gateway-ticket``) for the session-token owner: the gate takes it once
+        (``POST /api/webapp/socket-ticket?socket=gateway``) for the session-token owner: the gate takes it once
         and selects only the public protocol. A Bot Desktop screen ticket is never a login here
         either."""
         ticket = mint_ticket(user_id="legacy-token-owner", provider="session-token")

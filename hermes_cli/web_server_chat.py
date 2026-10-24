@@ -337,7 +337,7 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
 
         return "no_credential", "none"
 
-    # Loopback: a one-use ticket ``/api/webapp/gateway-ticket`` minted for the session-token owner
+    # Loopback: a one-use ticket ``/api/webapp/socket-ticket`` minted for the session-token owner
     # (the Webapp's live socket on this same origin), else the legacy ``?token=``.
     consumed = _consume_ws_ticket(ws, _ignore_rejection, socket)
     if consumed is not None:

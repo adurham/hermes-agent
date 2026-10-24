@@ -170,7 +170,8 @@ describe('browser-hosted Desktop bridge', () => {
     expect(secondUrl.searchParams.get('ticket')).toBe('ticket-two')
     expect(fetchMock).toHaveBeenCalledTimes(2)
     const minted = fetchMock.mock.calls.map(([url]) => url as URL)
-    expect(minted.every(url => url.pathname === '/hermes/api/webapp/gateway-ticket')).toBe(true)
+    expect(minted.every(url => url.pathname === '/hermes/api/webapp/socket-ticket')).toBe(true)
+    expect(minted.every(url => url.searchParams.get('socket') === 'gateway')).toBe(true)
     expect(minted.every(url => url.searchParams.get('profile') === 'worker-a')).toBe(true)
     expect(fetchMock.mock.calls.every(([, init]) => init?.method === 'POST')).toBe(true)
     expect(fetchMock.mock.calls.every(([, init]) => init?.credentials === 'same-origin')).toBe(true)
@@ -410,7 +411,7 @@ describe('browser-hosted Desktop bridge', () => {
       vi.fn().mockImplementation(async (url: URL) =>
         new Response(
           JSON.stringify(
-            url.pathname.endsWith('/api/webapp/gateway-ticket')
+            url.pathname.endsWith('/api/webapp/socket-ticket')
               ? { ticket: 'research-ticket' }
               : { profiles: [{ name: 'default' }, { name: 'research' }] }
           ),
@@ -908,7 +909,8 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.pathname).toBe('/hermes/api/host-terminal')
     expect(url.searchParams.get('ticket')).toBe('shell-ticket')
     expect(socket.url).not.toContain('served-token')
-    expect((fetchMock.mock.calls[0][0] as URL).pathname).toBe('/hermes/api/webapp/terminal-ticket')
+    expect((fetchMock.mock.calls[0][0] as URL).pathname).toBe('/hermes/api/webapp/socket-ticket')
+    expect((fetchMock.mock.calls[0][0] as URL).searchParams.get('socket')).toBe('host-terminal')
     expect(url.searchParams.get('profile')).toBe('active-terminal')
     expect(url.searchParams.get('cwd')).toBe('/work')
     expect(url.searchParams.get('cols')).toBe('42')
@@ -973,7 +975,8 @@ describe('browser-hosted Desktop bridge', () => {
     await win.hermesDesktop!.terminal.start({ cwd: '/work' })
 
     const [mint, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
-    expect(mint.pathname).toBe('/api/webapp/terminal-ticket')
+    expect(mint.pathname).toBe('/api/webapp/socket-ticket')
+    expect(mint.searchParams.get('socket')).toBe('host-terminal')
     expect(init.method).toBe('POST')
     expect(init.credentials).toBe('same-origin')
     expect(new Headers(init.headers).has('X-Hermes-Session-Token')).toBe(false)

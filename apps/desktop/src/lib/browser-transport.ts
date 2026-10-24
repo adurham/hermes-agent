@@ -266,22 +266,44 @@ export async function fileEndpointUrl(
 }
 
 /**
- * The live socket to the gateway serving this page. Every dial mints its own one-use ticket on the
- * same origin; a failed mint is the reason to show. `native_dial` makes the client speak the
- * gateway's canonical contract and move the ticket into the socket's subprotocol.
+ * The sockets a Webapp page dials, each with a one-use ticket minted for that socket alone by an
+ * authenticated request on this same origin (the session header on a loopback Webapp, the sign-in
+ * cookie on a gated host), so the session token never rides a socket URL that logs, history and
+ * proxies keep. Each maps to its name in `POST /api/webapp/socket-ticket?socket=`.
  */
-export async function gatewayWebsocketUrl(bootstrap: BrowserBootstrap, profile?: null | string): Promise<string> {
+const TICKET_SOCKETS = {
+  '/api/audio/speak-stream': 'speak-stream',
+  '/api/audio/transcribe-stream': 'transcribe-stream',
+  '/api/host-terminal': 'host-terminal',
+  '/api/ws': 'gateway'
+} as const
+
+export type TicketSocketPath = keyof typeof TICKET_SOCKETS
+export type AudioSocketPath = '/api/audio/speak-stream' | '/api/audio/transcribe-stream'
+
+/**
+ * Socket *path*'s URL for one dial, carrying a ticket minted for it alone; a failed mint is the
+ * reason to show. The gateway socket's mint also checks *profile*, and its `native_dial` makes the
+ * client speak the gateway's canonical contract and move the ticket into the socket's subprotocol.
+ */
+export async function ticketedWebsocketUrl(
+  bootstrap: BrowserBootstrap,
+  path: TicketSocketPath,
+  profile?: null | string
+): Promise<string> {
+  const gateway = path === '/api/ws'
+
   const result = await browserApi<null | { ticket?: string }>(bootstrap, {
     method: 'POST',
-    path: '/api/webapp/gateway-ticket',
-    profile
+    path: `/api/webapp/socket-ticket?socket=${TICKET_SOCKETS[path]}`,
+    profile: gateway ? profile : undefined
   })
 
   const ticket = String(result?.ticket || '').trim()
 
-  if (!ticket) {
-    throw new Error('Hermes did not return a gateway ticket')
-  }
+  if (!ticket) {throw new Error(`Hermes did not return a ticket for ${path}`)}
+
+  if (!gateway) {return websocketUrl(bootstrap.basePath, path, { ticket }, profile)}
 
   const url = new URL(gatewaySocketUrl(bootstrap, profile))
   url.searchParams.set('ticket', ticket)
@@ -295,56 +317,4 @@ export function gatewaySocketUrl(bootstrap: BrowserBootstrap, profile?: null | s
   url.searchParams.set('native_dial', BROWSER_NATIVE_DIAL)
 
   return url.toString()
-}
-
-/**
- * The host terminal's socket URL for one dial. Its one-use ticket is minted by an authenticated
- * request (the session header on a loopback Webapp, the sign-in cookie on a gated host) and opens
- * only the host terminal, so the session token never rides a socket URL that logs, history and
- * proxies keep.
- */
-export async function authenticatedWebsocketUrl(
-  bootstrap: BrowserBootstrap,
-  path: '/api/host-terminal',
-  profile?: null | string
-): Promise<string> {
-  const result = await browserApi<null | { ticket?: string }>(bootstrap, {
-    method: 'POST',
-    path: '/api/webapp/terminal-ticket'
-  })
-
-  const ticket = String(result?.ticket || '').trim()
-
-  if (!ticket) {throw new Error('Hermes did not return a terminal ticket')}
-
-  return websocketUrl(bootstrap.basePath, path, { ticket }, profile)
-}
-
-/** The voice streams beside `/api/ws`, each opened only by a ticket minted under its socket name. */
-const AUDIO_SOCKETS = {
-  '/api/audio/speak-stream': 'speak-stream',
-  '/api/audio/transcribe-stream': 'transcribe-stream'
-} as const
-
-export type AudioSocketPath = keyof typeof AUDIO_SOCKETS
-
-/**
- * A voice stream's socket URL for one dial. Its one-use ticket is minted for that stream alone: the
- * gateway's ticket opens only `/api/ws`, so the stream cannot reuse it.
- */
-export async function audioWebsocketUrl(
-  bootstrap: BrowserBootstrap,
-  path: AudioSocketPath,
-  profile?: null | string
-): Promise<string> {
-  const result = await browserApi<null | { ticket?: string }>(bootstrap, {
-    method: 'POST',
-    path: `/api/webapp/audio-ticket?socket=${AUDIO_SOCKETS[path]}`
-  })
-
-  const ticket = String(result?.ticket || '').trim()
-
-  if (!ticket) {throw new Error('Hermes did not return a voice stream ticket')}
-
-  return websocketUrl(bootstrap.basePath, path, { ticket }, profile)
 }

@@ -143,7 +143,9 @@ beforeEach(() => {
   const realFetch = globalThis.fetch
   let minted = 0
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (new URL(String(input), window.location.href).pathname.endsWith('/api/webapp/terminal-ticket')) {
+    const mint = new URL(String(input), window.location.href)
+
+    if (mint.pathname.endsWith('/api/webapp/socket-ticket') && mint.searchParams.get('socket') === 'host-terminal') {
       minted += 1
 
       return new Response(JSON.stringify({ ticket: `shell-ticket-${minted}` }), { status: 200 })

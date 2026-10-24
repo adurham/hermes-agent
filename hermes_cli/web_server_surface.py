@@ -23,8 +23,8 @@ class SurfacePolicy:
     host_terminal: bool
     #: An unauthenticated start hands the operator a private launch link.
     launch_link: bool
-    #: ``/api/webapp/gateway-ticket`` mints the browser's one-use ticket for ``/api/ws`` on this
-    #: same origin (accepted by the loopback and gated upgrade gates alike).
+    #: ``/api/webapp/socket-ticket`` mints the browser's one-use tickets for ``/api/ws`` and the voice
+    #: streams on this same origin (accepted by the loopback and gated upgrade gates alike).
     gateway_ticket: bool
 
 

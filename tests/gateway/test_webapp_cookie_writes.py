@@ -30,7 +30,7 @@ FOREIGN_PAGES = (
 
 async def _write_statuses(client: httpx.AsyncClient, headers: dict) -> tuple[int, int, int]:
     """Status codes of a POST (socket ticket), a PUT (config) and a DELETE (cron job) sent with *headers*."""
-    ticket = await client.post("/api/webapp/gateway-ticket", headers=headers)
+    ticket = await client.post("/api/webapp/socket-ticket?socket=gateway", headers=headers)
     config = await client.put("/api/config", headers=headers, json=SKIN)
     job = await client.delete("/api/cron/jobs/no-such-job", headers=headers)
     return ticket.status_code, config.status_code, job.status_code
@@ -85,7 +85,7 @@ def test_a_wildcard_webapp_takes_cookie_writes_only_from_its_own_page(tmp_path, 
                 assert read_raw_config()["display"]["skin"] == "mono"
                 # Electron's net.request sends the cookie with no Origin and no page Fetch Metadata.
                 for native in ({}, {"Sec-Fetch-Site": "none"}):
-                    native_ticket = await browser.post("/api/webapp/gateway-ticket", headers=native)
+                    native_ticket = await browser.post("/api/webapp/socket-ticket?socket=gateway", headers=native)
                     assert native_ticket.status_code == 200, native_ticket.text
             async with httpx.AsyncClient(transport=transport, base_url=WEBAPP) as native_app:
                 bearer = {"Authorization": f"Bearer {await _native_app_token(native_app)}", "Origin": "null"}

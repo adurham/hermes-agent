@@ -1,6 +1,6 @@
 """The Webapp's live socket ticket is minted by the server that serves the page.
 
-``POST /api/webapp/gateway-ticket?profile=<name>`` hands the browser a one-use ticket for
+``POST /api/webapp/socket-ticket?socket=gateway&profile=<name>`` hands the browser a one-use ticket for
 ``/api/ws`` on the same origin (offered as the ``hermes-gateway-ticket.`` subprotocol). It names the
 caller's login (and the profile it names, ``test_webapp_ticket_profile.py``), and the upgrade gate
 redeems it exactly once.
@@ -11,6 +11,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from hermes_cli.web_session_sockets import GATEWAY_SOCKET
+
+_MINT = "/api/webapp/socket-ticket?socket=gateway"
 
 _TOKEN = "a" * 43
 
@@ -44,8 +46,8 @@ def test_loopback_ticket_names_the_session_token_owner_and_is_spent_once(webapp)
     from hermes_cli import web_server_chat as chat
 
     _server, client = webapp
-    assert client.post("/api/webapp/gateway-ticket").status_code == 401
-    minted = client.post("/api/webapp/gateway-ticket", headers={"X-Hermes-Session-Token": _TOKEN})
+    assert client.post(_MINT).status_code == 401
+    minted = client.post(_MINT, headers={"X-Hermes-Session-Token": _TOKEN})
     assert minted.status_code == 200, minted.text
     assert minted.headers["cache-control"] == "no-store"
     body = minted.json()
@@ -61,7 +63,7 @@ def test_loopback_ticket_names_the_session_token_owner_and_is_spent_once(webapp)
 
 def test_a_missing_profile_is_refused_before_a_ticket_exists(webapp):
     _server, client = webapp
-    refused = client.post("/api/webapp/gateway-ticket?profile=missing", headers={"X-Hermes-Session-Token": _TOKEN})
+    refused = client.post(_MINT + "&profile=missing", headers={"X-Hermes-Session-Token": _TOKEN})
     assert refused.status_code == 404
 
 
@@ -69,5 +71,5 @@ def test_a_missing_profile_is_refused_before_a_ticket_exists(webapp):
 def test_other_surfaces_do_not_mint_webapp_socket_tickets(webapp, monkeypatch, surface):
     server, client = webapp
     monkeypatch.setattr(server.app.state, "ui_surface", surface)
-    refused = client.post("/api/webapp/gateway-ticket", headers={"X-Hermes-Session-Token": _TOKEN})
+    refused = client.post(_MINT, headers={"X-Hermes-Session-Token": _TOKEN})
     assert refused.status_code == 404

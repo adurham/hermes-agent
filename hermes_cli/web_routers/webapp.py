@@ -1,8 +1,7 @@
 """Webapp-only routes: the host terminal (loopback or authenticated binds), the
-one-use ticket each browser socket dial mints (``/api/webapp/gateway-ticket`` for
-``/api/ws`` on this same origin, ``/api/webapp/terminal-ticket`` for the host terminal,
-``/api/webapp/audio-ticket`` for each voice stream), and the one-use handoffs (child window,
-auto-opened launch tab) for the private, loopback Webapp session."""
+one-use ticket each browser socket dial mints (``/api/webapp/socket-ticket?socket=`` for
+``/api/ws`` on this same origin, the host terminal and each voice stream), and the one-use
+handoffs (child window, auto-opened launch tab) for the private, loopback Webapp session."""
 from __future__ import annotations
 
 import ipaddress
@@ -19,7 +18,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from hermes_cli.dashboard_auth.request_utils import _http_origin
 from hermes_cli.web_server_surface import policy, private_launch
-from hermes_cli.web_session_sockets import AUDIO_SOCKETS, GATEWAY_SOCKET, HOST_TERMINAL_SOCKET
+from hermes_cli.web_session_sockets import (
+    GATEWAY_SOCKET, HOST_TERMINAL_SOCKET, SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET)
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -209,47 +209,42 @@ def _socket_ticket_response(request: Request, identity: dict, socket: str, sessi
     return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers={"Cache-Control": "no-store"})
 
 
-@router.post("/api/webapp/gateway-ticket")
-async def issue_gateway_ticket(request: Request, profile: str | None = None):
-    """The browser's one-use ticket for its live socket: ``/api/ws`` on this same origin, offered
-    as the ``hermes-gateway-ticket.`` subprotocol and redeemed by the upgrade gate
-    (``web_server_chat._consume_ws_ticket``) as this caller's login. It opens no other socket.
-    Minted locally: the server that serves this page runs the socket's sessions. *profile* is
-    validated (400/404) so a stale tab learns its profile is gone here rather than from a socket
-    that keeps closing, and the ticket names it: the socket answers a request that names no profile
-    for the tab's profile, as a native ticket does, never for the gateway's launch profile."""
+#: Every socket a Webapp page dials with a one-use ticket from ``POST /api/webapp/socket-ticket``, by
+#: its ``web_session_sockets`` name: the ``web_server_surface.SurfacePolicy`` field that lets a surface
+#: mint it, and whether the mint checks the profile the page will dial (400/404), so a stale tab learns
+#: its profile is gone there rather than from a socket that keeps closing.
+SOCKET_TICKETS: dict[str, tuple[str, bool]] = {
+    GATEWAY_SOCKET: ("gateway_ticket", True),
+    HOST_TERMINAL_SOCKET: ("host_terminal", False),
+    SPEAK_STREAM_SOCKET: ("gateway_ticket", False),
+    TRANSCRIBE_STREAM_SOCKET: ("gateway_ticket", False),
+}
+
+
+@router.post("/api/webapp/socket-ticket")
+async def issue_socket_ticket(request: Request, socket: str = "", profile: str | None = None):
+    """The browser's one-use ticket for one dial of *socket* on this same origin: ``gateway`` for
+    ``/api/ws`` (also offered as the ``hermes-gateway-ticket.`` subprotocol), ``host-terminal`` for
+    ``/api/host-terminal``, ``speak-stream`` and ``transcribe-stream`` for ``/api/audio/<name>``. The
+    upgrade gate (``web_server_chat._consume_ws_ticket``) redeems it as this caller's login; it opens
+    that socket and nothing else, so the browser mints one per dial. Minted locally: the server that
+    serves this page runs the socket's sessions. A ``gateway`` ticket minted with *profile* names
+    it: that socket answers a request that names no profile for *profile*, as a native ticket does
+    (``chat_ws.gateway_ws``), never for the gateway's launch profile."""
     from hermes_cli.web_server_cron import _cron_profile_home
 
-    if not policy(request.app.state).gateway_ticket:
-        raise HTTPException(404, "Webapp gateway tickets are unavailable on this surface")
+    if socket not in SOCKET_TICKETS:
+        raise HTTPException(400, "Unknown socket")
+    surface, checks_profile = SOCKET_TICKETS[socket]
+    if not getattr(policy(request.app.state), surface):
+        raise HTTPException(404, f"Webapp {socket} tickets are unavailable on this surface")
     identity, session_token = _ticket_principal(request)
-    _name, home = _cron_profile_home(profile)
-    return _socket_ticket_response(request, identity, GATEWAY_SOCKET, session_token,
-                                   profile_home=str(home) if profile else None)
-
-
-@router.post("/api/webapp/terminal-ticket")
-async def issue_terminal_ticket(request: Request):
-    """The browser's one-use ticket for one host-terminal dial (``/api/host-terminal?ticket=``).
-    The host terminal opens with nothing else, and this ticket opens nothing else."""
-    if not policy(request.app.state).host_terminal:
-        raise HTTPException(404, "The host terminal is unavailable on this surface")
-    identity, session_token = _ticket_principal(request)
-    return _socket_ticket_response(request, identity, HOST_TERMINAL_SOCKET, session_token)
-
-
-@router.post("/api/webapp/audio-ticket")
-async def issue_audio_ticket(request: Request, socket: str = ""):
-    """The browser's one-use ticket for one voice stream dial, named by *socket*:
-    ``speak-stream`` for ``/api/audio/speak-stream``, ``transcribe-stream`` for
-    ``/api/audio/transcribe-stream``. It opens that stream and nothing else, and the gateway ticket
-    opens neither stream, so the browser mints one per dial beside the gateway's."""
-    if not policy(request.app.state).gateway_ticket:
-        raise HTTPException(404, "Webapp voice tickets are unavailable on this surface")
-    identity, session_token = _ticket_principal(request)
-    if socket not in AUDIO_SOCKETS:
-        raise HTTPException(400, "Unknown voice stream")
-    return _socket_ticket_response(request, identity, socket, session_token)
+    profile_home = None
+    if checks_profile:
+        _name, home = _cron_profile_home(profile)
+        if socket == GATEWAY_SOCKET and profile:
+            profile_home = str(home)
+    return _socket_ticket_response(request, identity, socket, session_token, profile_home=profile_home)
 
 
 @router.post("/webapp/window-session")

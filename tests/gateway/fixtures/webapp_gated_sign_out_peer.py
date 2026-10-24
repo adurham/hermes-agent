@@ -95,8 +95,8 @@ async def across_sign_out(runner, origin, ask):
                                        json={"provider": "basic", "username": USER, "password": PASSWORD})
         return signed_in.status_code
 
-    async def ticket(browser, kind):
-        minted = await browser.post(f"/api/webapp/{kind}-ticket", headers=page)
+    async def ticket(browser, socket):
+        minted = await browser.post(f"/api/webapp/socket-ticket?socket={socket}", headers=page)
         return minted.json()["ticket"] if minted.status_code == 200 else None
 
     authority = runner.session_authority
@@ -109,10 +109,10 @@ async def across_sign_out(runner, origin, ask):
         report["sessions_before"] = (await browser.get("/api/sessions")).status_code
         report["me_before"] = (await browser.get("/api/auth/me")).status_code
         stolen = dict(browser.cookies.items())
-        unused_terminal_ticket = await ticket(browser, "terminal")
+        unused_terminal_ticket = await ticket(browser, "host-terminal")
         async with connect(f"{sockets}/api/ws?native_dial=browser", origin=origin,
                            subprotocols=chat_protocols(await ticket(browser, "gateway"))) as chat, \
-                connect(f"{sockets}/api/host-terminal?ticket={await ticket(browser, 'terminal')}",
+                connect(f"{sockets}/api/host-terminal?ticket={await ticket(browser, 'host-terminal')}",
                         origin=origin) as terminal, \
                 connect(f"{sockets}/api/ws", subprotocols=chat_protocols(native_ticket)) as native:
             report["terminal_open"] = (await terminal.recv()).startswith(web_host_terminal.META_PREFIX)
@@ -126,7 +126,8 @@ async def across_sign_out(runner, origin, ask):
         report["sessions_after"] = _refusal(await browser.get("/api/sessions"))
         report["me_after"] = _refusal(await browser.get("/api/auth/me"))
         report["page_after"] = _refusal(await browser.get("/", follow_redirects=False))
-        report["terminal_ticket_after"] = _refusal(await browser.post("/api/webapp/terminal-ticket", headers=page))
+        report["terminal_ticket_after"] = _refusal(
+            await browser.post("/api/webapp/socket-ticket?socket=host-terminal", headers=page))
         report["old_terminal_ticket_after"] = await _upgrade(
             f"{sockets}/api/host-terminal?ticket={unused_terminal_ticket}", origin=origin)
         async with httpx.AsyncClient(base_url=origin, timeout=20, cookies=stolen) as replay:

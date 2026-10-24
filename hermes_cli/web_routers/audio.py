@@ -526,7 +526,7 @@ async def transcribe_stream_ws(ws: WebSocket) -> None:
                ``{"type": "error", "message": ...}`` — also when no live STT is available, so the
                client falls back to ``POST /api/audio/transcribe`` with its recorded blob.
     """
-    # A socket ticket opens this stream only when minted for it (``/api/webapp/audio-ticket``).
+    # A socket ticket opens this stream only when minted for it (``/api/webapp/socket-ticket``).
     if not _ws_auth_ok(ws, socket=TRANSCRIBE_STREAM_SOCKET):
         await ws.close(code=4401)
         return
@@ -613,7 +613,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
                still speak per sentence via ``text_to_speech_tool`` and stream
                that PCM — the client POST is the last resort, not the Edge path.
     """
-    # A socket ticket opens this stream only when minted for it (``/api/webapp/audio-ticket``).
+    # A socket ticket opens this stream only when minted for it (``/api/webapp/socket-ticket``).
     if not _ws_auth_ok(ws, socket=SPEAK_STREAM_SOCKET):
         await ws.close(code=4401)
         return

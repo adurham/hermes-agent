@@ -43,10 +43,10 @@ it('uses one private session for REST, RPC and terminal across reload without lo
 
   vi.stubGlobal('WebSocket', Socket)
 
-  const minted: Record<string, string> = { 'gateway-ticket': 'rpc-ticket', 'terminal-ticket': 'shell-ticket' }
+  const minted: Record<string, string> = { gateway: 'rpc-ticket', 'host-terminal': 'shell-ticket' }
 
   const fetchMock = vi.fn().mockImplementation(async (url: URL) => {
-    const ticket = minted[url.pathname.split('/api/webapp/')[1] ?? '']
+    const ticket = url.pathname.endsWith('/api/webapp/socket-ticket') ? minted[url.searchParams.get('socket') ?? ''] : ''
 
     return new Response(ticket ? JSON.stringify({ ticket }) : '{"ok":true}', { status: 200 })
   })
@@ -67,13 +67,19 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   const rpcUrl = new URL(typeof rpc === 'string' ? rpc : rpc.ok ? rpc.wsUrl : '')
   expect(rpcUrl.searchParams.get('ticket')).toBe('rpc-ticket')
   expect(rpcUrl.searchParams.get('profile')).toBe('coder')
-  const mint = fetchMock.mock.calls.find(([url]) => (url as URL).pathname === '/one/api/webapp/gateway-ticket')!
+
+  const mintFor = (socket: string) =>
+    fetchMock.mock.calls.find(
+      ([url]) => (url as URL).pathname === '/one/api/webapp/socket-ticket' && (url as URL).searchParams.get('socket') === socket
+    )!
+
+  const mint = mintFor('gateway')
   expect(new Headers(mint[1].headers).get('X-Hermes-Session-Token')).toBe(token)
   // Terminal: each dial mints its own one-use ticket the same way.
   await desktop.terminal.start({ cwd: '/work' })
   expect(urls[0].pathname).toBe('/one/api/host-terminal')
   expect(urls[0].searchParams.get('ticket')).toBe('shell-ticket')
-  const shellMint = fetchMock.mock.calls.find(([url]) => (url as URL).pathname === '/one/api/webapp/terminal-ticket')!
+  const shellMint = mintFor('host-terminal')
   expect(shellMint[1].method).toBe('POST')
   expect(new Headers(shellMint[1].headers).get('X-Hermes-Session-Token')).toBe(token)
   // A plugin's live socket cannot carry a ticket here; it stays on its polling fallback.

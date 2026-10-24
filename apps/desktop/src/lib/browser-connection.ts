@@ -4,13 +4,12 @@ import type { HermesApiRequest, HermesConnection } from '@/global'
 import { webappSignInRequired } from '@/lib/browser-launch-session'
 import {
   type AudioSocketPath,
-  audioWebsocketUrl,
   type BrowserBootstrap,
   BrowserReauthRequiredError,
   endpointUrl,
   gatewaySocketUrl,
-  gatewayWebsocketUrl,
-  navigateToBrowserLogin
+  navigateToBrowserLogin,
+  ticketedWebsocketUrl
 } from '@/lib/browser-transport'
 import { windowProfileOverride } from '@/store/windows'
 
@@ -99,7 +98,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     try {
       return {
         ok: true as const,
-        wsUrl: await gatewayWebsocketUrl(bootstrap, profile)
+        wsUrl: await ticketedWebsocketUrl(bootstrap, '/api/ws', profile)
       }
     } catch (error) {
       if (error instanceof BrowserReauthRequiredError) {
@@ -151,7 +150,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     }) => {
       requireBrowserConnection(payload.connectionId)
 
-      return audioWebsocketUrl(bootstrap, payload.path, payload.profile)
+      return ticketedWebsocketUrl(bootstrap, payload.path, payload.profile)
     },
     // Reconnect belongs to the window, not whichever secondary profile is active.
     // Explicit null still selects the default backend.

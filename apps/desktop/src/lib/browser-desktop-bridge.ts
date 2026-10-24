@@ -9,7 +9,7 @@ import { watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-lau
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
-import { authenticatedWebsocketUrl, browserApi, browserBootstrap } from '@/lib/browser-transport'
+import { browserApi, browserBootstrap, ticketedWebsocketUrl } from '@/lib/browser-transport'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
@@ -130,7 +130,7 @@ export function installBrowserDesktopBridge(): boolean {
     terminal: createBrowserTerminal({
       basePath: bootstrap.basePath,
       currentProfile,
-      websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
+      websocketUrl: profile => ticketedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
       defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || '',
       // The chat's sign-in view for a launch-link tab. Behind the sign-in gate the next ticket
       // request already takes the tab to the login page.

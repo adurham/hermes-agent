@@ -66,8 +66,8 @@ async def sockets_across_sign_out(runner, client, origin, ask):
     sockets = origin.replace("http:", "ws:")
     session = {"X-Hermes-Session-Token": web_server._SESSION_TOKEN}
 
-    async def ticket(kind):
-        return (await client.post(f"/api/webapp/{kind}-ticket", headers=session)).json()["ticket"]
+    async def ticket(socket):
+        return (await client.post(f"/api/webapp/socket-ticket?socket={socket}", headers=session)).json()["ticket"]
 
     def chat_protocols(value):
         return ["hermes-gateway-v1", f"hermes-gateway-ticket.{value}"]
@@ -79,7 +79,7 @@ async def sockets_across_sign_out(runner, client, origin, ask):
             f"{sockets}/api/host-terminal?ticket={await ticket('gateway')}", origin=origin),
         "chat_refuses_terminal_ticket": await _upgrade_refusal(
             f"{sockets}/api/ws?native_dial=browser", origin=origin,
-            subprotocols=chat_protocols(await ticket("terminal"))),
+            subprotocols=chat_protocols(await ticket("host-terminal"))),
     }
     authority = runner.session_authority
     runner.session_ticket_store = TicketStore("webapp-listener", frozenset({authority.profile_id}))
@@ -87,7 +87,7 @@ async def sockets_across_sign_out(runner, client, origin, ask):
         profile_id=authority.profile_id, subject="fixture-same-user", purpose="interactive")
     async with connect(f"{sockets}/api/ws?native_dial=browser", origin=origin,
                        subprotocols=chat_protocols(await ticket("gateway"))) as chat, \
-            connect(f"{sockets}/api/host-terminal?ticket={await ticket('terminal')}", origin=origin) as terminal, \
+            connect(f"{sockets}/api/host-terminal?ticket={await ticket('host-terminal')}", origin=origin) as terminal, \
             connect(f"{sockets}/api/ws", subprotocols=chat_protocols(native_ticket)) as native:
         report["terminal_opens_with_its_ticket"] = (await terminal.recv()).startswith(web_host_terminal.META_PREFIX)
         report["chat_opens_before_sign_out"] = "result" in await rpc(chat, "session.list")
@@ -150,7 +150,7 @@ async def probe(mode, port, dist, platform):
             report["host_terminals"] = hasattr(web_server.app.state, "host_terminals")
             report["session_token_is_seeded"] = web_server._SESSION_TOKEN == SEEDED_TOKEN
             report["token_file"] = (home / TOKEN_PATH).exists()
-            minted = await client.post("/api/webapp/gateway-ticket",
+            minted = await client.post("/api/webapp/socket-ticket?socket=gateway",
                                        headers={"X-Hermes-Session-Token": web_server._SESSION_TOKEN})
             report["ticket_status"] = minted.status_code
             if minted.status_code == 200:
@@ -177,7 +177,7 @@ async def probe(mode, port, dist, platform):
                 report["handoff_reuse_status"] = (
                     await client.post("/webapp/window-session", headers=handoff)).status_code
                 report.update(await sockets_across_sign_out(runner, client, origin, ask))
-                stale = await client.post("/api/webapp/gateway-ticket",
+                stale = await client.post("/api/webapp/socket-ticket?socket=gateway",
                                           headers={"X-Hermes-Session-Token": SEEDED_TOKEN})
                 report["old_credential_status"] = stale.status_code
                 report["token_file_rotated"] = (home / TOKEN_PATH).read_text().strip() not in {"", SEEDED_TOKEN}

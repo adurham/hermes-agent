@@ -68,7 +68,7 @@ def test_signing_out_closes_the_terminal_and_streams_the_session_token_opened(we
     client, host = webapp.client, webapp.host
     other = mint_ticket(user_id="someone-else", provider="stub")
     with TestClient(host) as shells, \
-            shells.websocket_connect(f"ws://localhost/api/host-terminal?ticket={_mint(client, 'terminal')}") as shell, \
+            shells.websocket_connect(f"ws://localhost/api/host-terminal?ticket={_mint(client, 'host-terminal')}") as shell, \
             client.websocket_connect(f"ws://localhost/api/events?channel=tab-1&token={_TOKEN}") as events, \
             client.websocket_connect(f"ws://localhost/api/events?channel=kept&ticket={other}") as kept:
         metadata(shell)
@@ -84,7 +84,7 @@ def test_signing_out_closes_the_terminal_and_streams_the_session_token_opened(we
 def test_signing_out_with_no_open_tabs_still_replaces_the_credential(webapp, sign_out):
     client = webapp.client
     assert sign_out() == {"signed_out": True, "serving": True, "sign_in_gate": False, "connections_closed": 0}
-    assert client.post("/api/webapp/gateway-ticket", headers={"X-Hermes-Session-Token": _TOKEN}).status_code == 401
+    assert client.post("/api/webapp/socket-ticket?socket=gateway", headers={"X-Hermes-Session-Token": _TOKEN}).status_code == 401
 
 
 def test_signing_out_ends_the_media_links_the_session_token_minted(webapp, sign_out, tmp_path, monkeypatch):
