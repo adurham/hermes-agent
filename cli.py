@@ -873,19 +873,19 @@ _RST = "\033[0m"
 def _load_stream_pad() -> str:
     """Left-margin indent for streamed response/reasoning box text.
 
-    User-configurable via ``display.response_indent_width`` (default 4,
-    the pre-July-2026 upstream default). Set to 0 to restore the
-    flush-left rendering upstream switched to in July 2026 specifically
-    for clean mouse-copy/paste (every selected line otherwise carries
-    this many leading spaces). ``/copy`` writes the ORIGINAL message
-    text via the native clipboard regardless of this setting, so it
-    remains the clean-copy path no matter which value is configured
-    here — this indent is purely cosmetic on-screen framing.
+    User-configurable via ``display.response_indent_width`` (default 0,
+    the flush-left rendering upstream switched to in July 2026
+    specifically for clean mouse-copy/paste — every selected line would
+    otherwise carry this many leading spaces). The fork follows upstream
+    again as of 2026-10-24; set the key above 0 to bring the indented
+    framing back. ``/copy`` writes the ORIGINAL message text via the
+    native clipboard regardless of this setting, so it remains the
+    clean-copy path no matter which value is configured here.
     """
     try:
-        n = int(CLI_CONFIG["display"].get("response_indent_width", 4))
+        n = int(CLI_CONFIG["display"].get("response_indent_width", 0))
     except Exception:
-        n = 4
+        n = 0
     return " " * max(0, n)
 
 

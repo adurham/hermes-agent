@@ -1,14 +1,13 @@
 """Streamed response indent is configurable via ``display.response_indent_width``.
 
-Upstream default was a 4-space ``_STREAM_PAD`` indent. July 2026 changed
-the default to 0 (flush-left) because every mouse-copied line carried
-leading whitespace, breaking paste. This fork restores 4 as the default
-(2026-08-10, explicit user preference for a visually framed response box)
-while keeping the setting configurable — ``/copy`` remains the clean-copy
-path regardless of the on-screen indent, since it writes the original
-message text via the native clipboard rather than scraping the rendered
-box. Setting ``display.response_indent_width: 0`` restores the July 2026
-flush-left behavior for anyone who wants clean mouse-copy over framing.
+Upstream default was a 4-space ``_STREAM_PAD`` indent. July 2026 changed the
+default to 0 (flush-left) because every mouse-copied line carried leading
+whitespace, breaking paste. This fork tracked 4 from 2026-08-10 (a visually
+framed response box) and returned to upstream's flush-left default on
+2026-10-24 so the transcript matches stock Hermes. The setting stays
+configurable — ``/copy`` remains the clean-copy path regardless of the
+on-screen indent, since it writes the original message text via the native
+clipboard rather than scraping the rendered box.
 """
 import os
 import re
@@ -40,11 +39,12 @@ def cli_stub(monkeypatch):
     return cli, emitted
 
 
-def test_stream_pad_default_is_four_spaces():
-    """Fork default restores the pre-July-2026 4-space indent."""
+def test_stream_pad_default_is_flush_left(monkeypatch):
+    """Unset config == upstream's post-July-2026 flush-left rendering."""
     import cli as climod
 
-    assert climod._STREAM_PAD == "    "
+    monkeypatch.delitem(climod.CLI_CONFIG["display"], "response_indent_width", raising=False)
+    assert climod._load_stream_pad() == ""
 
 
 def test_load_stream_pad_honors_config_override(monkeypatch):
@@ -62,15 +62,35 @@ def test_load_stream_pad_honors_config_override(monkeypatch):
 
 
 def test_load_stream_pad_falls_back_on_bad_config(monkeypatch):
-    """A non-numeric/garbage config value falls back to the 4-space default
+    """A non-numeric/garbage config value falls back to the flush-left default
     rather than raising and taking down CLI startup."""
     import cli as climod
 
     monkeypatch.setitem(climod.CLI_CONFIG["display"], "response_indent_width", "nonsense")
-    assert climod._load_stream_pad() == "    "
+    assert climod._load_stream_pad() == ""
 
 
-def test_streamed_content_lines_carry_the_configured_indent(cli_stub):
+def test_streamed_content_lines_are_flush_left_by_default(cli_stub, monkeypatch):
+    import cli as climod
+
+    monkeypatch.setattr(climod, "_STREAM_PAD", "")
+    cli, emitted = cli_stub
+    cli._stream_delta("First streamed line of text.\nSecond streamed line.\n")
+    cli._flush_stream()
+    content = [
+        _strip_ansi(e)
+        for e in emitted
+        if "streamed line" in _strip_ansi(e)
+    ]
+    assert content, "no content lines captured"
+    for line in content:
+        assert not line.startswith(" "), f"unexpected indent prefix: {line!r}"
+
+
+def test_streamed_content_lines_carry_the_configured_indent(cli_stub, monkeypatch):
+    import cli as climod
+
+    monkeypatch.setattr(climod, "_STREAM_PAD", "    ")
     cli, emitted = cli_stub
     cli._stream_delta("First streamed line of text.\nSecond streamed line.\n")
     cli._flush_stream()
@@ -84,9 +104,12 @@ def test_streamed_content_lines_carry_the_configured_indent(cli_stub):
         assert line.startswith("    "), f"expected 4-space indent prefix: {line!r}"
 
 
-def test_intentional_markdown_indentation_is_preserved_after_pad(cli_stub):
+def test_intentional_markdown_indentation_is_preserved_after_pad(cli_stub, monkeypatch):
     """Markdown-structural indentation (nested list items) must still be
     visible AFTER the configured pad prefix, not collapsed into it."""
+    import cli as climod
+
+    monkeypatch.setattr(climod, "_STREAM_PAD", "    ")
     cli, emitted = cli_stub
     cli._stream_delta("- item\n  - nested item\n")
     cli._flush_stream()

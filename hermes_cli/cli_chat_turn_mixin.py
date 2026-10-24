@@ -726,8 +726,8 @@ class CLIChatTurnMixin:
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
                 if modern:
-                    from hermes_cli.cli_modern_layout import closing_separator
-                    _cprint(closing_separator(True))
+                    from hermes_cli.cli_modern_layout import answer_closing_separator
+                    _cprint(answer_closing_separator())
                 else:
                     _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")
             elif already_streamed:
@@ -737,11 +737,11 @@ class CLIChatTurnMixin:
                 if _post_stream_text.strip():
                     _cprint(_post_stream_text)
             elif modern:
-                from hermes_cli.cli_modern_layout import answer_label, closing_separator
+                from hermes_cli.cli_modern_layout import answer_closing_separator, answer_label
                 _cprint(answer_label())
                 ChatConsole().print(_render_final_assistant_content(response, mode=self.final_response_markdown),
                                     style=_resp_text, soft_wrap=True)  # terminal wraps; resize re-flows
-                _cprint(closing_separator(True))
+                _cprint(answer_closing_separator())
             else:
                 ChatConsole().print(Panel(
                     _render_final_assistant_content(response, mode=self.final_response_markdown),

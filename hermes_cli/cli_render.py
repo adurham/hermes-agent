@@ -478,9 +478,10 @@ def _terminal_width_for_streaming() -> int:
     """Display cells available inside the streamed response box.
 
     FORK: the streaming path prefixes every line with ``_STREAM_PAD`` (configurable via
-    ``display.response_indent_width``, default 4) and hard-wraps at this budget so the box
-    gets a matching RIGHT margin, so ``_STREAM_PAD`` is subtracted on BOTH sides (upstream,
-    running flush-left, only subtracts it once). Also the realigner's horizontal-table budget.
+    ``display.response_indent_width``, default 0 = flush-left) and hard-wraps at this budget so
+    the box gets a matching RIGHT margin, so ``_STREAM_PAD`` is subtracted on BOTH sides
+    (upstream, running flush-left, only subtracts it once). Also the realigner's
+    horizontal-table budget.
     """
     from cli import _STREAM_PAD, _terminal_columns
     return max(20, _terminal_columns() - (2 * len(_STREAM_PAD)) - 2)
