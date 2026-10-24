@@ -1062,6 +1062,20 @@ def workspace_unavailable_result(policy) -> dict:
                          "workspace_unavailable", False)
 
 
+def refused_turn_result(policy, exc) -> dict | None:
+    """A failed, never-run turn for an owner refusal at scope entry that an unchanged resend repeats
+    (gone working folder, changed launch key); None for any other refusal."""
+    if exc.reason == 'workspace_unavailable':
+        return workspace_unavailable_result(policy)
+    if exc.reason != 'launch_credentials_unavailable':
+        return None
+    from agent.turn_failure_copy import launch_credentials_copy, stamp_failure
+    text = launch_credentials_copy(exc)
+    return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                          "failed": True, "completed": False, "error": text},
+                         "launch_credentials_unavailable", False)
+
+
 @contextmanager
 def policy_scope(policy, *, authority=None):
     if policy is None:
