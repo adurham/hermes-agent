@@ -200,6 +200,51 @@ causes:
 Also in that pass: the platform plugins' `docs_url` re-pointed at the fork (the only files kept from
 `scripts/sync-fork-branding.py`) and the generated gateway-command parity doc regenerated.
 
+**Fable review — dispositions (2026-10-24).** The reviewer's ranked concerns, each answered with a probe
+rather than an opinion:
+
+1. **Version skew between the merged CLI and the running gateway — CONFIRMED, operational.** The live install
+   (`~/.hermes/hermes-agent`) is still at `2b8681d718` (the pre-sync tip) and a gateway is running from it
+   (pid recorded in `~/.hermes/gateway.pid`). The merged CLI is a gateway *client* and a worker now sends the
+   new `api.calls` verb; a new client against an old gateway gets a refused receipt, which the worker store
+   latches — the same hang shape as defect 1, in production. **Move the tree and restart the gateway in one
+   step, and don't run the merged CLI against the old gateway in between.** Nothing was restarted here.
+2. **State rollback — the code tag does not protect the data.** The range adds one config migration
+   (50 → 51, dropping `cron.bot_chat_delivery_timeout_seconds`) and `hermes_state_schema.py` gains open-time
+   FTS realign / `message_uid` backfill handling (old layouts are recognised, not rewritten blindly).
+   Back up `~/.hermes/state.db` and `config.yaml` before the first run of the merged code.
+3. **"Silent-loss checks" needed an artifact — produced.** Every auto-merged file carrying fork-added lines
+   was checked line-by-line against the merged tree: 964 files, 0 unexplained losses; the only 7
+   `FILE-GONE` cases are the platform adapters that moved into `plugins/platforms/*`, and their fork lines
+   are present in the plugin copies (spot-checked per platform, including the strong-ref task sets and the
+   read-receipt bookkeeping).
+4. **The "passes in isolation" bucket was wrong and is corrected here.** Those tests fail on the workstation
+   under direct pytest as well as under the runner — they are Linux-only and merge-caused, not load
+   artifacts. Still open (11): `test_autostash_cleanup` (7, git subprocess timeouts on Linux),
+   `test_mcp_serve_error_logging` (2), `test_browser_real_profile::test_relaunch_path_does_snapshot`,
+   `test_plugin_command_choice::test_a_local_viewer_answers_the_choice_while_its_slash_exec_waits`. Each
+   passes on the pristine tag under the same runner.
+5. **`mcp__` in production code — probed, no hidden filter.** All non-test hits are comments, the wire-name
+   helper (`mcp_prefixed_tool_name`), prefix-stripping for display/BM25, and a provider-name-length note;
+   nothing filters registry names by the prefix, so bare-named MCP tools are not invisible to any runtime
+   path.
+6. **Closed-set message fields — swept, not spot-fixed.** A mechanical pass over the fork's persistence path
+   found exactly one key outside `_MESSAGE_FIELDS` (`anthropic_content_blocks`), now admitted; every other
+   key the fork writes is inside the set.
+7. **Managed workers no longer heartbeat or drain steers.** Deliberate and recorded: a worker cannot open
+   state.db, its liveness is the owner's `worker_executions` row, and mid-run steers reach it through the
+   owner. Steering a worker directly is therefore not a supported path — treat that as a behaviour change.
+8. **Parked cron deliveries are silent.** `bot_chat_legacy.defer` parks a delivery for a later tick but
+   raises no owner-facing notice; a permanently unreachable gateway now means cron output stops arriving
+   without an alert. Worth a notice in a follow-up.
+9. **The regenerated prompt snapshot was diffed before commit:** the only changes are the fork's docs URL,
+   the fork's prompt lines (skill_pitfalls guidance, load-hermes-agent-first) and the fork's tool schemas;
+   the stale `tool_search` bridge fixtures were removed because the fork's gated `auto` no longer renders
+   them.
+10. **Lower-order checks:** the fork's pyproject pins survive (mcp 2.3.0, httpx2 2.12.0, pydantic-settings,
+    pytest-randomly/cov/coverage); a scan for other mixin-shadowing duplicates in `cli.py` finds none left;
+    the TTY hint and the glyph rules were exercised on darwin, and the Linux-only remainder is itemized in 4.
+
 **Behaviour the owner should know about** (adopted from upstream, each reversible at the named site):
 cron bot-chat delivery parks instead of falling back to the local `hermes chat` CLI; `/stop <id>` still
 targets only local delegations (a gateway-hosted delegation needs a gateway route); `/toolsets` no longer
