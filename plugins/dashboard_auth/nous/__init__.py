@@ -6,12 +6,15 @@ when a client_id (``dashboard.oauth.client_id`` / ``HERMES_DASHBOARD_OAUTH_CLIEN
 Portal JWKS with ``aud`` = bare client_id. Portal issues a 24h *rotating* refresh token with
 reuse detection: the middleware MUST persist ``Session.refresh_token`` back to the cookie on
 every refresh or the next refresh replays a rotated token and revokes the whole session.
+
+While the gateway serves the Webapp, its sign-in uses the client Web Access registered for the
+Webapp instead of the configured one (:func:`use_listener_client`).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
 from plugins.dashboard_auth._shared import (
@@ -37,6 +40,11 @@ _SCOPE = "agent_dashboard:access"  # contract C3
 _EXPECTED_CONTRACT_VERSION = 1  # contract C11
 
 LAST_SKIP_REASON: str = ""  # cleared on every register() so restarts don't leak stale reasons
+# Whether plugin discovery has run register() in this process, i.e. the plugin is enabled here.
+_DISCOVERED = False
+# (client_id, portal_url) the listener this process serves signs in with instead of the configured
+# client, or None: see use_listener_client.
+_LISTENER_CLIENT: Optional[tuple[str, str]] = None
 
 
 class NousDashboardAuthProvider(JwtOAuthProvider):
@@ -131,6 +139,10 @@ def _load_config_oauth_section() -> dict:
 def _settings() -> dict:
     """Resolve NousDashboardAuthProvider kwargs; the skip reason names BOTH configuration surfaces."""
     section = _load_config_oauth_section()
+    if _LISTENER_CLIENT is not None:  # a plugin reload while the listener uses its own client keeps it
+        client_id, portal_url = _LISTENER_CLIENT
+        return {"client_id": client_id, "portal_url": portal_url,
+                "token_leeway": parse_leeway(section.get("token_leeway"))}
     client_id = resolve_env_or_cfg("HERMES_DASHBOARD_OAUTH_CLIENT_ID", section.get("client_id", ""))
     portal_url = resolve_env_or_cfg("HERMES_DASHBOARD_PORTAL_URL", section.get("portal_url", "")) or _DEFAULT_PORTAL_URL
     if not client_id:
@@ -154,10 +166,37 @@ def _settings() -> dict:
 
 def register(ctx) -> None:
     """Register ``NousDashboardAuthProvider`` when a client_id is configured."""
-    global LAST_SKIP_REASON
+    global LAST_SKIP_REASON, _DISCOVERED
+    _DISCOVERED = True
     LAST_SKIP_REASON = ""
     kwargs, LAST_SKIP_REASON = register_provider(ctx, logger, _TAG, NousDashboardAuthProvider, _settings)
     if kwargs is not None:
         logger.info(
             "dashboard-auth-nous: registered provider (client_id=%s, portal=%s, token_leeway=%ss)",
             kwargs["client_id"], kwargs["portal_url"], kwargs["token_leeway"])
+
+
+def use_listener_client(client_id: str, portal_url: str) -> Optional[Callable[[], None]]:
+    """Sign in with the Portal client *client_id* on *portal_url* instead of the configured one until
+    the returned undo runs, which puts the configured provider (or none) back. The gateway does this
+    while it serves the Webapp with the client Web Access registered for it, so the dashboard's
+    ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` keeps the redirect URI its own sign-in needs. None, changing
+    nothing, where the plugin is not enabled (discovery never ran :func:`register`)."""
+    from hermes_cli.dashboard_auth.registry import (
+        register_global_provider, restore_registration, snapshot_registration)
+
+    global _LISTENER_CLIENT
+    if not _DISCOVERED:
+        return None
+    previous = snapshot_registration(NousDashboardAuthProvider.name)
+    leeway = parse_leeway(_load_config_oauth_section().get("token_leeway"))
+    provider = NousDashboardAuthProvider(client_id=client_id, portal_url=portal_url, token_leeway=leeway)
+    _LISTENER_CLIENT = (client_id, portal_url)
+    register_global_provider(provider)
+
+    def undo() -> None:
+        global _LISTENER_CLIENT
+        _LISTENER_CLIENT = None
+        restore_registration(NousDashboardAuthProvider.name, provider, previous)
+
+    return undo

@@ -196,6 +196,19 @@ def listener_plan(home) -> tuple[str, int, WebappMount | None, str | None]:
     return (*settings.bind, mount, None)
 
 
+def use_own_sign_in(webapp: WebappMount):
+    """Sign the Webapp's browsers in to Nous with the Portal client Web Access registered for it
+    (``hermes_cli.webapp_access.sign_in_client``), never the dashboard's
+    ``HERMES_DASHBOARD_OAUTH_CLIENT_ID``, until the returned undo runs. None, changing nothing, when
+    Web Access registered no client of its own (Nous sign-in set up by hand keeps the configured
+    client) or the Nous sign-in plugin is not enabled."""
+    from hermes_cli.webapp_access import sign_in_client
+    from plugins.dashboard_auth import nous
+
+    client = sign_in_client(webapp.home)
+    return None if client is None else nous.use_listener_client(*client)
+
+
 def browser_session_token(home, *, rotate: bool = False) -> str:
     """The dashboard session token a Webapp browser holds, kept user-only in *home*.
 

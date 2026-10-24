@@ -128,10 +128,12 @@ turns the Webapp off the same way. A Webapp you turned on for this computer only
 
 Web Access changes only the `webapp:` settings and keeps your `webapp.port`. It leaves
 `dashboard.public_url` alone, so a standalone dashboard you publish separately keeps its own address.
-When it registers a sign-in address, it saves your Nous sign-in client's id as
-`HERMES_DASHBOARD_OAUTH_CLIENT_ID` in `.env`; the standalone dashboard's Nous sign-in uses the same
-client. A standalone profile with its own gateway needs its own `webapp.port` to serve a Webapp
-beside the default gateway's. `hermes update` rebuilds the Webapp whenever a profile has it turned on.
+Its Nous sign-in uses a sign-in client of its own, which the first Start registers with your Nous
+account and keeps in the gateway's home (`webapp/sign-in-registration.json`). Start never reads or
+writes `HERMES_DASHBOARD_OAUTH_CLIENT_ID` in `.env`, so turning Web Access on never changes the
+standalone dashboard's Nous sign-in. A standalone profile with its own gateway needs its own
+`webapp.port` to serve a Webapp beside the default gateway's. `hermes update` rebuilds the Webapp
+whenever a profile has it turned on.
 If that build fails, the gateway reports the Webapp unavailable, and the page says so, until
 `hermes webapp` rebuilds it.
 
