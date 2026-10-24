@@ -18,6 +18,12 @@ from agent.repetition_guard import STOP_PATH_MIN_CHARS, is_runaway_repetition
 from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
+from agent.promise_gate import (
+    MAX_PROMISE_GATE_RETRIES,
+    PROMISE_GATE_NUDGE,
+    promise_excerpt,
+    should_gate,
+)
 from agent.turn_truncation import partial_result, repetition_copy
 
 _REPETITION_STOPPED = repetition_copy(
@@ -30,7 +36,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_promise_gate_nudge",
 )
 
 
@@ -322,6 +328,44 @@ def finish_text_response(
 
     # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
     agent._dropped_toolcall_retries = 0
+
+    # Promise-without-action gate. deepseek-v4.1-flash on ollama-cloud routinely ends a
+    # no-action turn by announcing the work instead of doing it ("I'll build X now",
+    # "building the page next"), which reads to the operator as a commitment with nothing
+    # behind it. Gate it the same way as a dropped tool call: one ephemeral re-prompt per
+    # turn, and only when the whole turn made zero tool calls, so genuine work summaries
+    # and "next step" notes on a turn that did act are untouched.
+    _turn_tool_calls = sum(
+        1 for _m in messages
+        if isinstance(_m, dict) and _m.get("role") == "assistant" and _m.get("tool_calls")
+    )
+    if should_gate(
+        final_text=final_response,
+        turn_tool_call_count=_turn_tool_calls,
+        retries=getattr(agent, "_promise_gate_retries", 0),
+        finish_reason=finish_reason,
+    ):
+        agent._promise_gate_retries = getattr(agent, "_promise_gate_retries", 0) + 1
+        logger.warning(
+            "Promise-without-action (%r) with zero tool calls this turn — re-prompting "
+            "(retry %d/%d, model=%s provider=%s)",
+            promise_excerpt(final_response), agent._promise_gate_retries,
+            MAX_PROMISE_GATE_RETRIES, agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status(
+            "↻ Reply announced work without doing it — re-prompting"
+        )
+        final_msg["_promise_gate_nudge"] = True
+        append_message(messages, final_msg)
+        append_message(messages, {
+            "role": "user",
+            "content": PROMISE_GATE_NUDGE.format(excerpt=promise_excerpt(final_response)),
+            "_promise_gate_nudge": True,
+        })
+        agent._session_messages = messages
+        final_response = None
+        return _verdict("continue")
+    agent._promise_gate_retries = 0
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.
