@@ -182,6 +182,23 @@ def test_status_of_a_gateway_still_starting_the_webapp_says_so(world, capsys):
     assert "still starting" in out and "Unavailable" not in out and launcher.RESTART_COMMAND not in out
 
 
+OLDER = {"webapp-status": {"ok": False, "error": "unknown verb: 'webapp-status'", "supported_verbs": ["identify"]},
+         "webapp-launch": {"ok": False, "error": "unknown verb: 'webapp-launch'", "supported_verbs": ["identify"]},
+         "webapp-sign-out": {"ok": False, "error": "unknown verb: 'webapp-sign-out'", "supported_verbs": ["identify"]}}
+
+
+@pytest.mark.parametrize("action", [{"status": True}, {}, {"sign_out": True}])
+def test_a_gateway_older_than_the_webapp_is_named_with_the_restart_that_updates_it(world, capsys, action):
+    """A gateway started before an upgrade (a git pull, a service manager that kept the old process)
+    does not know the Webapp's commands and answers "unknown verb". The command says the running
+    gateway is older and names the restart that loads this version, not the raw protocol error."""
+    world["answers"].update(OLDER)
+    world["states"][:] = ["ready"]
+    assert launcher.cmd_webapp(_args(**action)) == 1
+    out = capsys.readouterr().out
+    assert "unknown verb" not in out and "older" in out and launcher.RESTART_COMMAND in out
+
+
 def test_status_with_no_gateway_running_says_so(world, capsys):
     world["answers"]["webapp-status"] = launcher.GatewayUnreachable("no gateway")
     assert launcher.cmd_webapp(_args(status=True)) == 1

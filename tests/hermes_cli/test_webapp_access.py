@@ -801,3 +801,19 @@ def test_web_access_changes_run_one_at_a_time(client, restarts, nous, monkeypatc
     else:
         assert nous == ["http://192.168.1.50:9120/auth/callback", f"{public_url}/auth/callback"]
         assert (block["enabled"], block.get("public_url")) == (True, public_url)
+
+
+def test_a_gateway_older_than_the_webapp_reads_as_serving_none_until_it_restarts(monkeypatch, tmp_path):
+    """A gateway that predates the Webapp answers its status with "unknown verb". It serves no Webapp,
+    so Web Access reports it ``off`` with a reason that names the restart (the pane then offers
+    Restart gateway), never ``unavailable``, which the pane's restart wait takes as the final answer."""
+    from pathlib import Path
+
+    from hermes_cli import webapp_access, webapp_launcher
+
+    answer = {"ok": False, "error": "unknown verb: 'webapp-status'", "protocol": 1,
+              "supported_verbs": ["identify", "session-ticket", "status"]}
+    monkeypatch.setattr(webapp_launcher, "_control", lambda _home, _verb, params=None: answer)
+    state = webapp_access._gateway_state(Path(tmp_path))
+    assert state["state"] == "off", state
+    assert webapp_launcher.RESTART_COMMAND in state["reason"]

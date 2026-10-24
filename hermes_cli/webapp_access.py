@@ -222,14 +222,17 @@ def _write_config(*, enabled: bool, host: str = "", public_url: str = "") -> Non
 
 
 def _gateway_state(home: Path) -> dict:
-    """What *home*'s gateway serves now (``serving``, ``off``, ``unavailable`` with a ``reason``, or
-    ``stopped`` when none answers). It reads the config at start, so it can lag until a restart."""
-    from hermes_cli.webapp_launcher import GatewayUnreachable, _control
+    """What *home*'s gateway serves now (``serving``, ``starting``, ``off``, ``unavailable`` with a
+    ``reason``, or ``stopped`` when none answers). It reads the config at start, so it can lag until a
+    restart; a gateway older than the Webapp serves none (``off``, with the restart as the reason)."""
+    from hermes_cli.webapp_launcher import OLDER_GATEWAY, GatewayUnreachable, _control, older_gateway
 
     try:
         response = _control(home, "webapp-status")
     except GatewayUnreachable:
         return {"state": "stopped", "url": None, "reason": None}
+    if older_gateway(response):
+        return {"state": "off", "url": None, "reason": OLDER_GATEWAY}
     if not response.get("ok"):
         return {"state": "unavailable", "url": None, "reason": str(response.get("error") or "")}
     return dict(response["result"])

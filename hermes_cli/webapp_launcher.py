@@ -20,6 +20,10 @@ RESTART_COMMAND = "hermes gateway restart"
 # The gateway reads the Webapp's settings and sign-in providers only when it starts.
 RETRY_AFTER_FIX = f"The gateway reads these settings when it starts: after fixing them, run {RESTART_COMMAND}."
 STARTED_BEFORE_ON = f"The gateway started before the Webapp was turned on. Restart it to serve the Webapp: {RESTART_COMMAND}"
+# A gateway answers a verb it does not know this way; the Webapp's are registered before its control
+# socket answers, so the gateway running predates them (an upgrade it has not restarted onto).
+OLDER_GATEWAY = ("The running gateway is older than the Webapp and does not know its commands. Restart it "
+                 f"onto this version of Hermes: {RESTART_COMMAND}")
 # How long --sign-out waits for a gateway that is still starting to answer (30 s).
 _START_WAIT_ATTEMPTS, _START_WAIT_INTERVAL = 60, 0.5
 
@@ -94,7 +98,14 @@ def _profile_choice(home: Path, target: Path) -> dict:
     return {"profile": name} if name and name != "default" else {}
 
 
+def older_gateway(response: dict) -> bool:
+    """Whether *response* is a gateway's answer to a verb it does not know: it predates the Webapp."""
+    return not response.get("ok") and str(response.get("error") or "").startswith("unknown verb:")
+
+
 def _refusal(response: dict) -> str:
+    if older_gateway(response):
+        return OLDER_GATEWAY
     error = str(response.get("error") or "The gateway refused the request.")
     kind, _, message = error.partition(": ")
     return message if kind.endswith("Error") and message else error
