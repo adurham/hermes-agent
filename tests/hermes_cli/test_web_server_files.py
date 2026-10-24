@@ -422,6 +422,42 @@ def test_managed_reads_reject_docker_mount_outside_locked_root(
         assert response.status_code == 403, response.text
 
 
+_PNG = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\0" * 16).decode()
+
+
+def test_a_locked_root_still_reads_back_the_images_the_browser_just_uploaded(
+    forced_files_client, monkeypatch, tmp_path,
+):
+    """With ``HERMES_DASHBOARD_FILES_ROOT`` naming a folder that does not hold the profile home, a
+    pasted image (``<home>/cache/images``) and a picked file (``<home>/uploads/web-*``) still read
+    back through ``/api/fs/read-data-url`` to be sent: they are files this server wrote for the
+    browser, not part of the managed tree. Every other file in the profile home stays outside the
+    read boundary."""
+    client, _root = forced_files_client
+    # A picked file arrives through the Webapp's upload route, which exists only on the Webapp.
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "uploads").mkdir()
+    (home / "uploads" / "notes.txt").write_text("not a staged upload", encoding="utf-8")
+    (home / "memories.md").write_text("profile file", encoding="utf-8")
+
+    pasted = client.post(
+        "/api/chat/image-upload", json={"data_url": f"data:image/png;base64,{_PNG}", "filename": "p.png"},
+    )
+    assert pasted.status_code == 200, pasted.text
+    picked = client.post("/api/chat/file-upload", files={"file": ("shot.png", base64.b64decode(_PNG), "image/png")})
+    assert picked.status_code == 200, picked.text
+
+    for uploaded in (pasted.json()["path"], picked.json()["path"]):
+        read_back = client.get("/api/fs/read-data-url", params={"path": uploaded})
+        assert read_back.status_code == 200, (uploaded, read_back.text)
+        assert read_back.json()["dataUrl"] == f"data:image/png;base64,{_PNG}"
+    for other in (home / "uploads" / "notes.txt", home / "memories.md"):
+        assert client.get("/api/fs/read-data-url", params={"path": str(other)}).status_code == 403
+
+
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root)

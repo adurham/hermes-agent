@@ -1120,7 +1120,10 @@ async def fs_read_data_url(
         encoded = base64.b64encode(data).decode("ascii")
         return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
     target = await _fs_download_path(path, profile, session_id)
-    _hosted_fs_read_guard(target, request)
+    # A browser paste or pick reads back to be sent wherever a locked files root sits: the server
+    # wrote it into the profile's own image cache or staged uploads, outside the managed tree.
+    if not await asyncio.to_thread(_is_host_file, str(target), profile):
+        _hosted_fs_read_guard(target, request)
     target, st = _fs_regular_file(target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
