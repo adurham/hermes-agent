@@ -9,11 +9,50 @@ from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
 from agent.proxy_bypass import is_loopback_host
 from agent.sleep_clock import SleepWatch
+from utils import env_int
 
 logger = logging.getLogger(__name__)
 
 
 class StreamingWaitMonitor:
+    # Stale-kill bookkeeping: consecutive kills of the SAME dispatched attempt, and the error
+    # that ends a call whose worker those kills could not unwind.
+    _last_killed_attempt = 0
+    _same_attempt_kills = 0
+    _abandon_error = None
+
+    def _rearm_or_abandon_after_kill(self, elapsed: float) -> None:
+        """After a stale kill: re-arm the stale timer and announce the reconnect, unless the
+        same dispatched attempt has now been killed ``HERMES_STREAM_STALE_ABANDON_KILLS``
+        times with its worker still alive. Then the worker is parked where a socket shutdown
+        cannot reach it, and re-killing it every window would stall the turn forever."""
+        # Reset the timer so we don't kill repeatedly while the worker unwinds.
+        self.last_chunk_time["t"] = time.time()
+        with self.stream_attempt_lock:
+            attempt = int(self.stream_attempt_state["current"])
+        rekill = bool(attempt) and attempt == self._last_killed_attempt
+        self._last_killed_attempt = attempt
+        self._same_attempt_kills = self._same_attempt_kills + 1 if rekill else 1
+        if rekill and self.worker is not None and self._same_attempt_kills >= env_int(
+                "HERMES_STREAM_STALE_ABANDON_KILLS", 3):
+            self._abandon_wedged_worker(elapsed, attempt)
+            return
+        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
+        self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+
+    def _abandon_wedged_worker(self, elapsed: float, attempt: int) -> None:
+        """Like the /stop path, leave the (daemon) worker behind and end this call with a
+        retryable timeout; ``run()`` discards anything the worker writes later."""
+        logger.error(
+            "Streaming worker did not unwind after %d stale kills of attempt %s (%.0fs since last chunk); "
+            "abandoning the request. model=%s", self._same_attempt_kills, attempt, elapsed,
+            self.api_kwargs.get("model", "unknown"))
+        self._request_cancelled["value"] = True
+        self._abandon_error = TimeoutError(
+            f"Provider stream stalled: no chunks and the request worker did not unwind after "
+            f"{self._same_attempt_kills} stale-stream kills; request abandoned.")
+        self._call_done.set()
+
     def _poll_local_load_notice(self, now: float) -> bool:
         """Managed local server: surface a cold model's weight-load progress
         instead of the 60s neutral "waiting on <model>" notice. Polled ~1s only while no

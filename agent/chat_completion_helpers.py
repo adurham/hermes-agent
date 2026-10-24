@@ -3843,10 +3843,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
         self._count_stale_attempt()
-        # Reset the timer so we don't kill repeatedly while the worker unwinds.
-        self.last_chunk_time["t"] = time.time()
-        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
-        self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+        self._rearm_or_abandon_after_kill(elapsed)
 
     def _abort_for_interrupt(self, stale_elapsed: float) -> None:
         """/stop seen by the monitor: mark cancelled, abort the request-local
@@ -3975,6 +3972,8 @@ class _StreamingCall(StreamingWaitMonitor):
             raise InterruptedError("Agent interrupted during streaming API call")
         if self.agent._interrupt_requested:  # worker returned early before the monitor saw the flag
             raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
+        if self._abandon_error is not None:  # the abandoned worker may still write into ``result``
+            self.result = {**self.result, "response": None, "error": self._abandon_error}
         if self.result["error"] is not None:
             if self.deltas_were_sent["yes"]:
                 return self._partial_stream_stub()
