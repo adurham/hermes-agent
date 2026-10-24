@@ -218,13 +218,13 @@ def test_webapp_verbs_answer_only_an_authenticated_same_user_peer(monkeypatch, t
 
 
 def test_where_one_use_links_cannot_be_checked_the_launcher_gets_one_to_open_by_hand(monkeypatch, tmp_path):
-    """Where the server cannot tell who redeems a launch link (macOS, the BSDs), the launcher still gets
+    """Where the server cannot tell who redeems a launch link (macOS, the BSDs, WSL), the launcher still gets
     a one-use link that lasts 60 seconds, never the long-lived browser credential: it spends without a
     peer check, as a window ticket does, and the launcher prints it rather than opening it."""
     from urllib.parse import parse_qs
 
-    monkeypatch.setattr(webapp, "_one_use_links_work", lambda: False)  # macOS
-    runner, _, _ = _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n  port: 9555\n")
+    runner, _, home = _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n  port: 9555\n")
+    webapp.register_control_verbs(runner, home, links_checked=False)  # as on macOS, the BSDs and WSL
     # The gateway mounts the dashboard app as the Webapp surface on a private (loopback) listener.
     web = SimpleNamespace(_SESSION_TOKEN="s" * 43, app=SimpleNamespace(state=SimpleNamespace(ui_surface="webapp")))
     runner.session_api.app = SimpleNamespace(web=web)
@@ -332,8 +332,8 @@ def _serving_runner(monkeypatch, tmp_path):
 def test_a_launch_link_for_a_named_profile_opens_that_profile(monkeypatch, tmp_path):
     from urllib.parse import parse_qs
     runner = _serving_runner(monkeypatch, tmp_path)
-    for checked in (True, False):  # Linux and Windows; macOS and the BSDs
-        monkeypatch.setattr(webapp, "_one_use_links_work", lambda checked=checked: checked)
+    for checked in (True, False):  # Linux and Windows; macOS, the BSDs and WSL
+        webapp.register_control_verbs(runner, tmp_path / "home", links_checked=checked)
         url = _ask(runner, "webapp-launch", params={"profile": "work"})["result"]["url"]
         page, fragment = url.split("#", 1)
         assert page == "http://127.0.0.1:9555/webapp/launch"

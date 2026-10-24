@@ -71,9 +71,10 @@ def test_macos_launch_handoff_fails_closed_without_consuming_child_window_author
 
 
 def test_a_link_for_the_user_to_open_by_hand_spends_once_without_a_peer_check(monkeypatch):
-    """Where nothing identifies the connection's owner (macOS, the BSDs), ``hermes webapp`` prints a
-    link for the user to open by hand. Its ticket spends without the peer check, once and within 60
-    seconds, as a window ticket does; an argv launch ticket still never spends there."""
+    """Where nothing identifies the connection's owner (macOS, the BSDs, WSL), ``hermes webapp`` prints a
+    link for the user to open by hand. On every host its ticket spends without consulting the peer
+    check, once and within 60 seconds, as a window ticket does. (That an argv launch ticket never
+    spends there is the platforms("macos") test above.)"""
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
@@ -85,7 +86,10 @@ def test_a_link_for_the_user_to_open_by_hand_spends_once_without_a_peer_check(mo
     monkeypatch.setattr(server.app.state, "bound_host", "127.0.0.1", raising=False)
     monkeypatch.setattr(server.app.state, "webapp_window_tickets", {}, raising=False)
     monkeypatch.setattr(server, "_SESSION_TOKEN", "a" * 43)
-    monkeypatch.setattr(webapp, "_peer_is_server_user", lambda request: False)  # macOS
+    def peer_check(request):
+        raise AssertionError("a printed launch ticket consulted the peer check")
+
+    monkeypatch.setattr(webapp, "_peer_is_server_user", peer_check)
     client = TestClient(server.app, base_url="http://127.0.0.1")
 
     def redeem(ticket):
@@ -95,7 +99,6 @@ def test_a_link_for_the_user_to_open_by_hand_spends_once_without_a_peer_check(mo
         printed = webapp.mint_printed_launch_ticket(server.app.state)
         assert redeem(printed).json() == {"token": "a" * 43}
         assert redeem(printed).status_code == 403
-        assert redeem(webapp.mint_launch_ticket(server.app.state)).status_code == 403
         late = webapp.mint_printed_launch_ticket(server.app.state)
         now = webapp.time.monotonic()
         monkeypatch.setattr(webapp, "time", SimpleNamespace(monotonic=lambda: now + webapp.LAUNCH_TICKET_TTL_SECONDS + 1))
@@ -110,12 +113,12 @@ def _loopback_request():
                            scope={"server": ("127.0.0.1", 9120)})
 
 
-@pytest.mark.parametrize("platform", ["freebsd14", "openbsd7", "sunos5"])
+@pytest.mark.parametrize("platform", ["darwin", "freebsd14", "openbsd7", "sunos5"])
 def test_where_no_peer_check_exists_a_launch_ticket_is_never_spent(platform):
-    """Other Unixes show every process's argv to all local users by default and Hermes cannot tell
-    who owns a loopback connection there. As on macOS, the launcher prints a link for the user to open
-    by hand rather than passing a launch ticket to a browser launcher, and a launch ticket is never
-    spent."""
+    """macOS and the other Unixes show every process's argv to all local users by default and Hermes
+    cannot tell who owns a loopback connection there. So the launcher prints a link for the user to
+    open by hand rather than passing a launch ticket to a browser launcher, and a launch ticket is
+    never spent. The platform is passed in as data; the marked tests below run each host's own path."""
     from gateway import webapp_listener
     from hermes_cli.web_routers import webapp
 
@@ -126,12 +129,53 @@ def test_where_no_peer_check_exists_a_launch_ticket_is_never_spent(platform):
 def test_windows_spends_a_launch_ticket_without_a_peer_check():
     """Windows does not show a process's command line to other standard users (reading it needs a
     handle the process's DACL grants only its own user, SYSTEM and elevated administrators), so the
-    ticket in the browser launcher's argv stays the user's own, as the stored credential does."""
+    ticket in the browser launcher's argv stays the user's own, as the stored credential does. The
+    platform is passed in as data; the platforms("windows") test below runs the real path."""
     from gateway import webapp_listener
     from hermes_cli.web_routers import webapp
 
     assert webapp._peer_is_server_user(_loopback_request(), platform="win32") is True
     assert webapp_listener._one_use_links_work(platform="win32") is True
+
+
+@pytest.mark.platforms("windows")
+def test_on_windows_the_launcher_opens_the_launch_link_and_its_browser_spends_it(tmp_path, monkeypatch):
+    """On Windows ``hermes webapp`` gets a launch link to open itself (not marked private), and the
+    browser it opens spends the ticket without a peer check."""
+    client, link = _launch_link(tmp_path, monkeypatch)
+    assert link["private"] is False
+    assert _spend(client, link).status_code == 200
+
+
+@pytest.mark.platforms("macos")
+def test_on_macos_the_launch_link_is_printed_and_spends_without_a_peer_check(tmp_path, monkeypatch):
+    """On macOS nothing identifies who owns the browser's connection: ``hermes webapp`` gets a link
+    marked private, to print for the user to open by hand, and it spends without the peer check."""
+    client, link = _launch_link(tmp_path, monkeypatch)
+    assert link["private"] is True
+    assert _spend(client, link).status_code == 200
+
+
+@pytest.mark.platforms("linux")
+def test_on_linux_the_peer_check_names_the_owner_of_a_real_loopback_connection():
+    """Linux reads who owns the browser's end of a loopback connection from ``/proc/net/tcp*``: a
+    connection this process holds passes the peer check, and one to a port nobody listens on (no
+    such connection) does not."""
+    import socket
+    from types import SimpleNamespace
+
+    from hermes_cli.web_routers import webapp
+
+    with socket.create_server(("127.0.0.1", 0)) as listener, \
+            socket.create_connection(listener.getsockname()) as browser:
+        served, _ = listener.accept()
+        with served:
+            host, port = browser.getsockname()
+            own = SimpleNamespace(client=SimpleNamespace(host=host, port=port),
+                                  scope={"server": listener.getsockname()})
+            assert webapp._peer_is_server_user(own) is True
+            unknown = SimpleNamespace(client=SimpleNamespace(host=host, port=port), scope={"server": (host, 1)})
+            assert webapp._peer_is_server_user(unknown) is False
 
 
 @pytest.mark.parametrize("page", ["/webapp/launch", "/webapp/window"])

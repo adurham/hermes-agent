@@ -280,7 +280,8 @@ def _close_to_other_users(folder: Path) -> None:
 
 
 def _one_use_links_work(platform: str = sys.platform) -> bool:
-    """Whether a browser the server opens can redeem a one-use launch link here. Redemption needs
+    """Whether a browser the server opens can redeem a one-use launch link on *platform* (a
+    ``sys.platform`` value, this host's by default). Redemption needs
     proof that the browser's connection belongs to the gateway's OS user
     (``web_routers.webapp._peer_is_server_user``) on Linux, or a browser launcher whose arguments other
     users cannot read (Windows: no connection is checked there). macOS and the BSDs offer neither, and
@@ -326,7 +327,7 @@ STARTING = {"state": "starting", "url": None, "reason": None}
 _STILL_STARTING = "The Webapp is still starting; try again in a moment."
 
 
-def register_control_verbs(runner, home, server=None) -> None:
+def register_control_verbs(runner, home, server=None, *, links_checked: bool | None = None) -> None:
     """The private control-socket verbs ``hermes webapp`` uses on *server* (the runner's control
     server by default); only an authenticated same-user peer reaches them. The gateway registers them
     before its control socket answers, so they answer from its first moment: :data:`STARTING` until
@@ -334,7 +335,11 @@ def register_control_verbs(runner, home, server=None) -> None:
     the credential crosses neither the socket nor a browser's argv; where nothing can check who
     redeems such a link (macOS, the BSDs, WSL) it is marked private, for the user to open by hand.
     ``webapp-sign-out`` replaces the browser credential, which also ends every login bound to it
-    behind the sign-in gate, closes the browser sockets those opened, and reports how many it closed."""
+    behind the sign-in gate, closes the browser sockets those opened, and reports how many it closed.
+
+    *links_checked* is whether such a link can be checked here; None asks this host
+    (:func:`_one_use_links_work`) at each launch. Tests pass False to take the printed-link path on
+    any host, as the gateway does on macOS, the BSDs and WSL."""
     server = server if server is not None else getattr(runner, "session_control_server", None)
     if server is None:
         return
@@ -391,7 +396,7 @@ def register_control_verbs(runner, home, server=None) -> None:
         # Where the browser's connection cannot be checked (macOS, the BSDs, WSL), the link is for the user
         # to open by hand ("private": printed, never passed to a browser launcher), and its ticket spends
         # without that check. Either way it works once, for 60 seconds, and carries no lasting credential.
-        checked = _one_use_links_work()
+        checked = _one_use_links_work() if links_checked is None else links_checked
         ticket = mint_launch_ticket(web.app.state) if checked else mint_printed_launch_ticket(web.app.state)
         fragment = urlencode({"ticket": ticket, **({"query": query} if query else {})})
         return {"url": f"{status['url']}/webapp/launch#{fragment}", "private": not checked,

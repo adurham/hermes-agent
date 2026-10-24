@@ -1,7 +1,7 @@
 """Start the gateway listener with the Webapp on or off; report what a browser and a native client get.
 
 Run as ``python webapp_listener_peer.py on|off <port> <dist> [macos]`` with an isolated ``HERMES_HOME``;
-``macos`` takes the launch path of macOS and the BSDs on any host. Writes
+``macos`` takes the launch path of macOS and the BSDs (the printed link) on any host. Writes
 ``receipt.json`` there (the gateway redirects stdout). No external inference: the model points at a closed
 port and no turn is submitted.
 """
@@ -15,15 +15,17 @@ import traceback
 SEEDED_TOKEN = "seeded-browser-credential-from-an-earlier-0"  # 43 URL-safe characters
 
 
-def follow_launch_path(platform: str) -> None:
-    """Have this gateway take *platform*'s launch path: ``macos`` stands in for macOS and the BSDs,
-    where nothing identifies who owns the browser's connection; anything else keeps the host's own."""
-    if platform == "macos":
-        from gateway import webapp_listener
-        from hermes_cli.web_routers import webapp
+def follow_launch_path(runner, home, platform: str) -> bool:
+    """Have this gateway take *platform*'s launch path and say whether its launch links are checked.
+    ``macos`` takes the path of macOS and the BSDs, where nothing identifies who owns the browser's
+    connection: the gateway is told so through ``register_control_verbs(links_checked=False)``, and its
+    link is printed for the user to open by hand. Anything else keeps the host's own path."""
+    from gateway import webapp_listener
 
-        webapp_listener._one_use_links_work = lambda: False
-        webapp._peer_is_server_user = lambda _request: False
+    if platform == "macos":
+        webapp_listener.register_control_verbs(runner, home, links_checked=False)
+        return False
+    return webapp_listener._one_use_links_work()
 
 
 async def _upgrade_refusal(url, **kwargs):
@@ -102,7 +104,6 @@ async def probe(mode, port, dist, platform):
     import httpx
     from websockets.asyncio.client import connect
 
-    from gateway import webapp_listener
     from gateway.control_socket import GatewayControlServer
     from gateway.run import GatewayRunner
     from gateway.run_api import stop_gateway_api
@@ -112,7 +113,6 @@ async def probe(mode, port, dist, platform):
     import hermes_cli.webapp
     from tests.gateway.fixtures.local_recovery_probe import rpc
 
-    follow_launch_path(platform)
     home = Path(os.environ["HERMES_HOME"])
     webapp_block = f"webapp:\n  enabled: true\n  port: {port}\n" if mode == "on" else ""
     (home / "config.yaml").write_text(
@@ -131,6 +131,7 @@ async def probe(mode, port, dist, platform):
                                          "served_profiles": []}
     await initialize_session_authority(runner, profile_id=str(home), instance_id="webapp-listener")
     await start_gateway_runtime_api(runner)
+    links_checked = follow_launch_path(runner, home, platform)
     api = runner.session_api
     from hermes_cli import web_server
 
@@ -167,7 +168,7 @@ async def probe(mode, port, dist, platform):
                 url = launched["result"]["url"]
                 report["launch_page"] = url.split("#", 1)[0] == origin + "/webapp/launch"
                 report["launch_private"] = launched["result"]["private"]
-                report["launch_printed_for_the_user"] = not webapp_listener._one_use_links_work()
+                report["launch_printed_for_the_user"] = not links_checked
                 ticket = url.split("#ticket=", 1)[1]
                 handoff = {"X-Hermes-Window-Ticket": ticket, "Origin": origin}
                 redeemed = await client.post("/webapp/window-session", headers=handoff)

@@ -131,7 +131,7 @@ def _loopback_peer_uid(client: tuple[str, int], server: tuple[str, int]) -> int 
 
 def _peer_is_server_user(request: Request, platform: str = sys.platform) -> bool:
     """Whether a launch ticket that crossed a browser launcher's argv may be spent over this
-    request's connection.
+    request's connection on *platform* (a ``sys.platform`` value, this host's by default).
 
     Linux checks that the connection belongs to the OS user running the server. Windows checks
     nothing and always says yes: the protection there is that the ticket travels only in the
