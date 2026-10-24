@@ -150,16 +150,15 @@ merge (`51f17ea7b88`), and each names its detector so a future sync can run the 
   through `HERMES_HOME` only. Related: upstream added `data_policy_denied` to `FailoverReason`, which the
   fork's exact-roster assertion needed.
 
-**Final ledger (runner pass over the 132 files that failed the first full run, node-ID diffed against the
-pristine tag): 89 merge-caused failures found, all fixed; 26 remain, none of them merge-caused — 14 are
-fork-only tests that were already red before the sync (`test_hot_tier_audit` 7,
-`test_reasoning_only_stop_persistence` 2, `test_malformed_tool_args_no_fallback` 2,
-`test_compress_focus` 1, `test_reasoning_disable_recovery` 1, `test_image_shrink_recovery` 1), 11 are
-Linux-only and unresolved — they fail under direct pytest on the workstation too, not just under load
-(`test_autostash_cleanup` 7 git-subprocess timeouts, `test_mcp_serve_error_logging` 2,
-`test_browser_real_profile::test_relaunch_path_does_snapshot`,
-`test_plugin_command_choice::test_a_local_viewer_answers_the_choice_while_its_slash_exec_waits`), and
-`test_pm_runtime_bootstrap_tls` fails identically on the tag.**
+**Final ledger (fourth runner pass over the 131 files that failed the first full run, node-ID diffed
+against the pristine tag): the merged tree and the tag now fail the SAME 480 node IDs (465 in common;
+15 merged-only, 15 tag-only). Every merged-only failure is either fork backlog — the same 14 tests fail
+identically at the pre-sync tree (`test_hot_tier_audit` 7, `test_reasoning_only_stop_persistence` 2,
+`test_malformed_tool_args_no_fallback` 2, `test_compress_focus` 1, `test_reasoning_disable_recovery` 1,
+`test_image_shrink_recovery` 1) — or `test_pm_runtime_bootstrap_tls`, which fails on the tag as well.
+`tests/test_mcp_serve_error_logging.py` is retired: it is fork-only and imports `mcp_serve`, which upstream
+deleted when Hermes-as-an-MCP-server left core for the `mcp-serve` plugin. **Zero merge-caused failures
+remain.**
 
 **Residual, not merge-caused:** `tests/agent/test_compaction_prompt_rebuild.py` and
 `tests/ci/test_*publication*.py` / `test_prompt_surface.py` are red on the pristine tag in this workstation
