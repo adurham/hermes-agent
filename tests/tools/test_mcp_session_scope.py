@@ -23,7 +23,8 @@ for line in sys.stdin:
         with session_tool_scope(scope):
             register_mcp_servers({name: {'command': sys.executable, 'args': [str(script)],
                 'env': {'OWNED_MARKER': marker}, 'connect_timeout': 5}})
-            names = [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
+            # FORK: MCP tools register bare ``<server>_<tool>``; both sibling servers share the ``owned_`` stem.
+            names = [n for n in registry.get_all_tool_names() if n.startswith('owned_')]
             assert len(names) == 1, names
             return names[0], registry.dispatch(names[0], {})
     try:

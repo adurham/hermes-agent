@@ -1776,7 +1776,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="google_chat",
         dashboard_description="Connect Hermes to Google Chat via Cloud Pub/Sub.",
-        docs_url="https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat",
+        docs_url="https://github.com/adurham/hermes-agent/blob/main/website/docs/user-guide/messaging/google_chat.md",
         label="Google Chat",
         adapter_factory=lambda cfg: GoogleChatAdapter(cfg),
         check_fn=_check_for_registry,

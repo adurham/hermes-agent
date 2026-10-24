@@ -203,6 +203,19 @@ def test_real_world_id_mix_is_fully_classified(store) -> None:
 
 # ── 3. poisoned layout inference (consequence 2) ───────────────────────
 
+# FORK: ``sessions.compression_attempts_total`` is ALTER-ADDed after SCHEMA_SQL
+# (``session_schema_history.FORK_COLUMN_ARRIVALS``). A fresh store ends
+# ``..., transcript_revision, compression_attempts_total``; a store the fork created
+# before upstream's event 32 ends ``..., compression_attempts_total, transcript_revision``.
+# Both are reachable and both columns are INTEGER 0 on every seeded row, so inference
+# rightly leaves exactly those two positions unresolved instead of guessing.
+_FORK_ORDER_AMBIGUOUS = {"transcript_revision", "compression_attempts_total"}
+
+
+def _unresolved(columns, mapping) -> set:
+    return {columns[i] for i in range(len(columns)) if mapping[i] is None}
+
+
 
 def test_child_of_a_cron_job_does_not_poison_layout_inference(store) -> None:
     """The regression that made the 21c5547faa fix inert on any install that ran cron.
@@ -232,7 +245,7 @@ def test_child_of_a_cron_job_does_not_poison_layout_inference(store) -> None:
                     if mapping[i] is not None and mapping[i] != columns[i]]
         assert not misnamed, f"cells mapped to the wrong columns: {misnamed}"
         # The fix must actually resolve the layout, not merely avoid crashing.
-        assert sum(1 for m in mapping if m is not None) == len(columns)
+        assert _unresolved(columns, mapping) <= _FORK_ORDER_AMBIGUOUS
     finally:
         conn.close()
 
@@ -251,13 +264,16 @@ def test_layout_inference_survives_every_derived_id_shape(store, tmp_path) -> No
         columns, rows = _sessions_rows(conn)
         mapping, kept = _infer_like_recovery(conn, columns, rows)
         assert mapping is not None and kept == len(rows)
-        assert all(mapping[i] == columns[i] for i in range(len(columns)))
+        assert all(mapping[i] in (columns[i], None) for i in range(len(columns)))
+        assert _unresolved(columns, mapping) <= _FORK_ORDER_AMBIGUOUS
     finally:
         conn.close()
     report = _map_as_salvage(tmp_path, columns, rows)
     assert report["mapped"]["sessions"] == len(rows)
     assert report["unrecognized_layout_rows"] == 0
-    assert report["inferred_layouts"]["sessions"][str(len(columns))] == columns
+    inferred = report["inferred_layouts"]["sessions"][str(len(columns))]
+    assert all(got in (want, None) for got, want in zip(inferred, columns, strict=True)), inferred
+    assert _unresolved(columns, inferred) <= _FORK_ORDER_AMBIGUOUS
 
 
 # ── 4. the safety property the fix must not weaken ─────────────────────

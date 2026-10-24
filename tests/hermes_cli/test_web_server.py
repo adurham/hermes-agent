@@ -257,6 +257,19 @@ def mutation_owner(monkeypatch, _isolate_hermes_home):
         db.close()
 
 
+def _plugin_catalog_entry(platform_id: str) -> dict:
+    """The catalog entry the dashboard builds for a plugin platform: upstream moved its card
+    metadata (``docs_url`` included) onto the plugin's registry entry, so build it the way
+    ``_messaging_catalog`` does -- from that entry, not from the bare id."""
+    from gateway.platform_registry import platform_registry
+    from hermes_cli.plugins import discover_plugins
+    from hermes_cli.web_server_messaging import _build_catalog_entry
+
+    discover_plugins()
+    entry = next(e for e in platform_registry.plugin_entries() if e.name == platform_id)
+    return _build_catalog_entry(platform_id, entry)
+
+
 class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 
@@ -1309,8 +1322,13 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         finally:
             db.close()
 
-        resp = self.client.patch("/api/sessions/title-only", json={"title": "Hi"})
-        assert resp.status_code == 200
+        # Upstream's owner refuses an unfenced write (409 client-upgrade-required), so the PATCH
+        # carries the mutation identity every current client sends.
+        resp = self.client.patch(
+            "/api/sessions/title-only",
+            json={"title": "Hi", "request_id": "title-only-rename", "expected_revision": 0},
+        )
+        assert resp.status_code == 200, resp.text
         assert "archived" not in resp.json()
 
     def test_audio_transcription_endpoint(self, monkeypatch):
@@ -1755,9 +1773,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         # plugin registry. The override must still supply a docs link so the
         # Channels page renders a working "Open setup guide" button instead of
         # an empty href (which resolves to the packaged app's own index.html).
-        from hermes_cli.web_server_messaging import _build_catalog_entry
-
-        teams = _build_catalog_entry("teams")
+        teams = _plugin_catalog_entry("teams")
         assert teams["docs_url"] == (
             "https://github.com/adurham/hermes-agent/blob/main/website/docs/user-guide/messaging/teams.md"
         )
@@ -1767,9 +1783,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         # the plugin registry. The override must supply a docs link so the
         # Channels page renders a working "Open setup guide" button instead of
         # an empty href (which resolves to the packaged app's own index.html).
-        from hermes_cli.web_server_messaging import _build_catalog_entry
-
-        google_chat = _build_catalog_entry("google_chat")
+        google_chat = _plugin_catalog_entry("google_chat")
         assert google_chat["name"] == "Google Chat"
         assert google_chat["docs_url"] == (
             "https://github.com/adurham/hermes-agent/blob/main/website/docs/user-guide/messaging/google_chat.md"

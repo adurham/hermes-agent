@@ -66,7 +66,8 @@ async def test_session_create_carries_the_notice_through_its_strict_wire_contrac
     """The notice also rides the snapshot ``session.create`` returns: it must pass that method's declared
     result contract (strict here, as under ``HERMES_TEST_ISOLATION``), for both session-start notices."""
     from tui_gateway.contracts import registry
-    monkeypatch.setattr(registry, 'STRICT', True)
+    # FORK: strict mode is read from HERMES_TEST_ISOLATION at report time (no import-time STRICT constant).
+    monkeypatch.setenv('HERMES_TEST_ISOLATION', '1')
     home, repo = tmp_path / 'home', tmp_path / 'repo'
     home.mkdir()
     (home / 'config.yaml').write_text(

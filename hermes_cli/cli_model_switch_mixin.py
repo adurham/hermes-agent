@@ -45,7 +45,14 @@ def _resolve_cli_reasoning(cli) -> None:
     from cli import CLI_CONFIG
     from hermes_constants import resolve_reasoning_config
     # getattr: tests drive /new unbound on a SimpleNamespace without ``model`` (blank -> config default).
-    cli.reasoning_config = resolve_reasoning_config(CLI_CONFIG, getattr(cli, "model", None) or "")
+    cfg = CLI_CONFIG
+    # FORK: the per-model map (``agent.reasoning_effort_by_model``) the /reasoning picker updates
+    # in-session lives on the CLI; CLI_CONFIG is the boot-time snapshot. Resolve against the live map
+    # so switching back to a model restores the effort picked for it this session.
+    by_model = getattr(cli, "_reasoning_effort_by_model", None)
+    if isinstance(by_model, dict) and by_model and isinstance(CLI_CONFIG, dict):
+        cfg = {**CLI_CONFIG, "agent": {**(CLI_CONFIG.get("agent") or {}), "reasoning_effort_by_model": by_model}}
+    cli.reasoning_config = resolve_reasoning_config(cfg, getattr(cli, "model", None) or "")
     cli._reasoning_user_set = False
 
 
@@ -358,8 +365,10 @@ def _commit_model_switch(
         _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn,
                                       one_turn=one_turn)
     if persist_global:
-        from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
+        # FORK: ``cli._persist_global_model_switch`` = upstream's ``persist_model_selection`` plus the
+        # custom-endpoint ``model.api_key`` write the CLI's /model --global has no other path for.
+        from cli import _persist_global_model_switch
+        _persist_global_model_switch(result)
         _cprint(f"    {t('cli.model.saved_global' if picker else 'cli.model.saved')}")
     elif one_turn:
         _cprint(f"    {t('cli.model.next_turn_only')}")

@@ -33,6 +33,8 @@ def _panel(pick):
     return clarify_callback, shown
 
 
+# FORK: the command is not ``/delegation`` (upstream's name): the fork ships a built-in
+# ``/delegation`` (hermes_cli/commands.py), and a plugin command colliding with a built-in is skipped.
 @pytest.fixture
 def plugin_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -42,7 +44,7 @@ def plugin_home(tmp_path, monkeypatch):
     (plugin / "__init__.py").write_text(
         "def register(ctx):\n"
         f"    choices = {_CHOICES!r}\n"
-        "    ctx.register_command('delegation', lambda arg: 'MODE=%s' % ctx.ask_choice('Delegation mode', choices))\n")
+        "    ctx.register_command('pickmode', lambda arg: 'MODE=%s' % ctx.ask_choice('Delegation mode', choices))\n")
     (home / "config.yaml").write_text(json.dumps({"plugins": {"enabled": ["pick"]}}))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -61,11 +63,11 @@ def test_an_in_process_plugin_command_picks_with_the_cli_clarify_panel(plugin_ho
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "s1"
     cli._clarify_callback, shown = _panel(1)
-    cli._run_plugin_slash_command("/delegation", "")
+    cli._run_plugin_slash_command("/pickmode", "")
     assert "MODE=model_map" in capsys.readouterr().out
     assert shown == [[{"qid": "q0", "question": "Delegation mode", "choices": _LABELS, "multi_select": False}]]
     # Called where no surface binds an asker (a hook, a cron job): None, and the handler says so itself.
-    assert invoke_plugin_command(plugins_mod.get_plugin_command_handler("delegation"), "") == "MODE=None"
+    assert invoke_plugin_command(plugins_mod.get_plugin_command_handler("pickmode"), "") == "MODE=None"
 
 
 class _GatewayConnection:
@@ -85,7 +87,7 @@ class _GatewayConnection:
         return self.session
 
     def call_until(self, method, wake, **params):
-        assert (method, params["command"]) == ("slash.exec", "delegation")
+        assert (method, params["command"]) == ("slash.exec", "pickmode")
         self.events.put({"jsonrpc": "2.0", "method": "event", "params": {
             "session_id": self.session_id, "type": "message.delta", "payload": {"text": "later turn"}}})
         self.events.put({"jsonrpc": "2.0", "id": "srq-1", "method": "clarify", "params": {
@@ -108,7 +110,7 @@ def test_a_gateway_plugin_command_choice_is_answered_while_the_cli_waits(monkeyp
     connection = _GatewayConnection("s1")
     monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda _cli: connection)
     result: list = []
-    runner = threading.Thread(target=lambda: result.append(gateway_plugin_commands.run(cli, "delegation", "")))
+    runner = threading.Thread(target=lambda: result.append(gateway_plugin_commands.run(cli, "pickmode", "")))
     runner.start()
     runner.join(15)
     assert result == [True]
@@ -145,7 +147,7 @@ def test_a_settled_choice_closes_the_cli_picker(monkeypatch, capsys):
     connection.call_until = other_viewer_answers
     monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda _cli: connection)
     result: list = []
-    runner = threading.Thread(target=lambda: result.append(gateway_plugin_commands.run(cli, "delegation", "")))
+    runner = threading.Thread(target=lambda: result.append(gateway_plugin_commands.run(cli, "pickmode", "")))
     runner.start()
     runner.join(15)
     assert closed.is_set() and result == [True]

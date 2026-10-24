@@ -31,7 +31,8 @@ def test_plugin_asset_path_checks_run_off_the_event_loop(monkeypatch, tmp_path):
     (plugin_dir / "index.js").write_text("export {}")
     plugins = [{"name": "demo", "source": "bundled", "_dir": str(plugin_dir)}]
     monkeypatch.setattr(dashboard_ui, "_get_dashboard_plugins", lambda force_rescan=False: plugins)
-    monkeypatch.setattr(dashboard_ui, "_plugin_enable_sets", lambda: (set(), set()))
+    # The enable/consent gate (upstream's ``_plugin_consent_withheld``) is not under test here.
+    monkeypatch.setattr(dashboard_ui, "_plugin_consent_withheld", lambda plugin: False)
     expected = (plugin_dir / "index.js").resolve()
     threads = _record_resolve_threads(monkeypatch)
 

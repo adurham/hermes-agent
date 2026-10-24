@@ -283,7 +283,7 @@ async def test_default_profiles_mcp_server_is_still_owned_after_the_flip(standal
             from tools.mcp_tool import _mcp_registry_scope
             scope = _mcp_registry_scope()
             assert get_mcp_status({"github": cfg})[0]["status"] == "connected"
-            assert registry.get_entry("mcp__github__t") is not None
+            assert registry.get_entry("github_t") is not None
             from tools import mcp_tool_loop as loop
             loop._ensure_mcp_loop()
             try:
@@ -296,12 +296,12 @@ async def test_default_profiles_mcp_server_is_still_owned_after_the_flip(standal
                 _deregister_mcp_tool_all_scopes(srv, name)
         assert closed == ["github"], "the reload skipped the default profile's server"
         assert (hermes_home_key(home), "github") not in core._servers
-        assert registry.get_entry("mcp__github__t", scope=hermes_home_key(home)) is None
-        assert "mcp__github__t" not in registry._tools
+        assert registry.get_entry("github_t", scope=hermes_home_key(home)) is None
+        assert "github_t" not in registry._tools
     finally:
         for key in [k for k in core._servers if (k[1] if isinstance(k, tuple) else k) == "github"]:
             core._servers.pop(key, None)
             core._server_scope_keys.pop(key, None)
             core._server_tool_scopes.pop(key, None)
         for slot in (None, hermes_home_key(home)):
-            registry.deregister("mcp__github__t", scope=slot)
+            registry.deregister("github_t", scope=slot)
