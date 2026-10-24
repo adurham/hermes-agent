@@ -186,6 +186,9 @@ async function openWebappTabProfile(desktop: Window['hermesDesktop'], primary: s
 
   try {
     await ensureGatewayProfile(profile)
+    // As a live switch does: the address names the profile the tab is on, so a reload lands here and
+    // files and the terminal, which fall back to the address's profile, follow it.
+    await desktop.profile?.remember?.(normalizeProfileKey(profile))
   } catch (error) {
     console.warn(`[gateway] could not open this tab on profile "${profile}"; it stays on "${primary}"`, error)
   }

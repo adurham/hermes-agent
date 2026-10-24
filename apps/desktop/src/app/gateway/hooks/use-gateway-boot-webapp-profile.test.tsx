@@ -168,11 +168,14 @@ it('a bare tab on a gateway launched as a named profile names default when it as
   expect(await sentFor('default', 'session.active_list')).toEqual({ profile: 'default' })
 })
 
-it('a bare tab opens on the saved default the same way', async () => {
+it('a bare tab opens on the saved default the same way, and records it in its address as a switch does', async () => {
   window.localStorage.setItem('hermes:webapp:default-profile:/', JSON.stringify({ connectionId: 'local', profile: 'research' }))
   await bootWebappTab('/#/')
 
   expect($activeGatewayProfile.get()).toBe('research')
   expect(await sentFor('research', 'session.active_list')).toEqual({ profile: 'research' })
   expect(mints.map(url => url.searchParams.get('profile'))).toEqual([null])
+  // Files, uploads and the terminal fall back to the address's profile whenever the connection
+  // descriptor names none (a reconnect publishes the tab's own socket), so it must name this one.
+  expect(new URLSearchParams(window.location.search).get('profile')).toBe('research')
 })
