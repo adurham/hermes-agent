@@ -69,7 +69,13 @@ vi.mock('@xterm/addon-fit', () => ({
     fit() {}
   }
 }))
-vi.mock('@xterm/addon-serialize', () => ({ SerializeAddon: class {} }))
+vi.mock('@xterm/addon-serialize', () => ({
+  SerializeAddon: class {
+    serialize() {
+      return '$ make\r\nbuilt ok\r\n'
+    }
+  }
+}))
 vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }))
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
@@ -377,4 +383,49 @@ it('native Desktop: a failed start shows main\'s error and Enter does not start 
   await act(async () => {})
   expect(start).toHaveBeenCalledTimes(1)
   expect(screen.getByText('closed')).toBeTruthy()
+})
+
+// An idle tab never re-saves its scrollback (#61572): the live buffer holds the replayed history
+// plus a fresh prompt. PowerShell (PSReadLine) and fish ask for the cursor position at startup, and
+// xterm's reply reaches the shell through onData like typed input; counting that reply as activity
+// re-saved those shells' idle tabs on every launch. Only keys, typing, composition, paste, drop and
+// mouse input with mouse tracking on count.
+it("native Desktop: xterm's reply to the shell's cursor query is not activity; typing is", async () => {
+  let shellOutput: ((data: string) => void) | null = null
+  const write = vi.fn(async () => true)
+
+  delete window.document.documentElement.dataset.hermesDesktopHost
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    terminal: {
+      attach: vi.fn(async () => true),
+      cwd: vi.fn(async () => null),
+      dispose: vi.fn(async () => true),
+      onData: vi.fn((_id: string, callback: (data: string) => void) => {
+        shellOutput = callback
+
+        return () => {}
+      }),
+      onExit: vi.fn(() => () => {}),
+      resize: vi.fn(async () => true),
+      start: vi.fn(async () => ({ id: 'pty-1', shell: 'pwsh.exe' })),
+      write
+    }
+  }
+  const id = createTerminal('/work')
+  updateTerminalReviveBuffer(id, SAVED_HISTORY)
+  const { container } = render(<Harness id={id} />)
+  await waitFor(() => expect(shellOutput).not.toBeNull())
+  const saved = () => $terminals.get().find(tab => tab.id === id)?.reviveBuffer
+
+  act(() => shellOutput!('PS /work> \u001b[6n'))
+
+  expect(write).toHaveBeenCalledWith('pty-1', '\u001b[1;1R')
+  expect(saved()).toBe(SAVED_HISTORY)
+
+  act(() => {
+    container.querySelector('div')!.dispatchEvent(new Event('beforeinput'))
+    shellOutput!('make\r\nbuilt ok\r\n')
+  })
+
+  await waitFor(() => expect(saved()).toContain('$ make'), { timeout: 2000 })
 })
