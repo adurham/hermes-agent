@@ -2163,9 +2163,12 @@ DEFAULT_CONFIG = {
             # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a
             # name+description manifest when it fits the budget (degrades to names-only); tier 2
             # (over budget even names-only, e.g. ~3,300-tool APIs) = bare bridge + a
-            # one-line-per-server summary (name + tool count). "auto"|"on" = activate when at least
-            # one deferred tool exists ("auto" is an alias of "on" today, reserved for a future
-            # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
+            # one-line-per-server summary (name + tool count). "on" = activate when at least one
+            # deferred tool exists. FORK: "auto" is NOT an alias of "on" — it keeps a
+            # budget-gated mode (tools/tool_search.py::should_activate): it activates only when the
+            # deferrable schemas would consume ``threshold_pct`` of the model's context (20K tokens
+            # when the context length is unknown), so a handful of small deferred tools does not buy
+            # every session the bridge indirection. An explicit defer list overrides the threshold.
             # "off" = pass-through, no bridge.
             "enabled": "auto",
             # Listing budget as % of the model's context length; effective budget = min(this % of

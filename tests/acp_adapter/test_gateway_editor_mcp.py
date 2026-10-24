@@ -39,13 +39,18 @@ class MCPModelPeer(BaseHTTPRequestHandler):
         # The fork registers MCP tools under the bare ``<ledgerServer>_<tool>`` name
         # (``editor_<server>_<tag>_echo``), with no ``mcp__`` prefix.
         editor_tool = r'\beditor_[a-z0-9_]+_[0-9a-f]{8}_echo\b'
-        names = [t['function']['name'] for t in request.get('tools', [])
-                 if re.fullmatch(editor_tool, t['function']['name'])]
-        if not names:
-            names = re.findall(editor_tool, json.dumps(results))
+        direct = [t['function']['name'] for t in request.get('tools', [])
+                  if re.fullmatch(editor_tool, t['function']['name'])]
+        names = re.findall(editor_tool, json.dumps(results))
         finished = next((m['content'] for m in results if 'OWNED_RESULT_' in str(m['content'])), None)
         message = {'role': 'assistant', 'content': 'DONE ' + str(finished)}
-        if not finished:
+        if not finished and direct:
+            # The fork's ``tool_search: auto`` keeps a size threshold (tools/tool_search.should_activate),
+            # so one small editor tool stays eager in the tools array: call it directly.
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'mcp-fixture-' + str(len(results)), 'type': 'function',
+                'function': {'name': direct[0], 'arguments': '{}'}}]}
+        elif not finished:
             message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                 'id': 'mcp-fixture-' + str(len(results)), 'type': 'function', 'function': {
                     'name': ('tool_describe' if len(results) == 1 else 'tool_call') if names else 'tool_search',
