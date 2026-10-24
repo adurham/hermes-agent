@@ -21,7 +21,6 @@ def cron_home(tmp_path, monkeypatch):
     (home / "cron").mkdir(parents=True)
     (home / "scripts").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(J, "HERMES_DIR", home)
     monkeypatch.setattr(J, "CRON_DIR", home / "cron")
     monkeypatch.setattr(J, "JOBS_FILE", home / "cron" / "jobs.json")
     monkeypatch.setattr(J, "OUTPUT_DIR", home / "cron" / "output")

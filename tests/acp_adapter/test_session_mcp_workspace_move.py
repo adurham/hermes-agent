@@ -7,7 +7,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from gateway.session_policy import policy_scope
-from tests.acp_adapter.test_session_mcp_policy import owner, policy
+from tests.acp_adapter.test_session_mcp_policy import mcp_tool_names, owner, policy
 
 
 def test_workspace_move_respawns_held_stdio_servers_in_the_new_folder(server_spec, tmp_path):
@@ -24,7 +24,7 @@ def test_workspace_move_respawns_held_stdio_servers_in_the_new_folder(server_spe
     before = policy(authority, 'moved', server_spec, old)
     try:
         with policy_scope(before, authority=authority):
-            name = next(n for n in registry.get_all_tool_names() if n.startswith('mcp__'))
+            name = next(iter(mcp_tool_names()))
             assert str(old.resolve()) in registry.dispatch(name, {})
         # What a committed ``workspace`` mutation freezes: the same editor selection, a new cwd.
         moved = replace(before, cwd=str(new))

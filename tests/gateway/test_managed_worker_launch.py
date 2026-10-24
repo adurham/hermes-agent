@@ -256,7 +256,11 @@ def test_ordinary_owner_launches_tool_worker_and_detach_does_not_cancel(tmp_path
         assert query('SELECT status FROM worker_executions WHERE session_id=?', (sid,)) == [('terminal',)]
         assert query('SELECT COUNT(*) FROM session_turn_leases') == [(0,)]
         if worker_action == 'mcp':
-            assert all(_model_saw_tool(r, 'mcp__owned__echo') for r in peer.requests), [r.get('tools') for r in peer.requests]
+            # FORK: MCP tools register under the bare `<server>_<tool>` name (tools/mcp_tool_schema),
+            # not upstream's `mcp__<server>__<tool>` wire shape.
+            from tools.mcp_tool_schema import mcp_registered_tool_name
+            expected_mcp = mcp_registered_tool_name('owned', 'echo')
+            assert all(_model_saw_tool(r, expected_mcp) for r in peer.requests), [r.get('tools') for r in peer.requests]
         assert len(peer.requests) == (3 if peer.control_mode else 2), json.dumps([
             {'model': r.get('model'), 'roles': [m['role'] for m in r['messages']],
              'user': [str(m.get('content'))[:120] for m in r['messages'] if m['role'] == 'user']} for r in peer.requests])

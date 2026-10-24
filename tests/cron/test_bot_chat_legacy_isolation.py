@@ -18,7 +18,9 @@ def test_corrupt_legacy_record_is_isolated_and_due_job_still_fires(tmp_path, mon
     pending = home / "cron" / "bot_chat_pending"
     pending.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    for name, value in (("HERMES_DIR", home), ("CRON_DIR", home / "cron"),
+    # FORK: cron/jobs.py resolves its store per call (get_hermes_home()), so HERMES_HOME above is
+    # the redirect; there is no import-time HERMES_DIR to pin.
+    for name, value in (("CRON_DIR", home / "cron"),
                         ("JOBS_FILE", home / "cron" / "jobs.json"),
                         ("OUTPUT_DIR", home / "cron" / "output")):
         monkeypatch.setattr(J, name, value)

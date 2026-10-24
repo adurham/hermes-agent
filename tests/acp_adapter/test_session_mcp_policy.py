@@ -10,6 +10,17 @@ from gateway.session_policy import build_policy, bind_launch_key, policy_scope, 
 from hermes_state_runtime import RuntimeStoreError
 
 
+def mcp_tool_names():
+    """Every MCP-registered tool visible in the current scope, identified by provenance.
+
+    The fork registers MCP tools under a bare ``<server>_<tool>`` name (no ``mcp__`` prefix, see
+    ``tools.mcp_tool_schema.mcp_registered_tool_name``), so the name alone cannot tell an MCP tool
+    from a built-in; the ``mcp-<server>`` toolset it was registered under can."""
+    from tools.registry import registry
+    return [n for n in registry.get_all_tool_names()
+            if (registry.get_toolset_for_tool(n) or '').startswith('mcp-')]
+
+
 def owner():
     return SimpleNamespace(instance_id='owned', epoch=1, profile_id='owned-profile')
 
@@ -33,7 +44,7 @@ def test_opposing_editors_freeze_tools_and_release_only_their_session(server_spe
     released = threading.Event()
     def run(p, marker):
         with policy_scope(p, authority=authority):
-            names = [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
+            names = mcp_tool_names()
             assert len(names) == 1
             ready.wait(timeout=20)
             if marker == 'PRIVATE_B':
@@ -68,6 +79,6 @@ def test_cold_editor_rebind_requires_exact_borrowed_config(server_spec, tmp_path
         attach_editor_mcp(authority, cold, [changed])
     attach_editor_mcp(authority, cold, [server_spec])
     with policy_scope(cold, authority=authority):
-        names = [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
+        names = mcp_tool_names()
         assert 'PRIVATE_A' in registry.dispatch(names[0], {})
     assert cold.toolsets == original.toolsets

@@ -798,6 +798,9 @@ _MESSAGE_FIELDS = frozenset({
     'codex_reasoning_items', 'codex_message_items', 'platform_message_id', 'message_id',
     'observed', 'effect_disposition', '_compressed_summary', 'timestamp', 'api_content',
     'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW, DATA_USE,
+    # FORK: Claude thinking-signature replay blocks persist per assistant row (hermes_state_messages
+    # writes the column); a worker's transcript.append carries the key, so the closed set must admit it.
+    'anthropic_content_blocks',
     # Main's durable message identity (message_uid / merge witness / tool-call uids) and the alternation
     # repair's row counts ride every persisted dict; the owner's insert and coverage read them.
 }) | PERSISTENCE_ONLY_MESSAGE_FIELDS | {ABSORBED_ROW_IDS}
@@ -910,6 +913,49 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     return {'value': None}
 
 
+def _worker_api_call(db, conn, session_id, payload):
+    """One ``api_calls`` telemetry row (fork table) from a managed worker.
+
+    Same INSERT the owner's ``SessionDB.record_api_call`` performs, on the worker's own
+    connection/transaction; the payload is validated here because a worker outbox is replayable
+    input, not trusted code.
+    """
+    import json as _json
+    allowed = {'call_seq', 'started_at', 'ended_at', 'model', 'provider', 'input_tokens',
+               'cache_read_tokens', 'cache_write_tokens', 'output_tokens', 'reasoning_tokens',
+               'request_id', 'stop_reason', 'call_type', 'extra'}
+    if set(payload) - allowed:
+        raise RuntimeStoreError('invalid_params')
+    for key in ('call_seq', 'started_at', 'ended_at'):
+        if key not in payload:
+            raise RuntimeStoreError('invalid_params')
+    latency = max(0.0, float(payload['ended_at']) - float(payload['started_at']))
+    prompt_total = (int(payload.get('input_tokens') or 0) + int(payload.get('cache_read_tokens') or 0)
+                    + int(payload.get('cache_write_tokens') or 0))
+    conn.execute(
+        """
+        INSERT INTO api_calls (
+            session_id, call_seq, started_at, ended_at,
+            latency_seconds, model, provider,
+            input_tokens, cache_read_tokens, cache_write_tokens,
+            output_tokens, reasoning_tokens, prompt_tokens_total,
+            request_id, stop_reason, call_type, extra
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id, int(payload['call_seq']), float(payload['started_at']), float(payload['ended_at']),
+            latency, payload.get('model'), payload.get('provider'),
+            int(payload.get('input_tokens') or 0), int(payload.get('cache_read_tokens') or 0),
+            int(payload.get('cache_write_tokens') or 0), int(payload.get('output_tokens') or 0),
+            int(payload.get('reasoning_tokens') or 0), prompt_total,
+            payload.get('request_id'), payload.get('stop_reason'),
+            payload.get('call_type') or 'main',
+            _json.dumps(payload.get('extra') or {}, default=str),
+        ),
+    )
+    return {'value': None}
+
+
 def _worker_finish(db, conn, session_id, payload):
     if payload:
         raise RuntimeStoreError('invalid_params')
@@ -935,6 +981,7 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
         'transcript.append': _worker_append,
         'execution.finish': _worker_finish,
         'usage.main': _worker_usage,
+        'api.calls': _worker_api_call,
         'usage.auxiliary': lambda db, conn, sid, p: _worker_usage(db, conn, sid, p, auxiliary=True),
         **{name: (lambda db, conn, sid, p, op=name: _worker_turn(db, conn, sid, p, op))
            for name in ('turn.acquire', 'turn.renew', 'turn.release')},

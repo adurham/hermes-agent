@@ -4,7 +4,7 @@ import sys
 import time
 
 from gateway.session_policy import build_policy, bind_launch_key, policy_scope
-from tests.acp_adapter.test_session_mcp_policy import owner
+from tests.acp_adapter.test_session_mcp_policy import mcp_tool_names, owner
 
 
 def _policy(authority, sid, specs, tmp_path):
@@ -15,8 +15,7 @@ def _policy(authority, sid, specs, tmp_path):
 
 
 def _editor_tools():
-    from tools.registry import registry
-    return [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
+    return mcp_tool_names()
 
 
 def test_a_broken_editor_server_is_left_out_of_the_session(server_spec, tmp_path):
@@ -41,7 +40,12 @@ def test_editor_tool_names_keep_the_server_name(server_spec, tmp_path, monkeypat
     p = _policy(authority, 'named', [server_spec], tmp_path)
     with policy_scope(p, authority=authority):
         (name,) = _editor_tools()
-    assert name.startswith('mcp__editor_same_editor_name_') and name.endswith('__echo')
+    # Registered under the fork's bare ``<server>_<tool>`` name, where the ledger server name keeps
+    # the editor's own server name plus a per-session tag.
+    from tools.mcp_tool_schema import mcp_registered_tool_name
+    (ledger,) = json.loads(p.editor_mcp_json)['names'].values()
+    assert ledger.startswith('editor_same_editor_name_')
+    assert name == mcp_registered_tool_name(ledger, 'echo')
     # A manifest frozen before names were recorded keeps executing under the names it froze.
     import gateway.session_local_mcp as local_mcp
     import hashlib

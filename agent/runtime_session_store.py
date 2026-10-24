@@ -404,6 +404,12 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         self._session(session_id)
         self._apply('usage.auxiliary', dict(usage, task=task))
 
+    def record_api_call(self, session_id, **payload):
+        # Per-call telemetry (fork's api_calls table) is a best-effort row on the owner's DB; a
+        # managed worker journals the same payload through its own mutation verb.
+        self._session(session_id)
+        self._apply('api.calls', payload)
+
     def flush_token_counts(self, timeout=5.0):
         with self.lock:
             if self.failure:

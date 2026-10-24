@@ -11,7 +11,7 @@ import pytest
 
 from gateway.session_policy import policy_scope
 from hermes_state_runtime import RuntimeStoreError
-from tests.acp_adapter.test_session_mcp_policy import owner, policy
+from tests.acp_adapter.test_session_mcp_policy import mcp_tool_names, owner, policy
 
 
 def _editor_servers():
@@ -36,7 +36,7 @@ def test_changed_credentials_with_equal_schemas_keep_the_manifest(server_spec, t
     assert 'PRIVATE_B' not in after.editor_mcp_json
     attach_editor_mcp(authority, after, [changed])
     with policy_scope(after, authority=authority):
-        names = [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
+        names = mcp_tool_names()
         assert 'PRIVATE_B' in registry.dispatch(names[0], {})
 
 

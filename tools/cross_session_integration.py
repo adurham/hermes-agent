@@ -167,6 +167,21 @@ def install_transport() -> None:
         logger.debug("cross_session lookup registration failed: %s", exc)
 
 
+def _gateway_owned_worker(agent: Any) -> bool:
+    """True when ``agent`` runs inside a managed worker.
+
+    A worker's ``_session_db`` is the owner's RPC facade (``RuntimeSessionStore``), not a
+    connection: the gateway's worker invariant forbids the worker opening state.db itself.
+    Cross-session delivery and the registry heartbeat are the OWNER's job for the sessions it
+    runs, and a worker's liveness is already its ``worker_executions`` row.
+    """
+    try:
+        from agent.runtime_session_store import RuntimeSessionStore
+    except Exception:
+        return False
+    return isinstance(getattr(agent, "_session_db", None), RuntimeSessionStore)
+
+
 def heartbeat_if_due(agent: Any, *, now: Optional[float] = None) -> bool:
     """Upsert this session's registry row, at most once per heartbeat window.
 
@@ -182,6 +197,8 @@ def heartbeat_if_due(agent: Any, *, now: Optional[float] = None) -> bool:
     if not session_id:
         return False
 
+    if _gateway_owned_worker(agent):
+        return False
     ts = float(now if now is not None else time.time())
     last = getattr(agent, "_cross_session_last_heartbeat", 0.0) or 0.0
     if (ts - last) < CROSS_SESSION_HEARTBEAT_SECONDS:
@@ -319,7 +336,7 @@ def drain_into_pending_steer(
     an additional outer wrapper, never a replacement for the cross-agent one.
     """
     session_id = getattr(agent, "session_id", "") or ""
-    if not session_id or is_subagent(agent):
+    if not session_id or is_subagent(agent) or _gateway_owned_worker(agent):
         return 0
 
     messages = _drain(session_id, on_held=on_held, now=now)
