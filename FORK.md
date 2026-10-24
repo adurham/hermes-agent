@@ -151,11 +151,11 @@ merge (`51f17ea7b88`), and each names its detector so a future sync can run the 
   fork's exact-roster assertion needed.
 
 **Residual, not merge-caused:** `tests/agent/test_compaction_prompt_rebuild.py` and
-`tests/ci/test_*publication*.py` / `test_prompt_surface.py` are red on the pristine tag in this
-workstation env (checked tree-by-tree); `tests/agent/lsp/test_workspace_release.py` and
-`tests/acp_adapter/test_gateway_compressed_reopen.py` pass in isolation and fail only inside a
-whole-directory run. On the desktop, `src/store/dead-session-prune.test.ts` fails on a file byte-identical
-to the tag.
+`tests/ci/test_*publication*.py` / `test_prompt_surface.py` are red on the pristine tag in this workstation
+env (checked tree-by-tree). `tests/acp_adapter/test_gateway_compressed_reopen.py` is upstream's own
+order-dependence: it passes alone and fails when any of nine other acp files runs first, reproduced on a
+`git archive v0.22.5` export — the sanctioned runner isolates every file, so it does not surface there.
+On the desktop, `src/store/dead-session-prune.test.ts` fails on a file byte-identical to the tag.
 
 **Behaviour the owner should know about** (adopted from upstream, each reversible at the named site):
 cron bot-chat delivery parks instead of falling back to the local `hermes chat` CLI; `/stop <id>` still
