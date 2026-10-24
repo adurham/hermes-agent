@@ -158,13 +158,3 @@ def test_a_webapp_public_url_without_sign_in_leaves_native_clients_a_listener(tm
     assert "webapp.public_url" in report["status"]["reason"]
     assert "dashboard.public_url" not in report["status"]["reason"]
 
-
-def test_a_refused_cookie_write_names_the_setting_its_surface_reads():
-    # Behind a reverse proxy the fix is the public URL that listener reads: webapp.public_url on the
-    # gateway's Webapp, dashboard.public_url on the standalone dashboard.
-    from hermes_cli.dashboard_auth.middleware import _cross_origin_write_detail
-
-    webapp = _cross_origin_write_detail(SimpleNamespace(ui_surface="webapp"))
-    dashboard = _cross_origin_write_detail(SimpleNamespace())
-    assert "webapp.public_url" in webapp and "dashboard.public_url" not in webapp
-    assert "dashboard.public_url" in dashboard

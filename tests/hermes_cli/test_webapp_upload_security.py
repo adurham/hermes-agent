@@ -1,6 +1,9 @@
-"""Real ASGI checks of the dashboard's same-origin gate for cookie-authenticated writes.
+"""Real ASGI checks of the Webapp's same-origin gate for cookie-authenticated writes.
 
-The pre-parser upload limit on the same routes is covered in ``test_webapp_upload_limit.py``.
+Behind the sign-in gate, the gateway's Webapp (``ui_surface == "webapp"``) refuses a write that
+carries the session cookie unless it comes from the Webapp's own origin; the standalone dashboard
+keeps main's rule (``test_dashboard_auth_middleware``). The pre-parser upload limit on the same
+routes is covered in ``test_webapp_upload_limit.py``.
 """
 
 from __future__ import annotations
@@ -27,6 +30,10 @@ def upload_app(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
     monkeypatch.setattr(web_server.app.state, "bound_host", "0.0.0.0", raising=False)
     monkeypatch.setattr(web_server.app.state, "trusted_public_hosts", frozenset(), raising=False)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    monkeypatch.setattr(web_server.app.state, "listener_public_url", "", raising=False)
+    if hasattr(web_server.app.state, "webapp_home"):
+        monkeypatch.delattr(web_server.app.state, "webapp_home")
     clear_providers()
     register_provider(StubAuthProvider())
     # Observe the actual parser's open files, retaining references so GC cannot
@@ -93,18 +100,20 @@ def test_cookie_upload_requires_exact_http_origin(upload_app, headers):
     asyncio.run(run())
 
 
-def test_cookie_same_origin_refresh_and_bearer_uploads_work(upload_app):
+def test_cookie_same_origin_and_refresh_uploads_work(upload_app):
+    """The Webapp's own page uploads with its cookie session, before and after a refresh. (A bearer
+    token skips the origin check; on the Webapp only a native app's own sign-in has one that works,
+    covered in ``tests/gateway/test_webapp_cookie_writes.py``.)"""
     home, spools = upload_app
 
     async def run():
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=web_server.app), base_url="https://dashboard.example.com"
         ) as client:
-            token = await _login(client)
+            await _login(client)
             for headers in (
                 {"Origin": "https://dashboard.example.com:443"},
-                {"Authorization": f"Bearer {token}"},
-                {"Authorization": f"Bearer {token}", "Origin": "null"},
+                {"Origin": "https://dashboard.example.com", "Sec-Fetch-Site": "same-origin"},
             ):
                 response = await client.post(
                     "/api/chat/file-upload", files={"file": ("ok.txt", b"allowed")}, headers=headers
@@ -128,7 +137,7 @@ def test_cookie_same_origin_refresh_and_bearer_uploads_work(upload_app):
                 headers={"Origin": "https://dashboard.example.com"},
             )
             assert response.status_code == 200, response.text
-        assert len(list((home / "uploads").iterdir())) == 4
+        assert len(list((home / "uploads").iterdir())) == 3
         assert all(s.closed for s in spools)
 
     asyncio.run(run())
@@ -177,7 +186,6 @@ def test_cookie_unsafe_methods_and_logout_but_not_auth_bootstrap(upload_app):
 def test_cookie_upload_accepts_trusted_proxy_origin_only(upload_app, monkeypatch, public_url):
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-    home, _ = upload_app
     monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1")
     monkeypatch.setattr(web_server.app.state, "trusted_public_hosts", frozenset({"dashboard.example.com"}))
 
@@ -188,9 +196,8 @@ def test_cookie_upload_accepts_trusted_proxy_origin_only(upload_app, monkeypatch
         ) as client:
             await _login(client)
             if public_url:
-                (home / "config.yaml").write_text(
-                    "dashboard:\n  public_url: https://dashboard.example.com:8443/hermes\n"
-                )
+                monkeypatch.setattr(web_server.app.state, "listener_public_url",
+                                    "https://dashboard.example.com:8443/hermes")
             host = "127.0.0.1:9119" if public_url else "dashboard.example.com:8443"
             headers = {"X-Forwarded-Prefix": "/hermes", "Host": host, "X-Forwarded-Proto": "https"}
             for origin, expected in (

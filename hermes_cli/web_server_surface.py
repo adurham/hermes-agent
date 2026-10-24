@@ -26,15 +26,21 @@ class SurfacePolicy:
     #: ``/api/webapp/socket-ticket`` mints the browser's one-use tickets for ``/api/ws`` and the voice
     #: streams on this same origin (accepted by the loopback and gated upgrade gates alike).
     gateway_ticket: bool
+    #: Behind the sign-in gate, a write that carries the session cookie (``/auth/logout`` included)
+    #: must come from this listener's own origin. Elsewhere the gate keeps main's rule.
+    own_origin_cookie_writes: bool
 
 
 POLICIES: dict[str, SurfacePolicy] = {
     "serve": SurfacePolicy(
-        serves_spa=False, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False),
+        serves_spa=False, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False,
+        own_origin_cookie_writes=False),
     "dashboard": SurfacePolicy(
-        serves_spa=True, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False),
+        serves_spa=True, html_token=True, host_terminal=False, launch_link=False, gateway_ticket=False,
+        own_origin_cookie_writes=False),
     "webapp": SurfacePolicy(
-        serves_spa=True, html_token=False, host_terminal=True, launch_link=True, gateway_ticket=True),
+        serves_spa=True, html_token=False, host_terminal=True, launch_link=True, gateway_ticket=True,
+        own_origin_cookie_writes=True),
 }
 
 

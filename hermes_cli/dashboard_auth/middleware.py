@@ -6,7 +6,8 @@ the auth-bootstrap routes and static assets through unauthenticated; for
 everything else demands a bearer token or a valid session cookie and attaches
 the verified :class:`Session` to ``request.state.session``. On the gateway's
 Webapp a cookie session also needs its sign-in binding to the browser credential
-(``hermes_cli.webapp_sign_in``). HTML routes are
+(``hermes_cli.webapp_sign_in``), and its cookie writes, sign-out included, must come
+from the Webapp's own origin. HTML routes are
 redirected to ``/login``; ``/api/*`` routes get a 401 JSON envelope.
 """
 from __future__ import annotations
@@ -72,14 +73,16 @@ def _safe_next_target(request: Request) -> str:
     return quote(f"{path}?{query}" if query else path, safe="")
 
 
-def _cross_origin_write_detail(state: object) -> str:
-    """The 403 detail for a cookie write from another origin, naming the public URL setting the
-    listener reads: ``webapp.public_url`` on the gateway's Webapp, ``dashboard.public_url`` elsewhere."""
-    if getattr(state, "ui_surface", None) == "webapp":
-        return ("Cookie-authenticated writes must come from the Webapp's own origin. "
-                "Behind a reverse proxy, set webapp.public_url to the URL the browser uses.")
-    return ("Cookie-authenticated writes must come from the dashboard's own origin. "
-            "Behind a reverse proxy, set dashboard.public_url to the URL the browser uses.")
+#: The 403 detail for a cookie write from another origin; only the gateway's Webapp checks
+#: (``SurfacePolicy.own_origin_cookie_writes``), so it names the public URL that listener reads.
+_CROSS_ORIGIN_WRITE_DETAIL = ("Cookie-authenticated writes must come from the Webapp's own origin. "
+                              "Behind a reverse proxy, set webapp.public_url to the URL the browser uses.")
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+
+def _own_origin_writes(request: Request) -> bool:
+    from hermes_cli.web_server_surface import policy
+    return policy(request.app.state).own_origin_cookie_writes
 
 
 def _unauth_response(request: Request, *, reason: str) -> Response:
@@ -184,9 +187,11 @@ async def gated_auth_middleware(
     if (getattr(request.state, "token_authenticated", False)
             or getattr(request.state, "native_http_principal", None)):
         return await call_next(request)
-    # Login/callback routes have their own credentials/state checks. Logout
-    # is public so an expired session can leave, but still consumes cookies.
-    cookie_logout = request.url.path == "/auth/logout"
+    # Login/callback routes have their own credentials/state checks. Logout is public so an
+    # expired session can leave; where cookie writes must come from the listener's own origin it
+    # still consumes cookies, so it goes through that check.
+    own_origin = _own_origin_writes(request)
+    cookie_logout = own_origin and request.url.path == "/auth/logout"
     if _path_is_public(request.url.path) and not cookie_logout:
         return await call_next(request)
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
@@ -212,8 +217,9 @@ async def gated_auth_middleware(
     gateway = webapp_sign_in.cookie_gateway(request)
     at, _rt = read_session_cookies(request, gateway)
     provider_hint = read_session_provider(request, gateway)
-    if (at or _rt) and request.method not in {"GET", "HEAD", "OPTIONS", "TRACE"} and not cookie_origin_is_allowed(request):
-        return JSONResponse(status_code=403, content={"detail": _cross_origin_write_detail(request.app.state)})
+    if (own_origin and (at or _rt) and request.method not in _SAFE_METHODS
+            and not cookie_origin_is_allowed(request)):
+        return JSONResponse(status_code=403, content={"detail": _CROSS_ORIGIN_WRITE_DETAIL})
     if cookie_logout:
         return await call_next(request)
     if not at and not _rt:

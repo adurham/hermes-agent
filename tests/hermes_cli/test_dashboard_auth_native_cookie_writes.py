@@ -2,10 +2,11 @@
 
 Installed Desktop builds reach password-gated gateways (and Cloud agents signed in
 through the silent cookie flow) with Electron ``net.request``, which sends the session
-cookie but never an Origin. Those writes, ws-ticket mints included, are admitted; a 403
-would read to Desktop as an expired session. The header shapes below are what Electron
-40.10.2 sends on the wire. A browser page's write always carries Origin, so page-shaped
-requests stay refused.
+cookie but never an Origin. Those writes, ws-ticket mints included, are admitted on every
+surface; a 403 would read to Desktop as an expired session. The header shapes below are what
+Electron 40.10.2 sends on the wire. On the gateway's Webapp a browser page's write always
+carries Origin, so page-shaped requests from another origin stay refused there (the standalone
+dashboard keeps main's rule, pinned in ``test_dashboard_auth_middleware``).
 """
 from __future__ import annotations
 
@@ -35,13 +36,20 @@ def password_hash():
     return basic_plugin.hash_password("hunter2")
 
 
-@pytest.fixture
-def password_gate(password_hash, monkeypatch):
-    """An all-interfaces gateway gated by the bundled username/password provider."""
+@pytest.fixture(params=["dashboard", "webapp"])
+def password_gate(request, password_hash, monkeypatch):
+    """An all-interfaces listener gated by the bundled username/password provider: the standalone
+    dashboard, or the gateway's Webapp (``ui_surface``), as the test's parameter says."""
     monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
     for key, value in (("bound_host", "0.0.0.0"), ("bound_port", 9119), ("auth_required", True),
                        ("trusted_public_hosts", frozenset())):
         monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    for key in ("ui_surface", "listener_public_url", "webapp_home"):
+        if hasattr(web_server.app.state, key):
+            monkeypatch.delattr(web_server.app.state, key)
+    if request.param == "webapp":
+        monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+        monkeypatch.setattr(web_server.app.state, "listener_public_url", "", raising=False)
     clear_providers()
     register_provider(basic_plugin.BasicAuthProvider(
         username="admin", password_hash=password_hash, secret=b"s" * 32))
@@ -95,7 +103,8 @@ def test_native_cookie_session_mints_tickets_writes_config_and_refreshes(passwor
     pytest.param(PLAIN_HTTP_REMOTE, {"Origin": "http://192.168.50.220:8080"}, id="http-sibling-port"),
     pytest.param(PLAIN_HTTP_REMOTE, {"Origin": "null"}, id="http-no-referrer-form"),
 ])
-def test_page_shaped_cookie_writes_stay_refused(password_gate, base_url, headers):
+@pytest.mark.parametrize("password_gate", ["webapp"], indirect=True)
+def test_page_shaped_cookie_writes_stay_refused_on_the_webapp(password_gate, base_url, headers):
     client = _signed_in(base_url)
 
     ticket = client.post("/api/auth/ws-ticket", headers=headers)
