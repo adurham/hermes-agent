@@ -185,7 +185,9 @@ def mount_spa(application: FastAPI):
                 return JSONResponse({"error": stale}, status_code=503, headers=_NO_STORE)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(application.state, "auth_required", False))
-        surface = getattr(application.state, "ui_surface", "dashboard")
+        # Only a host that records its surface (the gateway's Webapp) names it to the page.
+        surface = getattr(application.state, "ui_surface", None)
+        surface_js = "" if surface is None else f"window.__HERMES_UI_SURFACE__={json.dumps(surface)};"
         # Webapp grants host files and shell.exec as well as PTYs: its existing
         # session token must come from the operator, never anonymous HTML. The
         # gateway-hosted listener (gateway/run_api.py) never publishes it either:
@@ -208,7 +210,7 @@ def mount_spa(application: FastAPI):
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
             f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
-            f"window.__HERMES_UI_SURFACE__={json.dumps(surface)};"
+            f"{surface_js}"
             f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"
             f"</script>"
         )
@@ -269,7 +271,8 @@ def mount_spa(application: FastAPI):
         # real 404 JSON instead of index.html (which breaks JSON clients with a SyntaxError).
         if full_path == "api" or full_path.startswith("api/"):
             return JSONResponse({"detail": f"No such API endpoint: /{full_path}"}, status_code=404)
-        if full_path == "index.html":
+        if full_path == "index.html" and not policy(application.state).html_token:
+            # Where HTML may not carry the session token, no entry serves the raw file.
             return _serve_index(prefix)
         dist = web_dist()
         file_path = dist / full_path

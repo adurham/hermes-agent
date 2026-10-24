@@ -30,10 +30,12 @@ def test_bootstrap_token_visibility(monkeypatch, tmp_path, surface, gated, headl
     client = TestClient(application)
     for path in ("/", "/chat", "/settings", "/index.html"):
         response = client.get(path)
-        should_inject = not gated and surface != "webapp" and (not headless or path == "/")
+        # The dashboard serves its built /index.html as on main; only the Webapp bootstraps it too.
+        raw = path == "/index.html" and surface != "webapp"
+        should_inject = not gated and surface != "webapp" and not raw and (not headless or path == "/")
         assert (server._SESSION_TOKEN in response.text) is should_inject
         assert server._SESSION_TOKEN not in str(response.headers)
-        if not headless:
+        if not headless and not raw:
             profile_js = json.dumps(serving_profile).replace("</", "<\\/")
             assert f"window.__HERMES_DASHBOARD_PROFILE__={profile_js};" in response.text
         if surface == "webapp" and not headless:
