@@ -20,7 +20,7 @@ from typing import Optional
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from pathlib import Path
 from typing import Optional
-from hermes_cli.pty_session import PtySessionRegistry, WS_CLOSE_PROCESS_EXITED
+from hermes_cli.pty_session import PtySessionRegistry
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -72,12 +72,10 @@ async def _legacy_pump(ws: WebSocket, bridge) -> None:
     loop = asyncio.get_running_loop()
 
     async def pump_pty_to_ws() -> None:
-        process_exited = False
         try:
             while True:
                 chunk = await loop.run_in_executor(None, bridge.read, _PTY_READ_CHUNK_TIMEOUT)
                 if chunk is None:  # EOF
-                    process_exited = True
                     return
                 if not chunk:  # no data this tick; yield control and retry
                     await asyncio.sleep(_PTY_IDLE_BACKOFF)
@@ -97,7 +95,7 @@ async def _legacy_pump(ws: WebSocket, bridge) -> None:
                 # reap independent of that cancellation race (#54028).
                 await asyncio.to_thread(bridge.close)
             with contextlib.suppress(Exception):
-                await ws.close(code=WS_CLOSE_PROCESS_EXITED if process_exited else 1000)
+                await ws.close()
 
     reader_task = asyncio.create_task(pump_pty_to_ws())
 
