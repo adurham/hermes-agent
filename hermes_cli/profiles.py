@@ -40,10 +40,10 @@ _CLONE_CONFIG_FILES = ["config.yaml", ".env", "SOUL.md"]
 # identity, as important as SOUL.md for continuity.
 _CLONE_SUBDIR_FILES = ["memories/MEMORY.md", "memories/USER.md"]
 
-# Runtime files stripped after --clone-all, the Webapp's browser credential among them (each gateway
-# mints its own). A post-copy step: they are created dynamically and may be absent at copy time.
+# Runtime files stripped after --clone-all. A post-copy step rather than an ignore filter
+# because they are created dynamically and may be absent at copy time.
 _CLONE_ALL_STRIP: list[str] = [
-    "gateway.pid", "gateway_state.json", "processes.json", "webapp/session-token",
+    "gateway.pid", "gateway_state.json", "processes.json",
     # Bot Desktop runtime identity: pid + create_time of the SOURCE's launcher, its DISPLAY/XAUTHORITY and
     # lease. Copied verbatim, `screen stop` on the clone would kill the source's X server. Browser user data
     # stays, but Chromium's process markers must not let the clone attach to the source's live browser.
@@ -85,7 +85,7 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
 # duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
-    "cron",
+    "cron", "webapp",  # webapp/: the source gateway's sign-in state (credential, native grants, Portal callback)
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,

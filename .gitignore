@@ -250,6 +250,7 @@ docs/superpowers/*
 /profiles/
 /credentials/
 /mcp-tokens/
+/webapp/
 /pairing/
 /platforms/
 /backups/
