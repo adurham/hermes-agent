@@ -99,14 +99,20 @@ def _validate_post_login_target(raw: str) -> str:
 
 
 def _set_pkce(resp, request: Request, payload: dict[str, str]) -> None:
-    set_pkce_cookie(resp, payload=payload, use_https=detect_https(request), prefix=_prefix(request))
+    set_pkce_cookie(resp, payload=payload, use_https=detect_https(request), prefix=_prefix(request),
+                    gateway=webapp_sign_in.cookie_gateway(request))
+
+
+def _clear_pkce(resp, request: Request) -> None:
+    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request),
+                      gateway=webapp_sign_in.cookie_gateway(request))
 
 
 def _set_session(resp, request: Request, session: Session) -> None:
     set_session_cookies(
         resp, access_token=session.access_token, refresh_token=session.refresh_token,
         access_token_expires_in=access_token_max_age(session), use_https=detect_https(request),
-        prefix=_prefix(request), provider=session.provider)
+        prefix=_prefix(request), provider=session.provider, gateway=webapp_sign_in.cookie_gateway(request))
     webapp_sign_in.bind(resp, request)
 
 
@@ -341,7 +347,7 @@ async def auth_native_authorize(
 async def auth_callback(
     request: Request, code: str = "", state: str = "", error: str = "",
     error_description: str = ""):
-    pkce_raw = read_pkce_cookie(request)
+    pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
     if not pkce_raw:
         _audit(request, AuditEvent.LOGIN_FAILURE, reason="missing_pkce_cookie")
         raise _http(400, "Missing PKCE state cookie")
@@ -374,10 +380,9 @@ async def auth_callback(
     resp = RedirectResponse(url=target, status_code=302)
     if not native:
         _set_session(resp, request, session)
-    prefix = _prefix(request)
-    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
+    _clear_pkce(resp, request)
     # Clear the one-shot auto-SSO loop-guard so it never suppresses a future silent attempt.
-    clear_sso_attempt_cookie(resp, prefix=prefix)
+    clear_sso_attempt_cookie(resp, prefix=_prefix(request), gateway=webapp_sign_in.cookie_gateway(request))
     return resp
 
 
@@ -466,7 +471,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     # The native broker handle also records WHICH provider the flow was started for. Enforce
     # equality BEFORE verifying credentials so a flow started for provider A cannot be completed
     # with provider B's credentials.
-    pkce_raw = read_pkce_cookie(request)
+    pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
     pkce_parts = parse_pkce_payload(pkce_raw) if pkce_raw else {}
     broker_state = pkce_parts.get("broker", "")
     if broker_state and pkce_parts.get("provider", "") != body.provider:
@@ -489,7 +494,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         request, body.provider, session, broker_state=broker_state, next_raw=body.next)
     resp = JSONResponse({"ok": True, "next": target})
     if native:
-        clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
+        _clear_pkce(resp, request)
     else:
         _set_session(resp, request, session)
     return resp
@@ -497,7 +502,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
 
 @router.post("/auth/logout", name="auth_logout")
 async def auth_logout(request: Request):
-    _at, rt = read_session_cookies(request)
+    _at, rt = read_session_cookies(request, webapp_sign_in.cookie_gateway(request))
     # Best-effort revoke on every provider; failures logged, never raised.
     for provider in list_providers() if rt else ():
         try:
@@ -509,8 +514,8 @@ async def auth_logout(request: Request):
            user_id=(sess.user_id if sess else ""))
     prefix = _prefix(request)
     resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
-    clear_session_cookies(resp, prefix=prefix)
-    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
+    clear_session_cookies(resp, prefix=prefix, gateway=webapp_sign_in.cookie_gateway(request))
+    _clear_pkce(resp, request)
     return resp
 
 

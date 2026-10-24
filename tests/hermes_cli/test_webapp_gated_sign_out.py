@@ -215,6 +215,63 @@ def test_two_gateways_on_one_hostname_keep_their_own_sign_ins(gated, monkeypatch
     assert browser.get(at(9120, "/api/auth/me")).status_code == 200
 
 
+def test_two_gateways_with_their_own_sign_in_on_one_hostname_keep_their_logins_apart(gated, monkeypatch, tmp_path):
+    """The Webapp's listener names every sign-in cookie it sets for its gateway (the login's access and
+    refresh token, its provider hint and binding, the OAuth state and the auto sign-in marker), so two
+    gateways on one hostname whose sign-in providers differ (two users' or two profiles' gateways, each
+    with its own provider secret) keep their own logins in one browser: signing in to one leaves the
+    other signed in, and signing out of one in the browser leaves the other."""
+    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
+
+    state = gated.server.app.state
+    providers = {port: BasicAuthProvider(username=USER, password_hash=hash_password(PASSWORD), secret=secret * 32)
+                 for port, secret in ((9120, b"1"), (9121, b"2"))}
+    gateways = {9120: (tmp_path / ".hermes", _TOKEN), 9121: (tmp_path / "other-home", "o" * 43)}
+    browser = gated.browser()  # one cookie jar for both
+
+    def at(port, path):
+        home, token = gateways[port]
+        monkeypatch.setattr(state, "webapp_home", home)
+        monkeypatch.setattr(state, "bound_port", port)
+        monkeypatch.setattr(gated.server, "_SESSION_TOKEN", token)
+        clear_providers()
+        register_provider(providers[port])
+        return f"http://hermes.lan:{port}{path}"
+
+    for port in (9120, 9121):
+        signed_in = browser.post(at(port, "/auth/password-login"),
+                                 json={"provider": "basic", "username": USER, "password": PASSWORD})
+        assert signed_in.status_code == 200
+    assert browser.get(at(9121, "/api/auth/me")).status_code == 200
+    first = browser.get(at(9120, "/api/auth/me"))
+    assert first.status_code == 200, f"signing in to the second gateway signed the first out: {first.text}"
+    assert browser.post(at(9121, "/auth/logout"), headers={"Origin": "http://hermes.lan:9121"},
+                        follow_redirects=False).status_code == 302
+    _signed_out(browser.get(at(9121, "/api/auth/me")))
+    assert browser.get(at(9120, "/api/auth/me")).status_code == 200
+
+
+def test_the_webapp_leaves_cookies_named_for_no_gateway_to_the_dashboard(gated, monkeypatch):
+    """The standalone dashboard on the same hostname keeps main's cookie names, as did earlier builds
+    of the Webapp. The Webapp's listener neither reads nor clears them: a browser holding only such a
+    login gets the sign-in view there, and the dashboard keeps it."""
+    monkeypatch.setattr(gated.server.app.state, "ui_surface", "dashboard")
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    names = set(browser.cookies.keys())
+    assert {"hermes_session_at", "hermes_session_rt", "hermes_session_provider"} <= names
+    monkeypatch.setattr(gated.server.app.state, "ui_surface", "webapp")
+    on_webapp = browser.get("/api/auth/me")
+    _signed_out(on_webapp)
+    assert "hermes_session_at=" not in on_webapp.headers.get("set-cookie", "")
+    signed_out = browser.post("/auth/logout", headers={"Origin": WEBAPP}, follow_redirects=False)
+    assert signed_out.status_code == 302
+    assert "hermes_session_at=" not in signed_out.headers.get("set-cookie", "")
+    monkeypatch.setattr(gated.server.app.state, "ui_surface", "dashboard")
+    assert browser.get("/api/auth/me").status_code == 200
+
+
 # A browser's login keeps the sign-in provider's access and refresh token in its cookies. Copied out of
 # them they are the kind of token a native app presents as ``Authorization: Bearer`` and renews on
 # ``/auth/native/refresh``. On the Webapp's listener they work only as that login's cookies, so signing
@@ -236,10 +293,17 @@ def clock(monkeypatch):
     return advance
 
 
+def _cookie(client, bare):
+    """The name of *client*'s cookie *bare*: on the Webapp's listener followed by its gateway, elsewhere
+    as on main."""
+    return next(name for name in client.cookies.keys() if name == bare or name.startswith(f"{bare}_"))
+
+
 def _tokens(client):
     """The access and refresh token the cookie login on *client* holds, as a copy taken out of the
     browser would present them (the cookie keeps them in quotes)."""
-    return tuple(client.cookies.get(name).strip('"') for name in ("hermes_session_at", "hermes_session_rt"))
+    return tuple(client.cookies.get(_cookie(client, name)).strip('"')
+                 for name in ("hermes_session_at", "hermes_session_rt"))
 
 
 def _bearer(token):
@@ -293,7 +357,8 @@ def test_a_logins_tokens_work_only_as_its_cookies(gated, sign_in):
     assert browser.get("/api/auth/me").status_code == 200
     access, refresh = _tokens(browser)
     _refused_alone(gated, access, refresh)
-    stored = browser.cookies.get("hermes_session_at"), browser.cookies.get("hermes_session_rt")
+    stored = (browser.cookies.get(_cookie(browser, "hermes_session_at")),
+              browser.cookies.get(_cookie(browser, "hermes_session_rt")))
     _refused_alone(gated, *stored)
 
 
@@ -303,7 +368,7 @@ def test_a_pair_renewed_before_sign_out_is_refused_after_it(gated, sign_out, clo
     first = _tokens(browser)
     # The gate renews the browser's pair once its access token lapses.
     clock()
-    browser.cookies.delete("hermes_session_at")
+    browser.cookies.delete(_cookie(browser, "hermes_session_at"))
     assert browser.get("/api/auth/me").status_code == 200
     renewed = _tokens(browser)
     assert renewed[0] != first[0]

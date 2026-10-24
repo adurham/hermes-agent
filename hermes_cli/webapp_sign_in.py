@@ -2,13 +2,13 @@
 
 On the gateway's Webapp (``app.state.ui_surface == "webapp"``) with the sign-in gate engaged, every
 successful cookie login (a password login or an OAuth callback) also sets the cookie
-``hermes_webapp_signin_<gateway>`` (``<gateway>`` from a digest of the gateway's home, so two gateways'
-Webapps on one hostname keep their own): the
-hex HMAC-SHA256 of ``"webapp-sign-in"`` keyed with the browser session token the gateway serves
-(``web_server._SESSION_TOKEN``, kept in the gateway home by ``gateway.webapp_listener``). The gate treats
+``hermes_webapp_signin_<gateway>``: the hex HMAC-SHA256 of ``"webapp-sign-in"`` keyed with the browser
+session token the gateway serves (``web_server._SESSION_TOKEN``, kept in the gateway home by ``gateway.webapp_listener``). The gate treats
 a cookie session without a matching value as signed out. Replacing that token (``hermes webapp
 --sign-out``, or the CLI replacing the stored token while no gateway runs) therefore signs every browser
-out, whichever provider it signed in with.
+out, whichever provider it signed in with. ``<gateway>`` comes from a digest of the gateway's home
+(:func:`cookie_gateway`), and the Webapp's listener names every sign-in cookie it sets that way, so two
+gateways' Webapps on one hostname keep their own logins and leave the standalone dashboard's alone.
 
 A request that passes records the generation of the credential it was checked against
 (``hermes_cli.browser_credential``) on ``request.state.webapp_sign_in``; the socket tickets it mints
@@ -148,6 +148,13 @@ def _digest(token: str) -> str:
 def _home(request: Request) -> Optional[Path]:
     home = getattr(request.app.state, "webapp_home", None)
     return Path(home) if home is not None else None
+
+
+def cookie_gateway(request: Request) -> str:
+    """The suffix the gateway's Webapp gives every sign-in cookie it sets (``hermes_session_at_<it>``
+    and the rest, ``hermes_cli.dashboard_auth.cookies``): cookies are not scoped to a port. ``""`` off
+    the Webapp, where the standalone dashboard keeps main's names."""
+    return _gateway(request) if getattr(request.app.state, "ui_surface", None) == "webapp" else ""
 
 
 def _gateway(request: Request) -> str:

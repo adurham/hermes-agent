@@ -110,9 +110,10 @@ def _auto_sso_response(request: Request) -> Response | None:
     """
     if request.url.path.startswith("/api/"):
         return None
-    if read_sso_attempt_cookie(request):
+    gateway = webapp_sign_in.cookie_gateway(request)
+    if read_sso_attempt_cookie(request, gateway):
         resp = _unauth_response(request, reason="no_cookie")
-        clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request))
+        clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request), gateway=gateway)
         return resp
     providers = list_session_providers()
     if len(providers) != 1 or getattr(providers[0], "supports_password", False):
@@ -124,7 +125,7 @@ def _auto_sso_response(request: Request) -> Response | None:
     if next_param:
         auth_login = f"{auth_login}&next={next_param}"
     resp = RedirectResponse(url=auth_login, status_code=302)
-    set_sso_attempt_cookie(resp, use_https=detect_https(request), prefix=prefix)
+    set_sso_attempt_cookie(resp, use_https=detect_https(request), prefix=prefix, gateway=gateway)
     audit_log(AuditEvent.LOGIN_START, provider=provider.name, reason="auto_sso",
               ip=_client_ip(request))
     return resp
@@ -154,7 +155,8 @@ async def _serve_refreshed(request: Request, call_next, new_session, provider: s
     set_session_cookies(
         response, access_token=new_session.access_token, refresh_token=new_session.refresh_token,
         access_token_expires_in=_expires_in_seconds(new_session), use_https=detect_https(request),
-        prefix=prefix_from_request(request), provider=provider)
+        prefix=prefix_from_request(request), provider=provider,
+        gateway=webapp_sign_in.cookie_gateway(request))
     webapp_sign_in.renew(response, request)
     audit_log(AuditEvent.REFRESH_SUCCESS, provider=provider, user_id=new_session.user_id,
               ip=_client_ip(request))
@@ -167,7 +169,8 @@ def _session_expired_response(request: Request) -> Response:
     audit_log(AuditEvent.SESSION_VERIFY_FAILURE, reason="no_provider_recognises",
               ip=_client_ip(request))
     response = _unauth_response(request, reason="invalid_or_expired_session")
-    clear_session_cookies(response, prefix=prefix_from_request(request))
+    clear_session_cookies(response, prefix=prefix_from_request(request),
+                          gateway=webapp_sign_in.cookie_gateway(request))
     return response
 
 
@@ -206,8 +209,9 @@ async def gated_auth_middleware(
             return await call_next(request)
         return _unauth_response(request, reason="invalid_or_expired_session")
 
-    at, _rt = read_session_cookies(request)
-    provider_hint = read_session_provider(request)
+    gateway = webapp_sign_in.cookie_gateway(request)
+    at, _rt = read_session_cookies(request, gateway)
+    provider_hint = read_session_provider(request, gateway)
     if (at or _rt) and request.method not in {"GET", "HEAD", "OPTIONS", "TRACE"} and not cookie_origin_is_allowed(request):
         return JSONResponse(status_code=403, content={"detail": _cross_origin_write_detail(request.app.state)})
     if cookie_logout:
@@ -218,7 +222,7 @@ async def gated_auth_middleware(
         return auto if auto is not None else _unauth_response(request, reason="no_cookie")
     if webapp_sign_in.applies(request) and not webapp_sign_in.check(request):
         # A login on the gateway's Webapp holds only while the browser credential it was bound to is
-        # in use; signing out replaced it. The cookies stay: another surface on this host may use them.
+        # in use; signing out replaced it. The cookies stay and open nothing until it signs in again.
         return _unauth_response(request, reason="signed_out")
     # An absent AT with a present RT is the COMMON expiry case (the AT cookie's Max-Age tracks
     # the token TTL, so the browser evicts it first) — skip straight to refresh.
@@ -246,7 +250,7 @@ async def gated_auth_middleware(
     if not provider_hint and session.provider:
         set_session_provider_cookie(
             response, provider=session.provider, use_https=detect_https(request),
-            prefix=prefix_from_request(request))
+            prefix=prefix_from_request(request), gateway=gateway)
     return response
 
 
