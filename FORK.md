@@ -157,6 +157,35 @@ order-dependence: it passes alone and fails when any of nine other acp files run
 `git archive v0.22.5` export — the sanctioned runner isolates every file, so it does not surface there.
 On the desktop, `src/store/dead-session-prune.test.ts` fails on a file byte-identical to the tag.
 
+**Second pass — the tail the full-suite run exposed.** The first pass fixed the clusters that reproduced
+in isolation. A runner pass over the 132 failing files, diffed node-ID by node-ID against the pristine tag
+(the tag itself is 480 tests red in this workstation env), left 89 genuinely merge-caused tests and six more
+causes:
+
+- **A 359-line pre-upstream duplicate of the model-switch code in `cli.py`** shadowed the mixin's version,
+  so `/model <alias> --once` wrote the session model and never sent the one-turn `model_override`. Deleting
+  the copy restored upstream's flow; the two fork behaviours it carried (custom-endpoint `api_key`
+  persistence on `--global`, and the live in-session `reasoning_effort_by_model` map on a switch) moved
+  into `hermes_cli/cli_model_switch_mixin.py`.
+- **Interrupt folding on a gateway shutdown stop.** The fork merges an accepted-but-undelivered redirect or
+  steer into the interrupt message; on a restart/shutdown stop that replaced the cause string
+  `owner_stop_notice` matches, so the restart notice vanished. The fold now skips that stop (the turn is
+  never replayed) and still applies to user stops.
+- **`tool_search: "auto"` is budget-gated in the fork** (`should_activate`, marked FORK), so one small MCP
+  tool stays eager and the bridge trio never appears — upstream's new editor-MCP tests assumed the bridge.
+  Their fake model now calls the tool directly; the stale `config_defaults` comment that still described
+  upstream's "auto == on" was corrected.
+- **MCP tool names** in five more upstream tests (the fork registers bare `<server>_<tool>`).
+- **`consult` is a fork toolset every platform recovers** (`_recover_platform_native_toolsets`), so the
+  posture/verb tests have to expect it.
+- **Smaller upstream mechanism swaps**, all test-side: `registry.STRICT` → `HERMES_TEST_ISOLATION`, seven
+  MCP event utilities (not four), a revision-checked 409 write, the plugin catalog entry behind messaging
+  cards, the box-live flag in post-stream deferral, `_plugin_consent_withheld`, the two-column session-id
+  tail, and `install.sh`'s fork repo vs the stable-default test.
+
+Also in that pass: the platform plugins' `docs_url` re-pointed at the fork (the only files kept from
+`scripts/sync-fork-branding.py`) and the generated gateway-command parity doc regenerated.
+
 **Behaviour the owner should know about** (adopted from upstream, each reversible at the named site):
 cron bot-chat delivery parks instead of falling back to the local `hermes chat` CLI; `/stop <id>` still
 targets only local delegations (a gateway-hosted delegation needs a gateway route); `/toolsets` no longer
