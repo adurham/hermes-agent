@@ -21,7 +21,7 @@ import os
 import re
 import secrets
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -75,13 +75,16 @@ def _config_document(home: Path) -> dict:
 
 def webapp_settings(home) -> WebappSettings:
     """``webapp:`` from *home*'s config. A missing, unreadable or malformed block reads as off, so a
-    typo never exposes the listener; a block that cannot be used carries the reason in ``reason``."""
+    typo never exposes the listener; a block that cannot be used carries the reason in ``reason``.
+    A present block's valid ``host``, ``port`` and ``public_url`` are read whether or not it turns
+    the Webapp on (an invalid one reads as the default), so Web Access shows and registers the
+    address the gateway will bind."""
     path = Path(home) / "config.yaml"
     from ruamel.yaml.error import YAMLError
 
-    def off(reason: str) -> WebappSettings:
+    def off(reason: str, configured: WebappSettings = WebappSettings()) -> WebappSettings:
         logger.warning("Webapp stays off: %s", reason)
-        return WebappSettings(reason=reason)
+        return replace(configured, reason=reason)
 
     try:
         document = _config_document(Path(home))
@@ -92,23 +95,33 @@ def webapp_settings(home) -> WebappSettings:
         return WebappSettings()
     if not isinstance(block, dict):
         return off(f"webapp in {path} must be a mapping")
+    host, port, public_url = _configured_address(block)
+    configured = WebappSettings(host=host or DEFAULT_HOST, port=port or DEFAULT_PORT, public_url=public_url or "")
     enabled = block.get("enabled", False)
     if enabled is False:
-        return WebappSettings()
+        return configured
     if enabled is not True:
-        return off(f"webapp.enabled must be true or false in {path}")
-    host = block.get("host", DEFAULT_HOST)
-    port = block.get("port", DEFAULT_PORT)
-    host = _canonical_host(_bare_host(host)) if isinstance(host, str) else None
-    if host is None or not (_local_only(host) or _is_wildcard(host)):
-        return off(f"webapp.host must be 127.0.0.1, ::1, localhost, 0.0.0.0 or :: in {path}")
-    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-        return off(f"webapp.port must be a port number (1-65535) in {path}")
-    public_url = _public_url(block.get("public_url"))
+        return off(f"webapp.enabled must be true or false in {path}", configured)
+    if host is None:
+        return off(f"webapp.host must be 127.0.0.1, ::1, localhost, 0.0.0.0 or :: in {path}", configured)
+    if port is None:
+        return off(f"webapp.port must be a port number (1-65535) in {path}", configured)
     if public_url is None:
         return off(f"webapp.public_url must be an http:// or https:// address with no credentials, "
-                   f"query or fragment in {path}")
-    return WebappSettings(enabled=True, host=host, port=port, public_url=public_url)
+                   f"query or fragment in {path}", configured)
+    return replace(configured, enabled=True)
+
+
+def _configured_address(block: dict) -> tuple[str | None, int | None, str | None]:
+    """The block's ``(host, port, public_url)``, each None when invalid (``public_url`` is "" when
+    unset): the host canonical and local-only or a wildcard, the port 1-65535, the URL as
+    :func:`_public_url` reads it."""
+    host = block.get("host", DEFAULT_HOST)
+    host = _canonical_host(_bare_host(host)) if isinstance(host, str) else None
+    port = block.get("port", DEFAULT_PORT)
+    valid_port = isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
+    return (host if host is not None and (_local_only(host) or _is_wildcard(host)) else None,
+            port if valid_port else None, _public_url(block.get("public_url")))
 
 
 def _bare_host(host: str) -> str:

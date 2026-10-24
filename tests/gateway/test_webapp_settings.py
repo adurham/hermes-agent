@@ -43,6 +43,22 @@ def test_a_webapp_block_that_is_off_or_valid_has_no_reason(tmp_path, block):
     assert webapp.webapp_settings(_home(tmp_path, block)).reason is None
 
 
+def test_a_webapp_block_that_is_off_still_reads_its_address(tmp_path):
+    """Web Access shows and registers the address the gateway will bind, so a block that is off, or
+    asks for the Webapp but cannot be used, still reads its valid host, port and public URL (an
+    invalid one reads as the default). The listener stays main's private one either way."""
+    off = webapp.webapp_settings(_home(tmp_path / "off", (
+        "webapp:\n  enabled: false\n  host: 0.0.0.0\n  port: 9333\n  public_url: https://webapp.example.net/\n")))
+    assert (off.enabled, off.host, off.port, off.public_url, off.reason) == (
+        False, "0.0.0.0", 9333, "https://webapp.example.net", None)
+    assert off.bind == ("127.0.0.1", 0)
+    unusable = webapp.webapp_settings(_home(tmp_path / "unusable", (
+        "webapp:\n  enabled: true\n  host: 192.168.1.20\n  port: 9333\n  public_url: https://u:p@x.example\n")))
+    assert (unusable.enabled, unusable.host, unusable.port, unusable.public_url) == (False, "127.0.0.1", 9333, "")
+    assert unusable.bind == ("127.0.0.1", 0)
+    assert "webapp.host" in unusable.reason
+
+
 @pytest.mark.parametrize(("host", "bind_host"), [("'[::1]'", "::1"), ("'[::]'", "::"), ("' ::1 '", "::1")])
 def test_a_bracketed_ipv6_host_is_read_as_the_address(tmp_path, host, bind_host):
     # Brackets belong to URLs; the bind address and the address native clients dial carry none.

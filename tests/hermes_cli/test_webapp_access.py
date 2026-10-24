@@ -160,6 +160,50 @@ def test_start_keeps_a_custom_port_and_builds_the_addresses_on_it(client, restar
     assert response.json()["port"] == 9333
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("public_url", [
+    "https://user:secret@hermes.example.test",
+    "https://hermes.example.test/?next=x",
+    "https://hermes.example.test:99999",
+    "hermes.example.test",
+])
+def test_status_never_shows_a_public_url_the_gateway_refuses(client, public_url, enabled):
+    """The pane shows the ``webapp:`` block as the gateway reads it, with the gateway's own reader: a
+    ``webapp.public_url`` the gateway refuses shows as none, whether the Webapp is on or off, and
+    the port the user chose still shows."""
+    from hermes_cli.config import save_config
+
+    save_config({**_config(), "webapp": {"enabled": enabled, "port": 9333, "public_url": public_url}})
+
+    status = client.get("/api/webapp-access/status").json()
+    assert (status["enabled"], status["mode"], status["public_url"], status["port"]) == (False, None, "", 9333)
+
+
+@pytest.mark.parametrize("public_url", [
+    "https://hermes.example.test:99999",
+    "https://hermes.example.test:0",
+    "https://hermes.example.test/a@b",
+    "https://hermes.example.test/a b",
+])
+def test_start_refuses_a_public_url_the_gateway_would_refuse(client, restarts, nous, public_url):
+    """Start checks the URL with the gateway's own ``webapp.public_url`` reader (plus https on a host
+    other devices reach), so it never registers, saves and restarts onto a Webapp the gateway then
+    keeps off."""
+    response = client.post("/api/webapp-access/start", json={"mode": "public", "public_url": public_url})
+    assert response.status_code == 400, response.text
+    assert nous == []
+    assert restarts == []
+    assert not _config().get("webapp", {}).get("enabled")
+
+
+def test_start_takes_the_public_url_as_typed(client, restarts, nous):
+    """Spaces around the URL and a trailing slash are not part of the address."""
+    response = client.post("/api/webapp-access/start", json={"mode": "public", "public_url": "  https://hermes.example.test/ "})
+    assert response.status_code == 200, response.text
+    assert nous == ["https://hermes.example.test/auth/callback"]
+    assert _config()["webapp"]["public_url"] == "https://hermes.example.test"
+
+
 @pytest.fixture()
 def lan_browser(monkeypatch):
     """This listener on all interfaces behind password sign-in, and a browser on the LAN signed in

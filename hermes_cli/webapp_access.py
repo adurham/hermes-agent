@@ -26,8 +26,6 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 
-from gateway.webapp_listener import DEFAULT_PORT
-
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 # Web Access's portal client: its id, the Portal it lives on and the callback last registered on it.
 _REGISTRATION_PATH = Path("webapp") / "sign-in-registration.json"
@@ -50,14 +48,19 @@ def lan_address() -> Optional[str]:
 
 
 def _public_url(raw: Optional[str]) -> str:
-    """``https://host[:port][/prefix]`` without a trailing slash, or WebappAccessError."""
-    value = (raw or "").strip().rstrip("/")
-    parsed = urlsplit(value)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.hostname in _LOOPBACK_HOSTS:
-        raise WebappAccessError("The public URL must be an https:// address other devices use.")
-    if parsed.query or parsed.fragment or parsed.username or parsed.password:
+    """``https://host[:port][/prefix]`` without a trailing slash, or WebappAccessError: a
+    ``webapp.public_url`` the gateway reads (``gateway.webapp_listener._public_url``) that is also an
+    https address other devices reach."""
+    from gateway.webapp_listener import _public_url as read_public_url
+
+    value = (raw or "").strip()
+    url = read_public_url(value)
+    if url is None and any(c in value for c in "?#@"):
         raise WebappAccessError("The public URL cannot carry credentials, a query or a fragment.")
-    return value
+    parsed = urlsplit(url or "")
+    if parsed.scheme != "https" or parsed.hostname in _LOOPBACK_HOSTS:
+        raise WebappAccessError("The public URL must be an https:// address other devices use.")
+    return url
 
 
 def gateway_home() -> Path:
@@ -153,11 +156,13 @@ def plan(mode: str, public_url: Optional[str] = None) -> tuple[str, str, str]:
     """Check that *mode* can be served and signed in to; returns ``(host, public_url, callback)``:
     the bind host and the URL to pin for :func:`serve`, and the sign-in callback for
     :func:`register`. Changes nothing, so Start runs it before any slow or lasting step."""
+    from gateway.webapp_listener import webapp_settings
+
     if mode == "lan":
         address = lan_address()
         if address is None:
             raise WebappAccessError("This machine has no network address other devices can reach.")
-        host, url, pinned = "0.0.0.0", f"http://{address}:{_configured_port(gateway_home())}", ""
+        host, url, pinned = "0.0.0.0", f"http://{address}:{webapp_settings(gateway_home()).port}", ""
     elif mode == "public":
         host, url = "127.0.0.1", _public_url(public_url)
         pinned = url
@@ -216,35 +221,6 @@ def _write_config(*, enabled: bool, host: str = "", public_url: str = "") -> Non
     save_config(cfg)
 
 
-def _configured_block(home: Path) -> dict:
-    """The ``webapp:`` block of *home*'s config, or ``{}`` (``webapp_settings`` reports an unreadable
-    config)."""
-    from ruamel.yaml.error import YAMLError
-
-    from gateway.webapp_listener import _config_document
-
-    try:
-        document = _config_document(home)
-    except (OSError, ValueError, YAMLError):
-        return {}
-    block = document.get("webapp") if isinstance(document, dict) else None
-    return block if isinstance(block, dict) else {}
-
-
-def _configured_public_url(home: Path) -> str:
-    """``webapp.public_url`` from *home*'s config, or ``""``."""
-    value = _configured_block(home).get("public_url")
-    return value.strip().rstrip("/") if isinstance(value, str) else ""
-
-
-def _configured_port(home: Path) -> int:
-    """``webapp.port`` from *home*'s config, whether or not the Webapp is on (the default when unset
-    or invalid): the address Web Access shows and registers is the one the gateway will bind."""
-    port = _configured_block(home).get("port", DEFAULT_PORT)
-    valid = isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
-    return port if valid else DEFAULT_PORT
-
-
 def _gateway_state(home: Path) -> dict:
     """What *home*'s gateway serves now (``serving``, ``off``, ``unavailable`` with a ``reason``, or
     ``stopped`` when none answers). It reads the config at start, so it can lag until a restart."""
@@ -259,7 +235,7 @@ def _gateway_state(home: Path) -> dict:
     return dict(response["result"])
 
 
-def _mode(settings, public_url: str) -> Optional[str]:
+def _mode(settings) -> Optional[str]:
     """Who the configured Webapp serves: ``public`` (its own URL pins the callback and Host),
     ``lan`` (a wildcard bind), ``local`` (a loopback bind, as ``hermes webapp`` sets it up), or None
     when it is off."""
@@ -267,24 +243,25 @@ def _mode(settings, public_url: str) -> Optional[str]:
 
     if not settings.enabled:
         return None
-    if public_url:
+    if settings.public_url:
         return "public"
     return "lan" if _is_wildcard(settings.host) else "local"
 
 
 def access_status() -> dict:
-    """Everything the Web Access pane shows, read for the gateway home in scope."""
+    """Everything the Web Access pane shows, read for the gateway home in scope. The ``webapp:``
+    block is read once, by the gateway's own reader, so the pane shows the address and port the
+    gateway will serve, and no public URL it would refuse."""
     from gateway.webapp_listener import webapp_settings
 
     home = gateway_home()
     settings = webapp_settings(home)
-    public_url = _configured_public_url(home)
     return {
         "enabled": settings.enabled,
-        "mode": _mode(settings, public_url),
-        "port": _configured_port(home),
+        "mode": _mode(settings),
+        "port": settings.port,
         "gateway": _gateway_state(home),
         "lan_address": lan_address(),
-        "public_url": public_url,
+        "public_url": settings.public_url,
         "nous_signed_in": nous_signed_in(),
     }
