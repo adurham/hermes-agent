@@ -183,6 +183,11 @@ causes:
   cards, the box-live flag in post-stream deferral, `_plugin_consent_withheld`, the two-column session-id
   tail, and `install.sh`'s fork repo vs the stable-default test.
 
+- **Cross-session subagent registration from a managed worker** is skipped as well: the fork's
+  `_register_durable_subagent` read the session title through the worker store on Relay's running loop,
+  the store refused (`synchronous_rpc_on_event_loop`) and latched, and the parent turn never finished.
+  It now returns early through the same `_gateway_owned_worker` check as the heartbeat and steer drain.
+
 Also in that pass: the platform plugins' `docs_url` re-pointed at the fork (the only files kept from
 `scripts/sync-fork-branding.py`) and the generated gateway-command parity doc regenerated.
 
@@ -15634,6 +15639,10 @@ this test runner, unrelated to this change) — confirmed via `git stash`
 against unmodified `main`.
 
 ### Fork-only feature — 2026-07-14 (Ctrl+C to skip the exit-cleanup wait)
+
+**Update (2026-10-24, v0.22.5 sync):** the "cleaning up — press Ctrl+C" hint now prints only when
+stdout is a terminal. A piped one-shot (`chat -q … -Q`) owns its stdout for the answer alone, and the
+ANSI-dimmed hint was landing after the answer there; the handler itself is unchanged.
 
 **Follow-up to the watchdog fix above.** Bumping the exit watchdog to 60s
 (from 30s) fixed the summary-swallowing bug, but it also means a user who

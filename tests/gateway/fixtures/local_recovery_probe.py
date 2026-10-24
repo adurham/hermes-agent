@@ -184,7 +184,9 @@ def probe(tmp_path):
         assert texts.count('BLOCK_STARTED') == 1 and texts.count('RECOVER_QUEUED') == 1, texts
         assert not any(t in texts for t in ('NEVER_REPLAY', 'FOREIGN_QUEUE', 'MISSING_QUEUE', 'CORRUPT_QUEUE')), texts
         recovered = next(r for r in peer.requests if any(m.get('content') == 'RECOVER_QUEUED' for m in r['messages']))
-        assert recovered['model'] == 'frozen-safe' and not recovered.get('tools'), recovered
+        # Frozen ``toolsets=[]`` still carries the fork's ``consult``, which every platform recovers
+        # (hermes_cli/tools_config._recover_platform_native_toolsets; FORK.md) — and nothing else.
+        assert recovered['model'] == 'frozen-safe' and [t['function']['name'] for t in recovered.get('tools') or []] == ['consult'], recovered
         assert epochs[1] > epochs[0] and pids[0] != pids[1]
         return {'pids': pids, 'epochs': epochs, 'sessions': sessions, 'inference_texts': texts,
                 'queued_recovered': True, 'unknown_paused': True, 'foreign_missing_corrupt_refused': True,
