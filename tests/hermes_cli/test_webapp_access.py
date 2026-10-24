@@ -244,25 +244,46 @@ def test_a_browser_signed_in_over_the_network_cannot_use_web_access(lan_browser,
     assert not _config()["webapp"]["enabled"]
 
 
-def test_web_access_answers_the_native_app_and_the_loopback_token_only():
-    """The owner on this machine is the native app (its same-user gateway ticket, gated or not) or,
-    on a listener without sign-in, the holder of the loopback session token, which the auth
-    middleware has already checked. Behind the sign-in gate anything else is a remote login."""
-    from types import SimpleNamespace
+@pytest.fixture()
+def webapp_tab(monkeypatch):
+    """A tab of the default Webapp (loopback, no sign-in gate), which may be a browser on another
+    machine through ``ssh -L 9120:127.0.0.1:9120``: it holds the browser credential, which on this
+    listener is the loopback session token."""
+    from hermes_cli import web_server
 
-    from fastapi import HTTPException
+    for key, value in (("ui_surface", "webapp"), ("auth_required", False), ("bound_host", "127.0.0.1"),
+                       ("trusted_public_hosts", frozenset())):
+        monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    tab = TestClient(web_server.app, base_url="http://127.0.0.1:9120", raise_server_exceptions=False)
+    tab.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    yield tab
+    tab.close()
 
-    from hermes_cli.web_routers.webapp_access import owner_on_this_machine
 
-    def request(*, gated: bool, native: bool):
-        return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(auth_required=gated)),
-                               state=SimpleNamespace(native_http_principal={"profile_id": "x"} if native else None))
+def test_a_webapp_tab_cannot_use_web_access(webapp_tab, restarts, nous):
+    """Web Access decides what this machine exposes, so only native Desktop on this computer may use
+    it: each of its requests carries a one-use grant from the gateway's private control socket, which
+    answers only this OS user, and no Origin, and a browser tab can present neither. The browser
+    credential is not that proof, even where it is the loopback session token: every Web Access
+    route answers a Webapp tab 403 and changes nothing (the pane being hidden in the browser is UI
+    only)."""
+    assert webapp_tab.get("/api/webapp-access/status").status_code == 403
+    assert webapp_tab.post("/api/webapp-access/start", json={"mode": "lan"}).status_code == 403
+    assert webapp_tab.post("/api/webapp-access/stop").status_code == 403
+    assert webapp_tab.post("/api/webapp-access/restart").status_code == 403
+    assert nous == []
+    assert restarts == []
+    assert not _config().get("webapp", {}).get("enabled")
 
-    owner_on_this_machine(request(gated=True, native=True))
-    owner_on_this_machine(request(gated=False, native=False))
-    with pytest.raises(HTTPException) as refused:
-        owner_on_this_machine(request(gated=True, native=False))
-    assert refused.value.status_code == 403
+
+def test_native_desktop_uses_web_access_on_the_webapps_own_listener(client, monkeypatch):
+    """With the Webapp on, native Desktop dials the gateway's listener that serves it, and its Web
+    Access pane keeps working there."""
+    from hermes_cli import web_server
+
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+
+    assert client.get("/api/webapp-access/status").status_code == 200
 
 
 def test_start_builds_the_webapp_bundle_before_turning_it_on(client, restarts, nous, builds):
