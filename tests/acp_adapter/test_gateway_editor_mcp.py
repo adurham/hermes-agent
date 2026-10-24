@@ -36,10 +36,13 @@ class MCPModelPeer(BaseHTTPRequestHandler):
         tail = messages[next((i for i in range(len(messages)-1, -1, -1)
                               if messages[i]['role'] == 'user'), 0):]
         results = [m for m in tail if m['role'] == 'tool']
+        # The fork registers MCP tools under the bare ``<ledgerServer>_<tool>`` name
+        # (``editor_<server>_<tag>_echo``), with no ``mcp__`` prefix.
+        editor_tool = r'\beditor_[a-z0-9_]+_[0-9a-f]{8}_echo\b'
         names = [t['function']['name'] for t in request.get('tools', [])
-                 if t['function']['name'].startswith('mcp__')]
+                 if re.fullmatch(editor_tool, t['function']['name'])]
         if not names:
-            names = re.findall(r'mcp__editor_[a-z0-9_]+__echo', json.dumps(results))
+            names = re.findall(editor_tool, json.dumps(results))
         finished = next((m['content'] for m in results if 'OWNED_RESULT_' in str(m['content'])), None)
         message = {'role': 'assistant', 'content': 'DONE ' + str(finished)}
         if not finished:

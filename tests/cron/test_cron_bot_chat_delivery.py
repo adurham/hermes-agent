@@ -214,7 +214,6 @@ def test_tick_hands_legacy_pending_records_to_the_live_owner_once(tmp_path, monk
     from tools import bot_live_delivery as mailbox
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(J, "HERMES_DIR", tmp_path)
     monkeypatch.setattr(J, "CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr(J, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr(J, "OUTPUT_DIR", tmp_path / "cron" / "output")

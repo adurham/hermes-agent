@@ -70,6 +70,7 @@ class TestFailoverReason:
             "reasoning_mandatory",
             "generation_terminated",
             "provider_policy_blocked",
+            "data_policy_denied",
             "content_policy_blocked",
             "model_entitlement",
             "incomplete_response",
