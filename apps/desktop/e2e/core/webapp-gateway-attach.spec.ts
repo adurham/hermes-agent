@@ -80,9 +80,9 @@ function alive(pid: number): boolean {
   }
 }
 
-/** `hermes webapp <args>` in the sandbox, as an operator runs it. */
-function hermesWebapp(sandbox: CoreSandbox, ...args: string[]): { code: number | null; output: string } {
-  const result = spawnSync(PYTHON, ['-m', 'hermes_cli.main', 'webapp', ...args], {
+/** `hermes <args>` in the sandbox, as an operator runs it. */
+function hermesCli(sandbox: CoreSandbox, args: string[]): { code: number | null; output: string } {
+  const result = spawnSync(PYTHON, ['-m', 'hermes_cli.main', ...args], {
     cwd: REPO_ROOT,
     env: coreAppEnv(sandbox),
     encoding: 'utf8',
@@ -92,9 +92,16 @@ function hermesWebapp(sandbox: CoreSandbox, ...args: string[]): { code: number |
   return { code: result.status, output: `${result.stdout ?? ''}${result.stderr ?? ''}` }
 }
 
-/** Starts the gateway if needed and returns a one-use launch link for it. */
-function launchLink(sandbox: CoreSandbox): string {
-  const { code, output } = hermesWebapp(sandbox, '--no-open', '--skip-build')
+/** `hermes webapp <args>` in the sandbox. */
+function hermesWebapp(sandbox: CoreSandbox, ...args: string[]): { code: number | null; output: string } {
+  return hermesCli(sandbox, ['webapp', ...args])
+}
+
+/** Starts the gateway if needed and returns a one-use launch link for it (`hermes -p <profile> webapp`
+ * when a profile is named). */
+function launchLink(sandbox: CoreSandbox, profile?: string): string {
+  const profileArgs = profile ? ['-p', profile] : []
+  const { code, output } = hermesCli(sandbox, [...profileArgs, 'webapp', '--no-open', '--skip-build'])
   const link = /^\s+(http:\/\/127\.0\.0\.1:\d+\/webapp\/launch#\S+)$/m.exec(output)?.[1]
   expect(code, `hermes webapp --no-open\n${output.replace(/ticket=\S+/g, 'ticket=<redacted>')}`).toBe(0)
   expect(link, 'hermes webapp printed a one-use launch link').toBeTruthy()
@@ -217,6 +224,74 @@ test('the gateway serves the Webapp and runs every turn its browser sends', asyn
     expect(signedOut.code, signedOut.output).toBe(0)
     await page.reload()
     await expect(composer(page)).toBeHidden({ timeout: 60_000 })
+  } finally {
+    await browser?.close().catch(() => undefined)
+
+    for (const proc of sandboxProcesses(sandbox)) {
+      try {
+        process.kill(proc.pid, 'SIGKILL')
+      } catch {
+        /* already gone */
+      }
+    }
+
+    await provider.close()
+    sandbox.cleanup()
+  }
+})
+
+/**
+ * `hermes -p <profile> webapp` opens the default gateway's Webapp on that profile. The tab's own socket
+ * answers for the gateway's profile, so each request for the tab's profile names it: a turn whose tool
+ * stays quiet past the 45 s silence probe stays live, and a reload reads the transcript back.
+ */
+test('a Webapp tab opened on a named profile runs and reads that profile', async () => {
+  test.skip(process.platform !== 'linux', 'the quiet tool is a POSIX sleep')
+  test.setTimeout(420_000)
+  expect(
+    fs.existsSync(path.join(DESKTOP_ROOT, 'dist-webapp', 'index.html')),
+    'the Webapp renderer is built (npm run build:webapp)'
+  ).toBe(true)
+
+  const provider = await startScriptedProvider()
+  const sandbox = createCoreSandbox('webapp-profile')
+  writeProviderHome(sandbox.hermesHome, provider.url)
+  writeProviderHome(path.join(sandbox.hermesHome, 'profiles', 'p2'), provider.url)
+  const port = await freePort()
+  fs.appendFileSync(path.join(sandbox.hermesHome, 'config.yaml'), `\nwebapp:\n  enabled: true\n  port: ${port}\n`)
+  let browser: Browser | null = null
+
+  try {
+    launchLink(sandbox)
+    const link = launchLink(sandbox, 'p2')
+    browser = await chromium.launch({ executablePath: process.env.HERMES_E2E_CHROMIUM || undefined })
+    const page: Page = await (await browser.newContext({ viewport: { width: 1280, height: 860 } })).newPage()
+    const ws = recordWebSockets(page)
+    await page.goto(link)
+    await expect(composer(page)).toBeVisible({ timeout: 180_000 })
+    await expect.poll(() => new URL(page.url()).searchParams.get('profile')).toBe('p2')
+
+    // No text before the tool: a turn that has replied already never shows the ended card.
+    provider.script(U(1), [
+      { toolCalls: [{ name: 'terminal', args: { command: 'sleep 55' } }] },
+      { text: [`${A(1)} `, 'after ', 'the ', 'quiet ', 'tool'] }
+    ])
+    await send(page, `${U(1)} wait quietly`, 'Enter', ws)
+    await expect.poll(() => currentSessionId(page)).not.toBe('')
+    const sessionId = await currentSessionId(page)
+    await expect.poll(() => storedSessionForMarker(sandbox, 'p2', U(1)), { timeout: 60_000 }).toBe(sessionId)
+    expect(storedSessionForMarker(sandbox, 'default', U(1))).toBeNull()
+
+    const ended = page.getByText('Hermes ended this turn without a reply')
+    await page.waitForTimeout(50_000)
+    await expect(ended).toHaveCount(0)
+    await expect(page.getByText(A(1)).first()).toBeVisible({ timeout: 120_000 })
+    await expect(ended).toHaveCount(0)
+
+    await page.reload()
+    await expect(composer(page)).toBeVisible({ timeout: 120_000 })
+    expect(new URL(page.url()).searchParams.get('profile')).toBe('p2')
+    await expect(page.getByText(A(1)).first()).toBeVisible({ timeout: 60_000 })
   } finally {
     await browser?.close().catch(() => undefined)
 
