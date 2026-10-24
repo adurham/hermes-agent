@@ -201,7 +201,9 @@ def mount_spa(application: FastAPI):
         # This backend's OWN profile name (empty when it cannot be named unambiguously). The SPA
         # falls back to it when neither the URL nor --open-profile names one, so requests carry an
         # explicit scope from the first paint: destructive routes 400 on an unnamed profile as soon
-        # as the host serves more than one, and the switcher shows the same profile it writes.
+        # as the host serves more than one, and the switcher shows the same profile it writes. The
+        # Webapp reads it as the profile its gateway socket and REST answer for when a request names
+        # none, so a tab on any other profile names that profile on every request.
         from hermes_cli.web_server_profiles import serving_profile_name as _serving_profile_name
         serving_profile_js = json.dumps(_serving_profile_name()).replace("</", "<\\/")
         bootstrap_script = (
