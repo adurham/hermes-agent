@@ -1189,13 +1189,129 @@ _SINGLE_TARGET_TEXT = {
                 "TARGET: only 'user' is enabled for user profile facts (name, role, preferences, style).")}
 
 
+# ── warm-surface withdrawal (holographic provider registered) ────────────────────
+# When ``memory.provider: holographic``, the warm tier withdraws its model-facing
+# surface (see _get_warm_store_or_error). Withdrawing it only at CALL time left the
+# tool still ADVERTISING nine warm actions, ``tier: ['hot', 'warm']`` and every
+# warm-only parameter — so the model dutifully called memory(action='recall') and got
+# a hard ✗ instead of the fact_store surface that serves those same rows. The
+# advertised schema has to match the enforced one: the enum is the mechanical gate,
+# the description rewrite stops the prose from sending the model back to the
+# withdrawn surface.
+_HOT_ONLY_ACTIONS = ("add", "patch", "remove", "read")
+_WARM_ONLY_PARAMS = ("query", "top_k", "category", "tags", "fact_id", "helpful")
+
+_WARM_WITHDRAWN_NOTICE = (
+    "\n\nWARM TIER — SERVED ELSEWHERE IN THIS SESSION: memory.provider is 'holographic', so "
+    "the warm-tier facts (the unbounded, searchable tier) live behind the fact_store / "
+    "fact_feedback tools: fact_store(action='search'|'probe'|'related'|'reason') to recall, "
+    "fact_store(action='add') to save, fact_feedback to rate. This tool's warm-tier actions "
+    "(recall, recall_related, feedback, promote, demote, pin, unpin, pinned, replace) are "
+    "withdrawn — calling one errors. HOT-TIER actions (add/patch/remove/read against "
+    "target='memory'|'user') are unaffected."
+)
+
+# (anchor, replacement) — hot-tier prose stays; every line that would send the model back
+# to memory(action='recall'/'add', tier='warm') is repointed at fact_store.
+_WARM_DESCRIPTION_REWRITES = (
+    ("TWO TIERS, ONE TOOL — pick the right tier per fact.",
+     "TWO TIERS, TWO TOOLS — this one owns the hot tier; fact_store / fact_feedback own the "
+     "warm tier (do not save warm-tier facts here)."),
+    ("WARM TIER (tier='warm' on add, or use any warm-only action):",
+     "WARM TIER (served by fact_store / fact_feedback in this session — NOT by this tool):"),
+    ("  - Searchable via memory(action='recall', query='...'). Not in the prompt by default.",
+     "  - Searchable via fact_store(action='search', query='...'). Not in the prompt by default."),
+    ("  - DEFAULT for new content unless it genuinely belongs in hot tier — when in doubt, warm.",
+     "  - The default home for new content that does not belong in hot tier."),
+    ("- You discover environment / project / API quirks → WARM",
+     "- You discover environment / project / API quirks → fact_store(action='add')"),
+    ("- You learn a stable fact useful in future sessions → WARM unless it's a recurring correction",
+     "- You learn a stable fact useful in future sessions → fact_store(action='add') unless it's "
+     "a recurring correction"),
+    ("RECALL: use memory(action='recall', query='...') when the user references something cross-session, ",
+     "RECALL: use fact_store(action='search', query='...') when the user references something cross-session, "),
+)
+
+_WARM_ACTIONS_BLOCK_START = "  WARM-TIER: add (content [+category +tags])"
+_WARM_ACTIONS_BLOCK_END = "category sets the new warm category)."
+_WARM_ACTIONS_BLOCK_REPLACEMENT = (
+    "  WARM-TIER: WITHDRAWN in this session — save with fact_store(action='add'), recall with "
+    "fact_store(action='search'|'probe'|'related'|'reason'), rate with fact_feedback. "
+    "SESSION-PIN (pin/unpin/pinned) and CROSS-TIER (promote/demote) need the warm-tier tool "
+    "surface too, so they are unavailable while the provider is registered."
+)
+
+
+def _warm_surface_withdrawn() -> bool:
+    """True when the holographic provider owns the warm-tier rows (mutual exclusion).
+
+    Fails OPEN (False) on any error: the runtime gate in ``_get_warm_store_or_error``
+    still refuses warm calls, so a config-read failure degrades to the previous
+    (over-advertised) schema instead of hiding the warm tier from a config that might
+    legitimately own it.
+    """
+    try:
+        from tools.memory_warm import holographic_provider_is_registered
+    except ImportError:  # fork plumbing absent in a stripped install: advertise as before
+        return False
+    # The predicate itself already fails closed to False on a config-read error.
+    return bool(holographic_provider_is_registered())
+
+
+def _withdraw_warm_tool_surface(parameters: dict[str, Any], description: str) -> str:
+    """Narrow the advertised `memory` schema to the hot tier. Returns the new description."""
+    props = parameters["properties"]
+    props["action"]["enum"] = list(_HOT_ONLY_ACTIONS)
+    props["action"]["description"] = (
+        "The action to perform (HOT tier only in this session — the warm tier is served by "
+        "fact_store / fact_feedback, not by this tool). Omit when using the 'operations' "
+        "batch array. 'patch' replaces exactly the old_text span (set old_text to the whole "
+        "entry to rewrite it)."
+    )
+    props["tier"]["enum"] = ["hot"]
+    props["tier"]["description"] = (
+        "Only 'hot' is available here in this session; warm-tier facts are served by "
+        "fact_store / fact_feedback."
+    )
+    props["target"]["description"] = (
+        "'memory' for personal notes, 'user' for user profile. REQUIRED for a hot write "
+        "(a call that omits it is refused; retry with target='memory' or target='user')."
+    )
+    for name in _WARM_ONLY_PARAMS:
+        props.pop(name, None)
+
+    for anchor, replacement in _WARM_DESCRIPTION_REWRITES:
+        if anchor not in description:
+            # Not fatal — the enum above is the hard gate and the notice below is
+            # unconditional — but a drifted anchor means stale warm-tier advice survived.
+            logger.warning("memory schema warm-withdrawal anchor missing: %r", anchor[:70])
+            continue
+        description = description.replace(anchor, replacement, 1)
+
+    start = description.find(_WARM_ACTIONS_BLOCK_START)
+    end = description.find(_WARM_ACTIONS_BLOCK_END, start) if start >= 0 else -1
+    if start >= 0 and end >= 0:
+        description = (description[:start] + _WARM_ACTIONS_BLOCK_REPLACEMENT
+                       + description[end + len(_WARM_ACTIONS_BLOCK_END):])
+    else:
+        logger.warning("memory schema warm action-block markers not found; block left intact")
+
+    return description + _WARM_WITHDRAWN_NOTICE
+
+
 def _build_memory_schema_overrides() -> dict[str, Any]:
-    """Narrow the advertised target surface using the availability snapshot."""
+    """Narrow the advertised surface: enabled targets, and the warm tier when the
+    holographic provider serves those rows."""
     flags = _memory_surface_flags.get() or get_builtin_memory_store_flags()
     _memory_surface_flags.set(None)
     targets = [t for t, on in zip(("memory", "user"), flags) if on]
     parameters = copy.deepcopy(MEMORY_SCHEMA["parameters"])
-    target_schema, description = parameters["properties"]["target"], MEMORY_SCHEMA["description"]
+    description = MEMORY_SCHEMA["description"]
+    # Before the single-target narrowing: this sets a generic hot-only 'target'
+    # description, which the one-store text below then overrides.
+    if _warm_surface_withdrawn():
+        description = _withdraw_warm_tool_surface(parameters, description)
+    target_schema = parameters["properties"]["target"]
     target_schema["enum"] = targets
     # Fork note: upstream narrows the advertised target by str.replace()-ing a verbatim
     # "TARGETS: 'user' = ... 'memory' = ..." sentence out of its own description. The fork
