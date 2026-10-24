@@ -1937,8 +1937,10 @@ use. See [Desktop App → Use the Desktop workspace from a browser](../user-guid
 
 The link is valid for 60 seconds and works once; the browser exchanges it for the sign-in it keeps in
 that tab. Only your own OS user can get a link: the gateway answers this command over its private
-control socket. On macOS, the BSDs and WSL, where a one-use link cannot be checked against your OS
-user, the command prints the link for you to open and never passes it to a browser launcher. Until it is
+control socket. On Linux the gateway checks that the browser's connection belongs to your OS user; on
+Windows it checks nothing, and the link travels only in the browser launcher's command line, which other
+standard users cannot read. On macOS, the BSDs and WSL neither holds, so the command prints the link
+for you to open and never passes it to a browser launcher. Until it is
 used it signs a browser in as you, so keep it private.
 
 For a named profile served by the default gateway (`hermes -p work webapp`), the Webapp opens on that

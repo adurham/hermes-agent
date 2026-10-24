@@ -130,14 +130,17 @@ def _loopback_peer_uid(client: tuple[str, int], server: tuple[str, int]) -> int 
 
 
 def _peer_is_server_user(request: Request, platform: str = sys.platform) -> bool:
-    """Whether this request's connection belongs to the OS user running the server.
+    """Whether a launch ticket that crossed a browser launcher's argv may be spent over this
+    request's connection.
 
-    Linux authenticates the connection owner. Windows needs no check: a process's command line,
-    where the launch ticket travels, is readable only by its own user, SYSTEM and elevated
-    administrators. Elsewhere (macOS, the BSDs) every local user can read the launcher's argv
-    and nothing here identifies the connection's owner, so an argv-carried launch ticket cannot
-    be redeemed. Authenticated child-window tickets and the launch tickets ``hermes webapp`` prints for
-    the user to open by hand (``mint_printed_launch_ticket``) do not use this launcher channel.
+    Linux checks that the connection belongs to the OS user running the server. Windows checks
+    nothing and always says yes: the protection there is that the ticket travels only in the
+    launcher's command line, which only its own user, SYSTEM and elevated administrators can read.
+    Elsewhere (macOS, the BSDs) every local user can read the launcher's argv and nothing here
+    identifies the connection's owner, so an argv-carried launch ticket cannot be redeemed; WSL
+    never mints one. Authenticated child-window tickets and the launch tickets ``hermes webapp``
+    prints for the user to open by hand (``mint_printed_launch_ticket``) do not use this launcher
+    channel.
     """
     if platform == "win32":
         return True

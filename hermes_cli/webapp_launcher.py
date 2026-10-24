@@ -3,8 +3,10 @@
 The gateway serves the Webapp on its own listener when its home's config sets ``webapp.enabled``
 (``gateway.webapp_listener``). This command builds the bundle when it is stale, starts the gateway that
 serves the current profile, asks it for a one-use launch link over the control socket (same OS user
-only) and opens that link, so the credential appears in no argv, output or link. On macOS, the BSDs and
-WSL, where nothing checks who redeems the link, it prints the one-use link for the user to open instead.
+only) and opens that link, so the credential appears in no argv, output or link. On Linux the gateway
+checks that the browser's connection is the user's; on Windows nothing checks it, and the link travels
+only in the browser launcher's command line, which other standard users cannot read. On macOS, the BSDs
+and WSL neither holds, so it prints the one-use link for the user to open instead.
 ``--status`` and ``--sign-out`` talk to a running gateway and never start one.
 """
 from __future__ import annotations
