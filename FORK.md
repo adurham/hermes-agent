@@ -117,6 +117,54 @@ this Node/jsdom, not merge-caused). Python suite: see the close-out entry below.
   lives in the gateway and this path will not find it.
 - `/toolsets` no longer hides other platforms' `hermes-<platform>` toolsets.
 
+### Sync close-out — 2026-10-24 (v0.22.5): the merge defects the suites caught, and the residuals
+
+Six merge-caused defects, each green-looking until a check ran. All are fixed in the commit that follows the
+merge (`51f17ea7b88`), and each names its detector so a future sync can run the check first.
+
+- **Managed workers died on every turn (the whole `test_managed_worker_*` cluster hung, 300 s each).**
+  Upstream's new closed-set `_MESSAGE_FIELDS` in `hermes_state_runtime.py` did not admit the fork's
+  `anthropic_content_blocks`, so every worker `transcript.append` came back `invalid_params`; the
+  `RuntimeSessionStore` latches a failed receipt, the worker exited `managed_worker_failed`, and the
+  admission never reached `terminal` — from the outside it looked like a deadlock. Admitting the field
+  restored the cluster (`test_managed_worker_construct`: 4 passed, 20 s).
+- **`record_api_call` from a worker.** Upstream's session-store surface-parity test requires
+  `RuntimeSessionStore` to mirror every `SessionDB` method the agent core calls; the fork's per-call
+  telemetry (`api_calls`) is one. Added a real `api.calls` worker mutation verb (same INSERT the owner
+  writes) plus the store method — not a no-op stub, so a managed worker's telemetry lands the same row.
+- **A managed worker opened `state.db`.** The fork's cross-session registry heartbeat
+  (`_touch_activity` → `heartbeat_if_due`) and the per-iteration steer drain
+  (`turn_iteration_prep` → `drain_into_pending_steer`) both opened the DB directly; upstream's worker
+  invariant (enforced by an audit hook in `tests/gateway/test_managed_worker_launch.py`) forbids it. Both
+  now return early when the agent's `_session_db` is a `RuntimeSessionStore`: the OWNER beats and drains
+  for the sessions it runs, and a worker's liveness is its `worker_executions` row.
+- **Chrome width rules vs upstream's new glyphs.** Upstream's session dock renders `↻` and the telegram
+  plugin's emoji came back as `✈️` (VS16) in resolution. Both failed the fork's chrome lint;
+  U+21BB was added to `portable_glyphs` as accepted-risk and telegram now uses the bare `✈`.
+- **MCP tool naming in upstream's new tests.** The fork registers MCP tools bare
+  (`<server>_<tool>`, `tools/mcp_tool_schema.mcp_registered_tool_name`) while upstream's new acp and
+  managed-worker tests filtered `mcp__<server>__<tool>`. Retargeted to the registered name; the
+  production naming convention is unchanged.
+- **`cron.jobs.HERMES_DIR`.** Three upstream cron tests pinned that import-time constant, which the fork
+  replaced with a per-call `get_hermes_home()` lookup (profile-scoped cron store). The tests now redirect
+  through `HERMES_HOME` only. Related: upstream added `data_policy_denied` to `FailoverReason`, which the
+  fork's exact-roster assertion needed.
+
+**Residual, not merge-caused:** `tests/agent/test_compaction_prompt_rebuild.py` and
+`tests/ci/test_*publication*.py` / `test_prompt_surface.py` are red on the pristine tag in this
+workstation env (checked tree-by-tree); `tests/agent/lsp/test_workspace_release.py` and
+`tests/acp_adapter/test_gateway_compressed_reopen.py` pass in isolation and fail only inside a
+whole-directory run. On the desktop, `src/store/dead-session-prune.test.ts` fails on a file byte-identical
+to the tag.
+
+**Behaviour the owner should know about** (adopted from upstream, each reversible at the named site):
+cron bot-chat delivery parks instead of falling back to the local `hermes chat` CLI; `/stop <id>` still
+targets only local delegations (a gateway-hosted delegation needs a gateway route); `/toolsets` no longer
+hides other platforms' toolsets; and the CLI's session store is now the gateway's client
+(`GatewaySessionStore`) rather than a local writer — reads keep a read-only handle, writes go through the
+gateway, so the fork's old "share the registry handle so a second writer never re-opens the DB" concern no
+longer applies to that path.
+
 ### Fix — 2026-10-18 (subagents died "Model used all output tokens on reasoning": an exo route's 8192 output cap followed the session onto ollama-cloud and into every delegated child)
 
 **Symptom (user screenshot):** delegated children on `deepseek-v4.1-flash` (ollama-cloud) failing with `Response truncated (finish_reason='length')` / "Thinking Budget Exhausted"; one finished its work but never wrote the file (reasoning ate the budget, the final answer was cut).

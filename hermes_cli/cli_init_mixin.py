@@ -447,10 +447,9 @@ class CLIInitMixin:
         self._session_db = None
         self._session_db_unavailable = False
         try:
-            # Registry handle, not a bare SessionDB(): goals/loops/heartbeat acquire the same
-            # path a moment later from the REPL thread, and a second writer repeats the full
-            # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
-            # holds the GIL — that repeat was the post-banner freeze before the first prompt.
+            # Upstream v0.22.3+ routes the CLI's store through the GATEWAY (session_store() is a
+            # GatewaySessionStore client), so this process writes no row at all and the old
+            # "share the registry handle with goals/loops" concern is gone with the local writer.
             from hermes_cli.gateway_session_store import session_store
             self._session_db = session_store()  # the gateway is the single writer
         except Exception as e:
