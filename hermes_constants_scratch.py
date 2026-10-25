@@ -166,27 +166,30 @@ def _under(path: str, root: str) -> bool:
 # ``None``: the launcher could not compute it, so the pass signals nothing and keeps every entry
 # a live process works in.
 _launcher_lineage: frozenset[tuple[int, float]] | None = frozenset()
+_HAS_PROC = os.path.isdir("/proc/self")
 
 
 def _birth_stamp(proc) -> float:
     """A start stamp for *proc* that a clock step cannot move. Linux: ``starttime`` from
     ``/proc/<pid>/stat`` (clock ticks since boot; psutil's ``create_time()`` adds a wall-clock
     boot time, so an NTP/VM/resume step shifts it by whole seconds). Elsewhere:
-    :func:`hermes_cli.process_identity.process_birth` (the unadjusted kernel start on macOS)."""
-    try:
-        # After the last ")" (comm may hold spaces) fields start at #3, so #22 is index 19.
-        stat = Path(f"/proc/{proc.pid}/stat").read_text(encoding="utf-8")  # windows-footgun: ok (/proc is BOM-free)
-        return float(int(stat.rsplit(")", 1)[1].split()[19]))
-    except (OSError, IndexError, ValueError):
-        from hermes_cli.process_identity import process_birth
+    :func:`hermes_cli.process_identity.process_birth` (the unadjusted kernel start on macOS).
+    On a ``/proc`` host a failed read raises: falling back to a wall-clock value would compare
+    an epoch against recorded ticks and disown a live process."""
+    if _HAS_PROC:
+        # Bytes, not text: comm is cut at 15 bytes and can end mid-UTF-8 sequence. After the
+        # last ")" (comm may hold spaces or ")") fields start at #3, so #22 is index 19.
+        stat = Path(f"/proc/{proc.pid}/stat").read_bytes()
+        return float(int(stat.rsplit(b")", 1)[1].split()[19]))
+    from hermes_cli.process_identity import process_birth
 
-        return process_birth(proc)
+    return process_birth(proc)
 
 
 def _same_birth(proc, started: float) -> bool:
     """Exact on Linux (integer ticks); a 2 s tolerance where the stamp is a float epoch."""
     now = _birth_stamp(proc)
-    return now == started if os.path.exists(f"/proc/{proc.pid}/stat") else abs(now - started) < 2.0
+    return now == started if _HAS_PROC else abs(now - started) < 2.0
 
 
 def lineage_with_start_times() -> list[tuple[int, float]] | None:
@@ -203,7 +206,7 @@ def lineage_with_start_times() -> list[tuple[int, float]] | None:
         while proc is not None and proc.pid not in chain:
             chain[proc.pid] = _birth_stamp(proc)
             proc = proc.parent()
-    except (psutil.Error, OSError):
+    except (psutil.Error, OSError, IndexError, ValueError):
         return None
     return list(chain.items())
 
@@ -225,9 +228,13 @@ def _own_lineage() -> set[int] | None:
     except (psutil.Error, OSError):
         pass
     for pid, started in _launcher_lineage:
-        with contextlib.suppress(psutil.Error, OSError):
+        try:
             if _same_birth(psutil.Process(pid), started):
                 pids.add(pid)
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.Error, OSError, IndexError, ValueError):
+            pids.add(pid)  # unreadable is not proof of a reused pid: spare it
     return pids
 
 
