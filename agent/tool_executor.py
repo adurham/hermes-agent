@@ -42,7 +42,6 @@ from agent.inline_tool_executors import (
     apply_transform_tool_result,
     emit_terminal_post_tool_call,
     tool_hook_ids,
-    unwrap_end_turn_bridge,
 )
 from agent.message_metadata import stamp_data_use
 from agent.tool_dispatch_helpers import (
@@ -415,13 +414,6 @@ def _unwrap_tool_search_call(
         from tools import tool_search as _ts
         if function_name != _ts.TOOL_CALL_NAME:
             return function_name, function_args, None
-        # A turn close wrapped in the bridge is still a turn close: end_turn is agent-level
-        # (no registry entry, and the bridge drops the agent), so resolve_underlying_call can
-        # only reject it — which used to end the turn in prose and an ESCAPE log blaming the
-        # model (2026-10-25). Unwrap it into the identity hooks and display already trust.
-        bare_name, bare_args = unwrap_end_turn_bridge(function_name, function_args)
-        if bare_name == "end_turn":
-            return bare_name, bare_args, None
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:
             return function_name, function_args, None
@@ -1786,20 +1778,12 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     function_name, function_args, effective_task_id, tool_call_id, middleware_trace = (
         ref.name, ref.args, ref.task_id, ref.call_id, ref.trace,
     )
-    # A turn close wrapped in the Tool-Search bridge (tool_call(end_turn)) cannot be dispatched
-    # through model_tools at all; honour the close here instead of letting it escape the contract.
-    function_name, function_args = unwrap_end_turn_bridge(function_name, function_args)
-    # The unwrapped payload must reach the executor: callers hand the dispatch `ref.args`, which
-    # for a bridge call is the wrapper. (_parse_tool_call normally unwraps first, so this is the
-    # path for refs built without it.)
-    bridged_args = function_args if function_name == "end_turn" and ref.name != "end_turn" else None
     if function_name != "delegate_task" and function_name in INLINE_TOOL_EXECUTORS:
         # Agent-level tools that need live AIAgent state; table shared with invoke_tool.
         inline_executor = INLINE_TOOL_EXECUTORS[function_name]
         inline_ctx = InlineToolContext(effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages)
         return _SequentialDispatch(
-            lambda next_args: inline_executor(
-                agent, bridged_args if bridged_args is not None else next_args, inline_ctx),
+            lambda next_args: inline_executor(agent, next_args, inline_ctx),
             finish_in_finally=False,
         )
     if function_name == "delegate_task":

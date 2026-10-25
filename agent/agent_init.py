@@ -1169,11 +1169,11 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     if drops := agent_tool_drops(agent):
         agent.tools = [t for t in agent.tools if t["function"]["name"] not in drops]
 
-    # Turn-close contract (agent/end_turn.py): appended AFTER the toolset assembly and the
-    # drops, so a new toolset name cannot be default-off and the tool is always on the wire
-    # when the contract is live. Latches agent._turn_contract_enabled for the prompt builder.
-    from agent.end_turn import ensure_end_turn_schema
-    agent.tools = ensure_end_turn_schema(agent, agent.tools or [])
+    # Turn-close contract (agent/end_turn.py): registered AFTER the toolset assembly and the
+    # drops. valid_tool_names (the dispatch gate) derives from the same list so the two cannot
+    # disagree; tools/mcp_tool_agent.py rebuilds register it the same way. Latches the prompt flag.
+    from agent.end_turn import register_end_turn
+    agent.tools = register_end_turn(agent, agent.tools or [], names=set())
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
     # Kanban guidance is session-static for the dispatcher-owned worker only. Profiles may
     # expose kanban_show interactively, and children/cron runs inherit the env var, without

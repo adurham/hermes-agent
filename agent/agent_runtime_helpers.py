@@ -2591,13 +2591,10 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     invocation for display."""
     from agent.inline_tool_executors import (
         InlineToolContext, apply_transform_tool_result, emit_terminal_post_tool_call,
-        resolve_invoke_tool_executor, tool_hook_ids, unwrap_end_turn_bridge
+        resolve_invoke_tool_executor, tool_hook_ids
     )
     if not isinstance(function_args, dict):
         function_args = {}
-    # Same bridge misroute as the sequential path: tool_call(end_turn) cannot be dispatched by
-    # the registry, so honour the close as end_turn instead of failing it into an escape.
-    function_name, function_args = unwrap_end_turn_bridge(function_name, function_args)
     hook_ids = tool_hook_ids(agent, effective_task_id, tool_call_id)
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:

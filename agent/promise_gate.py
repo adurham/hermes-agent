@@ -106,10 +106,10 @@ _BACKGROUND_CONDITION_RE = re.compile(
 
 #: A trailing "if" is a conditional statement about the future, not a deferral — unless it is
 #: the operator being asked ("if you want", "if you'd like"), which stays gated.
-_USER_CONDITION_RE = re.compile(r"\b(?:if|once|when|unless)\s+(?:you|you['’]d|you['’]ll|your)\b", re.I)
+_USER_CONDITION_RE = re.compile(r"\b(?:if|once|when|unless)\s+(?:you|you['’]d|you['’]ll|your)\b", re.IGNORECASE)
 
 #: Something else is already running, so there is nothing for this turn to start.
-_STILL_RUNNING_RE = re.compile(r"\bstill (?:working|running|grinding|going|building)\b", re.I)
+_STILL_RUNNING_RE = re.compile(r"\bstill (?:working|running|grinding|going|building)\b", re.IGNORECASE)
 
 #: A promise conjoined to a clause that tells the USER to do something first ("Restart the app
 #: and I'll run exactly that", "Pair it and I'll report the fetch") is contingent on the operator,
