@@ -182,17 +182,28 @@ def test_path_under_a_deleted_directory_does_not_nudge(tmp_path, monkeypatch):
     assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[gone]) is None
 
 
-def test_nudge_asks_for_an_attributable_pipeline(tmp_path, monkeypatch):
-    """A piped run counts only when the check leads the pipeline."""
+def test_nudge_explains_only_a_check_run_the_shell_could_not_attribute(tmp_path, monkeypatch):
+    """The how-to-run advice names the hidden-status run, and only until a run is scored."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
     changed = _edited(tmp_path, "src/app.ts")
     mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
 
-    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+    def nudge() -> str:
+        text = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+        assert text is not None
+        return text
 
-    assert nudge is not None
-    assert "keep the check as the first command in the pipeline" in nudge
+    no_run = nudge()
+    record_terminal_result(command="pnpm test || true", cwd=tmp_path, session_id="s1", exit_code=0)
+    hidden = nudge()
+    record_terminal_result(command="pnpm test 2>&1 | tail -5", cwd=tmp_path, session_id="s1",
+                           exit_code=0, pipeline_status=[1, 0])
+    scored = nudge()
+
+    assert "did not count" not in no_run
+    assert "Your last check run (`pnpm test || true`) did not count" in hidden
+    assert "did not count" not in scored
 
 # ---------------------------------------------------------------------------
 # Fix C: documentation/prose edits carry no verifiable behavior and must never

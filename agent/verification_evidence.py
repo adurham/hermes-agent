@@ -25,6 +25,10 @@ _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
+# Latest verify-command run per (session, root) whose own exit status the shell hid. Read by
+# the stop nudge in this same process, so it stays in memory; bounded for long-lived gateways.
+_UNATTRIBUTED_RUNS: dict[tuple[str, str], str] = {}
+_MAX_UNATTRIBUTED_RUNS = 256
 
 _INTERPRETERS = {"python", "python3", "py", "node", "bash", "sh", "ruby", "perl"}
 # Windows spells the same interpreters `python.exe` / `py.exe` (a venv's absolute Scripts path).
@@ -332,9 +336,12 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
 
 def _find_canonical_match(
     command: str, canonical_commands: list[str], exit_code: int,
-    pipeline_status: Optional[list[int]] = None,
-) -> Optional[tuple[str, list[str], int]]:
-    """Return ``(canonical, trailing_args, status)`` for the first detected command."""
+    pipeline_status: Optional[list[int]] = None, *, attributed: bool = True,
+) -> Optional[tuple[str, list[str], Optional[int]]]:
+    """Return ``(canonical, trailing_args, status)`` for the first detected command.
+
+    ``attributed=False`` also matches a run whose own status the shell hid (status ``None``).
+    """
     segments = _split_shell_segments(command)
     for canonical in canonical_commands:
         needle = _canonical_tokens(canonical)
@@ -343,7 +350,7 @@ def _find_canonical_match(
         for index, segment in enumerate(segments):
             candidate_tokens = _normalize_tokens(_strip_command_prefix(segment.tokens))
             status = _segment_status(segments, index, exit_code, pipeline_status)
-            if status is None:
+            if status is None and attributed:
                 continue
             for candidate in _equivalent_needles(needle):
                 candidate = _normalize_tokens(candidate)
@@ -515,10 +522,19 @@ def classify_verification_command(
     facts = _project_facts(cwd)
     if not facts:
         return None
+    return _classify_in_workspace(
+        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
+        pipeline_status=pipeline_status,
+    )
 
+
+def _classify_in_workspace(
+    command: str, facts: dict[str, Any], *, cwd: str | Path | None, session_id: str | None,
+    exit_code: int, output: str, pipeline_status: Optional[list[int]],
+) -> Optional[VerificationEvidence]:
     verify_commands = list(facts.get("verifyCommands") or [])
     match = _find_canonical_match(command, verify_commands, int(exit_code), pipeline_status)
-    if match is not None:
+    if match is not None and match[2] is not None:
         canonical, trailing_args, status = match
         kind = _kind_for_command(canonical)
         scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
@@ -539,14 +555,37 @@ def record_terminal_result(
     *, command: str, cwd: str | Path | None, session_id: str | None, exit_code: int, output: str = "",
     pipeline_status: Optional[list[int]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Record a foreground terminal result when it is verification evidence."""
-    if not _ledger_enabled():
+    """Record a foreground terminal result when it is verification evidence.
+
+    A run of a detected verify command whose own status the shell hid (``pytest || true``,
+    a pipe on a backend without ``PIPESTATUS``) is remembered so the stop nudge can say why
+    it did not count.
+    """
+    if not _ledger_enabled() or not command or not isinstance(command, str):
         return None
-    evidence = classify_verification_command(
-        command, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
+    facts = _project_facts(cwd)
+    if not facts:
+        return None
+    key = (str(session_id or "default"), _root_for(facts, cwd))
+    evidence = _classify_in_workspace(
+        command, facts, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output,
         pipeline_status=pipeline_status,
     )
-    return None if evidence is None else _insert_evidence(evidence)
+    if evidence is not None:
+        _UNATTRIBUTED_RUNS.pop(key, None)
+        return _insert_evidence(evidence)
+    verify_commands = list(facts.get("verifyCommands") or [])
+    if _find_canonical_match(command, verify_commands, int(exit_code), attributed=False):
+        _UNATTRIBUTED_RUNS.pop(key, None)
+        _UNATTRIBUTED_RUNS[key] = command
+        while len(_UNATTRIBUTED_RUNS) > _MAX_UNATTRIBUTED_RUNS:
+            _UNATTRIBUTED_RUNS.pop(next(iter(_UNATTRIBUTED_RUNS)))
+    return None
+
+
+def last_unattributed_run(*, session_id: str | None, root: str | None) -> Optional[str]:
+    """The latest verify-command run in ``root`` whose own exit status could not be read."""
+    return _UNATTRIBUTED_RUNS.get((str(session_id or "default"), str(root)))
 
 
 def record_verify_run(
