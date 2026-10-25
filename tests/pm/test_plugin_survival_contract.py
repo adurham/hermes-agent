@@ -465,15 +465,16 @@ def test_provider_only_record_is_retried_only_while_it_is_still_the_provider(adm
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_recorded_plugin_is_retried_only_when_changed_and_never_displaces_an_enabled_one(admission_env, monkeypatch):
-    """A plugin an update disabled on a resolver verdict is not built again while neither it nor
-    core changed. Once it changed, it is tried only on top of the enabled plugins, so even a
-    download failure hitting an enabled plugin in that update can never swap the two."""
+    """A plugin an update disabled on a resolver verdict is not built again while neither it, core
+    nor the enabled plugins beside it changed. Once it changed, it is tried only on top of the
+    enabled plugins, so even a download failure hitting an enabled plugin in that update can never
+    swap the two; once only the plugin it conflicted with changes, it comes back."""
     from pm.install import sync_venv, venv_is_current
     from pm.package import InstallError
     from pm.packages import Venv
 
     tmp_path, home = admission_env
-    _plug_a, plug_b, _, _ = _local_conflict_members(home)
+    plug_a, plug_b, _, _ = _local_conflict_members(home)
     _write_enabled(home, ["plug-a", "plug-b"])
     sync_venv(explicit=True, evict_incompatible_plugins=True)
 
@@ -504,6 +505,14 @@ def test_recorded_plugin_is_retried_only_when_changed_and_never_displaces_an_ena
     plugins = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
     assert plugins["enabled"] == ["plug-a"] and plugins["disabled"] == ["plug-b"]
     assert venv_is_current(project_root=tmp_path / "core") is True
+
+    # Only the enabled plugin it conflicted with changes, and the conflict is gone: it comes back.
+    manifest = plug_a / "pyproject.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace('"sharedlib==1.0.0"', '"sharedlib>=1"').replace(
+        "sharedlib-v1", "sharedlib-v2"), encoding="utf-8")
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    plugins = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert plugins["enabled"] == ["plug-a", "plug-b"] and not plugins.get("disabled")
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")

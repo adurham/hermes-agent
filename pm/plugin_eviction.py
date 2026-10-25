@@ -301,6 +301,7 @@ class _EvictingUpdate:
         self.explicit, self.configs, self.entries, self.reasons = explicit, configs, entries, reasons
         self.retrying = list(recorded)
         self.tried: dict[Path, str] = {}
+        self.verdicts: list[Path] = []  # disabled on a verdict about the plugin: fingerprinted at commit
         self.base = _target_selection(package, fact, inputs={"plugin_dirs": []}, repair=False, **selection)[0]
 
         def fits(plugin_dir: Path) -> bool:
@@ -309,23 +310,28 @@ class _EvictingUpdate:
         self.kept = list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries
                                        if fits(plugin_dir) and _is_member_candidate(plugin_dir)))
         # A plugin with nothing to build rejoins on its static verdict; one with dependencies is
-        # due only when core's inputs or its own changed since the attempt that failed.
+        # due only when core's inputs, its own or the enabled plugins beside it changed since the
+        # attempt that failed.
         self.joined = [entry for entry in recorded if fits(entry[2]) and not _is_member_candidate(entry[2])]
         # Those whose last failure was no verdict on the plugin (a download failure, a static
         # misfit since fixed) go first: they fitted beside the rest before.
         self.due = sorted((entry for entry, record in recorded.items()
                            if fits(entry[2]) and _is_member_candidate(entry[2])
-                           and record.get("tried") != self.fingerprint(entry[2])),
+                           and record.get("tried") != self.fingerprint(entry[2], self.kept)),
                           key=lambda entry: "tried" in recorded[entry])
 
-    def fingerprint(self, plugin_dir: Path) -> str:
-        return self.package.expected_stamp(self.base, plugin_dirs=[plugin_dir])
+    def fingerprint(self, plugin_dir: Path, beside: list[Path]) -> str:
+        """What a retry of *plugin_dir* would build: core, the plugin and the enabled plugins."""
+        return self.package.expected_stamp(self.base, plugin_dirs=[*beside, plugin_dir])
 
     def commit(self, members: list[Path]) -> None:
         from pm import receipt
         from pm.install import _commit_selection, _runtime_state_matches, _target_selection
 
-        enabled, stamp, inputs = _target_selection(self.package, self.fact, inputs={"plugin_dirs": list(dict.fromkeys(members))},
+        members = list(dict.fromkeys(members))
+        # Fingerprinted against the members this update leaves enabled: the next update compares there.
+        self.tried = {member.resolve(): self.fingerprint(member, members) for member in self.verdicts}
+        enabled, stamp, inputs = _target_selection(self.package, self.fact, inputs={"plugin_dirs": members},
                                                    repair=False, **self.selection)
         receipt.record_feature_list(enabled)
         edit = None
@@ -368,7 +374,7 @@ class _EvictingUpdate:
             return True
         self.reasons[member.resolve()] = verdict[0]
         if verdict[1]:
-            self.tried[member.resolve()] = self.fingerprint(member)
+            self.verdicts.append(member)
         return False
 
     def evict_enabled(self, failure: InstallError) -> None:
