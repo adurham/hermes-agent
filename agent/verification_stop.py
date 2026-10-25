@@ -181,7 +181,9 @@ def build_verify_on_stop_nudge(
     status, facts = snapshot
     if str(status.get("status") or "unverified") == "passed":
         return None
-    unattributed = last_unattributed_run(session_id=status.get("session_id"), root=status.get("root"))
+    unattributed = last_unattributed_run(
+        session_id=status.get("session_id"), root=status.get("root"),
+        since=(status.get("evidence") or {}).get("created_at"))
     run_warning = _UNATTRIBUTED_RUN_WARNING.format(
         command=elide(unattributed, _MAX_UNATTRIBUTED_COMMAND_CHARS)) if unattributed else ""
     verify_commands = [str(cmd).strip() for cmd in (facts.get("verifyCommands") or []) if str(cmd).strip()]

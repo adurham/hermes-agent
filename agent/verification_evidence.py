@@ -25,9 +25,10 @@ _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
-# Latest verify-command run per (session, root) whose own exit status the shell hid. Read by
-# the stop nudge in this same process, so it stays in memory; bounded for long-lived gateways.
-_UNATTRIBUTED_RUNS: dict[tuple[str, str], str] = {}
+# Latest verify-command run per (session, root) whose own exit status the shell hid, with the
+# time it ran. Read by the stop nudge in this same process, so it stays in memory; bounded for
+# long-lived gateways.
+_UNATTRIBUTED_RUNS: dict[tuple[str, str], tuple[str, str]] = {}
 _MAX_UNATTRIBUTED_RUNS = 256
 
 _INTERPRETERS = {"python", "python3", "py", "node", "bash", "sh", "ruby", "perl"}
@@ -582,20 +583,27 @@ def record_terminal_result(
         pipeline_status=pipeline_status,
     )
     if evidence is not None:
-        _UNATTRIBUTED_RUNS.pop(key, None)
         return _insert_evidence(evidence)
     verify_commands = list(facts.get("verifyCommands") or [])
     if _find_canonical_match(command, verify_commands, int(exit_code), attributed=False):
         _UNATTRIBUTED_RUNS.pop(key, None)
-        _UNATTRIBUTED_RUNS[key] = command
+        _UNATTRIBUTED_RUNS[key] = (command, _utc_now())
         while len(_UNATTRIBUTED_RUNS) > _MAX_UNATTRIBUTED_RUNS:
             _UNATTRIBUTED_RUNS.pop(next(iter(_UNATTRIBUTED_RUNS)))
     return None
 
 
-def last_unattributed_run(*, session_id: str | None, root: str | None) -> Optional[str]:
-    """The latest verify-command run in ``root`` whose own exit status could not be read."""
-    return _UNATTRIBUTED_RUNS.get((str(session_id or "default"), str(root)))
+def last_unattributed_run(
+    *, session_id: str | None, root: str | None, since: str | None = None,
+) -> Optional[str]:
+    """The latest verify-command run in ``root`` whose own exit status could not be read,
+    unless evidence recorded at ``since`` came after it. ``hermes verify`` usually records
+    from its own process, so this process's memory alone cannot know about that run.
+    """
+    run = _UNATTRIBUTED_RUNS.get((str(session_id or "default"), str(root)))
+    if run is None or (since and since >= run[1]):
+        return None
+    return run[0]
 
 
 def record_verify_run(
@@ -624,6 +632,7 @@ def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
     """Insert a classified evidence row and repoint the workspace state."""
     created_at = _utc_now()
     e = evidence
+    _UNATTRIBUTED_RUNS.pop((e.session_id, e.root), None)
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
             "INSERT INTO verification_events("
