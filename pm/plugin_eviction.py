@@ -6,8 +6,11 @@ core moved (a newer Python, a bumped pin, a newer manifest contract) under a plu
 that was admitted against the old core. Such a plugin is disabled in every home that
 enables it, the reason reaches the operator and the receipt, and the update continues
 with the rest. Only a core that cannot build on its own still fails. The edit is recorded
-in the home's config, so every later update retries the plugin and undoes the edit once it
-fits again; a user who re-enables, disables or removes it takes the decision back.
+in the home's config. A resolver or build verdict carries a fingerprint of what was tried
+(core's dependency inputs plus the plugin's) and is retried once either side changed; a fetch
+failure is retried by the next update. A plugin that fits again gets the edit undone; a user who re-enables, disables or removes it takes the decision back.
+Retries are tried only on top of the enabled plugins that build, so a recorded plugin can never
+cost an enabled one its place.
 
 Disabling needs evidence about the plugin itself: its requires-python against the pinned
 interpreter, its manifest contract, a resolver proof, or its build failing. A fetch or
@@ -90,7 +93,7 @@ def _list(plugins, key: str) -> list:
     return plugins[key]
 
 
-def _disable(plugins, name: str, plugin_dir: Path, reason: str) -> None:
+def _disable(plugins, name: str, plugin_dir: Path, reason: str, tried: str | None = None) -> None:
     """Park *name* in plugins.disabled, drop it from plugins.enabled and record what to undo."""
     from pm.plugins_state import plugin_spellings
 
@@ -107,7 +110,9 @@ def _disable(plugins, name: str, plugin_dir: Path, reason: str) -> None:
         disabled.append(name)
     if isinstance(enabled, list):
         _discard(enabled, spellings)
-    plugins[RECORD][name] = {"enabled": was_enabled, "reason": " ".join(reason.split())[-300:]}
+    plugins[RECORD][name] = {"enabled": was_enabled, "reason": " ".join(reason.split())[:300]}
+    if tried:
+        plugins[RECORD][name]["tried"] = tried
 
 
 def _rejoin(plugins, name: str, plugin_dir: Path) -> None:
@@ -116,8 +121,10 @@ def _rejoin(plugins, name: str, plugin_dir: Path) -> None:
 
     record = plugins.get(RECORD) if isinstance(plugins.get(RECORD), dict) else {}
     earlier = record.get(name)
+    if not isinstance(earlier, dict):
+        return  # the user settled it since this update read the config: their choice stands
     _discard(_list(plugins, "disabled"), plugin_spellings(plugin_dir, name))
-    if isinstance(earlier, dict) and earlier.get("enabled") and name not in _list(plugins, "enabled"):
+    if earlier.get("enabled") and name not in _list(plugins, "enabled"):
         plugins["enabled"].append(name)
 
 
@@ -143,14 +150,14 @@ def _prune_record(plugins) -> None:
         del plugins[RECORD]
 
 
-def recorded_evictions() -> list[Entry]:
-    """Plugins an earlier update disabled that their home still has disabled: retried each update.
+def recorded_evictions() -> dict[Entry, dict]:
+    """Plugins an earlier update disabled that their home still has disabled, with their record.
     A provider-only record (never in plugins.enabled) is retried only while memory.provider still
     names it, so a rejoin never installs a provider the user has since switched away from."""
     from pm.plugins_state import dependency_homes, plugin_spellings, read_home_selection
     from pm.workspace import selected_plugin_dir
 
-    entries: list[Entry] = []
+    entries: dict[Entry, dict] = {}
     for home in dependency_homes():
         try:
             selection = read_home_selection(home) or {}
@@ -166,10 +173,9 @@ def recorded_evictions() -> list[Entry]:
                 plugin_dir = selected_plugin_dir(home / "plugins", name)
             except InstallError:
                 continue  # a hand-edited key that names no plugin tree
-            earlier = record.get(name)
-            was_enabled = isinstance(earlier, dict) and bool(earlier.get("enabled"))
-            if plugin_dir is not None and (was_enabled or provider in plugin_spellings(plugin_dir, name)):
-                entries.append((home / "plugins", name, plugin_dir))
+            earlier = record[name] if isinstance(record[name], dict) else {}
+            if plugin_dir is not None and (earlier.get("enabled") or provider in plugin_spellings(plugin_dir, name)):
+                entries[(home / "plugins", name, plugin_dir)] = earlier
     return entries
 
 
@@ -183,11 +189,14 @@ class PluginEviction:
     Published like a plugin selection.
     """
 
-    def __init__(self, entries: list[Entry], reasons: dict[Path, str], rejoined: list[Entry] = ()):
+    def __init__(self, entries: list[Entry], reasons: dict[Path, str], rejoined: list[Entry] = (), *,
+                 tried: dict[Path, str] | None = None, configs=None):
         from hermes_yaml import roundtrip_yaml
         from pm.publication import selection_snapshot
 
-        self.configs = selection_snapshot()
+        # The snapshot the update decided from: a user edit since then refuses publication.
+        self.configs = selection_snapshot() if configs is None else configs
+        tried = tried or {}
         by_home: dict[Path, list[tuple[str, Path, str | None]]] = {}
         for plugins_dir, name, plugin_dir in entries:
             if plugin_dir.resolve() in reasons:
@@ -208,7 +217,7 @@ class PluginEviction:
                 if reason is None:
                     _rejoin(plugins, name, plugin_dir)
                 else:
-                    _disable(plugins, name, plugin_dir, reason)
+                    _disable(plugins, name, plugin_dir, reason, tried.get(plugin_dir.resolve()))
             _prune_record(plugins)
             output = io.StringIO()
             yaml.dump(config, output)
@@ -229,8 +238,9 @@ class PluginEviction:
             durable_write_bytes(path, proposed)
 
 
-def _trial(package, enabled, explicit: bool, plugin_dirs: list[Path]) -> str | None:
-    """Why the last of *plugin_dirs* cannot join the build, or None when it builds."""
+def _trial(package, enabled, explicit: bool, plugin_dirs: list[Path]) -> tuple[str, bool] | None:
+    """Why the last of *plugin_dirs* cannot join the build, and whether that is a verdict on the
+    plugin (a resolver proof or its build failing) rather than the moment; None when it builds."""
     cause = ""
     # A fetch or tooling failure can be the moment rather than the plugin: one more try.
     for _attempt in range(2):
@@ -238,10 +248,10 @@ def _trial(package, enabled, explicit: bool, plugin_dirs: list[Path]) -> str | N
             package.apply(enabled, explicit=explicit, plugin_dirs=plugin_dirs, skip_invalid_secondary=True)
             return None
         except (ResolutionConflict, BuildFailure) as exc:
-            return f"the dependency environment no longer builds with it: {exc.cause[-400:]}"
+            return f"the dependency environment no longer builds with it: {exc.cause[-400:]}", True
         except InstallError as exc:
             cause = exc.cause
-    return f"its dependencies could not be prepared, twice: {cause[-400:]}"
+    return f"its dependencies could not be prepared, twice: {cause[-400:]}", False
 
 
 def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explicit: bool) -> None:
@@ -250,13 +260,15 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
     Static misfits go first (no resolver needed). If the rest still fails, core alone is
     built to prove the plugins are the cause, then members are re-added in config order
     and each one that breaks the build is disabled too. Plugins an earlier update disabled
-    are retried after the enabled ones and re-enabled when they fit.
+    are retried once their fingerprint changed, on top of the enabled plugins that build,
+    and re-enabled when they fit.
     """
     from pm import receipt
-    from pm.install import _commit_selection, _runtime_state_matches, _target_selection
     from pm.plugins_state import dependency_homes, read_home_selection
-    from pm.workspace import _is_member_candidate, enabled_plugin_entries
+    from pm.publication import selection_snapshot
+    from pm.workspace import enabled_plugin_entries
 
+    configs = selection_snapshot()
     notices: list[str] = []
     for home in dependency_homes()[1:]:
         try:
@@ -264,65 +276,136 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
         except ValueError as exc:
             notices.append(f"Skipped the plugins of profile {home}: {exc}; they rejoin once its config.yaml is fixed")
     entries = enabled_plugin_entries(skip_invalid_secondary=True)
-    retrying = recorded_evictions()
-    reasons, waiting = static_verdicts([*entries, *retrying], _interpreter_version())
-
-    def fits(plugin_dir: Path) -> bool:
-        return plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting
-
-    def members() -> list[Path]:
-        return list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in [*entries, *retrying]
-                                  if fits(plugin_dir) and _is_member_candidate(plugin_dir)))
-
-    def commit() -> None:
-        enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs={"plugin_dirs": members()},
-                                                   repair=False, shipped=shipped, frozen=frozen)
-        receipt.record_feature_list(enabled)
-        rejoined = [entry for entry in retrying if fits(entry[2])]
-        edit = PluginEviction([*entries, *retrying], reasons, rejoined) if reasons or rejoined else None
-        _commit_selection(package, facts, edit, enabled=enabled, stamp=stamp, inputs=inputs,
-                          current=_runtime_state_matches(fact, stamp), repair=False, explicit=explicit,
-                          skip_invalid_secondary=True)
-
-    kept = members()
-    try:
-        commit()
-    except InstallError as failure:
-        if not kept:
-            raise
-        enabled = _target_selection(package, fact, extras=extras, inputs={"plugin_dirs": []},
-                                    repair=False, shipped=shipped, frozen=frozen)[0]
-        try:
-            package.apply(enabled, explicit=explicit, plugin_dirs=[], skip_invalid_secondary=True)
-        except InstallError:
-            raise failure from None
-        fitting: list[Path] = []
-        for member in kept:
-            reason = _trial(package, enabled, explicit, [*fitting, member])
-            if reason:
-                reasons[member.resolve()] = reason
-            else:
-                fitting.append(member)
-        commit()
-    notices += _outcome_notices(entries, retrying, reasons, waiting)
+    recorded = recorded_evictions()
+    reasons, waiting = static_verdicts([*entries, *recorded], _interpreter_version())
+    update = _EvictingUpdate(package, facts, fact, dict(extras=extras, shipped=shipped, frozen=frozen),
+                             explicit=explicit, configs=configs, entries=entries, recorded=recorded,
+                             reasons=reasons, waiting=waiting)
+    update.run()
+    notices += _outcome_notices(entries, recorded, reasons, waiting, update.joined)
     for message in notices:
         print(f"⚠ {message}", file=sys.stderr, flush=True)
         receipt.record_warning(message)
 
 
-def _outcome_notices(entries: list[Entry], retrying: list[Entry], reasons: dict[Path, str],
-                     waiting: dict[Path, str]) -> list[str]:
+class _EvictingUpdate:
+    """One update's build: the enabled plugins first, then the recorded ones that are due."""
+
+    def __init__(self, package, facts, fact: dict, selection: dict, *, explicit: bool, configs,
+                 entries: list[Entry], recorded: dict[Entry, dict], reasons: dict[Path, str],
+                 waiting: dict[Path, str]):
+        from pm.install import _target_selection
+        from pm.workspace import _is_member_candidate
+
+        self.package, self.facts, self.fact, self.selection = package, facts, fact, selection
+        self.explicit, self.configs, self.entries, self.reasons = explicit, configs, entries, reasons
+        self.retrying = list(recorded)
+        self.tried: dict[Path, str] = {}
+        self.base = _target_selection(package, fact, inputs={"plugin_dirs": []}, repair=False, **selection)[0]
+
+        def fits(plugin_dir: Path) -> bool:
+            return plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting
+
+        self.kept = list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries
+                                       if fits(plugin_dir) and _is_member_candidate(plugin_dir)))
+        # A plugin with nothing to build rejoins on its static verdict; one with dependencies is
+        # due only when core's inputs or its own changed since the attempt that failed.
+        self.joined = [entry for entry in recorded if fits(entry[2]) and not _is_member_candidate(entry[2])]
+        # Those whose last failure was no verdict on the plugin (a download failure, a static
+        # misfit since fixed) go first: they fitted beside the rest before.
+        self.due = sorted((entry for entry, record in recorded.items()
+                           if fits(entry[2]) and _is_member_candidate(entry[2])
+                           and record.get("tried") != self.fingerprint(entry[2])),
+                          key=lambda entry: "tried" in recorded[entry])
+
+    def fingerprint(self, plugin_dir: Path) -> str:
+        return self.package.expected_stamp(self.base, plugin_dirs=[plugin_dir])
+
+    def commit(self, members: list[Path]) -> None:
+        from pm import receipt
+        from pm.install import _commit_selection, _runtime_state_matches, _target_selection
+
+        enabled, stamp, inputs = _target_selection(self.package, self.fact, inputs={"plugin_dirs": list(dict.fromkeys(members))},
+                                                   repair=False, **self.selection)
+        receipt.record_feature_list(enabled)
+        edit = None
+        if self.reasons or self.joined:
+            edit = PluginEviction([*self.entries, *self.retrying], self.reasons, self.joined,
+                                  tried=self.tried, configs=self.configs)
+        _commit_selection(self.package, self.facts, edit, enabled=enabled, stamp=stamp, inputs=inputs,
+                          current=_runtime_state_matches(self.fact, stamp), repair=False, explicit=self.explicit,
+                          skip_invalid_secondary=True)
+
+    def run(self) -> None:
+        due = [entry[2] for entry in self.due]
+        if due:
+            try:
+                self.joined += self.due
+                self.commit([*self.kept, *due])
+                return
+            except InstallError:
+                self.joined = self.joined[:-len(self.due)]
+        try:
+            if not due:
+                self.commit(self.kept)
+                return
+            self.package.apply(self.base, explicit=self.explicit, plugin_dirs=self.kept, skip_invalid_secondary=True)
+        except InstallError as failure:
+            self.evict_enabled(failure)
+            return
+        fitting = list(self.kept)
+        for entry in self.due:
+            if self.try_member(fitting, entry[2]):
+                self.joined.append(entry)
+        self.commit(fitting)
+
+    def try_member(self, fitting: list[Path], member: Path) -> bool:
+        """Add *member* to *fitting* when it builds on top; else record why. Only a verdict on the
+        plugin is fingerprinted: a fetch failure is the moment, so the next update retries it."""
+        verdict = _trial(self.package, self.base, self.explicit, [*fitting, member])
+        if verdict is None:
+            fitting.append(member)
+            return True
+        self.reasons[member.resolve()] = verdict[0]
+        if verdict[1]:
+            self.tried[member.resolve()] = self.fingerprint(member)
+        return False
+
+    def evict_enabled(self, failure: InstallError) -> None:
+        """Core alone must build; then each enabled member that breaks the build is disabled.
+        Nothing rejoins in such an update: a retried plugin must never take an enabled one's place."""
+        if not self.kept:
+            raise failure
+        try:
+            self.package.apply(self.base, explicit=self.explicit, plugin_dirs=[], skip_invalid_secondary=True)
+        except InstallError:
+            raise failure from None
+        self.joined = [entry for entry in self.joined if entry not in self.due]
+        fitting: list[Path] = []
+        for member in self.kept:
+            self.try_member(fitting, member)
+        self.commit(fitting)
+
+
+_RETRY = "a later update retries it"
+
+
+def _outcome_notices(entries: list[Entry], recorded: dict[Entry, dict], reasons: dict[Path, str],
+                     waiting: dict[Path, str], joined: list[Entry]) -> list[str]:
     notices = []
     for plugins_dir, name, plugin_dir in entries:
         key = plugin_dir.resolve()
         if key in reasons:
-            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}; every update retries "
-                           f"it and turns it back on once it fits, or run `hermes plugins enable {name}` sooner")
+            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}; {_RETRY} and turns it "
+                           f"back on once it fits, or run `hermes plugins enable {name}` sooner")
         elif key in waiting:
             notices.append(f"Left plugin '{name}' in {plugins_dir.parent} out of this update: {waiting[key]}; "
                            "it stays enabled and rejoins once Hermes reports a version it accepts")
-    for plugins_dir, name, plugin_dir in retrying:
-        why = reasons.get(plugin_dir.resolve()) or waiting.get(plugin_dir.resolve())
-        notices.append(f"Plugin '{name}' in {plugins_dir.parent} is still disabled: {why}; the next update retries it"
-                       if why else f"Turned plugin '{name}' in {plugins_dir.parent} back on: it fits this Hermes again")
+    for entry, record in recorded.items():
+        plugins_dir, name, plugin_dir = entry
+        if entry in joined:
+            notices.append(f"Turned plugin '{name}' in {plugins_dir.parent} back on: it fits this Hermes again")
+            continue
+        why = reasons.get(plugin_dir.resolve()) or waiting.get(plugin_dir.resolve()) or record.get("reason") or "unknown"
+        notices.append(f"Plugin '{name}' in {plugins_dir.parent} is still disabled: {why}; {_RETRY}")
     return notices

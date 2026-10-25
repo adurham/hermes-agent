@@ -513,7 +513,7 @@ def parked_provider_notice(name: str) -> Optional[str]:
     from pm.plugins_state import RECORD
     record = cfg_get(load_config(), "plugins", RECORD)
     recorded = record.get(name) if isinstance(record, dict) else None
-    why = (f" An update turned it off ({recorded.get('reason')}) and the next update retries it."
+    why = (f" An update turned it off ({recorded.get('reason')}) and a later update retries it."
            if isinstance(recorded, dict) and recorded.get("reason") else "")
     return (f"⚠ Memory provider '{name}' is turned off: plugins.disabled lists it, so external memory is off "
             f"(built-in memory still works).{why} Turn it back on with `hermes plugins enable {name}`.")

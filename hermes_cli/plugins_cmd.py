@@ -570,7 +570,7 @@ def _activate_key(key: str, *, enable: bool, console=None) -> bool:
     enabled, disabled = _get_enabled_set(), _get_disabled_set()
     aliases = _plugin_aliases(key)
     target, other = (enabled, disabled) if enable else (disabled, enabled)
-    # A plugin an update disabled is retried by the next update; disabling it yourself stops that.
+    # A plugin an update disabled is retried by later updates; disabling it yourself stops that.
     if key in target and not (aliases & other) and not (not enable and _disabled_by_update(key, aliases)):
         return False
     _set_plugin_enabled(key, enable=enable, aliases=aliases, console=console)

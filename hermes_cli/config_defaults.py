@@ -1708,7 +1708,7 @@ DEFAULT_CONFIG = {
     # are given.
     "platform_hints": {},
     # Plugin system. `enabled`/`disabled` (`hermes plugins enable|disable`) and `disabled_by_update` (pm.plugin_eviction:
-    # plugins an update turned off, retried each update) are omitted so an empty default never clobbers a user's lists.
+    # plugins an update turned off, retried by later updates) are omitted so an empty default never clobbers a user's lists.
     "plugins": {
         # Deadline (seconds) for one plugin Git clone, fetch or checkout. Slow repositories may
         # need more time; each network operation is capped at one hour.

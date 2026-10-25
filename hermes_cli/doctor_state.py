@@ -657,7 +657,7 @@ def _check_plugins_disabled_by_update(should_fix: bool, f: Finding) -> None:
     for name, entry in entries.items():
         reason = entry.get("reason", "") if isinstance(entry, dict) else ""
         check_warn(f"{name} is off", f"({reason})" if reason else "")
-        f.manual_issues.append(f"Plugin '{name}' was turned off by an update; the next update retries it, "
+        f.manual_issues.append(f"Plugin '{name}' was turned off by an update; a later update retries it, "
                                f"or run: hermes plugins enable {name}")
 
 

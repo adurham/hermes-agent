@@ -460,7 +460,50 @@ def test_provider_only_record_is_retried_only_while_it_is_still_the_provider(adm
     assert [name for _, name, _ in recorded_evictions()] == ["parked"]
 
     (home / "config.yaml").write_text(record + "memory:\n  provider: other\n", encoding="utf-8")
-    assert recorded_evictions() == []
+    assert not recorded_evictions()
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_recorded_plugin_is_retried_only_when_changed_and_never_displaces_an_enabled_one(admission_env, monkeypatch):
+    """A plugin an update disabled on a resolver verdict is not built again while neither it nor
+    core changed. Once it changed, it is tried only on top of the enabled plugins, so even a
+    download failure hitting an enabled plugin in that update can never swap the two."""
+    from pm.install import sync_venv, venv_is_current
+    from pm.package import InstallError
+    from pm.packages import Venv
+
+    tmp_path, home = admission_env
+    _plug_a, plug_b, _, _ = _local_conflict_members(home)
+    _write_enabled(home, ["plug-a", "plug-b"])
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    builds: list[list[str]] = []
+    offline = {"plug-a": False}
+    real_apply = Venv.apply
+
+    def watched_apply(self, extras, *, plugin_dirs=None, **kwargs):
+        names = [Path(plugin_dir).name for plugin_dir in plugin_dirs or ()]
+        builds.append(names)
+        if offline["plug-a"] and names == ["plug-a"]:
+            raise InstallError("plug-a", "network unreachable")
+        return real_apply(self, extras, plugin_dirs=plugin_dirs, **kwargs)
+
+    monkeypatch.setattr(Venv, "apply", watched_apply)
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    assert not any("plug-b" in names for names in builds)
+
+    manifest = plug_b / "pyproject.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "# 0.1.1, still sharedlib 2\n", encoding="utf-8")
+    offline["plug-a"] = True
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    plugins = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert "plug-b" not in (plugins.get("enabled") or []) and "plug-b" in plugins["disabled"]
+
+    offline["plug-a"] = False
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    plugins = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert plugins["enabled"] == ["plug-a"] and plugins["disabled"] == ["plug-b"]
+    assert venv_is_current(project_root=tmp_path / "core") is True
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")

@@ -8,19 +8,20 @@ logger = logging.getLogger("run_agent")
 
 
 # Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
-_warned_unavailable_providers: set[tuple[str, str]] = set()
+_warned_unavailable_providers: set[tuple[str, str, str]] = set()
 
 
-def _unavailable_warning_key(name: str) -> tuple[str, str]:
-    """Once per profile home and provider: one multiplexed gateway/Desktop backend serves several
-    profiles, and each one running without its memory must be told."""
+def _unavailable_warning_key(name: str, kind: str = "unavailable") -> tuple[str, str, str]:
+    """Once per profile home, provider and kind of trouble: one multiplexed gateway/Desktop backend
+    serves several profiles, each one running without its memory must be told, and a provider the
+    user turns back on that is then unavailable is news even after the "turned off" notice."""
     from hermes_constants import get_hermes_home, hermes_home_key
-    return hermes_home_key(get_hermes_home()), name
+    return hermes_home_key(get_hermes_home()), name, kind
 
 
-def _warn_once(name: str, message: str, say=None) -> None:
-    """Log *message* and hand it to the user's sink once per home and provider."""
-    key = _unavailable_warning_key(name)
+def _warn_once(name: str, message: str, say=None, kind: str = "unavailable") -> None:
+    """Log *message* and hand it to the user's sink once per home, provider and kind."""
+    key = _unavailable_warning_key(name, kind)
     if key in _warned_unavailable_providers:
         return
     _warned_unavailable_providers.add(key)
@@ -55,18 +56,19 @@ def resolve_memory_provider(name: str, say=None):
         parked = parked_provider_notice(name)
         if parked:
             # Installed but turned off (by the user or by an update): say so, never re-install it.
-            _warn_once(name, parked, say=say)
+            _warn_once(name, parked, say=say, kind="parked")
             return None
-        # The provider left core for the catalog (or was never installed): fetch it once.
-        from hermes_cli.memory_provider_migration import recover_at_startup
+        if find_provider_dir(name) is None:
+            # The provider left core for the catalog (or was never installed): fetch it once.
+            from hermes_cli.memory_provider_migration import recover_at_startup
 
-        if recover_at_startup(name, say=say):
-            provider = load_memory_provider(name)
-        # Installed (now or before) yet still not loading: an install notice does not explain that.
+            if recover_at_startup(name, say=say):
+                provider = load_memory_provider(name)
+        # Installed (now or before) yet not loading: neither "not installed" nor an install notice explains that.
         if provider is None and find_provider_dir(name) is not None:
             _warn_once(name, f"⚠ Memory provider '{name}' is installed but failed to load, so external memory is off "
                              "for this session (built-in memory still works). The log names the error; "
-                             "`hermes memory status` shows the plugin's state.", say=say)
+                             "`hermes memory status` shows the plugin's state.", say=say, kind="load")
     if provider is None or provider.is_available():
         return provider
     if _unavailable_warning_key(name) not in _warned_unavailable_providers:
