@@ -172,3 +172,53 @@ class TestCounters:
         monkeypatch.setattr(et, "STATS_PATH", tmp_path / "deep" / "blocked" / "tc.json")
         (tmp_path / "deep").write_text("not a dir")   # parent is a file: mkdir must fail
         et.record_turn_contract_event("closed")       # swallowed, per contract
+
+
+class TestBridgeWrappedClose:
+    """``tool_call(end_turn)`` is the same semantic close in a different shape.
+
+    The bridge cannot dispatch agent-level tools at all (no registry entry, and its recursive
+    re-dispatch drops ``agent``), so a wrapped close used to come back as an error; the model
+    then answered in prose and the turn escaped the contract while the log blamed the model
+    (2026-10-25). Unwrap instead: the close is status/summary/open_items, not a call shape.
+    """
+
+    def test_batch_shape_is_unwrapped(self):
+        from agent.inline_tool_executors import unwrap_end_turn_bridge
+
+        payload = {"status": "done", "summary": "ok", "open_items": []}
+        name, args = unwrap_end_turn_bridge(
+            "tool_call", {"calls": [{"name": "end_turn", "arguments": payload}]}
+        )
+        assert (name, args) == ("end_turn", payload)
+
+    def test_legacy_single_shape_is_unwrapped(self):
+        from agent.inline_tool_executors import unwrap_end_turn_bridge
+
+        name, args = unwrap_end_turn_bridge(
+            "tool_call", {"name": "end_turn", "arguments": {"status": "blocked", "summary": "s"}}
+        )
+        assert name == "end_turn"
+        assert args["status"] == "blocked"
+
+    def test_other_bridged_tools_are_left_to_the_bridge(self):
+        from agent.inline_tool_executors import unwrap_end_turn_bridge
+
+        args = {"name": "vision_analyze", "arguments": {"image": "x.png"}}
+        assert unwrap_end_turn_bridge("tool_call", args) == ("tool_call", args)
+
+    def test_direct_calls_and_malformed_args_are_untouched(self):
+        from agent.inline_tool_executors import unwrap_end_turn_bridge
+
+        direct = {"status": "done", "summary": "s", "open_items": []}
+        assert unwrap_end_turn_bridge("end_turn", direct) == ("end_turn", direct)
+        bad = {"calls": []}
+        assert unwrap_end_turn_bridge("tool_call", bad) == ("tool_call", bad)
+
+    def test_the_wrapping_habit_is_counted(self, tmp_path, monkeypatch):
+        from agent import end_turn as et
+        from agent.inline_tool_executors import unwrap_end_turn_bridge
+
+        monkeypatch.setattr(et, "STATS_PATH", tmp_path / "tc.json")
+        unwrap_end_turn_bridge("tool_call", {"name": "end_turn", "arguments": {"summary": "s"}})
+        assert et.read_turn_contract_stats().get("unwrapped") == 1

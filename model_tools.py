@@ -719,12 +719,17 @@ def _emit_post_tool_call_hook(
 
 def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
                           enabled_toolsets: Optional[list[str]], disabled_toolsets: Optional[list[str]],
-                          ids: Optional[_CallIds] = None):
+                          ids: Optional[_CallIds] = None, agent: Optional[Any] = None):
     """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
 
     None when *function_name* is not a bridge tool; ``(result, None)`` for a
     finished catalog read or error; ``(None, (name, args))`` when a validated
     tool_call should be re-dispatched as the real tool.
+
+    *agent* is the live session: its ``tools`` array is the authoritative list of
+    what the model was given, so it is unioned into the bridge's scoped catalog for
+    error messages. Without it, a tool injected after toolset assembly (``end_turn``)
+    is invisible here and a misrouted call gets "unknown name — use tool_search".
     """
     try:
         from tools import tool_search as ts
@@ -748,7 +753,12 @@ def _dispatch_bridge_tool(function_name: str, function_args: dict[str, Any],
         return ts.dispatch_tool_describe(args, current_tool_defs=current_defs, call=call), None
     # Session-scoped names for the error path below: a core tool stripped from this
     # session (clarify in a subagent) must not be told to "call it directly".
-    underlying_name, underlying_args, err = ts.resolve_underlying_call(args, ts.session_tool_names(current_defs))
+    session_names = ts.session_tool_names(current_defs)
+    if agent is not None:
+        # The live session's own tool list is authoritative and includes post-assembly
+        # injections (end_turn); the re-derived catalog above never carries them.
+        session_names = session_names | ts.session_tool_names(getattr(agent, "tools", None) or [])
+    underlying_name, underlying_args, err = ts.resolve_underlying_call(args, session_names)
     if err or not underlying_name:
         return tool_error(err or "tool_call could not be resolved"), None
     if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
@@ -931,7 +941,7 @@ def handle_function_call(
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
     # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
     # approval, guardrails) sees the real tool name, never the bridge.
-    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets, ids)
+    bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets, ids, agent=agent)
     if bridged is not None:
         result, underlying = bridged
         if underlying is None:

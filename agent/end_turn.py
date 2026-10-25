@@ -47,9 +47,10 @@ END_TURN_SCHEMA: dict[str, Any] = {
         "name": "end_turn",
         "description": (
             "Close the turn and speak to the user. REQUIRED: a turn that used any other tool "
-            "may not end with prose — the harness rejects a text-only ending. Call this with "
-            "what the user should read. If work remains, put it in open_items as a task, never "
-            "as a promise: 'I'll do X next' is not an answer."
+            "may not end with prose — the harness rejects a text-only ending. Call this tool "
+            "directly (it is top-level; `tool_call`/`tool_search` reach deferred tools only), "
+            "with what the user should read. If work remains, put it in open_items as a task, "
+            "never as a promise: 'I'll do X next' is not an answer."
         ),
         "parameters": {
             "type": "object",
@@ -93,11 +94,13 @@ TURN_CONTRACT_NUDGE = (
 TURN_CONTRACT_GUIDANCE = (
     "# Turn contract\n"
     "A turn that used a tool cannot end with prose. To speak to the user you MUST call "
-    "`end_turn(status, summary, open_items)`; the harness rejects a text-only ending. Put the "
-    "whole reply in `summary` — text written outside it is dropped, so a short status note in "
-    "`summary` plus the real content in prose leaves the user with the note. Anything unfinished "
-    "goes in `open_items` as a task — never as a promise ('I'll do X next' is not an answer, and "
-    "it will be rejected)."
+    "`end_turn(status, summary, open_items)`; the harness rejects a text-only ending. "
+    "`end_turn` is a top-level tool: call it directly, never through `tool_call` or "
+    "`tool_search` (those reach deferred tools only). "
+    "Put the whole reply in `summary` — text written outside it is dropped, so a short status "
+    "note in `summary` plus the real content in prose leaves the user with the note. Anything "
+    "unfinished goes in `open_items` as a task — never as a promise ('I'll do X next' is not an "
+    "answer, and it will be rejected)."
 )
 
 
