@@ -690,6 +690,11 @@ class _NotOnTheSshMachine:
 
     def __init__(self):
         self.asked = []
+        self.written = []
+
+    def write_text(self, path, content, *, max_bytes):
+        self.written.append((path, content))
+        return path, len(content.encode("utf-8"))
 
     def read_bytes(self, path, *, max_bytes, read_limit=None):
         self.asked.append(path)
@@ -782,6 +787,78 @@ def test_a_staged_text_preview_reads_back_from_the_host_for_an_ssh_profile(clien
     not_host_owned = client.get("/api/fs/read-text", params={"path": str(unnamed), **remote_dev})
     assert not_host_owned.status_code == 404, not_host_owned.text
     assert workspace.asked == [str(unnamed)]
+
+
+def test_a_staged_text_file_saves_where_its_preview_reads_it_for_an_ssh_profile(client, monkeypatch, tmp_path):
+    """A staged text preview on this host can be edited, and the editor saves through
+    /api/fs/write-text before it reads the file again. The save goes to the same host file the
+    preview read, so the reread shows the edit; any other path is still saved on the SSH machine."""
+    _profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    remote_dev = {"profile": "remote-dev"}
+
+    staged = client.post("/api/chat/file-upload", params=remote_dev,
+                         files={"file": ("pasted.txt", b"pasted words", "text/plain")})
+    assert staged.status_code == 200, staged.text
+    staged_path = Path(staged.json()["path"])
+
+    def preview():
+        response = client.get("/api/fs/read-text", params={"path": str(staged_path), **remote_dev})
+        assert response.status_code == 200, response.text
+        return response.json()["text"]
+
+    assert preview() == "pasted words"
+    saved = client.post("/api/fs/write-text", params=remote_dev,
+                        json={"path": str(staged_path), "content": "edited words"})
+    assert saved.status_code == 200, saved.text
+    assert preview() == "edited words"
+    assert staged_path.read_text(encoding="utf-8") == "edited words"
+    assert (workspace.asked, workspace.written) == ([], [])
+
+    remote = client.post("/api/fs/write-text", params=remote_dev,
+                         json={"path": "/srv/repos/notes.txt", "content": "remote words"})
+    assert remote.status_code == 200, remote.text
+    assert workspace.written == [("/srv/repos/notes.txt", "remote words")]
+
+
+def test_a_staged_text_preview_reads_back_under_a_locked_files_root(client, monkeypatch, tmp_path):
+    """A locked files root outside the profile home still lets a staged paste or pick preview, as
+    /api/fs/read-data-url already does, for an SSH profile and a host-local one. Every other host
+    file outside the root stays refused: one in the profile home, and one in the uploads folder the
+    upload route did not name."""
+    profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    remote_dev = {"profile": "remote-dev"}
+
+    def stage(query):
+        staged = client.post("/api/chat/file-upload", params=query,
+                             files={"file": ("pasted.txt", b"pasted words", "text/plain")})
+        assert staged.status_code == 200, staged.text
+        return Path(staged.json()["path"])
+
+    staged, default_staged = stage(remote_dev), stage({})
+    unrelated = profile / "notes.txt"
+    unnamed = staged.parent / "pasted.txt"
+    for path in (unrelated, unnamed):
+        path.write_bytes(b"not staged")
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(managed))
+
+    def read_text(path, query):
+        return client.get("/api/fs/read-text", params={"path": str(path), **query})
+
+    over_ssh = read_text(staged, remote_dev)
+    assert (over_ssh.status_code, over_ssh.json().get("text")) == (200, "pasted words"), over_ssh.text
+
+    monkeypatch.setattr(file_routes, "_fs_backend", lambda profile=None: None)
+    for query, path in ((remote_dev, staged), ({}, default_staged)):
+        response = read_text(path, query)
+        assert (response.status_code, response.json().get("text")) == (200, "pasted words"), response.text
+    for path in (unrelated, unnamed):
+        response = read_text(path, remote_dev)
+        assert response.status_code == 403, (path, response.text)
+    assert workspace.asked == []
 
 
 @pytest.mark.platforms("posix")
