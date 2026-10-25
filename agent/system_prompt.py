@@ -587,6 +587,10 @@ def _guidance_parts(agent: Any) -> list[str]:
             ) if getattr(agent, flag, True)
         ]
     parts.append(_tool_guidance_block(agent))  # None/empty entries are dropped by _join_tier
+    if getattr(agent, "_turn_contract_enabled", False):
+        from agent.end_turn import TURN_CONTRACT_GUIDANCE
+
+        parts.append(TURN_CONTRACT_GUIDANCE)
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools.

@@ -344,7 +344,97 @@ def finish_text_response(
     # (agent.log carried no Promise-without-action line at all; the live 2026-10-24 miss was a
     # 5-probe turn ending on "I'll build that offline" — msg 736018).
     _turn_tool_calls = tool_calls_this_turn(messages)
-    _promise_kind = gate_kind(
+
+    # Turn-close contract (agent/end_turn.py). A turn that used a tool may not end on prose:
+    # the model must call end_turn and put the reply in its summary. This replaces detection
+    # with a structural rule — the failure ("announced work, ran nothing") is impossible to
+    # express without lying in a structured, parseable field. See the module docstring for the
+    # measurements that led here and for why the promise gate below is disabled under it.
+    from agent.end_turn import (
+        CLOSE,
+        ESCAPE,
+        MAX_TURN_CONTRACT_REJECTIONS,
+        REJECT,
+        TURN_CONTRACT_NUDGE,
+        clear_end_turn,
+        contract_decision,
+        end_turn_payload,
+        render_summary,
+        turn_contract_enabled,
+    )
+
+    _contract = turn_contract_enabled(agent)
+    _payload = end_turn_payload(agent) if _contract else None
+    _decision = (
+        contract_decision(
+            payload=_payload,
+            tool_calls_this_turn=_turn_tool_calls,
+            rejections=getattr(agent, "_turn_contract_rejections", 0),
+        )
+        if _contract
+        else None
+    )
+    if _decision == CLOSE:
+        # Closed properly: the payload IS the reply. Trailing prose, if any, is ignored —
+        # the summary is what the model committed to and what the operator reads.
+        final_response = render_summary(_payload or {})
+        final_msg["content"] = final_response
+        logger.info(
+            "turn-contract: closed[%s] open_items=%d tool_calls=%d (model=%s provider=%s)",
+            (_payload or {}).get("status"), len((_payload or {}).get("open_items") or []),
+            _turn_tool_calls, agent.model, agent.provider,
+        )
+        clear_end_turn(agent)
+        agent._turn_contract_rejections = 0
+    elif _decision == REJECT:
+        _rejections = getattr(agent, "_turn_contract_rejections", 0)
+        agent._turn_contract_rejections = _rejections + 1
+        logger.warning(
+            "turn-contract: rejected text-only ending after %d tool call(s) "
+            "(rejection %d/%d, model=%s provider=%s)",
+            _turn_tool_calls, _rejections + 1, MAX_TURN_CONTRACT_REJECTIONS,
+            agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status(
+            "↻ Turn used tools but ended on prose — requiring end_turn"
+        )
+        final_msg["_turn_contract_nudge"] = True
+        append_message(messages, final_msg)
+        append_message(messages, {
+            "role": "user",
+            "content": TURN_CONTRACT_NUDGE,
+            "_turn_contract_nudge": True,
+        })
+        agent._session_messages = messages
+        final_response = None
+        return _verdict("continue")
+    elif _decision == ESCAPE:
+        # The model refused the contract as often as allowed. Deliver the prose (the operator
+        # must still get an answer) and record it — an escape is the empirical trigger for
+        # changing models, not for another detector.
+        _rejections = getattr(agent, "_turn_contract_rejections", 0)
+        logger.warning(
+            "turn-contract: ESCAPE — text-only ending after %d tool call(s) survived %d "
+            "rejections (model=%s provider=%s)",
+            _turn_tool_calls, _rejections, agent.model, agent.provider,
+        )
+        agent._turn_contract_rejections = 0
+
+    # Promise-without-action gate. deepseek-v4.1-flash on ollama-cloud routinely ends a turn by
+    # announcing the work instead of doing it ("I'll build X now", "building the page next",
+    # "...I'll build that offline rather than keep firing"), which reads to the operator as a
+    # commitment with nothing behind it. Two shapes, one shared retry budget:
+    #   * turn — no tool calls at all this turn: whole-body scan.
+    #   * tail — the turn acted, but its last prose paragraph ENDS on a commitment: the earlier
+    #     calls were earlier steps, nothing ran after the promise, so it is unfulfilled by
+    #     position. Tail-only, because long analyses legitimately say "I'll" mid-reply.
+    #   * The count MUST be turn-scoped: the session-wide count this used to take is non-zero from
+    #     the first tool call onward, which made the zero-tool branch unreachable in practice
+    #     (agent.log carried no Promise-without-action line at all; the live 2026-10-24 miss was a
+    #     5-probe turn ending on "I'll build that offline" — msg 736018).
+    # Disabled under the turn-close contract: a 50%-precision prose nudger running beside a
+    # structural rule would just collide with it (consult verdict, 2026-10-25).
+    _promise_kind = None if _contract else gate_kind(
         final_text=final_response,
         turn_tool_call_count=_turn_tool_calls,
         retries=getattr(agent, "_promise_gate_retries", 0),

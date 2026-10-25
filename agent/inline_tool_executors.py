@@ -271,6 +271,13 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         "tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
     ),
+    # Turn-close contract: a turn with tool activity ends by calling this, not by prose.
+    "end_turn": _tool(
+        "agent.end_turn", "end_turn_tool",
+        ("status", "status", "done"), ("summary", "summary", ""),
+        ("open_items", "open_items", None), ("blocker", "blocker"),
+        agent=lambda agent, ctx: agent,
+    ),
     "session_search": _session_search,
     "memory": _memory,
     "clarify": _tool(
