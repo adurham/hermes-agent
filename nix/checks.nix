@@ -1359,6 +1359,24 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           });
           viaOverlayShipped = hermes-agent.override { extraDependencyGroups = [ "messaging" ]; };
 
+          # A custom `package` that already carries extras of its own: the
+          # module's extras must land on top of them, not replace them.
+          testPkg2 = pythonLock.interpreter.pkgs.tabulate;
+          newGroup2 = "ddgs";
+          customPackage = hermes-agent.override {
+            extraDependencyGroups = [ newGroup ];
+            extraPythonPackages = [ testPkg ];
+          };
+          viaModuleOnCustom = modulePackage {
+            package = customPackage;
+            extraDependencyGroups = [ newGroup2 ];
+            extraPythonPackages = [ testPkg2 ];
+          };
+          bothExtras = hermes-agent.override {
+            extraDependencyGroups = [ newGroup newGroup2 ];
+            extraPythonPackages = [ testPkg testPkg2 ];
+          };
+
           cases = [
             {
               what = "module extraPythonPackages reaches the package (wrapper PYTHONPATH)";
@@ -1387,6 +1405,14 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             {
               what = "overlay group the package already ships leaves the venv unchanged";
               ok = path viaOverlayShipped.hermesVenv == path hermesVenv;
+            }
+            {
+              what = "module extras on a custom package keep its groups (venv)";
+              ok = path viaModuleOnCustom.hermesVenv == path bothExtras.hermesVenv;
+            }
+            {
+              what = "module extras on a custom package keep its python packages";
+              ok = path viaModuleOnCustom == path bothExtras;
             }
           ];
           report = lib.concatMapStrings (c: "${if c.ok then "PASS" else "FAIL"}: ${c.what}\n") cases;
