@@ -4,6 +4,34 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### Promise-without-action gate widened to turns that END on a promise — 2026-10-24
+
+`agent/promise_gate.py` existed to re-prompt deepseek-v4.1-flash when it ends a turn by promising work
+instead of doing it, but it could not fire on the shape the operator actually kept hitting. Two defects:
+
+1. `finish_text_response` passed a SESSION-wide tool-call count (`sum(... messages ...)`), so the gate's
+   "zero tool calls this turn" condition was false from the session's first tool call onward — it was
+   effectively dead in any session that ever worked. `agent.log` had never carried a single
+   `Promise-without-action` line.
+2. Even turn-scoped, the design exempted every turn that used a tool. A promise is the LAST thing said,
+   so no tool call followed it: the exemption covered precisely the worst case.
+
+Recorded miss (session `local-dcb4e36e…`, message 736018, 2026-10-24 19:02): four terminal probes, then a
+2,134-char reply ending "I'll build that offline rather than keep firing and burning a relaunch per
+attempt." Nothing was built.
+
+Now: `tool_calls_this_turn()` (agent_runtime_helpers) scopes the count to rows after the last user row, and
+`gate_kind()` adds a `tail` shape — on an acting turn only the final prose paragraph is judged, and only
+when it ENDS on a commitment. Suppressed when a delivered fenced block follows the commitment, when the
+reply ends on a question, or when the tail names an external blocker. Soft deferrals ("once you confirm",
+"if you want") stay gated on purpose. Both shapes share the single per-turn retry; a promise that survives
+the nudge logs `Promise-unfulfilled-after-nudge` instead of disappearing silently into the answer.
+
+Verified: `tests/test_promise_gate.py` carries the recorded miss verbatim as a regression fixture
+(mutation-checked — reverting the tail path fails it), plus fence/blocker/question/soft-deferral cases and
+the turn-scoping of the counter; `tests/agent/test_stall_guards.py` and
+`tests/agent/test_bare_toolcall_recovery.py` still green.
+
 ### Upstream sync — 2026-10-24 (v0.22.2 → v0.22.5, 3,291 commits, 4,690 changed files, 65 conflict files)
 
 Merged tag `v0.22.5` (tag object `56b6a31fede`, release commit `bf0203a794a`, released 2026-10-22) into
