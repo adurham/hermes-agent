@@ -25,13 +25,6 @@ def _make_project(root: Path) -> None:
     root.mkdir()
     _node_project(root)
 
-def _edited(root: Path, rel: str) -> str:
-    """Create an edited file: the guard only asks about paths a real edit left on disk."""
-    path = root / rel
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("x", encoding="utf-8")
-    return str(path)
-
 @pytest.fixture(autouse=True)
 def _ledger_on(monkeypatch):
     """The ledger is inert unless verify-on-stop is enabled; ``clear_verify_env`` (requested
@@ -81,8 +74,8 @@ def test_nudge_checks_all_edited_workspaces(tmp_path, monkeypatch):
     project_b = tmp_path / "b"
     _make_project(project_a)
     _make_project(project_b)
-    changed_a = _edited(project_a, "src/app.ts")
-    changed_b = _edited(project_b, "src/app.ts")
+    changed_a = str(project_a / "src" / "app.ts")
+    changed_b = str(project_b / "src" / "app.ts")
 
     record_terminal_result(
         command="pnpm test",
@@ -115,7 +108,7 @@ def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
 
     nudge = build_verify_on_stop_nudge(
         session_id="s1",
-        changed_paths=[_edited(project, "src/app.ts")],
+        changed_paths=[str(project / "src" / "app.ts")],
     )
 
     assert nudge is not None
@@ -125,7 +118,7 @@ def test_no_suite_nudge_uses_canonical_temp_dir(tmp_path, monkeypatch):
 def test_ad_hoc_pass_satisfies_no_suite_stop_loop(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
-    changed = _edited(tmp_path, "src/app.ts")
+    changed = str(tmp_path / "src" / "app.ts")
     script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-stop-{tmp_path.name}.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     try:
@@ -144,7 +137,7 @@ def test_ad_hoc_pass_satisfies_no_suite_stop_loop(tmp_path, monkeypatch):
 def test_nudge_attempts_are_bounded(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
-    changed = _edited(tmp_path, "src/app.ts")
+    changed = str(tmp_path / "src" / "app.ts")
     mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
 
     assert build_verify_on_stop_nudge(
@@ -159,7 +152,7 @@ def test_piped_verification_run_satisfies_the_guard(tmp_path, monkeypatch):
     """A piped run counts once the shell's PIPESTATUS is recorded with it."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
-    changed = _edited(tmp_path, "src/app.ts")
+    changed = str(tmp_path / "src" / "app.ts")
     mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
     record_terminal_result(
         command="pnpm test 2>&1 | tail -20",
@@ -173,20 +166,11 @@ def test_piped_verification_run_satisfies_the_guard(tmp_path, monkeypatch):
     assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
 
 
-def test_path_under_a_deleted_directory_does_not_nudge(tmp_path, monkeypatch):
-    """A removed worktree is not a workspace: its vanished paths must not ask for proof."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    _node_project(tmp_path)
-    gone = str(tmp_path / "worktree-gone" / "agent" / "app.py")
-
-    assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[gone]) is None
-
-
 def test_nudge_explains_only_a_check_run_the_shell_could_not_attribute(tmp_path, monkeypatch):
     """The how-to-run advice names the hidden-status run, and only until a run is scored."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
-    changed = _edited(tmp_path, "src/app.ts")
+    changed = str(tmp_path / "src" / "app.ts")
     mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
 
     def nudge() -> str:
@@ -213,8 +197,8 @@ def test_nudge_explains_only_a_check_run_the_shell_could_not_attribute(tmp_path,
 def test_mixed_doc_and_code_edit_still_nudges(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _node_project(tmp_path)
-    doc = _edited(tmp_path, "README.md")
-    code = _edited(tmp_path, "src/app.ts")
+    doc = str(tmp_path / "README.md")
+    code = str(tmp_path / "src" / "app.ts")
     mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[code])
 
     nudge = build_verify_on_stop_nudge(

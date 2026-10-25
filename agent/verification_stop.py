@@ -170,12 +170,8 @@ def build_verify_on_stop_nudge(
     *, session_id: str | None, changed_paths: Iterable[str], attempts: int=0, max_attempts: int=2,
 ) -> str | None:
     """Return a synthetic follow-up when edited code lacks fresh verification."""
-    # Prose-only turns (markdown, skills, README, LICENSE, ...) have nothing to verify, and
-    # a path under a directory that no longer exists (a removed worktree) is not a workspace.
-    paths = sorted({
-        str(p) for p in changed_paths
-        if p and not _is_non_code_path(p) and Path(p).parent.is_dir()
-    })
+    # Prose-only turns (markdown, skills, README, LICENSE, ...) have nothing to verify.
+    paths = sorted({str(p) for p in changed_paths if p and not _is_non_code_path(p)})
     if not paths or attempts >= max_attempts:
         return None
 
