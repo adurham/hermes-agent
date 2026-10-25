@@ -175,12 +175,13 @@ from hermes_cli.web_server_boundary import (
 )
 
 
-def _ws_request_view(ws: WebSocket) -> Request:
+def _ws_request_view(ws: WebSocket, app) -> Request:
     """A ``Request`` facade over a ``WebSocket`` for the auth helpers.
 
     ``_verify_access_token`` only touches ``request.headers`` (X-Forwarded-For
     via ``client_ip``) and ``request.client`` on this path (``audit=False``,
-    no cookie/redirect work), so a lightweight duck-typed stand-in avoids
+    no cookie/redirect work), and ``webapp_sign_in.token_works_alone`` reads
+    ``request.app.state``, so a lightweight stand-in carrying *app* avoids
     constructing a real ASGI request inside the upgrade. ``scan_session_providers``
     itself never sees the request — only the provider callbacks do.
     """
@@ -188,6 +189,7 @@ def _ws_request_view(ws: WebSocket) -> Request:
 
     return Request({
         "type": "http",
+        "app": app,
         "headers": [(k.lower().encode("latin-1"), v.encode("latin-1"))
                     for k, v in getattr(ws.headers, "items", dict)()],
         "client": (ws.client.host, 0) if ws.client else None,
@@ -289,12 +291,16 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False,
         # and a provider-verified token is accepted on identity merit.
         token = ws.query_params.get("token", "")
         if token:
+            from hermes_cli import webapp_sign_in
             from hermes_cli.dashboard_auth.base import ProviderError
             from hermes_cli.dashboard_auth.middleware import _verify_access_token
 
+            view = _ws_request_view(ws, app)
             try:
-                session = _verify_access_token(
-                    _ws_request_view(ws), access_token=token, audit=False)
+                # On the gateway's Webapp a browser login's tokens work only as its cookies, which
+                # sign-out ends; only a token this listener gave a native app's sign-in works alone.
+                session = (_verify_access_token(view, access_token=token, audit=False)
+                           if webapp_sign_in.token_works_alone(view, token) else None)
             except ProviderError as exc:
                 # All providers unreachable (IDP outage) — reject without
                 # crashing the upgrade; the REST bearer leg answers 503, and

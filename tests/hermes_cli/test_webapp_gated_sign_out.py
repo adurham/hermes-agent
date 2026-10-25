@@ -394,6 +394,31 @@ def test_off_the_webapp_any_provider_token_works_on_its_own_as_on_main(gated, mo
     assert _renew(gated, refresh).status_code == 200
 
 
+def _gateway_socket_with(gated, access):
+    """The ``/api/ws`` upgrade from a client holding nothing but *access* (``?token=``): the close
+    code the gate answers with, or None when it lets the socket open."""
+    from urllib.parse import quote
+
+    try:
+        with gated.browser().websocket_connect(f"ws://hermes.lan:9120/api/ws?token={quote(access)}") as ws:
+            return _close_code(ws, 0.5)
+    except WebSocketDisconnect as closed:
+        return closed.code
+
+
+def test_a_logins_access_token_opens_no_socket_on_its_own(gated, monkeypatch):
+    """The upgrade gate takes a provider token on its own on the same terms as the bearer header:
+    on the Webapp only one given to a native app's sign-in, anywhere else any, as on main."""
+    browser = gated.browser()
+    _sign_in_with_password(browser)
+    access, _ = _tokens(browser)
+    native_access, _ = _native_app_sign_in(gated)
+    assert _gateway_socket_with(gated, access) == 4401
+    assert _gateway_socket_with(gated, native_access) is None
+    monkeypatch.setattr(gated.server.app.state, "ui_surface", "dashboard")
+    assert _gateway_socket_with(gated, access) is None
+
+
 @pytest.mark.platforms("posix")
 def test_the_record_of_native_sign_ins_is_user_only(gated, tmp_path):
     from hermes_cli.webapp_sign_in import RECORD_PATH
