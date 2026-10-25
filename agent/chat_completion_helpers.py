@@ -3594,22 +3594,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self.clients.close_once("stream_options_rejected_retry")
             return True
 
-        if self.deltas_were_sent["yes"]:
-            _partial_tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
-            if not _partial_tool_in_flight and not self._visible_text_delivered():
-                # Deltas fired but nothing visible reached a consumer (whitespace/think-only
-                # deltas, or no display consumer at all) and no tool call is in flight: from
-                # the user's and the model's point of view NOTHING was delivered. The
-                # "partial delivery" stub would be EMPTY and the loop would ask the model to
-                # continue from nowhere, so it repeats the lost step (#112419). Classify as an
-                # undelivered failure instead: same-prefix retry, then the main loop's
-                # fallback/backoff — there is no text to duplicate.
-                logger.warning(
-                    "Stream died after deltas but before any visible text was delivered (0 chars, "
-                    "no tool call in flight); treating as an undelivered stream failure: %s", e)
-                self._quiet(self.agent._reset_stream_delivery_tracking)
-                self.deltas_were_sent["yes"] = False
-                self.first_delta_fired["done"] = False
+        _partial_tool_in_flight = self._forget_invisible_deltas(e)
         if self.deltas_were_sent["yes"]:
             # Died AFTER tokens were delivered: normally no retry (would duplicate
             # text). Exception: a tool call in flight — aborting discards it, so
@@ -3974,6 +3959,7 @@ class _StreamingCall(StreamingWaitMonitor):
             raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
         if self._abandon_error is not None:  # the abandoned worker may still write into ``result``
             self.result = {**self.result, "response": None, "error": self._abandon_error}
+            self._forget_invisible_deltas(self._abandon_error)  # nothing visible: retry, not a stub
         if self.result["error"] is not None:
             if self.deltas_were_sent["yes"]:
                 return self._partial_stream_stub()

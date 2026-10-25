@@ -33,12 +33,29 @@ class StreamingWaitMonitor:
         rekill = bool(attempt) and attempt == self._last_killed_attempt
         self._last_killed_attempt = attempt
         self._same_attempt_kills = self._same_attempt_kills + 1 if rekill else 1
-        if rekill and self.worker is not None and self._same_attempt_kills >= env_int(
-                "HERMES_STREAM_STALE_ABANDON_KILLS", 3):
+        limit = env_int("HERMES_STREAM_STALE_ABANDON_KILLS", 3)  # 0 or less: never abandon
+        if attempt and self.worker is not None and 0 < limit <= self._same_attempt_kills:
             self._abandon_wedged_worker(elapsed, attempt)
             return
         self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
         self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+
+    def _forget_invisible_deltas(self, exc) -> bool:
+        """Deltas fired but nothing visible reached a consumer (whitespace/think-only deltas,
+        or no display consumer at all) and no tool call is in flight: from the user's and the
+        model's point of view NOTHING was delivered. The "partial delivery" stub would be
+        EMPTY and the loop would ask the model to continue from nowhere, so it repeats the
+        lost step (#112419). Reset delivery so the failure is handled as undelivered (retry
+        the unchanged request) instead. Returns whether a partial tool call is in flight."""
+        tool_in_flight = bool(self.result.get("partial_tool_names")) or self.provider_tool_in_flight["yes"]
+        if self.deltas_were_sent["yes"] and not tool_in_flight and not self._visible_text_delivered():
+            logging.getLogger("agent.chat_completion_helpers").warning(
+                "Stream died after deltas but before any visible text was delivered (0 chars, "
+                "no tool call in flight); treating as an undelivered stream failure: %s", exc)
+            self._quiet(self.agent._reset_stream_delivery_tracking)
+            self.deltas_were_sent["yes"] = False
+            self.first_delta_fired["done"] = False
+        return tool_in_flight
 
     def _abandon_wedged_worker(self, elapsed: float, attempt: int) -> None:
         """Like the /stop path, leave the (daemon) worker behind and end this call with a

@@ -201,3 +201,46 @@ def test_turn_retries_an_abandoned_stream_and_completes(monkeypatch):
     assert len(calls) == 2
     assert result.get("completed") is True and result.get("final_response") == "done after retry"
     assert len(session_ends) == 1 and session_ends[0]["completed"] is True
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_abandon_limit_of_one_abandons_on_the_first_kill(wedged, monkeypatch, caplog):
+    monkeypatch.setenv("HERMES_STREAM_STALE_ABANDON_KILLS", "1")
+    with caplog.at_level("WARNING"):
+        caller, outcome = _call_in_thread(wedged)
+        caller.join(timeout=10.0)
+
+    assert not caller.is_alive()
+    assert isinstance(outcome.get("error"), TimeoutError), outcome
+    assert _log_count(caplog, "Stream stale for") == 1, "a limit of one must not wait a second window"
+    assert _log_count(caplog, "abandoning the request") == 1
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_abandon_after_invisible_deltas_retries_instead_of_an_empty_stub(monkeypatch):
+    """Whitespace-only text reached no consumer before the worker wedged: nothing was
+    delivered, so the abandon must surface as a retryable error, not an empty partial stub."""
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.3")
+    monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "5")
+    agent = _anthropic_agent()
+    agent._abort_request_anthropic_client = lambda client, reason=None: None
+    release = threading.Event()
+
+    def _events():
+        yield SimpleNamespace(type="content_block_start", index=0,
+                              content_block=SimpleNamespace(type="text", text=""))
+        yield SimpleNamespace(type="content_block_delta", index=0,
+                              delta=SimpleNamespace(type="text_delta", text="  \n"))
+        release.wait(timeout=30.0)
+        yield SimpleNamespace(type="message_stop")
+
+    agent._anthropic_client.messages.stream.side_effect = _stream_of(_events)
+    try:
+        caller, outcome = _call_in_thread(agent)
+        caller.join(timeout=10.0)
+    finally:
+        release.set()
+
+    assert not caller.is_alive()
+    assert "value" not in outcome, f"an empty partial stub was returned: {outcome.get('value')!r}"
+    assert isinstance(outcome.get("error"), TimeoutError), outcome
