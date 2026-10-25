@@ -163,8 +163,7 @@ export async function runExportProfileFlow(profile?: string): Promise<null | str
   // The browser Webapp has no save dialog for a host-side archive. Say how to
   // export there instead of doing nothing.
   if (!pick) {
-    const reason = `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${target}`
-    notifyError(new Error(reason), translateNow('profiles.failedExport'))
+    notifyError(new Error(translateNow('profiles.exportNeedsHost', target)), translateNow('profiles.failedExport'))
 
     return null
   }

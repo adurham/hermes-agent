@@ -2769,6 +2769,7 @@ export const en: Translations = {
     exported: 'Profile exported',
     failedImport: 'Failed to import profile',
     failedExport: 'Failed to export profile',
+    exportNeedsHost: name => `The browser can't save a profile archive. On the Hermes host, run: hermes profile export ${name}`,
     allProfiles: 'All profiles',
     showAllProfiles: 'Show all profiles',
     switchToProfile: name => `Switch to ${name}`,

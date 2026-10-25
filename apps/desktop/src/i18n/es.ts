@@ -3193,6 +3193,7 @@ export const esOverrides = {
     exported: 'Perfil exportado',
     failedImport: 'No se pudo importar el perfil',
     failedExport: 'No se pudo exportar el perfil',
+    exportNeedsHost: name => `El navegador no puede guardar un archivo de perfil. En el host de Hermes, ejecuta: hermes profile export ${name}`,
     allProfiles: 'Todos los perfiles',
     showAllProfiles: 'Mostrar todos los perfiles',
     switchToProfile: name => `Cambiar a ${name}`,

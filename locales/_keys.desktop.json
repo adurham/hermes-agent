@@ -2450,6 +2450,7 @@
     "profiles.emptySoul",
     "profiles.env",
     "profiles.exportMenu",
+    "profiles.exportNeedsHost",
     "profiles.exportProfile",
     "profiles.exported",
     "profiles.failedCopy",
