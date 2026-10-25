@@ -19,10 +19,12 @@ from agent.turn_failure_copy import stamp_failure
 from agent.turn_empty_response import recover_empty_response
 from agent.turn_stop_gates import apply_stop_gates
 from agent.promise_gate import (
+    GATE_TAIL,
     MAX_PROMISE_GATE_RETRIES,
     PROMISE_GATE_NUDGE,
+    PROMISE_GATE_TAIL_NUDGE,
+    gate_kind,
     promise_excerpt,
-    should_gate,
 )
 from agent.turn_truncation import partial_result, repetition_copy
 
@@ -175,7 +177,7 @@ def finish_text_response(
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
         intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
+        tool_calls_this_turn, tool_results_this_turn, trailing_continue_intent,
     )
 
     _ack_mode = intent_ack_continuation_mode(agent)
@@ -329,28 +331,32 @@ def finish_text_response(
     # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
     agent._dropped_toolcall_retries = 0
 
-    # Promise-without-action gate. deepseek-v4.1-flash on ollama-cloud routinely ends a
-    # no-action turn by announcing the work instead of doing it ("I'll build X now",
-    # "building the page next"), which reads to the operator as a commitment with nothing
-    # behind it. Gate it the same way as a dropped tool call: one ephemeral re-prompt per
-    # turn, and only when the whole turn made zero tool calls, so genuine work summaries
-    # and "next step" notes on a turn that did act are untouched.
-    _turn_tool_calls = sum(
-        1 for _m in messages
-        if isinstance(_m, dict) and _m.get("role") == "assistant" and _m.get("tool_calls")
-    )
-    if should_gate(
+    # Promise-without-action gate. deepseek-v4.1-flash on ollama-cloud routinely ends a turn by
+    # announcing the work instead of doing it ("I'll build X now", "building the page next",
+    # "...I'll build that offline rather than keep firing"), which reads to the operator as a
+    # commitment with nothing behind it. Two shapes, one shared retry budget:
+    #   * turn — no tool calls at all this turn: whole-body scan.
+    #   * tail — the turn acted, but its last prose paragraph ENDS on a commitment: the earlier
+    #     calls were earlier steps, nothing ran after the promise, so it is unfulfilled by
+    #     position. Tail-only, because long analyses legitimately say "I'll" mid-reply.
+    # The count MUST be turn-scoped: the session-wide count this used to take is non-zero from
+    # the first tool call onward, which made the zero-tool branch unreachable in practice
+    # (agent.log carried no Promise-without-action line at all; the live 2026-10-24 miss was a
+    # 5-probe turn ending on "I'll build that offline" — msg 736018).
+    _turn_tool_calls = tool_calls_this_turn(messages)
+    _promise_kind = gate_kind(
         final_text=final_response,
         turn_tool_call_count=_turn_tool_calls,
         retries=getattr(agent, "_promise_gate_retries", 0),
         finish_reason=finish_reason,
-    ):
+    )
+    if _promise_kind:
         agent._promise_gate_retries = getattr(agent, "_promise_gate_retries", 0) + 1
         logger.warning(
-            "Promise-without-action (%r) with zero tool calls this turn — re-prompting "
+            "Promise-without-action[%s] (%r) — tool calls this turn: %d; re-prompting "
             "(retry %d/%d, model=%s provider=%s)",
-            promise_excerpt(final_response), agent._promise_gate_retries,
-            MAX_PROMISE_GATE_RETRIES, agent.model, agent.provider,
+            _promise_kind, promise_excerpt(final_response), _turn_tool_calls,
+            agent._promise_gate_retries, MAX_PROMISE_GATE_RETRIES, agent.model, agent.provider,
         )
         agent._emit_diagnostic_status(
             "↻ Reply announced work without doing it — re-prompting"
@@ -359,12 +365,32 @@ def finish_text_response(
         append_message(messages, final_msg)
         append_message(messages, {
             "role": "user",
-            "content": PROMISE_GATE_NUDGE.format(excerpt=promise_excerpt(final_response)),
+            "content": (PROMISE_GATE_TAIL_NUDGE if _promise_kind == GATE_TAIL else PROMISE_GATE_NUDGE)
+            .format(excerpt=promise_excerpt(final_response)),
             "_promise_gate_nudge": True,
         })
         agent._session_messages = messages
         final_response = None
         return _verdict("continue")
+    # The nudge already ran and the model promised AGAIN: the turn ends on an unbacked
+    # commitment. Say so loudly once (the counter is zeroed right below, so this fires on
+    # exactly that one pass) — this is the operator's and the log's only record that the
+    # promised work never happened.
+    if (
+        getattr(agent, "_promise_gate_retries", 0) >= MAX_PROMISE_GATE_RETRIES
+        and gate_kind(
+            final_text=final_response, turn_tool_call_count=_turn_tool_calls,
+            retries=0, finish_reason=finish_reason,
+        )
+    ):
+        logger.warning(
+            "Promise-unfulfilled-after-nudge (%r) — delivered as the final answer with "
+            "nothing run for it (model=%s provider=%s)",
+            promise_excerpt(final_response), agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status(
+            "⚠ Announced work, then promised again without acting — nothing was run"
+        )
     agent._promise_gate_retries = 0
 
     # Pop prefill / empty-retry scaffolding before the final response or

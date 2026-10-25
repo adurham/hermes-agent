@@ -3476,6 +3476,26 @@ def looks_like_degenerate_final(text: str, user_message: Any = None) -> bool:
     return not any(ch.isalpha() and not ch.isascii() for ch in user_text)
 
 
+def tool_calls_this_turn(messages: list[dict[str, Any]] | None) -> int:
+    """Assistant rows that emitted tool calls after the most recent user row.
+
+    The promise gate needs THIS turn's tool use, never the session's: a session-wide count
+    is non-zero from the first tool call onward, so the gate's zero-tool-call branch becomes
+    unreachable for the rest of the session (the failure mode that let a 5-probe-then-promise
+    turn through untouched). Same window rule as ``tool_results_this_turn``: the continuation
+    nudges are user rows, so they correctly close the window and bound the re-prompts.
+    """
+    count = 0
+    for msg in reversed(messages or ()):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "user":
+            break
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            count += 1
+    return count
+
+
 def tool_results_this_turn(messages: list[dict[str, Any]]) -> int:
     """Tool-result rows after the most recent user row — whether the turn did real tool work.
 
