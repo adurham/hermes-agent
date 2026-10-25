@@ -63,6 +63,17 @@ def _unavailable_warning_key(name: str) -> tuple[str, str]:
     return hermes_home_key(get_hermes_home()), name
 
 
+def _warn_once(name: str, message: str, say=None) -> None:
+    """Log *message* and hand it to the user's sink once per home and provider."""
+    key = _unavailable_warning_key(name)
+    if key in _warned_unavailable_providers:
+        return
+    _warned_unavailable_providers.add(key)
+    logger.warning(message)
+    if say is not None:
+        say(message)
+
+
 def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> None:
     """Warn once per home and provider that a configured memory provider is unavailable.
 
@@ -71,20 +82,13 @@ def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> 
     can only reach the user here, so it is appended when present. *say* is the agent's
     user-facing sink: a log line alone leaves the user running without memory unaware.
     """
-    key = _unavailable_warning_key(name)
-    if key in _warned_unavailable_providers:
-        return
-    _warned_unavailable_providers.add(key)
-    message = (
+    _warn_once(name, (
         f"⚠ Memory provider {name!r} is selected but reports unavailable — external memory "
         "is disabled for this session (built-in memory still works). Check the "
         "provider's credentials/config with 'hermes memory status'. Note: "
         "systemd/gateway services do not inherit ~/.hermes/.env automatically; set "
         f"any required variables in the service environment.{f' {reason}' if reason else ''}"
-    )
-    logger.warning(message)
-    if say is not None:
-        say(message)
+    ), say=say)
 
 
 def _provider_default_routes(provider: str) -> set[str]:
@@ -1348,10 +1352,14 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
-                from plugins.memory import load_memory_provider as _load_mem
+                from plugins.memory import load_memory_provider as _load_mem, parked_provider_notice
                 agent._memory_manager = _MemoryManager()
                 _mp = _load_mem(_mem_provider_name)
-                if _mp is None:
+                _parked = _mp is None and parked_provider_notice(_mem_provider_name)
+                if _parked:
+                    # Installed but turned off (by the user or by an update): say so, never re-install it.
+                    _warn_once(_mem_provider_name, _parked, say=agent._emit_startup_warning)
+                elif _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.
                     from hermes_cli.memory_provider_migration import recover_at_startup
                     if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):

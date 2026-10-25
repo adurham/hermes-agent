@@ -370,7 +370,8 @@ def test_plugin_whose_pyproject_installs_nothing_keeps_the_environment(admission
 def test_update_sync_disables_plugin_excluded_by_requires_python(admission_env):
     """An update never fails because of a plugin: a member whose requires-python excludes the
     interpreter core now runs on is disabled in every home that enables it (plugins.enabled in
-    one, memory.provider in another), the rest build, and the next boot sees a current venv."""
+    one, memory.provider in another), the rest build, and the next boot sees a current venv.
+    The provider selection survives, and the update after the plugin fits again undoes the edit."""
     from pm.environments import runtime_facts_path, selected_venv
     from pm.install import sync_venv, venv_is_current
     from pm.lock import Facts
@@ -400,10 +401,50 @@ def test_update_sync_disables_plugin_excluded_by_requires_python(admission_env):
     assert "# operator note" in text
     assert "too-old" in yaml.safe_load(text)["plugins"]["disabled"]
     assert yaml.safe_load(text)["plugins"]["enabled"] == ["fits"]
-    assert yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))["memory"]["provider"] == ""
+    work = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))
+    assert work["memory"]["provider"] == "too-old" and work["plugins"]["disabled"] == ["too-old"]
     assert "too-old" in json.dumps(_latest_receipt(home).get("warnings"))
     assert "hermes plugins enable too-old" in json.dumps(_latest_receipt(home).get("warnings"))
     assert venv_is_current(project_root=core) is True
+
+    for plugin in (home / "plugins" / "too-old", profile / "plugins" / "too-old"):
+        manifest = plugin / "pyproject.toml"
+        manifest.write_text(manifest.read_text(encoding="utf-8").replace(
+            f'"<{sys.version_info[0]}.{sys.version_info[1]}"', '">=3.11"'), encoding="utf-8")
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    root = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert root["enabled"] == ["fits", "too-old"] and not root.get("disabled") and "disabled_by_update" not in root
+    work = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))
+    assert work["memory"]["provider"] == "too-old" and not work["plugins"].get("enabled")
+    assert not work["plugins"].get("disabled") and "disabled_by_update" not in work["plugins"]
+    workspace = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["resolved_lock"]).parent
+    assert "too-old" in (workspace / "pyproject.toml").read_text()
+    assert venv_is_current(project_root=core) is True
+
+
+@pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
+def test_plugin_the_user_disables_after_an_update_stays_disabled(admission_env):
+    """Disabling a plugin an update turned off takes the decision back: later updates stop
+    retrying it, even once it fits again."""
+    from pm.install import sync_venv
+    from pm.plugin_inputs import Selection
+
+    _, home = admission_env
+    _local_conflict_members(home)
+    _write_enabled(home, ["plug-a", "plug-b"])
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+    assert "plug-b" in yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]["disabled_by_update"]
+
+    sync_venv(explicit=True, plugins=Selection({"home": str(home.resolve()), "enabled": ["plug-a"],
+                                                "disabled": ["plug-b"], "settled": ["plug-b"]}))
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    cfg["plugins"]["enabled"] = []  # without plug-a, plug-b would fit again
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    sync_venv(explicit=True, evict_incompatible_plugins=True)
+
+    plugins = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]
+    assert plugins["disabled"] == ["plug-b"] and "disabled_by_update" not in plugins
 
 
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")

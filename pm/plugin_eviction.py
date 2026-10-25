@@ -5,7 +5,9 @@ choose again. An update has nobody to ask and must never fail because of a plugi
 core moved (a newer Python, a bumped pin, a newer manifest contract) under a plugin
 that was admitted against the old core. Such a plugin is disabled in every home that
 enables it, the reason reaches the operator and the receipt, and the update continues
-with the rest. Only a core that cannot build on its own still fails.
+with the rest. Only a core that cannot build on its own still fails. The edit is recorded
+in the home's config, so every later update retries the plugin and undoes the edit once it
+fits again; a user who re-enables, disables or removes it takes the decision back.
 
 Disabling needs evidence about the plugin itself: its requires-python against the pinned
 interpreter, its manifest contract, a resolver proof, or its build failing. A fetch or
@@ -21,7 +23,6 @@ import base64
 import hashlib
 import io
 import json
-import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -30,8 +31,7 @@ from pm.environment import BuildFailure, ResolutionConflict
 from pm.environments import install_state_dir, runtime_facts_path
 from pm.filesystem import durable_write_bytes, file_digest, native, read_bytes_or_none
 from pm.package import InstallError
-
-logger = logging.getLogger(__name__)
+from pm.plugins_state import RECORD
 
 Entry = tuple[Path, str, Path]  # (home plugins dir, selection key, plugin dir)
 
@@ -77,77 +77,133 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
     return reasons, waiting
 
 
-def _discover_plugins() -> list | None:
-    """One scan of the plugin tree for alias lookup, or None when it cannot be read."""
-    try:
-        from hermes_cli.plugins_cmd import _discover_all_plugins
-
-        return _discover_all_plugins()
-    except (ImportError, OSError) as exc:
-        # Discovery only adds manifest-name aliases; the key and its bare leaf are always known.
-        # Anything else is a real bug in the plugin tree and should surface, not be hidden.
-        logger.warning("Could not discover plugin aliases: %s", exc)
-        return None
-
-
-def _spellings(name: str, discovered: list | None) -> set[str]:
-    """Every spelling a config list may hold for plugin *name* (key, bare leaf, manifest name).
-    *discovered* is the shared scan from :func:`_discover_plugins`; None means the scan failed."""
-    if discovered is None:
-        return {name, name.split("/")[-1]}
-    from hermes_cli.plugins_cmd import _plugin_aliases
-
-    return _plugin_aliases(name, discovered)
-
-
-def _discard_aliases(names: list, aliases: set[str]) -> None:
-    """Remove *aliases* from the round-tripped list in place, so order and comments survive."""
+def _discard(names: list, spellings: set[str]) -> None:
+    """Remove *spellings* from a round-tripped list in place, so order and comments survive."""
     for index in reversed(range(len(names))):
-        if names[index] in aliases:
+        if names[index] in spellings:
             del names[index]
 
 
-class PluginEviction:
-    """Config edits disabling the plugins in *reasons*; published like a plugin selection."""
+def _list(plugins, key: str) -> list:
+    if plugins.get(key) is None:
+        plugins[key] = []
+    return plugins[key]
 
-    def __init__(self, entries: list[Entry], reasons: dict[Path, str]):
+
+def _disable(plugins, name: str, plugin_dir: Path, reason: str) -> None:
+    """Park *name* in plugins.disabled, drop it from plugins.enabled and record what to undo."""
+    from pm.plugins_state import plugin_spellings
+
+    spellings = plugin_spellings(plugin_dir, name)
+    disabled, enabled = _list(plugins, "disabled"), plugins.get("enabled")
+    if not isinstance(plugins.get(RECORD), dict):
+        plugins[RECORD] = {}
+    earlier = plugins[RECORD].get(name)
+    if name in disabled and isinstance(earlier, dict):
+        was_enabled = bool(earlier.get("enabled"))  # a retry that still fails keeps the first record
+    else:
+        was_enabled = isinstance(enabled, list) and bool(spellings & set(enabled))
+    if name not in disabled:
+        disabled.append(name)
+    if isinstance(enabled, list):
+        _discard(enabled, spellings)
+    plugins[RECORD][name] = {"enabled": was_enabled, "reason": " ".join(reason.split())[-300:]}
+
+
+def _rejoin(plugins, name: str, plugin_dir: Path) -> None:
+    """Undo an earlier update's _disable now that the plugin fits again."""
+    from pm.plugins_state import plugin_spellings
+
+    record = plugins.get(RECORD) if isinstance(plugins.get(RECORD), dict) else {}
+    earlier = record.get(name)
+    _discard(_list(plugins, "disabled"), plugin_spellings(plugin_dir, name))
+    if isinstance(earlier, dict) and earlier.get("enabled") and name not in _list(plugins, "enabled"):
+        plugins["enabled"].append(name)
+
+
+def settle_record(plugins, settled=()) -> None:
+    """A user's own selection takes the decision back: forget the record of every plugin they just
+    enabled, disabled or removed (*settled*), so no later update turns it back on."""
+    record = plugins.get(RECORD)
+    for name in settled if isinstance(record, dict) else ():
+        record.pop(name, None)
+    _prune_record(plugins)
+
+
+def _prune_record(plugins) -> None:
+    """Forget records whose plugin left plugins.disabled (the user re-enabled or removed it)."""
+    record = plugins.get(RECORD)
+    if not isinstance(record, dict):
+        plugins.pop(RECORD, None)
+        return
+    disabled = set(plugins.get("disabled") or ())
+    for name in [name for name in record if name not in disabled]:
+        del record[name]
+    if not record:
+        del plugins[RECORD]
+
+
+def recorded_evictions() -> list[Entry]:
+    """Plugins an earlier update disabled that their home still has disabled: retried each update."""
+    from pm.plugins_state import dependency_homes, read_home_selection
+    from pm.workspace import selected_plugin_dir
+
+    entries: list[Entry] = []
+    for home in dependency_homes():
+        try:
+            plugins = (read_home_selection(home) or {}).get("plugins") or {}
+        except ValueError:
+            continue  # sync_evicting already reports an unreadable profile
+        record, disabled = plugins.get(RECORD), plugins.get("disabled") or []
+        for name in record if isinstance(record, dict) else ():
+            if not isinstance(name, str) or name not in disabled:
+                continue
+            try:
+                plugin_dir = selected_plugin_dir(home / "plugins", name)
+            except InstallError:
+                continue  # a hand-edited key that names no plugin tree
+            if plugin_dir is not None:
+                entries.append((home / "plugins", name, plugin_dir))
+    return entries
+
+
+class PluginEviction:
+    """One update's config edits: disable the plugins in *reasons*, re-enable *rejoined* ones.
+
+    A disabled plugin leaves plugins.enabled under every spelling and is recorded under
+    plugins.disabled_by_update (was it enabled, and why), so a later update can retry it and undo
+    exactly this edit. memory.provider is left alone: plugins.disabled keeps a parked provider out
+    of the environment and the loader, and re-enabling the plugin brings the provider back with it.
+    Published like a plugin selection.
+    """
+
+    def __init__(self, entries: list[Entry], reasons: dict[Path, str], rejoined: list[Entry] = ()):
         from hermes_yaml import roundtrip_yaml
         from pm.publication import selection_snapshot
 
         self.configs = selection_snapshot()
-        by_home: dict[Path, list[str]] = {}
+        by_home: dict[Path, list[tuple[str, Path, str | None]]] = {}
         for plugins_dir, name, plugin_dir in entries:
             if plugin_dir.resolve() in reasons:
-                by_home.setdefault(plugins_dir.parent, []).append(name)
+                by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, reasons[plugin_dir.resolve()]))
+        for plugins_dir, name, plugin_dir in rejoined:
+            by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, None))
         self.edits: list[tuple[Path, bytes | None, bytes]] = []
-        discovered: list | None = None
-        scanned = False  # scan once for every evicted plugin, and only if an enabled list needs it
-        for home, names in by_home.items():
+        for home, changes in by_home.items():
             path = home / "config.yaml"
             previous = read_bytes_or_none(path)
             yaml = roundtrip_yaml()
             config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
-            # read_home_selection already proved plugins/memory are mappings and the lists are lists.
+            # read_home_selection already proved plugins is a mapping and the lists are lists.
             plugins = config.get("plugins")
             if plugins is None:
                 plugins = config["plugins"] = {}
-            disabled = plugins.get("disabled")
-            if disabled is None:
-                disabled = plugins["disabled"] = []
-            enabled = plugins.get("enabled")
-            memory = config.get("memory")
-            for name in names:
-                if name not in disabled:
-                    disabled.append(name)
-                # Keep the two lists consistent: a plugin that is disabled must not stay enabled
-                # under any spelling the loader matches, or `plugins enable` has nothing to repair.
-                if isinstance(enabled, list):
-                    if not scanned:
-                        discovered, scanned = _discover_plugins(), True
-                    _discard_aliases(enabled, _spellings(name, discovered))
-                # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
-                if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
-                    memory["provider"] = ""
+            for name, plugin_dir, reason in changes:
+                if reason is None:
+                    _rejoin(plugins, name, plugin_dir)
+                else:
+                    _disable(plugins, name, plugin_dir, reason)
+            _prune_record(plugins)
             output = io.StringIO()
             yaml.dump(config, output)
             self.edits.append((path, previous, output.getvalue().encode("utf-8")))
@@ -187,7 +243,8 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
 
     Static misfits go first (no resolver needed). If the rest still fails, core alone is
     built to prove the plugins are the cause, then members are re-added in config order
-    and each one that breaks the build is disabled too.
+    and each one that breaks the build is disabled too. Plugins an earlier update disabled
+    are retried after the enabled ones and re-enabled when they fit.
     """
     from pm import receipt
     from pm.install import _commit_selection, _runtime_state_matches, _target_selection
@@ -201,19 +258,23 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
         except ValueError as exc:
             notices.append(f"Skipped the plugins of profile {home}: {exc}; they rejoin once its config.yaml is fixed")
     entries = enabled_plugin_entries(skip_invalid_secondary=True)
-    reasons, waiting = static_verdicts(entries, _interpreter_version())
+    retrying = recorded_evictions()
+    reasons, waiting = static_verdicts([*entries, *retrying], _interpreter_version())
+
+    def fits(plugin_dir: Path) -> bool:
+        return plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting
 
     def members() -> list[Path]:
-        return list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries
-                                  if plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting
-                                  and _is_member_candidate(plugin_dir)))
+        return list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in [*entries, *retrying]
+                                  if fits(plugin_dir) and _is_member_candidate(plugin_dir)))
 
     def commit() -> None:
         enabled, stamp, inputs = _target_selection(package, fact, extras=extras, inputs={"plugin_dirs": members()},
                                                    repair=False, shipped=shipped, frozen=frozen)
         receipt.record_feature_list(enabled)
-        _commit_selection(package, facts, PluginEviction(entries, reasons) if reasons else None,
-                          enabled=enabled, stamp=stamp, inputs=inputs,
+        rejoined = [entry for entry in retrying if fits(entry[2])]
+        edit = PluginEviction([*entries, *retrying], reasons, rejoined) if reasons or rejoined else None
+        _commit_selection(package, facts, edit, enabled=enabled, stamp=stamp, inputs=inputs,
                           current=_runtime_state_matches(fact, stamp), repair=False, explicit=explicit,
                           skip_invalid_secondary=True)
 
@@ -237,14 +298,25 @@ def sync_evicting(package, facts, fact: dict, *, extras, shipped, frozen, explic
             else:
                 fitting.append(member)
         commit()
-    for plugins_dir, name, plugin_dir in entries:
-        key = plugin_dir.resolve()
-        if key in reasons:
-            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}; "
-                           f"once it fits this Hermes again, run `hermes plugins enable {name}`")
-        elif key in waiting:
-            notices.append(f"Left plugin '{name}' in {plugins_dir.parent} out of this update: {waiting[key]}; "
-                           "it stays enabled and rejoins once Hermes reports a version it accepts")
+    notices += _outcome_notices(entries, retrying, reasons, waiting)
     for message in notices:
         print(f"⚠ {message}", file=sys.stderr, flush=True)
         receipt.record_warning(message)
+
+
+def _outcome_notices(entries: list[Entry], retrying: list[Entry], reasons: dict[Path, str],
+                     waiting: dict[Path, str]) -> list[str]:
+    notices = []
+    for plugins_dir, name, plugin_dir in entries:
+        key = plugin_dir.resolve()
+        if key in reasons:
+            notices.append(f"Disabled plugin '{name}' in {plugins_dir.parent}: {reasons[key]}; every update retries "
+                           f"it and turns it back on once it fits, or run `hermes plugins enable {name}` sooner")
+        elif key in waiting:
+            notices.append(f"Left plugin '{name}' in {plugins_dir.parent} out of this update: {waiting[key]}; "
+                           "it stays enabled and rejoins once Hermes reports a version it accepts")
+    for plugins_dir, name, plugin_dir in retrying:
+        why = reasons.get(plugin_dir.resolve()) or waiting.get(plugin_dir.resolve())
+        notices.append(f"Plugin '{name}' in {plugins_dir.parent} is still disabled: {why}; the next update retries it"
+                       if why else f"Turned plugin '{name}' in {plugins_dir.parent} back on: it fits this Hermes again")
+    return notices
