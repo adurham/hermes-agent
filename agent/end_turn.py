@@ -124,16 +124,20 @@ def turn_contract_enabled(agent: Any = None) -> bool:
 
 def ensure_end_turn_schema(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Append the ``end_turn`` schema to *tools* when the contract is enabled, and latch the
-    flag the prompt builder reads. Idempotent."""
+    flag the prompt builder reads. Idempotent, and cheap enough to run on every request: the
+    request builder calls it so no toolset assembly, session pin or surface rebuild can ship a
+    contracted prompt without the tool it demands (2026-10-25: every CLI session's persisted
+    tools[] carried 37 tools and no ``end_turn`` while the prompt required it)."""
     enabled = turn_contract_enabled(agent)
     agent._turn_contract_enabled = enabled
-    logger.warning("turn-contract: schema injection enabled=%s tools=%d", enabled, len(tools or []))
     if not enabled:
+        logger.warning("turn-contract: schema injection enabled=False tools=%d", len(tools or []))
         return tools
     tools = list(tools or [])
     if any(((t or {}).get("function") or {}).get("name") == "end_turn" for t in tools):
         return tools
     tools.append(json.loads(json.dumps(END_TURN_SCHEMA)))
+    logger.warning("turn-contract: schema injection enabled=True tools=%d (appended end_turn)", len(tools))
     return tools
 
 
