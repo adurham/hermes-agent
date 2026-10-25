@@ -168,21 +168,40 @@ def _under(path: str, root: str) -> bool:
 _launcher_lineage: frozenset[tuple[int, float]] | None = frozenset()
 
 
+def _birth_stamp(proc) -> float:
+    """A start stamp for *proc* that a clock step cannot move. Linux: ``starttime`` from
+    ``/proc/<pid>/stat`` (clock ticks since boot; psutil's ``create_time()`` adds a wall-clock
+    boot time, so an NTP/VM/resume step shifts it by whole seconds). Elsewhere:
+    :func:`hermes_cli.process_identity.process_birth` (the unadjusted kernel start on macOS)."""
+    try:
+        # After the last ")" (comm may hold spaces) fields start at #3, so #22 is index 19.
+        stat = Path(f"/proc/{proc.pid}/stat").read_text(encoding="utf-8")  # windows-footgun: ok (/proc is BOM-free)
+        return float(int(stat.rsplit(")", 1)[1].split()[19]))
+    except (OSError, IndexError, ValueError):
+        from hermes_cli.process_identity import process_birth
+
+        return process_birth(proc)
+
+
+def _same_birth(proc, started: float) -> bool:
+    """Exact on Linux (integer ticks); a 2 s tolerance where the stamp is a float epoch."""
+    now = _birth_stamp(proc)
+    return now == started if os.path.exists(f"/proc/{proc.pid}/stat") else abs(now - started) < 2.0
+
+
 def lineage_with_start_times() -> list[tuple[int, float]] | None:
     """This process and its ancestors with their create times, the set :func:`_own_lineage`
     computes in-process, in a form that stays checkable after they exit. ``None`` when it
     cannot be computed completely (no psutil, a process that refuses inspection)."""
     try:
         import psutil
-
-        from hermes_cli.process_identity import process_birth
     except ImportError:
         return None
     chain: dict[int, float] = {}
     try:
         proc = psutil.Process()
         while proc is not None and proc.pid not in chain:
-            chain[proc.pid] = process_birth(proc)
+            chain[proc.pid] = _birth_stamp(proc)
             proc = proc.parent()
     except (psutil.Error, OSError):
         return None
@@ -194,8 +213,6 @@ def _own_lineage() -> set[int] | None:
     detached pass adds its launcher's ancestors that still run under the same create time (a
     reused pid is not spared), and returns ``None`` (spare every process) without them."""
     import psutil
-
-    from hermes_cli.process_identity import process_birth
 
     if _launcher_lineage is None:
         return None
@@ -209,10 +226,7 @@ def _own_lineage() -> set[int] | None:
         pass
     for pid, started in _launcher_lineage:
         with contextlib.suppress(psutil.Error, OSError):
-            # process_birth: macOS create_time() shifts by a boot-time reference frozen per
-            # process, so the launcher and this pass read different values after a clock step.
-            # Tolerance: Linux create_time adds a whole-second boot time psutil re-reads per call.
-            if abs(process_birth(psutil.Process(pid)) - started) < 2.0:
+            if _same_birth(psutil.Process(pid), started):
                 pids.add(pid)
     return pids
 
