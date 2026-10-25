@@ -1590,6 +1590,13 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     reasoning_config = _reasoning_config_for_wire(agent)
     if tools_for_api is None:
         tools_for_api = agent.tools
+    # Last mile for the turn-close contract: whatever built this array (toolset assembly, a
+    # session pin restored by tools.mcp_tool_agent, a surface rebuild), a contracted prompt must
+    # not ship without the tool it tells the model to call. Idempotent; skipped when there are
+    # no tools at all, where the contract cannot trigger.
+    if tools_for_api:
+        from agent.end_turn import ensure_end_turn_schema
+        tools_for_api = ensure_end_turn_schema(agent, tools_for_api)
     # The one place request_overrides are consumed: static /fast values are already pinned
     # in agent.request_overrides; auto/cold windows layer the fast override per request.
     request_overrides = effective_request_overrides(agent)
