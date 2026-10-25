@@ -1,4 +1,9 @@
-"""Display and heartbeat phase of the request-local streaming monitor."""
+"""Display and heartbeat phase of the request-local streaming monitor.
+
+Also holds the stale-kill follow-up (re-arm, abandon a wedged worker, stop claiming liveness
+for a wedged inline call) and the shared "no visible text was delivered" check
+(``_forget_invisible_deltas``) used by the error and abandon paths.
+"""
 
 import logging
 import time
@@ -9,9 +14,10 @@ from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
 from agent.proxy_bypass import is_loopback_host
 from agent.sleep_clock import SleepWatch
-from utils import env_int
-
 logger = logging.getLogger(__name__)
+
+# Kills of one dispatched attempt whose worker never unwinds before the monitor gives up on it.
+_STALE_ABANDON_KILLS = 3
 
 
 class StreamingWaitMonitor:
@@ -20,12 +26,21 @@ class StreamingWaitMonitor:
     _last_killed_attempt = 0
     _same_attempt_kills = 0
     _abandon_error = None
+    # Inline call wedged past the limit: the stale-timer re-arm time after which activity touches
+    # are withheld (None = claim liveness as usual). A real chunk after it lifts the hold.
+    _liveness_withheld_at = None
+
+    def _claims_liveness(self) -> bool:
+        since = self._liveness_withheld_at
+        return since is None or self.last_chunk_time["t"] > since
 
     def _rearm_or_abandon_after_kill(self, elapsed: float) -> None:
         """After a stale kill: re-arm the stale timer and announce the reconnect, unless the
-        same dispatched attempt has now been killed ``HERMES_STREAM_STALE_ABANDON_KILLS``
-        times with its worker still alive. Then the worker is parked where a socket shutdown
-        cannot reach it, and re-killing it every window would stall the turn forever."""
+        same dispatched attempt has now been killed ``_STALE_ABANDON_KILLS`` times without
+        unwinding. Then the request is parked where a socket shutdown cannot reach it, and
+        re-killing it every window would stall the turn forever: a worker thread is abandoned;
+        an inline call (cron, delegated children) runs on the caller's thread and cannot be,
+        so the monitor stops touching activity and the owner's inactivity watchdog ends it."""
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
         self.last_chunk_time["t"] = time.time()
         with self.stream_attempt_lock:
@@ -33,12 +48,21 @@ class StreamingWaitMonitor:
         rekill = bool(attempt) and attempt == self._last_killed_attempt
         self._last_killed_attempt = attempt
         self._same_attempt_kills = self._same_attempt_kills + 1 if rekill else 1
-        limit = env_int("HERMES_STREAM_STALE_ABANDON_KILLS", 3)  # 0 or less: never abandon
-        if attempt and self.worker is not None and 0 < limit <= self._same_attempt_kills:
-            self._abandon_wedged_worker(elapsed, attempt)
-            return
+        if not rekill:
+            self._liveness_withheld_at = None
+        if attempt and self._same_attempt_kills >= _STALE_ABANDON_KILLS:
+            if self.worker is not None:
+                self._abandon_wedged_worker(elapsed, attempt)
+                return
+            if self._liveness_withheld_at is None:
+                logger.error(
+                    "Inline streaming call did not unwind after %d stale kills of attempt %s; no longer "
+                    "reporting it as active, so the inactivity watchdog can end it. model=%s",
+                    self._same_attempt_kills, attempt, self.api_kwargs.get("model", "unknown"))
+            self._liveness_withheld_at = self.last_chunk_time["t"]
         self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
-        self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+        if self._claims_liveness():
+            self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
 
     def _forget_invisible_deltas(self, exc) -> bool:
         """Deltas fired but nothing visible reached a consumer (whitespace/think-only deltas,
@@ -142,7 +166,9 @@ class StreamingWaitMonitor:
 
     def _heartbeat(self, waiting_secs: int) -> None:
         """Gateway inactivity heartbeat: the start-to-first-chunk gap (thinking,
-        local prefill) can exceed the gateway timeout."""
+        local prefill) can exceed the gateway timeout. Withheld for a wedged inline call."""
+        if not self._claims_liveness():
+            return
         if waiting_secs >= 60.0:
             # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in —
             # once per silence, not every heartbeat (#92550).

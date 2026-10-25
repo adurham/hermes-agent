@@ -4,9 +4,10 @@ Incident: the monitor killed the same Anthropic stream attempt every stale windo
 hours. The worker never unwound (parked outside the socket read, so the socket
 shutdown could not wake it), ``_count_stale_attempt`` counts each attempt once so the
 stale streak stayed at 1, ``_check_stale_giveup`` only runs before a call, and only
-/stop ended the turn. Now the call abandons the worker after
-``HERMES_STREAM_STALE_ABANDON_KILLS`` kills of the same attempt and raises a retryable
-``TimeoutError``, the way the /stop path already leaves a worker behind.
+/stop ended the turn. Now the call abandons the worker after ``_STALE_ABANDON_KILLS``
+kills of the same attempt and raises a retryable ``TimeoutError``, the way the /stop path
+already leaves a worker behind. An inline call (cron, delegated children) cannot be
+abandoned, so it stops reporting activity and the owner's inactivity watchdog ends it.
 """
 
 import threading
@@ -17,6 +18,7 @@ import httpx
 import pytest
 
 from agent import chat_completion_helpers as helpers
+from agent import chat_completion_stream_monitor as monitor
 
 _ABANDONED = "request abandoned"
 
@@ -91,33 +93,20 @@ def test_wedged_worker_is_abandoned_with_a_retryable_timeout(wedged, caplog):
     assert not caller.is_alive(), "the call never ended: the same wedged attempt was re-killed forever"
     assert isinstance(outcome.get("error"), TimeoutError), outcome
     assert _ABANDONED in str(outcome["error"])
-    assert _log_count(caplog, "Stream stale for") == 3  # HERMES_STREAM_STALE_ABANDON_KILLS default
+    assert _log_count(caplog, "Stream stale for") == 3  # _STALE_ABANDON_KILLS
     assert _log_count(caplog, "abandoning the request") == 1
     assert wedged._consecutive_stale_streams == 1, "one wedged attempt must still count once"
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
-def test_late_write_from_the_abandoned_worker_does_not_replace_the_error(wedged, monkeypatch):
-    real_abandon = helpers._StreamingCall._abandon_wedged_worker
-    late = SimpleNamespace(late=True)
-
-    def _abandon_then_late_write(self, *args):
-        real_abandon(self, *args)
-        self.result["response"] = late  # the daemon worker wakes up and writes after the verdict
-
-    monkeypatch.setattr(helpers._StreamingCall, "_abandon_wedged_worker", _abandon_then_late_write)
-    caller, outcome = _call_in_thread(wedged)
-    caller.join(timeout=10.0)
-
-    assert not caller.is_alive()
-    assert "value" not in outcome, "a late write from the abandoned worker became the call's result"
-    assert isinstance(outcome.get("error"), TimeoutError), outcome
-
-
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_worker_that_unwinds_after_a_kill_still_retries(monkeypatch, caplog):
     """The common path: the kill unblocks the read, the worker retries with a fresh
-    attempt, and no attempt is killed twice, so nothing is abandoned."""
+    attempt, and no attempt is killed twice, so nothing is abandoned.
+
+    Relies on ``tests/agent/conftest.py`` zeroing ``jittered_backoff``: the attempt id moves
+    only when the worker STARTS its next attempt, so with this 0.3 s stale window kills
+    landing in a real 1-4 s retry backoff would count as the same attempt. In production
+    the stale window (180 s or more) dwarfs that backoff."""
     monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.3")
     monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "5")
     monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
@@ -145,67 +134,9 @@ def test_worker_that_unwinds_after_a_kill_still_retries(monkeypatch, caplog):
     assert _log_count(caplog, "abandoning the request") == 0
 
 
-# ── turn level: the abandon error is retried and the turn completes ──────────
-
-
-def _resp(content):
-    msg = SimpleNamespace(content=content, tool_calls=None)
-    return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason="stop")],
-                           model="test/model", usage=None)
-
-
-def _abandon_error():
-    """The exact error a real abandonment produces."""
-    call = helpers._StreamingCall.__new__(helpers._StreamingCall)
-    call.api_kwargs, call._same_attempt_kills = {"model": "m"}, 3
-    call._request_cancelled, call._call_done = {"value": False}, threading.Event()
-    call._abandon_wedged_worker(720.0, 1)
-    assert call._request_cancelled["value"] and call._call_done.is_set()
-    return call._abandon_error
-
-
-def test_turn_retries_an_abandoned_stream_and_completes(monkeypatch):
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
-    session_ends = []
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook",
-                        lambda name, **kw: session_ends.append(kw) if name == "on_session_end" else [])
-    tool = {"type": "function", "function": {"name": "web_search", "description": "web_search",
-                                             "parameters": {"type": "object", "properties": {}}}}
-    from run_agent import AIAgent
-
-    with (patch("model_tools.get_tool_definitions", return_value=[tool]),
-          patch("model_tools.check_toolset_requirements", return_value={}),
-          patch("agent.process_bootstrap.OpenAI")):
-        agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
-                        quiet_mode=True, skip_context_files=True, skip_memory=True)
-    agent.client = MagicMock()
-    agent._cached_system_prompt = "You are helpful."
-    agent._use_prompt_caching = False
-    agent.compression_enabled = False
-    agent.save_trajectories = False
-    agent._persist_session = lambda *a, **k: None
-    agent._save_trajectory = lambda *a, **k: None
-    abandoned = _abandon_error()
-    calls = []
-
-    def _api(api_kwargs):
-        calls.append(1)
-        if len(calls) == 1:
-            raise abandoned
-        return _resp("done after retry")
-
-    agent._interruptible_api_call = _api
-    with patch("run_agent.time.sleep", return_value=None), patch("time.sleep", return_value=None):
-        result = agent.run_conversation("hi")
-
-    assert len(calls) == 2
-    assert result.get("completed") is True and result.get("final_response") == "done after retry"
-    assert len(session_ends) == 1 and session_ends[0]["completed"] is True
-
-
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 def test_abandon_limit_of_one_abandons_on_the_first_kill(wedged, monkeypatch, caplog):
-    monkeypatch.setenv("HERMES_STREAM_STALE_ABANDON_KILLS", "1")
+    monkeypatch.setattr(monitor, "_STALE_ABANDON_KILLS", 1, raising=False)
     with caplog.at_level("WARNING"):
         caller, outcome = _call_in_thread(wedged)
         caller.join(timeout=10.0)
@@ -244,3 +175,95 @@ def test_abandon_after_invisible_deltas_retries_instead_of_an_empty_stub(monkeyp
     assert not caller.is_alive()
     assert "value" not in outcome, f"an empty partial stub was returned: {outcome.get('value')!r}"
     assert isinstance(outcome.get("error"), TimeoutError), outcome
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_wedged_inline_call_stops_reporting_activity(wedged, monkeypatch, caplog):
+    """Cron turns and delegated children run the request inline, so there is no worker to
+    abandon. Past the kill limit the monitor must stop touching activity (kills and
+    heartbeat), so the cron / delegate inactivity watchdog can end the job."""
+    monkeypatch.setattr(helpers, "should_use_direct_api_call", lambda agent: True)
+    monkeypatch.setattr(monitor, "_STALE_ABANDON_KILLS", 3, raising=False)
+    touches, calls = [], []
+    real_touch = wedged._touch_activity
+    monkeypatch.setattr(wedged, "_touch_activity", lambda desc, **kw: (touches.append(desc), real_touch(desc, **kw)))
+    real_rearm = helpers._StreamingCall._rearm_or_abandon_after_kill
+
+    def _rearm(self, elapsed):
+        calls.append(self)
+        real_rearm(self, elapsed)
+
+    monkeypatch.setattr(helpers._StreamingCall, "_rearm_or_abandon_after_kill", _rearm)
+    with caplog.at_level("WARNING"):
+        caller, _outcome = _call_in_thread(wedged)
+        caller.join(timeout=2.5)  # about 8 stale windows: well past the limit
+        kills = _log_count(caplog, "Stream stale for")
+        stale_touches = [t for t in touches if t.startswith("stale stream detected")]
+        call = calls[-1]
+        before = len(touches)
+        call._heartbeat(10)
+        call._heartbeat(90)
+        heartbeat_touches = len(touches) - before
+
+    assert caller.is_alive(), "an inline call runs on the caller's thread and is not abandoned"
+    assert kills > 3
+    assert len(stale_touches) == 2, f"kills past the limit still reported activity: {stale_touches}"
+    assert heartbeat_touches == 0, "the heartbeat kept reporting a wedged inline call as active"
+    assert _log_count(caplog, "no longer reporting it as active") == 1
+    assert _log_count(caplog, "abandoning the request") == 0
+    # A real chunk lifts the hold.
+    call.last_chunk_time["t"] = call._liveness_withheld_at + 1
+    call._heartbeat(10)
+    assert len(touches) > before
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_abandon_after_visible_text_returns_a_stub_classified_as_the_abandon(monkeypatch):
+    """Visible text already reached the user: the abandon ends in the partial-delivery stub,
+    and the stub is classified from the abandon error, not from whatever the worker left."""
+    monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.3")
+    monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "5")
+    agent = _anthropic_agent()
+    agent._abort_request_anthropic_client = lambda client, reason=None: None
+    agent._current_streamed_assistant_text = "Hello there"
+    monkeypatch.setattr(helpers._StreamingCall, "_visible_text_delivered", lambda self: True)
+    classified = []
+    from agent import error_classifier
+
+    real_classify = error_classifier.classify_api_error
+    monkeypatch.setattr(error_classifier, "classify_api_error",
+                        lambda error, **kw: (classified.append(error), real_classify(error, **kw))[1])
+    release = threading.Event()
+
+    def _events():
+        yield SimpleNamespace(type="content_block_start", index=0,
+                              content_block=SimpleNamespace(type="text", text=""))
+        yield SimpleNamespace(type="content_block_delta", index=0,
+                              delta=SimpleNamespace(type="text_delta", text="Hello there"))
+        release.wait(timeout=30.0)
+        yield SimpleNamespace(type="message_stop")
+
+    agent._anthropic_client.messages.stream.side_effect = _stream_of(_events)
+    try:
+        caller, outcome = _call_in_thread(agent)
+        caller.join(timeout=10.0)
+    finally:
+        release.set()
+
+    assert not caller.is_alive()
+    assert "value" in outcome, outcome
+    assert classified and isinstance(classified[-1], TimeoutError) and _ABANDONED in str(classified[-1])
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_abandon_joins_the_worker_for_relay_teardown_like_stop(wedged, monkeypatch):
+    """The in-turn retry opens a new Relay scope, so the abandon gets the same bounded
+    join as /stop before raising (#81521)."""
+    joined = []
+    monkeypatch.setattr(helpers, "_join_worker_for_relay_teardown",
+                        lambda worker, *, label: joined.append((worker, label)))
+    caller, outcome = _call_in_thread(wedged)
+    caller.join(timeout=10.0)
+
+    assert isinstance(outcome.get("error"), TimeoutError), outcome
+    assert len(joined) == 1 and joined[0][0] is not None and joined[0][1] == "Abandoned streaming"

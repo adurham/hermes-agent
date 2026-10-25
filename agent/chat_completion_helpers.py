@@ -3872,14 +3872,13 @@ class _StreamingCall(StreamingWaitMonitor):
             return
         self._stream_stale_timeout = _cloud_stale_timeout_for(self.agent, self.api_kwargs)
 
-    def _partial_stream_stub(self):
+    def _partial_stream_stub(self, error):
         """Tokens already reached the platform: a finish_reason="length" stub fires the
         continuation machinery; tool_calls=None blocks executing incomplete calls.
         Content may be EMPTY (dropped tool call, overflow) — the loop skips appending an
         empty stub and only sends the nudge (placeholder text leaked into the stitched
         response). A text-only death with 0 visible chars never gets here: the error
         handler reclassifies it as undelivered (#112419)."""
-        error = self.result["error"]
         _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
         _partial_names = list(self.result.get("partial_tool_names") or [])
         if _partial_names:
@@ -3957,19 +3956,23 @@ class _StreamingCall(StreamingWaitMonitor):
             raise InterruptedError("Agent interrupted during streaming API call")
         if self.agent._interrupt_requested:  # worker returned early before the monitor saw the flag
             raise InterruptedError("Agent interrupted during streaming API call (post-worker)")
-        if self._abandon_error is not None:  # the abandoned worker may still write into ``result``
-            self.result = {**self.result, "response": None, "error": self._abandon_error}
-            self._forget_invisible_deltas(self._abandon_error)  # nothing visible: retry, not a stub
-        if self.result["error"] is not None:
+        # Read the outcome once: an abandoned worker can still write into ``self.result`` later.
+        error, response = self.result["error"], self.result["response"]
+        if self._abandon_error is not None:
+            # Same bounded Relay join as /stop (#81521), before the retry opens a new scope.
+            _join_worker_for_relay_teardown(self.worker, label="Abandoned streaming")
+            error, response = self._abandon_error, None
+            self._forget_invisible_deltas(error)  # nothing visible: retry, not a stub
+        if error is not None:
             if self.deltas_were_sent["yes"]:
-                return self._partial_stream_stub()
-            raise self.result["error"]
-        if self.result["response"] is not None:
+                return self._partial_stream_stub(error)
+            raise error
+        if response is not None:
             _reset_stale_streak(self.agent)  # provider proved responsive: clear the breaker
         # Propagate first-chunk timing for the ``post_api_request`` hook.
         if isinstance(self.clients.diag, dict) and self.clients.diag.get("first_chunk_at"):
             self.agent._last_api_first_chunk_at = float(self.clients.diag["first_chunk_at"])
-        return self.result["response"]
+        return response
 
 
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
