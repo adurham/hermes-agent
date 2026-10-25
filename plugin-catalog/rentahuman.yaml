@@ -1,0 +1,15 @@
+name: rentahuman
+title: RentAHuman
+repo: https://github.com/rentahuman-ai/hermes-plugin
+sha: 277e36716546e2b0a9963f028b133562cb52266e
+description: Find people and coordinate real-world work through the RentAHuman marketplace.
+maintainer: RentAHuman
+tier: community
+category: tools
+docs_url: https://rentahuman.ai/docs#mcp
+version: "3.16.1"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
