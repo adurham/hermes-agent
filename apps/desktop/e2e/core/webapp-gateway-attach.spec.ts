@@ -456,7 +456,7 @@ test('signing out of a Webapp behind sign-in signs the browser out', async () =>
       .poll(() => open.every(socket => socket.closed), { timeout: 30_000, message: "sign-out closed the tab's socket" })
       .toBe(true)
     expect(signedOut.output).toMatch(/closed [1-9]\d* browser connections?\./)
-    expect(signedOut.output).toContain('Browsers behind sign-in must sign in again')
+    expect(signedOut.output).toContain('Every browser login behind sign-in has ended')
     expect((await page.request.get(`${origin}/api/sessions`)).status()).toBe(401)
     await page.reload()
     await expect(page).toHaveURL(/\/login/, { timeout: 60_000 })
