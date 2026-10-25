@@ -79,7 +79,7 @@ def _git_proc_running() -> bool:
         argv = ["tasklist", "/FO", "CSV", "/NH"] if os.name == "nt" else ["pgrep", _PGREP_GIT]
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                timeout=10, creationflags=windows_hide_flags(), check=False)
-    except (OSError, subprocess.SubprocessError):
+    except Exception:  # health: allow BLE001 -- whatever stops the probe, the locks stay
         logger.debug("git process probe failed; assuming git may be running", exc_info=True)
         return True
     if os.name == "nt":
