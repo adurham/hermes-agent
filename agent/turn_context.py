@@ -1128,6 +1128,15 @@ def build_turn_context(
         persist_user_timestamp, persist_user_platform_id,
     )
     _reset_per_turn_agent_state(agent)
+    # Turn-close contract: a payload left by a turn that ended some other way must never be
+    # delivered as the next turn's answer.
+    try:
+        from agent.end_turn import clear_end_turn
+
+        clear_end_turn(agent)
+        agent._turn_contract_rejections = 0
+    except Exception:
+        pass
 
     _preview_text = summarize_user_message_for_log(user_message)
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
