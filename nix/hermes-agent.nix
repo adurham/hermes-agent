@@ -3,7 +3,7 @@
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
 # Users override via:
 #   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
-#   pkgs.hermes-agent.override { extraDependencyGroups = [ "honcho" ]; }
+#   pkgs.hermes-agent.override { extraDependencyGroups = [ "google-meet" ]; }
 # Both extras add to what the package ships. The shipped groups live in
 # defaultDependencyGroups (set by packages.nix for `full`/`messaging`), so a
 # plain override of the extras never drops them.
