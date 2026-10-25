@@ -9,7 +9,6 @@ refused and the reaper closes it.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -21,8 +20,8 @@ import secrets
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
 from hermes_cli.pty_session import (
-    WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry,
-    RegistryFull, _close_ws, run_reaper,
+    _VIEWER_SEND_ERRORS, _VIEWER_SEND_TIMEOUT_SECONDS, WS_CLOSE_VIEWER_STALLED,
+    WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry, RegistryFull, _close_ws, run_reaper,
 )
 from hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import assert_named_profile_home_live, get_hermes_home
@@ -32,11 +31,11 @@ RETENTION_SECONDS = 15 * 60
 _MAX_SHELLS = 16
 # Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
+# How often a reader held up by that bound checks that the tab is still there (``_queue_frame``).
+# Once the connection is gone a check fails within about three: the first can still reach the
+# kernel before the peer's reset comes back.
+_LIVENESS_PROBE_SECONDS = 1.0
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
-# Puts abandoned because this task is already cancelling. Awaiting them here is
-# cancelled again before they finish; holding them until the callback reads the
-# result keeps "exception was never retrieved" off the loop.
-_DROPPED_TASKS: set[asyncio.Task] = set()
 
 
 class TerminalDenied(Exception):
@@ -264,120 +263,47 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return session, owner
 
 
-def _read_dropped_task(task: asyncio.Task) -> None:
-    _DROPPED_TASKS.discard(task)
-    if not task.cancelled():
-        task.exception()
+async def _queue_frame(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future, msg) -> None:
+    """``inbox.put(msg)``, checking that the tab is still there while the inbox stays full.
 
-
-def _drop_task(task: asyncio.Task) -> None:
-    """Cancel ``task`` without awaiting it. Safe while this task is itself cancelling."""
-    if not task.done():
-        task.cancel()
-    _DROPPED_TASKS.add(task)
-    task.add_done_callback(_read_dropped_task)
-
-
-class _SocketTail:
-    """Socket reads that stay ahead of a full inbox.
-
-    The inbox bound is backpressure for a live viewer. A put that waits for room must
-    not be the only thing the reader is doing: the tab's close is the next socket
-    message, possibly behind further keystrokes, and it has to surface while that
-    put is blocked. Frames already pulled are kept, in order, so a program that is
-    still reading takes them. They are not dropped to make the queue move.
+    A full inbox stops the reader taking frames. That backpressure bounds what a tab can queue, but
+    it also leaves the tab's close unread behind those frames, and short of reading them only a send
+    can find out that the connection is gone. So while the put waits, the tab gets an empty binary
+    frame (no output, which the client ignores) every ``_LIVENESS_PROBE_SECONDS``; attach has already
+    sent the replay, so it is never taken for one. A send that fails means the connection is gone:
+    ``ended`` is set, which cancels a write waiting on the program, and the put goes on waiting
+    unprobed.
     """
-
-    def __init__(self, ws: WebSocket):
-        self._ws = ws
-        self._ahead: deque = deque()
-        self._recv: asyncio.Task | None = asyncio.create_task(ws.receive())
-
-    def close(self) -> None:
-        recv, self._recv = self._recv, None
-        if recv is not None:
-            _drop_task(recv)
-
-    def pending_receive(self) -> asyncio.Task | None:
-        return self._recv
-
-    async def next_message(self):
-        """The next data frame, or None once the socket has disconnected."""
-        if self._ahead:
-            return self._ahead.popleft()
-        if self._recv is None:
-            return None
-        msg = await self._recv
-        if msg.get("type") == "websocket.disconnect":
-            self._recv = None
-            return None
-        self._recv = asyncio.create_task(self._ws.receive())
-        return msg
-
-    def saw_disconnect(self) -> bool:
-        """Consume a receive that has already finished. Data stays queued ahead."""
-        recv = self._recv
-        if recv is None or not recv.done():
-            return False
-        msg = recv.result()
-        if msg.get("type") == "websocket.disconnect":
-            self._recv = None
-            return True
-        self._ahead.append(msg)
-        self._recv = asyncio.create_task(self._ws.receive())
-        return False
-
-
-async def _put_frame(inbox: asyncio.Queue, tail: _SocketTail, ended: asyncio.Future, msg) -> None:
-    """Queue ``msg``. A full inbox still leaves the socket readable.
-
-    On disconnect, ``ended`` is set before this put finishes, so a write waiting on
-    the program is cancelled even though the frame itself stays queued for a pump
-    that is still delivering input.
-    """
-    if not inbox.full():
-        inbox.put_nowait(msg)
-        return
-    put = asyncio.create_task(inbox.put(msg))
-    try:
-        while not put.done():
-            pending = tail.pending_receive()
-            if pending is None:
-                break
-            await asyncio.wait((put, pending), return_when=asyncio.FIRST_COMPLETED)
-            if tail.saw_disconnect() and not ended.done():
-                ended.set_result(None)
-        await put
-    finally:
-        if not put.done():
-            _drop_task(put)
-
-
-async def _queue_until_close(tail: _SocketTail, inbox: asyncio.Queue, ended: asyncio.Future) -> None:
-    while (msg := await tail.next_message()) is not None:
-        await _put_frame(inbox, tail, ended, msg)
+    while not ended.done():
+        try:
+            return await asyncio.wait_for(inbox.put(msg), _LIVENESS_PROBE_SECONDS)
+        except TimeoutError:
+            pass
+        try:
+            await asyncio.wait_for(ws.send_bytes(b""), _VIEWER_SEND_TIMEOUT_SECONDS)
+        except _VIEWER_SEND_ERRORS:
+            ended.set_result(None)
+    await inbox.put(msg)
 
 
 async def _read_frames(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future) -> None:
     """Queue inbound frames. The last item is None, or the error that ended reading
     (re-raised by ``_pump_input`` so the route's handlers still see it). ``ended`` gets the same
-    item as soon as reading ends, before it is queued: a write waiting on the shell, or a full
-    inbox behind it, must not keep the pump from seeing that the socket is gone."""
+    item as soon as reading ends, before it is queued, or None as soon as a full inbox finds the
+    socket gone (``_queue_frame``): a write waiting on the shell, or a full inbox behind it, must
+    not keep the pump from seeing that the socket is gone."""
     end = None
-    tail = _SocketTail(ws)
     try:
-        try:
-            await _queue_until_close(tail, inbox, ended)
-        except RuntimeError:  # a superseding/drain task already closed us
-            pass
-        # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
-        except Exception as exc:
-            end = exc
-        if not ended.done():
-            ended.set_result(end)
-        await inbox.put(end)
-    finally:
-        tail.close()
+        while (msg := await ws.receive()).get("type") != "websocket.disconnect":
+            await _queue_frame(ws, inbox, ended, msg)
+    except RuntimeError:  # a superseding/drain task already closed us
+        pass
+    # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
+    except Exception as exc:
+        end = exc
+    if not ended.done():
+        ended.set_result(end)
+    await inbox.put(end)
 
 
 async def _write_while_open(session: PtySession, ws: WebSocket, data: bytes, fence,
