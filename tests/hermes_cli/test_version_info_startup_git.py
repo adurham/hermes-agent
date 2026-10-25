@@ -78,6 +78,12 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
             "headers = {'X-Tier': 'pro'} | (base.default_headers | headers)\n"
             "register_provider(dataclasses.replace(base, name='gmi-acct', aliases=(), default_headers=headers))\n"
         ),
+        # A lazy header derived from another profile's unread lazy header (nested resolution).
+        "gmi-tag": (
+            "from providers.base import LazyHeaders\n"
+            "headers = LazyHeaders({'User-Agent': lambda: base.default_headers['User-Agent'] + ' eu'})\n"
+            "register_provider(dataclasses.replace(base, name='gmi-tag', aliases=(), default_headers=headers))\n"
+        ),
     }
     code = (
         "import json, os, pathlib, hermes_cli.config, providers\n"
@@ -93,7 +99,7 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
         "        \"base = get_provider_profile('gmi')\\n\" + body)\n"
         "providers._home_layer(force_stamp_check=True)\n"
         "from hermes_cli.version_info import get_version_info\n"
-        "found = {n: providers.get_provider_profile(n) for n in ('gmi-eu', 'gmi-acct')}\n"
+        "found = {n: providers.get_provider_profile(n) for n in ('gmi-eu', 'gmi-acct', 'gmi-tag')}\n"
         "print(json.dumps({'before': before, 'ua': ua, 'base': get_version_info().base_version,\n"
         "                  'found': {n: p and dict(p.default_headers) for n, p in found.items()}}))\n"
     )
@@ -106,6 +112,7 @@ def test_provider_headers_run_no_git_until_read_and_stay_a_dict_for_overrides(tm
     assert result["found"] == {
         "gmi-eu": {"User-Agent": ua},
         "gmi-acct": {"X-Tier": "pro", "User-Agent": ua, "X-Account": "eu"},
+        "gmi-tag": {"User-Agent": f"{ua} eu"},
     }
 
 

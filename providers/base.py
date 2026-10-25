@@ -39,7 +39,7 @@ def _profile_user_agent() -> str:
         return "hermes-cli"
 
 
-_RESOLVE_LOCK = threading.Lock()
+_RESOLVE_LOCK = threading.RLock()  # re-entrant: a callback may read another LazyHeaders
 
 
 class LazyHeaders(dict[str, str]):
