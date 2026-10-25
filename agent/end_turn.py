@@ -26,6 +26,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -91,8 +94,10 @@ TURN_CONTRACT_GUIDANCE = (
     "# Turn contract\n"
     "A turn that used a tool cannot end with prose. To speak to the user you MUST call "
     "`end_turn(status, summary, open_items)`; the harness rejects a text-only ending. Put the "
-    "whole reply in `summary`. Anything unfinished goes in `open_items` as a task — never as a "
-    "promise ('I'll do X next' is not an answer, and it will be rejected)."
+    "whole reply in `summary` — text written outside it is dropped, so a short status note in "
+    "`summary` plus the real content in prose leaves the user with the note. Anything unfinished "
+    "goes in `open_items` as a task — never as a promise ('I'll do X next' is not an answer, and "
+    "it will be rejected)."
 )
 
 
@@ -199,3 +204,45 @@ def contract_decision(*, payload, tool_calls_this_turn: int, rejections: int) ->
     if tool_calls_this_turn > 0:
         return REJECT if rejections < MAX_TURN_CONTRACT_REJECTIONS else ESCAPE
     return PASS
+
+
+#: Where the contract's own counters live. The ESCAPE counter is the go/no-go metric: an
+#: escape means the model refused the contract and the enforcement is being defeated, so the
+#: fix is a model change, not another detector. Counted mechanically, never by impression.
+STATS_PATH = Path.home() / ".hermes" / "state" / "turn_contract.json"
+
+
+def record_turn_contract_event(kind: str) -> None:
+    """Bump today's ``closed`` / ``rejected`` / ``escaped`` counter and persist it.
+
+    Never raises: a turn must not fail because bookkeeping did.
+    """
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            data = json.loads(STATS_PATH.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        day = data.setdefault(today, {})
+        day[kind] = int(day.get(kind, 0)) + 1
+        # Keep a rolling window; the file is a signal, not a ledger.
+        for stale in sorted(data)[:-30]:
+            data.pop(stale, None)
+        STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, STATS_PATH)
+    except Exception:  # pragma: no cover - bookkeeping must never break a turn
+        pass
+
+
+def read_turn_contract_stats() -> dict[str, Any]:
+    """Today's counters (empty when nothing has been recorded)."""
+    try:
+        data = json.loads(STATS_PATH.read_text(encoding="utf-8"))
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return dict(data.get(today) or {})
+    except Exception:
+        return {}

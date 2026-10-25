@@ -144,3 +144,31 @@ class TestDecision:
             contract_decision(payload={}, tool_calls_this_turn=1, rejections=0),
         }
         assert seen == {PASS, REJECT, ESCAPE, CLOSE}
+
+
+class TestCounters:
+    """The escape counter is the go/no-go metric, so it has to be mechanical."""
+
+    def test_events_accumulate_per_day(self, tmp_path, monkeypatch):
+        from agent import end_turn as et
+
+        monkeypatch.setattr(et, "STATS_PATH", tmp_path / "tc.json")
+        et.record_turn_contract_event("closed")
+        et.record_turn_contract_event("closed")
+        et.record_turn_contract_event("escaped")
+        stats = et.read_turn_contract_stats()
+        assert stats["closed"] == 2
+        assert stats["escaped"] == 1
+
+    def test_missing_file_reads_empty(self, tmp_path, monkeypatch):
+        from agent import end_turn as et
+
+        monkeypatch.setattr(et, "STATS_PATH", tmp_path / "nope.json")
+        assert et.read_turn_contract_stats() == {}
+
+    def test_bookkeeping_never_raises(self, tmp_path, monkeypatch):
+        from agent import end_turn as et
+
+        monkeypatch.setattr(et, "STATS_PATH", tmp_path / "deep" / "blocked" / "tc.json")
+        (tmp_path / "deep").write_text("not a dir")   # parent is a file: mkdir must fail
+        et.record_turn_contract_event("closed")       # swallowed, per contract
