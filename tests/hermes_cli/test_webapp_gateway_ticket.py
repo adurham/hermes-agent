@@ -2,7 +2,8 @@
 
 ``POST /api/webapp/gateway-ticket?profile=<name>`` hands the browser a one-use ticket for
 ``/api/ws`` on the same origin (offered as the ``hermes-gateway-ticket.`` subprotocol). It names the
-caller's login, never a pinned home, and the upgrade gate redeems it exactly once.
+caller's login (and the profile it names, ``test_webapp_ticket_profile.py``), and the upgrade gate
+redeems it exactly once.
 """
 from types import SimpleNamespace
 

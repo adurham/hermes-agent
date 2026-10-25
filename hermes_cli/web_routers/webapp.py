@@ -176,12 +176,13 @@ def _ticket_principal(request: Request) -> tuple[dict, str | None]:
 
 
 def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None = None,
-                       sign_in: str | None = None) -> str:
+                       sign_in: str | None = None, profile_home: str | None = None) -> str:
     """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET``,
     ``HOST_TERMINAL_SOCKET`` or one of ``AUDIO_SOCKETS``) as *identity*. Minted with
     *session_token*, or by a login whose sign-in binding was checked against the credential with
     digest *sign_in* (``hermes_cli.webapp_sign_in``), it opens nothing once that credential is
-    replaced, and the socket it opens closes when the browser signs out."""
+    replaced, and the socket it opens closes when the browser signs out. With *profile_home* the
+    socket it opens answers for that profile (``chat_ws.gateway_ws``)."""
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from hermes_cli.web_session_sockets import token_digest
 
@@ -190,15 +191,19 @@ def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None
         extra["session_token"] = token_digest(session_token)
     if sign_in is not None:
         extra["sign_in"] = sign_in
+    if profile_home is not None:
+        extra["profile_home"] = profile_home
     return mint_ticket(user_id=identity["user_id"], provider=identity["provider"],
                        issuer=identity.get("issuer", ""), extra=extra)
 
 
-def _socket_ticket_response(request: Request, identity: dict, socket: str, session_token: str | None) -> JSONResponse:
+def _socket_ticket_response(request: Request, identity: dict, socket: str, session_token: str | None,
+                            profile_home: str | None = None) -> JSONResponse:
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
     from hermes_cli.webapp_sign_in import sign_in_of
 
-    ticket = mint_socket_ticket(identity, socket, session_token=session_token, sign_in=sign_in_of(request))
+    ticket = mint_socket_ticket(identity, socket, session_token=session_token, sign_in=sign_in_of(request),
+                                profile_home=profile_home)
     return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers={"Cache-Control": "no-store"})
 
 
@@ -209,14 +214,16 @@ async def issue_gateway_ticket(request: Request, profile: str | None = None):
     (``web_server_chat._consume_ws_ticket``) as this caller's login. It opens no other socket.
     Minted locally: the server that serves this page runs the socket's sessions. *profile* is
     validated (400/404) so a stale tab learns its profile is gone here rather than from a socket
-    that keeps closing."""
+    that keeps closing, and the ticket names it: the socket answers a request that names no profile
+    for the tab's profile, as a native ticket does, never for the gateway's launch profile."""
     from hermes_cli.web_server_cron import _cron_profile_home
 
     if not policy(request.app.state).gateway_ticket:
         raise HTTPException(404, "Webapp gateway tickets are unavailable on this surface")
     identity, session_token = _ticket_principal(request)
-    _cron_profile_home(profile)
-    return _socket_ticket_response(request, identity, GATEWAY_SOCKET, session_token)
+    _name, home = _cron_profile_home(profile)
+    return _socket_ticket_response(request, identity, GATEWAY_SOCKET, session_token,
+                                   profile_home=str(home) if profile else None)
 
 
 @router.post("/api/webapp/terminal-ticket")

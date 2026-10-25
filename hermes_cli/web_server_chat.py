@@ -382,6 +382,8 @@ def _consume_ws_ticket(ws: WebSocket, reject, socket: Optional[str] = None, *,
     ws._hermes_auth_identity = {"user_id": info.get("user_id"), "provider": info.get("provider")}
     if info.get("issuer"):
         ws._hermes_auth_identity["issuer"] = info["issuer"]
+    if info.get("profile_home"):
+        ws._hermes_ticket_profile_home = info["profile_home"]
     if (admitted := admitted_with(info)) is not None:
         track(ws, admitted)
     if not protocol_ticket:

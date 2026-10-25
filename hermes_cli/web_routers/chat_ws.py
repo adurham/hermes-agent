@@ -630,6 +630,17 @@ async def pty_ws(ws: WebSocket) -> None:
 # session id, so agent emits fan out to both sinks.
 
 
+def _authority_for_ticket_home(authority, home: str):
+    """The authority serving *home*: *authority* itself for its own home, else the served sibling,
+    or None when this process does not serve it."""
+    from pathlib import Path
+
+    from gateway.session_authorities import authority_for_home
+    if Path(authority.profile_id).resolve() == Path(home).resolve():
+        return authority
+    return authority_for_home(getattr(authority, 'runner', None), home)
+
+
 @router.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
     if not await _close_unless_sidecar_allowed(ws, allow_internal=True, socket=GATEWAY_SOCKET):
@@ -657,6 +668,17 @@ async def gateway_ws(ws: WebSocket) -> None:
         # The dashboard gate authorizes the whole host (its REST routes take ``?profile=`` for
         # every profile), so its socket may select any served sibling too.
         identity = {**identity, 'profile_scope': 'host'}
+    ticket_home = getattr(ws, "_hermes_ticket_profile_home", None)
+    if ticket_home and authority is not None and identity is not None:
+        # A Webapp tab's ticket names its profile (``webapp.issue_gateway_ticket``): bind the socket
+        # to that home's authority, as a native ticket does (``gateway/run_api.py``), so a request
+        # that names no profile is answered for the tab's profile, not the launch profile.
+        served = _authority_for_ticket_home(authority, ticket_home)
+        if served is None:
+            await ws.close(code=4403)
+            return
+        ws.scope['hermes.session_authority'] = served
+        identity = {**identity, 'profile_id': served.profile_id, 'instance_id': served.instance_id}
     await handle_ws(
         ws,
         auth_identity=identity,

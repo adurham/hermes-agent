@@ -32,10 +32,9 @@ def two_profiles(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(launch))
     registry = SessionAuthorities(launch, multiplexed=True)
     runner = SimpleNamespace(_draining=False, session_authorities=registry)
-    authorities, dbs = {}, []
+    authorities, dbs = {}, {}
     for name, home in (("default", launch), ("beta", beta)):
-        db = SessionDB(home / "state.db")
-        dbs.append(db)
+        db = dbs[name] = SessionDB(home / "state.db")
         authorities[name] = SessionAuthority(runner, profile_id=str(home), instance_id="ticket-profile", db=db,
                                              epoch=begin_runtime_epoch(db, instance_id="ticket-profile"))
         registry.add(home, authorities[name], name=name)
@@ -45,37 +44,46 @@ def two_profiles(monkeypatch, tmp_path):
     monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
     monkeypatch.setattr(server.app.state, "bound_host", "127.0.0.1", raising=False)
     monkeypatch.setattr(server, "_SESSION_TOKEN", _TOKEN)
+    monkeypatch.setattr(server, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     try:
-        yield TestClient(server.app, base_url="http://127.0.0.1"), launch, beta
+        yield TestClient(server.app, base_url="http://127.0.0.1"), {"default": launch, "beta": beta}
     finally:
-        for db in dbs:
+        for db in dbs.values():
             db.close()
 
 
-def _answering_home(client, profile=None, request_profile=None):
-    """The profile home ``runtime.describe`` answers from on a tab socket opened for *profile*."""
+def _ask(client, method, params, profile=None):
+    """*method*'s reply on a tab socket opened for *profile* (``?profile=`` on the page)."""
     query = f"?profile={profile}" if profile else ""
     minted = client.post(f"/api/webapp/gateway-ticket{query}", headers={"X-Hermes-Session-Token": _TOKEN})
     assert minted.status_code == 200, minted.text
     ticket = minted.json()["ticket"]
     socket_query = f"&profile={profile}" if profile else ""
-    params = {"profile": request_profile} if request_profile else {}
-    with client.websocket_connect(f"/api/ws?native_dial=browser&ticket={ticket}{socket_query}") as ws:
-        ws.send_json({"jsonrpc": "2.0", "id": "describe", "method": "runtime.describe", "params": params})
+    # TestClient's WS default Host is "testserver", which the upgrade gate refuses.
+    with client.websocket_connect(f"/api/ws?native_dial=browser&ticket={ticket}{socket_query}",
+                                  headers={"host": "127.0.0.1"}) as ws:
+        ws.send_json({"jsonrpc": "2.0", "id": "ask", "method": method, "params": params})
         while True:
             frame = ws.receive_json()
-            if frame.get("id") == "describe":
-                assert "result" in frame, frame
-                return Path(frame["result"]["profile_id"])
+            if frame.get("id") == "ask":
+                return frame
+
+
+def _answering_home(client, profile=None):
+    reply = _ask(client, "runtime.describe", {}, profile)
+    assert "result" in reply, reply
+    return Path(reply["result"]["profile_id"])
 
 
 def test_a_tab_opened_on_a_profile_is_answered_for_it_and_keeps_its_host_scope(two_profiles):
-    client, launch, beta = two_profiles
-    assert _answering_home(client, profile="beta") == beta
-    # The ticket keeps the dashboard gate's host scope: naming the launch profile still reaches it.
-    assert _answering_home(client, profile="beta", request_profile="default") == launch
+    client, homes = two_profiles
+    assert _answering_home(client, profile="beta") == homes["beta"]
+    # Still the dashboard gate's host scope: naming another served profile reaches it, where a
+    # profile-bound grant would be refused with ``profile_mismatch``.
+    reply = _ask(client, "session.active_list", {"profile": "default"}, profile="beta")
+    assert reply.get("result") == {"sessions": []}, reply
 
 
 def test_a_tab_opened_without_a_profile_is_answered_for_the_launch_profile(two_profiles):
-    client, launch, _beta = two_profiles
-    assert _answering_home(client) == launch
+    client, homes = two_profiles
+    assert _answering_home(client) == homes["default"]
