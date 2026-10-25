@@ -36,6 +36,10 @@
       lastModified = inputs.self.lastModified or null;
       minimal = pkgs.callPackage ./hermes-agent.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
+        # Passed explicitly so `override (prev: ...)` sees it: a function form that appends to
+        # `prev.extraDependencyGroups` worked before the shipped groups moved to
+        # defaultDependencyGroups, and an argument default never lands in `prev`.
+        extraDependencyGroups = [ ];
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
         inherit pmPackages;
         inherit

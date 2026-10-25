@@ -1354,8 +1354,9 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           viaModuleGroup = modulePackage { extraDependencyGroups = [ newGroup ]; };
           viaModuleShipped = modulePackage { extraDependencyGroups = [ "anthropic" ]; };
           viaOverlayGroup = hermes-agent.override { extraDependencyGroups = [ newGroup ]; };
+          # No `or [ ]`: appending to prev.extraDependencyGroups is a shape users already write.
           viaFunctionGroup = hermes-agent.override (prev: {
-            extraDependencyGroups = (prev.extraDependencyGroups or [ ]) ++ [ newGroup ];
+            extraDependencyGroups = prev.extraDependencyGroups ++ [ newGroup ];
           });
           viaOverlayShipped = hermes-agent.override { extraDependencyGroups = [ "messaging" ]; };
 
