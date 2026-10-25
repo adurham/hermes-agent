@@ -8,6 +8,8 @@ Run as ``python webapp_fallback_peer.py '<spec json>'`` with an isolated ``HERME
 - ``fail_after_mount``: the listener's startup fails once, after the dashboard mount is up, as when
   another process starts listening on the port first;
 - ``hold_port``: another socket already listens on the Webapp's port;
+- ``credential_unusable``: a file stands where the browser credential's folder belongs, so the
+  credential can be neither read nor written;
 - ``rival_listens_during_mount``: another socket bound the port with SO_REUSEADDR before the gateway
   and starts listening while the gateway mounts the dashboard (Linux only);
 - ``connect_during_mount``: a client connects to the Webapp's port while the dashboard mounts;
@@ -186,9 +188,12 @@ async def probe(spec):
     home = Path(os.environ["HERMES_HOME"])
     (home / "config.yaml").write_text(_config(spec), encoding="utf-8")
     # Seeded user-only, as the gateway writes it: a stored token other users can read is replaced.
-    (home / "webapp").mkdir(mode=0o700, exist_ok=True)
-    (home / "webapp" / "session-token").write_text(SEEDED_TOKEN + "\n", encoding="utf-8")
-    (home / "webapp" / "session-token").chmod(0o600)
+    if spec.get("credential_unusable"):
+        (home / "webapp").write_text("not a folder\n", encoding="utf-8")
+    else:
+        (home / "webapp").mkdir(mode=0o700, exist_ok=True)
+        (home / "webapp" / "session-token").write_text(SEEDED_TOKEN + "\n", encoding="utf-8")
+        (home / "webapp" / "session-token").chmod(0o600)
     dist = home.parent / "dist-webapp"
     dist.mkdir(exist_ok=True)
     if spec.get("built", True):
@@ -279,7 +284,8 @@ async def probe(spec):
                 built = await client.get("/")
                 report["index_once_built"] = {"status": built.status_code,
                                               "is_webapp": "WEBAPP_BUNDLE rebuilt" in built.text}
-        report["token_rotated"] = (home / "webapp" / "session-token").read_text().strip() != SEEDED_TOKEN
+        if not spec.get("credential_unusable"):
+            report["token_rotated"] = (home / "webapp" / "session-token").read_text().strip() != SEEDED_TOKEN
     finally:
         await stop_gateway_api(api)
         if rival is not None:

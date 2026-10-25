@@ -131,9 +131,11 @@ class GatewayDashboardMount:
                 raise RuntimeError("gateway API stopped")
             if getattr(web.app.state, "gateway_runner", None) not in (None, self.runner):
                 raise RuntimeError("gateway API already started")
-            self._bind_state(web)
-            lifespan = web.app.router.lifespan_context(web.app)
             try:
+                # Binding may fail too (the Webapp's browser credential cannot be read or written);
+                # its app state and swapped session token roll back with a failed lifespan's.
+                self._bind_state(web)
+                lifespan = web.app.router.lifespan_context(web.app)
                 await lifespan.__aenter__()
                 if self._closed:  # close() won while the lifespan started; it never saw this mount
                     await lifespan.__aexit__(None, None, None)

@@ -108,3 +108,18 @@ def test_a_webapp_that_needs_sign_in_it_cannot_have_falls_back_to_the_private_li
     assert report["native_session_list"] is True
     assert report["status"]["state"] == "unavailable"
     assert report["state"]["auth_required"] is False
+
+
+def test_a_webapp_whose_browser_credential_cannot_be_kept_leaves_native_clients_a_listener(tmp_path):
+    # A file where the credential's folder belongs fails the Webapp's mount while it binds: every
+    # change that bind made is undone, so main's private listener mounts and native clients connect.
+    port = _free_port()
+    report = _run(tmp_path, {"webapp": {"enabled": True, "port": port}, "credential_unusable": True})
+    assert report["start_error"] is None, report.get("start_traceback")
+    assert report["api_origin"] != f"http://127.0.0.1:{port}"
+    assert report["native_session_list"] is True
+    assert report["status"]["state"] == "unavailable"
+    assert "webapp" in report["status"]["reason"] and "could not listen" not in report["status"]["reason"]
+    assert report["state"]["surface"] == "<absent>"
+    assert report["state"]["web_dist_set"] is False
+

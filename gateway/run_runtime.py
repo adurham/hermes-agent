@@ -515,6 +515,8 @@ async def start_gateway_runtime_api(runner):
         # this gateway, so it keeps main's private listener and reports why the Webapp is not served.
         if isinstance(exc, SystemExit):
             reason = str(exc.code).strip()  # the gate's own message names the fix
+        elif isinstance(exc, OSError) and exc.filename:  # the browser credential's file, not the port
+            reason = f"could not use {exc.filename} ({exc.strerror or exc})"
         else:
             cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
             reason = f"could not listen on {host}:{port} ({cause})"
