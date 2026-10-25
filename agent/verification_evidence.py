@@ -313,14 +313,16 @@ def _is_harmless_interpreter_flag(token: str) -> bool:
 
 
 def _normalize_tokens(tokens: list[str]) -> list[str]:
-    """Comparison form: no leading ``./``, interpreters collapsed, harmless flags dropped."""
+    """Comparison form: no leading ``./``, interpreters collapsed, Python's harmless flags
+    dropped. Only Python's: the same letters mean other things elsewhere (``bash -s``
+    reads commands from stdin and never runs the script named after it)."""
     normalized: list[str] = []
     i = 0
     while i < len(tokens):
         family = _interpreter_family(tokens[i])
         normalized.append(family or re.sub(r"^(?:\./)+", "", tokens[i]))
         i += 1
-        if family:
+        if family == "python":
             while i < len(tokens) and _is_harmless_interpreter_flag(tokens[i]):
                 i += 2 if tokens[i] in {"-W", "-X"} else 1
     return normalized

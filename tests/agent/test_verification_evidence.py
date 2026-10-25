@@ -188,6 +188,17 @@ def test_dot_slash_script_invocation_matches_detected_script(tmp_path, monkeypat
     assert evidence.canonical_command == "scripts/run_tests.sh"
 
 
+@pytest.mark.parametrize("command", ["bash -s scripts/run_tests.sh", "sh -s scripts/run_tests.sh"])
+def test_shell_flag_that_skips_the_script_is_not_evidence(tmp_path, monkeypatch, command):
+    """``bash -s`` reads commands from stdin: the script named after it never runs."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+
+    assert classify_verification_command(
+        command, cwd=tmp_path, session_id="s1", exit_code=0,
+    ) is None
+
+
 @pytest.mark.parametrize(
     "command",
     ["timeout 300 pytest -q", "nice -n 5 pytest -q", "timeout 5m pytest -q", "timeout -s KILL 300 pytest -q"],
