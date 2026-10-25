@@ -223,7 +223,10 @@ def _segment_status(
     Only the last ``;``-separated sequence reports its status; backgrounding and ``||``
     hide it; an ``&&`` chain proves each member only on success. A pipeline hides every
     status but the last segment's, unless ``pipeline_status`` (the shell's PIPESTATUS
-    array) is supplied and the match is the pipeline's leading command.
+    array) is supplied and the match leads the sequence's last pipeline. Behind ``&&``
+    that pipeline may never have run, leaving PIPESTATUS from an earlier one
+    (``true | false && pytest | tail``); a short-circuited chain exits non-zero, so
+    there the array counts only when the shell's own code is 0, as for plain ``&&``.
     """
     if not segments or not 0 <= match_index < len(segments) or any(s.following_operator == "&" for s in segments):
         return None
@@ -248,7 +251,8 @@ def _segment_status(
             ),
             default=sequence_start,
         )
-        if pipeline_status and len(pipeline_status) >= 2 and match_index == pipeline_start:
+        chain_ran = "&&" not in operators or int(exit_code) == 0
+        if chain_ran and pipeline_status and len(pipeline_status) >= 2 and match_index == pipeline_start:
             return pipeline_status[0]
         return None
     if not operators:

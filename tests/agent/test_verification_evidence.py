@@ -117,6 +117,24 @@ def test_piped_verifier_without_pipeline_status_is_not_evidence(tmp_path, monkey
     ) is None
 
 
+@pytest.mark.parametrize("command, exit_code, pipeline_status, expected", [
+    ("true | false && pytest -q | tail -5", 1, [0, 1], None),
+    ("cd . && pytest -q | tail -5", 0, [1, 0], "failed"),
+])
+def test_piped_verifier_behind_and_counts_only_when_the_chain_ran(
+    tmp_path, monkeypatch, command, exit_code, pipeline_status, expected,
+):
+    """A short-circuited ``&&`` skips the verifier and leaves an earlier pipeline's PIPESTATUS."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+
+    evidence = classify_verification_command(
+        command, cwd=tmp_path, session_id="s1", exit_code=exit_code, pipeline_status=pipeline_status,
+    )
+
+    assert (evidence and evidence.status) == expected
+
+
 @pytest.mark.parametrize("pipeline_status", [[0], [1]])
 def test_piped_verifier_with_single_pipeline_status_is_not_evidence(
     tmp_path, monkeypatch, pipeline_status,
