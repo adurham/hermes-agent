@@ -12,6 +12,7 @@ Those stay on AIAgent.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -38,6 +39,9 @@ def _profile_user_agent() -> str:
         return "hermes-cli"
 
 
+_RESOLVE_LOCK = threading.Lock()
+
+
 class LazyHeaders(dict[str, str]):
     """``default_headers`` whose callable values (a User-Agent carrying the release) run on first read.
 
@@ -60,10 +64,13 @@ class LazyHeaders(dict[str, str]):
 
     def _resolved(self) -> LazyHeaders:
         if self._pending:
-            for key, value in list(dict.items(self)):
-                if callable(value):
-                    dict.__setitem__(self, key, value())
-            self._pending = False
+            # One resolver: concurrent first reads (parallel aux clients) would each walk git.
+            with _RESOLVE_LOCK:
+                if self._pending:
+                    for key, value in list(dict.items(self)):
+                        if callable(value):
+                            dict.__setitem__(self, key, value())
+                    self._pending = False
         return self
 
     def __getitem__(self, key: str) -> str:
