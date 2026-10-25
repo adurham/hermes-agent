@@ -119,6 +119,7 @@ def ensure_end_turn_schema(agent: Any, tools: list[dict[str, Any]]) -> list[dict
     flag the prompt builder reads. Idempotent."""
     enabled = turn_contract_enabled(agent)
     agent._turn_contract_enabled = enabled
+    logger.warning("turn-contract: schema injection enabled=%s tools=%d", enabled, len(tools or []))
     if not enabled:
         return tools
     tools = list(tools or [])
