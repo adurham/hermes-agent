@@ -6,7 +6,9 @@ Desktop, CLI and TUI clients still connect, the mount carries none of the Webapp
 ``hermes webapp --status`` says why the Webapp is not served. Each case runs a real gateway listener
 in a child process (``fixtures/webapp_fallback_peer.py``) with its own ``HERMES_HOME``.
 """
+import ipaddress
 import sys
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -123,3 +125,19 @@ def test_a_webapp_whose_browser_credential_cannot_be_kept_leaves_native_clients_
     assert report["state"]["surface"] == "<absent>"
     assert report["state"]["web_dist_set"] is False
 
+
+def test_a_webapp_bound_to_localhost_publishes_a_numeric_loopback_origin_native_clients_accept(tmp_path):
+    from hermes_cli.gateway_runtime import _endpoint
+
+    report = _run(tmp_path, {"webapp": {"enabled": True, "host": "localhost", "port": _free_port()}})
+    assert report["start_error"] is None, report.get("start_traceback")
+    assert report["status"]["state"] == "serving"
+    origin = report["api_origin"]
+    assert ipaddress.ip_address(urlsplit(origin).hostname).is_loopback
+    assert report["native_session_list"] is True
+    home = tmp_path / "state"
+    payload = {"runtime_protocol": 1, "served_profiles": [{"home": str(home), "profile_id": "default"}],
+               "state": "ready", "capabilities": ["session-authority-v1"], "authority_epoch": 1,
+               "instance_id": "webapp-fallback", "api_origin": origin, "supervisor": "none"}
+    discovered = _endpoint(payload, home)
+    assert (discovered.state, discovered.reason_code) == ("ready", None)

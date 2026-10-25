@@ -271,7 +271,9 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, w
 
     task = asyncio.create_task(serve(), name="gateway-api")
     return GatewayAPIHandle(
-        api_origin=dial_origin(host, state.bound_port),
+        # The address the socket bound, never a name: native clients accept only a numeric loopback
+        # origin, and ``localhost`` may resolve to either family.
+        api_origin=dial_origin(listener.getsockname()[0], state.bound_port),
         server=server, task=task, app=mount, socket=listener,
     )
 

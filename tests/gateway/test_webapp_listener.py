@@ -53,7 +53,6 @@ def test_a_malformed_webapp_block_keeps_the_listener_private(tmp_path, block):
 
 @pytest.mark.parametrize(("bind", "dial"), [
     ("127.0.0.1", "127.0.0.1"),
-    ("localhost", "localhost"),
     ("::1", "::1"),
     ("0.0.0.0", "127.0.0.1"),
     ("::", "::1"),
