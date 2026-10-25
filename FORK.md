@@ -40,33 +40,56 @@ Live config (default profile) also pins `web.extract_backend: ollama-cloud` — 
 brave-free for SEARCH, Ollama `/api/web_fetch` for FETCH — which is what `hermes config set` wrote; the code
 fix stands on its own and the pin just makes the intent explicit (and takes effect in already-running
 processes, since `load_config` invalidates on the file signature).
-### Promise gate reads present-progressive announcements in the closing paragraphs — 2026-10-25
+### Promise gate rewritten around grammar, after measuring the miss rate — 2026-10-25
 
-The 2026-10-24 widening gated tails that END on a future-tense commitment. It still could not fire on
-the shape the operator hit the next day: an acting turn whose reply says **"I'm dispatching it now: take
-the compat sysent table, …"** and then closes with a paragraph of commentary ("The next launch then tests
-one named hypothesis from that list…"). Two separate misses in that one reply:
+The 2026-10-24 widening gated tails that END on a future-tense commitment *whose verb was on a
+whitelist*. Two measured holes, one day later:
 
-1. `_PROMISE_RE` requires a future construction (`I'll`, `I'm going to`, `let me`). "I'm dispatching" is
-   present progressive, so nothing matched even in the right paragraph.
-2. The zone was a single paragraph — the last one. The announcement sat in the paragraph ABOVE a closing
-   observation, so the tail scan never saw it.
+1. **The verb list cannot be complete.** Real replies that walked straight past it: "I'll work
+   that next while you play", "That's what I'll go after next", "I'll pin that down from the
+   disassembly". A promise is identified by its grammar, not by its vocabulary.
+2. **The zone was one paragraph.** The recorded miss said "I'm dispatching it now: …" in the
+   paragraph ABOVE a closing observation, and present progressive ("I'm dispatching") matched no
+   pattern at all.
 
-Recorded miss: session `local-1de66e45…`, msg 740570 (2026-10-25 11:29:09). The turn ran five tools and
-ended by saying it was dispatching the sysent candidate audit; nothing was dispatched, and the operator
-replied "ok you said you are dispatching it now but I see nothing".
+Recorded miss: session `local-1de66e45…`, msg 740570 (2026-10-25 11:29:09) — five tools, then
+"I'm dispatching it now" for the sysent audit; nothing was dispatched, and the operator came back
+with "ok you said you are dispatching it now but I see nothing".
 
-Now: `_ACT_NOW_RE` matches a first-person present-progressive work verb anchored on an explicit "now"
-inside one sentence, and `_act_now_commitment()` reads the closing **two** prose paragraphs (bounded, so
-an intention stated earlier in a long analysis is untouched). Same suppressors as the tail path: never
-when the reply ends on a question, never when the paragraph names an external blocker, never inside a
-truncated fence. `looks_like_promise()` also carries the shape, so a zero-tool turn announcing
-"I'm launching it now" gates through the whole-body path.
+**Measured before changing anything** (3 days of this profile's transcripts, 1,975 turn-final
+replies): only **3** gate fires in two days of `agent.log`, against **511** replies carrying
+promise-shaped language; after removing the ones waiting on something, **156** remained, and
+sampling found genuine unbacked promises throughout. The gate was covering a few percent of its
+own class.
 
-Verified: the recorded reply is a regression fixture (`TestActNowCommitment.LIVE_REPLY`, verbatim);
-red on the previous gate (3 of the new tests fail), green with the fix; `tests/test_promise_gate.py`
-36/36, and `tests/agent/test_stall_guards.py` + `tests/agent/test_bare_toolcall_recovery.py` stay green
-(95/95 across the three files).
+An LLM judge was evaluated as the detector (disposable test, 28 replies, both `deepseek-v4.1-flash`
+and `glm-5.3-flash`): 13/16 on a hand-labelled set, but on 12 real candidates it answered NO to
+**every** one, including clear deferrals — it over-suppresses, which is the exact failure being
+fixed. Rejected as the primary detector.
+
+Final rule: a first-person future ("I'll/I'm going to/we'll/let me") or a sentence-initial present
+progressive with "now", in the **closing two** prose paragraphs, with bounded suppressors, each
+justified by a measured false-positive family:
+
+- meta commentary ("I'll be honest", "I'll say this plainly", "let me know");
+- a condition before the commitment ("once the run lands, I'll report") — a stated dependency;
+- a promise waiting on the world ("when it lands", "after this sweep", "still running");
+- a promise conjoined to an operator instruction ("Restart the app and I'll run exactly that"),
+  including sentences that open with an imperative;
+- end-of-reply question, explicit blocker, truncated fence (unchanged).
+
+A condition AFTER the promise still gates unless it names the operator's action — "I'll build the
+chain once you confirm" is the soft deferral this gate exists to reject.
+
+Cost, stated plainly: on the same corpus 136 of 1,975 finals would now be judged (≈45/day) versus
+3 in two days. Roughly half of those are the waiting-on-something family that slips through; each
+costs exactly one re-prompt (`MAX_PROMISE_GATE_RETRIES = 1`), which the model can answer with a
+one-line stated blocker. Silence was the worse error.
+
+Verified: `tests/test_promise_gate.py` 41/41, plus `tests/agent/test_stall_guards.py` and
+`tests/agent/test_bare_toolcall_recovery.py` (100/100 across the three files). Red on the previous
+gate: 3 of the new tests fail against it (`test_deferrals_to_an_unlisted_verb_are_gated`,
+`test_commitment_under_a_real_conclusion_is_gated`, `test_promise_conjoined_to_a_user_instruction…`).
 
 ### Promise-without-action gate widened to turns that END on a promise — 2026-10-24
 

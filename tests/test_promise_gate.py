@@ -161,15 +161,20 @@ class TestTailCommitment:
             final_text=text, turn_tool_call_count=4, retries=0, finish_reason="stop",
         ) is None
 
-    def test_mid_reply_intention_under_a_real_conclusion_is_not_gated(self):
+    def test_commitment_under_a_real_conclusion_is_gated(self):
+        # Changed 2026-10-25. This reply was previously exempt because its commitment was
+        # followed by analysis. Measurement killed that exemption: the same shape
+        # ("I'll <verb> …" + explanation) is how the laziness presents in practice, and the
+        # cost of a wrong nudge — one re-prompt, which the model can answer with a stated
+        # blocker — is far below the cost of a missed one.
         text = (
             "I'll check the ids first. Both indices alternate 0x206 and 0x20B, so the burst "
             "never overlapped with A's slot and the oracle had nothing to catch."
         )
-        assert tail_commitment(text) is None
+        assert tail_commitment(text) == "I'll check the ids first."
         assert gate_kind(
             final_text=text, turn_tool_call_count=4, retries=0, finish_reason="stop",
-        ) is None
+        ) == GATE_TAIL
 
     def test_commitment_before_a_short_closing_fragment_is_gated(self):
         text = "...analysis...\n\nI'll build the multi-call child chain. That's the enabling piece."
@@ -305,6 +310,40 @@ class TestActNowCommitment:
             "That is the first time this surface has shown overlap at all."
         )
         assert tail_commitment(text) is None
+
+
+class TestGrammarNotVocabulary:
+    """A verb whitelist cannot be complete — these are real replies that walked past one."""
+
+    def test_deferrals_to_an_unlisted_verb_are_gated(self):
+        for text, expected in (
+            ("Nothing new today. I'll work that next while you play.", "I'll work that next"),
+            ("That's what I'll go after next.", "That's what I'll go after next."),
+            (
+                "It explains the 14.10 delta. I'll pin that down from the disassembly.",
+                "I'll pin that down",
+            ),
+            ("The queue is dry. I'll chase the second oracle tomorrow.", "I'll chase"),
+        ):
+            detected = tail_commitment(text)
+            assert detected and expected in detected, text
+
+    def test_promise_conjoined_to_a_user_instruction_is_not_gated(self):
+        for text in (
+            "Restart the app and I'll run exactly that.",
+            "Pair it in the console's Bluetooth menu and I'll report the fetch.",
+            "Tell me the destination and I'll drive it.",
+        ):
+            assert tail_commitment(text) is None, text
+
+    def test_a_condition_before_the_promise_is_a_stated_dependency(self):
+        assert tail_commitment("Once the run lands, I'll report the delta.") is None
+
+    def test_a_condition_after_the_promise_is_still_the_soft_dodge(self):
+        assert tail_commitment("I'll build the chain once you confirm.") is not None
+
+    def test_first_person_commitment_conjoined_to_another_stays_gated(self):
+        assert tail_commitment("I'll build the chain and I'll test it against the local build.") is not None
 
 
 class TestToolCallsThisTurn:
