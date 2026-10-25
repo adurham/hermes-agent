@@ -55,6 +55,23 @@ def _pipe_marker_printf(marker: str) -> str:
     return f"printf '\\n{marker}%s{marker}\\n' \"${{__hermes_ps[*]-}}\""
 
 
+def _eval_capturing_pipestatus(escaped: str) -> str:
+    """``eval`` the command and keep its last pipeline's ``PIPESTATUS`` as side data.
+
+    The array must be read inside the same ``eval`` (afterwards it holds only ``eval``'s
+    status), while ``$?`` stays the exit code: the two differ for ``!``, ``if``/``while``,
+    ``pipefail`` and parse errors. The blank line stops the capture joining a command
+    continued by a trailing backslash.
+    """
+    return f"eval '{escaped}\n\n__hermes_rc=$? __hermes_ps=(\"${{PIPESTATUS[@]}}\"); (exit $__hermes_rc)'"
+
+
+def _can_capture_pipestatus(command: str) -> bool:
+    """An unterminated heredoc would read the capture line as its body (into the user's
+    file), and a trailing ``\\`` would join onto it: such commands run unchanged."""
+    return "<<" not in command and not command.endswith("\\")
+
+
 def _cwd_marker_printf(marker: str) -> str:
     """Emit the CWD marker on its own line (leading ``\\n`` guards against a
     command whose output lacks a trailing newline; ``_split_cwd_marker`` strips it)."""
@@ -159,6 +176,7 @@ def _wrap_command_script(
     changing the command's umask.
     """
     escaped = command.replace("'", "'\\''")
+    capture = bool(pipe_marker) and _can_capture_pipestatus(command)
     save, restore = _passthrough_save_restore(passthrough_names)
     parts = list(save)
     if snapshot_ready:
@@ -169,7 +187,7 @@ def _wrap_command_script(
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',
         # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
         f"builtin cd -- {quoted_cwd} || exit 126",
-        f"eval '{escaped}\n\n__hermes_rc=$? __hermes_ps=(\"${{PIPESTATUS[@]}}\"); (exit $__hermes_rc)'",
+        _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'",
         "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready and persist_env:
@@ -178,7 +196,7 @@ def _wrap_command_script(
             f"{{ {_export_dump_excluding_session_vars(_SNAP_TMP, passthrough_names)} "
             f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
             f"2>/dev/null || rm -f {_SNAP_TMP} 2>/dev/null || true")
-    if pipe_marker:
+    if capture:
         parts.append(_pipe_marker_printf(pipe_marker))
     parts += [_cwd_marker_printf(cwd_marker), "exit $__hermes_ec"]
     return "\n".join(parts)
