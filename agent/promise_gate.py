@@ -57,26 +57,18 @@ GATE_TAIL = "tail"
 #: tool call appears.
 MAX_PROMISE_GATE_RETRIES = 1
 
-#: First-person future constructions followed (within a short window) by a work verb.
+#: First-person future constructions — the shape of the promise, with NO verb whitelist.
+#: A verb list cannot be complete: the recorded misses walked straight past it ("I'll work that
+#: next while you play", "That's what I'll go after next", "I'll pin that down from the
+#: disassembly"). What is bounded is the *grammar* of a promise, not its vocabulary.
 _FUTURE = r"(?:i['’]ll|i will|i['’]m going to|i am going to|we['’]ll|we will|let me)"
 
-_WORK_VERB = (
-    r"(?:build|building|write|writing|make|making|run|running|check|checking|add|adding|"
-    r"fix|fixing|test|testing|look|looking|start|starting|try|trying|dig|digging|"
-    r"wire|wiring|patch|patching|dispatch|dispatching|launch|launching|set up|spin up|"
-    r"re-run|rerun|rerunning|investigate|investigating|probe|probing|verify|verifying|"
-    r"fire|firing|open|opening|stage|staging|audit|auditing|scan|scanning|"
-    r"sweep|sweeping|harvest|harvesting|read|reading|pull|pulling)"
-)
+_PROMISE_RE = re.compile(r"\b" + _FUTURE + r"\b", re.IGNORECASE)
 
-_PROMISE_RE = re.compile(_FUTURE + r"\s+(?:now\s+)?" + _WORK_VERB + r"\b", re.IGNORECASE)
-
-#: Present-progressive announcement: "I'm dispatching it now", "I am launching it now".
-#: No future tense to hang on, so "now" is the anchor — a first-person present-progressive
-#: work verb close to an explicit "now" is the model describing the action as underway. The
-#: window is sentence-bounded, so a later "now" in another clause cannot manufacture a match.
+#: Present-progressive announcement: "I'm dispatching it now", "I am launching it now". The verb
+#: is deliberately unconstrained; the sentence-bounded "now" is the anchor.
 _ACT_NOW_RE = re.compile(
-    r"\b(?:i['’]m|i am)\s+(?:now\s+)?" + _WORK_VERB + r"\b[^.!?\n]{0,60}?\bnow\b",
+    r"\b(?:i['’]m|i am)\s+(?:now\s+)?[a-z]+ing\b[^.!?\n]{0,50}?\bnow\b",
     re.IGNORECASE,
 )
 
@@ -84,6 +76,55 @@ _ACT_NOW_RE = re.compile(
 _BARE_RE = re.compile(
     r"^\W*(?:building now|working on it now|doing it now|on it now|starting now)\W*$",
     re.IGNORECASE | re.MULTILINE,
+)
+
+#: Commitments that promise nothing to do: commentary about the message itself.
+_META_RE = re.compile(
+    r"\b(?:i['’]ll|i will|let me)\s+(?:be|say|note|keep|admit|repeat|clarify|emphasi[sz]e|mention|"
+    r"flag that|add that|call it|know)\b",
+    re.IGNORECASE,
+)
+
+#: A clause introduced by a condition is not a promise — but only when the condition precedes
+#: it. "I'll build the chain once you confirm" stays gated on purpose (a soft deferral is the
+#: exact dodge this gate rejects); "once the run lands, I'll report" is a stated dependency.
+_CONDITIONAL_RE = re.compile(
+    r"\b(?:if|unless|once|when|whenever|until|after|before|whether|in case|as soon as)\b",
+    re.IGNORECASE,
+)
+
+#: Waiting on the world, not deferring work: the promised action cannot happen until something
+#: outside the agent finishes ("I'll report when the run lands", "I'll fix it after this sweep").
+#: Measured over three days of transcripts, this is the single largest family of false positives
+#: — a nudge there just makes the model restate that it is waiting.
+_BACKGROUND_CONDITION_RE = re.compile(
+    r"\b(?:when|once|as soon as|the moment|after|until)\b[^.!?\n]{0,60}?"
+    r"\b(?:lands?|finished|finishes|completes?|reports?|returns?|arrives?|fires?|asks?|"
+    r"is done|are done|comes back|sweep|build|run|batch|job|worker|subagent|analyst)\b",
+    re.IGNORECASE,
+)
+
+#: A trailing "if" is a conditional statement about the future, not a deferral — unless it is
+#: the operator being asked ("if you want", "if you'd like"), which stays gated.
+_USER_CONDITION_RE = re.compile(r"\b(?:if|once|when|unless)\s+(?:you|you['’]d|you['’]ll|your)\b", re.I)
+
+#: Something else is already running, so there is nothing for this turn to start.
+_STILL_RUNNING_RE = re.compile(r"\bstill (?:working|running|grinding|going|building)\b", re.I)
+
+#: A promise conjoined to a clause that tells the USER to do something first ("Restart the app
+#: and I'll run exactly that", "Pair it and I'll report the fetch") is contingent on the operator,
+#: not dangling work. Suppressed only when the clause BEFORE the conjunction is not itself a
+#: first-person commitment ("I'll build it, and I'll test it" stays gated).
+_IMPERATIVE_CONJUNCTION_RE = re.compile(r"\band\s*$", re.IGNORECASE)
+_FIRST_PERSON_HEAD_RE = re.compile(r"^(?:i\b|i['’]|we\b|let me\b)", re.IGNORECASE)
+
+#: A sentence that OPENS with an instruction is addressed to the operator ("Restart and the
+#: oracle run goes first, then I'll add …"). Its tail is contingent on that instruction, so the
+#: whole sentence is skipped rather than parsed for a commitment.
+_USER_IMPERATIVE_HEAD_RE = re.compile(
+    r"^\W*(?:restart|relaunch|reload|tap|click|pair|plug|insert|open|close|create|send|tell|"
+    r"give|delete|remove|press|connect|unplug|power|reboot|launch|try|check|look|set|put)\b",
+    re.IGNORECASE,
 )
 
 #: A tail commitment naming a dependency outside the agent's control is a stated blocker,
@@ -95,11 +136,6 @@ _BLOCKER_RE = re.compile(
     r"need the|you'll need|requires your|until you)\b",
     re.IGNORECASE,
 )
-
-#: A reply that ends on a fragment ("That's the enabling piece.") puts its commitment in the
-#: sentence BEFORE it; a longer closing sentence is substantive prose, so only the final
-#: sentence is considered (a promise buried under further analysis is not dangling).
-_SHORT_LAST_SENTENCE = 44
 
 _FENCE = ("```", "~~~")
 
@@ -137,41 +173,99 @@ def _paragraphs(text: str) -> list[str]:
     return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
 
 
-def _tail_paragraph(text: str) -> str:
-    """The final prose paragraph — the only zone a dangling promise can live in."""
-    paragraphs = _paragraphs(_prose_after_last_fence(text))
-    return paragraphs[-1] if paragraphs else ""
+#: How many closing prose paragraphs the commitment scan reads. One is not enough: the
+#: announcement is routinely followed by a closing paragraph of commentary ("The next launch
+#: then tests one named hypothesis…"), which is what the recorded 2026-10-25 miss looked like.
+#: Still bounded, so an intention stated earlier in a long analysis stays untouched.
+_CLOSING_PARAGRAPHS = 2
 
 
-#: How many closing prose paragraphs the present-progressive ("I'm dispatching it now") scan
-#: reads. One is not enough: the announcement is routinely followed by a closing paragraph of
-#: commentary ("The next launch then tests one named hypothesis…"), which is what the recorded
-#: 2026-10-25 miss looked like. Still bounded, so an intention stated earlier in a long analysis
-#: stays untouched.
-_ACT_NOW_ZONE_PARAGRAPHS = 2
+def _commitment_in_sentence(sentence: str) -> bool:
+    """True when *sentence* commits the speaker to work, judged by grammar not vocabulary.
 
+    Excluded, each for a measured reason:
 
-def _act_now_commitment(text: str) -> str | None:
-    """The present-progressive announcement in the closing paragraphs, or None.
-
-    "I'm dispatching it now: …" claims the action is already underway. When the turn ends
-    there nothing was dispatched, so it is a promise in the present tense — invisible to the
-    future-tense sentence test, and invisible to the final-paragraph test whenever a closing
-    paragraph of commentary follows it.
+    * meta commentary ("I'll be honest", "I'll say this plainly") — no work in it;
+    * a condition BEFORE the commitment ("once the run lands, I'll report") — a stated
+      dependency. A condition AFTER it ("I'll build it once you confirm") stays gated: that
+      is the soft deferral this gate exists to reject;
+    * a commitment conjoined to a user instruction ("Restart the app and I'll run exactly
+      that") — contingent on the operator, not dangling work;
+    * a promise waiting on something outside the agent ("I'll report when the run lands",
+      "I'll fix it after this sweep") — the action cannot happen yet.
     """
+    if _USER_IMPERATIVE_HEAD_RE.match(sentence):
+        return False
+    match = _PROMISE_RE.search(sentence) or _ACT_NOW_RE.search(sentence)
+    if not match:
+        return False
+    # A present-progressive announce only counts at the head of a sentence: "What I'm reading:
+    # … as of now" is a list heading, not a commitment.
+    if not _PROMISE_RE.search(sentence) and match.start() > 0:
+        return False
+    if _META_RE.search(sentence):
+        return False
+    prefix = sentence[: match.start()]
+    tail = sentence[match.end() :]
+    if _CONDITIONAL_RE.search(prefix):
+        return False
+    if _IMPERATIVE_CONJUNCTION_RE.search(prefix.strip()) and not _FIRST_PERSON_HEAD_RE.match(
+        prefix.strip()
+    ):
+        return False
+    if _USER_CONDITION_RE.search(tail):
+        return True
+    if _BACKGROUND_CONDITION_RE.search(tail):
+        return False
+    return True
+
+
+def tail_commitment(text: str | None) -> str | None:
+    """The commitment sentence a reply ENDS on, or None.
+
+    Only the closing prose paragraphs decide, so a long reply that mentions an intention
+    mid-analysis (or before a delivered code block) is untouched. The turn must not end on a
+    question, and a tail naming an external blocker is a stated blocker, not a promise.
+    """
+    if not text:
+        return None
     paragraphs = _paragraphs(_prose_after_last_fence(text))
     if not paragraphs:
         return None
-    for paragraph in reversed(paragraphs[-_ACT_NOW_ZONE_PARAGRAPHS:]):
-        if _BLOCKER_RE.search(paragraph):
+    if _sentences(paragraphs[-1]) and _sentences(paragraphs[-1])[-1].rstrip().endswith("?"):
+        return None
+    for paragraph in reversed(paragraphs[-_CLOSING_PARAGRAPHS:]):
+        if _BLOCKER_RE.search(paragraph) or _STILL_RUNNING_RE.search(paragraph):
             continue
         for sentence in _sentences(paragraph):
             if sentence.rstrip().endswith("?"):
                 continue
-            if _ACT_NOW_RE.search(sentence):
+            if _commitment_in_sentence(sentence):
                 return sentence
     return None
 
+
+def _trim(sentence: str, limit: int) -> str:
+    if len(sentence) > limit:
+        return sentence[: limit - 1].rstrip() + "…"
+    return sentence
+
+
+def looks_like_promise(text: str | None) -> bool:
+    """True when *text* commits the speaker to work it has not done.
+
+    Scanned sentence by sentence through the same grammar test the tail path uses, so the
+    suppressors (meta commentary, preceding condition, user-instruction conjunction) apply
+    here too. Completed-work summaries ("I built X", "the gate is in") never match.
+    """
+    if not text:
+        return False
+    body = text.strip()
+    if not body:
+        return False
+    if _BARE_RE.search(body):
+        return True
+    return any(_commitment_in_sentence(sentence) for sentence in _sentences(body))
 
 
 def _sentence_containing(text: str, offset: int) -> str:
@@ -184,61 +278,6 @@ def _sentence_containing(text: str, offset: int) -> str:
         end = offset + m.end()
         break
     return text[start:end].strip()
-
-
-def _trim(sentence: str, limit: int) -> str:
-    if len(sentence) > limit:
-        return sentence[: limit - 1].rstrip() + "…"
-    return sentence
-
-
-def looks_like_promise(text: str | None) -> bool:
-    """True when *text* is a future-tense work commitment.
-
-    Deliberately conservative: matching requires a first-person future construction
-    adjacent to a work verb, or a bare "building now"-style line. Completed-work
-    summaries ("I built X", "the gate is in") never match.
-    """
-    if not text:
-        return False
-    body = text.strip()
-    if not body:
-        return False
-    return bool(
-        _PROMISE_RE.search(body) or _BARE_RE.search(body) or _ACT_NOW_RE.search(body)
-    )
-
-
-def tail_commitment(text: str | None) -> str | None:
-    """The commitment sentence a reply ENDS on, or None.
-
-    Only the final prose paragraph decides, so a long reply that mentions an intention
-    mid-analysis (or before a delivered code block) is untouched. The turn must not end
-    on a question, and a tail naming an external blocker is a stated blocker, not a promise.
-    """
-    if not text:
-        return None
-    paragraph = _tail_paragraph(text)
-    if not paragraph:
-        return None
-    sentences = _sentences(paragraph)
-    if not sentences:
-        return None
-    last = sentences[-1]
-    if last.rstrip().endswith("?"):
-        return None
-    if _BLOCKER_RE.search(paragraph):
-        return None
-    act_now = _act_now_commitment(text)
-    if act_now:
-        return act_now
-    candidates = [last]
-    if len(sentences) > 1 and len(last) <= _SHORT_LAST_SENTENCE:
-        candidates.insert(0, sentences[-2])
-    for sentence in candidates:
-        if _PROMISE_RE.search(sentence) or _BARE_RE.search(sentence):
-            return sentence
-    return None
 
 
 def promise_excerpt(text: str | None, limit: int = 120) -> str:
