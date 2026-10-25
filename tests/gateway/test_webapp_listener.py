@@ -325,23 +325,26 @@ def test_cancelling_the_gateway_while_the_webapp_listener_starts_cancels_it(monk
         _start_runtime_api(monkeypatch, tmp_path, "webapp:\n  enabled: true\n", refuse=asyncio.CancelledError())
 
 
-@pytest.mark.parametrize("posix", [True, False])
-def test_only_posix_lets_the_webapps_fixed_port_bind_again_at_once(monkeypatch, posix):
-    # A restarted gateway must take the Webapp's port back while the old connections sit in
-    # TIME_WAIT. On Windows SO_REUSEADDR would let another process bind the port, so it stays off.
+def _reuse_address(port: int) -> bool:
     import socket
 
     from gateway import run_api
-    monkeypatch.setattr(run_api, "_REUSE_FIXED_PORT", posix)
-    with run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, webapp.DEFAULT_PORT) as fixed, \
-            run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, 0) as ephemeral:
-        assert bool(fixed.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)) is posix
-        assert not ephemeral.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)  # main's private listener
+    with run_api._listener_socket(socket.AF_INET, socket.SOCK_STREAM, 0, port) as listener:
+        return bool(listener.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR))
 
 
-def test_the_fixed_port_switch_follows_the_platform():
-    from gateway import run_api
-    assert run_api._REUSE_FIXED_PORT is (os.name != "nt")
+@pytest.mark.platforms("posix")
+def test_on_posix_the_webapps_fixed_port_binds_again_at_once():
+    # A restarted gateway must take the Webapp's port back while the old connections sit in TIME_WAIT.
+    assert _reuse_address(webapp.DEFAULT_PORT) is True
+    assert _reuse_address(0) is False  # main's private listener
+
+
+@pytest.mark.platforms("windows")
+def test_on_windows_the_webapps_fixed_port_never_lets_another_process_bind_it():
+    # On Windows SO_REUSEADDR would let another process bind the port, so it stays off.
+    assert _reuse_address(webapp.DEFAULT_PORT) is False
+    assert _reuse_address(0) is False  # main's private listener
 
 
 def test_a_fixed_port_binds_again_while_the_last_gateways_connections_linger():

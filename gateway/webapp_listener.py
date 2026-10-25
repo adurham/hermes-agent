@@ -243,13 +243,13 @@ def _close_to_other_users(folder: Path) -> None:
         logger.warning("Could not make %s user-only: %s", folder, exc)
 
 
-def _one_use_links_work() -> bool:
+def _one_use_links_work(platform: str = sys.platform) -> bool:
     """Whether a browser the server opens can redeem a one-use launch link here. Redemption needs
     proof that the browser's connection belongs to the gateway's OS user
     (``web_routers.webapp._peer_is_server_user``) on Linux, or a browser launcher whose arguments other
     users cannot read (Windows). macOS and the BSDs offer neither, so there the link is printed for
     the user to open by hand and spends without that proof."""
-    return sys.platform in ("linux", "win32")
+    return platform in ("linux", "win32")
 
 
 #: How every missing-bundle reason starts; ``hermes webapp --status`` asks for no restart after it.

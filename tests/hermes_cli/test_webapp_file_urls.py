@@ -34,26 +34,29 @@ def webapp_client(monkeypatch, tmp_path):
     client.close()
 
 
-@pytest.fixture(params=["local", "unc"])
-def files(request, tmp_path):
-    """A clip, an image and a page, named as the Webapp meets them: by their own path (a drive path on
-    Windows) or, on Windows, through a UNC host (the local administrative share, ``\\\\127.0.0.1\\C$``)."""
+@pytest.fixture
+def files(tmp_path):
+    """A clip, an image and a page, named as the Webapp meets them by their own path (a drive path on
+    Windows)."""
     renders = tmp_path / "renders"
     renders.mkdir()
     (renders / "clip one.mp4").write_bytes(b"hello")
     (renders / "shot one.png").write_bytes(b"\x89PNG\r\n\x1a\nimage")
     (renders / "report #1.html").write_text("<p>report</p>", encoding="utf-8")
-    if request.param == "unc":
-        if os.name != "nt":
-            pytest.skip("UNC hosts are Windows paths")
-        drive, rest = os.path.splitdrive(str(renders))
-        renders = Path(f"\\\\127.0.0.1\\{drive[0]}${rest}")
-        if not renders.is_dir():
-            pytest.skip("the local administrative share is not reachable")
     return renders
 
 
-def test_the_webapp_plays_a_file_url_through_its_stream_ticket(webapp_client, files):
+@pytest.fixture
+def unc_files(files):
+    """The same files through a UNC host: the local administrative share, ``\\\\127.0.0.1\\C$``."""
+    drive, rest = os.path.splitdrive(str(files))
+    renders = Path(f"\\\\127.0.0.1\\{drive[0]}${rest}")
+    if not renders.is_dir():
+        pytest.skip("the local administrative share is not reachable")
+    return renders
+
+
+def _plays_through_its_stream_ticket(webapp_client, files):
     url = (files / "clip one.mp4").as_uri()
     minted = webapp_client.post("/api/files/ticket", json={"route": "stream", "path": url, "profile": PROFILE})
     assert minted.status_code == 200, (url, minted.text)
@@ -69,7 +72,7 @@ def test_the_webapp_plays_a_file_url_through_its_stream_ticket(webapp_client, fi
     assert (stream.status_code, stream.content) == (206, b"ell"), (url, stream.text)
 
 
-def test_the_webapp_reads_images_and_previews_by_native_path(webapp_client, files):
+def _reads_images_and_previews_by_native_path(webapp_client, files):
     # ``str(path)`` is what the shared parser gives for ``path.as_uri()`` (``apps/shared/src/file-url.ts``).
     shot = files / "shot one.png"
     read = webapp_client.get("/api/fs/read-data-url", params={"path": str(shot), "profile": PROFILE})
@@ -80,3 +83,23 @@ def test_the_webapp_reads_images_and_previews_by_native_path(webapp_client, file
     preview = webapp_client.get("/api/fs/read-text", params={"path": str(page), "profile": PROFILE})
     assert preview.status_code == 200, (page, preview.text)
     assert preview.json()["text"] == "<p>report</p>"
+
+
+@pytest.mark.platforms("linux", "windows")
+def test_the_webapp_plays_a_file_url_through_its_stream_ticket(webapp_client, files):
+    _plays_through_its_stream_ticket(webapp_client, files)
+
+
+@pytest.mark.platforms("linux", "windows")
+def test_the_webapp_reads_images_and_previews_by_native_path(webapp_client, files):
+    _reads_images_and_previews_by_native_path(webapp_client, files)
+
+
+@pytest.mark.platforms("windows")
+def test_the_webapp_plays_a_unc_file_url_through_its_stream_ticket(webapp_client, unc_files):
+    _plays_through_its_stream_ticket(webapp_client, unc_files)
+
+
+@pytest.mark.platforms("windows")
+def test_the_webapp_reads_unc_images_and_previews_by_native_path(webapp_client, unc_files):
+    _reads_images_and_previews_by_native_path(webapp_client, unc_files)

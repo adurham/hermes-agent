@@ -128,7 +128,7 @@ def _loopback_peer_uid(client: tuple[str, int], server: tuple[str, int]) -> int 
     return None
 
 
-def _peer_is_server_user(request: Request) -> bool:
+def _peer_is_server_user(request: Request, platform: str = sys.platform) -> bool:
     """Whether this request's connection belongs to the OS user running the server.
 
     Linux authenticates the connection owner. Windows needs no check: a process's command line,
@@ -138,9 +138,9 @@ def _peer_is_server_user(request: Request) -> bool:
     be redeemed. Authenticated child-window tickets and the launch tickets ``hermes webapp`` prints for
     the user to open by hand (``mint_printed_launch_ticket``) do not use this launcher channel.
     """
-    if sys.platform == "win32":
+    if platform == "win32":
         return True
-    if sys.platform != "linux":
+    if platform != "linux":
         return False
     client, server = request.client, request.scope.get("server")
     if client is None or not server:

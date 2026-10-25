@@ -111,30 +111,24 @@ def _loopback_request():
 
 
 @pytest.mark.parametrize("platform", ["freebsd14", "openbsd7", "sunos5"])
-def test_where_no_peer_check_exists_a_launch_ticket_is_never_spent(monkeypatch, platform):
+def test_where_no_peer_check_exists_a_launch_ticket_is_never_spent(platform):
     """Other Unixes show every process's argv to all local users by default and Hermes cannot tell
     who owns a loopback connection there. As on macOS, the launcher prints a link for the user to open
     by hand rather than passing a launch ticket to a browser launcher, and a launch ticket is never
     spent."""
-    import sys
-
     from gateway import webapp_listener
     from hermes_cli.web_routers import webapp
 
-    monkeypatch.setattr(sys, "platform", platform)
-    assert webapp._peer_is_server_user(_loopback_request()) is False
-    assert webapp_listener._one_use_links_work() is False
+    assert webapp._peer_is_server_user(_loopback_request(), platform=platform) is False
+    assert webapp_listener._one_use_links_work(platform=platform) is False
 
 
-def test_windows_spends_a_launch_ticket_without_a_peer_check(monkeypatch):
+def test_windows_spends_a_launch_ticket_without_a_peer_check():
     """Windows does not show a process's command line to other standard users (reading it needs a
     handle the process's DACL grants only its own user, SYSTEM and elevated administrators), so the
     ticket in the browser launcher's argv stays the user's own, as the stored credential does."""
-    import sys
-
     from gateway import webapp_listener
     from hermes_cli.web_routers import webapp
 
-    monkeypatch.setattr(sys, "platform", "win32")
-    assert webapp._peer_is_server_user(_loopback_request()) is True
-    assert webapp_listener._one_use_links_work() is True
+    assert webapp._peer_is_server_user(_loopback_request(), platform="win32") is True
+    assert webapp_listener._one_use_links_work(platform="win32") is True

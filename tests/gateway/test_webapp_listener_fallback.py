@@ -7,7 +7,6 @@ Desktop, CLI and TUI clients still connect, the mount carries none of the Webapp
 in a child process (``fixtures/webapp_fallback_peer.py``) with its own ``HERMES_HOME``.
 """
 import ipaddress
-import sys
 from urllib.parse import urlsplit
 
 import pytest
@@ -61,7 +60,7 @@ def test_a_webapp_that_starts_keeps_the_browser_credential(tmp_path):
     assert report["token_rotated"] is False
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="only Linux lets two SO_REUSEADDR sockets bind one address")
+@pytest.mark.platforms("linux")  # only Linux lets two SO_REUSEADDR sockets bind one address
 def test_the_webapp_owns_its_port_before_mounting_the_dashboard(tmp_path):
     # Two processes may both bind the Webapp's port under SO_REUSEADDR; the first to listen owns it.
     # The gateway listens as soon as it binds, so a rival that tries while the dashboard mounts loses.
@@ -82,7 +81,7 @@ def test_the_webapp_port_accepts_connections_before_the_dashboard_mounts(tmp_pat
     assert report["status"]["state"] == "serving"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="SO_EXCLUSIVEADDRUSE is a Windows socket option")
+@pytest.mark.platforms("windows")  # SO_EXCLUSIVEADDRUSE is a Windows socket option
 def test_on_windows_the_webapps_fixed_port_is_held_exclusively():
     # Without exclusive use another process may bind the Webapp's port with SO_REUSEADDR (a more
     # specific address then takes those connections). Main's private ephemeral listener is unchanged.
