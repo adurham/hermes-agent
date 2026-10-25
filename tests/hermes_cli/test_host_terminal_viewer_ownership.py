@@ -353,7 +353,11 @@ def unread_posix_pty(_monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("typed_after", [0, 64], ids=["quiet", "full-inbox"])
+@pytest.mark.parametrize(
+    "typed_after",
+    ["quiet", "full", "overflow"],
+    ids=["quiet", "full-inbox", "close-behind-full-inbox"],
+)
 @pytest.mark.parametrize("terminal", [
     pytest.param(unread_posix_pty, id="posix-pty", marks=pytest.mark.platforms("posix")),
     pytest.param(unread_input, id="unread-input", marks=pytest.mark.platforms("any")),
@@ -365,10 +369,13 @@ async def test_closing_the_tab_during_a_waiting_paste_detaches_and_keeps_the_she
     deadline. When the tab closes meanwhile, the wait is cancelled and the shell is detached, as on
     any disconnect: it keeps running, retained for a reattach, and the reaper retires it once its
     retention runs out. A full input queue behind the paste (keys typed while it waited) does not
-    hide the close."""
+    hide the close, including when the close sits behind more frames than the queue holds."""
     from hermes_cli import web_host_terminal_sessions as host_sessions
 
-    assert typed_after in (0, host_sessions._INPUT_BATCH_FRAMES)
+    fill = host_sessions._INPUT_BATCH_FRAMES
+    # Overflow is the put that blocks: the close is not the frame that fills the queue,
+    # it is behind further keystrokes the reader has not queued yet.
+    typed = {"quiet": 0, "full": fill, "overflow": fill + 17}[typed_after]
     home = tmp_path / ".hermes"
     profile = home / "profiles" / "worker"
     profile.mkdir(parents=True)
@@ -393,7 +400,7 @@ async def test_closing_the_tab_during_a_waiting_paste_detaches_and_keeps_the_she
         try:
             handler = asyncio.create_task(host_sessions.host_terminal(tab))
             assert await asyncio.to_thread(waiting.wait, 5), "the paste never waited for the program"
-            tab.type(*[b"k"] * typed_after)
+            tab.type(*[b"k"] * typed)
             tab.close_tab()
             async with asyncio.timeout(5):
                 await handler
@@ -410,3 +417,96 @@ async def test_closing_the_tab_during_a_waiting_paste_detaches_and_keeps_the_she
             registry._sessions.clear()
             registry.owners.clear()
             await registry.close_all()
+
+
+class SlowAccept:
+    """A program that reads every byte, but not until ``release``: slow, not stopped.
+
+    The first write accepts its buffer (it does not report a full queue) and then waits.
+    Later writes land immediately. Keystrokes that arrived while the first write waited
+    must still be delivered, including ones that did not fit in the input queue.
+    """
+
+    def __init__(self):
+        self._closed = False
+        self.written = bytearray()
+        self.entered, self.release = threading.Event(), threading.Event()
+        self._gated = True
+
+    async def write(self, data, *, timeout=10.0, fence=None):
+        assert timeout is None, "host terminal input has no deadline"
+        accepted = await asyncio.to_thread(fence, lambda: len(data))
+        assert accepted == len(data)
+        if self._gated:
+            self._gated = False
+            self.entered.set()
+            assert await asyncio.to_thread(self.release.wait, 5), "slow reader was not released"
+        self.written.extend(data)
+        return True
+
+    def resize(self, cols, rows):
+        pass
+
+    def close(self):
+        self._closed = True
+
+    def is_alive(self):
+        return not self._closed
+
+
+@pytest.mark.asyncio
+async def test_slow_program_keeps_keystrokes_typed_past_a_full_input_queue(tmp_path, monkeypatch):
+    """A live tab's input is not dropped when the program reads slowly. Frames past the
+    inbox bound stay in order and reach the shell once it takes them; the socket is read
+    while the inbox is full, so a later close is not stuck behind that put."""
+    from hermes_cli import web_host_terminal_sessions as host_sessions
+
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner = HostOwner(("loopback", "test"), profile, "sh", str(tmp_path))
+    registry = HostTerminalRegistry()
+    bridge = SlowAccept()
+    session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
+    registry._sessions[session.key] = session
+    registry.owners[session.key] = owner
+
+    async def admit(_ws, _registry):
+        return session, owner
+
+    monkeypatch.setattr(host_sessions, "get_host_terminals", lambda _app: registry)
+    monkeypatch.setattr(host_sessions, "_admit", admit)
+    tab = ClosingTab(b"A")
+    handler = None
+    try:
+        handler = asyncio.create_task(host_sessions.host_terminal(tab))
+        assert await asyncio.to_thread(bridge.entered.wait, 5), "the first write never started"
+        extra = [bytes([65 + (n % 26)]) for n in range(host_sessions._INPUT_BATCH_FRAMES + 17)]
+        tab.type(*extra)
+        await async_wait_until(
+            tab.inbound.empty, timeout=5,
+            what="the reader to pull keystrokes sitting behind a full input queue",
+        )
+        assert session.attached, "a full queue is not a disconnect"
+        bridge.release.set()
+        expected = b"A" + b"".join(extra)
+        await async_wait_until(
+            lambda: bytes(bridge.written) == expected, timeout=5,
+            what="every keystroke to reach the slow program",
+        )
+        tab.close_tab()
+        async with asyncio.timeout(5):
+            await handler
+        assert session.alive and not bridge._closed
+        assert registry._sessions.get(session.key) is session
+        assert not session.attached and session._ws is None
+    finally:
+        bridge.release.set()
+        if handler is not None:
+            handler.cancel()
+            await asyncio.gather(handler, return_exceptions=True)
+        registry._sessions.clear()
+        registry.owners.clear()
+        await registry.close_all()

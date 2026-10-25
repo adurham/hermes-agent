@@ -9,6 +9,7 @@ refused and the reaper closes it.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -32,6 +33,10 @@ _MAX_SHELLS = 16
 # Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
+# Puts abandoned because this task is already cancelling. Awaiting them here is
+# cancelled again before they finish; holding them until the callback reads the
+# result keeps "exception was never retrieved" off the loop.
+_DROPPED_TASKS: set[asyncio.Task] = set()
 
 
 class TerminalDenied(Exception):
@@ -259,22 +264,120 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return session, owner
 
 
+def _read_dropped_task(task: asyncio.Task) -> None:
+    _DROPPED_TASKS.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+def _drop_task(task: asyncio.Task) -> None:
+    """Cancel ``task`` without awaiting it. Safe while this task is itself cancelling."""
+    if not task.done():
+        task.cancel()
+    _DROPPED_TASKS.add(task)
+    task.add_done_callback(_read_dropped_task)
+
+
+class _SocketTail:
+    """Socket reads that stay ahead of a full inbox.
+
+    The inbox bound is backpressure for a live viewer. A put that waits for room must
+    not be the only thing the reader is doing: the tab's close is the next socket
+    message, possibly behind further keystrokes, and it has to surface while that
+    put is blocked. Frames already pulled are kept, in order, so a program that is
+    still reading takes them. They are not dropped to make the queue move.
+    """
+
+    def __init__(self, ws: WebSocket):
+        self._ws = ws
+        self._ahead: deque = deque()
+        self._recv: asyncio.Task | None = asyncio.create_task(ws.receive())
+
+    def close(self) -> None:
+        recv, self._recv = self._recv, None
+        if recv is not None:
+            _drop_task(recv)
+
+    def pending_receive(self) -> asyncio.Task | None:
+        return self._recv
+
+    async def next_message(self):
+        """The next data frame, or None once the socket has disconnected."""
+        if self._ahead:
+            return self._ahead.popleft()
+        if self._recv is None:
+            return None
+        msg = await self._recv
+        if msg.get("type") == "websocket.disconnect":
+            self._recv = None
+            return None
+        self._recv = asyncio.create_task(self._ws.receive())
+        return msg
+
+    def saw_disconnect(self) -> bool:
+        """Consume a receive that has already finished. Data stays queued ahead."""
+        recv = self._recv
+        if recv is None or not recv.done():
+            return False
+        msg = recv.result()
+        if msg.get("type") == "websocket.disconnect":
+            self._recv = None
+            return True
+        self._ahead.append(msg)
+        self._recv = asyncio.create_task(self._ws.receive())
+        return False
+
+
+async def _put_frame(inbox: asyncio.Queue, tail: _SocketTail, ended: asyncio.Future, msg) -> None:
+    """Queue ``msg``. A full inbox still leaves the socket readable.
+
+    On disconnect, ``ended`` is set before this put finishes, so a write waiting on
+    the program is cancelled even though the frame itself stays queued for a pump
+    that is still delivering input.
+    """
+    if not inbox.full():
+        inbox.put_nowait(msg)
+        return
+    put = asyncio.create_task(inbox.put(msg))
+    try:
+        while not put.done():
+            pending = tail.pending_receive()
+            if pending is None:
+                break
+            await asyncio.wait((put, pending), return_when=asyncio.FIRST_COMPLETED)
+            if tail.saw_disconnect() and not ended.done():
+                ended.set_result(None)
+        await put
+    finally:
+        if not put.done():
+            _drop_task(put)
+
+
+async def _queue_until_close(tail: _SocketTail, inbox: asyncio.Queue, ended: asyncio.Future) -> None:
+    while (msg := await tail.next_message()) is not None:
+        await _put_frame(inbox, tail, ended, msg)
+
+
 async def _read_frames(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future) -> None:
     """Queue inbound frames. The last item is None, or the error that ended reading
     (re-raised by ``_pump_input`` so the route's handlers still see it). ``ended`` gets the same
     item as soon as reading ends, before it is queued: a write waiting on the shell, or a full
     inbox behind it, must not keep the pump from seeing that the socket is gone."""
     end = None
+    tail = _SocketTail(ws)
     try:
-        while (msg := await ws.receive()).get("type") != "websocket.disconnect":
-            await inbox.put(msg)
-    except RuntimeError:  # a superseding/drain task already closed us
-        pass
-    # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
-    except Exception as exc:
-        end = exc
-    ended.set_result(end)
-    await inbox.put(end)
+        try:
+            await _queue_until_close(tail, inbox, ended)
+        except RuntimeError:  # a superseding/drain task already closed us
+            pass
+        # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
+        except Exception as exc:
+            end = exc
+        if not ended.done():
+            ended.set_result(end)
+        await inbox.put(end)
+    finally:
+        tail.close()
 
 
 async def _write_while_open(session: PtySession, ws: WebSocket, data: bytes, fence,
