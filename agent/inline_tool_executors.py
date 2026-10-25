@@ -10,11 +10,14 @@ lazily at call time so ``patch("tools.x.y")`` in tests keeps working.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from tools.arg_coercion import coerce_tool_args
+
+logger = logging.getLogger(__name__)
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
@@ -328,6 +331,48 @@ def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
 INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     name: _coerced(name, executor) for name, executor in _RAW_INLINE_TOOL_EXECUTORS.items()
 }
+
+#: The Tool Search bridge tool a model can wrap a call in.
+BRIDGE_TOOL_NAME = "tool_call"
+
+
+def unwrap_end_turn_bridge(function_name: str, function_args: dict[str, Any]) -> Tuple[str, dict[str, Any]]:
+    """Normalize a turn close that arrived through the Tool Search bridge.
+
+    deepseek-v4.1-flash sometimes closes a turn with
+    ``tool_call(name="end_turn", arguments={...})`` — the shape it uses for deferred tools.
+    The bridge can never satisfy that call: ``end_turn`` is in no registry, and the bridge's
+    recursive re-dispatch drops the ``agent`` the executor needs. The model is then told its
+    close was rejected and answers in prose, which the turn-close contract rejects until it
+    escapes (measured 2026-10-25: an escape whose last model action was exactly this
+    misroute, logged as a refusal). The close is semantic — status/summary/open_items — not a
+    calling convention, so honour it, warn, and count the habit rather than lose the turn.
+    """
+    if function_name != BRIDGE_TOOL_NAME or not isinstance(function_args, dict):
+        return function_name, function_args
+    try:
+        from tools.tool_search_validation import normalize_tool_call_entries
+        entries, err = normalize_tool_call_entries(function_args)
+    except Exception:
+        return function_name, function_args
+    if err or len(entries) != 1:
+        return function_name, function_args
+    entry = entries[0]
+    if str(entry.get("name") or "").strip() != "end_turn":
+        return function_name, function_args
+    args = entry.get("arguments")
+    if not isinstance(args, dict):
+        return function_name, function_args
+    logger.warning(
+        "turn-contract: unwrapped tool_call(end_turn) — closed through the Tool-Search bridge, "
+        "which cannot dispatch agent-level tools; dispatching end_turn directly"
+    )
+    try:
+        from agent.end_turn import record_turn_contract_event
+        record_turn_contract_event("unwrapped")
+    except Exception:  # bookkeeping must never break a turn
+        pass
+    return "end_turn", args
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three
 # names and before the remaining inline tools; ``message_agent`` falls through to the

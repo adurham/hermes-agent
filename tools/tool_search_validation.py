@@ -248,6 +248,15 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
     global blocklist, because a top-level session legitimately has these tools.
     """
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
+    if session_tool_names is not None and name in set(session_tool_names) and _registry_entry(name) is None:
+        # Injected, agent-level tools (``end_turn``) are in the live session's tool list but in
+        # no registry and no static core list. The session carrying the schema IS the proof it
+        # is directly callable; answering "unknown name, use tool_search" sent a model hunting
+        # for a tool it already had, and the end_turn contract escaped on that dead end
+        # (2026-10-25, deepseek-v4.1-flash). Registry tools keep the branch below, which also
+        # distinguishes "absent from this restricted session".
+        return (f"'{name}' is a directly-listed tool in this session, not a deferred one. "
+                "Call it directly instead of via tool_call.")
     if name in _core_tool_names() or _registry_entry(name) is not None:
         if session_tool_names is not None and name not in set(session_tool_names):
             return unavailable_in_session_reason(name)

@@ -1314,3 +1314,43 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+class TestSessionCarriedBridgeAdvice:
+    """A tool injected after toolset assembly is in the live session but in no registry and no
+    static core list. The bridge must call it directly-listed, not send the model to
+    ``tool_search`` for a tool it already carries (the 2026-10-25 end_turn escape)."""
+
+    def test_session_carried_name_is_reported_as_directly_listed(self):
+        from tools.tool_search_validation import not_deferrable_error
+
+        msg = not_deferrable_error("end_turn", {"terminal", "end_turn"})
+        assert "directly-listed tool in this session" in msg
+        assert "tool_search" not in msg
+
+    def test_without_session_context_the_name_is_still_unknown(self):
+        from tools.tool_search_validation import not_deferrable_error
+
+        assert "not a known tool name" in not_deferrable_error("end_turn", None)
+
+    def test_core_tool_absent_from_a_restricted_session_stays_unavailable(self):
+        from tools.tool_search_validation import not_deferrable_error
+
+        msg = not_deferrable_error("clarify", {"terminal"})
+        assert "not available in this execution context" in msg
+
+    def test_bridge_dispatch_uses_the_live_session_tool_list(self):
+        """The bridge re-derives its catalog without post-assembly injections; the live
+        agent's own tool list is what the model was actually given."""
+        import model_tools
+
+        class _Session:
+            tools = [_td("end_turn", "Close the turn."), _td("terminal", "Shell.")]
+
+        result, underlying = model_tools._dispatch_bridge_tool(
+            "tool_call",
+            {"name": "end_turn", "arguments": {"status": "done", "summary": "x", "open_items": []}},
+            None, None, None, agent=_Session(),
+        )
+        assert underlying is None
+        assert "directly-listed tool in this session" in result
