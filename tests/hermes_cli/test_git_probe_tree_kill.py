@@ -21,6 +21,7 @@ import pytest
 
 from hermes_cli import _subprocess_compat
 from hermes_cli._subprocess_compat import bounded_git_probe, kill_process_tree
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX process-group semantics
 
@@ -128,14 +129,13 @@ def test_grace_kill_takes_a_term_ignoring_member_once_the_leader_exits(tmp_path)
 
     kill_process_tree(proc, grace=5.0)
 
-    assert proc.returncode is not None
-    deadline = time.monotonic() + 3.0
-    while time.monotonic() < deadline and _pid_alive(member):
-        time.sleep(0.05)
-    alive = _pid_alive(member)
-    if alive:  # reparented out of our subtree, so the live-system guard refuses os.kill here
-        subprocess.run(["kill", "-9", str(member)], check=False)
-    assert not alive, f"SIGTERM-ignoring member {member} survived the graced kill"
+    try:
+        assert proc.returncode is not None
+        wait_until(lambda: not _pid_alive(member), timeout=3.0,
+                   what=f"SIGTERM-ignoring member {member} to die with the graced kill")
+    finally:
+        if _pid_alive(member):  # reparented out of our subtree: the live-system guard refuses os.kill
+            subprocess.run(["kill", "-9", str(member)], check=False)
 
 
 def test_fast_path_unaffected(tmp_path):
