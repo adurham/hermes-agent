@@ -38,7 +38,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge", "_promise_gate_nudge",
+    "_dropped_toolcall_nudge", "_promise_gate_nudge", "_turn_contract_nudge",
 )
 
 
@@ -357,6 +357,7 @@ def finish_text_response(
         REJECT,
         TURN_CONTRACT_NUDGE,
         clear_end_turn,
+        record_turn_contract_event,
         contract_decision,
         end_turn_payload,
         render_summary,
@@ -386,9 +387,11 @@ def finish_text_response(
         )
         clear_end_turn(agent)
         agent._turn_contract_rejections = 0
+        record_turn_contract_event("closed")
     elif _decision == REJECT:
         _rejections = getattr(agent, "_turn_contract_rejections", 0)
         agent._turn_contract_rejections = _rejections + 1
+        record_turn_contract_event("rejected")
         logger.warning(
             "turn-contract: rejected text-only ending after %d tool call(s) "
             "(rejection %d/%d, model=%s provider=%s)",
@@ -413,10 +416,15 @@ def finish_text_response(
         # must still get an answer) and record it — an escape is the empirical trigger for
         # changing models, not for another detector.
         _rejections = getattr(agent, "_turn_contract_rejections", 0)
-        logger.warning(
+        record_turn_contract_event("escaped")
+        logger.error(
             "turn-contract: ESCAPE — text-only ending after %d tool call(s) survived %d "
-            "rejections (model=%s provider=%s)",
+            "rejections (model=%s provider=%s) — the model refused the contract; "
+            "this is the signal to change models, not to add a detector",
             _turn_tool_calls, _rejections, agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status(
+            "⚠ Model refused the turn contract — answer delivered unbacked"
         )
         agent._turn_contract_rejections = 0
 
