@@ -1,13 +1,14 @@
 name: hermes-proton
 repo: https://github.com/Maytrella007/hermes-proton
-sha: 52b1ce15843c9205f9944f424a1a7c5ccd95e43b
+sha: 411a978d3d99e71807ece05f5246849ff3d810e7
 description: "Proton Mail, Calendar, Contacts and Drive for a Hermes Agent, through an MIT-licensed client built from Proton's own open-source Go libraries (go-srp, go-proton-api) — no Proton Bridge and no paid plan. Reads, searches and sends mail (attachments, scheduled send, labels, folders), manages calendar events and RSVPs, contacts (signed/encrypted vCards), and Drive (upload, download, move, rename, trash, public share links). Sign-in runs in a terminal via `hermes proton login` and the account password is never taken through chat; sending is refused until a recipient allowlist is set and every send is gated by Hermes's pre_tool_call approval. Disclosure — talks to Proton's private, undocumented web API over the network; writes attachment downloads and uploads to local files under the session directory; shells out to gpg for calendar/Drive key provisioning; stores a per-account session file (0600) holding OAuth-style tokens and the derived key passphrase, never the password; no self-update, no downloaded binaries, no telemetry, no background process."
 maintainer: Maytrella007
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/Maytrella007/hermes-proton#readme
-version: "0.27.0"
+version: "0.28.0"
+image: https://raw.githubusercontent.com/Maytrella007/hermes-proton/411a978d3d99e71807ece05f5246849ff3d810e7/assets/banner.jpg
 readme: true
 platforms:
   - linux
