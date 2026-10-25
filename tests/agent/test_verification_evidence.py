@@ -188,7 +188,10 @@ def test_dot_slash_script_invocation_matches_detected_script(tmp_path, monkeypat
     assert evidence.canonical_command == "scripts/run_tests.sh"
 
 
-@pytest.mark.parametrize("command", ["timeout 300 pytest -q", "nice -n 5 pytest -q"])
+@pytest.mark.parametrize(
+    "command",
+    ["timeout 300 pytest -q", "nice -n 5 pytest -q", "timeout 5m pytest -q", "timeout -s KILL 300 pytest -q"],
+)
 def test_status_preserving_wrapper_still_attributes_the_run(tmp_path, monkeypatch, command):
     """``timeout``/``nice`` return the child's status, so the run proves the verifier's."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

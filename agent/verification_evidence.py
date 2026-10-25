@@ -267,6 +267,10 @@ def _canonical_tokens(canonical: str) -> list[str]:
 
 
 _STATUS_PRESERVING_WRAPPERS = {"timeout", "nice", "nohup", "stdbuf"}
+# Wrapper options whose value is the next token (``timeout -s KILL 300``).
+_WRAPPER_VALUE_FLAGS = {"-s", "--signal", "-k", "--kill-after", "-n", "--adjustment", "-i", "-o", "-e"}
+# A bare count or a ``timeout`` duration: ``300``, ``5m``, ``1.5h``.
+_WRAPPER_ARG_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 
 
 def _strip_command_prefix(tokens: list[str]) -> list[str]:
@@ -280,8 +284,8 @@ def _strip_command_prefix(tokens: list[str]) -> list[str]:
             i += 1
         elif tokens[i] in _STATUS_PRESERVING_WRAPPERS:
             i += 1
-            while i < len(tokens) and (tokens[i].startswith("-") or tokens[i].isdigit()):
-                i += 1
+            while i < len(tokens) and (tokens[i].startswith("-") or _WRAPPER_ARG_RE.match(tokens[i])):
+                i += 2 if tokens[i] in _WRAPPER_VALUE_FLAGS else 1
         else:
             break
     return list(tokens[i:])
