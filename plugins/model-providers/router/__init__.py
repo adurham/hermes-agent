@@ -294,7 +294,7 @@ router = RouterProfile(
     env_vars=("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY", "RAMP_ROUTER_BASE_URL"), base_url=_base_url(),
     auth_type="api_key",
     # Router attributes coding-agent clients by UA prefix; its WAF rejects default UAs.
-    default_headers=LazyHeaders(lambda: {"User-Agent": hermes_user_agent("Hermes-Agent")}),
+    default_headers=LazyHeaders({"User-Agent": lambda: hermes_user_agent("Hermes-Agent")}),
     supports_vision=True, default_aux_model="gpt-5.4-mini",
     fallback_models=(),  # account-scoped IDs; the picker uses fetch_models()
 )

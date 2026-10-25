@@ -14,12 +14,11 @@ from datetime import UTC
 
 # Attribution headers (same values as OpenRouter / Vercel / Fireworks); via
 # default_headers so they survive model switches and credential rotation.
-def _attribution_headers() -> dict[str, str]:
-    return {
-        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-        "X-Title": "Hermes Agent",
-        "User-Agent": hermes_user_agent("HermesAgent"),
-    }
+_ATTRIBUTION_HEADERS = {
+    "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+    "X-Title": "Hermes Agent",
+    "User-Agent": lambda: hermes_user_agent("HermesAgent"),
+}
 
 
 def _flat_model_name(model: str | None) -> str:
@@ -119,13 +118,13 @@ class OpenCodeZenProfile(ProviderProfile):
 
 opencode_zen = OpenCodeZenProfile(
     name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
-    base_url="https://opencode.ai/zen/v1", default_headers=LazyHeaders(_attribution_headers),
+    base_url="https://opencode.ai/zen/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
 )
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
-    base_url="https://opencode.ai/zen/go/v1", default_headers=LazyHeaders(_attribution_headers),
+    base_url="https://opencode.ai/zen/go/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
     default_aux_model="glm-5",
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
