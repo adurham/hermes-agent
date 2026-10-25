@@ -39,6 +39,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     # reconstruction is gated on _use_prompt_caching, so default it off
     # for the legacy restore tests (the reconstruction tests enable it).
     agent._use_prompt_caching = False
+    agent._turn_contract_enabled = False  # likewise: a Mock flag reads as "contract on"
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     agent.enabled_toolsets = agent.disabled_toolsets = None  # all toolsets, as an unrestricted agent
     return agent

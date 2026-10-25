@@ -345,88 +345,20 @@ def finish_text_response(
     # 5-probe turn ending on "I'll build that offline" — msg 736018).
     _turn_tool_calls = tool_calls_this_turn(messages)
 
-    # Turn-close contract (agent/end_turn.py). A turn that used a tool may not end on prose:
-    # the model must call end_turn and put the reply in its summary. This replaces detection
-    # with a structural rule — the failure ("announced work, ran nothing") is impossible to
-    # express without lying in a structured, parseable field. See the module docstring for the
-    # measurements that led here and for why the promise gate below is disabled under it.
-    from agent.end_turn import (
-        CLOSE,
-        ESCAPE,
-        MAX_TURN_CONTRACT_REJECTIONS,
-        REJECT,
-        TURN_CONTRACT_NUDGE,
-        clear_end_turn,
-        record_turn_contract_event,
-        contract_decision,
-        end_turn_payload,
-        render_summary,
-        turn_contract_enabled,
+    # Turn-close contract (agent/turn_final_response_contract.py, agent/end_turn.py): a turn
+    # that used a tool may not end on prose — the model must call end_turn and its summary is
+    # the reply. A structural rule in place of detection; the promise gate below is off under it.
+    from agent.turn_final_response_contract import apply_turn_contract
+    _tc = apply_turn_contract(
+        agent, messages=messages, final_msg=final_msg, tool_calls_this_turn=_turn_tool_calls,
     )
-
-    _contract = turn_contract_enabled(agent)
-    _payload = end_turn_payload(agent) if _contract else None
-    _decision = (
-        contract_decision(
-            payload=_payload,
-            tool_calls_this_turn=_turn_tool_calls,
-            rejections=getattr(agent, "_turn_contract_rejections", 0),
-        )
-        if _contract
-        else None
-    )
-    if _decision == CLOSE:
-        # Closed properly: the payload IS the reply. Trailing prose, if any, is ignored —
-        # the summary is what the model committed to and what the operator reads.
-        final_response = render_summary(_payload or {})
-        final_msg["content"] = final_response
-        logger.info(
-            "turn-contract: closed[%s] open_items=%d tool_calls=%d (model=%s provider=%s)",
-            (_payload or {}).get("status"), len((_payload or {}).get("open_items") or []),
-            _turn_tool_calls, agent.model, agent.provider,
-        )
-        clear_end_turn(agent)
-        agent._turn_contract_rejections = 0
-        record_turn_contract_event("closed")
-    elif _decision == REJECT:
-        _rejections = getattr(agent, "_turn_contract_rejections", 0)
-        agent._turn_contract_rejections = _rejections + 1
-        record_turn_contract_event("rejected")
-        logger.warning(
-            "turn-contract: rejected text-only ending after %d tool call(s) "
-            "(rejection %d/%d, model=%s provider=%s)",
-            _turn_tool_calls, _rejections + 1, MAX_TURN_CONTRACT_REJECTIONS,
-            agent.model, agent.provider,
-        )
-        agent._emit_diagnostic_status(
-            "↻ Turn used tools but ended on prose — requiring end_turn"
-        )
-        final_msg["_turn_contract_nudge"] = True
-        append_message(messages, final_msg)
-        append_message(messages, {
-            "role": "user",
-            "content": TURN_CONTRACT_NUDGE,
-            "_turn_contract_nudge": True,
-        })
+    _contract = _tc.enabled
+    if _tc.reprompt:
         agent._session_messages = messages
         final_response = None
         return _verdict("continue")
-    elif _decision == ESCAPE:
-        # The model refused the contract as often as allowed. Deliver the prose (the operator
-        # must still get an answer) and record it — an escape is the empirical trigger for
-        # changing models, not for another detector.
-        _rejections = getattr(agent, "_turn_contract_rejections", 0)
-        record_turn_contract_event("escaped")
-        logger.error(
-            "turn-contract: ESCAPE — text-only ending after %d tool call(s) survived %d "
-            "rejections (model=%s provider=%s) — the model refused the contract; "
-            "this is the signal to change models, not to add a detector",
-            _turn_tool_calls, _rejections, agent.model, agent.provider,
-        )
-        agent._emit_diagnostic_status(
-            "⚠ Model refused the turn contract — answer delivered unbacked"
-        )
-        agent._turn_contract_rejections = 0
+    if _tc.final_response is not None:
+        final_response = _tc.final_response
 
     # Promise-without-action gate. deepseek-v4.1-flash on ollama-cloud routinely ends a turn by
     # announcing the work instead of doing it ("I'll build X now", "building the page next",

@@ -160,6 +160,7 @@ def refresh_agent_mcp_tools(
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
     _reinject_authorized_dynamic_tools(agent, new_defs, new_names)
+    new_defs = _reinject_end_turn(agent, new_defs, new_names)
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
     # under the tools lock would be the first nesting of the two.
     prefix_registered: Optional[set] = None
@@ -286,6 +287,7 @@ def restore_agent_tool_prefix(agent, saved) -> bool:
     merged = _drop_gated_carried_tools(merged, carried)
     merged_names = {_def_name(t) for t in merged}
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
+    merged = _reinject_end_turn(agent, merged, merged_names)
     merged, merged_names = _drop_session_tools(agent, merged, merged_names)
     changed = merged != fresh_defs
     if changed:
@@ -338,6 +340,20 @@ def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set) -
     if message_agent_authorized(agent):
         tools_list.append(message_agent_tool_schema())
         name_set.add(MESSAGE_AGENT_TOOL_NAME)
+
+
+def _reinject_end_turn(agent, tools_list: list, name_set: set) -> list:
+    """The turn-close contract's ``end_turn`` is appended by ``agent_init`` after toolset
+    assembly and lives in no registry, so a registry-derived rebuild drops it from BOTH halves
+    of the pair — and the request builder would then put it back on the wire only, leaving
+    every direct call rejected by the validator as unknown (2026-10-25). Register it on the
+    staged pair through the one function that owns it."""
+    try:
+        from agent.end_turn import register_end_turn
+        return register_end_turn(agent, tools_list, names=name_set)
+    except Exception:
+        logger.debug("end_turn re-injection skipped", exc_info=True)
+        return tools_list
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:

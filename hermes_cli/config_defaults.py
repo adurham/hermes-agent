@@ -17,18 +17,7 @@ DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
 
 
-def _aux(timeout, *, reasoning_effort=True, **extra):
-    """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
-
-    reasoning_effort=False omits that key (MoA blocks configure depth per slot);
-    ``extra`` keys are appended after the standard ones.
-    """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
-    if reasoning_effort:
-        d["reasoning_effort"] = ""
-    d.update(extra)
-    return d
-
+from hermes_cli.config_defaults_aux import aux_model_block as _aux
 
 DEFAULT_CONFIG = {
     "model": "",
@@ -190,6 +179,10 @@ DEFAULT_CONFIG = {
         # set up a dedicated setup-token for Hermes.
         "pin_anthropic_token": False,
         "fast_auto_seconds": 60,
+        # Turn-close contract (agent/end_turn.py): a turn that used a tool must end by calling
+        # end_turn(status, summary, open_items) instead of prose. Off until a full session reads
+        # closed > 0, rejected = 0, escaped = 0 in ~/.hermes/state/turn_contract.json.
+        "turn_contract": False,
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.
         "text_verbosity": "",
