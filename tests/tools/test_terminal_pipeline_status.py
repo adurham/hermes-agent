@@ -63,6 +63,7 @@ def _seen(result: subprocess.CompletedProcess) -> tuple[int, str, str]:
         ("echo hi \\", 0, "hi \\\n"),
         ("cat <<'EOF'\nunterminated heredoc", 0, "unterminated heredoc\n"),
         ("exit 3", 3, ""),
+        ("trap 'echo T' ERR; false", 1, "T\n"),
     ],
 )
 def test_capturing_pipestatus_changes_nothing_the_model_sees(command, exit_code, stdout):

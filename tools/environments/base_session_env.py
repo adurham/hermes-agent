@@ -61,9 +61,10 @@ def _eval_capturing_pipestatus(escaped: str) -> str:
     The array must be read inside the same ``eval`` (afterwards it holds only ``eval``'s
     status), while ``$?`` stays the exit code: the two differ for ``!``, ``if``/``while``,
     ``pipefail`` and parse errors. The blank line stops the capture joining a command
-    continued by a trailing backslash.
+    continued by a trailing backslash. The restore sits on the left of ``&&`` so its
+    non-zero status fires neither a user's ``ERR`` trap a second time nor ``set -e``.
     """
-    return f"eval '{escaped}\n\n__hermes_rc=$? __hermes_ps=(\"${{PIPESTATUS[@]}}\"); (exit $__hermes_rc)'"
+    return f"eval '{escaped}\n\n__hermes_rc=$? __hermes_ps=(\"${{PIPESTATUS[@]}}\"); (exit $__hermes_rc) && :'"
 
 
 def _can_capture_pipestatus(command: str) -> bool:
