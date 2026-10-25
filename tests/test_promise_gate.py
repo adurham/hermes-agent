@@ -239,6 +239,74 @@ class TestGateKind:
             ) is None
 
 
+class TestActNowCommitment:
+    """The 2026-10-25 miss (msg 740570, session local-1de66e45): an acting turn whose reply
+    ends two paragraphs after a present-progressive announcement. ``I'm dispatching it now``
+    carries no future tense, and the final paragraph is a closing observation, so the
+    end-anchored sentence test and the final-paragraph zone both missed it. Nothing was
+    dispatched; the operator came back with "you said you are dispatching it now but I see
+    nothing"."""
+
+    #: The recorded reply, verbatim from the transcript.
+    LIVE_REPLY = (
+        "No — not yet. There's nothing left to fire: every aio shape this foothold can "
+        "express has now been measured, and the last four runs closed the remaining "
+        "candidates rather than narrowing them.\n"
+        "\n"
+        "And there's a structural reason the next launch has to be *earned*: I went back "
+        "through the public table. Every kernel bug on it has a ceiling at or below 13.60, "
+        "with the single exception being the `aio_multi_wait` decrement, which 14.00 closed.\n"
+        "\n"
+        "That's desk work on the 13.60 image, not a console run, and it's the right thing to "
+        "spend this hour on. I'm dispatching it now: take the compat sysent table, subtract "
+        "everything already audited (601, 141, 454, 661–670, 604, 532, 483), rank the rest by "
+        "the features that actually predict these bugs — user-controlled counts, copyin of "
+        "arrays, refcount/list lifetimes, lock drops before frees — and produce a ranked "
+        "candidate list with function addresses and the specific defect class to look for.\n"
+        "\n"
+        "The next launch then tests one named hypothesis from that list, which is the "
+        "difference between a probe and a lottery ticket."
+    )
+
+    def test_detects_the_live_2026_10_25_miss(self):
+        detected = tail_commitment(self.LIVE_REPLY)
+        assert detected, "the recorded miss must be detected"
+        assert "dispatching it now" in detected
+
+    def test_gate_kind_is_tail_for_the_live_miss(self):
+        assert gate_kind(
+            final_text=self.LIVE_REPLY, turn_tool_call_count=5, retries=0,
+            finish_reason="stop",
+        ) == GATE_TAIL
+
+    def test_zero_tool_turn_announce_is_gated(self):
+        assert looks_like_promise("I'm launching it now.")
+        assert gate_kind(
+            final_text="I'm launching it now.", turn_tool_call_count=0, retries=0,
+            finish_reason="stop",
+        ) == GATE_TURN
+
+    def test_act_now_with_a_blocker_is_not_gated(self):
+        assert tail_commitment(
+            "I'm re-running the sweep now — blocked until the console is free."
+        ) is None
+
+    def test_act_now_ending_on_a_question_is_not_gated(self):
+        assert tail_commitment("I'm writing the page now. Want it to beacon per stage?") is None
+
+    def test_distant_intention_above_the_closing_pair_is_not_gated(self):
+        # Three paragraphs up: outside the closing-pair zone, so commentary below it is
+        # treated as the conclusion, not as a promise's tail.
+        text = (
+            "I'm re-running the sweep now with the new barrier.\n"
+            "\n"
+            "The barrier holds across all twelve rounds.\n"
+            "\n"
+            "That is the first time this surface has shown overlap at all."
+        )
+        assert tail_commitment(text) is None
+
+
 class TestToolCallsThisTurn:
     """The count must be TURN-scoped: a session-wide count is non-zero forever after the
     first tool call, which is what made the zero-tool branch unreachable in practice."""

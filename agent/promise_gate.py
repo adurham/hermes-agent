@@ -17,6 +17,14 @@ Two shapes are gated:
   Tail-only, because a long analysis legitimately says "I'll" mid-reply, and never
   when that final paragraph is followed by a delivered fenced block.
 
+A third shape rides on the tail path: the present-progressive announce
+("I'm dispatching it now: take the table, rank the rest…") followed by a closing
+paragraph of commentary. Future tense is absent there, and the commitment is one
+paragraph above the last one, so both the sentence and the paragraph tests miss it.
+A first-person present-progressive work verb anchored on "now" is an action the model
+claims is already underway; when the turn ends there, by construction nothing was
+dispatched. That shape is read across the closing TWO paragraphs.
+
 Narrow by construction: one retry per turn (shared by both shapes), the commitment
 must sit in the final prose paragraph, and an explicit external blocker ("blocked",
 "waiting on", "needs you to") is a stated blocker, not a promise.
@@ -56,10 +64,21 @@ _WORK_VERB = (
     r"(?:build|building|write|writing|make|making|run|running|check|checking|add|adding|"
     r"fix|fixing|test|testing|look|looking|start|starting|try|trying|dig|digging|"
     r"wire|wiring|patch|patching|dispatch|dispatching|launch|launching|set up|spin up|"
-    r"re-run|rerun|rerunning|investigate|investigating|probe|probing|verify|verifying)"
+    r"re-run|rerun|rerunning|investigate|investigating|probe|probing|verify|verifying|"
+    r"fire|firing|open|opening|stage|staging|audit|auditing|scan|scanning|"
+    r"sweep|sweeping|harvest|harvesting|read|reading|pull|pulling)"
 )
 
 _PROMISE_RE = re.compile(_FUTURE + r"\s+(?:now\s+)?" + _WORK_VERB + r"\b", re.IGNORECASE)
+
+#: Present-progressive announcement: "I'm dispatching it now", "I am launching it now".
+#: No future tense to hang on, so "now" is the anchor — a first-person present-progressive
+#: work verb close to an explicit "now" is the model describing the action as underway. The
+#: window is sentence-bounded, so a later "now" in another clause cannot manufacture a match.
+_ACT_NOW_RE = re.compile(
+    r"\b(?:i['’]m|i am)\s+(?:now\s+)?" + _WORK_VERB + r"\b[^.!?\n]{0,60}?\bnow\b",
+    re.IGNORECASE,
+)
 
 #: Bare announcements that carry no future tense but still promise work.
 _BARE_RE = re.compile(
@@ -114,11 +133,45 @@ def _sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?…])\s+", text.strip()) if s.strip()]
 
 
+def _paragraphs(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+
 def _tail_paragraph(text: str) -> str:
     """The final prose paragraph — the only zone a dangling promise can live in."""
-    zone = _prose_after_last_fence(text)
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", zone) if p.strip()]
+    paragraphs = _paragraphs(_prose_after_last_fence(text))
     return paragraphs[-1] if paragraphs else ""
+
+
+#: How many closing prose paragraphs the present-progressive ("I'm dispatching it now") scan
+#: reads. One is not enough: the announcement is routinely followed by a closing paragraph of
+#: commentary ("The next launch then tests one named hypothesis…"), which is what the recorded
+#: 2026-10-25 miss looked like. Still bounded, so an intention stated earlier in a long analysis
+#: stays untouched.
+_ACT_NOW_ZONE_PARAGRAPHS = 2
+
+
+def _act_now_commitment(text: str) -> str | None:
+    """The present-progressive announcement in the closing paragraphs, or None.
+
+    "I'm dispatching it now: …" claims the action is already underway. When the turn ends
+    there nothing was dispatched, so it is a promise in the present tense — invisible to the
+    future-tense sentence test, and invisible to the final-paragraph test whenever a closing
+    paragraph of commentary follows it.
+    """
+    paragraphs = _paragraphs(_prose_after_last_fence(text))
+    if not paragraphs:
+        return None
+    for paragraph in reversed(paragraphs[-_ACT_NOW_ZONE_PARAGRAPHS:]):
+        if _BLOCKER_RE.search(paragraph):
+            continue
+        for sentence in _sentences(paragraph):
+            if sentence.rstrip().endswith("?"):
+                continue
+            if _ACT_NOW_RE.search(sentence):
+                return sentence
+    return None
+
 
 
 def _sentence_containing(text: str, offset: int) -> str:
@@ -151,7 +204,9 @@ def looks_like_promise(text: str | None) -> bool:
     body = text.strip()
     if not body:
         return False
-    return bool(_PROMISE_RE.search(body) or _BARE_RE.search(body))
+    return bool(
+        _PROMISE_RE.search(body) or _BARE_RE.search(body) or _ACT_NOW_RE.search(body)
+    )
 
 
 def tail_commitment(text: str | None) -> str | None:
@@ -174,6 +229,9 @@ def tail_commitment(text: str | None) -> str | None:
         return None
     if _BLOCKER_RE.search(paragraph):
         return None
+    act_now = _act_now_commitment(text)
+    if act_now:
+        return act_now
     candidates = [last]
     if len(sentences) > 1 and len(last) <= _SHORT_LAST_SENTENCE:
         candidates.insert(0, sentences[-2])
