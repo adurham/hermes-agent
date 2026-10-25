@@ -8,7 +8,7 @@ service that didn't inherit ``~/.hermes/.env``) used to be dropped silently.
 
 import logging
 
-from agent import agent_init
+from agent import agent_init_memory_warnings as agent_init
 
 
 def test_warns_once_and_dedupes(caplog):

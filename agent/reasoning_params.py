@@ -193,7 +193,7 @@ class ReasoningParamsMixin:
         try:
             from hermes_cli.config import load_config_readonly
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- a config failure must fall back, not fail init
             # Log the class, never the config value or exception traceback.
             logging.getLogger("run_agent").warning(
                 "Agent configuration for model.reasoning_echo could not be loaded (%s); "

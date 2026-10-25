@@ -37,6 +37,9 @@ from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _config
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.agent_init_memory_warnings import (
+    _unavailable_warning_key, _warn_memory_provider_unavailable, _warn_once, _warned_unavailable_providers,
+)
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -50,45 +53,6 @@ from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
 logger = logging.getLogger("run_agent")
-
-
-# Deduped: the gateway builds a fresh AIAgent per message, so it would warn every turn.
-_warned_unavailable_providers: set[tuple[str, str]] = set()
-
-
-def _unavailable_warning_key(name: str) -> tuple[str, str]:
-    """Once per profile home and provider: one multiplexed gateway/Desktop backend serves several
-    profiles, and each one running without its memory must be told."""
-    from hermes_constants import get_hermes_home, hermes_home_key
-    return hermes_home_key(get_hermes_home()), name
-
-
-def _warn_once(name: str, message: str, say=None) -> None:
-    """Log *message* and hand it to the user's sink once per home and provider."""
-    key = _unavailable_warning_key(name)
-    if key in _warned_unavailable_providers:
-        return
-    _warned_unavailable_providers.add(key)
-    logger.warning(message)
-    if say is not None:
-        say(message)
-
-
-def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> None:
-    """Warn once per home and provider that a configured memory provider is unavailable.
-
-    ``is_available()`` is a side-effect-free hot-path check and can't log itself; without this
-    the provider is silently dropped. ``reason`` (the provider's ``unavailable_reason()`` hint)
-    can only reach the user here, so it is appended when present. *say* is the agent's
-    user-facing sink: a log line alone leaves the user running without memory unaware.
-    """
-    _warn_once(name, (
-        f"⚠ Memory provider {name!r} is selected but reports unavailable — external memory "
-        "is disabled for this session (built-in memory still works). Check the "
-        "provider's credentials/config with 'hermes memory status'. Note: "
-        "systemd/gateway services do not inherit ~/.hermes/.env automatically; set "
-        f"any required variables in the service environment.{f' {reason}' if reason else ''}"
-    ), say=say)
 
 
 def _provider_default_routes(provider: str) -> set[str]:
@@ -705,7 +669,7 @@ def _init_prompt_cache_config(agent):
             agent._use_native_cache_layout = False
             agent._cache_ttl = None
             agent._cache_disabled = True
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the class is logged
         # Config values and traceback frames may contain credentials.
         logger.warning(
             "Agent configuration for prompt_caching.cache_ttl could not be loaded (%s); "
@@ -2384,7 +2348,7 @@ def init_agent(
     try:
         from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the class is logged
         # Config exceptions may contain secrets; omit their message and traceback
         # even when a caller installs a non-redacting log handler.
         logger.warning(
