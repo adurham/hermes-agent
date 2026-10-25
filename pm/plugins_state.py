@@ -178,14 +178,14 @@ def _parked(plugin_dir: Path, config: dict[str, Any]) -> bool:
 def plugin_spellings(plugin_dir: Path, key: str | None = None) -> set[str]:
     """Every name a plugins list may use for this plugin: the selection key and its bare leaf, the
     directory name and the manifest ``name:``. Read from the plugin itself, so it holds in any home."""
-    import hermes_yaml
-    from ruamel.yaml.error import YAMLError
+    from pm.plugin_declarations import native_manifest_file, read_native_manifest
 
     names = {plugin_dir.name} | ({key, key.rsplit("/", 1)[-1]} if key else set())
     try:
-        manifest = hermes_yaml.safe_load((plugin_dir / "plugin.yaml").read_text(encoding="utf-8-sig")) or {}
-        names.add(str(manifest.get("name") or ""))
-    except (OSError, UnicodeError, YAMLError, AttributeError):
+        manifest_file = native_manifest_file(plugin_dir)
+        if manifest_file is not None:
+            names.add(str(read_native_manifest(manifest_file).get("name") or ""))
+    except ValueError:
         pass  # no readable manifest: the other spellings still hold
     names.discard("")
     return names

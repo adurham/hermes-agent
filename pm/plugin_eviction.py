@@ -144,16 +144,20 @@ def _prune_record(plugins) -> None:
 
 
 def recorded_evictions() -> list[Entry]:
-    """Plugins an earlier update disabled that their home still has disabled: retried each update."""
-    from pm.plugins_state import dependency_homes, read_home_selection
+    """Plugins an earlier update disabled that their home still has disabled: retried each update.
+    A provider-only record (never in plugins.enabled) is retried only while memory.provider still
+    names it, so a rejoin never installs a provider the user has since switched away from."""
+    from pm.plugins_state import dependency_homes, plugin_spellings, read_home_selection
     from pm.workspace import selected_plugin_dir
 
     entries: list[Entry] = []
     for home in dependency_homes():
         try:
-            plugins = (read_home_selection(home) or {}).get("plugins") or {}
+            selection = read_home_selection(home) or {}
         except ValueError:
             continue  # sync_evicting already reports an unreadable profile
+        plugins = selection.get("plugins") or {}
+        provider = str((selection.get("memory") or {}).get("provider") or "").strip()
         record, disabled = plugins.get(RECORD), plugins.get("disabled") or []
         for name in record if isinstance(record, dict) else ():
             if not isinstance(name, str) or name not in disabled:
@@ -162,7 +166,9 @@ def recorded_evictions() -> list[Entry]:
                 plugin_dir = selected_plugin_dir(home / "plugins", name)
             except InstallError:
                 continue  # a hand-edited key that names no plugin tree
-            if plugin_dir is not None:
+            earlier = record.get(name)
+            was_enabled = isinstance(earlier, dict) and bool(earlier.get("enabled"))
+            if plugin_dir is not None and (was_enabled or provider in plugin_spellings(plugin_dir, name)):
                 entries.append((home / "plugins", name, plugin_dir))
     return entries
 

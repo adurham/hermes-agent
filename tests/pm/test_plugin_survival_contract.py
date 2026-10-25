@@ -447,6 +447,22 @@ def test_plugin_the_user_disables_after_an_update_stays_disabled(admission_env):
     assert plugins["disabled"] == ["plug-b"] and "disabled_by_update" not in plugins
 
 
+def test_provider_only_record_is_retried_only_while_it_is_still_the_provider(admission_env):
+    """A provider an update parked that was never in plugins.enabled rejoins only as the provider:
+    once the user picks another provider, updates stop installing it (its rejoin would leave the
+    environment holding a plugin no selection names)."""
+    from pm.plugin_eviction import recorded_evictions
+
+    _, home = admission_env
+    (home / "plugins" / "parked").mkdir(parents=True)
+    record = "plugins:\n  disabled: [parked]\n  disabled_by_update:\n    parked: {enabled: false, reason: r}\n"
+    (home / "config.yaml").write_text(record + "memory:\n  provider: parked\n", encoding="utf-8")
+    assert [name for _, name, _ in recorded_evictions()] == ["parked"]
+
+    (home / "config.yaml").write_text(record + "memory:\n  provider: other\n", encoding="utf-8")
+    assert recorded_evictions() == []
+
+
 @pytest.mark.skipif(not _uv_available(), reason="uv not on PATH")
 def test_update_sync_disables_later_plugin_of_unresolvable_union(admission_env):
     """Core moved under two admitted plugins that no longer co-resolve: the update keeps the

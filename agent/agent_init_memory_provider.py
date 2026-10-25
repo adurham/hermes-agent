@@ -59,16 +59,11 @@ def resolve_memory_provider(name: str, say=None):
             return None
         # The provider left core for the catalog (or was never installed): fetch it once.
         from hermes_cli.memory_provider_migration import recover_at_startup
-        reported: list[str] = []
 
-        def relay(message: str) -> None:
-            reported.append(message)
-            if say is not None:
-                say(message)
-
-        if recover_at_startup(name, say=relay):
+        if recover_at_startup(name, say=say):
             provider = load_memory_provider(name)
-        if provider is None and not reported and find_provider_dir(name) is not None:
+        # Installed (now or before) yet still not loading: an install notice does not explain that.
+        if provider is None and find_provider_dir(name) is not None:
             _warn_once(name, f"⚠ Memory provider '{name}' is installed but failed to load, so external memory is off "
                              "for this session (built-in memory still works). The log names the error; "
                              "`hermes memory status` shows the plugin's state.", say=say)
