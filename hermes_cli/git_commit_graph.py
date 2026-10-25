@@ -196,12 +196,28 @@ def refresh_commit_graph(repo_root: str, git_dir: Path) -> None:
         logger.info("core.commitGraph=false in %s; not writing a commit-graph", repo_root)
         return
     # Object-store debris only: ``hermes -w`` runs this in whatever repo it was launched from, where
-    # index.lock / HEAD.lock belong to the user's own git (and pgrep can be blind to it).
+    # index.lock / HEAD.lock belong to the user's own git.
     clear_stale_object_store_locks(git_dir)
     clear_stale_tmp_packs(git_dir)
     logger.info("git commit-graph missing or stale — writing it in background")
-    if run_bounded_git(repo_root, _WRITE, _TIMEOUT, env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV}) == 0:
+    if run_bounded_git(repo_root, _WRITE, _TIMEOUT, env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV}) != 0:
+        return
+    # The stamp vouches for a graph on disk: a write another git undid (or whose files vanished)
+    # exits 0 too, and a stamp then would hold the retry off for a day with no graph at all.
+    if _graph_on_disk(git_dir):
         (git_dir / _FRESH_STAMP).touch()
+    else:
+        logger.info("git commit-graph write in %s exited 0 but left no graph (no commits yet?)", repo_root)
+
+
+def _graph_on_disk(git_dir: Path) -> bool:
+    """A split chain whose every layer file exists, or a monolithic graph."""
+    info = git_dir / "objects" / "info"
+    try:
+        layers = (info / "commit-graphs" / "commit-graph-chain").read_text(encoding="ascii").split()
+    except (OSError, UnicodeDecodeError):
+        return (info / "commit-graph").is_file()
+    return bool(layers) and all((info / "commit-graphs" / f"graph-{layer}.graph").is_file() for layer in layers)
 
 
 class _LogDirOnFailureHandler(logging.FileHandler):

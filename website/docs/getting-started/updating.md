@@ -323,7 +323,9 @@ stopped (asked to exit first, so git removes its own lock). A failed or stopped 
 repository it shares objects with. A repo with `core.commitGraph=false` in its own, your global or
 the system git config is left without a graph. A
 `commit-graph.lock` or `multi-pack-index.lock` that a killed git left behind is removed by the same
-stale-lock sweep as `index.lock` once it is 10 minutes old and no git is running; in a repo you
+stale-lock sweep as `index.lock` once it is 10 minutes old and no git process of any form (`git`,
+`git-commit-graph`, `git.exe`, ...) is running; when Hermes cannot list running processes, no lock is
+removed. In a repo you
 launch `hermes -w` from, only those object-store locks are swept, never `index.lock` or `HEAD.lock`.
 
 Each `hermes update` also spends at most 60 seconds cleaning those packs up, picking up where the

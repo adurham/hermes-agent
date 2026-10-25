@@ -27,6 +27,7 @@ import pytest
 from hermes_cli.gitlock import (
     LOCK_NAMES,
     STALE_LOCK_MIN_AGE_SECONDS,
+    _git_proc_running as _REAL_GIT_GUARD,
     clear_stale_git_locks,
 )
 
@@ -91,10 +92,18 @@ def test_clear_removes_all_stale_lock_kinds(repo: Path, no_git_running: None) ->
         assert not (repo / ".git" / name).exists()
 
 
-def test_graph_refresh_clears_object_store_debris_and_leaves_the_index_lock(repo: Path, no_git_running: None) -> None:
+def test_graph_refresh_clears_object_store_debris_and_leaves_the_index_lock(
+        repo: Path, no_git_running: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A killed graph/midx writer's lock fails every later write of that file (git: "File exists"). The
-    refresh also runs in whatever repo ``hermes -w`` started in, where index.lock is the user's git's."""
-    from hermes_cli.git_commit_graph import refresh_commit_graph
+    refresh also runs in whatever repo ``hermes -w`` started in, where index.lock is the user's git's.
+
+    An old lock is no proof its writer is dead (a stopped writer's lock ages too): while a git of any
+    form runs (git-core's dashed executables included), or when no process list can be read, every
+    lock stays, and a write that could not run leaves no freshness stamp."""
+    import sys
+
+    from hermes_cli import gitlock
+    from hermes_cli.git_commit_graph import _FRESH_STAMP, refresh_commit_graph
 
     git_dir = repo / ".git"
     debris = [git_dir / "objects" / rel for rel in (
@@ -109,6 +118,33 @@ def test_graph_refresh_clears_object_store_debris_and_leaves_the_index_lock(repo
     subprocess.run(["git", "commit-graph", "verify"], cwd=repo, check=True)
     # The install checkout's own sweep (every update) still takes it.
     assert clear_stale_git_locks(repo) == [str(git_dir / "index.lock")]
+
+    monkeypatch.setattr(gitlock, "_git_proc_running", _REAL_GIT_GUARD)
+    lock = git_dir / "objects" / "info" / "commit-graphs" / "commit-graph-chain.lock"
+    exec_path = Path(subprocess.run(["git", "--exec-path"], capture_output=True, text=True, check=True).stdout.strip())
+    dashed = next(exec_path.glob("git-cat-file*"), None)
+    if dashed is None:
+        pytest.skip("this git ships no dashed executables")
+    blind = tmp_path / "bin"  # git and nice only: no pgrep
+    blind.mkdir()
+    for tool in ("git", "nice"):
+        (blind / tool).symlink_to(shutil.which(tool))
+    for case in ("dashed git running", "no process list"):
+        # A commit the graph lacks, so the write needs its lock (with nothing new it touches nothing).
+        subprocess.run(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", "commit", "-q", "--allow-empty",
+                        "-m", case], cwd=repo, check=True)
+        _touch(lock, STALE_LOCK_MIN_AGE_SECONDS + 60)
+        (git_dir / _FRESH_STAMP).unlink(missing_ok=True)
+        if case == "dashed git running":
+            with subprocess.Popen([str(dashed), "--batch"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL) as live:
+                refresh_commit_graph(str(repo), git_dir)
+                live.communicate()
+        else:
+            monkeypatch.setitem(sys.modules, "psutil", None)
+            monkeypatch.setenv("PATH", str(blind))
+            refresh_commit_graph(str(repo), git_dir)
+        assert lock.exists(), case
+        assert not (git_dir / _FRESH_STAMP).exists(), case
 
 
 def test_clear_skips_sweep_while_git_running(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:

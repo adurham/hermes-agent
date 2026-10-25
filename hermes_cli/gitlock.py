@@ -51,25 +51,57 @@ _TMP_PACK_PREFIXES = ("tmp_pack_", "tmp_idx_", "tmp_rev_", "tmp_mtimes_", ".tmp-
 _TMP_GRAPH_PREFIX = "tmp_graph_"
 
 
-def _git_proc_running() -> bool:
-    """True when a ``git`` process is running — the check that stops us yanking a lock a live fetch holds.
+# pgrep's name pattern for every form git runs as: ``git``, the dashed executables it ships and
+# launches (git-core's ``git-commit-graph``, ``git-repack``; comm is cut to 15 chars), ``git.exe``.
+_PGREP_GIT = r"^git(-.*|\.exe)?$"
 
-    A failed probe logs and returns False; the age floor in the sweep still applies.
+
+def _git_proc_running() -> bool:
+    """Whether a git process may be running: the check that stops us yanking a lock a live git holds.
+
+    Fails closed: a probe that cannot tell (pgrep missing or failing, tasklist failing, a process
+    whose name psutil may not read) answers True and the sweep removes nothing. The age floor is
+    no proof on its own: a stopped or slow writer's lock ages like an abandoned one.
     """
+    if os.name != "nt":
+        try:
+            import psutil
+        except ImportError:  # the dependency-free bootstrap interpreter
+            pass
+        else:
+            return _psutil_git_running(psutil)
+    from hermes_cli._early_recovery import _git_program
+
     try:
         # One shared spawn for both probes: the argv is the platform fork, the
         # hide-flags wiring is common, so a console-less parent (pythonw backend)
         # never flashes a console for either (#117781).
-        argv = (["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"]
-                if os.name == "nt" else ["pgrep", "-x", "git"])
+        argv = ["tasklist", "/FO", "CSV", "/NH"] if os.name == "nt" else ["pgrep", _PGREP_GIT]
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                timeout=10, creationflags=windows_hide_flags(), check=False)
-        if os.name == "nt":
-            return "git.exe" in proc.stdout.lower()
-        return proc.returncode == 0
-    except Exception:
-        logger.debug("git process probe failed; assuming no git running", exc_info=True)
-        return False
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("git process probe failed; assuming git may be running", exc_info=True)
+        return True
+    if os.name == "nt":
+        return proc.returncode != 0 or any(
+            _git_program(line.split(",", 1)[0].strip('"')) for line in proc.stdout.splitlines())
+    return proc.returncode != 1  # 1 is pgrep's "no match"; 2 and 3 mean it could not tell
+
+
+def _psutil_git_running(psutil) -> bool:
+    from hermes_cli._early_recovery import _git_program
+
+    try:
+        for proc in psutil.process_iter():
+            try:
+                if _git_program(proc.name()) is not None:
+                    return True
+            except psutil.NoSuchProcess:  # exited between the listing and the read
+                continue
+    except Exception:  # health: allow BLE001 -- AccessDenied or a failed scan keeps the locks
+        logger.debug("git process scan failed; assuming git may be running", exc_info=True)
+        return True
+    return False
 
 
 def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, min_age_seconds: Optional[int],
