@@ -270,7 +270,12 @@ class TestDDGSSearchOnlyErrors:
         import asyncio
         from tools import web_tools
 
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
+        # Explicit fetch pin on a search-only vendor — a real misconfiguration (a search-only
+        # SHARED web.backend is no longer inherited by web_extract at all).
+        monkeypatch.setattr(
+            web_tools, "_load_web_config",
+            lambda: {"backend": "ddgs", "extract_backend": "ddgs"},
+        )
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         async def _allow_ssrf(_url: str) -> bool:

@@ -158,7 +158,12 @@ class TestBraveFreeSearchOnlyErrors:
         import asyncio
         from tools import web_tools
 
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
+        # An EXPLICIT fetch pin on a search-only vendor is a real misconfiguration and must surface.
+        # (A search-only SHARED web.backend no longer reaches the extract dispatcher at all.)
+        monkeypatch.setattr(
+            web_tools, "_load_web_config",
+            lambda: {"backend": "brave-free", "extract_backend": "brave-free"},
+        )
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         async def _allow_ssrf(_url: str) -> bool:

@@ -4,6 +4,39 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### Fix — 2026-10-25 (every `web_extract` failed: a search-only shared `web.backend` was inherited as the FETCH backend)
+
+Symptom: `✗ Fetch www.notebookcheck.net 1.7s [Brave Search (Free) is a search-only backend and cannot
+extract URL content. Set web.extract_backend to firecrawl, tavily, keenable, exa, or parallel.]` on every
+fetch, with `web.search_backend: brave-free` and `web.backend: brave-free` in config.
+
+Mechanism: `_get_search_backend` was split per-capability (#113017), but `_get_extract_backend()` still did
+`pin or _get_backend()`, so an unset `web.extract_backend` inherited the SHARED `web.backend` name verbatim.
+When that name is a registered search-only provider, `_resolve_extract_provider` (correctly) refuses it as a
+typed error — the registry's own capability filter never runs, because a name was handed to it. So a config
+that was right for search hard-failed every fetch, even with `web.keyless_fallback: true` and an
+extract-capable provider (plugin or keyless ring) available. `hermes tools` showed the same trap: the
+picker's `_web_serving_backends` claimed the shared vendor served extract too.
+
+Fix: `_get_extract_backend` now treats an INHERITED shared name as a search selection. If the shared
+provider is registered and `supports_extract()` is false, it resolves the extract capability
+(`get_active_extract_provider`: by_provider → capability filter → availability walk → keyless ring) and
+returns that name. Contract preserved elsewhere: an EXPLICIT `web.extract_backend: <search-only>` still
+returns the name so the strict "search-only backend" error surfaces (a real misconfiguration), and an
+unregistered shared name (typo) still reaches the unknown-provider diagnostic instead of being rerouted.
+`_web_serving_backends` applies the same filter so the picker stops highlighting a search-only shared
+vendor as the extract provider.
+
+Verified live on the default profile (`ollama-cloud` main provider, no extract vendor keys): search still
+`brave-free` (3 results), extract resolves `brave-free` → `ollama-cloud` (Ollama `/api/web_fetch`), fetched
+notebookcheck home (15,349 chars), a real T14 Gen 7 review page (15,387 chars), and arstechnica.com
+(8,044 chars) — the search-only refusal is unreachable for this config. Suites:
+`tests/tools/test_web_providers.py` (13), `test_web_providers_brave_free.py` (9), `test_web_providers_searxng.py`
+(13), `test_web_backend_capability_isolation.py` (3), `test_web_tools_config.py` (66),
+`test_web_managed_routing.py` (11) green; `test_web_picker_active_rows.py` 6 passed / 4 pre-existing
+home-io-guard failures (identical on the stashed baseline). Runs take effect for a NEW session — a live CLI
+or gateway process keeps the already-imported module.
+
 ### Promise-without-action gate widened to turns that END on a promise — 2026-10-24
 
 `agent/promise_gate.py` existed to re-prompt deepseek-v4.1-flash when it ends a turn by promising work

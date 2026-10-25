@@ -94,6 +94,52 @@ class TestPerCapabilityBackendSelection:
         assert web_tools._get_search_backend() == "keenable"
         assert web_tools._get_extract_backend() == "keenable"
 
+    def test_shared_search_only_backend_does_not_become_extract_backend(self, monkeypatch):
+        """A shared ``web.backend`` naming a search-only vendor is a SEARCH selection.
+
+        Inheriting it fed the extract dispatcher a backend it can only refuse
+        ("… is a search-only backend and cannot extract URL content"), so every fetch failed
+        on a config that was right for search. Extract must resolve a capable provider.
+        """
+        from tools import web_tools
+
+        class _SearchOnly:
+            name = "brave-free"
+            def supports_search(self): return True
+            def supports_extract(self): return False
+
+        class _Extractor:
+            name = "exa"
+            def supports_extract(self): return True
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "brave-free"})
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_registered_web_provider", lambda name: _SearchOnly())
+        monkeypatch.setattr(
+            web_tools, "_registry_call",
+            lambda func_name, default, *a: _Extractor() if func_name == "get_active_extract_provider" else default,
+        )
+        assert web_tools._get_extract_backend() == "exa"
+
+    def test_explicit_search_only_extract_pin_keeps_strict_selection(self, monkeypatch):
+        """An explicit ``web.extract_backend: <search-only>`` is a real misconfiguration and must surface."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "brave-free",
+            "extract_backend": "brave-free",
+        })
+        assert web_tools._get_extract_backend() == "brave-free"
+
+    def test_unregistered_shared_backend_keeps_strict_diagnostic(self, monkeypatch):
+        """A typo'd shared name is not silently rerouted: the dispatcher's unknown-provider error stands."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecralw"})
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(web_tools, "_registered_web_provider", lambda name: None)
+        assert web_tools._get_extract_backend() == "firecralw"
+
 
 # ---------------------------------------------------------------------------
 # Config key presence in DEFAULT_CONFIG

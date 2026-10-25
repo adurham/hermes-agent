@@ -228,9 +228,31 @@ def _provider_failed(response_data: object) -> bool:
 
 def _get_extract_backend() -> str:
     """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect.
-    A ``nous`` pin is managed Firecrawl; the client picks the gateway route for that capability."""
+    A ``nous`` pin is managed Firecrawl; the client picks the gateway route for that capability.
+
+    An INHERITED shared ``web.backend`` that names a *search-only* provider is a search selection, not a
+    fetch one. Returning it here fed the dispatcher a backend it can only refuse ("… is a search-only
+    backend and cannot extract URL content"), so every fetch hard-failed on a config that was correct for
+    search — even with an extract-capable vendor or the keyless tier available. Resolve the extract
+    capability instead. An EXPLICIT ``web.extract_backend`` naming a search-only provider keeps the strict
+    diagnostic: that one is a real misconfiguration and must surface.
+    """
     pin = _configured_backend("extract_backend")
-    return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin or _get_backend()
+    if pin == NOUS_MANAGED_PROVIDER:
+        return "firecrawl"
+    if pin:
+        return pin
+    shared = _get_backend()
+    _ensure_web_plugins_loaded()
+    provider = _registered_web_provider(shared)
+    if provider is not None and _probe(provider, "supports_extract") is False:
+        resolved = _registry_call("get_active_extract_provider", None)
+        name = getattr(resolved, "name", "") or ""
+        logger.debug(
+            "web.backend '%s' is search-only; web_extract resolves to '%s' instead", shared, name or "<none>"
+        )
+        return name
+    return shared
 
 
 def _ddgs_package_importable() -> bool:
