@@ -758,6 +758,32 @@ def test_a_picked_image_reads_back_from_the_host_for_an_ssh_profile(client, monk
     assert workspace.asked == [path for path in not_host_owned for _route in range(2)]
 
 
+def test_a_staged_text_preview_reads_back_from_the_host_for_an_ssh_profile(client, monkeypatch, tmp_path):
+    """A long paste or a picked text file is staged in the profile's uploads folder on this host,
+    even when its workspace is an SSH machine. Its chip previews it through /api/fs/read-text, so
+    that one host-owned file is read here, as /api/fs/read-data-url reads a staged image. A file in
+    the uploads folder the upload route did not name is still the SSH machine's to answer."""
+    _profile, workspace = _ssh_profiles(tmp_path, monkeypatch)
+    monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
+    remote_dev = {"profile": "remote-dev"}
+
+    staged = client.post("/api/chat/file-upload", params=remote_dev,
+                         files={"file": ("pasted.txt", b"pasted words", "text/plain")})
+    assert staged.status_code == 200, staged.text
+    staged_path = Path(staged.json()["path"])
+    unnamed = staged_path.parent / "pasted.txt"
+    unnamed.write_bytes(b"not staged")
+
+    preview = client.get("/api/fs/read-text", params={"path": str(staged_path), **remote_dev})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["text"] == "pasted words"
+    assert workspace.asked == []
+
+    not_host_owned = client.get("/api/fs/read-text", params={"path": str(unnamed), **remote_dev})
+    assert not_host_owned.status_code == 404, not_host_owned.text
+    assert workspace.asked == [str(unnamed)]
+
+
 @pytest.mark.platforms("posix")
 def test_a_link_staged_in_the_uploads_folder_is_not_read_from_the_host(client, monkeypatch, tmp_path):
     """A staged name that links to another host file resolves outside the uploads folder, so an

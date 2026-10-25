@@ -980,7 +980,8 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
 
 @router.get("/api/fs/read-text")
 async def fs_read_text(path: str, request: Request = None, profile: Optional[str] = None):
-    backend = await asyncio.to_thread(_fs_backend, profile)
+    # A staged paste or pick previews from this host, as read-data-url reads it back to send.
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
             data, size, target = await asyncio.to_thread(
