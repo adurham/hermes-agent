@@ -37,9 +37,7 @@ from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _config
 from agent.primary_runtime_snapshot import _snapshot_primary_runtime
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
-from agent.agent_init_memory_warnings import (
-    _unavailable_warning_key, _warn_memory_provider_unavailable, _warn_once, _warned_unavailable_providers,
-)
+from agent.agent_init_memory_provider import resolve_memory_provider
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
@@ -1325,27 +1323,10 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
-                from plugins.memory import load_memory_provider as _load_mem, parked_provider_notice
                 agent._memory_manager = _MemoryManager()
-                _mp = _load_mem(_mem_provider_name)
-                _parked = _mp is None and parked_provider_notice(_mem_provider_name)
-                if _parked:
-                    # Installed but turned off (by the user or by an update): say so, never re-install it.
-                    _warn_once(_mem_provider_name, _parked, say=agent._emit_startup_warning)
-                elif _mp is None:
-                    # The provider left core for the catalog (or was never installed): fetch it once.
-                    from hermes_cli.memory_provider_migration import recover_at_startup
-                    if recover_at_startup(_mem_provider_name, say=agent._emit_startup_warning):
-                        _mp = _load_mem(_mem_provider_name)
-                if _mp and _mp.is_available():
+                _mp = resolve_memory_provider(_mem_provider_name, say=agent._emit_startup_warning)
+                if _mp is not None:
                     agent._memory_manager.add_provider(_mp)
-                elif _mp is not None and _unavailable_warning_key(_mem_provider_name) not in _warned_unavailable_providers:
-                    # unavailable_reason() reads config/probes importlib — skip it once warned.
-                    _unavailable_reason = ""
-                    with suppress(Exception):
-                        _unavailable_reason = _mp.unavailable_reason()
-                    _warn_memory_provider_unavailable(
-                        _mem_provider_name, _unavailable_reason, say=agent._emit_startup_warning)
                 if agent._memory_manager.providers and agent._memory_manager.initialize_for_agent(
                         say=agent._emit_startup_warning, **_memory_provider_init_kwargs(agent, platform)):
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
