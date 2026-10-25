@@ -36,6 +36,10 @@ notebookcheck home (15,349 chars), a real T14 Gen 7 review page (15,387 chars), 
 `test_web_managed_routing.py` (11) green; `test_web_picker_active_rows.py` 6 passed / 4 pre-existing
 home-io-guard failures (identical on the stashed baseline). Runs take effect for a NEW session — a live CLI
 or gateway process keeps the already-imported module.
+Live config (default profile) also pins `web.extract_backend: ollama-cloud` — the operator's intent is
+brave-free for SEARCH, Ollama `/api/web_fetch` for FETCH — which is what `hermes config set` wrote; the code
+fix stands on its own and the pin just makes the intent explicit (and takes effect in already-running
+processes, since `load_config` invalidates on the file signature).
 
 ### Promise-without-action gate widened to turns that END on a promise — 2026-10-24
 
