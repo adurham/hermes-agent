@@ -115,7 +115,6 @@ def _make_execute_only_env(forward_env=None):
     env._snapshot_path = "/tmp/hermes-snap-test123.sh"
     env._cwd_file = "/tmp/hermes-cwd-test123.txt"
     env._cwd_marker = "__HERMES_CWD_test123__"
-    env._pipe_marker = "__HERMES_PIPE_test123__"
     env._snapshot_ready = True
     env._last_sync_time = None
     env._init_env_args = []

@@ -297,6 +297,9 @@ class BaseEnvironment(ABC):
     # through the active profile scope; other backends keep plain snapshots.
     _profile_scoped_passthrough: bool = False
 
+    # Per-session PIPESTATUS marker set in __init__; empty means the wrapper emits none.
+    _pipe_marker: str = ""
+
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
 
@@ -630,7 +633,7 @@ class BaseEnvironment(ABC):
         only when THIS command emitted a marker: a killed/timed-out command emits none and
         ``self.cwd`` keeps the previous value. The environment is shared across sessions, so
         concurrent callers must read ``result["cwd"]`` rather than ``self.cwd``."""
-        pipe_split = _split_cwd_marker(result.get("output", ""), self._pipe_marker)
+        pipe_split = _split_cwd_marker(result.get("output", ""), self._pipe_marker) if self._pipe_marker else None
         if pipe_split is not None:
             statuses, cleaned = pipe_split
             result["output"] = cleaned
