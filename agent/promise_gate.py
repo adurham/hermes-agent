@@ -100,6 +100,11 @@ def _prose_after_last_fence(text: str) -> str:
             if in_fence:
                 last_close = i
             in_fence = not in_fence
+    if in_fence:
+        # The reply ends INSIDE a fenced block (truncated output, a half-written snippet):
+        # the last thing said is code, not prose. A comment there ("# I'll build that later")
+        # is code, not a commitment.
+        return ""
     if last_close < 0:
         return text or ""
     return "\n".join(lines[last_close + 1:])

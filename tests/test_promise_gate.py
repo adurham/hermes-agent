@@ -192,6 +192,11 @@ class TestTailCommitment:
         ):
             assert tail_commitment(text) is not None, text
 
+    def test_reply_ending_inside_a_fenced_block_is_not_a_promise(self):
+        # Truncated output: the last thing said is code, and a comment there is not a commitment.
+        text = "Running the builder now.\n\n```python\ndef build():\n    # I'll build that offline later\n"
+        assert tail_commitment(text) is None
+
     def test_reply_ending_on_a_question_is_not_gated(self):
         text = "I'll build the chain next. Want me to start with the barrier gadget?"
         assert tail_commitment(text) is None
