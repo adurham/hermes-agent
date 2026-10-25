@@ -473,11 +473,16 @@ let
           the sealed Python venv. These are resolved by uv alongside core
           dependencies — no PYTHONPATH patching or collision risk.
 
+          They add to the groups `package` already ships (the default
+          package ships "messaging", "voice", "exa", ...); they never
+          replace them. For a smaller venv pick a smaller `package`
+          (`minimal`, `messaging`) or override its defaultDependencyGroups.
+
           Use this for optional extras already declared in hermes-agent's
-          pyproject.toml (e.g. "exa", "voice").
+          pyproject.toml (e.g. "google-meet").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
-        example = [ "voice" ];
+        example = [ "google-meet" ];
       };
 
       # ── Service behaviour ──────────────────────────────────────────────
