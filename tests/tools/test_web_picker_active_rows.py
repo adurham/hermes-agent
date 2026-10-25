@@ -46,6 +46,26 @@ def test_row_active_iff_it_serves_a_capability(web, active, inactive):
     assert _is_provider_active(_row("parallel", web_tier="free"), tiered) is False
 
 
+def test_shared_search_only_backend_serves_only_search(monkeypatch):
+    """A shared search-only ``web.backend`` is a SEARCH selection: the picker must not claim it
+    also serves extract (``_get_extract_backend`` resolves the extract capability instead)."""
+    from tools import web_tools
+
+    class _SearchOnly:
+        def supports_extract(self): return False
+
+    monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+    monkeypatch.setattr(
+        web_tools, "_registered_web_provider",
+        lambda name: _SearchOnly() if name == "brave-free" else None,
+    )
+    from hermes_cli.tools_config_providers import _web_serving_backends
+
+    assert _web_serving_backends({"web": {"search_backend": "keenable", "backend": "brave-free"}}) == {"keenable"}
+    # Alone, it still serves search.
+    assert _web_serving_backends({"web": {"backend": "brave-free"}}) == {"brave-free"}
+
+
 def test_managed_row_active_for_a_nous_capability_pin(monkeypatch):
     """``extract_backend: nous`` (Desktop "Use for Extract" on Nous Subscription): the managed row serves
     extract and must be active alongside the BYOK row serving search; a vendor-only config leaves it off."""

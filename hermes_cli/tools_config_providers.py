@@ -366,7 +366,12 @@ def _web_serving_backends(config: dict) -> set:
     """Backend names serving web search / extract as configured: each capability's own
     ``web.<cap>_backend`` override first, else the shared ``web.backend`` (``tools/web_tools.py``
     dispatch order; legacy ``use_gateway: true`` reads as the managed ``nous`` selection).
-    Lower-cased and stripped like the dispatchers."""
+    Lower-cased and stripped like the dispatchers.
+
+    A shared backend that is a registered SEARCH-ONLY provider does not serve extract —
+    ``_get_extract_backend`` resolves the extract capability instead of inheriting it, so the
+    picker must not claim that vendor serves both.
+    """
     raw_web_cfg = config.get("web")
     web_cfg = raw_web_cfg if isinstance(raw_web_cfg, dict) else {}
 
@@ -374,8 +379,25 @@ def _web_serving_backends(config: dict) -> set:
         value = web_cfg.get(key)
         return value.lower().strip() if isinstance(value, str) else ""
 
+    def _extract_capable(name: str) -> bool:
+        """False only for a REGISTERED provider that cannot extract; an unknown name keeps the old
+        'shared key serves both' reading so a typo still shows as the configured vendor."""
+        if not name:
+            return True
+        try:
+            from tools.web_tools import _ensure_web_plugins_loaded, _registered_web_provider
+
+            _ensure_web_plugins_loaded()
+            provider = _registered_web_provider(name)
+            return provider is None or bool(provider.supports_extract())
+        except Exception:
+            return True
+
     shared = NOUS_MANAGED_PROVIDER if is_truthy_value(web_cfg.get("use_gateway"), default=False) else _name("backend")
-    serving = {_name(key) or shared for key in ("search_backend", "extract_backend")}
+    serving = {_name("search_backend") or shared}
+    extract_backend = _name("extract_backend") or shared
+    if _extract_capable(extract_backend):
+        serving.add(extract_backend)
     serving.discard("")
     return serving
 
