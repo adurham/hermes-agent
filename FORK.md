@@ -40,6 +40,33 @@ Live config (default profile) also pins `web.extract_backend: ollama-cloud` — 
 brave-free for SEARCH, Ollama `/api/web_fetch` for FETCH — which is what `hermes config set` wrote; the code
 fix stands on its own and the pin just makes the intent explicit (and takes effect in already-running
 processes, since `load_config` invalidates on the file signature).
+### Promise gate reads present-progressive announcements in the closing paragraphs — 2026-10-25
+
+The 2026-10-24 widening gated tails that END on a future-tense commitment. It still could not fire on
+the shape the operator hit the next day: an acting turn whose reply says **"I'm dispatching it now: take
+the compat sysent table, …"** and then closes with a paragraph of commentary ("The next launch then tests
+one named hypothesis from that list…"). Two separate misses in that one reply:
+
+1. `_PROMISE_RE` requires a future construction (`I'll`, `I'm going to`, `let me`). "I'm dispatching" is
+   present progressive, so nothing matched even in the right paragraph.
+2. The zone was a single paragraph — the last one. The announcement sat in the paragraph ABOVE a closing
+   observation, so the tail scan never saw it.
+
+Recorded miss: session `local-1de66e45…`, msg 740570 (2026-10-25 11:29:09). The turn ran five tools and
+ended by saying it was dispatching the sysent candidate audit; nothing was dispatched, and the operator
+replied "ok you said you are dispatching it now but I see nothing".
+
+Now: `_ACT_NOW_RE` matches a first-person present-progressive work verb anchored on an explicit "now"
+inside one sentence, and `_act_now_commitment()` reads the closing **two** prose paragraphs (bounded, so
+an intention stated earlier in a long analysis is untouched). Same suppressors as the tail path: never
+when the reply ends on a question, never when the paragraph names an external blocker, never inside a
+truncated fence. `looks_like_promise()` also carries the shape, so a zero-tool turn announcing
+"I'm launching it now" gates through the whole-body path.
+
+Verified: the recorded reply is a regression fixture (`TestActNowCommitment.LIVE_REPLY`, verbatim);
+red on the previous gate (3 of the new tests fail), green with the fix; `tests/test_promise_gate.py`
+36/36, and `tests/agent/test_stall_guards.py` + `tests/agent/test_bare_toolcall_recovery.py` stay green
+(95/95 across the three files).
 
 ### Promise-without-action gate widened to turns that END on a promise — 2026-10-24
 
