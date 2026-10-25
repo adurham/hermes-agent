@@ -60,8 +60,8 @@ class StreamingWaitMonitor:
                     "reporting it as active, so the inactivity watchdog can end it. model=%s",
                     self._same_attempt_kills, attempt, self.api_kwargs.get("model", "unknown"))
             self._liveness_withheld_at = self.last_chunk_time["t"]
-        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
-        if self._claims_liveness():
+        if self._claims_liveness():  # the reconnect notice touches activity too (_emit_wait_notice)
+            self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
             self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
 
     def _forget_invisible_deltas(self, exc) -> bool:

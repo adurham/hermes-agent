@@ -189,9 +189,13 @@ def test_wedged_inline_call_stops_reporting_activity(wedged, monkeypatch, caplog
     monkeypatch.setattr(wedged, "_touch_activity", lambda desc, **kw: (touches.append(desc), real_touch(desc, **kw)))
     real_rearm = helpers._StreamingCall._rearm_or_abandon_after_kill
 
+    held_from = []  # len(touches) right after the kill that started the hold
+
     def _rearm(self, elapsed):
         calls.append(self)
         real_rearm(self, elapsed)
+        if self._liveness_withheld_at is not None and not held_from:
+            held_from.append(len(touches))
 
     monkeypatch.setattr(helpers._StreamingCall, "_rearm_or_abandon_after_kill", _rearm)
     with caplog.at_level("WARNING"):
@@ -199,6 +203,7 @@ def test_wedged_inline_call_stops_reporting_activity(wedged, monkeypatch, caplog
         caller.join(timeout=2.5)  # about 8 stale windows: well past the limit
         kills = _log_count(caplog, "Stream stale for")
         stale_touches = [t for t in touches if t.startswith("stale stream detected")]
+        after_hold = touches[held_from[0]:] if held_from else None
         call = calls[-1]
         before = len(touches)
         call._heartbeat(10)
@@ -208,6 +213,8 @@ def test_wedged_inline_call_stops_reporting_activity(wedged, monkeypatch, caplog
     assert caller.is_alive(), "an inline call runs on the caller's thread and is not abandoned"
     assert kills > 3
     assert len(stale_touches) == 2, f"kills past the limit still reported activity: {stale_touches}"
+    # Every activity path counts (the reconnect notice touches activity too), not only the kill's own touch.
+    assert after_hold == [], f"activity was still reported during the hold: {after_hold}"
     assert heartbeat_touches == 0, "the heartbeat kept reporting a wedged inline call as active"
     assert _log_count(caplog, "no longer reporting it as active") == 1
     assert _log_count(caplog, "abandoning the request") == 0
