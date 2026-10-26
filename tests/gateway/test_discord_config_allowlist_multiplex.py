@@ -74,8 +74,8 @@ def _thread():
 
 
 def test_button_click_in_a_thread_follows_the_thread_message_verdict(config_only_discord):
-    """Regression: #133213 checked every guild click as ``group``, so an allowlisted user who can
-    chat in a thread was told "This bot is private" when clicking Allow Once there."""
+    """Guard: a thread click is checked like the thread's messages, so an allowlisted user who can
+    chat in a thread is not told "This bot is private" when clicking Allow Once there."""
     from plugins.platforms.discord.adapter_component_auth import _component_check_auth
 
     _runner, adapter = _wire(config_only_discord)
@@ -90,9 +90,8 @@ def test_button_click_in_a_thread_follows_the_thread_message_verdict(config_only
 
 @pytest.mark.parametrize("user_id,expected", [(USER, True), (STRANGER, False)])
 def test_guild_channel_message_and_button_honor_config_allow_from(config_only_discord, user_id, expected):
-    """Regression: ``allow_from`` is Discord's only user allowlist, so it governs guild channels
-    too. The gateway's fallback read ``group_allow_from`` (Telegram's group-only key) for ``group``
-    sources and silently dropped the allowlisted user's channel messages and button clicks."""
+    """Guard: ``allow_from`` is Discord's only user allowlist, so it governs guild channels too:
+    the default bot admits the allowlisted user's channel messages and button clicks."""
     from plugins.platforms.discord.adapter_component_auth import _component_check_auth
 
     runner, adapter = _wire(config_only_discord)
@@ -133,9 +132,9 @@ def test_telegram_group_still_requires_group_allow_from(monkeypatch):
     assert runner._is_user_authorized(source("group")) is False
 
 
-def test_button_click_in_a_thread_resolves_a_thread_scoped_route(monkeypatch):
-    """A click carries the thread id, so a ``thread_id`` profile route matches it the same way it
-    matches the thread's messages: a user paired only in the routed profile can answer the card."""
+def test_button_click_in_a_thread_resolves_a_thread_scoped_route():
+    """A click carries the thread id, so the live verdict resolves a ``thread_id`` profile route
+    the same way the thread's messages do (here: the routed profile's pairing store)."""
     from agent import secret_scope
     from gateway.pairing import PairingStore
 
@@ -174,8 +173,8 @@ def test_secondary_profiles_own_bot_honors_its_config_allow_from_in_guild_channe
     """A profile running its own Discord bot keeps its allowlist in its own config.yaml.
 
     Under multiplex only the default profile's list reaches the env, so the guild-channel verdict for
-    the secondary's bot can come only from its adapter's ``allow_from`` (copied into
-    ``PlatformConfig.extra`` by the config loader), as its DMs already do.
+    the secondary's bot can come only from its adapter's ``allow_from`` (``PlatformConfig.extra``,
+    where the config loader puts it), as its DMs already do.
     """
     from agent import secret_scope
     from gateway.config import GatewayConfig, PlatformConfig
@@ -185,8 +184,6 @@ def test_secondary_profiles_own_bot_honors_its_config_allow_from_in_guild_channe
 
     home = Path(os.environ["HERMES_HOME"])
     (home / "profiles" / "kody").mkdir(parents=True)
-    (home / "profiles" / "kody" / "config.yaml").write_text(
-        f"discord:\n  require_mention: true\n  allow_from: {USER}\n", encoding="utf-8")
     (home / "profiles" / "kody" / ".env").write_text("DISCORD_BOT_TOKEN=kody-token\n", encoding="utf-8")
     (home / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
     (home / ".env").write_text("DISCORD_BOT_TOKEN=test-token\nDISCORD_ALLOWED_USERS=999\n", encoding="utf-8")
