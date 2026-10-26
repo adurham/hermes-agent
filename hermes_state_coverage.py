@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from agent.message_metadata import MESSAGE_UID, message_uid_or_none
+from agent.message_metadata import DB_ROW_SNAPSHOT, MESSAGE_UID, message_uid_or_none
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _parse_tool_calls
@@ -25,6 +25,19 @@ def _text_of(content: Any) -> str:
             str(part.get("text") or "") for part in content
             if isinstance(part, dict) and part.get("type") in {"text", "input_text", "output_text"})
     return ""
+
+
+def _holds_as_block(inner: str, outer: str) -> bool:
+    """True when *inner* sits in *outer* as whole lines: the compressor adds only whole blocks around a carried
+    row's text (header, markers, summary), so a hit that starts or ends mid-line is the row losing text instead.
+    Blanks beside the hit count as line edges: the load lens strips the stored text, never the copy inside."""
+    start = outer.find(inner)
+    while start != -1:
+        end = start + len(inner)
+        if not outer[:start].rpartition("\n")[2].strip() and not outer[end:].partition("\n")[0].strip():
+            return True
+        start = outer.find(inner, start + 1)
+    return False
 
 
 def _images_replaced(stored: Any, held: Any) -> bool:
@@ -74,8 +87,8 @@ class SessionCoverageMixin:
             return {}, set()
         by_row, by_uid, by_key, bare = self._index_held_dicts(compacted_messages)
         rows = conn.execute(
-            f"SELECT id, session_id, role, content, tool_call_id, tool_calls, timestamp, {MESSAGE_UID} FROM messages "
-            f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id", tail_ids,
+            # Every column: the rewritten-carry pass compares the row's version digest (DB_ROW_SNAPSHOT).
+            f"SELECT * FROM messages WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id", tail_ids,
         ).fetchall()
         identities = {
             int(row["id"]): self._row_identity(
@@ -157,7 +170,8 @@ class SessionCoverageMixin:
         """Second pass: the one unclaimed dict naming *row* (``_row_id`` with the row's uid, else its uid alone)
         whose different content the compressor's rewrite of that row explains; None means clone."""
         named = by_row.get(int(row["id"]))
-        if named is not None and named[2] == row_uid:
+        addressed = named is not None and named[2] == row_uid
+        if addressed:
             candidates = [named[0]]
         else:
             candidates = [index for index, _identity in by_uid.get(row_uid, ())]
@@ -165,15 +179,33 @@ class SessionCoverageMixin:
         if len(candidates) != 1:
             return None
         held = compacted_messages[candidates[0]]
-        if self._rewrite_explains(row, held):
+        if self._rewrite_explains(row, held, addressed):
             return candidates[0]
         return None
 
-    def _rewrite_explains(self, row, held: dict[str, Any]) -> bool:
+    @staticmethod
+    def _copy_of_current_row(row, held: dict[str, Any], addressed: bool) -> bool:
+        """Whether *held* was copied from *row*'s current version, so extra text in it is the compressor's.
+
+        Containment alone cannot tell "the compressor added text" from "the row lost text after the copy"
+        (an in-place edit that shortens it). The stored-row digest a flushed dict carries settles it: a
+        mismatch means the row was rewritten after the copy. Without a digest only a ``_row_id`` carry
+        qualifies (row-addressed loaders, e.g. a Desktop resume, omit the digest by design); a bare uid
+        copy may predate any number of rewrites, so it is cloned."""
+        snapshot = held.get(DB_ROW_SNAPSHOT)
+        if isinstance(snapshot, str):
+            # Runtime import avoids the transcript_repair -> hermes_state_messages module cycle.
+            from agent.transcript_repair import transcript_row_snapshot
+
+            return snapshot == transcript_row_snapshot(row)
+        return addressed
+
+    def _rewrite_explains(self, row, held: dict[str, Any], addressed: bool) -> bool:
         """True when *held* differs from stored *row* only the way the compressor rewrites a carry it keeps:
-        image parts replaced by text placeholders, or the row's text kept verbatim inside a longer text
-        (a summary merged in, prior-context header and markers around it). The summary flag alone is not
-        enough: a flagged copy taken before an in-place rewrite of the row would put the older text back."""
+        image parts replaced by text placeholders, or, for a copy of the row's current version, the row's
+        text kept verbatim as whole lines inside a longer text (a summary merged in, prior-context header and
+        markers around it). The summary flag alone is not enough: a flagged copy taken before an in-place
+        rewrite of the row would put the older text back."""
         role = row["role"]
         if (held.get("role"), held.get("tool_call_id") or None) != (role, row["tool_call_id"] or None):
             return False
@@ -183,8 +215,10 @@ class SessionCoverageMixin:
         content = self._loaded_view_content(role, held.get("content"))
         if _images_replaced(stored, content):
             return True
+        if not self._copy_of_current_row(row, held, addressed):
+            return False
         stored_text = _text_of(stored)
-        return bool(stored_text.strip()) and stored_text in _text_of(content)
+        return bool(stored_text.strip()) and _holds_as_block(stored_text, _text_of(content))
 
     @staticmethod
     def _uids_active_outside(conn, rows, tail_ids: list[int], named_uids) -> set[str]:

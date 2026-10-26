@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.message_metadata import RESTORED_FROM_STORE
+from agent.message_metadata import DB_ROW_SNAPSHOT, RESTORED_FROM_STORE
 from hermes_state import SessionDB
 
 SID = "sess1"
@@ -150,8 +150,37 @@ def _summary_merged_into_named_row(db: SessionDB) -> tuple:
     return [{**row, "content": merged, "_compressed_summary": True}], [merged]
 
 
+def _summary_merged_into_flushed_row(db: SessionDB) -> tuple:
+    """The compressor merged the summary into its copy of a flushed dict whose digest still matches the row; the
+    load lens strips the row's padding, the copy inside the merge keeps it."""
+    flushed = {"role": "user", "content": "  steer during the summary call"}
+    db.append_messages_batch(SID, [flushed])
+    merged = f"[prior]\n{flushed['content']}\n\n{SUMMARY_TEXT}"
+    return [{**flushed, "content": merged, "_compressed_summary": True}], [merged]
+
+
+def _row_shortened_after_flushed_hold(label: str, before: str, after: str, *drop: str):
+    """The compressor copied the flushed dict (row id, uid, stored-row digest; minus *drop*), then an in-place
+    edit SHORTENED the row: its new text sits inside the older copy, which must not stand for it."""
+    def build(db: SessionDB) -> tuple:
+        flushed = {"role": "user", "content": before}
+        db.append_messages_batch(SID, [flushed])
+        held = {key: value for key, value in flushed.items() if key not in drop}
+        db.set_user_message_content(SID, flushed["_row_id"], after)
+        return [_summary(), held], [SUMMARY_TEXT, before, after]
+    build.__name__ = f"shortened_{label}"
+    return build
+
+
 @pytest.mark.parametrize("build", [
-    _row_rewritten_after_hold, _edit_reinserted_with_its_uid, _summary_merged_into_named_row])
+    _row_rewritten_after_hold, _edit_reinserted_with_its_uid, _summary_merged_into_named_row,
+    _summary_merged_into_flushed_row,
+    _row_shortened_after_flushed_hold("suffix", "fix bug in parser", "fix bug"),
+    _row_shortened_after_flushed_hold("instruction", "yes, but first delete the prod database", "yes"),
+    _row_shortened_after_flushed_hold("line_digest", "fix bug\nthen drop the prod table", "fix bug"),
+    _row_shortened_after_flushed_hold(
+        "line_uid_only", "fix bug\nthen drop the prod table", "fix bug", "_row_id", DB_ROW_SNAPSHOT),
+], ids=lambda build: build.__name__)
 def test_a_rewritten_carry_claims_only_what_the_compressor_rewrote(db: SessionDB, build) -> None:
     """A held copy whose content differs from its tail row stands for that row only when the compressor's own
     rewrite explains the difference: the model never ends up on an older copy or on two copies of one
