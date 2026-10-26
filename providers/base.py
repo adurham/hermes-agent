@@ -162,7 +162,7 @@ class ProviderProfile:
     env_vars: tuple = ()
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
-    auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|external_process|aws_sdk|plugin-defined
     # None preserves transport defaults (external-process clients default to non-streaming).
     # True opts a streaming-capable process client in; False disables streaming for this provider.
     supports_streaming: bool | None = field(default=None, kw_only=True)
@@ -508,7 +508,7 @@ class ProviderProfile:
         This is the hook that lets a provider ship *outside* this tree: with it,
         a profile registered from ``~/.hermes/plugins/model-providers/`` or a
         pip entry point can supply its own transport without any core edit. See
-        ``plugins/model-providers/copilot-acp/`` for the in-tree example.
+        ``website/docs/developer-guide/model-provider-plugin.md``.
         """
         return None
 

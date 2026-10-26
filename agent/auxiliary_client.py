@@ -3781,12 +3781,9 @@ def _prepare_same_provider_retry(
         extra_body=effective_extra_body, reasoning_config=reasoning_config,
         base_url=retry_base or resolved_base_url, task=task,
     )
-    # Preserve per-request attribution headers (e.g. Copilot ``x-initiator``) so the retry keeps capability gating.
+    # Preserve per-request attribution headers (a profile's ``request_headers``) across the rebuilt-client
+    # retry: dropping them would let a recovery retry silently lose capability gating (#60293).
     if extra_headers:
-        # Copilot's ``x-initiator: user``) across the rebuilt-client retry — dropping them here would let a
-        # recovery retry silently lose capability gating (#60293).
-        # Preserve per-request attribution headers across the rebuilt-client retry — see the sync variant
-        # above (#60293).
         retry_kwargs["extra_headers"] = dict(extra_headers)
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
@@ -4699,7 +4696,7 @@ def _effective_provider_for_client(client: Any, fallback: str) -> str:
 
 
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
-    """Sync client → async counterpart, preserving Codex routing (``is_vision`` adds the Copilot vision header)."""
+    """Sync client → async counterpart, preserving Codex routing (``is_vision`` keeps the endpoint's vision headers)."""
     from openai import AsyncOpenAI
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
@@ -6106,30 +6103,29 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
 
 
 def _builtin_provider_present(name: str) -> bool:
-    """Look up *name* in the built-in provider registry, returning False
-    (not raising) when the catalog fails to load.
-
-    Used by ``_preserve_provider_with_base_url`` so a built-in lookup
-    exception cannot suppress the parallel user-defined provider lookup
-    (#76602).
-    """
+    """*name* is a built-in provider. Never raises, so a failing catalog cannot suppress the parallel
+    user-defined lookup in ``_preserve_provider_with_base_url`` (#76602)."""
     try:
         from hermes_cli.providers import get_provider
 
         return get_provider(name) is not None
     except Exception:
-        # Keep the high-risk provider-backed routes safe even if provider
-        # catalog loading is unavailable during early import/test paths.
-        return name in {
-            "anthropic",
-            "copilot",
-            "copilot-acp",
-            "minimax-oauth",
-            "nous",
-            "openai-codex",
-            "qwen-oauth",
-            "xai-oauth",
-        }
+        # Catalog unavailable (early import/test paths): still keep the high-risk provider-backed routes.
+        return (name in {"anthropic", "minimax-oauth", "nous", "openai-codex", "qwen-oauth", "xai-oauth"}
+                or _profile_credentials_bypass_custom(name))
+
+
+def _profile_credentials_bypass_custom(name: str) -> bool:
+    """A profile (canonical name) whose credentials ``custom`` cannot carry: ambient, or an external process's."""
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(name)
+    except Exception:
+        logger.debug("provider profile lookup for %s failed", name, exc_info=True)
+        return False
+    return profile is not None and profile.name == name and (
+        profile.ambient_credentials or profile.auth_type == "external_process")
 
 
 def _named_custom_provider_present(name: str) -> bool:
