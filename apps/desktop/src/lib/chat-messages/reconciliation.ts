@@ -593,6 +593,17 @@ export function preserveLocalAssistantErrors(
 }
 
 /**
+ * A transcript line only this window drew, never stored: every renderer-made
+ * `system` row (slash output and the /btw and /bg echoes, the btw.complete and
+ * background.complete answers, fallback-switch, deferred-compress,
+ * approval-timeout and self-improvement review notices). A stored row owns a
+ * `rowId`, so no page read can bring one of these back.
+ */
+export function isLocalSystemNotice(message: ChatMessage): boolean {
+  return message.role === 'system' && message.rowId === undefined
+}
+
+/**
  * Re-graft trailing client-local `system` notices (the fallback-switch notice
  * from status.update): refreshes rebuild from stored rows, which never carry
  * them, so the notice vanished on the next refresh (#126422). Stored rows own
@@ -608,7 +619,7 @@ export function preserveLocalSystemNotices(nextMessages: ChatMessage[], currentM
       break
     }
 
-    if (message.rowId === undefined) {
+    if (isLocalSystemNotice(message)) {
       trailing.unshift(message)
     }
   }

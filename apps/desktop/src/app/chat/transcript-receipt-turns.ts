@@ -16,13 +16,15 @@
  * The page is one contiguous run of the newest stored rows, so a page that
  * holds the turn's first row and reaches its last row holds the whole turn.
  * The window's rows from that prompt to the receipt bubble are then the live
- * copy of rows the page carries, and only the page's copy is kept.
+ * copy of rows the page carries, and only the page's copy is kept. A local
+ * notice drawn between them (see `isLocalSystemNotice`) is no row of the turn
+ * and is never dropped.
  */
 
 import type { PersistedTurn } from '@hermes/shared'
 
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, isLocalSystemNotice } from '@/lib/chat-messages'
 
 const isRowId = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value > 0
@@ -80,6 +82,12 @@ function receiptTurnIndices(window: ChatMessage[], end: number, pageRows: Set<nu
   const indices: number[] = []
 
   for (let index = start; index <= end; index += 1) {
+    // A notice this window drew mid-turn (a /btw answer, a fallback switch) is
+    // not a row of the turn: the page cannot carry it, so it stays.
+    if (isLocalSystemNotice(window[index])) {
+      continue
+    }
+
     const ids = transcriptRowIds(window[index])
 
     // A row that carries a stored id outside the turn is not this turn's copy:
