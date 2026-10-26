@@ -909,7 +909,7 @@ def _watch_supervisor(proc) -> None:
     try:
         # health: allow HX012 -- the thread waitpid()s one child and touches only process-global supervisor state
         threading.Thread(target=wait_then_restart, name="owner-death-supervisor-waiter", daemon=True).start()
-    except Exception:
+    except RuntimeError:  # "can't start new thread" (thread limit, interpreter shutdown)
         # The supervisor still works; it is left a zombie until we exit and is not restarted if killed.
         logger.debug("Could not start the owner-death supervisor's waiter", exc_info=True)
 
@@ -938,7 +938,7 @@ def _release_when_idle_locked(proc) -> None:
         _idle_release = threading.Timer(_SUPERVISOR_IDLE_EXIT_S, release)
         _idle_release.daemon = True
         _idle_release.start()
-    except Exception:
+    except RuntimeError:
         # No thread for the grace (thread limit, interpreter shutdown): release at once, as before the
         # grace existed. Losing the grace must never fail the live child this call is about.
         _idle_release = None
