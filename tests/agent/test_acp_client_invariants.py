@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -303,6 +304,36 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
         with client._session(30):
             pass
 
+
+_STDIN_CLOSING_ACP_CLI = """import os, sys, time
+os.close(0)  # stops reading: the client's first write hits a closed pipe
+open(sys.argv[1], "w").close()
+time.sleep(0.3)
+print('fatal: agent cannot start', file=sys.stderr)
+sys.exit(2)
+"""
+
+
+def test_cli_that_stops_reading_is_reported_with_its_exit_text(tmp_path):
+    """A CLI dying before it reads the first request: the write raised a bare BrokenPipeError, so the
+    user never saw the CLI's own crash text (and the error read as a client bug)."""
+    server = tmp_path / "stdin_closing_acp.py"
+    server.write_text(_STDIN_CLOSING_ACP_CLI, encoding="utf-8")
+    closed = tmp_path / "stdin-closed"
+    client = _AcmeClient(command=sys.executable, args=[str(server), str(closed)], acp_cwd=str(tmp_path))
+    real_spawn = client._spawn
+
+    def spawn_then_wait_for_the_close():
+        proc = real_spawn()
+        deadline = time.monotonic() + 30
+        while not closed.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return proc
+
+    client._spawn = spawn_then_wait_for_the_close
+    with pytest.raises(RuntimeError, match="exited early: fatal: agent cannot start"):
+        with client._session(30):
+            pass
 
 def test_model_discovery_does_not_allow_file_requests(tmp_path):
     """``list_models`` opens a session only to read the catalog: an fs request on that path is refused."""

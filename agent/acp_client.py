@@ -451,8 +451,12 @@ class ACPClient:
         def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None,
                      reasoning_parts: list[str] | None = None) -> Any:
             request_id = next(request_ids)
-            proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
-            proc.stdin.flush()
+            try:
+                proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
+                proc.stdin.flush()
+            except BrokenPipeError:  # the CLI stopped reading (dying): report its exit text, not a bare EPIPE
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=5)
             deadline = session_deadline
             while time.monotonic() < deadline and proc.poll() is None:
                 try:
