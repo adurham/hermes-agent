@@ -9,6 +9,10 @@ from hermes_cli.model_switch import list_authenticated_providers
 from hermes_cli import model_switch_providers
 from hermes_cli import models
 from hermes_cli.models import provider_model_ids
+import providers as _providers
+
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (catalog module)
+from plugins.model_providers.copilot import catalog as copilot_catalog
 
 
 @patch.dict(os.environ, {"GH_TOKEN": "test-key"}, clear=False)
@@ -16,8 +20,8 @@ def test_copilot_picker_uses_live_catalog_when_available():
     live_models = ["gpt-5.4", "claude-sonnet-4.6", "gemini-3.1-pro-preview"]
 
     with patch("agent.models_dev.fetch_models_dev", return_value={}), \
-         patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
-         patch("hermes_cli.models._fetch_github_models", return_value=live_models):
+         patch.object(copilot_catalog, "_resolve_copilot_catalog_api_key", return_value="gh-token"), \
+         patch.object(copilot_catalog, "_fetch_github_models", return_value=live_models):
         providers = list_authenticated_providers(current_provider="openrouter", max_models=50)
 
     copilot = next((p for p in providers if p["slug"] == "copilot"), None)
@@ -61,8 +65,8 @@ def test_copilot_acp_listed_when_executable_resolves(tmp_path, monkeypatch, _no_
     monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", str(fake))
 
     with patch("agent.models_dev.fetch_models_dev", return_value={}), \
-         patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=None), \
-         patch("hermes_cli.models._fetch_github_models", return_value=[]):
+         patch.object(copilot_catalog, "_resolve_copilot_catalog_api_key", return_value=None), \
+         patch.object(copilot_catalog, "_fetch_github_models", return_value=[]):
         providers = list_authenticated_providers(current_provider="openrouter", max_models=50)
 
     acp = next((p for p in providers if p["slug"] == "copilot-acp"), None)
@@ -79,8 +83,8 @@ def test_copilot_acp_hidden_when_executable_missing(monkeypatch, _no_other_copil
     monkeypatch.setattr(auth.shutil, "which", lambda *_a, **_k: None)
 
     with patch("agent.models_dev.fetch_models_dev", return_value={}), \
-         patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=None), \
-         patch("hermes_cli.models._fetch_github_models", return_value=[]):
+         patch.object(copilot_catalog, "_resolve_copilot_catalog_api_key", return_value=None), \
+         patch.object(copilot_catalog, "_fetch_github_models", return_value=[]):
         providers = list_authenticated_providers(current_provider="openrouter", max_models=50)
 
     assert all(p["slug"] != "copilot-acp" for p in providers), \
@@ -90,12 +94,21 @@ def test_copilot_acp_hidden_when_executable_missing(monkeypatch, _no_other_copil
 _ACP_CREDS = {"api_key": "copilot-acp", "base_url": "acp://copilot", "command": "copilot", "args": ["--acp", "--stdio"]}
 
 
+def _acp_catalog():
+    import providers
+
+    providers.get_provider_profile("copilot-acp")  # discovery imports the bundled plugin package
+    from plugins.model_providers.copilot_acp import catalog
+
+    return catalog
+
+
 @pytest.fixture()
 def _fresh_acp_memo(monkeypatch):
-    monkeypatch.setattr(models, "_copilot_acp_session_memo", None)
+    monkeypatch.setattr(_acp_catalog(), "_session_memo", None)
     yield
     # Don't leak a memoized (possibly failed) probe into other tests in this process.
-    monkeypatch.setattr(models, "_copilot_acp_session_memo", None)
+    monkeypatch.setattr(_acp_catalog(), "_session_memo", None)
 
 
 def _copilot_acp_client():
@@ -121,8 +134,8 @@ def test_copilot_acp_catalog_prefers_authenticated_session(
         _fresh_acp_memo, session_probe, github_token, github_models, expected):
     with patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value=_ACP_CREDS), \
          patch.object(_copilot_acp_client(), "list_models", **session_probe) as list_models, \
-         patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=github_token), \
-         patch("hermes_cli.models._fetch_github_models", return_value=github_models) as github:
+         patch.object(copilot_catalog, "_resolve_copilot_catalog_api_key", return_value=github_token), \
+         patch.object(copilot_catalog, "_fetch_github_models", return_value=github_models) as github:
         assert provider_model_ids("copilot-acp", force_refresh=True) == expected
 
     list_models.assert_called_once()
@@ -136,18 +149,18 @@ def test_copilot_acp_session_probe_is_memoized_across_model_switch_validation(_f
 
     with patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value=_ACP_CREDS), \
          patch.object(_copilot_acp_client(), "list_models", return_value=["gpt-5.6-terra"]) as list_models, \
-         patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=""), \
-         patch("hermes_cli.models._fetch_github_models", return_value=[]):
+         patch.object(copilot_catalog, "_resolve_copilot_catalog_api_key", return_value=""), \
+         patch.object(copilot_catalog, "_fetch_github_models", return_value=[]):
         for _ in range(3):
             verdict = validate_requested_model("gpt-5.6-terra", "copilot-acp", api_key="copilot-acp", base_url="acp://copilot")
             assert verdict["accepted"] and verdict["recognized"]
     assert list_models.call_count == 1
 
-    models._copilot_acp_session_memo = None  # (teardown in _fresh_acp_memo restores it)
+    _acp_catalog()._session_memo = None  # (teardown in _fresh_acp_memo restores it)
     with patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value=_ACP_CREDS), \
          patch.object(_copilot_acp_client(), "list_models", side_effect=RuntimeError("not signed in")) as list_models, \
-         patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=""), \
-         patch("hermes_cli.models._fetch_github_models", return_value=[]):
+         patch.object(copilot_catalog, "_resolve_copilot_catalog_api_key", return_value=""), \
+         patch.object(copilot_catalog, "_fetch_github_models", return_value=[]):
         for _ in range(3):
             provider_model_ids("copilot-acp")
     assert list_models.call_count == 1

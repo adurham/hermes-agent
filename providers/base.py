@@ -688,3 +688,24 @@ class ProviderProfile:
     def replays_function_thought_signature(self, *, model: str | None, base_url: str) -> bool:
         """True when replayed tool calls keep ``function.thought_signature`` (stripped everywhere else)."""
         return False
+
+    # --- I2-cat: provider-owned catalog sources ---
+    # ``picker_catalog(force_refresh) -> list | None``: the provider's own model-picker catalog (own
+    # credential lookup, live fetch, curated fallback); set = a live source, tried before the generic
+    # profile fetch like a built-in per-provider fetcher. None return falls through to that path.
+    picker_catalog: Callable[[bool], Any] | None = field(default=None, kw_only=True)
+    # Curated ids registered as this provider's row of core's static catalog (model detection,
+    # defaults, validation) the way a built-in provider's curated list is; empty = no row.
+    static_models: tuple = field(default=(), kw_only=True)
+    # Credential files (``~`` allowed) whose mtime is folded into every cached catalog's fingerprint.
+    catalog_credential_files: tuple = field(default=(), kw_only=True)
+
+    def probe_models(
+        self, *, base_url: str, api_key: str | None = None, timeout: float = 5.0,
+    ) -> tuple[list[str] | None, str, str] | None:
+        """``(model ids or None, probed_url, resolved_base_url)`` for a ``/models`` probe of *base_url*
+        this provider answers from its own catalog; None = the generic HTTP probe."""
+        return None
+
+    def invalidate_catalog_cache(self) -> None:
+        """Drop in-process catalog memos (``/model --refresh``); default none."""

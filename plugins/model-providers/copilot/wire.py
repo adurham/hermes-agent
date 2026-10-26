@@ -35,7 +35,7 @@ def model_api_mode(
     """API mode for a Copilot model from the id pattern (opencode's approach). Copilot's Claude models
     go through its OpenAI-compatible chat endpoint, not the native Anthropic adapter: the catalog may
     advertise /v1/messages but the Copilot token/header scheme lives in the OpenAI client path."""
-    from hermes_cli.models import fetch_github_model_catalog, normalize_copilot_model_id
+    from .catalog import fetch_github_model_catalog, normalize_copilot_model_id
 
     if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
         catalog = fetch_github_model_catalog(api_key=api_key)

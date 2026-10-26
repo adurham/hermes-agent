@@ -43,15 +43,18 @@ def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
     expected_mode,
 ):
     """The public resolver must propagate the target through every auth path."""
-    from hermes_cli import models
+    import providers
     from hermes_cli import runtime_provider as rp
+
+    providers.get_provider_profile("copilot")  # imports the copilot plugin package (catalog module)
+    from plugins.model_providers.copilot import catalog as copilot_catalog
 
     model_cfg = {"provider": "copilot", "default": configured_model}
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
     monkeypatch.setattr(rp, "resolve_provider", lambda *_args, **_kwargs: "copilot")
     # Keep this a real Copilot model_api_mode decision without making a live
     # catalog request. The API-mode contract is determined by the model family.
-    monkeypatch.setattr(models, "fetch_github_model_catalog", lambda **_kwargs: [])
+    monkeypatch.setattr(copilot_catalog, "fetch_github_model_catalog", lambda **_kwargs: [])
 
     kwargs = {"requested": "copilot", "target_model": target_model}
     if credential_source == "pool":

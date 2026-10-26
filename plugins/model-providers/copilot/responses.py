@@ -38,7 +38,7 @@ class CopilotResponsesMixin:
     """Endpoint ownership, catalog-clamped reasoning payloads and the ``/chat/completions`` carriers."""
 
     def reasoning_payload(self, model: str | None, reasoning_config: dict | None, *, base_url: str) -> dict | None:
-        from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
+        from .catalog import clamp_github_reasoning_effort, github_model_reasoning_efforts
 
         supported = github_model_reasoning_efforts(model)
         if not supported:

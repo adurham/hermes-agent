@@ -10,7 +10,7 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
-from .catalog import HOSTNAMES, METADATA_HOSTNAMES, MODELS_DEV_ID, CopilotCatalogMixin
+from .catalog import CATALOG_FIELDS, HOSTNAMES, METADATA_HOSTNAMES, MODELS_DEV_ID, CopilotCatalogMixin
 from .credentials import CopilotCredentialsMixin
 from .responses import RESPONSES_PROFILE_FIELDS, CopilotResponsesMixin
 from .setup import SETUP_FIELDS
@@ -27,7 +27,7 @@ class CopilotProfile(CopilotWireMixin, CopilotResponsesMixin, CopilotCatalogMixi
         if not (supports_reasoning and model):
             return {}, {}
         try:
-            from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
+            from .catalog import clamp_github_reasoning_effort, github_model_reasoning_efforts
 
             supported = github_model_reasoning_efforts(model)
             if not supported:
@@ -45,7 +45,7 @@ copilot = CopilotProfile(
     name="copilot", aliases=("github-copilot", "github-models", "github-model", "github"),
     env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), base_url="https://api.githubcopilot.com",
     auth_type="copilot", ambient_credentials=True, **RESPONSES_PROFILE_FIELDS, **SETUP_FIELDS,
-    hostnames=HOSTNAMES, metadata_hostnames=METADATA_HOSTNAMES, models_dev_id=MODELS_DEV_ID,
+    hostnames=HOSTNAMES, metadata_hostnames=METADATA_HOSTNAMES, models_dev_id=MODELS_DEV_ID, **CATALOG_FIELDS,
 )
 
 register_provider(copilot)

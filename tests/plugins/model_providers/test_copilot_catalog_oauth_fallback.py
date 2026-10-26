@@ -12,10 +12,10 @@ credential pool.
 
 from unittest.mock import patch
 
-from hermes_cli.models import _resolve_copilot_catalog_api_key
 import providers as _providers
 _providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
 from plugins.model_providers.copilot import credentials as copilot_credentials
+from plugins.model_providers.copilot.catalog import _resolve_copilot_catalog_api_key
 
 
 class TestCopilotCatalogApiKeyResolution:

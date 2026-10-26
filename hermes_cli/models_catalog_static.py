@@ -145,7 +145,7 @@ def _xai_curated_models() -> list[str]:
     return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
 
 
-# Native OpenAI Chat Completions (api.openai.com); also the head of the Copilot list.
+# Native OpenAI Chat Completions (api.openai.com).
 _OPENAI_CHAT_MODELS = [
     "gpt-5.4", "gpt-5.4-mini", "gpt-5-mini", "gpt-5.3-codex", "gpt-5.2-codex", "gpt-4.1", "gpt-4o", "gpt-4o-mini",
 ]
@@ -184,11 +184,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "openai-codex": _codex_curated_models(),
     "xai-oauth": list(_XAI_MODELS),
-    "copilot-acp": ["copilot-acp"],
-    "copilot": _OPENAI_CHAT_MODELS + [
-        "claude-sonnet-4.6", "claude-sonnet-5", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5",
-        "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro",
-    ],
     "gemini": [
         # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
         "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
@@ -406,6 +401,8 @@ def sync_plugin_provider_catalog() -> int:
         return 0
     added = 0
     for pp in profiles:
+        if pp.static_models:
+            _PROVIDER_MODELS.setdefault(pp.name, list(pp.static_models))
         if not _plugin_provider_enters_picker(pp):
             continue
         label = pp.display_name or pp.name
@@ -582,7 +579,7 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "openc
 
 # Models supporting OpenAI Priority Processing (service_tier="priority"; see
 # openai.com/api-priority-processing). Pattern-based: any OpenAI flagship (gpt-*, o1*, o3*, o4*).
-# Non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies) strip service_tier, so false
+# Non-OpenAI endpoints (OpenRouter/opencode-zen and other proxies) strip service_tier, so false
 # positives are harmless. Codex-series models are excluded — the Codex Responses API doesn't
 # expose service_tier.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
@@ -597,32 +594,11 @@ _OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-so
 # and the gateway /model picker. DELIBERATELY EXCLUDED: "openrouter" (curated list is a hand-picked
 # agentic subset of 400+ models — merging would dump everything), "nous" (curated list + Portal
 # /models are the subscription-tier source of truth), and providers with dedicated live-endpoint
-# branches (copilot, anthropic, ai-gateway, ollama-cloud, custom, stepfun, openai-codex).
+# branches or a profile catalog hook (anthropic, ai-gateway, ollama-cloud, custom, stepfun, openai-codex).
 _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "opencode-go", "opencode-zen", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
     "perplexity", "groq", "nvidia", "huggingface", "zai", "gemini", "google", "xai", "xai-oauth",
 })
-
-
-# OpenRouter-style ids -> Copilot ids. Dash-notation Claude ids are accepted too: Hermes' default
-# Claude IDs use hyphens (Anthropic native) but Copilot's API only accepts dot-notation, so a
-# copilot + hyphenated default would otherwise hit HTTP 400 "model_not_supported".
-_COPILOT_MODEL_ALIASES = dict((
-    ("openai/gpt-5", "gpt-5-mini"), ("openai/gpt-5-chat", "gpt-5-mini"), ("openai/gpt-5-mini", "gpt-5-mini"),
-    ("openai/gpt-5-nano", "gpt-5-mini"), ("openai/gpt-4.1", "gpt-4.1"), ("openai/gpt-4.1-mini", "gpt-4.1"),
-    ("openai/gpt-4.1-nano", "gpt-4.1"), ("openai/gpt-4o", "gpt-4o"), ("openai/gpt-4o-mini", "gpt-4o-mini"),
-    ("openai/o1", "gpt-5.2"), ("openai/o1-mini", "gpt-5-mini"), ("openai/o1-preview", "gpt-5.2"),
-    ("openai/o3", "gpt-5.3-codex"), ("openai/o3-mini", "gpt-5-mini"), ("openai/o4-mini", "gpt-5-mini"),
-    ("anthropic/claude-opus-4.6", "claude-opus-4.6"), ("anthropic/claude-sonnet-5", "claude-sonnet-5"),
-    ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"), ("anthropic/claude-sonnet-4", "claude-sonnet-4"),
-    ("anthropic/claude-sonnet-4.5", "claude-sonnet-4.5"), ("anthropic/claude-haiku-4.5", "claude-haiku-4.5"),
-    ("claude-sonnet-5", "claude-sonnet-5"), ("claude-opus-4-6", "claude-opus-4.6"),
-    ("claude-sonnet-4-6", "claude-sonnet-4.6"), ("claude-sonnet-4-0", "claude-sonnet-4"),
-    ("claude-sonnet-4-5", "claude-sonnet-4.5"), ("claude-haiku-4-5", "claude-haiku-4.5"),
-    ("anthropic/claude-opus-4-6", "claude-opus-4.6"), ("anthropic/claude-sonnet-4-6", "claude-sonnet-4.6"),
-    ("anthropic/claude-sonnet-4-0", "claude-sonnet-4"), ("anthropic/claude-sonnet-4-5", "claude-sonnet-4.5"),
-    ("anthropic/claude-haiku-4-5", "claude-haiku-4.5"),
-))
 
 
 # Azure Foundry model families that require the Responses API: Azure rejects /chat/completions

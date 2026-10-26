@@ -10,7 +10,10 @@ Every such call failed, for both custom models a tenant had configured.
 
 import pytest
 
-from hermes_cli.models import normalize_copilot_model_id
+import providers as _providers
+
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (catalog module)
+from plugins.model_providers.copilot.catalog import normalize_copilot_model_id
 
 
 # ``owner/sub/model`` — the shape an enterprise BYOK custom model has (tenant name sanitized).

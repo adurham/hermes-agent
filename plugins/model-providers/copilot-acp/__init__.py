@@ -11,6 +11,7 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+from .catalog import acp_picker_catalog, clear_session_memo
 from .setup import SETUP_FIELDS
 
 
@@ -64,6 +65,9 @@ class CopilotACPProfile(ProviderProfile):
         copilot = get_provider_profile("copilot")
         return copilot.live_context_length(model, api_key=api_key, base_url=base_url) if copilot else None
 
+    def invalidate_catalog_cache(self) -> None:
+        clear_session_memo()
+
     def normalize_model_id(self, model: str, *, api_key: str = "") -> str | None:
         """Copilot id space; the ACP marker key never reaches the HTTP catalog."""
         from providers import get_provider_profile
@@ -86,6 +90,7 @@ copilot_acp = CopilotACPProfile(
     process_args_env_var="HERMES_COPILOT_ACP_ARGS",
     # A delegation.command no other profile claims has always run through this ACP client.
     process_command_fallback=True,
+    picker_catalog=acp_picker_catalog, static_models=("copilot-acp",),
     **SETUP_FIELDS,
 )
 
