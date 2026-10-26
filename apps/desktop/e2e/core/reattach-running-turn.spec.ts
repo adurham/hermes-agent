@@ -225,7 +225,9 @@ test('re-attaching to a running tool turn renders each segment once', async () =
         await expect.poll(() => ws.sockets.length, { timeout: 60_000 }).toBeGreaterThan(socketsBefore)
         await expect.poll(() => proxy.connections(), { timeout: 60_000 }).toBeGreaterThan(0)
         hold.open()
-        await settled(page, ws, A(7))
+        // The tail, and even message.complete, can fall in the reconnect gap
+        // (a lossy wire), so the view, not a frame, says the turn settled.
+        await expect(stopButton(page)).toHaveCount(0, { timeout: 120_000 })
         session.lossyWire = [U(7)]
         await assertTranscriptOracle(page, ws, provider, session, 'reconnect during a tool turn')
       } finally {
@@ -358,11 +360,19 @@ test('a narrated segment replayed after a message.start renders once', async () 
     await page.reload()
     await waitForInteractive(app, page)
     await installDuplicateSampler(page)
+    const hold = gate()
     provider.script(U(1), [
       { text: words(AI(1), 'commentary', 'before', 'the', 'tool'), toolCalls: [echo(`replay-${nonce}`)] },
-      { text: words(A(1), 'a', 'different', 'final', 'answer') }
+      { text: words(A(1), 'a', 'different', 'final', 'answer'), holdAfterFirstChunk: hold }
     ])
     await send(page, `${U(1)} commentary then answer`, 'Enter', ws)
+    // Mid-turn, with the re-sent narration delivered and the answer held:
+    // the frame a reader sees while the turn is still running.
+    await provider.streamStarted(U(1), 1)
+    await expect(viewport(page)).toContainText(A(1))
+    expect(redelivery.redelivered).toBe(true)
+    await page.screenshot({ path: test.info().outputPath('replayed-segment-mid-turn.png') })
+    hold.open()
     await settled(page, ws, A(1))
     session.sessionId = await currentSessionId(page)
     session.expectUserMarkers.push(U(1))

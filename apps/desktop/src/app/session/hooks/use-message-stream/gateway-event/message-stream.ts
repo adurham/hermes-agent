@@ -1,5 +1,6 @@
 import { type BillingBlock, mergeUsage } from '@hermes/shared'
 
+import { noteTurnSettled } from '@/app/session/hooks/use-session-actions/settled-turns'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import type { GatewayEventPayload } from '@/lib/chat-messages'
@@ -408,6 +409,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
 
+    noteTurnSettled(sessionId)
     completeAssistantMessage(
       sessionId,
       finalText,
