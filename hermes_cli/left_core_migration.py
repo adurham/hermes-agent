@@ -283,9 +283,18 @@ def _provider_choices(home: Path) -> set[str]:
 def routes_at_hosts(home: Path, hosts: tuple[str, ...]) -> bool:
     """A route *home* configures (:func:`_route_slots`) has its ``base_url`` at one of *hosts* (the host or
     a subdomain), whatever provider name it goes by (``custom``, a named endpoint)."""
-    from utils import base_url_host_matches
     urls = {str(slot.get("base_url") or "").strip() for slot in _route_slots(home)} - {""} if hosts else set()
-    return any(base_url_host_matches(url, host) for url in urls for host in hosts)
+    return any(_at_host(url, host) for url in urls for host in hosts)
+
+
+def _at_host(url: str, host: str) -> bool:
+    """*url* is at *host* or a subdomain. A URL ``urlparse`` rejects (an unclosed IPv6 bracket) is at no host:
+    that route fails on its own, and one bad slot must not abort the home's other migrations."""
+    from utils import base_url_host_matches
+    try:
+        return base_url_host_matches(url, host)
+    except ValueError:
+        return False
 
 
 def _delegation_backend_routes(delegation: dict) -> list[dict]:
@@ -580,8 +589,7 @@ def host_install_hint(base_url: str) -> str:
     """For a request rejected by an endpoint at a host a left-core plugin serves while none of that plugin's
     providers is registered (core attached the host's wire quirks itself): the install (or enable) sentence
     for the active home, else ``""``. Printed with non-retryable request errors."""
-    from utils import base_url_host_matches
-    feature = next((f for f in LEFT_CORE if any(base_url_host_matches(str(base_url or ""), h) for h in f.hosts)), None)
+    feature = next((f for f in LEFT_CORE if any(_at_host(str(base_url or ""), h) for h in f.hosts)), None)
     if feature is None or not all(provider_left_core(name) for name in feature.providers):
         return ""
     return provider_install_hint(feature.providers[0])

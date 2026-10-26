@@ -267,6 +267,17 @@ def test_an_agent_start_install_of_a_platform_keeps_the_restart_hint(tmp_path, m
 
 
 
+def test_a_malformed_route_url_does_not_abort_the_home_migration(tmp_path, monkeypatch):
+    """`urlparse` raises on an unclosed IPv6 bracket: that one slot is at no host, and the home's other
+    features (Home Assistant here) still migrate."""
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n", config="model:\n  provider: custom\n  base_url: http://[fe80::1/v1\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import pm.install
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(lcm, "_install_into", lambda h, consent=None: lambda name: {"ok": True})
+    assert lcm.recover_at_startup() == ["homeassistant"]
+
+
 def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
     """At most one automatic install per home: after `hermes plugins remove`, neither `hermes update`
     nor startup reinstalls it. Until an install succeeds (catalog miss, failed install) it retries."""
