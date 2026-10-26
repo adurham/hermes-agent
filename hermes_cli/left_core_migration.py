@@ -114,16 +114,21 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
         _read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}), own_platform="homeassistant")
 
 
+def _auth_store(home: Path) -> dict:
+    """*home*'s ``auth.json``; ``{}`` when missing, unreadable or invalid (no login we can see)."""
+    import json
+    try:
+        store = json.loads((home / "auth.json").read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return store if isinstance(store, dict) else {}
+
+
 def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
     """What made core's Spotify tools usable for *home*: a login stored in its ``auth.json``
     (``providers.spotify``, written by ``hermes auth spotify``) or the ``spotify`` toolset selected
     for a platform. The tools were opt-in and login-gated, so a client id alone is not use."""
-    import json
-    try:
-        store = json.loads((home / "auth.json").read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):  # missing/unreadable/invalid JSON: no login we can see
-        store = {}
-    providers = store.get("providers") if isinstance(store, dict) else None
+    providers = _auth_store(home).get("providers")
     state = providers.get("spotify") if isinstance(providers, dict) else None
     if isinstance(state, dict) and (state.get("access_token") or state.get("refresh_token")):
         return True
@@ -225,6 +230,87 @@ def camofox_in_use(home: Path, *, process_env: bool = False) -> bool:
     return bool(_home_env(home, "CAMOFOX_URL", process_env=process_env))
 
 
+def _provider_choices(home: Path) -> set[str]:
+    """Every provider *home* routes inference through, read with core's own loaders: config.yaml with the
+    managed overlay (``read_yaml_layers``): ``model``, the fallback chain (``get_fallback_chain``: legacy
+    ``fallback_model`` merged), each ``auxiliary.<task>``, ``delegation`` and its fallback chain, every MoA
+    preset's reference models and aggregator (``normalize_moa_config``); the ``auth.json``
+    ``active_provider`` the resolver's auto rung follows; and the provider each cron job pinned."""
+    from gateway import config_loader
+    from hermes_cli.fallback_config import get_fallback_chain
+    from hermes_cli.moa_config import normalize_moa_config
+    try:
+        cfg = config_loader.read_yaml_layers(home)
+    except Exception:  # malformed config.yaml: the agent reads nothing from it either
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        cfg = {}
+    cfg = cfg if isinstance(cfg, dict) else {}
+
+    def block(value) -> dict:
+        return value if isinstance(value, dict) else {}
+    delegation = block(cfg.get("delegation"))
+    slots = [block(cfg.get("model")), *get_fallback_chain(cfg), *map(block, block(cfg.get("auxiliary")).values()),
+             delegation, *get_fallback_chain({"fallback_providers": delegation.get("fallback_providers")})]
+    for preset in normalize_moa_config(cfg.get("moa"))["presets"].values():
+        slots += [*map(block, preset.get("reference_models") or []), block(preset.get("aggregator"))]
+    import json
+    try:
+        jobs = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8-sig")).get("jobs")
+    except (OSError, ValueError, AttributeError):  # no (readable) job store: no pins
+        jobs = None
+    slots += [block(job) for job in jobs] if isinstance(jobs, list) else []
+    chosen = {str(slot.get("provider") or "").strip().lower() for slot in slots}
+    chosen.add(str(_auth_store(home).get("active_provider") or "").strip().lower())
+    return chosen - {""}
+
+
+def providers_selected(home: Path, names: tuple[str, ...], *, process_env: bool = False) -> set[str]:
+    """The provider *names* (ids or aliases) *home* routes inference through (:func:`_provider_choices`),
+    or names in its ``HERMES_INFERENCE_PROVIDER`` (dotenv layers; the process env too for the launch home
+    with *process_env*). A credential alone is not a choice: core never routed to a provider for a key."""
+    chosen = _provider_choices(home) | {_home_env(home, "HERMES_INFERENCE_PROVIDER", process_env=process_env).lower()}
+    return chosen & {name.lower() for name in names}
+
+
+# GitHub Copilot: the API provider and the Copilot CLI over ACP, ids and every alias their profiles declared.
+_COPILOT_API = ("copilot", "github-copilot", "github-models", "github-model", "github")
+_COPILOT_ACP = ("copilot-acp", "github-copilot-acp", "copilot-acp-agent")
+
+
+def copilot_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """Core routed inference through GitHub Copilot for *home*: ``copilot`` or ``copilot-acp`` (any alias)
+    is a provider it chose (:func:`providers_selected`). A GH_TOKEN in ``.env`` alone is not use."""
+    return bool(providers_selected(home, _COPILOT_API + _COPILOT_ACP, process_env=process_env))
+
+
+def copilot_relogin_notice(home: Path, *, process_env: bool = False) -> str:
+    """The Copilot API provider is in use in *home* with no token the plugin reads: no
+    COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN in its dotenv layers (process env too for the launch home
+    with *process_env*) and no Hermes login in its ``auth.json`` (a ``manual`` credential-pool row from
+    ``hermes auth add copilot``, or ``providers.copilot``). Core also took ``gh auth token`` and the
+    GitHub/Copilot CLI's token files, which the plugin does not; read-only, never runs ``gh``."""
+    if not providers_selected(home, _COPILOT_API, process_env=process_env):
+        return ""
+    if any(_home_env(home, name, process_env=process_env)
+           for name in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")):
+        return ""
+    store = _auth_store(home)
+    pool = store.get("credential_pool")
+    rows = pool.get("copilot") if isinstance(pool, dict) else None
+    if isinstance(rows, list) and any(
+            isinstance(row, dict) and str(row.get("source") or "").split(":", 1)[0] == "manual" for row in rows):
+        return ""
+    providers = store.get("providers")
+    if isinstance(providers, dict) and isinstance(providers.get("copilot"), dict) and providers["copilot"]:
+        return ""
+    return ("This profile's Copilot login came from `gh auth token` or the GitHub/Copilot CLI, which the plugin "
+            "no longer reads: run `hermes auth add copilot` to sign in.")
+
+
+def _no_notice(home: Path, *, process_env: bool = False) -> str:
+    return ""
+
+
 @dataclass(frozen=True)
 class LeftCoreFeature:
     plugin: str                               # catalog entry name == installed plugin name
@@ -280,6 +366,20 @@ class LeftCoreFeature:
     # only while the home's config is below it or when that version's config step found the feature in
     # use (:func:`record_core_use`). A newer home that sets the plugin up itself keeps core's toolsets.
     left_at: int = 0
+    # Provider ids and aliases the plugin's model-provider profiles register. A name nothing resolves to
+    # gets :func:`provider_install_hint` appended to its "unknown provider" error, runtime resolution
+    # installs the plugin first for a home that uses it (:func:`recover_for_provider`), and those names
+    # never resolve through another rung (the models.dev catalog) while the plugin is not loaded.
+    providers: tuple[str, ...] = ()
+    # Env names the plugin's providers read that core kept profile-managed: scrubbed when inherited but
+    # absent from the profile's .env (env_loader._PROFILE_MANAGED_ENV_KEYS), routed to .env by `hermes
+    # config set` (config._EXTRA_ENV_KEYS), and refused by the generic env writers while the plugin is
+    # absent (executable/argv authority its profile otherwise declares). Read statically: env_loader runs
+    # before provider discovery.
+    profile_env: tuple[str, ...] = ()
+    # (home, *, process_env=False) -> str: one more sentence for every migration outcome in *home* (a
+    # credential source core read that the plugin does not, and the command that replaces it), "" = none.
+    notice: Callable[..., str] = _no_notice
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -333,6 +433,18 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         unchanged="`hermes import-agent`, its flags and your import-sync.json sync sources are unchanged",
         command="import-agent", old_cli=("claw",),
     ),
+    LeftCoreFeature(
+        # Core kept COPILOT_GITHUB_TOKEN and the two base-URL overrides out of children as provider env
+        # (Tier 2: credentialed CLIs still get them); GH_TOKEN/GITHUB_TOKEN stay on core's static lists.
+        plugin="github-copilot", label="GitHub Copilot", in_use=copilot_in_use,
+        unchanged="your COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN and `hermes auth add copilot` logins, model "
+                  "names and copilot-acp settings are unchanged",
+        private_env=("COPILOT_GITHUB_TOKEN", "COPILOT_API_BASE_URL", "COPILOT_ACP_BASE_URL"),
+        providers=_COPILOT_API + _COPILOT_ACP,
+        profile_env=("HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH",
+                     "COPILOT_ACP_BASE_URL"),
+        notice=copilot_relogin_notice,
+    ),
 )
 
 def _install_sentence(feature: LeftCoreFeature) -> str:
@@ -353,6 +465,66 @@ def terminal_backend_install_hint(backend: str) -> str:
     the active home, else ``""``. Appended to "unknown terminal backend" errors."""
     feature = next((f for f in LEFT_CORE if f.terminal_backend and f.terminal_backend == backend), None)
     return f". {_install_sentence(feature)}" if feature else ""
+
+
+def _provider_feature(name: str) -> Optional[LeftCoreFeature]:
+    key = str(name or "").strip().lower()
+    return next((f for f in LEFT_CORE if key and key in f.providers), None)
+
+
+def provider_install_hint(name: str) -> str:
+    """For a provider name nothing resolves to that a left-core plugin supplies: the sentence naming its
+    install command for the active home (its enable command when installed but not loaded), else ``""``.
+    Appended to every "unknown provider" error (runtime resolution, ``/model``, ``hermes model``, ``hermes
+    auth add``)."""
+    feature = _provider_feature(name)
+    if feature is None:
+        return ""
+    from hermes_constants import get_hermes_home
+    home = Path(get_hermes_home())
+    if not plugin_present(feature.plugin, home):
+        return f"{_install_sentence(feature)}."
+    enable = _install_command(feature.plugin, home).replace(" install ", " enable ")
+    return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is installed but not "
+            f"loaded: run `{enable}`.")
+
+
+def provider_left_core(name: str) -> bool:
+    """*name* is a provider a left-core plugin supplies and no registered profile serves it now: no other
+    resolution rung (the models.dev catalog) may stand in for it (it would send the user's token to the
+    vendor's endpoint through a generic client)."""
+    if _provider_feature(name) is None:
+        return False
+    from providers import get_provider_profile
+    return get_provider_profile(str(name).strip().lower()) is None
+
+
+def recover_for_provider(name: Optional[str]) -> None:
+    """Runtime resolution of *name*, a provider a left-core plugin supplies, in a home that uses it and lacks
+    the plugin: run :func:`recover_at_startup` now. The CLI and Desktop resolve the provider before the agent
+    (whose start runs the migration) exists, so they would otherwise stop at "unknown provider" on a home no
+    ``hermes update`` migrated. Outcomes are logged and wait for the home's first agent, as at gateway start."""
+    feature = _provider_feature(name or "")
+    if feature is None:
+        return
+    from hermes_constants import get_hermes_home
+    from providers import get_provider_profile
+    home = Path(get_hermes_home())
+    if plugin_present(feature.plugin, home) or get_provider_profile(str(name).strip().lower()) is not None:
+        return
+    if feature.in_use(home, process_env=True):
+        recover_at_startup()
+
+
+def profile_env_names() -> frozenset[str]:
+    """Every row's :attr:`LeftCoreFeature.profile_env` (static: no discovery)."""
+    return frozenset(name for feature in LEFT_CORE for name in feature.profile_env)
+
+
+def absent_plugin_profile_env(home: Path) -> frozenset[str]:
+    """``profile_env`` of the rows whose plugin *home* does not have: the generic env writers refuse them."""
+    return frozenset(name for feature in LEFT_CORE if feature.profile_env and not plugin_present(feature.plugin, home)
+                     for name in feature.profile_env)
 
 
 def legacy_plugin_alias(name: str) -> str:
@@ -581,7 +753,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
         if not feature.in_use(home, process_env=process_env):
             continue
         if not _predates_split(home, feature):
-            _say_post_split(home, feature, say=say, backoff=backoff)
+            _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
             continue
         present = plugin_present(feature.plugin, home)
         try:
@@ -599,23 +771,31 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             continue
         if catalog_source(feature.plugin) is None:
             _note_failure(home, feature.plugin)
-            say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
-                f"Hermes cannot find in the plugin catalog yet. Run `{_install_command(feature.plugin, home)}` "
-                f"once it is listed.")
+            say(_noticed(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
+                         f"Hermes cannot find in the plugin catalog yet. Run "
+                         f"`{_install_command(feature.plugin, home)}` once it is listed.", home, feature, process_env))
             continue
         out.append(feature)
     return out
 
 
-def _say_post_split(home: Path, feature: LeftCoreFeature, *, say: Callable[[str], None], backoff: bool) -> None:
+def _say_post_split(home: Path, feature: LeftCoreFeature, *, say: Callable[[str], None], backoff: bool,
+                    process_env: bool = False) -> None:
     """*home* uses *feature* while its stamp says it never ran it in core (a newer home, or a Nix-managed
     config.yaml stamped at activation): nothing is converted or installed, but a home without the plugin is
     told where the feature went. Starts repeat it on the install backoff (``_note_failure``)."""
     if plugin_present(feature.plugin, home) or (backoff and _failed_recently(home, feature.plugin)):
         return
     _note_failure(home, feature.plugin)
-    say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this profile does not "
-        f"have, so it is off. Run `{_install_command(feature.plugin, home)}`.")
+    say(_noticed(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this profile "
+                 f"does not have, so it is off. Run `{_install_command(feature.plugin, home)}`.",
+                 home, feature, process_env))
+
+
+def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bool) -> str:
+    """*message* with *feature*'s :attr:`~LeftCoreFeature.notice` for *home* appended."""
+    extra = feature.notice(home, process_env=process_env)
+    return f"{message} {extra}" if extra else message
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
@@ -641,7 +821,7 @@ def _first_cause(error: str) -> str:
 
 
 def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str], dict],
-                 say: Callable[[str], None]) -> bool:
+                 say: Callable[[str], None], process_env: bool = False) -> bool:
     try:
         result = install(feature.plugin)
     except Exception as exc:  # network, uv, kill list — report, do not raise
@@ -651,13 +831,13 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
             _record_migration(home, feature)
         except Exception as exc:  # the next run sees the plugin dir and records it then
             logger.debug("left-core install marker not written for %s: %s", home, exc)
-        say(f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
-            f"catalog ({feature.unchanged}).")
+        say(_noticed(f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
+                     f"catalog ({feature.unchanged}).", home, feature, process_env))
         return True
     _note_failure(home, feature.plugin)
     error = _first_cause(str(result.get("error") or ""))
-    say(f"  ⚠ {feature.label} moved out of core and its '{feature.plugin}' plugin could not be installed "
-        f"automatically: {error}. Run `{_install_command(feature.plugin, home)}`.")
+    say(_noticed(f"  ⚠ {feature.label} moved out of core and its '{feature.plugin}' plugin could not be installed "
+                 f"automatically: {error}. Run `{_install_command(feature.plugin, home)}`.", home, feature, process_env))
     return False
 
 
@@ -769,16 +949,16 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
         from pm.install import lazy_installs_allowed
         if not lazy_installs_allowed():
             for feature in features:
-                report(f"⚠ {feature.label} moved out of core and its '{feature.plugin}' plugin is not "
-                       f"installed, so it is off. security.allow_lazy_installs is off, so Hermes did not "
-                       f"fetch it: run `{_install_command(feature.plugin, home)}`.")
+                report(_noticed(f"⚠ {feature.label} moved out of core and its '{feature.plugin}' plugin is not "
+                                f"installed, so it is off. security.allow_lazy_installs is off, so Hermes did not "
+                                f"fetch it: run `{_install_command(feature.plugin, home)}`.", home, feature, True))
             return []
         installed = []
         # Agent init cannot answer a dependency prompt: under the CLI the chat input owns the terminal,
         # so the question hangs at "Initializing agent...". Every row shipped in core, so its users
         # already accepted its dependencies (as memory_provider_migration.recover_at_startup does).
         for feature in features:
-            if _install_one(home, feature, install=_install_into(home, consent=True), say=report):
+            if _install_one(home, feature, install=_install_into(home, consent=True), say=report, process_env=True):
                 installed.append(feature.plugin)
                 if say is not None and feature.platform and _gateway_serves(home):
                     report(f"Restart the gateway (`hermes gateway restart`) so it serves {feature.label}.")

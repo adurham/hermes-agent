@@ -1380,28 +1380,6 @@ def deactivate_provider() -> None:
 # ── Provider Resolution — picks which provider to use ───────────────────────────────────────────────
 
 
-def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
-    """Return a helpful hint string when provider resolution fails."""
-    if str(provider_name or "").strip().lower() in {"opencode-free", "free", "opencode_free"}:
-        return ("OpenCode discontinued anonymous free-tier access outside its own client "
-                "(relay 403s FreeTierError), so the keyless 'opencode-free' provider was removed. "
-                "Switch to 'opencode-zen' (pay-as-you-go, OPENCODE_ZEN_API_KEY) or 'opencode-go' "
-                "($10/mo subscription, OPENCODE_GO_API_KEY) via 'hermes model'.")
-    try:
-        from hermes_cli.config import validate_config_structure
-        issues = validate_config_structure()
-        if not issues:
-            return ""
-        lines = ["Config issue detected — run 'hermes doctor' for full diagnostics:"]
-        for ci in issues:
-            lines.append(f"  [{'ERROR' if ci.severity == 'error' else 'WARNING'}] {ci.message}")
-            if ci.hint and ci.hint.splitlines()[0]:
-                lines.append(f"    → {ci.hint.splitlines()[0]}")
-        return "\n".join(lines)
-    except Exception:
-        return ""
-
-
 def _refuse_env_adoption_if_config_corrupt() -> None:
     """Refuse env-key/pool auto-adoption of openrouter while config.yaml is corrupt.
 
@@ -1645,7 +1623,8 @@ def resolve_provider(
     if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
         return normalized
     if normalized != "auto":
-        hint = _get_config_hint_for_unknown_provider(normalized)
+        from hermes_cli.auth_error_copy import unknown_provider_hint
+        hint = unknown_provider_hint(normalized)
         tail = (f"\n\n{hint}" if hint else " Check 'hermes model' for available providers, "
                 "or run 'hermes doctor' to diagnose config issues.")
         raise AuthError(f"Unknown provider '{normalized}'." + tail, code="invalid_provider")

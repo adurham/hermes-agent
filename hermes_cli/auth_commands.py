@@ -143,6 +143,9 @@ def _unknown_provider_exit(provider: str) -> SystemExit:
     import difflib
     known = sorted({pid for pid, _ in canonical_registry_rows()} | {"openrouter"}
                    | {entry["name"] for entry in _get_custom_provider_entries()})
+    from hermes_cli.left_core_migration import provider_install_hint
+    if moved := provider_install_hint(provider):
+        return SystemExit(f"Unknown provider '{provider}'. {moved}")
     close = difflib.get_close_matches(provider, known, n=3, cutoff=0.5)
     hint = f" Did you mean {', '.join(close)}?" if close else ""
     return SystemExit(

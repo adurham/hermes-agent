@@ -236,6 +236,9 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     """Look up a built-in provider by id or alias: models.dev catalog merged with the Hermes overlay;
     Hermes-only overlay (nous, openai-codex, …); plugin provider profiles with a concrete endpoint."""
     canonical = normalize_provider(name)
+    from hermes_cli.left_core_migration import provider_left_core
+    if provider_left_core(canonical):  # its plugin is not loaded: models.dev must not stand in for it
+        return None
     mdev_info = _models_dev_info(canonical, allow_network)
     overlay, overlay_label = _get_overlay(canonical)
     if mdev_info is not None:
