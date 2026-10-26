@@ -26,10 +26,8 @@ class ResponsesEndpointQuirks(NamedTuple):
     replay_item_ids: bool = True
     prompt_cache_key: bool = True
     issuer_kind: str = ""
-    trusts_completed_status: bool = True
     native_compaction: bool = True
     profile_reasoning: bool = False
-    profile: Any = None
 
 
 _GENERIC_ENDPOINT = ResponsesEndpointQuirks()
@@ -45,9 +43,8 @@ def responses_endpoint_quirks(base_url: Any) -> ResponsesEndpointQuirks:
         return _GENERIC_ENDPOINT
     return ResponsesEndpointQuirks(
         replay_item_ids=profile.responses_replay_item_ids, prompt_cache_key=profile.responses_prompt_cache_key,
-        issuer_kind=profile.responses_issuer_kind, trusts_completed_status=profile.responses_trusts_completed_status,
-        native_compaction=profile.responses_native_compaction, profile_reasoning=profile.responses_profile_reasoning,
-        profile=profile,
+        issuer_kind=profile.responses_issuer_kind, native_compaction=profile.responses_native_compaction,
+        profile_reasoning=profile.responses_profile_reasoning,
     )
 
 

@@ -393,22 +393,20 @@ def _price_reference_response(
         return usage, None, None, None
 
 
-def _slot_request_headers(runtime: dict[str, Any]) -> dict[str, str] | None:
+def _slot_request_headers(runtime: dict[str, Any], agent: Any = None) -> dict[str, str] | None:
     """User-initiated request headers of the slot's provider, attributed at that provider's own endpoint
-    (MoA attributes by slot provider, whatever account host the slot resolved to)."""
+    (MoA attributes by slot provider, whatever account host the slot resolved to). Asked like every
+    per-request hook (``route_answer``: memoized, one failure policy for the agent's session)."""
     from agent.auxiliary_client import _normalize_aux_provider
+    from agent.provider_route_hooks import route_answer
     from providers import get_provider_profile
 
     provider = _normalize_aux_provider(str(runtime.get("provider") or ""))
     profile = get_provider_profile(provider) if provider else None
     if profile is None:
         return None
-    try:
-        return profile.request_headers(base_url=profile.base_url, model=str(runtime.get("model") or ""),
-                                       user_initiated=True) or None
-    except Exception:  # plugin code: a broken hook must not fail the reference call
-        logger.debug("MoA slot %s request_headers failed", provider, exc_info=True)
-        return None
+    return route_answer("request_headers", provider=provider, base_url=profile.base_url or "",
+                        model=str(runtime.get("model") or ""), user_initiated=True, scope=agent)
 
 
 def _run_reference(
@@ -438,7 +436,7 @@ def _run_reference(
 
         # Providers may gate premium models on request attribution; MoA fan-out serves the
         # user's current turn, so mirror the main agent's user-initiated request headers.
-        initiator_headers = _slot_request_headers(runtime)
+        initiator_headers = _slot_request_headers(runtime, agent)
         if agent is not None:
             from agent.auxiliary_client import aux_progress_hook
 
