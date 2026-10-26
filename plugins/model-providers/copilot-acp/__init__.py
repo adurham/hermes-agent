@@ -11,6 +11,8 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+from .setup import SETUP_FIELDS
+
 
 class CopilotACPProfile(ProviderProfile):
     """GitHub Copilot ACP — external process, no REST models endpoint."""
@@ -84,6 +86,7 @@ copilot_acp = CopilotACPProfile(
     process_args_env_var="HERMES_COPILOT_ACP_ARGS",
     # A delegation.command no other profile claims has always run through this ACP client.
     process_command_fallback=True,
+    **SETUP_FIELDS,
 )
 
 register_provider(copilot_acp)
