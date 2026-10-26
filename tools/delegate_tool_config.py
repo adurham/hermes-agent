@@ -327,35 +327,6 @@ def _require_pinned_command(command: Optional[str], message: str) -> None:
     if command and not _shutil.which(command):
         raise ValueError(message)
 
-def _process_command_provider(
-    command: str, provider: Optional[str], api_mode: Optional[str],
-) -> tuple[str, Optional[str]]:
-    """(provider, api_mode) that runs a pinned ``delegation.command``: the selected provider when it is
-    already an external-process one; else the external-process profile whose ``process_command`` names the
-    same binary; else the profile flagged ``process_command_fallback``. No candidate fails the spawn."""
-    from providers import get_provider_profile, list_providers
-
-    selected = get_provider_profile(provider or "")
-    if selected is not None and selected.auth_type == "external_process":
-        return provider, api_mode
-    candidates = [p for p in list_providers() if p.auth_type == "external_process"]
-    binary = _command_stem(command)
-    match = next((p for p in candidates if p.process_command and _command_stem(p.process_command) == binary), None)
-    match = match or next((p for p in candidates if p.process_command_fallback), None)
-    if match is None:
-        raise ValueError(
-            f"Pinned delegation command '{command}' does not belong to any installed external-process provider. "
-            "Install the provider plugin for it, or remove delegation.command from config.yaml.")
-    return match.name, match.api_mode or "chat_completions"
-
-
-def _command_stem(command: str) -> str:
-    """Binary name of ``command`` without directory or a Windows launcher suffix (``kimchi.cmd`` -> ``kimchi``)."""
-    name = os.path.basename(command.strip().replace("\\", "/")).lower()
-    stem, ext = os.path.splitext(name)
-    return stem if ext in {".exe", ".cmd", ".bat", ".ps1"} else name
-
-
 def _credential_bundle(model, provider, base_url, api_key, api_mode, request_overrides, **extra) -> dict:
     """The child credential dict every branch of ``_resolve_delegation_credentials`` returns."""
     return {
@@ -604,13 +575,8 @@ def _resolve_child_runtime(
     # ACP client and bypass the override credentials entirely (issue #16816).
     if override_provider and not override_acp_command:
         effective_acp_command, effective_acp_args = None, []
-    # Defensive: validate trusted delegation.command exists on PATH before honoring it. An explicitly pinned
-    # transport that cannot run must fail the spawn loudly (#80450) — silently falling back to the default
-    # transport would run the child somewhere the user explicitly routed it away from. Normally unreachable
-    # via delegate_task, which pre-validates the command in _resolve_delegation_credentials.
-    if override_acp_command:
-        effective_provider, effective_api_mode = _process_command_provider(
-            override_acp_command, effective_provider, effective_api_mode)
+    # A pinned command arrives only with the runtime of the provider that resolved it, so the selected
+    # provider (and its api_mode) is kept as is.
 
     # A named provider identity is endpoint-scoped. Preserve it only when the
     # child inherits the exact parent route; an override owns its final identity.

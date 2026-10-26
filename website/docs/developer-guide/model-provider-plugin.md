@@ -254,7 +254,6 @@ meaning says otherwise.
 | `process_args` | External-process default argv tail | `()` |
 | `process_command_env_vars` | Env vars overriding the binary, in priority order | `()` |
 | `process_args_env_var` | Env var overriding argv (shlex-split) | `""` |
-| `process_command_fallback` | Serves a pinned `delegation.command` no profile's `process_command` names; first registered wins | `False` |
 | `fallback_models` | Curated picker list when the live fetch fails | `()` |
 | `model_aliases` | Short name → model id; `/model <alias>` resolves here first | `{}` |
 | `hostname` | Base hostname for URL → provider reverse mapping (derived from `base_url` when empty) | `""` |
@@ -373,11 +372,10 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 
 | Field | Purpose |
 |---|---|
-| `process_command` | Default binary, e.g. `"kimchi"`. A pinned `delegation.command` naming the same binary runs on this provider |
+| `process_command` | Default binary, e.g. `"kimchi"` |
 | `process_args` | Default argv tail, e.g. `("--mode", "acp")` |
 | `process_command_env_vars` | Env vars that override the binary, checked in order |
 | `process_args_env_var` | Env var that overrides argv (shlex-split) |
-| `process_command_fallback` | `True` makes this provider run a pinned `delegation.command` no profile's `process_command` names (default `False`; first registered wins, none = the spawn fails) |
 
 The `process_command_env_vars` and `process_args_env_var` names are executable authority: Hermes' generic env writers (dashboard, MCP and connector installs, `save_env_value`) refuse them, so set them in `.env` or the shell.
 

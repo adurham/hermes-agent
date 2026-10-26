@@ -222,11 +222,6 @@ class ProviderProfile:
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
 
-    # ── L5: external-process (ACP) seams ──
-    # Serves a pinned ``delegation.command`` whose binary no profile's process_command names (a
-    # generic ACP stdio client); the first registered profile setting it wins.
-    process_command_fallback: bool = False
-
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
