@@ -3180,12 +3180,10 @@ def looks_like_codex_intermediate_ack(
     assistant_text = agent._strip_think_blocks(assistant_content or "").strip().lower()
     if not assistant_text or len(assistant_text) > 1200:
         return False
-    # Some tool-using providers narrate the next action in terse log style
-    # rather than with a first-person lead-in: "Brief written. Creating the
-    # session now." Bare gerunds are too ambiguous ("Reading the traceback
-    # explains the failure" is a final answer), so this path also requires an
-    # explicit transition cue such as "now", "via acpx", "actual log", or
-    # "then launching". Completed reports and questions stay final.
+    # Some tool-using providers narrate the next action in terse log style: "Brief written. Creating the
+    # session now." Bare gerunds are too ambiguous ("Reading the traceback explains the failure" is a final
+    # answer), so this path also requires an explicit transition cue such as "now", "on <provider> via acpx",
+    # "actual log", or "then launching". Completed reports and questions stay final.
     action_clause_pattern = re.compile(
         r"(?:^|[.!…—–]\s+|\n+\s*|,\s+then\s+)"
         r"(?:(?P<transition>then)\s+)?"
@@ -3227,9 +3225,11 @@ def looks_like_codex_intermediate_ack(
         r"\s+now\s*[—–-]\s*see\s+https?://\S+"
         r"(?:\s+for\s+progress)?\s*$"
     )
+    from providers import list_providers  # "relaunching it on <any registered provider name or alias>"
+    provider_names = sorted({n.lower() for p in list_providers() for n in (p.name, *p.aliases) if n})
     provider_tail_pattern = re.compile(
         r"\s+(?:it|(?:the\s+)?(?:session|worker|agent|job|process))\s+"
-        r"on\s+copilot(?:\s+via\s+acpx)?\s*$"
+        rf"on\s+(?:{'|'.join(map(re.escape, provider_names)) or '(?!)'})(?:\s+via\s+acpx)?\s*$"
     )
     actual_log_tail_pattern = re.compile(
         r"\s+(?:the\s+)?actual\s+(?:log|output)\s*$"
