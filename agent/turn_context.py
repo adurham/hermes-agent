@@ -1135,6 +1135,7 @@ def build_turn_context(
 
         clear_end_turn(agent)
         agent._turn_contract_rejections = 0
+        agent._turn_continuations = 0
     except Exception:
         pass
 

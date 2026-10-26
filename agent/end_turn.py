@@ -54,6 +54,15 @@ TURN_STATUSES = ("done", "deferred", "blocked", "need_input")
 
 END_TURN_TOOL_NAME = "end_turn"
 
+#: How many times the harness hands a turn back because the model closed with work it can
+#: still do (``deferred``, or ``done`` carrying open items) before the close is delivered
+#: anyway. A close that declares work is not a stop: measured 2026-10-25, 28 of 28 deferred
+#: closes in three days were followed by a user row — 0 continued on their own — so the
+#: declared items were a report, never a queue. The bounce is the queue. Bounded because an
+#: unbounded gate would spend calls on a model that refuses to act; ``deferred_delivered``
+#: records the ones that reached the end of the budget.
+MAX_TURN_CONTINUATIONS = 3
+
 END_TURN_SCHEMA: dict[str, Any] = {
     "type": "function",
     "function": {
@@ -62,8 +71,9 @@ END_TURN_SCHEMA: dict[str, Any] = {
             "Close the turn and speak to the user. REQUIRED: a turn that used any other tool "
             "may not end with prose — the harness rejects a text-only ending. Call this tool "
             "directly (it is top-level; `tool_call`/`tool_search` reach deferred tools only), "
-            "with what the user should read. If work remains, put it in open_items as a task, "
-            "never as a promise: 'I'll do X next' is not an answer."
+            "with what the user should read. `open_items` is a work queue, not an ending: an "
+            "item you can still act on hands the turn straight back to you, so close only "
+            "when the list is empty or what remains is not yours to do."
         ),
         "parameters": {
             "type": "object",
@@ -72,9 +82,11 @@ END_TURN_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "enum": list(TURN_STATUSES),
                     "description": (
-                        "done = the requested work is finished and verified; deferred = work "
-                        "remains (list it in open_items); blocked = an external dependency stops "
-                        "progress (name it in blocker); need_input = the user must answer first."
+                        "done = the requested work is finished and verified (open_items empty); "
+                        "blocked = an external dependency stops progress — name it in blocker; "
+                        "need_input = the user must answer first — say what in blocker. "
+                        "deferred is NOT a stopping state: it tells the harness work remains "
+                        "that you can still do, and the turn continues with your open_items."
                     ),
                 },
                 "summary": {
@@ -84,7 +96,10 @@ END_TURN_SCHEMA: dict[str, Any] = {
                 "open_items": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Concrete unfinished work, one item per entry. Empty when done.",
+                    "description": (
+                        "Unfinished work, one concrete item per entry — a task, not a promise. "
+                        "An item you can act on keeps the turn running; empty when the work is done."
+                    ),
                 },
                 "blocker": {
                     "type": "string",
@@ -111,9 +126,12 @@ TURN_CONTRACT_GUIDANCE = (
     "`end_turn` is a top-level tool: call it directly, never through `tool_call` or "
     "`tool_search` (those reach deferred tools only). "
     "Put the whole reply in `summary` — text written outside it is dropped, so a short status "
-    "note in `summary` plus the real content in prose leaves the user with the note. Anything "
-    "unfinished goes in `open_items` as a task — never as a promise ('I'll do X next' is not an "
-    "answer, and it will be rejected)."
+    "note in `summary` plus the real content in prose leaves the user with the note. "
+    "`open_items` is a work queue, not a report: `done` requires it empty. `deferred` means work "
+    "remains that you can still do, and the harness answers it by handing the turn back to you "
+    "with those items — so listing an item you can act on means the turn is not over. Use "
+    "`blocked` (external dependency) or `need_input` (the user must answer) with a `blocker` "
+    "only when the rest genuinely is not yours to do."
 )
 
 
@@ -146,6 +164,29 @@ def _carries_end_turn(tools: Iterable[dict[str, Any]]) -> bool:
     return any(((t or {}).get("function") or {}).get("name") == END_TURN_TOOL_NAME for t in tools)
 
 
+def turn_continuation_budget(agent: Any = None) -> int:
+    """How many times a close reporting open work is handed back before delivery.
+
+    ``agent.turn_continuations`` (default :data:`MAX_TURN_CONTINUATIONS`); 0 turns the gate
+    off and restores the old deliver-anything behaviour. Cached on the agent by
+    :func:`register_end_turn`, so the hot path does not read config per close; an unreadable
+    config keeps the default rather than silently disabling the gate.
+    """
+    if agent is not None:
+        cached = getattr(agent, "_turn_continuations_budget", None)
+        if cached is not None:
+            return int(cached)
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        value = (cfg.get("agent") or {}).get("turn_continuations", MAX_TURN_CONTINUATIONS)
+        return max(0, int(value))
+    except Exception:
+        logger.debug("turn-contract: continuation budget unreadable; using the default", exc_info=True)
+        return MAX_TURN_CONTINUATIONS
+
+
 def register_end_turn(agent: Any, tools: list[dict[str, Any]], names: Optional[set] = None) -> list[dict[str, Any]]:
     """The ONE registration of ``end_turn``: the wire list and the dispatch gate together.
 
@@ -162,6 +203,8 @@ def register_end_turn(agent: Any, tools: list[dict[str, Any]], names: Optional[s
     agent._turn_contract_enabled = enabled
     if not enabled:
         return tools
+    if getattr(agent, "_turn_continuations_budget", None) is None:
+        agent._turn_continuations_budget = turn_continuation_budget(agent)
     if names is None:
         names = getattr(agent, "valid_tool_names", None)
     if isinstance(names, set):
@@ -222,12 +265,14 @@ def clear_end_turn(agent: Any) -> None:
     agent._end_turn_payload = None
 
 
-def render_summary(payload: dict[str, Any]) -> str:
+def render_summary(payload: dict[str, Any], *, open_label: str = "Open:") -> str:
     """The user-visible reply for a closed turn.
 
     The summary is the answer. Open items are appended as a short, explicit task list — that
-    is the point of the contract: unfinished work is *declared*, so the next turn (or the
-    operator) can see it instead of discovering it was only ever promised.
+    is the point of the contract: unfinished work is *declared*, so the next turn can see it
+    instead of discovering it was only ever promised. They are rendered for EVERY status that
+    carries them: ``done`` with open items used to drop them on the floor, which turned a
+    contradiction into silent ghost tasks.
     """
     summary = (payload.get("summary") or "").strip()
     status = payload.get("status") or "done"
@@ -238,8 +283,8 @@ def render_summary(payload: dict[str, Any]) -> str:
     lines = [summary]
     if blocker:
         lines.append(f"Blocked: {blocker}")
-    if open_items and status != "done":
-        lines.append("Open:")
+    if open_items:
+        lines.append(open_label)
         lines.extend(f"- {item}" for item in open_items)
     return "\n\n".join(line for line in lines if line)
 
@@ -318,19 +363,94 @@ REJECT = "reject"                # text-only ending after tool activity, no clos
 ESCAPE = "escape"                # rejected as often as allowed: deliver, and log the escape
 HARNESS_ERROR = "harness_error"  # the model called end_turn and the harness failed to run it: deliver
 PASS = "pass"                    # nothing to enforce (no tool activity, or the contract is off)
+CONTINUE = "continue"            # closed with work it can still do: hand the turn back
+CONTINUE_EXHAUSTED = "continue_exhausted"  # same, budget spent: deliver, and count it
+
+#: A close that claims work remains, or claims done while carrying work, is not a stop.
+STOP = "stop"
+WORK_OPEN = "work_open"
+
+
+def close_verdict(payload: dict[str, Any]) -> tuple[str, str]:
+    """``(STOP|WORK_OPEN, reason)`` for a close payload.
+
+    This is what makes the status field load-bearing instead of decorative. ``deferred`` says
+    work remains that the model can still do — which is precisely a reason NOT to end the turn;
+    the measured failure (2026-10-25) is that the model used it as a polite stop, and the
+    harness delivered it 28 times in three days with zero follow-through. ``done`` carrying
+    open items is a contradiction. ``blocked``/``need_input`` are terminal only when they name
+    the blocker — a terminal status with no blocker is a bare stop with a label on it.
+    """
+    status = str(payload.get("status") or "done")
+    items = payload.get("open_items") or []
+    blocker = str(payload.get("blocker") or "").strip()
+    if status == "deferred":
+        return WORK_OPEN, "deferred"
+    if status == "done" and items:
+        return WORK_OPEN, "done_with_open_items"
+    if status in ("blocked", "need_input") and not blocker:
+        return WORK_OPEN, "terminal_without_blocker"
+    return STOP, ""
+
+
+def continuation_nudge(payload: dict[str, Any], reason: str) -> str:
+    """The row that turns a declared work list into the turn's actual assignment.
+
+    The items are echoed back numbered, because the failure being fixed is not that the model
+    forgot them — it wrote them — but that nothing ever asked it to do them.
+    """
+    items = [str(i) for i in (payload.get("open_items") or [])]
+    status = str(payload.get("status") or "deferred")
+    if reason == "done_with_open_items":
+        head = (f"This close was refused: status `done` with {len(items)} unfinished item(s). "
+                "`done` means the requested work is finished and verified; it cannot carry work "
+                "you have not done.")
+    elif reason == "terminal_without_blocker":
+        head = (f"This close was refused: status `{status}` ends the turn, so it must name what "
+                "stops you in `blocker`. You named nothing.")
+    elif items:
+        head = (f"This close was refused: `deferred` says work remains that you can still do "
+                f"({len(items)} item(s) listed), and a turn does not end with work you can do.")
+    else:
+        head = ("This close was refused: `deferred` says work remains but names none, so there "
+                "is nothing to continue and nothing to report.")
+    lines = [head]
+    if items:
+        lines += ["", "The work, in order:"] + [f"{i}. {item}" for i, item in enumerate(items, 1)]
+        action = "Act on item 1 now, in this turn, with a real tool call — do not restate the plan."
+    else:
+        action = "Name the next concrete step and take it with a tool call in this turn."
+    lines += [
+        "",
+        action,
+        "Close again as `done` only when this list is empty; as `blocked` with a `blocker` naming the "
+        "external dependency (owner action, hardware, a service) when the rest is not yours to do; or "
+        "as `need_input` with a `blocker` naming the question the owner must answer.",
+    ]
+    return "\n".join(lines)
 
 
 def contract_decision(
     *, payload, tool_calls_this_turn: int, rejections: int, close_attempted: bool = False,
+    continuations: int = 0, max_continuations: int = MAX_TURN_CONTINUATIONS,
 ) -> str:
     """What the turn loop should do about this ending, given the contract is enabled.
 
     ``close_attempted`` is :func:`attempted_end_turn_close` as a bool: the model invoked the
     tool and got no payload out of it. That is a harness fault by definition — the tool is
     the harness's to run — so it is delivered and counted on its own, never as a rejection.
+
+    A close that reports work still open is judged before the stop branch: the loop hands the
+    turn back (``CONTINUE``) with the items until ``max_continuations`` is spent, then delivers
+    (``CONTINUE_EXHAUSTED``) so the operator still gets an answer and the counter records it.
     """
     if payload is not None:
-        return CLOSE
+        verdict, _reason = close_verdict(payload)
+        if verdict == STOP:
+            return CLOSE
+        if continuations < max(0, max_continuations):
+            return CONTINUE
+        return CONTINUE_EXHAUSTED
     if close_attempted:
         return HARNESS_ERROR
     if tool_calls_this_turn > 0:

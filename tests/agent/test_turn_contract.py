@@ -7,15 +7,22 @@ the live one-shot in FORK.md.
 
 from agent.end_turn import (
     CLOSE,
+    CONTINUE,
+    CONTINUE_EXHAUSTED,
     END_TURN_SCHEMA,
     ESCAPE,
     HARNESS_ERROR,
+    MAX_TURN_CONTINUATIONS,
     MAX_TURN_CONTRACT_REJECTIONS,
     PASS,
     REJECT,
+    STOP,
     TURN_STATUSES,
+    WORK_OPEN,
     attempted_end_turn_close,
     clear_end_turn,
+    close_verdict,
+    continuation_nudge,
     contract_decision,
     end_turn_payload,
     end_turn_tool,
@@ -425,12 +432,51 @@ class TestHarnessFault:
         assert recover_close(attempt) is None   # the loop falls back to the prose
 
 
+class TestCloseVerdict:
+    """``deferred`` is a claim that work remains, not a stop; ``blocked`` is only terminal when
+    it names the blocker. These four cases are the whole gate."""
+
+    @staticmethod
+    def _p(**kw):
+        from agent.end_turn import normalize_payload
+
+        return normalize_payload(**kw)
+
+    def test_deferred_is_work_open_whatever_it_carries(self):
+        assert close_verdict(self._p(status="deferred", summary="s", open_items=["x"])) == (WORK_OPEN, "deferred")
+        assert close_verdict(self._p(status="deferred", summary="s", open_items=[])) == (WORK_OPEN, "deferred")
+
+    def test_done_with_open_items_is_a_contradiction(self):
+        verdict, reason = close_verdict(self._p(status="done", summary="s", open_items=["x"]))
+        assert (verdict, reason) == (WORK_OPEN, "done_with_open_items")
+
+    def test_a_terminal_status_without_a_blocker_is_a_bare_stop(self):
+        for status in ("blocked", "need_input"):
+            assert close_verdict(self._p(status=status, summary="s")) == (WORK_OPEN, "terminal_without_blocker")
+
+    def test_done_and_a_named_blocker_stop(self):
+        assert close_verdict(self._p(status="done", summary="s", open_items=[])) == (STOP, "")
+        assert close_verdict(self._p(status="blocked", summary="s", blocker="owner relaunch")) == (STOP, "")
+
+    def test_open_items_are_rendered_even_when_the_status_says_done(self):
+        # The old renderer dropped the list for `done`, so a contradictory close became silent
+        # ghost tasks the operator never saw.
+        reply = render_summary(self._p(status="done", summary="Wrapped.", open_items=["still open"]))
+        assert reply == "Wrapped.\n\nOpen:\n\n- still open"
+
+    def test_the_nudge_numbers_the_items_and_names_the_way_out(self):
+        text = continuation_nudge(self._p(status="deferred", summary="s", open_items=["a", "b"]), "deferred")
+        assert "1. a" in text and "2. b" in text
+        assert "Act on item 1 now" in text
+        assert "`blocked`" in text and "`need_input`" in text
+
+
 class TestLoopVerdict:
     """``apply_turn_contract`` is what ``finish_text_response`` acts on: drive it end to end
     with real message rows and assert the delivered reply and the counter together."""
 
     @staticmethod
-    def _agent(tmp_path, monkeypatch, *, rejections=0):
+    def _agent(tmp_path, monkeypatch, *, rejections=0, continuations=0, budget=MAX_TURN_CONTINUATIONS):
         import types
 
         from agent import end_turn as et
@@ -439,6 +485,7 @@ class TestLoopVerdict:
         statuses = []
         agent = types.SimpleNamespace(
             _turn_contract_enabled=True, _turn_contract_rejections=rejections,
+            _turn_continuations=continuations, _turn_continuations_budget=budget,
             model="m", provider="p", _emit_diagnostic_status=statuses.append, statuses=statuses,
         )
         return agent
@@ -452,6 +499,13 @@ class TestLoopVerdict:
             {"role": "tool", "tool_call_id": "c1", "name": "terminal", "content": "ok"},
             *extra,
         ]
+
+    @staticmethod
+    def _nudge(messages):
+        """The continuation row the harness appended, asserting it is a nudge user row."""
+        row = messages[-1]
+        assert row["role"] == "user" and row["_turn_contract_nudge"] is True
+        return row["content"]
 
     def test_dispatch_failure_delivers_the_summary_and_records_harness_error(self, tmp_path, monkeypatch):
         from agent import end_turn as et
@@ -495,13 +549,109 @@ class TestLoopVerdict:
         from agent.turn_final_response_contract import apply_turn_contract
 
         agent = self._agent(tmp_path, monkeypatch)
-        end_turn_tool(status="deferred", summary="Half done.", open_items=["rest"], agent=agent)
+        end_turn_tool(status="done", summary="Half done.", open_items=[], agent=agent)
         final_msg = {"role": "assistant", "content": ""}
         verdict = apply_turn_contract(agent, messages=self._rows(), final_msg=final_msg, tool_calls_this_turn=2)
         assert verdict.decision == CLOSE
-        assert verdict.final_response.startswith("Half done.") and "- rest" in verdict.final_response
+        assert verdict.final_response == "Half done."
         assert et.read_turn_contract_stats() == {"closed": 1}
         assert end_turn_payload(agent) is None
+
+    def test_a_deferred_close_is_handed_back_with_its_items(self, tmp_path, monkeypatch):
+        # The regression the owner reported: "new attack surface" / "Open:" and then nothing.
+        # `deferred` is a claim that work remains that the model can still do, so the harness
+        # must not deliver it as an answer — it echoes the items back as the turn's assignment.
+        from agent import end_turn as et
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch)
+        end_turn_tool(
+            status="deferred", summary="Found a new attack surface.",
+            open_items=["audit FUN_0010a360 for count→size overflow", "confirm which method P/Invokes hpatchz"],
+            agent=agent,
+        )
+        messages = self._rows()
+        verdict = apply_turn_contract(
+            agent, messages=messages, final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=2,
+        )
+        assert verdict.decision == CONTINUE and verdict.reprompt is True
+        assert verdict.final_response is None
+        assert agent._turn_continuations == 1
+        assert end_turn_payload(agent) is None          # the old payload must not close the next attempt
+        text = self._nudge(messages)
+        assert "1. audit FUN_0010a360 for count→size overflow" in text
+        assert "2. confirm which method P/Invokes hpatchz" in text
+        assert "Act on item 1 now" in text
+        assert et.read_turn_contract_stats() == {"continued": 1}
+        assert any("continuing" in s for s in agent.statuses)
+
+    def test_done_with_open_items_is_the_same_claim_in_disguise(self, tmp_path, monkeypatch):
+        from agent import end_turn as et
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch)
+        end_turn_tool(status="done", summary="Wrapped up.", open_items=["still need the apply bridge"], agent=agent)
+        messages = self._rows()
+        verdict = apply_turn_contract(
+            agent, messages=messages, final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=3,
+        )
+        assert verdict.decision == CONTINUE
+        assert "`done` with 1 unfinished item(s)" in self._nudge(messages)
+        assert et.read_turn_contract_stats() == {"continued": 1}
+
+    def test_a_terminal_status_needs_a_named_blocker(self, tmp_path, monkeypatch):
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch)
+        end_turn_tool(status="blocked", summary="Waiting.", open_items=[], agent=agent)
+        messages = self._rows()
+        verdict = apply_turn_contract(
+            agent, messages=messages, final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=1,
+        )
+        assert verdict.decision == CONTINUE
+        assert "must name what stops you" in self._nudge(messages)
+
+    def test_blocked_with_a_blocker_is_delivered(self, tmp_path, monkeypatch):
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch)
+        end_turn_tool(
+            status="blocked", summary="Console parked.",
+            open_items=["relaunch the loader"], blocker="the owner must relaunch the compat loader", agent=agent,
+        )
+        verdict = apply_turn_contract(
+            agent, messages=self._rows(), final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=1,
+        )
+        assert verdict.decision == CLOSE
+        reply = verdict.final_response or ""
+        assert "Blocked: the owner must relaunch" in reply
+        assert "- relaunch the loader" in reply
+
+    def test_budget_exhaustion_delivers_with_an_honest_label(self, tmp_path, monkeypatch):
+        from agent import end_turn as et
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch, continuations=MAX_TURN_CONTINUATIONS)
+        end_turn_tool(status="deferred", summary="Still mid-way.", open_items=["item one"], agent=agent)
+        verdict = apply_turn_contract(
+            agent, messages=self._rows(), final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=1,
+        )
+        assert verdict.decision == CONTINUE_EXHAUSTED and verdict.reprompt is False
+        reply = verdict.final_response or ""
+        assert reply.startswith("Still mid-way.")
+        assert "Open (turn budget exhausted — still undone):" in reply
+        assert "- item one" in reply
+        assert et.read_turn_contract_stats() == {"deferred_delivered": 1}
+
+    def test_budget_zero_restores_the_old_deliver_anything_behaviour(self, tmp_path, monkeypatch):
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch, budget=0)
+        end_turn_tool(status="deferred", summary="Half done.", open_items=["rest"], agent=agent)
+        verdict = apply_turn_contract(
+            agent, messages=self._rows(), final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=1,
+        )
+        assert verdict.decision == CONTINUE_EXHAUSTED
 
     def test_prose_with_no_attempt_is_rejected_then_escapes(self, tmp_path, monkeypatch):
         from agent import end_turn as et

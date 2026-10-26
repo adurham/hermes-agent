@@ -183,6 +183,10 @@ DEFAULT_CONFIG = {
         # end_turn(status, summary, open_items) instead of prose. Off until a full session reads
         # closed > 0, rejected = 0, escaped = 0 in ~/.hermes/state/turn_contract.json.
         "turn_contract": False,
+        # How many times a close that reports work still open (`deferred`, or `done` carrying
+        # open_items) is handed back to the model with those items before the reply is
+        # delivered anyway. 0 restores the old behaviour (deliver any close as-written).
+        "turn_continuations": 3,
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.
         "text_verbosity": "",
