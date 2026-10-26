@@ -528,7 +528,7 @@ def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: P
         if not released:  # name which leg kept it: owner proof, an unreadable process, or a holder
             from hermes_cli import _early_recovery as er
             from hermes_cli.gitlock import _killed_update_owns
-            why = {"killed_update_owns": _killed_update_owns(lock),
+            why = {"lock_exists": lock.exists(), "killed_update_owns": _killed_update_owns(lock),
                    "held_open": er._held_open(lock, repo, any_git=True)}
         assert released is True, f"once the checkout's git is gone the killed update's lock goes: {why}"
 
@@ -623,10 +623,10 @@ def test_a_failed_retry_never_erases_the_killed_updates_claim(repo: Path) -> Non
     from hermes_cli.gitlock import release_dead_index_lock
 
     lock = repo / ".git" / "index.lock"
-    _killed_update_receipt()
-    time.sleep(0.05)
+    _killed_update_receipt()  # started before the lock, as a real killed run did
     lock.write_bytes(b"")  # the killed run's git took it, then died with it
-    time.sleep(0.05)
+    # No wait before the retry: the lock's coarse mtime never runs AHEAD of the precise clock, so
+    # the retry's started_at is always after it.
     update_receipt.begin_update_receipt()  # the retry: refused on the lock, and finalized failed
     update_receipt.finalize_update_receipt("failed")
     assert update_receipt.read_latest_receipt()["outcome"] == "failed"
