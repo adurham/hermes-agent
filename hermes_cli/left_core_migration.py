@@ -283,9 +283,23 @@ def _delegation_backend_routes(delegation: dict) -> list[dict]:
 def providers_selected(home: Path, names: tuple[str, ...], *, process_env: bool = False) -> set[str]:
     """The provider *names* (ids or aliases) *home* routes inference through (:func:`_provider_choices`),
     or names in its ``HERMES_INFERENCE_PROVIDER`` (dotenv layers; the process env too for the launch home
-    with *process_env*). A credential alone is not a choice: core never routed to a provider for a key."""
+    with *process_env*). A credential alone is not a choice: core never routed to a provider for a key, and
+    a name that is the user's own custom endpoint (``custom_providers: [{name: github, ...}]``) is not one."""
     chosen = _provider_choices(home) | {_home_env(home, "HERMES_INFERENCE_PROVIDER", process_env=process_env).lower()}
-    return chosen & {name.lower() for name in names}
+    chosen &= {name.lower() for name in names}
+    return {name for name in chosen if not _names_custom_endpoint(home, name)} if chosen else chosen
+
+
+def _names_custom_endpoint(home: Path, name: str) -> bool:
+    """*name* resolves to one of *home*'s own ``providers:`` / ``custom_providers:`` endpoints (the
+    resolver's named-custom rung: ``named_custom_provider_config_path``), not to the provider it aliases."""
+    from gateway import config_loader
+    from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
+    try:
+        return named_custom_provider_config_path(name, config_loader.read_yaml_layers(home)) is not None
+    except Exception:  # malformed config.yaml: the resolver finds no custom entry in it either
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        return False
 
 
 # GitHub Copilot: the API provider and the Copilot CLI over ACP, ids and every alias their profiles declared.

@@ -78,6 +78,11 @@ def test_copilot_in_use_is_any_provider_slot_naming_it(tmp_path, config, env, au
     ("model:\n  provider: openrouter\n  default: github/copilot-like\n", "", None),
     ("", "", {"credential_pool": {"copilot": [{"source": "gh_cli", "access_token": "t"}]}}),
     ("model: copilot\n", "", None),  # a bare model string names a model, not a provider
+    # the user's own endpoint under a name that is also a Copilot alias: the resolver serves it as custom
+    ("model:\n  provider: github\ncustom_providers:\n  - name: github\n"
+     "    base_url: https://llm.example.test/v1\n", "", None),
+    ("model:\n  provider: github-models\nproviders:\n  github-models:\n"
+     "    base_url: https://llm.example.test/v1\n", "", None),
 ])
 def test_copilot_credentials_alone_are_not_use(tmp_path, config, env, auth):
     assert lcm.copilot_in_use(_home(tmp_path, config=config, env=env, auth=auth)) is False
