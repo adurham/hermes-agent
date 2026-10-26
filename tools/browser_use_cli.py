@@ -721,16 +721,36 @@ _real_profile_fallback: dict[str, str] = {}
 _real_profile_note_delivered: set = set()
 
 
-def stop_harness_daemons(home_key: Optional[str] = None) -> None:
+def stop_harness_daemons(home_key: Optional[str] = None, claim_aware: bool = False) -> None:
     """Stop every harness daemon this process drove (only ``home_key``'s when given), through the
     harness's own identity-checked ``--reload``; the next browser_exec respawns one on the endpoint
-    it resolves then."""
+    it resolves then.
+
+    ``claim_aware`` (process exit): a daemon another LIVE Hermes process also claims (same dirs +
+    BU_NAME, same profile) is left running and only OUR ownership record is dropped — the other owner
+    wins, exactly as in ``stop_idle_harness_daemons``; its own idle/exit stop, or the orphan sweep once
+    it dies, takes the daemon down. Without ``claim_aware`` (``/browser connect`` backend swap) the swap
+    wins: the daemon latched the old endpoint, so it is stopped even under a peer's claim, or our next
+    call would silently keep driving the old browser."""
     with _driven_daemons_lock:
-        daemons = sorted(key for key, home in _driven_daemons.items() if home_key in (None, home))
-        for key in daemons:
+        daemons = sorted((key, home) for key, home in _driven_daemons.items() if home_key in (None, home))
+        for key, _home in daemons:
             _driven_daemons.pop(key, None)
             _daemon_last_used.pop(key, None)
-    _reload_daemons(daemons)
+            _daemon_cdp.pop(key, None)
+    if not claim_aware:
+        _reload_daemons([key for key, _home in daemons])
+        return
+    for key, home in daemons:
+        token = set_hermes_home_override(home) if home else None
+        try:
+            if _other_live_owner(key):
+                forget_harness_daemon_owner(key)
+                continue
+            _reload_daemons([key])
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
 
 
 # --- harness daemon lifetime under a LIVE owner: idle stop ------------------------------------
@@ -747,6 +767,7 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
 # ever used left one immortal daemon (holding a dead CDP socket) for the life of the gateway — measured:
 # four ``browser_harness.daemon`` at ppid=1, hours idle, their spawning gateway still running.
 _daemon_last_used: dict[tuple[str, ...], float] = {}  # identity -> monotonic end of its last call
+_daemon_cdp: dict[tuple[str, ...], str] = {}  # identity -> BU_CDP_* endpoint its last call handed it
 _daemon_calls_in_flight: dict[tuple[str, ...], int] = {}
 _daemons_stopping: set = set()  # identities whose idle stop (--reload) is running right now
 _driven_daemons_cond = threading.Condition(_driven_daemons_lock)
@@ -757,15 +778,20 @@ def _monotonic() -> float:  # the idle clock (a seam: tests advance it without t
 
 
 @contextlib.contextmanager
-def _track_daemon_call(daemon: tuple[str, ...], home: str):
+def _track_daemon_call(daemon: tuple[str, ...], home: str, cdp: Optional[str] = None):
     """Mark ``daemon`` driven and busy for one CLI run; its idle clock restarts when the run ends.
 
     Waits out an idle stop already in flight for the same daemon, so a call never races the
-    ``--reload`` that is tearing its daemon down (the call then spawns a fresh one)."""
+    ``--reload`` that is tearing its daemon down (the call then spawns a fresh one). ``cdp`` is the
+    BU_CDP_* endpoint this run hands the daemon: the idle stop probes it (``_cdp_endpoint_alive``)."""
     with _driven_daemons_cond:
         while daemon in _daemons_stopping:
             _driven_daemons_cond.wait(timeout=1.0)
         _driven_daemons[daemon] = home
+        if cdp:
+            _daemon_cdp[daemon] = cdp
+        else:
+            _daemon_cdp.pop(daemon, None)
         _daemon_calls_in_flight[daemon] = _daemon_calls_in_flight.get(daemon, 0) + 1
     try:
         yield
@@ -779,21 +805,65 @@ def _track_daemon_call(daemon: tuple[str, ...], home: str):
             _daemon_last_used[daemon] = _monotonic()
 
 
-def stop_idle_harness_daemons(idle_s: float, now: Optional[float] = None) -> list:
-    """Stop daemons this process drove that have had no call for ``idle_s`` seconds; returns them.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
+_CDP_PROBE_TIMEOUT_S = 0.5
 
-    A daemon with a call in flight is never idle (a browser_exec may run up to ``_MAX_TIMEOUT_S``). Each
-    stop runs the harness's own ``--reload`` (meta:shutdown, socket/pid cleanup, cloud-browser stop) under
-    its owning profile's home, so that profile's ownership record is the one cleared."""
+
+def _cdp_endpoint_alive(cdp: Optional[str]) -> Optional[bool]:
+    """Whether something still listens on a LOOPBACK CDP endpoint (``http://``/``ws://`` host:port).
+
+    True/False for a loopback endpoint (one local TCP connect, no network); None when there is no
+    endpoint or it is remote (a cloud ``wss://``): a remote browser is never probed from the janitor."""
+    if not cdp:
+        return None
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(cdp)
+        host, port = parts.hostname, parts.port or {"http": 80, "ws": 80, "https": 443, "wss": 443}.get(parts.scheme)
+    except ValueError:
+        return None
+    if not host or not port or host.lower() not in _LOOPBACK_HOSTS:
+        return None
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1" if host == "0.0.0.0" else host, port),
+                                      timeout=_CDP_PROBE_TIMEOUT_S):
+            return True
+    except OSError:
+        return False
+
+
+def stop_idle_harness_daemons(idle_s: float, now: Optional[float] = None) -> list:
+    """Stop daemons this process drove whose Chrome is gone; returns them.
+
+    The gate is the daemon's Chrome endpoint being DEAD (nothing listening on the loopback CDP port its
+    last call handed it — the measured leak: daemons holding sockets to ports 62914/52806/... that no
+    longer existed). ``idle_s`` (``browser.inactivity_timeout``) only avoids churn around a Chrome
+    restart; it is NOT the stop signal: a daemon whose Chrome is still live is left alone however long
+    the agent pauses. Only a daemon with no loopback endpoint to probe (a remote/cloud browser, or none
+    recorded) falls back to ``idle_s`` alone, since nothing local can say whether it is still in use.
+
+    A daemon with a call in flight is never stopped (a browser_exec may run up to ``_MAX_TIMEOUT_S``).
+    The probe runs outside the lock; the in-flight/idle predicate is then re-checked and the daemon fenced
+    (``_daemons_stopping``) under the SAME lock ``_track_daemon_call`` takes, so a call can never slip
+    between the check and the stop. Each stop runs the harness's own ``--reload`` under its owning
+    profile's home, so that profile's ownership record is the one cleared."""
     now = _monotonic() if now is None else now
+
+    def idle_now(key: tuple[str, ...]) -> bool:  # caller holds _driven_daemons_cond
+        return (key in _driven_daemons and not _daemon_calls_in_flight.get(key)
+                and key not in _daemons_stopping and now - _daemon_last_used.get(key, now) >= idle_s)
+
     with _driven_daemons_cond:
-        idle = sorted(
-            (key, home) for key, home in _driven_daemons.items()
-            if not _daemon_calls_in_flight.get(key)
-            and now - _daemon_last_used.get(key, now) >= idle_s)
+        candidates = [(key, _daemon_cdp.get(key)) for key in sorted(_driven_daemons) if idle_now(key)]
+    dead = {key: cdp for key, cdp in candidates if _cdp_endpoint_alive(cdp) is not True}
+    with _driven_daemons_cond:
+        idle = sorted((key, _driven_daemons[key]) for key, cdp in dead.items()
+                      if idle_now(key) and _daemon_cdp.get(key) == cdp)
         for key, _home in idle:
             _driven_daemons.pop(key, None)
             _daemon_last_used.pop(key, None)
+            _daemon_cdp.pop(key, None)
             _daemons_stopping.add(key)
     try:
         for key, home in idle:
@@ -805,7 +875,11 @@ def stop_idle_harness_daemons(idle_s: float, now: Optional[float] = None) -> lis
                     # if that owner dies first the orphan sweep does.
                     forget_harness_daemon_owner(key)
                     continue
-                _reload_daemons([key])
+                if _reload_daemons([key]):  # failed, not yet escalated: stay driven so the next tick retries
+                    with _driven_daemons_cond:
+                        if key not in _driven_daemons:
+                            _driven_daemons[key] = home
+                            _daemon_last_used.setdefault(key, now - idle_s)
             finally:
                 if token is not None:
                     reset_hermes_home_override(token)
@@ -1127,20 +1201,120 @@ def _reap_orphans_before_driving(daemon: tuple[str, ...]) -> None:
         logger.debug("harness orphan reap failed: %s", e)
 
 
-def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with its own dirs
+# Bounded escalation for a wedged daemon. ``--reload`` asks the daemon to shut itself down; one that never
+# answers used to keep its record and be retried on every sweep forever. After this many consecutive
+# failed reloads the daemon is signalled directly — but only once its pid is PROVEN to be that daemon.
+_RELOAD_FAILURES_BEFORE_KILL = 2
+_RELOAD_TIMEOUT_S = 15
+_KILL_GRACE_S = 5.0
+# identity -> (consecutive failed reloads, (pid, start-time) fingerprint seen at the first failure)
+_reload_failures: dict[tuple[str, ...], tuple[int, Optional[tuple[int, Optional[int]]]]] = {}
+_reload_failures_lock = threading.Lock()
+
+
+def _signal_pid(pid: int, sig: int) -> None:  # a seam: tests observe which signals were sent
+    os.kill(pid, sig)
+
+
+def _pid_gone(pid: int) -> bool:
+    from gateway.status import _pid_exists  # a zombie counts as dead
+    return not _pid_exists(pid)
+
+
+def _daemon_endpoint_paths(env: dict, daemon: tuple[str, ...]) -> tuple[Path, str]:
+    denv = daemon_env(env, daemon)
+    return _harness_runtime_dir(denv), _harness_endpoint_stem(denv)
+
+
+def _daemon_fingerprint(env: dict, daemon: tuple[str, ...]) -> Optional[tuple[int, Optional[int]]]:
+    """``(pid, start-time)`` of the process the daemon's own pid file names, or None if there is none."""
+    runtime, stem = _daemon_endpoint_paths(env, daemon)
+    try:
+        pid = int((runtime / f"{stem}.pid").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if pid <= 0 or pid == os.getpid() or _pid_gone(pid):
+        return None
+    return pid, _process_start_time(pid)
+
+
+def _kill_wedged_daemon(env: dict, daemon: tuple[str, ...], seen: Optional[tuple[int, Optional[int]]]) -> None:
+    """SIGTERM, then SIGKILL, the daemon whose ``--reload`` keeps failing — only when identity is proven.
+
+    Proof: the daemon's pid file names the same pid it named at the first failed reload, and that pid's
+    start-time fingerprint (the PID-reuse guard the ownership records use) is unchanged and known. Any
+    mismatch — pid file gone or rewritten, pid recycled, fingerprint unreadable — drops the record and
+    signals NOTHING."""
+    current = _daemon_fingerprint(env, daemon)
+    if seen is None or current is None or current != seen or seen[1] is None:
+        logger.warning("browser-harness daemon %r: --reload failed %d times but its pid cannot be proven to "
+                       "be that daemon (first seen %r, now %r); dropping its record, signalling nothing",
+                       daemon, _RELOAD_FAILURES_BEFORE_KILL, seen, current)
+        forget_harness_daemon_owner(daemon)
+        return
+    pid = current[0]
+    logger.warning("browser-harness daemon %r (pid %d) ignored %d --reload attempts; terminating it",
+                   daemon, pid, _RELOAD_FAILURES_BEFORE_KILL)
+    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+        try:
+            _signal_pid(pid, sig)
+        except ProcessLookupError:
+            break
+        except OSError as e:
+            logger.warning("could not signal browser-harness daemon pid %d: %s", pid, e)
+            return  # keep the record: nothing was proven stopped
+        deadline = time.monotonic() + _KILL_GRACE_S
+        while time.monotonic() < deadline and not _pid_gone(pid):
+            time.sleep(0.05)
+        if _pid_gone(pid):
+            break
+    if not _pid_gone(pid):
+        logger.warning("browser-harness daemon pid %d survived SIGKILL; keeping its record", pid)
+        return
+    runtime, stem = _daemon_endpoint_paths(env, daemon)
+    for suffix in (".sock", ".port", ".pid"):  # what --reload would have cleaned up
+        try:
+            (runtime / f"{stem}{suffix}").unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.debug("could not remove killed daemon endpoint %s%s: %s", stem, suffix, e)
+    forget_harness_daemon_owner(daemon)
+
+
+def _reload_daemons(daemons) -> list:  # each ``daemon_identity`` daemon, with its own dirs
+    """``--reload`` each daemon; returns those whose reload failed and that were NOT escalated (retry).
+
+    A successful reload clears the record and resets the daemon's failure count. The
+    ``_RELOAD_FAILURES_BEFORE_KILL``-th consecutive failure escalates (``_kill_wedged_daemon``)."""
     cmd = _find_cli() if daemons else None
     if not cmd:
-        return
+        return []
     env = _base_subprocess_env()
+    pending = []
     for daemon in daemons:
         try:
-            _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), 15)
-        except subprocess.TimeoutExpired:
-            continue  # a wedged --reload keeps its record: the next sweep retries it
-        except (OSError, subprocess.SubprocessError) as e:
+            _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), _RELOAD_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError) as e:  # TimeoutExpired included: a wedged daemon
             logger.debug("browser-harness --reload failed for %r: %s", daemon, e)
+            with _reload_failures_lock:
+                count, seen = _reload_failures.get(daemon, (0, None))
+                count += 1
+                if count == 1:
+                    seen = _daemon_fingerprint(env, daemon)
+                if count < _RELOAD_FAILURES_BEFORE_KILL:
+                    _reload_failures[daemon] = (count, seen)
+                else:
+                    _reload_failures.pop(daemon, None)
+            if count < _RELOAD_FAILURES_BEFORE_KILL:
+                pending.append(daemon)  # keeps its record: the next tick/sweep retries it
+            else:
+                _kill_wedged_daemon(env, daemon, seen)
             continue
+        with _reload_failures_lock:
+            _reload_failures.pop(daemon, None)
         forget_harness_daemon_owner(daemon)
+    return pending
 
 
 
@@ -1177,6 +1351,7 @@ def _reload_if_republished(env: dict, generation: int) -> None:
     daemon = daemon_identity(env)
     with _driven_daemons_lock:
         _driven_daemons.pop(daemon, None)
+        _daemon_cdp.pop(daemon, None)
     _reload_daemons([daemon])
 
 
@@ -1259,7 +1434,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         record_harness_daemon_owner(daemon, env)
         try:
             # Driven + busy for the run; its idle clock (stop_idle_harness_daemons) restarts at the end.
-            with _track_daemon_call(daemon, hermes_home_key()):
+            with _track_daemon_call(daemon, hermes_home_key(), env.get("BU_CDP_WS") or env.get("BU_CDP_URL")):
                 return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
             return {"error_result": tool_error(

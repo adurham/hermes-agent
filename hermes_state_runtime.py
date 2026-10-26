@@ -203,7 +203,10 @@ _ANY_HEAD = object()
 # long turn otherwise ran as N model turns before the message the user typed after Ctrl+C (#141822).
 # FIFO holds within each class; wakes run once no person's input is queued.
 AUTOMATION_PRINCIPAL_PREFIX = 'automation:'
-QUEUED_HEAD_ORDER_SQL = "(principal_id LIKE 'automation:%'), seq"
+# GLOB, not LIKE: LIKE is ASCII case-insensitive, so ``Automation:x`` (a principal from an actor
+# subject) sorted as an internal wake in SQL but as a person in ``queued_head_key`` — the claim and
+# the preclaim checks then validated different rows. The prefix holds no GLOB metacharacters.
+QUEUED_HEAD_ORDER_SQL = "(principal_id GLOB '" + AUTOMATION_PRINCIPAL_PREFIX + "*'), seq"
 
 
 def queued_head_key(row) -> tuple:

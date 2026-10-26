@@ -251,6 +251,21 @@ delegation:
   surface_child_process_notifications: true   # default: false
 ```
 
+While the subagent that started a process is still running, that process's
+completion is **held** out of the parent chat and released when the child
+exits — or earlier, once the child has shown no activity for 30 minutes. A
+child that is stuck but still active (a retry loop) would otherwise hold it
+forever, so there is an absolute ceiling, after which the completion is
+delivered with a note that it was held past the ceiling:
+
+```yaml
+delegation:
+  completion_hold_max_seconds: 14400   # default 4h; floored at 1800
+```
+
+Held completions wait in the in-process notification queue, not the session's
+input FIFO, so they never take a slot from your own queued messages.
+
 ### Handing a process to the parent
 
 A subagent's background processes are also **killed when the subagent finishes**, so a CI watcher or build a child starts with `notify=true` never reports to anyone. The child's `terminal` result says so (`notify_on_complete: false` plus a `subagent_note`), and the child has three honest options before it finishes:

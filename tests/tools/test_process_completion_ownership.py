@@ -160,3 +160,66 @@ def test_completion_naming_its_spawner_is_never_ownerless(tmp_path, monkeypatch,
     with scoped_current_session_id(drainer):
         delivered = registry.drain_notifications(session_key=key)
     assert delivered == [], (drainer, session.id)
+
+
+def test_vetoed_by_every_drainer_reaches_a_terminal_state(tmp_path, monkeypatch, caplog):
+    """No drainer can prove it owns the spawner (A ended into C, but C never drains: the tab was
+    closed). Two sessions provably foreign to A drain repeatedly. Before the bound the completion was
+    requeued forever; now it is dropped (with a warning naming the vetoing sessions) once it has been
+    vetoed ``_SPAWNER_VETO_MAX_ATTEMPTS`` times over at least the hold ceiling — never delivered to a
+    session that proved it is not the spawner."""
+    import logging
+
+    import tools.process_registry as pr
+    from gateway.session_context import scoped_current_session_id
+
+    chat_key = "agent:main:local:dm:local-deadbeef"
+    _make_db(tmp_path, monkeypatch, sessions=[
+        ("sess-a", None, "compression"),
+        ("sess-b", "sess-a", None),
+        ("sess-c", "sess-a", None),
+        ("sess-d", None, None),
+    ])
+    now = [1_000_000.0]
+    monkeypatch.setattr(pr, "_monotonic", lambda: now[0])
+    registry = pr.ProcessRegistry()
+    session = _spawn_and_kill(registry, parent_session_id="sess-a", session_key=chat_key)
+    step = pr._completion_hold_ceiling_seconds() / (pr._SPAWNER_VETO_MAX_ATTEMPTS - 1)
+
+    terminal_at = None
+    with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
+        for n in range(1, 3 * pr._SPAWNER_VETO_MAX_ATTEMPTS):
+            drainer = ("sess-b", "sess-d")[n % 2]
+            with scoped_current_session_id(drainer):
+                assert registry.drain_notifications(session_key=chat_key) == [], (n, drainer)
+            if not _queued_completions(registry):
+                terminal_at = n
+                break
+            now[0] += step
+    assert terminal_at == pr._SPAWNER_VETO_MAX_ATTEMPTS, terminal_at
+    dropped = [r.getMessage() for r in caplog.records if "Dropping process completion" in r.getMessage()]
+    assert len(dropped) == 1 and session.id in dropped[0]
+    assert "sess-b" in dropped[0] and "sess-d" in dropped[0]
+
+
+def test_vetoes_in_a_burst_do_not_exhaust_the_owners_notice(tmp_path, monkeypatch):
+    """An idle CLI drains ~10x/s: a sibling's veto count alone must not drop the spawner's notice
+    while the spawner is merely mid-turn. The owner still receives it afterwards."""
+    import tools.process_registry as pr
+    from gateway.session_context import scoped_current_session_id
+
+    chat_key = "agent:main:local:dm:local-deadbeef"
+    _make_db(tmp_path, monkeypatch, sessions=[
+        ("sess-a", None, "compression"),
+        ("sess-b", "sess-a", None),
+        ("sess-c", "sess-a", None),
+    ])
+    registry = pr.ProcessRegistry()
+    session = _spawn_and_kill(registry, parent_session_id="sess-a", session_key=chat_key)
+    with scoped_current_session_id("sess-b"):
+        for _ in range(5 * pr._SPAWNER_VETO_MAX_ATTEMPTS):
+            assert registry.drain_notifications(session_key=chat_key) == []
+    assert [e["session_id"] for e in _queued_completions(registry)] == [session.id]
+    with scoped_current_session_id("sess-c"):
+        delivered = registry.drain_notifications(session_key=chat_key)
+    assert [evt["session_id"] for evt, _ in delivered] == [session.id]

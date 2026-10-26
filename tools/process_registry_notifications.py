@@ -540,6 +540,12 @@ def format_process_notification(evt: dict) -> str | None:
     _attribution = _delegation_attribution_line(evt)
     if evt.get("handoff_note"):
         _attribution = f"Handed off to you by a subagent before it finished. Purpose: {evt['handoff_note']}"
+    # Key literal mirrors process_registry._EVENT_HOLD_CEILING_KEY (that module imports this one).
+    _ceiling = evt.get("_event_released_at_hold_ceiling_seconds")
+    if _ceiling is not None and evt_type == "completion":
+        _note = (f"Held {_format_age(float(_ceiling))} past the delegation.completion_hold_max_seconds ceiling "
+                 f"while its subagent was still running — released now; the subagent may be stuck.")
+        _attribution = f"{_attribution}\n{_note}" if _attribution else _note
     attribution = f"{_attribution}\n" if _attribution else ""
     if evt_type == "heartbeat":
         return (
