@@ -1,9 +1,11 @@
 """A Discord allowlist written only in config.yaml (``discord.allow_from``) under multiplex.
 
-The YAML bridge copies ``allow_from`` into ``os.environ['DISCORD_ALLOWED_USERS']``, but multiplexed
-authorization reads each profile's own secret scope and never falls back to ``os.environ``. The
-user must still be admitted wherever the adapter's own intake admits them: guild channels, threads
-and component clicks. Real config loader, real ``GatewayRunner`` auth callback, real adapter.
+Multiplexed authorization reads each profile's own secret scope. The default profile's
+``DISCORD_ALLOWED_USERS`` (bridged from ``allow_from``) reaches it, but a secondary profile running
+its own bot has its list only in its adapter's config. Either way the user must be admitted wherever
+the adapter's own intake admits them: guild channels, threads and component clicks. Real
+``GatewayRunner`` auth callback and real adapter; the default-profile cases also use the real config
+loader.
 """
 
 import os
@@ -184,8 +186,6 @@ def test_secondary_profiles_own_bot_honors_its_config_allow_from_in_guild_channe
 
     home = Path(os.environ["HERMES_HOME"])
     (home / "profiles" / "kody").mkdir(parents=True)
-    (home / "profiles" / "kody" / ".env").write_text("DISCORD_BOT_TOKEN=kody-token\n", encoding="utf-8")
-    (home / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
     (home / ".env").write_text("DISCORD_BOT_TOKEN=test-token\nDISCORD_ALLOWED_USERS=999\n", encoding="utf-8")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "999")  # the default profile's live env
     prev = secret_scope.is_multiplex_active()
