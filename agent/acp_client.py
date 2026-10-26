@@ -43,6 +43,8 @@ from agent.runtime_cwd import resolve_agent_cwd
 
 logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+# ACP JSON-RPC error code meaning "authentication required" (the agent CLI is not signed in).
+_ACP_AUTH_REQUIRED = -32000
 _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "tool": "Tool", "context": "Context"}
 # Probe verdicts per binary path (~50ms --help paid once per process). Only definitive
 # True/False is cached, so a CLI installed mid-session is picked up.
@@ -290,6 +292,9 @@ class ACPClient:
     label: str = "ACP"
     #: Error text after "Could not start <label> command '<cmd>'." (default names ``command_env_vars``).
     missing_command_hint: str = ""
+    #: Sentence appended when the agent answers a request with ACP's auth-required error (code -32000),
+    #: e.g. the CLI's own login command; None = the agent's message alone.
+    auth_required_hint: str | None = None
     #: Error text after the ``--acp`` probe rejects the CLI.
     unsupported_transport_hint: str = (
         "Either install a CLI release that supports --acp, or point the provider at a working command/args pair.")
@@ -308,6 +313,11 @@ class ACPClient:
     def _resolve_args(self) -> list[str]:
         override = os.getenv(self.args_env_var, "").strip() if self.args_env_var else ""
         return shlex.split(override) or list(self.default_args)
+
+    def _request_error(self, method: str, err: Any) -> str:
+        text = f"{self.label} {method} failed: {(err.get('message') if isinstance(err, dict) else None) or err}"
+        auth_required = isinstance(err, dict) and err.get("code") == _ACP_AUTH_REQUIRED
+        return f"{text} {self.auth_required_hint}" if auth_required and self.auth_required_hint else text
 
     def _missing_command_hint(self) -> str:
         if self.missing_command_hint:
@@ -455,8 +465,7 @@ class ACPClient:
                 ) or msg.get("id") != request_id:
                     continue
                 if "error" in msg:
-                    err = msg.get("error") or {}
-                    raise RuntimeError(f"{self.label} {method} failed: {err.get('message') or err}")
+                    raise RuntimeError(self._request_error(method, msg.get("error") or {}))
                 return msg.get("result")
             if proc.poll() is not None:
                 # The pump can still hold the crash text when poll() first sees the exit; reading

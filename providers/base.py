@@ -663,6 +663,11 @@ class ProviderProfile:
         """Subprocess-free ``(verified, source)`` login evidence for an external CLI; None = binary resolves."""
         return None
 
+    def missing_credentials_hint(self) -> str | None:
+        """One sentence appended to every "No usable credentials found" surface (runtime resolution, CLI and
+        Desktop readiness), e.g. the provider's own sign-in command; None = the generic message alone."""
+        return None
+
     # ── Lane L3: Responses-route quirks and message-level reasoning carriers ───
     # Every field and hook below applies only on hosts the profile declares in ``hostnames``;
     # the defaults are the generic wire. Hot path: answers must be pure and cheap (no I/O). A hook that

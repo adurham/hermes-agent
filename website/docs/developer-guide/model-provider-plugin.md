@@ -308,6 +308,7 @@ meaning says otherwise.
 | `credential_refresh_notice()` | Status line after a successful runtime refresh | `""` (generic wording) |
 | `request_rejection_hint()` | User-facing lines for an endpoint's hard rejection of any route | `()` |
 | `external_auth_evidence()` | Subprocess-free `(verified, source)` login evidence for an external CLI | `None` (binary resolves) |
+| `missing_credentials_hint()` | One sentence appended to every "No usable credentials found" message (runtime resolution, CLI and Desktop readiness), e.g. the provider's sign-in command | `None` |
 | `responses_replay_item_ids` | Replayed Responses `message` items keep their `id` | `True` |
 | `responses_prompt_cache_key` | The Responses body carries `prompt_cache_key` | `True` |
 | `responses_issuer_kind` | Persisted issuer stamp for encrypted reasoning minted here | `""` (URL-derived) |
@@ -406,6 +407,7 @@ class MyAgentClient(ACPClient):
     marker_base_url = "acp://myagent"
     placeholder_model = "myagent-acp"      # "session default": never sent as a model selection
     label = "MyAgent ACP"                  # product name in errors and logs
+    auth_required_hint = "Run `myagent login`, then retry."  # optional: added to ACP's auth-required error (-32000)
 
     def model_entry_disabled(self, entry):  # optional: vendor _meta marking a model unavailable
         return False

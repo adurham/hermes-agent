@@ -902,7 +902,8 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
     # An explicitly selected API-key provider is authoritative: an empty key would defer failure
     # to the first request and make a later fallback look like a silent provider switch.
     if not has_usable_secret(creds.get("api_key")):
-        hint = f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else ""
+        from hermes_cli.runtime_readiness import missing_credentials_suffix
+        hint = (f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else "") + missing_credentials_suffix(provider)
         raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
     # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
     base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))

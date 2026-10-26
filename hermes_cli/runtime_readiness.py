@@ -6,6 +6,15 @@ failure (naming the configured pin, never the fallback chain's tail), ``free_tie
 """
 
 
+def missing_credentials_suffix(provider) -> str:
+    """``" <hint>"`` from *provider*'s profile (``ProviderProfile.missing_credentials_hint``) for a
+    "No usable credentials found" message, else ``""``."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(str(provider or "").strip().lower()) if provider else None
+    hint = profile.missing_credentials_hint() if profile is not None else None
+    return f" {hint.strip()}" if hint and hint.strip() else ""
+
+
 def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resolve=None):
     """ok/error verdict for the runtime a session would be built with.
 
@@ -52,7 +61,7 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
     api_key_text = '' if callable(api_key) else str(api_key or '').strip()
     if not (callable(api_key) or api_key_text in {'aws-sdk', 'no-key-required'}
             or has_usable_secret(api_key_text) or bool(runtime.get('command'))):
-        return fail(f'No usable credentials found for {blamed}.', runtime.get('source'))
+        return fail(f'No usable credentials found for {blamed}.{missing_credentials_suffix(blamed)}', runtime.get('source'))
     from hermes_cli.anon_auth import route_is_welcome_host
     # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
     # on profile state: a paid Nous key beside a free-tier identity must not read as free.
