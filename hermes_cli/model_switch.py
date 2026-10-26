@@ -1707,7 +1707,8 @@ def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Opti
         from providers import get_provider_profile
         profile = get_provider_profile(key)
         if profile is not None:
-            return profile.api_mode_for_model(model, api_key=api_key or "")
+            from agent.provider_route_hooks import model_api_mode
+            return model_api_mode(profile, model, api_key=api_key or "")
     return override(key, model, api_key) if override is not None else None
 
 

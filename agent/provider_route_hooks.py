@@ -137,6 +137,25 @@ def ask_on_error_path(profile: Any, hook: str, fallback: Any, **kwargs: Any) -> 
 _ERROR_PATH_WARNED: set[tuple] = set()
 
 
+def model_api_mode(profile: Any, model: str, *, api_key: str | None = None) -> str | None:
+    """*profile*'s ``api_mode_for_model`` answer for *model* (None = no per-model wire). The ONE guard for
+    resolution, ``/model``, resume and the agent: a raising hook (a live catalog fetch, a lost plugin host)
+    answers the profile's declared ``api_mode``, logged with its traceback once per provider per process,
+    so a model pick never fails where runtime resolution succeeded."""
+    try:
+        return profile.api_mode_for_model(model, api_key=api_key)
+    except Exception:  # health: allow BLE001 -- plugin hook boundary; logged with traceback once below
+        name = getattr(profile, "name", "?")
+        if name not in _API_MODE_WARNED:
+            _API_MODE_WARNED.add(name)
+            logger.warning("provider %s: api_mode_for_model failed; using its declared api_mode", name,
+                           exc_info=True)
+        return profile.api_mode or "chat_completions"
+
+
+_API_MODE_WARNED: set[str] = set()
+
+
 def route_answer(hook: str, *, provider: str = "", scope: Any = None, **kwargs: Any) -> Any:
     """First truthy answer of *hook* across ``route_profiles``; None when no profile claims the endpoint.
     Failures follow ``ask_profile``'s policy (*scope* = the agent, when there is one)."""

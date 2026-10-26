@@ -5300,10 +5300,10 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
-    # A profile serving this model only on the Responses API: route call_llm() through responses.stream().
+    from agent.provider_route_hooks import model_api_mode  # a Responses-only model: call_llm() streams responses
     from providers import get_provider_profile
     profile = get_provider_profile(provider) if final_model and not req.raw_codex else None
-    if profile is not None and profile.api_mode_for_model(final_model) == "codex_responses":
+    if profile is not None and model_api_mode(profile, final_model) == "codex_responses":
         logger.debug("resolve_provider_client: %s model %s needs Responses API — wrapping", provider, final_model)
         client = CodexAuxiliaryClient(client, final_model)
     # api_mode handling for any API-key provider (direct OpenAI + codex model) and Anthropic-wire

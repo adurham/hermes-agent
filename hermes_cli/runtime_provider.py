@@ -275,6 +275,7 @@ def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key:
                               target_model: Optional[str] = None) -> str:
     """api_mode for a provider that routes per model: its hard per-model wire wins over a stale persisted
     ``codex_responses`` (pure check, no network); otherwise the profile decides with the live key."""
+    from agent.provider_route_hooks import model_api_mode
     profile = _per_model_profile(provider)
     configured_mode = _configured_api_mode(provider, model_cfg)
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
@@ -285,19 +286,13 @@ def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key:
         # switch to a chat-only model) must not override the provider's per-model requirement: the
         # Responses request silently succeeds but returns no reasoning content (#46527).
         if (configured_mode == "codex_responses" and model_name and profile is not None
-                and profile.api_mode_for_model(model_name) == "chat_completions"):
+                and model_api_mode(profile, model_name) == "chat_completions"):
             return "chat_completions"
         return configured_mode
     if profile is None:
         return "chat_completions"
     declared = profile.api_mode or "chat_completions"  # the hook's None means "keep the static api_mode"
-    if not model_name:
-        return declared
-    try:
-        return profile.api_mode_for_model(model_name, api_key=api_key) or declared
-    except Exception:  # plugin hook (live catalog fetch): degrade to the declared wire, never fail resolution
-        logger.debug("%s api_mode_for_model(%s) failed", provider, model_name, exc_info=True)
-        return declared
+    return (model_api_mode(profile, model_name, api_key=api_key) or declared) if model_name else declared
 
 
 def _azure_inferred_api_mode(effective_model: str, api_mode: str) -> str:
