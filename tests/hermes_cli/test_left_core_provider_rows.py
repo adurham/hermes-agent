@@ -202,3 +202,62 @@ def test_models_dev_never_stands_in_for_a_provider_whose_plugin_left_core(acme_r
 def test_a_row_without_notice_adds_nothing(tmp_path):
     feature = replace(ACME, notice=lcm._no_notice)
     assert lcm._noticed("x", tmp_path, feature, False) == "x"
+
+
+# ── hosts: a route at the plugin's host is use, whatever provider name it goes by ─────────────────
+
+
+@pytest.mark.parametrize("config", [
+    "model:\n  provider: custom\n  base_url: https://api.githubcopilot.com\n",
+    "model:\n  provider: work\ncustom_providers:\n  - name: work\n    base_url: https://api.business.githubcopilot.com\n",
+    "providers:\n  gh:\n    base_url: https://models.github.ai/inference\n",
+    "auxiliary:\n  vision:\n    provider: custom\n    base_url: https://api.enterprise.githubcopilot.com/\n",
+    "delegation:\n  provider: custom\n  base_url: https://api.githubcopilot.com\n",
+    "fallback_providers:\n  - provider: custom\n    base_url: https://api.githubcopilot.com\n    model: gpt-5.4\n",
+])
+def test_a_route_at_the_rows_host_is_use(tmp_path, config):
+    feature = next(f for f in lcm.LEFT_CORE if f.plugin == "github-copilot")
+    assert lcm.feature_in_use(feature, _home(tmp_path, config=config)) is True
+
+
+@pytest.mark.parametrize("url", ["https://githubcopilot.com.evil.test/v1", "https://evil.test/api.githubcopilot.com"])
+def test_a_lookalike_host_is_not_use(tmp_path, url):
+    feature = next(f for f in lcm.LEFT_CORE if f.plugin == "github-copilot")
+    home = _home(tmp_path, config=f"model:\n  provider: custom\n  base_url: {url}\n")
+    assert lcm.feature_in_use(feature, home) is False
+
+
+def test_a_request_rejected_at_the_rows_host_names_the_install(acme_row, monkeypatch, capsys):
+    from agent.error_classifier import classify_api_error
+    from agent.turn_recovery import nonretryable_client_error_result
+    monkeypatch.setattr(lcm, "LEFT_CORE", (replace(ACME, hosts=("acme.test",)),))
+    printed = []
+
+    class _Rejected(Exception):
+        status_code = 400
+
+    class _Agent:
+        log_prefix = ""
+
+        def _summarize_api_error(self, error):
+            return str(error)
+
+        def _vprint(self, line, **kw):
+            printed.append(line)
+
+        def __getattr__(self, name):
+            return lambda *a, **kw: None
+
+    def reject(base_url):
+        printed.clear()
+        error = _Rejected("HTTP 400: bad request")
+        nonretryable_client_error_result(
+            _Agent(), error, classify_api_error(error, provider="custom", model="m"), status_code=400,
+            api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=1,
+            approx_tokens=10, provider="custom", base_url=base_url, model="m")
+        return "\n".join(printed)
+    assert "hermes plugins install acme-llm" in reject("https://api.eu.acme.test/v1")
+    assert "acme-llm" not in reject("https://api.other.test/v1")
+    import providers
+    monkeypatch.setattr(providers, "get_provider_profile", lambda name: object())  # the plugin is loaded
+    assert "acme-llm" not in reject("https://api.eu.acme.test/v1")

@@ -230,15 +230,16 @@ def camofox_in_use(home: Path, *, process_env: bool = False) -> bool:
     return bool(_home_env(home, "CAMOFOX_URL", process_env=process_env))
 
 
-def _provider_choices(home: Path) -> set[str]:
-    """Every provider *home* routes inference through, read with core's own loaders: config.yaml with the
-    managed overlay (``read_yaml_layers``): ``model``, the fallback chain (``get_fallback_chain``: legacy
+def _route_slots(home: Path) -> list[dict]:
+    """Every inference route *home* configures, read with core's own loaders: config.yaml with the managed
+    overlay (``read_yaml_layers``): ``model``, the fallback chain (``get_fallback_chain``: legacy
     ``fallback_model`` merged), each ``auxiliary.<task>``, ``delegation`` and its fallback chain, every
     delegation backend route (:func:`_delegation_backend_routes`) and its chain, every MoA preset's reference
-    models and aggregator (``normalize_moa_config``); the ``auth.json`` ``active_provider`` the resolver's auto
-    rung follows; the cron-wide ``cron.model_provider`` and the provider each cron job pinned."""
+    models and aggregator (``normalize_moa_config``), the cron-wide ``cron.model_provider``, each cron job's pin
+    and the user's own ``providers:`` / ``custom_providers:`` endpoints (``get_compatible_custom_providers``)."""
     from cron.scheduler_preflight import cron_default_provider
     from gateway import config_loader
+    from hermes_cli.config_providers import get_compatible_custom_providers
     from hermes_cli.fallback_config import get_fallback_chain
     from hermes_cli.moa_config import normalize_moa_config
     try:
@@ -250,6 +251,7 @@ def _provider_choices(home: Path) -> set[str]:
 
     def block(value) -> dict:
         return value if isinstance(value, dict) else {}
+
     def with_chain(slot: dict) -> list[dict]:
         return [slot, *get_fallback_chain({"fallback_providers": slot.get("fallback_providers")})]
     delegation = block(cfg.get("delegation"))
@@ -259,15 +261,29 @@ def _provider_choices(home: Path) -> set[str]:
         slots += [*map(block, preset.get("reference_models") or []), block(preset.get("aggregator"))]
     for route in _delegation_backend_routes(delegation):
         slots += with_chain(route)
+    slots += [{"base_url": entry.get("base_url")} for entry in get_compatible_custom_providers(cfg)]
     import json
     try:
         jobs = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8-sig")).get("jobs")
     except (OSError, ValueError, AttributeError):  # no (readable) job store: no pins
         jobs = None
-    slots += [block(job) for job in jobs] if isinstance(jobs, list) else []
-    chosen = {str(slot.get("provider") or "").strip().lower() for slot in slots}
+    return slots + ([block(job) for job in jobs] if isinstance(jobs, list) else [])
+
+
+def _provider_choices(home: Path) -> set[str]:
+    """Every provider *home* routes inference through (:func:`_route_slots`), plus the ``auth.json``
+    ``active_provider`` the resolver's auto rung follows."""
+    chosen = {str(slot.get("provider") or "").strip().lower() for slot in _route_slots(home)}
     chosen.add(str(_auth_store(home).get("active_provider") or "").strip().lower())
     return chosen - {""}
+
+
+def routes_at_hosts(home: Path, hosts: tuple[str, ...]) -> bool:
+    """A route *home* configures (:func:`_route_slots`) has its ``base_url`` at one of *hosts* (the host or
+    a subdomain), whatever provider name it goes by (``custom``, a named endpoint)."""
+    from utils import base_url_host_matches
+    urls = {str(slot.get("base_url") or "").strip() for slot in _route_slots(home)} - {""} if hosts else set()
+    return any(base_url_host_matches(url, host) for url in urls for host in hosts)
 
 
 def _delegation_backend_routes(delegation: dict) -> list[dict]:
@@ -407,6 +423,11 @@ class LeftCoreFeature:
     # absent (executable/argv authority its profile otherwise declares). Read statically: env_loader runs
     # before provider discovery.
     profile_env: tuple[str, ...] = ()
+    # Hosts the plugin's providers serve (a host covers its subdomains). Core attached their wire quirks by
+    # host for any provider name, so a home with a route at one (a ``custom`` endpoint included) uses the
+    # feature (:func:`feature_in_use`), and a request rejected there names the install
+    # (:func:`host_install_hint`).
+    hosts: tuple[str, ...] = ()
     # (home, *, process_env=False) -> str: one more sentence for every migration outcome in *home* (a
     # credential source core read that the plugin does not, and the command that replaces it), "" = none.
     notice: Callable[..., str] = _no_notice
@@ -470,7 +491,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         unchanged="your COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN and `hermes auth add copilot` logins, model "
                   "names and copilot-acp settings are unchanged",
         private_env=("COPILOT_GITHUB_TOKEN", "COPILOT_API_BASE_URL", "COPILOT_ACP_BASE_URL"),
-        providers=_COPILOT_API + _COPILOT_ACP,
+        providers=_COPILOT_API + _COPILOT_ACP, hosts=("githubcopilot.com", "models.github.ai"),
         profile_env=("HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH",
                      "COPILOT_ACP_BASE_URL"),
         notice=copilot_relogin_notice,
@@ -529,6 +550,23 @@ def provider_left_core(name: str) -> bool:
     return get_provider_profile(str(name).strip().lower()) is None
 
 
+def feature_in_use(feature: LeftCoreFeature, home: Path, *, process_env: bool = False) -> bool:
+    """*home* uses *feature*: its :attr:`~LeftCoreFeature.in_use` predicate, or a configured route at one of
+    its :attr:`~LeftCoreFeature.hosts` (:func:`routes_at_hosts`)."""
+    return feature.in_use(home, process_env=process_env) or bool(feature.hosts and routes_at_hosts(home, feature.hosts))
+
+
+def host_install_hint(base_url: str) -> str:
+    """For a request rejected by an endpoint at a host a left-core plugin serves while none of that plugin's
+    providers is registered (core attached the host's wire quirks itself): the install (or enable) sentence
+    for the active home, else ``""``. Printed with non-retryable request errors."""
+    from utils import base_url_host_matches
+    feature = next((f for f in LEFT_CORE if any(base_url_host_matches(str(base_url or ""), h) for h in f.hosts)), None)
+    if feature is None or not all(provider_left_core(name) for name in feature.providers):
+        return ""
+    return provider_install_hint(feature.providers[0])
+
+
 def recover_for_provider(name: Optional[str]) -> None:
     """Runtime resolution of *name*, a provider a left-core plugin supplies, in a home that uses it and lacks
     the plugin: run :func:`recover_at_startup` now. The CLI and Desktop resolve the provider before the agent
@@ -544,7 +582,7 @@ def recover_for_provider(name: Optional[str]) -> None:
         return
     if plugin_present(feature.plugin, home) or get_provider_profile(str(name).strip().lower()) is not None:
         return
-    if feature.in_use(home, process_env=True):
+    if feature_in_use(feature, home, process_env=True):
         recover_at_startup()
 
 
@@ -654,7 +692,7 @@ def record_core_use(home: Path, config: dict, version: int) -> bool:
     core-era setup): mark every row that left core at *version* and that *home* uses. Returns whether
     *config* changed. The launch home's process env counts, as at agent start."""
     used = [feature for feature in LEFT_CORE if feature.left_at == version
-            and not _marked(config, _USED_KEY, feature) and feature.in_use(home, process_env=True)]
+            and not _marked(config, _USED_KEY, feature) and feature_in_use(feature, home, process_env=True)]
     for feature in used:
         _mark(config, _USED_KEY, feature)
     return bool(used)
@@ -783,7 +821,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
     for feature in LEFT_CORE:
         if _marked(_read_config(home), _INSTALLED_KEY, feature):
             continue
-        if not feature.in_use(home, process_env=process_env):
+        if not feature_in_use(feature, home, process_env=process_env):
             continue
         if not _predates_split(home, feature):
             _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
@@ -1010,5 +1048,5 @@ def recover_for_command(name: Optional[str]) -> None:
     from hermes_constants import get_hermes_home
     home = Path(get_hermes_home())
     if any(name and name in (f.cli, f.command, *f.old_cli) and not plugin_present(f.plugin, home)
-           and f.in_use(home) for f in LEFT_CORE):
+           and feature_in_use(f, home) for f in LEFT_CORE):
         recover_at_startup(say=lambda message: print(message, file=sys.stderr))

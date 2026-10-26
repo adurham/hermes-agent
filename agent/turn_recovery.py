@@ -1053,6 +1053,9 @@ def nonretryable_client_error_result(
         )
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     _prefix_suggestion = _missing_vendor_prefix_suggestion(api_error, provider, model)
+    from hermes_cli.left_core_migration import host_install_hint
+    if _moved_hint := host_install_hint(base_url):  # a host whose plugin left core: install it first
+        _vlines(agent, f"   💡 {_moved_hint}")
     if _welcome_hint:
         # A free-tier gate or a wrong-host refusal: the way forward is a sign-in or another
         # provider, never the key/credits advice below.
