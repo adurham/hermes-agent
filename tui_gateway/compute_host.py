@@ -412,6 +412,8 @@ class ComputeHost:
                 "tool_started_at": {}, "model_override": frame.get("model_override"),
                 "source": server._resolve_session_source(frame.get("source")),
                 "transport": self._transport}
+            # The fallback bypasses _init_session, which is what normally starts the reaper.
+            server._ensure_idle_reaper_started()
         session = server._sessions[sid]
         session["transport"] = self._transport
         # The host pipe names no login; the record carries the one the gateway stamped at creation.

@@ -14,6 +14,7 @@ import math
 import os
 import time
 import uuid
+import weakref
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -415,6 +416,45 @@ class ActiveSessionLease:
         release_active_session(self)
 
 
+# ── What this PROCESS owns, per backend ─────────────────────────────────────────
+# The registry entry is the cross-process proof that somebody owns a session. A process that runs an
+# orphan sweep needs its OWN proof that it still holds a lease, and one backend's session map is not
+# it: a process can hold leases no TUI session record owns (the messaging gateway claims one per
+# live local turn in ``gateway/run_busy._claim_active_session_slot``, the CLI holds its session
+# lease). Each backend registers itself here and is asked for the ids its LIVE turns hold; a lease
+# no live owner reports stays reclaimable, so the sweep's safety net (#62823) is unchanged.
+# Keying the sweep on ``tui_gateway``'s session map alone is what let a process reclaim its own live
+# leases once the sync put ``tui_gateway.server`` on the gateway's RPC paths (#145177 class).
+_LEASE_SOURCES: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def register_lease_source(owner: Any) -> None:
+    """Let ``owner`` (a runner/backend holding live turns) vouch for the leases it currently
+    holds. It must expose ``live_active_session_lease_ids() -> Iterable[str]``. Weakly held: a
+    retired backend stops being consulted, and its leases become reclaimable again."""
+    if owner is not None:
+        _LEASE_SOURCES.add(owner)
+
+
+def held_lease_ids() -> Optional[set[str]]:
+    """Ids of the leases this process's registered backends report holding right now.
+
+    Fails CLOSED: if any source cannot answer, returns ``None`` ("ownership unknown") rather than
+    the other sources' ids. Dropping the broken source would make its live leases look orphaned and
+    the sweep would reclaim them — the exact bug this registry exists to prevent.
+    ``_drop_self_orphans`` treats ``None`` as "keep every lease", so the sweep is skipped.
+    """
+    ids: set[str] = set()
+    for owner in list(_LEASE_SOURCES):
+        try:
+            ids |= {str(lease_id) for lease_id in (owner.live_active_session_lease_ids() or ()) if lease_id}
+        except Exception:
+            logger.warning("lease source %r failed; skipping orphaned-lease reclaim this pass",
+                           owner, exc_info=True)
+            return None
+    return ids
+
+
 def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {str(k): v for k, v in metadata.items() if isinstance(k, str)}
 
@@ -513,6 +553,7 @@ def try_acquire_active_session(
         lease_id=lease_id, session_id=key, surface=str(surface), state_path=state_path,
         lock_path=lock_path, track_liveness=track_liveness,
     )
+
     with _FileLock(lock_path):
         # A capacity cap could degrade open; exclusivity cannot: "could not
         # prove ownership" must never become "no owner exists".
@@ -662,7 +703,7 @@ def _drop_self_orphans(
     ]
 
 
-def _release_orphaned_leases_in_home(registry_home: Path, live_lease_ids: set[str]) -> int:
+def _release_orphaned_leases_in_home(registry_home: Path, live_lease_ids: set[str] | None) -> int:
     state_path = _state_path(registry_home)
     # No registry file yet means no leases have ever been written under this
     # home — don't take a lock (or create its file) on the idle-reaper tick.
@@ -684,8 +725,10 @@ def _release_orphaned_leases_in_home(registry_home: Path, live_lease_ids: set[st
         return dropped
 
 
-def release_orphaned_leases(live_lease_ids: set[str]) -> int:
+def release_orphaned_leases(live_lease_ids: set[str] | None) -> int:
     """Drop this process's registry entries that no live session owns.
+
+    ``None`` means the caller could not prove which leases it owns: nothing is dropped.
 
     ``_prune_dead`` only reclaims leases of dead processes, so on a days-long server a
     lease whose session skipped teardown is held until restart. The owning process is the
@@ -699,6 +742,8 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     except OSError:
         pass
 
+    if live_lease_ids is None:
+        return 0
     dropped = 0
     for home in homes:
         try:

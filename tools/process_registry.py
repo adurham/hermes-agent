@@ -1620,6 +1620,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 "session_key": session.session_key,
                 "task_id": session.task_id,
                 "owner_task_id": session.owner_task_id,
+                # The durable spawner. ``session_key`` names the ROUTE (a chat), which every
+                # session of one compression lineage — and every subagent of that chat —
+                # shares; only this id says which session may consume the completion. Without
+                # it the drain could not apply the lineage proof the receipt reader already
+                # uses, and a sibling/rotated session holding the key took the notice.
+                "parent_session_id": session.parent_session_id,
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
@@ -1814,8 +1820,33 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             return False
 
     @staticmethod
-    def _owns_event(evt: dict, session_key: str, owns_event, is_async_delegation: bool) -> bool:
+    def _spawner_veto(evt: dict, session_id: str) -> bool:
+        """True when this event names a spawner the drainer provably does NOT own.
+
+        Route-key equality is not ownership: a mid-turn compression, a resumed tab and every
+        subagent of the chat all hold the spawner's ``session_key``. The completion therefore
+        carries ``parent_session_id`` and the drain applies the same compression-lineage proof
+        the durable receipt reader uses (``process_registry_results.spawner_lineage``). Only a
+        proven "not mine" vetoes, so a notice a lineage cannot decide (a delegated child's, a
+        pre-upgrade event, another profile's session) still routes by key exactly as before.
+        """
+        if evt.get("type") != "completion" or not session_id:
+            return False
+        parent = str(evt.get("parent_session_id") or "").strip()
+        if not parent:
+            return False
+        from tools.process_registry_results import spawner_lineage
+
+        return spawner_lineage(session_id, parent) is False
+
+    @staticmethod
+    def _owns_event(evt: dict, session_key: str, owns_event, is_async_delegation: bool,
+                    session_id: str = "") -> bool:
         """Routing verdict for one drained event (see drain_notifications); False = requeue."""
+        # A proven-foreign spawner beats every positive check below, including a consumer's
+        # own ``owns_event`` (which cannot see lineage): the notice stays for its owner.
+        if ProcessRegistry._spawner_veto(evt, session_id):
+            return False
         evt_session_key = str(evt.get("session_key") or "")
         requires_positive_proof = is_async_delegation or bool(evt_session_key or evt.get("origin_ui_session_id"))
         if owns_event is not None and requires_positive_proof:
@@ -1853,15 +1884,25 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
+        session_id: str = "",
     ) -> list[tuple[dict, str]]:
         """Pop all pending events and return ``(raw_event, formatted_text)`` pairs.
         Skips completions per ``_drain_should_skip`` (gateway/TUI pass
-        ``skip_poll_observed=False``). Routing (``_owns_event``): async-delegation events
-        always need ownership proof, ordinary events once they carry ``session_key`` or
-        ``origin_ui_session_id``; ``owns_event(evt)`` (strongest; the TUI passes a
-        compression-chain-aware check) consumes ONLY on True, ``session_key`` uses plain
-        equality; non-owned events are re-queued for their owner. No filter consumes
-        everything (legacy single-session) except restored delegation payloads (fail-closed)."""
+        ``skip_poll_observed=False``). Routing (``_owns_event``): a completion that names a
+        spawner this session does not own by compression lineage is requeued before any other
+        check; then async-delegation events always need ownership proof, ordinary events once
+        they carry ``session_key`` or ``origin_ui_session_id``; ``owns_event(evt)`` (strongest;
+        the TUI passes a compression-chain-aware check) consumes ONLY on True, ``session_key``
+        uses plain equality; non-owned events are re-queued for their owner. No filter consumes
+        everything (legacy single-session) except restored delegation payloads (fail-closed).
+
+        ``session_id`` is the drainer's durable session id; when omitted it is read from the
+        bound session context — the same source ``load_completed_results`` uses, so the live
+        and retained routes agree on who the reader is.
+        """
+        if not session_id:
+            from gateway.session_context import get_session_env
+            session_id = get_session_env("HERMES_SESSION_ID", "")
         self.restore_completions()
         results: list[tuple[dict, str]] = []
         requeue: list[dict] = []
@@ -1909,7 +1950,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # they carry routing metadata. Ownerless ordinary events preserve
             # legacy single-session delivery.
             is_async_delegation = evt.get("type") == "async_delegation"
-            if not self._owns_event(evt, session_key, owns_event, is_async_delegation):
+            if not self._owns_event(evt, session_key, owns_event, is_async_delegation, session_id):
                 requeue.append(evt)
                 continue
             # Routing happened first so a foreign session cannot drop the owner's
@@ -2828,6 +2869,31 @@ def event_owner_still_running(evt: dict) -> bool:
     return False
 
 
+def _owner_idle_seconds(evt: dict) -> Optional[float]:
+    """Seconds since the owning subagent's activity clock last ticked, or None when unknown.
+
+    Read off the live registry record's agent (``get_activity_summary()["last_activity_ts"]`` — the
+    same clock the delegation heartbeat's stale verdict and ``child_timeout_seconds`` read, ticking on
+    every API call, tool start and in-flight model wait). ``list_active_subagents`` strips the agent
+    object, so the record is read directly. Never raises.
+    """
+    task_id = evt.get("owner_task_id") or evt.get("task_id")
+    if not isinstance(task_id, str) or not task_id.startswith("sa-"):
+        return None
+    try:
+        from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+
+        with _active_subagents_lock:
+            record = _active_subagents.get(task_id)
+            agent = record.get("agent") if record else None
+        if agent is None:
+            return None
+        ts = (agent.get_activity_summary() or {}).get("last_activity_ts")
+        return max(0.0, time.time() - float(ts)) if ts is not None else None
+    except Exception:
+        return None
+
+
 def should_hold_completion_event(evt: dict) -> bool:
     """True when a completion event must be held because its owning subagent
     is still running.
@@ -2839,11 +2905,18 @@ def should_hold_completion_event(evt: dict) -> bool:
 
     Returns False unless the event is a ``completion`` whose owner is still
     live (``event_owner_still_running``). On first hold it stamps the
-    ``_event_held_at_monotonic`` key on the event so the hold duration is
-    measured from first-hold rather than from enqueue time. Returns True
-    only while the hold remains under the max-hold bound; once the bound is
-    exceeded (a wedged-but-alive child must not pin the event forever) it
-    returns False, releasing the event to the parent regardless of liveness.
+    ``_event_held_at_monotonic`` key on the event (the stamp also tells
+    the delivery gates that the event was held and is releasing via the
+    attributed orphan path).
+
+    The max-hold bound releases a WEDGED-but-alive child's event, so it
+    measures the owner's INACTIVITY: the event is released only once it has
+    been held for ``_EVENT_MAX_HOLD_SECONDS`` AND the owner's activity clock
+    has not ticked for that long. A child still making progress keeps its
+    completions until it finishes — a wall-clock stopwatch from first hold
+    released every completion of a long-running child into the parent chat
+    exactly 30 minutes in, mid-task. When the owner exposes no activity clock
+    the bound falls back to time-since-first-hold.
     """
     if evt.get("type") != "completion":
         return False
@@ -2853,7 +2926,10 @@ def should_hold_completion_event(evt: dict) -> bool:
     if held_at is None:
         held_at = _monotonic()
         evt[_EVENT_HELD_AT_KEY] = held_at
-    return _monotonic() - held_at < _EVENT_MAX_HOLD_SECONDS
+    if _monotonic() - held_at < _EVENT_MAX_HOLD_SECONDS:
+        return True
+    idle = _owner_idle_seconds(evt)
+    return idle is not None and idle < _EVENT_MAX_HOLD_SECONDS
 
 
 # --- the "process_manage" tool schema + handler -----------------------------------

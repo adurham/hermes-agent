@@ -440,6 +440,9 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         _register_session_cwd(_sessions[sid])
         if idem_key is not None:
             _idempotency_keys[idem_key] = (sid, now)
+    # This backend now serves a session: start its idle reaper (TTL eviction, flush, WS-orphan repair,
+    # session cap, orphan-lease reclaim). session.create bypasses _init_session, so it must start it too.
+    _ensure_idle_reaper_started()
     if session_model_override:
         # A composer pick rides in as this override and beats model.default for the whole session;
         # name both so agent.log alone explains which model a new chat runs, and why (#107410).

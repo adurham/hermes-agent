@@ -6,6 +6,7 @@ instead of default browser tools
 
 import contextlib
 import functools
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -20,7 +21,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_constants import (get_hermes_home, hermes_home_key, reset_hermes_home_override,
+                              set_hermes_home_override)
 from tools.browser_harness_dirs import daemon_env, daemon_identity, namespace_harness_dirs
 from utils import is_truthy_value
 
@@ -671,6 +673,18 @@ def _kill_cli_process_group(proc) -> None:
         os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX only, the nt branch returned above
 
 
+def _reap_dead_child(proc) -> None:
+    """``wait()`` a child we just SIGKILLed so it never lingers as ``<defunct>``.
+
+    The drain after a group kill can still time out when a process OUTSIDE the group holds the capture
+    pipes; the child itself is already dead, but its ``Popen`` handle stays referenced by the
+    ``TimeoutExpired`` traceback callers may keep, so nothing reaps it. ``wait()`` blocks on the PROCESS
+    (dead already), never on the pipes, so it cannot wedge the way the drain can.
+    """
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        proc.wait(timeout=_POST_KILL_DRAIN_S)
+
+
 def _run_cli_killing_process_group(cmd, code, env, timeout):
     """Run the CLI in its own process group and kill the whole group on timeout.
 
@@ -689,6 +703,7 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
         _kill_cli_process_group(proc)
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.communicate(timeout=_POST_KILL_DRAIN_S)
+        _reap_dead_child(proc)
         raise
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
@@ -714,7 +729,402 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
         daemons = sorted(key for key, home in _driven_daemons.items() if home_key in (None, home))
         for key in daemons:
             _driven_daemons.pop(key, None)
+            _daemon_last_used.pop(key, None)
     _reload_daemons(daemons)
+
+
+# --- harness daemon lifetime under a LIVE owner: idle stop ------------------------------------
+#
+# Lifetime contract. ``browser_harness.admin.ensure_daemon()`` (run by the CLI each browser_exec spawns)
+# starts the daemon DETACHED (``start_new_session=True``) and the CLI then exits, so every daemon is
+# ppid=1 from its first second: being reparented is normal, not the leak. The daemon has NO idle exit — it
+# only stops on ``meta:shutdown`` (``--reload``). So Hermes, which caused the spawn, owns the stop:
+#   * shutdown / ``/browser connect``: ``stop_harness_daemons`` (in-memory ``_driven_daemons``);
+#   * owner died without that: ``reap_orphaned_harness_daemons`` (durable records, next process);
+#   * owner ALIVE but done browsing: ``stop_idle_harness_daemons``, below, from the browser janitor.
+# The third leg was missing. A long-lived gateway closed each Chromium session after
+# ``browser.inactivity_timeout`` but never the harness daemon attached to it, so every BU_NAME the gateway
+# ever used left one immortal daemon (holding a dead CDP socket) for the life of the gateway — measured:
+# four ``browser_harness.daemon`` at ppid=1, hours idle, their spawning gateway still running.
+_daemon_last_used: dict[tuple[str, ...], float] = {}  # identity -> monotonic end of its last call
+_daemon_calls_in_flight: dict[tuple[str, ...], int] = {}
+_daemons_stopping: set = set()  # identities whose idle stop (--reload) is running right now
+_driven_daemons_cond = threading.Condition(_driven_daemons_lock)
+
+
+def _monotonic() -> float:  # the idle clock (a seam: tests advance it without touching time.monotonic)
+    return time.monotonic()
+
+
+@contextlib.contextmanager
+def _track_daemon_call(daemon: tuple[str, ...], home: str):
+    """Mark ``daemon`` driven and busy for one CLI run; its idle clock restarts when the run ends.
+
+    Waits out an idle stop already in flight for the same daemon, so a call never races the
+    ``--reload`` that is tearing its daemon down (the call then spawns a fresh one)."""
+    with _driven_daemons_cond:
+        while daemon in _daemons_stopping:
+            _driven_daemons_cond.wait(timeout=1.0)
+        _driven_daemons[daemon] = home
+        _daemon_calls_in_flight[daemon] = _daemon_calls_in_flight.get(daemon, 0) + 1
+    try:
+        yield
+    finally:
+        with _driven_daemons_cond:
+            remaining = _daemon_calls_in_flight.get(daemon, 1) - 1
+            if remaining > 0:
+                _daemon_calls_in_flight[daemon] = remaining
+            else:
+                _daemon_calls_in_flight.pop(daemon, None)
+            _daemon_last_used[daemon] = _monotonic()
+
+
+def stop_idle_harness_daemons(idle_s: float, now: Optional[float] = None) -> list:
+    """Stop daemons this process drove that have had no call for ``idle_s`` seconds; returns them.
+
+    A daemon with a call in flight is never idle (a browser_exec may run up to ``_MAX_TIMEOUT_S``). Each
+    stop runs the harness's own ``--reload`` (meta:shutdown, socket/pid cleanup, cloud-browser stop) under
+    its owning profile's home, so that profile's ownership record is the one cleared."""
+    now = _monotonic() if now is None else now
+    with _driven_daemons_cond:
+        idle = sorted(
+            (key, home) for key, home in _driven_daemons.items()
+            if not _daemon_calls_in_flight.get(key)
+            and now - _daemon_last_used.get(key, now) >= idle_s)
+        for key, _home in idle:
+            _driven_daemons.pop(key, None)
+            _daemon_last_used.pop(key, None)
+            _daemons_stopping.add(key)
+    try:
+        for key, home in idle:
+            token = set_hermes_home_override(home) if home else None
+            try:
+                if _other_live_owner(key):
+                    # Another live Hermes process drives the same daemon (same dirs + BU_NAME) and may be
+                    # mid-call: drop only OUR claim. The last live owner's own idle stop takes it down, and
+                    # if that owner dies first the orphan sweep does.
+                    forget_harness_daemon_owner(key)
+                    continue
+                _reload_daemons([key])
+            finally:
+                if token is not None:
+                    reset_hermes_home_override(token)
+                with _driven_daemons_cond:  # release a caller waiting on THIS daemon as soon as it is down
+                    _daemons_stopping.discard(key)
+                    _driven_daemons_cond.notify_all()
+    finally:  # an exception mid-loop must not leave later daemons fenced off forever
+        with _driven_daemons_cond:
+            for key, _home in idle:
+                _daemons_stopping.discard(key)
+            _driven_daemons_cond.notify_all()
+    if idle:
+        logger.info("Stopped %d idle browser-harness daemon(s)", len(idle))
+    return [key for key, _home in idle]
+
+
+# --- harness daemon ownership: durable records, orphan reaping --------------------------------
+#
+# A browser_harness daemon outlives the CLI that spawned it BY DESIGN: ensure_daemon() starts it with
+# start_new_session=True (browser_harness._ipc.spawn_kwargs) and it has no idle exit, so the NEXT call
+# reuses its warm CDP connection. Nothing in that contract ties the daemon's lifetime to the Hermes
+# process that owns the session, and ``_driven_daemons`` above lives only in that process's memory. Any
+# exit that skips stop_harness_daemons() — Ctrl-C, SIGKILL, a crashed or OOM-killed gateway, a one-shot
+# ``hermes -p`` run, a subagent — leaves the daemon reparented to launchd/init (ppid=1) with no way for
+# anyone to find it again: one immortal helper per BU_NAME that process ever used, plus its .sock/.pid.
+#
+# The record below is the durable half of that contract. Every daemon Hermes drives gets a per-profile
+# record naming the Hermes PID that owns it — one file per (daemon identity, owner), written before the
+# CLI runs, so two processes sharing one daemon (same dirs + BU_NAME) can never overwrite each other's
+# claim. Any later Hermes process reaps a daemon once ALL its claims are provably dead, through the
+# harness's own identity-checked ``--reload`` (which sends meta:shutdown, waits, cleans up the socket/pid
+# and stops a billable cloud browser). "Provably dead" means the PID is gone, or its start-time
+# fingerprint no longer matches (a recycled PID is not a live owner).
+_HARNESS_RECORD_VERSION = 1
+_HARNESS_RECORD_DIRNAME = "browser-harness"
+# The sweep is throttled per process: it runs on the browser path, so it must not cost a subprocess
+# (or a directory scan) on every browser_exec call. Each reaped daemon costs one short `--reload` child
+# (and up to 15s if that daemon is wedged), hence the per-sweep cap: a big backlog drains over a few
+# sweeps instead of stalling the one browser call that happens to run right after a crash.
+HARNESS_ORPHAN_SWEEP_INTERVAL_S = 300.0
+HARNESS_ORPHAN_SWEEP_MAX = 8
+_last_harness_orphan_sweep = 0.0
+_harness_orphan_sweep_lock = threading.Lock()
+
+
+def _process_start_time(pid: int) -> Optional[int]:
+    """A stable per-process start-time fingerprint (PID-reuse guard), or None when unavailable."""
+    def read() -> Optional[int]:
+        from gateway.status import get_process_start_time
+        return get_process_start_time(pid)
+    return _quiet(read, None, "process start-time lookup failed")
+
+
+def _harness_runtime_dir(env: dict) -> Path:
+    """The dir the harness binds ``bu[-<name>].sock`` in for a CLI started with ``env``.
+
+    Mirrors ``browser_harness._ipc`` as it resolves ``BH_RUNTIME_DIR`` at import: the caller's runtime
+    dir, else the caller's tmp dir (legacy single-dir callers), else ``paths.runtime_dir()`` under the
+    harness home."""
+    raw = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    home = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
+    if home:
+        return Path(home).expanduser().resolve() / "runtime"
+    xdg = env.get("XDG_CONFIG_HOME")
+    base = (Path(xdg).expanduser() / "browser-harness" if xdg
+            else Path(env.get("HOME") or Path.home()) / ".config" / "browser-harness")
+    return base.resolve() / "runtime"
+
+
+def _harness_endpoint_stem(env: dict) -> str:
+    """``bu`` when the runtime dir isolates one daemon, else ``bu-<BU_NAME>`` (``_ipc._runtime_stem``)."""
+    name = env.get("BU_NAME") or "default"
+    return "bu" if env.get("BH_RUNTIME_DIR") and env.get("BH_RUNTIME_DIR_SHARED") != "1" else f"bu-{name}"
+
+
+def _harness_record_dir() -> Path:
+    """``<HERMES_HOME>/run/browser-harness`` — per profile, so a multiplexed gateway's profiles never
+    reap each other's daemons."""
+    return Path(get_hermes_home()) / "run" / _HARNESS_RECORD_DIRNAME
+
+
+def _harness_record_digest(identity: tuple[str, ...]) -> str:
+    return hashlib.sha256("\0".join(identity).encode()).hexdigest()[:16]
+
+
+def _harness_record_path(identity: tuple[str, ...], pid: Optional[int] = None) -> Path:
+    """The record ONE owning process writes for ``identity``: one file per (daemon, owner).
+
+    A shared owners map would need read-modify-write, and two processes claiming the same daemon at the
+    same time would lose one claim — after which a sweep could kill a daemon that is still in use. A file
+    per owner needs no locking: it is written once and unlinked by whoever no longer owns it."""
+    return _harness_record_dir() / f"{_harness_record_digest(identity)}-{os.getpid() if pid is None else pid}.json"
+
+
+def _read_harness_record(path: Path) -> Optional[dict]:
+    """The parsed record at ``path``, or None when missing/corrupt/foreign (never raises)."""
+    try:
+        record = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("version") != _HARNESS_RECORD_VERSION:
+        return None
+    identity = record.get("identity")
+    if not isinstance(identity, list) or len(identity) != 5 or not all(isinstance(p, str) for p in identity):
+        return None
+    if not isinstance(record.get("owner_pid"), int):
+        return None
+    return record
+
+
+def _write_harness_record(path: Path, record: dict) -> None:
+    """Atomically replace ``path`` with ``record`` (a torn read would look like a dead owner)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _owner_alive(pid: int, started: Optional[int]) -> bool:
+    """Whether the recorded owner ``pid`` is still that same process (fail-safe: unreadable = alive)."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    from gateway.status import _pid_exists  # cross-platform, and a zombie counts as dead
+    if not _pid_exists(pid):
+        return False
+    if started is None:
+        return True
+    current = _process_start_time(pid)
+    return current is None or int(current) == int(started)
+
+
+def record_harness_daemon_owner(identity: tuple[str, ...], env: dict) -> None:
+    """Record this process as an owner of the daemon ``identity`` names, before the CLI drives it.
+
+    Called before the CLI runs on purpose: the daemon may already exist (a warm one this call reuses),
+    and if this process dies mid-call the record is the only way a later process can find the daemon."""
+    try:
+        _write_harness_record(_harness_record_path(identity), {
+            "version": _HARNESS_RECORD_VERSION,
+            "identity": list(identity),
+            "runtime_dir": str(_harness_runtime_dir(env)),
+            "stem": _harness_endpoint_stem(env),
+            "owner_pid": os.getpid(),
+            "owner_started": _process_start_time(os.getpid()),
+            "updated": time.time(),
+        })
+    except OSError as e:  # a record is cleanup bookkeeping, never a precondition for browsing
+        logger.debug("could not record harness daemon ownership for %r: %s", identity, e)
+
+
+def forget_harness_daemon_owner(identity: tuple[str, ...]) -> None:
+    """Drop this process's claim on ``identity``'s daemon (the daemon itself is stopped by the caller)."""
+    try:
+        _harness_record_path(identity).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.debug("could not clear harness daemon ownership for %r: %s", identity, e)
+
+
+def _other_live_owner(identity: tuple[str, ...]) -> bool:
+    """Whether a live process OTHER than this one holds an ownership record for ``identity``'s daemon."""
+    me = _harness_record_path(identity).name
+    try:
+        paths = list(_harness_record_dir().glob(f"{_harness_record_digest(identity)}-*.json"))
+    except OSError:
+        return False
+    for path in paths:
+        record = None if path.name == me else _read_harness_record(path)
+        if record and tuple(record["identity"]) == tuple(identity) and record["owner_pid"] != os.getpid() \
+                and _owner_alive(record["owner_pid"], record.get("owner_started")):
+            return True
+    return False
+
+
+def _harness_endpoint_present(record: dict) -> bool:
+    """Whether any of the daemon's endpoint files still exist (unknown record fields = assume present)."""
+    runtime, stem = str(record.get("runtime_dir") or ""), str(record.get("stem") or "")
+    if not runtime or not stem:
+        return True
+    return any((Path(runtime) / f"{stem}{suffix}").exists() for suffix in (".sock", ".port", ".pid"))
+
+
+def orphaned_harness_daemons(exclude=()) -> list[dict]:
+    """Daemons whose every owning Hermes process is provably gone (never the ``exclude`` identities).
+
+    One entry per daemon identity: ``{"identity", "records", "paths", "record"}``, where the record list
+    holds one claim per owning process."""
+    exempt = set(exclude)
+    try:
+        paths = sorted(_harness_record_dir().glob("*.json"))
+    except OSError:
+        return []
+    claims: dict[tuple[str, ...], list[tuple[Path, dict]]] = {}
+    for path in paths:
+        record = _read_harness_record(path)
+        if record is None:
+            continue  # corrupt/foreign: leave it alone rather than guess
+        identity = tuple(record["identity"])
+        if identity in exempt:
+            continue
+        claims.setdefault(identity, []).append((path, record))
+    orphans = []
+    for identity, group in claims.items():
+        if any(_owner_alive(record["owner_pid"], record.get("owner_started")) for _, record in group):
+            continue  # somebody alive still owns it
+        orphans.append({"identity": identity, "record": group[0][1],
+                        "records": [record for _, record in group], "paths": [path for path, _ in group]})
+    return orphans
+
+
+def _legacy_harness_daemons(claimed: set[tuple[str, ...]], env: dict) -> list[dict]:
+    """Daemons in ``env``'s harness runtime dir that no ownership record claims.
+
+    Daemons leaked BEFORE this fix have no record at all, so the claim sweep can never see them. Adopt
+    them the way the agent-browser reaper treats an untracked session: only once nothing has touched their
+    endpoint files for ``BROWSER_ORPHAN_GRACE_SECONDS`` (a live pre-fix Hermes process therefore loses at
+    most a warm daemon — the browser and its tabs live in Chromium, and the next call respawns one). Only
+    this env's own runtime dir is scanned, so a profile never reaches into another profile's daemons.
+    """
+    runtime = _harness_runtime_dir(env)
+    if not (env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")):
+        # Without a dir of our own the harness uses the machine-wide ``~/.config/browser-harness/runtime``,
+        # shared with every other Hermes process AND with a user's own plain ``browser-harness`` runs.
+        # Nothing there proves which process a daemon belongs to, so a single profile must not adopt it.
+        return []
+    try:
+        from tools.browser_tool import BROWSER_ORPHAN_GRACE_SECONDS as grace
+    except Exception:  # pragma: no cover — a stripped-down caller still gets a sane floor
+        grace = 3600.0
+    now = time.time()
+    name = env.get("BU_NAME") or "default"
+    private = bool(env.get("BH_RUNTIME_DIR")) and env.get("BH_RUNTIME_DIR_SHARED") != "1"
+    found, seen = [], set()
+    for path in sorted(runtime.glob("bu*")):
+        stem, _, suffix = path.name.partition(".")
+        if suffix not in ("sock", "port", "pid") or stem in seen:
+            continue
+        seen.add(stem)
+        if private:  # the runtime dir isolates one daemon: stem is a bare "bu"
+            daemon_name = name
+        elif stem.startswith("bu-"):
+            daemon_name = stem[len("bu-"):]
+        else:
+            continue
+        identity = (env.get("BH_RUNTIME_DIR", ""), env.get("BH_RUNTIME_DIR_SHARED", ""),
+                    env.get("BH_TMP_DIR", ""), env.get("BH_TMP_DIR_SHARED", ""), daemon_name)
+        if identity in claimed:
+            continue
+        pid_file = runtime / f"{stem}.pid"
+        try:
+            touched = max(path.stat().st_mtime, pid_file.stat().st_mtime if pid_file.exists() else 0.0)
+        except OSError:
+            continue  # vanished mid-scan (or unreadable): next sweep
+        if now - touched < grace:
+            continue
+        found.append({"identity": identity, "record": {"runtime_dir": str(runtime), "stem": stem},
+                      "records": [{"runtime_dir": str(runtime), "stem": stem}], "paths": []})
+    return found
+
+
+def reap_orphaned_harness_daemons(exclude=(), force: bool = False) -> int:
+    """Stop harness daemons left behind by dead Hermes processes; returns how many were reaped.
+
+    Runs on the browser path (throttled to ``HARNESS_ORPHAN_SWEEP_INTERVAL_S`` per process) so the leak
+    is drained by the very code that creates it: the first browser call after a crash reaps that crash's
+    daemons. ``exclude`` holds the identity this call is about to drive — reaping it would turn a warm
+    daemon into a cold spawn for no reason."""
+    global _last_harness_orphan_sweep
+    now = time.monotonic()
+    with _harness_orphan_sweep_lock:
+        if not force and now - _last_harness_orphan_sweep < HARNESS_ORPHAN_SWEEP_INTERVAL_S:
+            return 0
+        _last_harness_orphan_sweep = now
+    orphans = orphaned_harness_daemons(exclude=exclude)
+    try:
+        env = _base_subprocess_env()
+        claimed = {tuple(record["identity"]) for record in
+                   (_read_harness_record(p) for p in _harness_record_dir().glob("*.json")) if record}
+        # The daemon this call is about to drive is exempt by stem too: in a private runtime dir every
+        # daemon is the bare "bu" stem, so an identity built from a different BU_NAME would not match.
+        own_stem = _harness_endpoint_stem(env)
+        orphans += [o for o in _legacy_harness_daemons(claimed, env)
+                    if o["record"]["stem"] != own_stem
+                    and o["identity"] not in set(exclude)
+                    and o["identity"] not in {x["identity"] for x in orphans}]
+    except Exception as e:  # pragma: no cover — the claim sweep above must survive any legacy-scan failure
+        logger.debug("legacy harness daemon scan failed: %s", e)
+    if not orphans or _find_cli() is None:
+        return 0  # nothing to reap, or nothing to stop them with: leave the records for a run that can
+    reaped = 0
+    for orphan in orphans[:HARNESS_ORPHAN_SWEEP_MAX]:
+        if any(_harness_endpoint_present(record) for record in orphan["records"]):
+            _reload_daemons([orphan["identity"]])  # the harness's own identity-checked stop + cleanup
+            if any(_harness_endpoint_present(record) for record in orphan["records"]):
+                continue  # still there (slow/wedged): keep the records and retry on the next sweep
+        cleared = True
+        for path in orphan["paths"]:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.debug("could not clear stale harness daemon record %s: %s", path, e)
+                cleared = False
+        reaped += 1 if cleared else 0
+    if reaped:
+        logger.info("Cleared %d orphaned browser-harness daemon(s) from previous runs", reaped)
+    return reaped
+
+
+def _reap_orphans_before_driving(daemon: tuple[str, ...]) -> None:
+    """Best-effort drain of dead owners' daemons; cleanup must never break the browser call itself."""
+    try:
+        reap_orphaned_harness_daemons(exclude=(daemon,))
+    except Exception as e:  # pragma: no cover — defensive: a sweep failure is never fatal
+        logger.debug("harness orphan reap failed: %s", e)
 
 
 def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with its own dirs
@@ -723,8 +1133,15 @@ def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with i
         return
     env = _base_subprocess_env()
     for daemon in daemons:
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
+        try:
             _run_cli_killing_process_group([*cmd, "--reload"], "", daemon_env(env, daemon), 15)
+        except subprocess.TimeoutExpired:
+            continue  # a wedged --reload keeps its record: the next sweep retries it
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.debug("browser-harness --reload failed for %r: %s", daemon, e)
+            continue
+        forget_harness_daemon_owner(daemon)
+
 
 
 def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,
@@ -826,14 +1243,24 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     timeout = _clamp_timeout(timeout_s)
     started = time.time()
+    daemon = daemon_identity(env)
+    # Before this call spawns anything: drain daemons whose owning Hermes process died without stopping
+    # them (a crash, SIGKILL, a one-shot run). Outside the bot-desktop fence, and never this call's own
+    # daemon — the point is to stop the leak, not to hand this call a cold daemon.
+    _reap_orphans_before_driving(daemon)
 
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
-        with _driven_daemons_lock:
-            daemon = daemon_identity(env)
-            _driven_daemons[daemon] = hermes_home_key()
+        # The janitor is what stops this call's daemon once it goes idle; only the managed-Chromium route
+        # used to start it (via _get_session_info), so a CDP-override / BU-cloud exec had no idle stop.
+        _lazy_call("tools.browser_tool_lifecycle", "_start_browser_cleanup_thread", None,
+                   "browser janitor start failed")
+        # Durable ownership: in-process bookkeeping dies with this process, the record does not.
+        record_harness_daemon_owner(daemon, env)
         try:
-            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+            # Driven + busy for the run; its idle clock (stop_idle_harness_daemons) restarts at the end.
+            with _track_daemon_call(daemon, hermes_home_key()):
+                return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
             return {"error_result": tool_error(
                 f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "

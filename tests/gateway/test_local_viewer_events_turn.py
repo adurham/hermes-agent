@@ -666,3 +666,27 @@ def test_subagent_roster_survives_a_parent_rebuild():
     finally:
         for sid in ('live-child', 'other-profile', 'other-conv'):
             _unregister_subagent(sid)
+
+
+def test_subagent_list_row_reports_the_live_fallback_model_not_the_assignment():
+    """The Desktop sidecar's ``subagent.list`` row must carry the model the child is ACTUALLY running
+    on, plus the fallback marker fields; the registry record's ``model`` is a dispatch-time snapshot
+    that a mid-run ``try_activate_fallback()`` never rewrites. A child on its primary is unchanged."""
+    import tools.delegate_tool_registry  # noqa: F401 — subagent_snapshot reads it via sys.modules
+    from gateway.session_ancillary import subagent_snapshot
+
+    lane = SimpleNamespace(model='deepseek-v4.1-flash', provider='deepseek', _fallback_activated=True,
+                           _primary_runtime={'model': 'claude-opus-5-5', 'provider': 'claude-subscription'})
+    row = subagent_snapshot({'subagent_id': 'lane', 'model': 'claude-opus-5-5', 'status': 'running', 'agent': lane})
+    assert row['model'] == 'deepseek-v4.1-flash' and row['provider'] == 'deepseek'
+    assert row['fallback_active'] is True
+    assert (row['primary_model'], row['primary_provider']) == ('claude-opus-5-5', 'claude-subscription')
+    assert 'deepseek-v4.1-flash' in row['model_label'] and 'claude-opus-5-5' in row['model_label']
+    assert 'agent' not in row
+
+    steady = subagent_snapshot({'subagent_id': 'steady', 'model': 'glm-5.3', 'status': 'running',
+                                'agent': SimpleNamespace(model='glm-5.3', provider='zai')})
+    assert (steady['model'], steady['fallback_active'], steady['primary_model'], steady['model_label']) == (
+        'glm-5.3', False, None, 'glm-5.3')
+    # Agent ref gone: the dispatch-time snapshot is the degradation path, never a blank model.
+    assert subagent_snapshot({'subagent_id': 'done', 'model': 'glm-5.3'})['model'] == 'glm-5.3'

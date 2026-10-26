@@ -1269,19 +1269,31 @@ class TestTimeoutProcessGroupKill:
         assert not psutil.pid_exists(pid)
 
     def test_post_kill_drain_is_bounded(self, monkeypatch):
-        """If even the post-kill drain misses its deadline, give up instead of wedging."""
+        """If even the post-kill drain misses its deadline, give up instead of wedging — and still reap."""
 
         class _StuckProc:
             pid = 424243
             returncode = None
 
+            def __init__(self):
+                self.waited = 0
+
             def communicate(self, input=None, timeout=None):
                 raise subprocess.TimeoutExpired("browser-use", timeout)
 
-        monkeypatch.setattr(bu_cli.subprocess, "Popen", lambda *a, **k: _StuckProc())
+            def wait(self, timeout=None):
+                # The child is SIGKILLed: this reaps it and never blocks on the pipes.
+                self.waited += 1
+                return -9
+
+        proc = _StuckProc()
+        monkeypatch.setattr(bu_cli.subprocess, "Popen", lambda *a, **k: proc)
         monkeypatch.setattr(bu_cli, "_kill_cli_process_group", lambda proc: None)
         with pytest.raises(subprocess.TimeoutExpired):
             bu_cli._run_cli_killing_process_group(["x"], "code", {}, 5)
+        # A drain that missed its deadline used to drop the Popen handle unreaped: the dead child stayed
+        # <defunct> for as long as anything (the TimeoutExpired traceback) kept the handle alive.
+        assert proc.waited == 1, "the killed CLI child was left unreaped"
 
 
 class TestExecHybridPrivateUrlRouting:

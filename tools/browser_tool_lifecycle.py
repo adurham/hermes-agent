@@ -100,6 +100,13 @@ def _emergency_cleanup_all_sessions():
                 _bt._recording_sessions.clear()
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
     _best_effort("Lightpanda cleanup on exit", _stop_all_lightpanda)
+    # Browser Use harness daemons this process drove. Not gated on ``_active_sessions``: a CDP-override or
+    # BU-cloud exec never creates a session there, so the block above skipped them and a clean CLI exit
+    # left every daemon it drove running detached forever. Idempotent after cleanup_all_browsers().
+    def _stop_harness():
+        from tools.browser_use_cli import stop_harness_daemons
+        stop_harness_daemons()
+    _best_effort("Browser Use harness daemon stop on exit", _stop_harness)
     # Safe even if we never used the browser — owner_pid liveness protects daemons
     # owned by other live hermes processes.
     _best_effort("Orphan reap on exit", _reap_orphaned_browser_sessions)
@@ -154,6 +161,14 @@ def _cleanup_inactive_browser_sessions():
     See #100738, #86402.
     """
     current_time = time.time()
+
+    # Browser Use harness daemons first: they have no idle exit of their own and are not in
+    # ``_active_sessions`` (a CDP-override or BU-cloud exec never creates a session there), so without
+    # this a live gateway keeps one daemon per BU_NAME it ever used, for its whole life.
+    def _stop_idle_harness():
+        from tools.browser_use_cli import stop_idle_harness_daemons
+        stop_idle_harness_daemons(_bt.BROWSER_SESSION_INACTIVITY_TIMEOUT)
+    _best_effort("Browser Use harness idle stop", _stop_idle_harness)
 
     with _bt._cleanup_lock:
         sessions_to_cleanup = [task_id for task_id, last_time in list(_bt._session_last_activity.items())
@@ -385,6 +400,15 @@ def _reap_orphaned_browser_sessions():
         from tools.browser_lightpanda import reap_orphaned_lightpanda
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
+
+    # Browser Use harness daemons outlive the Hermes process that spawned them (detached, no idle exit)
+    # and keep their own ownership records, so they sweep on their own — through the harness's own
+    # identity-checked --reload. Also before the early return below: they live in the harness runtime
+    # dir, not in the agent-browser socket dirs this scan looks for.
+    def _reap_harness():
+        from tools.browser_use_cli import reap_orphaned_harness_daemons
+        reap_orphaned_harness_daemons()
+    _best_effort("Browser Use harness orphan reap", _reap_harness)
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []

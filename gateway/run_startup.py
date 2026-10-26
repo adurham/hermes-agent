@@ -1643,6 +1643,14 @@ class GatewayStartupMixin:
 
     async def _start_impl(self) -> bool:
         logger.info("Starting Hermes Gateway...")
+        # This process is a lease OWNER for its local turns: register the runner so a process-wide
+        # orphan sweep (tui_gateway.session_reaper, which starts in any process that imported that
+        # module for a helper) can see the leases this runner still holds. Idempotent.
+        try:
+            from hermes_cli.active_sessions import register_lease_source
+            register_lease_source(self)
+        except Exception:
+            logger.debug("could not register the gateway as an active-session lease source", exc_info=True)
         self._start_install_faulthandler()
         await self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():

@@ -308,13 +308,36 @@ def _release_hosted_room_turn_slot(session: dict) -> None:
         _release_active_session_slot(session)
 
 
-def _own_live_lease_ids(*, exclude=None) -> set[str]:
-    """Snapshot leases still backed by this process's live session records (plus leases deferred past a
-    close for an unsettled isolated turn — still ours until the child settles)."""
+def _own_live_lease_ids(*, exclude=None) -> Optional[set[str]]:
+    """Snapshot leases still backed by this process (plus leases deferred past a close for an
+    unsettled isolated turn — still ours until the child settles).
+
+    Two sources, on purpose: this backend's live session records, and ``active_sessions``'s own
+    process-wide registry of the lease objects it handed out. The second is load-bearing — a
+    process can hold leases no TUI session record owns (the messaging gateway claims one per local
+    turn in ``gateway/run_busy._claim_active_session_slot``, the CLI holds its session lease), and
+    vouching for ``_sessions`` alone made an import-time reaper in such a process reclaim its own
+    live leases. See ``hermes_cli/active_sessions.held_lease_ids``.
+
+    Returns ``None`` when ownership cannot be proven (a lease source failed): callers then keep
+    every lease of this process instead of reclaiming one a backend may still hold (fail closed).
+    """
     with _sessions_lock:
-        return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude
-                } | set(_deferred_active_session_leases)
+        own = {str(lease.lease_id) for session in _sessions.values()
+               if (lease := session.get("active_session_lease")) is not None and lease is not exclude
+               } | set(_deferred_active_session_leases)
+    try:
+        from hermes_cli.active_sessions import held_lease_ids
+        held = held_lease_ids()
+    except Exception:  # unknown ownership must never become "owns nothing": fail closed
+        logging.getLogger(__name__).warning("held-lease vouching unavailable", exc_info=True)
+        return None
+    if held is None:
+        return None
+    own |= held
+    if exclude is not None:
+        own.discard(str(getattr(exclude, "lease_id", "") or ""))
+    return own
 
 
 @contextlib.contextmanager

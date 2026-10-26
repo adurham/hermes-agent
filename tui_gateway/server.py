@@ -410,19 +410,48 @@ _REAPER_SCAN_S = 300.0
 # mid-update loses at most one flush interval of session state.
 _EXIT_FLUSH_BUDGET_S = max(0.0, env_float("HERMES_TUI_EXIT_FLUSH_BUDGET_S", 5.0))
 _INCREMENTAL_FLUSH_INTERVAL_S = max(0.0, env_float("HERMES_TUI_SESSION_FLUSH_INTERVAL_S", _REAPER_SCAN_S))
+# The reaper is started by the backend that actually serves sessions (first session record), never
+# at import — see _start_idle_reaper.
+_IDLE_REAPER_THREAD_NAME = "hermes-tui-idle-reaper"
+_idle_reaper_lock = threading.Lock()
+_idle_reaper_thread: Optional[threading.Thread] = None
 
 
 def _start_idle_reaper() -> None:
-    def _loop():
-        while True:
-            time.sleep(_REAPER_SCAN_S)
-            with contextlib.suppress(Exception):
-                _reap_idle_sessions()
-    threading.Thread(target=_loop, daemon=True).start()
+    """Start this backend's idle reaper ONCE, when it first serves a session.
+
+    Deliberately NOT an import-time side effect. ``tui_gateway.server`` is imported for helper
+    functions by processes that never serve a TUI session — the messaging gateway uses it for
+    ``complete.path``, attachments and /status (``gateway/session_complete_path.py``,
+    ``gateway/session_ancillary.py``, ``gateway/session_tui_reads.py``). A reaper in such a
+    process sweeps leases against the TUI backend's session map only, so it reclaimed the
+    process's OWN live leases (``gateway/run_busy._claim_active_session_slot``): the session then
+    looked unowned while its turn still ran, another backend could claim it, and the gateway's
+    next turn was refused ``SESSION_NOT_OWNED`` — the queued message behind it never ran, and a
+    viewer's finalize ended the row mid-turn (fencing the turn ``unknown`` and pausing the FIFO).
+    """
+    global _idle_reaper_thread
+    with _idle_reaper_lock:
+        if _idle_reaper_thread is not None and _idle_reaper_thread.is_alive():
+            return
+
+        def _loop():
+            while True:
+                time.sleep(_REAPER_SCAN_S)
+                with contextlib.suppress(Exception):
+                    _reap_idle_sessions()
+
+        _idle_reaper_thread = threading.Thread(
+            target=_loop, name=_IDLE_REAPER_THREAD_NAME, daemon=True)
+        _idle_reaper_thread.start()
+
+
+def _ensure_idle_reaper_started() -> None:
+    """Start the reaper on this backend's FIRST session (idempotent)."""
+    _start_idle_reaper()
 
 
 atexit.register(_shutdown_sessions)
-_start_idle_reaper()
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────

@@ -84,6 +84,54 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         db.close()
 
 
+def spawner_lineage(owner: str, parent: str | None) -> bool | None:
+    """Whether *owner* may consume a result spawned by *parent*: ``True``/``False`` when the
+    compression lineage decides it, ``None`` when it cannot decide.
+
+    This is the one ownership proof shared by every consumer of a completed process: the
+    durable receipt reader (``_owns_result``, which fails closed on ``None``) and the live
+    completion drain (``ProcessRegistry.drain_notifications``, which falls back to route-key
+    routing on ``None`` so a notice is never pinned to a session that can never take it).
+
+    Undecidable cases, all deliberate:
+
+    * no spawner recorded (a pre-upgrade receipt, or a spawn with no session bound);
+    * the spawner has no row in this profile's store (another profile's session, or a
+      receipt whose session was deleted);
+    * the spawner is a DELEGATED CHILD. A subagent's ``session_key`` is its parent chat's
+      key and its own session is the receipt's spawner, so its process completions are
+      routed by the delegation path (hold while the child runs, release to the parent
+      chat with attribution) — never by lineage, which would leave them ownerless.
+
+    A route key alone is NOT proof: every session in one compression lineage, every
+    sibling continuation and every subagent of the chat hold the same key.
+    """
+    if not parent or not owner:
+        return None
+    if owner == parent:
+        return True
+    from hermes_state import SessionDB
+
+    db = SessionDB(read_only=True)
+    try:
+        row = db.get_session(parent)
+        if row is None:
+            return None
+        config = row.get("model_config")
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except (TypeError, ValueError):
+                config = None
+        if row.get("_delegate_from") or (isinstance(config, dict) and config.get("_delegate_from")):
+            return None
+        return db.get_compression_tip(parent) == owner
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
+
+
 def load_completed_results(prefix: str = "") -> dict:
     """Restore read-only snapshots; no process handles, watchers, or queue events."""
     from tools.process_registry import ProcessSession
