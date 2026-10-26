@@ -6,6 +6,7 @@ import { app } from 'electron'
 
 import { INSTALL_STAMP } from '../install-stamp'
 import { launchBuildIdentity } from '../launch-build-identity'
+import { createLinuxGpuBootWindow } from '../linux-gpu-fallback'
 import { readNvidiaEglMarker } from '../linux-nvidia-egl-fallback'
 import { createNvidiaEglRecovery } from '../linux-nvidia-egl-recovery'
 
@@ -27,7 +28,10 @@ const report = (event: string, data: Record<string, unknown> = {}) => {
   appendFileSync(options.eventsFile, `${JSON.stringify({ event, ...data })}\n`, 'utf8')
 }
 
+const bootWindow = createLinuxGpuBootWindow({ platform: 'linux' })
+
 const recovery = createNvidiaEglRecovery({
+  bootWindow,
   userData: options.userData,
   appVersion: app.getVersion(),
   buildIdentity: launchBuildIdentity({ appVersion: app.getVersion(), installStamp: INSTALL_STAMP }),
@@ -54,6 +58,7 @@ if (!primary) {
       return
     }
 
+    bootWindow.revealed()
     recovery.healthy()
     report('ready', { software: recovery.decision.enable, marker: readNvidiaEglMarker(options.userData) })
 

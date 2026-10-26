@@ -5,9 +5,13 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { launchBuildIdentity } from './launch-build-identity'
-import { linuxGpuChildDeathPath } from './linux-gpu-fallback'
+import {
+  createLinuxGpuBootWindow,
+  LINUX_GPU_DEATH_WITNESS_GRACE_MS,
+  linuxGpuChildDeathPath
+} from './linux-gpu-fallback'
 import { nvidiaEglMarkerPath, readNvidiaEglMarker, writeNvidiaEglMarker } from './linux-nvidia-egl-fallback'
-import { createNvidiaEglRecovery, NVIDIA_GPU_DEATH_WITNESS_GRACE_MS } from './linux-nvidia-egl-recovery'
+import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
 
 let userData: string
 const driverVersion = '600.1.2'
@@ -18,11 +22,15 @@ const build = (commit = 'a'.repeat(40)) =>
     installStamp: { commit, builtAt: '2026-10-23T00:00:00Z', dirty: false }
   })
 
-function launch(overrides: Partial<Parameters<typeof createNvidiaEglRecovery>[0]> = {}, primary = true) {
+type RecoveryOptions = Parameters<typeof createNvidiaEglRecovery>[0]
+
+function launch({ now, ...overrides }: Partial<RecoveryOptions> & { now?: () => number } = {}, primary = true) {
   const relaunch = vi.fn()
   const log = vi.fn()
+  const bootWindow = createLinuxGpuBootWindow({ platform: 'linux', now })
 
   const recovery = createNvidiaEglRecovery({
+    bootWindow,
     userData,
     driverMajor: 600,
     driverVersion,
@@ -36,7 +44,13 @@ function launch(overrides: Partial<Parameters<typeof createNvidiaEglRecovery>[0]
     ...overrides
   })
 
-  return { ...recovery, relaunch, log }
+  // main.ts's window reveal: the shared boot clock first, then the NVIDIA marker.
+  const healthy = () => {
+    bootWindow.revealed()
+    recovery.healthy()
+  }
+
+  return { ...recovery, healthy, afterBootWindow: bootWindow.afterBootWindow, relaunch, log }
 }
 
 beforeEach(() => {
@@ -178,7 +192,7 @@ describe('NVIDIA GPU-death witness window', () => {
     let clock = 1_000
     const first = launch({ now: () => clock })
     first.healthy()
-    clock += NVIDIA_GPU_DEATH_WITNESS_GRACE_MS + 1
+    clock += LINUX_GPU_DEATH_WITNESS_GRACE_MS + 1
 
     expect(first.gpuDied({ type: 'GPU', reason: 'killed', exitCode: 15 })).toBe(false)
     expect(first.relaunch).not.toHaveBeenCalled()
@@ -199,7 +213,7 @@ describe('NVIDIA GPU-death witness window', () => {
     let clock = 1_000
     const first = launch({ now: () => clock })
     first.healthy()
-    clock += NVIDIA_GPU_DEATH_WITNESS_GRACE_MS + 1
+    clock += LINUX_GPU_DEATH_WITNESS_GRACE_MS + 1
     const details = { type: 'GPU', reason: 'crashed', exitCode: 139 } as const
 
     // main.ts asks both ladders about the same death.

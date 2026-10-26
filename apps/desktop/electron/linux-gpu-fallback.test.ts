@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  createLinuxGpuBootWindow,
   decideLinuxGpuLaunch,
   disableGpuSwitchNeededForReason,
+  LINUX_GPU_DEATH_WITNESS_GRACE_MS,
   linuxGpuChildDeathPath,
   linuxGpuFallbackMarker,
   linuxGpuFallbackReasonForDeath,
@@ -334,5 +336,25 @@ describe("Electron's real GPU launch-failure reason", () => {
     expect(linuxGpuChildDeathPath({ platform: 'linux', details })).toBe('disable-gpu')
     expect(shouldRelaunchForLinuxGpuCrash({ platform: 'linux', details })).toBe(true)
     expect(linuxGpuFallbackReasonForDeath(details.reason)).toBe('gpu-launch-failure')
+  })
+})
+
+describe('Linux GPU boot window on a host without an NVIDIA driver', () => {
+  // Mesa/AMD/Intel: the witness window gated only the NVIDIA ladder, so a GPU crash
+  // hours after a healthy boot relaunched with --disable-gpu and pinned software forever.
+  it('a crash long after the first reveal takes no --disable-gpu relaunch; a crash during boot still does', () => {
+    let clock = 1_000
+    const bootWindow = createLinuxGpuBootWindow({ platform: 'linux', now: () => clock })
+    const details = { type: 'GPU', reason: 'crashed', exitCode: 139 }
+
+    const path = () =>
+      linuxGpuChildDeathPath({ platform: 'linux', details, runtimeDeath: bootWindow.afterBootWindow() })
+
+    expect(path()).toBe('disable-gpu')
+    bootWindow.revealed()
+    clock += 5_000
+    expect(path()).toBe('disable-gpu')
+    clock += LINUX_GPU_DEATH_WITNESS_GRACE_MS
+    expect(path()).toBeNull()
   })
 })

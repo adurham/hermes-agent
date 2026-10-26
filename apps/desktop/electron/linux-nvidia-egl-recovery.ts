@@ -1,5 +1,6 @@
 import type { Details } from 'electron'
 
+import type { LinuxGpuBootWindow } from './linux-gpu-fallback'
 import type { NvidiaEglFallbackOptions, NvidiaEglMarker } from './linux-nvidia-egl-fallback'
 import {
   decideNvidiaEglFallback,
@@ -19,17 +20,9 @@ interface NvidiaEglRecoveryOptions extends Omit<NvidiaEglFallbackOptions, 'marke
   relaunch: (extraArgs: readonly string[]) => void
   argv?: readonly string[]
   log: (message: string) => void
-  now?: () => number
+  /** The launch's shared Linux boot clock; the caller records the first reveal on it. */
+  bootWindow: LinuxGpuBootWindow
 }
-
-/**
- * How long after the first window reveals a GPU-process death still counts as
- * this launch failing to bring the GPU up. Later deaths (session logout or OOM
- * killing the GPU child, a driver reset after suspend) are runtime events that
- * Chromium recovers from itself; pinning every future launch to SwiftShader for
- * them turned healthy hosts into 4-9 core CPU burns (#131321, #141753).
- */
-export const NVIDIA_GPU_DEATH_WITNESS_GRACE_MS = 60_000
 
 const SWIFTSHADER_SWITCH = '--use-angle=swiftshader'
 
@@ -41,9 +34,6 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
   const primary = supported && options.primary
   let quitting = false
   let relaunchAttempted = false
-  let healthyAt: number | null = null
-  const now = options.now ?? Date.now
-  const afterBootWindow = (): boolean => healthyAt !== null && now() - healthyAt > NVIDIA_GPU_DEATH_WITNESS_GRACE_MS
 
   // A relaunch that carried the fallback on argv because the marker was unwritable.
   const argvFallback = (options.argv ?? process.argv).includes(SWIFTSHADER_SWITCH)
@@ -68,14 +58,10 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
   return {
     decision,
     startupMessage: `[gpu] NVIDIA ANGLE fallback=${decision.enable} (${decision.reason ?? 'not selected'}); previous=${previous?.state ?? 'none'}; build=${options.buildIdentity ?? options.appVersion}; driver=${options.driverVersion}`,
-    /** A GPU death now is a runtime event: no recovery ladder may relaunch or write a fallback for it. */
-    afterBootWindow,
     healthy(): void {
       if (!primary || quitting || relaunchAttempted) {
         return
       }
-
-      healthyAt ??= now()
 
       persist(nvidiaEglMarkerAfterSuccessfulBoot({ ...options, fallbackActive: decision.enable }))
     },
@@ -103,7 +89,7 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
         !primary ||
         quitting ||
         teardownInProgress ||
-        afterBootWindow() ||
+        options.bootWindow.afterBootWindow() ||
         !nvidiaEglFallbackAllowed(options) ||
         !shouldRelaunchForNvidiaGpuDeath({
           platform: options.platform,
