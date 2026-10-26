@@ -558,8 +558,8 @@ def _provider_alias_table() -> dict[str, str]:
     if _ALIAS_TABLE is None:
         merged: dict[str, str] = dict(_LOCAL_SERVER_ALIASES)
         with contextlib.suppress(Exception):
-            from hermes_cli.auth import _PROVIDER_ALIASES as _auth_table
-            merged.update(_auth_table)
+            from hermes_cli.auth import _plugin_aliases
+            merged.update(_plugin_aliases())
         _ALIAS_TABLE = merged
     return _ALIAS_TABLE
 
@@ -2155,7 +2155,8 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
     except ImportError:
         logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
         return None, None
-    for provider_id, pconfig in PROVIDER_REGISTRY.items():
+    from hermes_cli.auth_plugin_providers import canonical_registry_rows
+    for provider_id, pconfig in canonical_registry_rows():
         if pconfig.auth_type != "api_key":
             continue
         if _is_provider_unhealthy(provider_id):
