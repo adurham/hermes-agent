@@ -40,8 +40,9 @@ def start():
             "expires_in": 60, "interval": 1, "state": {"polls": 0}}
 
 def poll(state):
+    from hermes_constants import get_hermes_home
     polls = state["polls"] + 1
-    _log("poll", polls=polls)
+    _log("poll", polls=polls, home=str(get_hermes_home()))
     if polls < int(os.environ.get("ACME_APPROVE_AT", "2")):
         return {"status": "pending", "state": {"polls": polls}}
     if os.environ.get("ACME_DENY"):
@@ -131,6 +132,15 @@ def test_profile_device_login_lists_starts_and_saves_in_the_owning_profile(acme)
     saves = [e for e in events() if e["event"] == "save"]
     assert saves == [{"event": "save", "home": str(coder), "credential": "acme-secret"}]
     assert [e["polls"] for e in events() if e["event"] == "poll"] == [1, 2]
+
+
+def test_profile_device_login_polls_in_the_owning_profile(acme):
+    """The background poller binds the session's ``?profile=`` home around every poll, so a hook that
+    reads config (or a hosted profile picking its plugin host) sees coder's home, not the launch one."""
+    coder, events = acme
+    body = client.post(f"/api/providers/oauth/{NAME}/start?profile=coder", headers=HEADERS).json()
+    assert _wait(body["session_id"], "coder")["status"] == "approved"
+    assert [e["home"] for e in events() if e["event"] == "poll"] == [str(coder), str(coder)]
 
 
 def test_profile_device_login_cancel_before_approval_never_saves(acme, monkeypatch):

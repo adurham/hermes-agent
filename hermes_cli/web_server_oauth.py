@@ -357,15 +357,16 @@ _DEVICE_LOGIN_ENDINGS = {"denied": "Authorization was denied.", "expired": "Devi
 @_oauth_poller("provider-profile")
 def _profile_device_poller(session_id: str, sess: dict[str, Any]) -> None:
     """Drive a device-code login a provider profile owns (``ProviderProfile.start_device_login``):
-    one ``poll_device_login`` per interval until approved, then ``save_device_login`` under the
-    session's profile scope, in one critical section with the cancel check like the built-in savers."""
-    from hermes_cli.web_server_profiles import _profile_scope
+    one ``poll_device_login`` per interval (each bound to the session's profile) until approved, then
+    ``save_device_login`` under the session's profile scope, in one critical section with the cancel check like the built-in savers."""
+    from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
     profile, state, interval = sess["_provider_profile"], sess["_device_state"], int(sess["interval"])
     result: dict[str, Any] = {}
     while time.time() < sess["expires_at"]:
         if _sleep_unless_cancelled(sess, interval):
             break
-        result = dict(profile.poll_device_login(state) or {})
+        with _config_profile_scope(sess.get("profile")):  # await-safe: no skills lock across the wait
+            result = dict(profile.poll_device_login(state) or {})
         state = result.get("state", state)
         if result.get("status") != "pending":
             break
