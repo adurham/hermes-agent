@@ -22,6 +22,9 @@ from hermes_cli.auth import (
     get_external_process_provider_status,
     resolve_external_process_provider_credentials,
 )
+import providers as _providers
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
+from plugins.model_providers.copilot import credentials as copilot_credentials
 
 
 @pytest.fixture()
@@ -348,8 +351,7 @@ def test_catalog_key_resolves_from_copilot_cli_store(tmp_path, monkeypatch, _cle
 
     with mock_patch.object(
         models_mod, "_resolve_copilot_catalog_api_key", wraps=models_mod._resolve_copilot_catalog_api_key
-    ), mock_patch(
-        "hermes_cli.copilot_auth.exchange_copilot_token",
+    ), mock_patch.object(copilot_credentials, "exchange_copilot_token",
         return_value=("exchanged-api-token", 0.0, None),
     ), mock_patch(
         "hermes_cli.auth.resolve_api_key_provider_credentials",

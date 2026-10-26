@@ -14,6 +14,9 @@ runs when the main provider has no working client.
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+import providers as _providers
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
+from plugins.model_providers.copilot import credentials as copilot_credentials
 
 # ── Text aux tasks — _resolve_auto_route ──────────────────────────────────────────
 
@@ -414,8 +417,7 @@ class TestResolveVisionMainFirst:
                 "api_key": "copilot-api-token",
                 "base_url": "https://api.githubcopilot.com",
             },
-        ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
+        ), patch.object(copilot_credentials, "copilot_request_headers",
             side_effect=fake_headers,
         ):
             mock_client = MagicMock()
@@ -451,8 +453,7 @@ class TestResolveVisionMainFirst:
                 "api_key": "copilot-api-token",
                 "base_url": "https://api.githubcopilot.com",
             },
-        ), patch(
-            "hermes_cli.copilot_auth.copilot_request_headers",
+        ), patch.object(copilot_credentials, "copilot_request_headers",
             side_effect=fake_headers,
         ):
             mock_client = MagicMock()

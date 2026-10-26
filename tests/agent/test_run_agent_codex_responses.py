@@ -11,6 +11,9 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
 from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+import providers as _providers
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
+from plugins.model_providers.copilot import credentials as copilot_credentials
 
 
 @pytest.fixture(autouse=True)
@@ -1547,24 +1550,21 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
         rebuilt["kwargs"] = kwargs
         return _RebuiltClient()
 
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+    monkeypatch.setattr(copilot_credentials, "resolve_copilot_token",
         lambda: ("gho_new_token", "GH_TOKEN"),
     )
     # The 401 refresh forces a fresh IDE-token exchange; mock it to a valid
     # exchanged token so the test is deterministic and network-free.
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
+    monkeypatch.setattr(copilot_credentials, "evict_cached_exchanged_token",
         lambda _raw: None,
     )
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+    monkeypatch.setattr(copilot_credentials, "get_copilot_api_token",
         lambda _raw: ("tid=exchanged-ide-token", None),
     )
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     agent.client = _ExistingClient()
-    ok = agent._try_refresh_copilot_client_credentials()
+    ok = agent._try_refresh_provider_runtime_credentials(reason="unauthorized")
 
     assert ok is True
     # The old client is retired by _replace_primary_openai_client (release is
@@ -1594,18 +1594,16 @@ def test_try_refresh_copilot_client_credentials_falls_back_when_exchange_unavail
     def _boom(_raw):
         raise RuntimeError("exchange endpoint unreachable")
 
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+    monkeypatch.setattr(copilot_credentials, "resolve_copilot_token",
         lambda: ("gho_raw_token", "GH_TOKEN"),
     )
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.evict_cached_exchanged_token",
+    monkeypatch.setattr(copilot_credentials, "evict_cached_exchanged_token",
         lambda _raw: None,
     )
-    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", _boom)
+    monkeypatch.setattr(copilot_credentials, "get_copilot_api_token", _boom)
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
-    ok = agent._try_refresh_copilot_client_credentials()
+    ok = agent._try_refresh_provider_runtime_credentials(reason="unauthorized")
 
     assert ok is True
     # Exchange failed → falls back to the resolved raw token, client still rebuilt.

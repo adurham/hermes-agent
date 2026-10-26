@@ -13,6 +13,9 @@ credential pool.
 from unittest.mock import patch
 
 from hermes_cli.models import _resolve_copilot_catalog_api_key
+import providers as _providers
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
+from plugins.model_providers.copilot import credentials as copilot_credentials
 
 
 class TestCopilotCatalogApiKeyResolution:
@@ -25,8 +28,7 @@ class TestCopilotCatalogApiKeyResolution:
         ), patch(
             "hermes_cli.auth.read_credential_pool",
             return_value=[{"access_token": "gho_abc123"}],
-        ), patch(
-            "hermes_cli.copilot_auth.exchange_copilot_token",
+        ), patch.object(copilot_credentials, "exchange_copilot_token",
             return_value=("tid_exchanged_xyz", 1234567890.0),
         ):
             assert _resolve_copilot_catalog_api_key() == "tid_exchanged_xyz"
@@ -54,8 +56,7 @@ class TestCopilotCatalogApiKeyResolution:
                 {"access_token": "gho_unsupported_account"},
                 {"access_token": "gho_valid_token"},
             ],
-        ), patch(
-            "hermes_cli.copilot_auth.exchange_copilot_token",
+        ), patch.object(copilot_credentials, "exchange_copilot_token",
             side_effect=fake_exchange,
         ):
             assert _resolve_copilot_catalog_api_key() == "tid_from_second"
