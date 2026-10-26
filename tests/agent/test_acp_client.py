@@ -100,6 +100,14 @@ def test_errors_carry_the_subclass_label_and_early_exit_hook(tmp_path):
         ACPClient(command=command, args=args, acp_cwd=str(tmp_path)).list_models(timeout_seconds=30)
 
 
+def test_malformed_vendor_model_options_fall_back_to_the_session_default(tmp_path):
+    body = _CATALOG_SERVER.replace('result = {"sessionId": "s1", "configOptions": [', 'result = {"sessionId": "s1", "configOptions": 5, "x": [')
+    command, *args = _server(tmp_path, body)
+    completion = _VendorClient(command=command, args=args, acp_cwd=str(tmp_path)).chat.completions.create(
+        model="open-model", messages=[{"role": "user", "content": "hi"}], timeout=30)
+    assert completion.choices[0].message.content == "hello"
+
+
 _FROZEN_SUBCLASS_PLUGIN = '''
 """Frozen shape of an out-of-tree ACP provider built on the deprecated alias (kimchi-acp-provider)."""
 import os

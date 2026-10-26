@@ -496,7 +496,10 @@ class ACPClient:
                         _request(*selection)
                     else:
                         logger.warning("%s does not offer model %r; using the session default.", self.label, requested_model)
-                except (RuntimeError, TimeoutError, OSError) as exc:  # what _request raises (OSError: broken pipe)
+                # _request raises RuntimeError/TimeoutError/OSError (broken pipe); vendor ``session/new`` payload
+                # drift (e.g. a non-list ``configOptions``) raises TypeError/AttributeError in the parsers.
+                # Either way model choice degrades to the session default instead of failing the turn.
+                except (RuntimeError, TimeoutError, OSError, TypeError, AttributeError) as exc:
                     logger.warning("%s model selection for %r failed; continuing with the session default: %s",
                                    self.label, requested_model, exc)
             text_parts: list[str] = []
