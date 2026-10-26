@@ -30,6 +30,23 @@ describe('stopped reply folded into its tool bubble', () => {
     expect(replies[0].interrupted).toBe(true)
   })
 
+  it('keeps the stopped mark of a turn stopped during its tool run', () => {
+    // Stored by the backend's close of an interrupted tool tail: no reply, an empty hidden row.
+    const closing: SessionMessage = {
+      id: 4,
+      role: 'assistant',
+      content: '',
+      display_kind: 'hidden',
+      timestamp: 4,
+      display_metadata: '{"interrupted": true}'
+    }
+
+    const stoppedInTool = [...rows.slice(0, 2), { ...rows[2], content: '[Command interrupted]' }, closing]
+    const replies = toChatMessages(stoppedInTool).filter(message => message.role === 'assistant')
+
+    expect(replies.map(message => [chatMessageText(message), message.interrupted])).toEqual([['Looking.', true]])
+  })
+
   it('leaves a finished tool turn unmarked', () => {
     const finished = rows.map(row => (row.id === 4 ? { ...row, display_metadata: undefined } : row))
     const replies = toChatMessages(finished).filter(message => message.role === 'assistant')

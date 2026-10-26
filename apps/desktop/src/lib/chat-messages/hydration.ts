@@ -439,6 +439,22 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     clearPendingTools()
   }
 
+  // The empty row closing a turn stopped during its tool run draws nothing, but it is
+  // the turn's last stored row and the one that says it was stopped: the mark goes on
+  // the bubble that row closes, as a folded reply's does (foldIntoToolBubble).
+  const lendStoppedMark = (message: SessionMessage, index: number) => {
+    if (!messageInterrupted(message.display_metadata)) {
+      return
+    }
+
+    flushPendingTools(index)
+    const bubble = activeAssistantIndex === null ? undefined : result[activeAssistantIndex]
+
+    if (bubble?.role === 'assistant') {
+      bubble.interrupted = true
+    }
+  }
+
   // `index` stays the stored row position (it keys tool-part and message ids), so skipped merges shift nothing.
   const painted = messages.flatMap((message, index) => (isPainted(message) ? [{ index, message }] : []))
 
@@ -561,7 +577,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     if (!parts.length && !extractedAttachmentRefs?.length) {
-      if (message.role !== 'assistant') {
+      if (message.role === 'assistant') {
+        lendStoppedMark(message, index)
+      } else {
         flushPendingTools(index)
         activeAssistantIndex = null
       }
