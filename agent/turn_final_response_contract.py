@@ -21,10 +21,12 @@ from agent.end_turn import (
     CONTINUE_EXHAUSTED,
     ESCAPE,
     HARNESS_ERROR,
+    IDLE,
     MAX_TURN_CONTRACT_REJECTIONS,
     REJECT,
     TURN_CONTRACT_NUDGE,
     attempted_end_turn_close,
+    carry_open_items,
     clear_end_turn,
     close_verdict,
     continuation_nudge,
@@ -33,6 +35,7 @@ from agent.end_turn import (
     record_turn_contract_event,
     recover_close,
     render_summary,
+    split_items,
     turn_continuation_budget,
     turn_contract_enabled,
 )
@@ -93,24 +96,23 @@ def apply_turn_contract(
         record_turn_contract_event("closed")
         return ContractVerdict(True, CLOSE, final_response=reply)
     if decision in (CONTINUE, CONTINUE_EXHAUSTED):
-        # The status field is load-bearing: `deferred` says work remains that the model can
-        # still do, and `done` carrying items says the same thing in the wrong words. Either
-        # way the turn is handed back with those items as the assignment, not delivered as a
-        # plan. Measured 2026-10-25: 28 of 28 such closes in three days were followed by a user
-        # row, none by work — the items were a report the operator had to convert into an order.
+        # The OWNER field is load-bearing: an agent-owned item is work the model can still do,
+        # and `deferred` is the same claim in words. Either way the turn is handed back with
+        # those items as the assignment, not delivered as a plan. Measured 2026-10-25: 28 of 28
+        # such closes in three days were followed by a user row, none by work.
         _verdict, reason = close_verdict(payload or {})
-        items = (payload or {}).get("open_items") or []
+        agent_items, user_items = split_items((payload or {}).get("open_items") or [])
         if decision == CONTINUE:
             agent._turn_continuations = continuations + 1
             record_turn_contract_event("continued")
             logger.warning(
-                "turn-contract: CONTINUE[%s] — %d open item(s) after %d tool call(s); handing the "
-                "turn back (continuation %d/%d, model=%s provider=%s)",
-                reason, len(items), tool_calls_this_turn, continuations + 1,
+                "turn-contract: CONTINUE[%s] — %d agent item(s), %d user item(s) after %d tool call(s); "
+                "handing the turn back (continuation %d/%d, model=%s provider=%s)",
+                reason, len(agent_items), len(user_items), tool_calls_this_turn, continuations + 1,
                 turn_continuation_budget(agent), agent.model, agent.provider,
             )
             agent._emit_diagnostic_status(
-                "↻ Turn closed with work still open — continuing"
+                f"↻ continuing — {len(agent_items)} open, working item 1"
             )
             clear_end_turn(agent)
             final_msg["content"] = render_summary(payload or {})
@@ -121,24 +123,48 @@ def apply_turn_contract(
                 "_turn_contract_nudge": True,
             })
             return ContractVerdict(True, CONTINUE, reprompt=True)
-        # Budget spent: deliver what there is, but say so in the reply instead of letting an
-        # undone list read like a plan the operator agreed to.
+        # Ceiling reached: deliver what there is, say so in the reply instead of letting an
+        # undone list read like a plan, and carry the agent-owned items into the todo list so
+        # the next turn can resume them instead of the operator having to retype them.
+        carried = carry_open_items(agent, payload or {})
         reply = render_summary(
             payload or {}, open_label="Open (turn budget exhausted — still undone):",
         )
         final_msg["content"] = reply
         record_turn_contract_event("deferred_delivered")
         logger.error(
-            "turn-contract: CONTINUE_EXHAUSTED[%s] — %d open item(s) survived %d continuation(s); "
-            "delivering (model=%s provider=%s)",
-            reason, len(items), continuations, agent.model, agent.provider,
+            "turn-contract: CONTINUE_EXHAUSTED[%s] — %d agent item(s) survived %d continuation(s); "
+            "delivering, %d carried into the todo list (model=%s provider=%s)",
+            reason, len(agent_items), continuations, carried, agent.model, agent.provider,
         )
         agent._emit_diagnostic_status(
-            "⚠ Turn ended with work still open after the continuation budget — answer delivered"
+            "⚠ Turn ended with work still open after the continuation ceiling — answer delivered"
         )
         clear_end_turn(agent)
         agent._turn_continuations = 0
         return ContractVerdict(True, CONTINUE_EXHAUSTED, final_response=reply)
+    if decision == IDLE:
+        # Handed the turn back to act, closed again with zero tool calls: the bounce asked for a
+        # tool call, so this is a refusal to continue, not another continuation. It spends the
+        # existing rejection budget; the next idle close escapes and is delivered.
+        _verdict, reason = close_verdict(payload or {})
+        agent._turn_contract_rejections = rejections + 1
+        record_turn_contract_event("idle_continuation")
+        logger.warning(
+            "turn-contract: IDLE[%s] — closed with agent-owned work and no tool call since the "
+            "hand-back (rejection %d/%d, model=%s provider=%s)",
+            reason, rejections + 1, MAX_TURN_CONTRACT_REJECTIONS, agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status("↻ Closed without acting — requiring a tool call")
+        clear_end_turn(agent)
+        final_msg["content"] = render_summary(payload or {})
+        append_message(messages, final_msg)
+        append_message(messages, {
+            "role": "user",
+            "content": continuation_nudge(payload or {}, reason, idle=True),
+            "_turn_contract_nudge": True,
+        })
+        return ContractVerdict(True, IDLE, reprompt=True)
     if decision == HARNESS_ERROR:
         # The model did what it was told and the harness could not run end_turn (dispatch
         # gate without the name, executor exception, bridge rejection). Deliver — the summary

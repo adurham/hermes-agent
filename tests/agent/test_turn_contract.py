@@ -12,6 +12,7 @@ from agent.end_turn import (
     END_TURN_SCHEMA,
     ESCAPE,
     HARNESS_ERROR,
+    IDLE,
     MAX_TURN_CONTINUATIONS,
     MAX_TURN_CONTRACT_REJECTIONS,
     PASS,
@@ -90,8 +91,20 @@ class TestTool:
             blocker="console is off", agent=agent,
         )
         payload = end_turn_payload(agent)
-        assert payload["open_items"] == ["probe 118"]
+        assert payload["open_items"] == [{"item": "probe 118", "owner": "agent", "needs": None}]
         assert payload["blocker"] == "console is off"
+
+    def test_an_item_object_keeps_its_owner_and_needs(self):
+        agent = _Agent()
+        end_turn_tool(
+            status="done", summary="Report.",
+            open_items=[{"item": "relaunch the console", "owner": "user", "needs": "you relaunch it"},
+                        {"item": "audit the parser"}],
+            agent=agent,
+        )
+        items = end_turn_payload(agent)["open_items"]
+        assert items[0] == {"item": "relaunch the console", "owner": "user", "needs": "you relaunch it"}
+        assert items[1] == {"item": "audit the parser", "owner": "agent", "needs": None}
 
     def test_unknown_status_falls_back_to_done(self):
         agent = _Agent()
@@ -433,8 +446,8 @@ class TestHarnessFault:
 
 
 class TestCloseVerdict:
-    """``deferred`` is a claim that work remains, not a stop; ``blocked`` is only terminal when
-    it names the blocker. These four cases are the whole gate."""
+    """The gate keys on the OWNER the model commits to, not on its prose: agent-owned work is
+    never a stop, user-owned work must say what it needs, and `done` may carry user items."""
 
     @staticmethod
     def _p(**kw):
@@ -442,17 +455,34 @@ class TestCloseVerdict:
 
         return normalize_payload(**kw)
 
-    def test_deferred_is_work_open_whatever_it_carries(self):
-        assert close_verdict(self._p(status="deferred", summary="s", open_items=["x"])) == (WORK_OPEN, "deferred")
+    def test_agent_owned_work_is_never_a_stop_whatever_the_status(self):
+        for status in ("done", "deferred", "blocked", "need_input"):
+            payload = self._p(status=status, summary="s", open_items=[{"item": "audit the parser"}],
+                              blocker="x")
+            assert close_verdict(payload) == (WORK_OPEN, "agent_work_open"), status
+
+    def test_a_bare_string_item_is_agent_owned(self):
+        # The pre-owner shape (and what a model ignoring the schema emits) must not become an
+        # escape hatch: a string claims work the model can do.
+        assert close_verdict(self._p(status="done", summary="s", open_items=["still open"])) == (
+            WORK_OPEN, "agent_work_open")
+
+    def test_deferred_with_no_items_names_nothing(self):
         assert close_verdict(self._p(status="deferred", summary="s", open_items=[])) == (WORK_OPEN, "deferred")
 
-    def test_done_with_open_items_is_a_contradiction(self):
-        verdict, reason = close_verdict(self._p(status="done", summary="s", open_items=["x"]))
-        assert (verdict, reason) == (WORK_OPEN, "done_with_open_items")
+    def test_a_user_item_without_needs_is_unusable(self):
+        payload = self._p(status="done", summary="s", open_items=[{"item": "relaunch it", "owner": "user"}])
+        assert close_verdict(payload) == (WORK_OPEN, "user_item_without_needs")
 
-    def test_a_terminal_status_without_a_blocker_is_a_bare_stop(self):
+    def test_a_terminal_status_needs_a_user_item_or_a_blocker(self):
         for status in ("blocked", "need_input"):
             assert close_verdict(self._p(status=status, summary="s")) == (WORK_OPEN, "terminal_without_blocker")
+
+    def test_done_carrying_only_well_formed_user_items_is_a_report(self):
+        payload = self._p(status="done", summary="Here is where things stand.",
+                          open_items=[{"item": "relaunch the console", "owner": "user",
+                                       "needs": "you relaunch the loader"}])
+        assert close_verdict(payload) == (STOP, "")
 
     def test_done_and_a_named_blocker_stop(self):
         assert close_verdict(self._p(status="done", summary="s", open_items=[])) == (STOP, "")
@@ -464,11 +494,24 @@ class TestCloseVerdict:
         reply = render_summary(self._p(status="done", summary="Wrapped.", open_items=["still open"]))
         assert reply == "Wrapped.\n\nOpen:\n\n- still open"
 
+    def test_user_items_render_as_waiting_on_you_with_their_need(self):
+        reply = render_summary(self._p(
+            status="done", summary="Report.",
+            open_items=[{"item": "relaunch the console", "owner": "user", "needs": "you relaunch the loader"}],
+        ))
+        assert "Waiting on you:" in reply
+        assert "- relaunch the console (needs: you relaunch the loader)" in reply
+        assert "Open:" not in reply
+
     def test_the_nudge_numbers_the_items_and_names_the_way_out(self):
         text = continuation_nudge(self._p(status="deferred", summary="s", open_items=["a", "b"]), "deferred")
         assert "1. a" in text and "2. b" in text
         assert "Act on item 1 now" in text
         assert "`blocked`" in text and "`need_input`" in text
+
+    def test_the_idle_nudge_names_what_was_missing(self):
+        text = continuation_nudge(self._p(status="done", summary="s", open_items=["a"]), "agent_work_open", idle=True)
+        assert "without running a single tool" in text
 
 
 class TestLoopVerdict:
@@ -596,7 +639,7 @@ class TestLoopVerdict:
             agent, messages=messages, final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=3,
         )
         assert verdict.decision == CONTINUE
-        assert "`done` with 1 unfinished item(s)" in self._nudge(messages)
+        assert "it carries 1 item(s) owned by you" in self._nudge(messages)
         assert et.read_turn_contract_stats() == {"continued": 1}
 
     def test_a_terminal_status_needs_a_named_blocker(self, tmp_path, monkeypatch):
@@ -609,23 +652,65 @@ class TestLoopVerdict:
             agent, messages=messages, final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=1,
         )
         assert verdict.decision == CONTINUE
-        assert "must name what stops you" in self._nudge(messages)
+        assert "must carry either an `owner=\"user\"` item with `needs`, or a `blocker`" in self._nudge(messages)
 
-    def test_blocked_with_a_blocker_is_delivered(self, tmp_path, monkeypatch):
+    def test_a_user_owned_item_with_needs_closes_the_turn(self, tmp_path, monkeypatch):
+        # The over-fire guard: a real status report whose remaining work belongs to the owner
+        # is terminal, and the reply says who is being waited on.
         from agent.turn_final_response_contract import apply_turn_contract
 
         agent = self._agent(tmp_path, monkeypatch)
         end_turn_tool(
             status="blocked", summary="Console parked.",
-            open_items=["relaunch the loader"], blocker="the owner must relaunch the compat loader", agent=agent,
+            open_items=[{"item": "relaunch the loader", "owner": "user", "needs": "you relaunch the compat loader"}],
+            agent=agent,
         )
         verdict = apply_turn_contract(
             agent, messages=self._rows(), final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=1,
         )
         assert verdict.decision == CLOSE
         reply = verdict.final_response or ""
-        assert "Blocked: the owner must relaunch" in reply
-        assert "- relaunch the loader" in reply
+        assert "Waiting on you:" in reply
+        assert "- relaunch the loader (needs: you relaunch the compat loader)" in reply
+
+    def test_an_idle_re_close_spends_the_rejection_budget(self, tmp_path, monkeypatch):
+        # Bounced to act, closed again with zero tool calls: that is a refusal, not a
+        # continuation. It must not buy another free re-entry.
+        from agent import end_turn as et
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch, continuations=1)
+        end_turn_tool(status="deferred", summary="Still thinking.", open_items=["audit the parser"], agent=agent)
+        messages = self._rows()
+        verdict = apply_turn_contract(
+            agent, messages=messages, final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=0,
+        )
+        assert verdict.decision == IDLE and verdict.reprompt is True
+        assert agent._turn_contract_rejections == 1
+        assert "without running a single tool" in self._nudge(messages)
+        assert et.read_turn_contract_stats() == {"idle_continuation": 1}
+
+    def test_a_second_idle_re_close_escapes_and_is_delivered(self, tmp_path, monkeypatch):
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch, continuations=1,
+                            rejections=MAX_TURN_CONTRACT_REJECTIONS)
+        end_turn_tool(status="deferred", summary="Still thinking.", open_items=["audit the parser"], agent=agent)
+        verdict = apply_turn_contract(
+            agent, messages=self._rows(), final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=0,
+        )
+        assert verdict.decision == ESCAPE and verdict.reprompt is False
+
+    def test_a_user_owned_item_with_needs_closes_the_turn_even_as_done(self, tmp_path, monkeypatch):
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch)
+        end_turn_tool(status="done", summary="Where things stand.",
+                      open_items=[{"item": "relaunch it", "owner": "user", "needs": "you"}], agent=agent)
+        verdict = apply_turn_contract(
+            agent, messages=self._rows(), final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=2,
+        )
+        assert verdict.decision == CLOSE
 
     def test_budget_exhaustion_delivers_with_an_honest_label(self, tmp_path, monkeypatch):
         from agent import end_turn as et
@@ -642,6 +727,25 @@ class TestLoopVerdict:
         assert "Open (turn budget exhausted — still undone):" in reply
         assert "- item one" in reply
         assert et.read_turn_contract_stats() == {"deferred_delivered": 1}
+
+    def test_the_ceiling_carries_agent_items_into_the_todo_list(self, tmp_path, monkeypatch):
+        # The ceiling is a runaway stop, not permission to drop the queue: the remaining
+        # agent-owned items must survive the turn.
+        from tools.todo_tool import TodoStore
+
+        from agent.turn_final_response_contract import apply_turn_contract
+
+        agent = self._agent(tmp_path, monkeypatch, continuations=MAX_TURN_CONTINUATIONS)
+        agent._todo_store = TodoStore()
+        agent.session_id = "sess-abc123"
+        end_turn_tool(status="deferred", summary="Mid-way.", open_items=["audit the parser"], agent=agent)
+        apply_turn_contract(
+            agent, messages=self._rows(), final_msg={"role": "assistant", "content": ""}, tool_calls_this_turn=1,
+        )
+        items = agent._todo_store.read()
+        assert len(items) == 1
+        assert "audit the parser" in items[0]["content"]
+        assert items[0]["status"] == "pending"
 
     def test_budget_zero_restores_the_old_deliver_anything_behaviour(self, tmp_path, monkeypatch):
         from agent.turn_final_response_contract import apply_turn_contract

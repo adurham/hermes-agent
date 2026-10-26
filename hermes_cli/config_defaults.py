@@ -183,10 +183,12 @@ DEFAULT_CONFIG = {
         # end_turn(status, summary, open_items) instead of prose. Off until a full session reads
         # closed > 0, rejected = 0, escaped = 0 in ~/.hermes/state/turn_contract.json.
         "turn_contract": False,
-        # How many times a close that reports work still open (`deferred`, or `done` carrying
-        # open_items) is handed back to the model with those items before the reply is
-        # delivered anyway. 0 restores the old behaviour (deliver any close as-written).
-        "turn_continuations": 3,
+        # Hard ceiling on how many times a turn is handed back to the model because it closed
+        # with agent-owned work (open_items entries whose owner is "agent"). It is a runaway
+        # stop, not a per-item budget: re-entries that actually run tools are legitimate and
+        # cheap, while an idle re-close (no tool call) spends the rejection budget instead.
+        # 0 restores the old behaviour (deliver any close as-written).
+        "turn_continuations": 20,
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.
         "text_verbosity": "",
