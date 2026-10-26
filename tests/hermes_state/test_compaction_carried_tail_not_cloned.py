@@ -122,3 +122,46 @@ def test_a_colliding_stored_row_is_never_dropped(db: SessionDB) -> None:
     restored.pop("_db_persisted", None)
     db.append_messages_batch(SID, [restored])
     assert "continue, and also this" in [m["content"] for m in db.get_messages_as_conversation(SID)]
+
+
+def _row_rewritten_after_hold(db: SessionDB) -> tuple:
+    """The compressor took a uid-only copy, then the row was rewritten in place (an @file expansion)."""
+    db.append_message(SID, role="user", content="raw @file")
+    row = db.get_messages_as_conversation(SID, include_row_ids=True)[-1]
+    db.set_user_message_content(SID, row["_row_id"], "expanded file body")
+    held = {"role": "user", "content": "raw @file", "message_uid": row["message_uid"]}
+    return [_summary(), held], [SUMMARY_TEXT, "raw @file", "expanded file body"]
+
+
+def _edit_reinserted_with_its_uid(db: SessionDB) -> tuple:
+    """Two tail rows share a uid (an edit re-inserted with it); the held copy is the edit."""
+    db.append_message(SID, role="assistant", content="v1 draft")
+    uid = db.get_messages_as_conversation(SID)[-1]["message_uid"]
+    db.append_messages_batch(SID, [{"role": "assistant", "content": "v2 edited", "message_uid": uid}])
+    held = {"role": "assistant", "content": "v2 edited", "message_uid": uid}
+    return [_summary(), held], [SUMMARY_TEXT, "v2 edited", "v1 draft"]
+
+
+def _summary_merged_into_named_row(db: SessionDB) -> tuple:
+    """The in-process compressor merged the summary into its copy of the row, which keeps ``_row_id``."""
+    db.append_message(SID, role="user", content="steer during the summary call")
+    row = db.get_messages_as_conversation(SID, include_row_ids=True)[-1]
+    merged = f"[prior]\n{row['content']}\n\n{SUMMARY_TEXT}"
+    return [{**row, "content": merged, "_compressed_summary": True}], [merged]
+
+
+@pytest.mark.parametrize("build", [
+    _row_rewritten_after_hold, _edit_reinserted_with_its_uid, _summary_merged_into_named_row])
+def test_a_rewritten_carry_claims_only_what_the_compressor_rewrote(db: SessionDB, build) -> None:
+    """A held copy whose content differs from its tail row stands for that row only when the compressor's own
+    rewrite explains the difference: the model never ends up on an older copy or on two copies of one
+    message, and every stored version stays visible."""
+    watermark = db.get_active_message_watermark(SID)
+    compacted, expected_live = build(db)
+    versions = [r["content"] for r in _rows(db) if r["active"] and r["id"] > watermark]
+
+    db.archive_and_compact(SID, compacted, watermark=watermark, tail_count=1)
+
+    assert [m["content"] for m in db.get_messages_as_conversation(SID)] == expected_live
+    display = "\n".join(str(m["content"]) for m in db.get_messages(SID, include_compacted=True))
+    assert versions and all(text in display for text in versions)
