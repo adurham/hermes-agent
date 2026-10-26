@@ -335,6 +335,16 @@ meaning says otherwise.
 | `base_url_env_var` | Env var overriding `base_url` on the registry row when not in `env_vars` | `""` |
 | `registry_after` | Registry id this row follows in priority-ordered scans | `""` (appended) |
 
+### Public helpers for a `model_setup_flow`
+
+A provider's own `hermes model` step calls these instead of re-implementing core's config rules:
+
+| Helper | What it does |
+|---|---|
+| `hermes_cli.model_setup.persist_model_selection(model, provider, *, base_url=None, api_mode=None)` | Writes the `model:` section (`provider`, then `base_url` / `api_mode` when given), scrubs inline endpoint credentials, saves `config.yaml` and deactivates the previously active OAuth provider. Returns the saved section. |
+| `hermes_cli.model_setup.note_setup_failure(failure_class)` | Records why the flow ended without a pick (`"auth"`, `"no_models"`, ...) for the opt-in provider-setup metric; a no-op outside a tracked flow. |
+| `agent.secret_scope.secret_source_label(name)` | `" (from Bitwarden)"`-style suffix naming the secret-source plugin that supplied env var `name`; `""` for `.env` / shell values. |
+
 ## Account usage
 
 Model-provider plugins can provide account or plan usage to `/usage` by
