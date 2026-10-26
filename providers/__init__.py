@@ -349,6 +349,21 @@ def unlisted_provider_names() -> set[str]:
     return hidden
 
 
+def names_without_profile(names) -> set[str]:
+    """The *names* that have no profile in the bound home: neither process-wide nor its plugins.
+
+    Lets process-wide mirrors of profiles (``hermes_cli.auth.PROVIDER_REGISTRY``) hide the rows
+    another home's plugins put there. Cheap enough for per-lookup use: no discovery, no miss re-scan;
+    only the periodic plugin-dir stamp check, skipped mid-scan so a plugin reading the mirror while
+    it imports cannot re-enter its own scan.
+    """
+    rest = [name for name in names if name not in _REGISTRY]
+    if not rest:
+        return set()
+    layer = _bound_home_layer()[0] if _discovering else _home_layer()
+    return {name for name in rest if name not in layer.registry}
+
+
 def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
     """The layer for the home bound right now, importing plugin dirs it has not seen yet."""
     layer, home, key = _bound_home_layer()

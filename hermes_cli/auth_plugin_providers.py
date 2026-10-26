@@ -35,6 +35,62 @@ PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
 PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
 
 
+def _absent_mirrored(ids) -> set[str]:
+    """The plugin-mirrored ids among *ids* that the bound home has no profile for."""
+    mirrored = [pid for pid in ids if pid in PLUGIN_MIRRORED_PROVIDERS]
+    if not mirrored:
+        return set()
+    from providers import names_without_profile
+    return names_without_profile(mirrored)
+
+
+class HomeScopedRegistry(dict):
+    """``PROVIDER_REGISTRY``: process-wide storage, read per profile home.
+
+    Plugin profiles are per ``$HERMES_HOME`` but their mirrored rows (and the alias keys pointing at
+    them) live in one process-wide dict, and one process serves many profiles (multiplex gateway,
+    Desktop ``serve``). Every read hides a mirrored row whose provider has no profile in the bound
+    home, so a profile without the plugin never resolves, auto-detects or reads credentials for a
+    provider another profile installed. Built-in rows are never hidden; writes are plain dict writes.
+    """
+
+    def _hidden(self) -> set[str]:
+        return _absent_mirrored({row.id for row in dict.values(self)}) if PLUGIN_MIRRORED_PROVIDERS else set()
+
+    def _shown(self, row: Any) -> bool:
+        return row.id not in PLUGIN_MIRRORED_PROVIDERS or not _absent_mirrored((row.id,))
+
+    def __getitem__(self, key: str) -> Any:
+        row = dict.__getitem__(self, key)
+        if not self._shown(row):
+            raise KeyError(key)
+        return row
+
+    def get(self, key: str, default: Any = None) -> Any:
+        row = dict.get(self, key)
+        return row if row is not None and self._shown(row) else default
+
+    def __contains__(self, key: object) -> bool:
+        row = dict.get(self, key)
+        return row is not None and self._shown(row)
+
+    def items(self) -> list[tuple[str, Any]]:
+        hidden = self._hidden()
+        return [(key, row) for key, row in dict.items(self) if row.id not in hidden]
+
+    def keys(self) -> list[str]:
+        return [key for key, _ in self.items()]
+
+    def values(self) -> list[Any]:
+        return [row for _, row in self.items()]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        return len(self.items())
+
+
 def _api_key_env_fields(pp: Any) -> tuple[tuple, str]:
     """Split a profile's ``env_vars`` into (api-key vars, base-URL var); the URL var may be ""."""
     is_url = lambda v: v.endswith("_BASE_URL") or v.endswith("_URL")
@@ -73,11 +129,13 @@ def registry_auth_type(pp: Any) -> str:
 
 
 def _insert_row(registry: dict, pconfig: Any, after: str) -> None:
-    """Add *pconfig* right after the *after* row (in place: callers hold the dict), else append."""
-    if after not in registry:
+    """Add *pconfig* right after the *after* row (in place: callers hold the dict), else append.
+
+    Reads the raw storage: rows hidden from the bound home must survive the rebuild."""
+    if not dict.__contains__(registry, after):
         registry[pconfig.id] = pconfig
         return
-    rows = list(registry.items())
+    rows = list(dict.items(registry))
     at = [key for key, _ in rows].index(after) + 1
     registry.clear()
     registry.update(rows[:at] + [(pconfig.id, pconfig)] + rows[at:])
