@@ -370,12 +370,17 @@ def _tree_matches_completed_stamp(root: Path) -> bool:
     return info.commit == commit and not info.dirty
 
 
+# `hermes update` flags that report and exit without changing anything (subcommands/update.py).
+_REPORT_ONLY_UPDATE_FLAGS = frozenset({"--check", "--plan", "--list-venv-holders"})
+
+
 def _may_retry_completion(root: Path, command: list[str], *, current: bool) -> bool:
     """Whether this launch runs the owed repair now; a suppressed one says why when it matters."""
     import sys
 
-    if not current and command[:1] == ["update"]:
+    if not current and command[:1] == ["update"] and not _REPORT_ONLY_UPDATE_FLAGS & set(command):
         # `hermes update` is the remedy every backed-off launch names: it always tries the repair.
+        # Its report-only forms change nothing, so they stay inside the backoff like any launch.
         return True
     may_retry, attempts, backoff = completion_retry_state(root)
     if not may_retry and attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
@@ -398,15 +403,19 @@ def _may_retry_completion(root: Path, command: list[str], *, current: bool) -> b
     return may_retry
 
 
-def _relaunch_target(python: Path, *, same: bool) -> Path | None:
-    """*python*, unless this process is already a relaunch into that same interpreter.
+def _relaunch_target(root: Path, python: Path, *, same: bool) -> Path | None:
+    """*python*, unless this process is a relaunch into that same interpreter and is still stale.
 
-    A relaunched child that asks to relaunch into itself again would find the same install state
-    in the next child too: exec'ing would loop forever (#122513), so it boots as it is.
+    A relaunched child that is still stale would find the same install state in the next child
+    too: exec'ing would loop forever (#122513), so it boots as it is. The marker can outlive the
+    relaunch that set it (a restore re-execs ``sys.orig_argv``), so a marked child whose sync DID
+    make the install current relaunches once more: that next child boots current, never here.
     """
     import sys
 
-    if same and getattr(sys, "_hermes_relaunched", False):
+    import pm
+
+    if same and getattr(sys, "_hermes_relaunched", False) and not pm.venv_is_current(project_root=root):
         print("hermes: relaunching did not leave this install current; running with the "
               "dependencies it has — run `hermes update` to finish it", file=sys.stderr, flush=True)
         return None
@@ -515,7 +524,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
     if not current or not same:
         publish_launchers(root)
-        return _relaunch_target(python, same=same)
+        return _relaunch_target(root, python, same=same)
     if owed_to_cli:
         # Left owed, not dropped: say so (once, in the process that boots) where an
         # operator of the unit will read it.
@@ -691,7 +700,8 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
-    # _hermes_relaunched marks the child this starts (not processes it spawns) for _relaunch_target.
+    # _hermes_relaunched marks the child this starts (not processes it spawns) for _relaunch_target;
+    # a restore re-execs sys.orig_argv and keeps it, which is why that guard re-checks currency.
     prefix = (f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
               "sys._hermes_relaunched = True; ")
     if argv[0] == "-c":
