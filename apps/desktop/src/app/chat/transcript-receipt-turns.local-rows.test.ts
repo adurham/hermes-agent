@@ -55,7 +55,10 @@ const live = (id: string, role: ChatMessage['role'], text: string, extra: Partia
 })
 
 const count = (messages: ChatMessage[], needle: string) =>
-  messages.map(message => chatMessageText(message)).join('\n').split(needle).length - 1
+  messages
+    .map(message => chatMessageText(message))
+    .join('\n')
+    .split(needle).length - 1
 
 /** The refresh composition the post-turn and sessions.changed reads apply. */
 const refresh = (page: ChatMessage[], window: ChatMessage[]) =>
@@ -85,7 +88,9 @@ describe('local notices inside a steered turn', () => {
 
   it.each([
     // Long chat: the newest page starts inside an older turn (stored-id merge).
-    ['a page that starts inside an older turn', [...olderTurn(1, 'old-a').slice(3), ...olderTurn(7, 'old-b')]]
+    ['a page that starts inside an older turn', [...olderTurn(1, 'old-a').slice(3), ...olderTurn(7, 'old-b')]],
+    // Short chat: the page is the whole conversation (taken as is).
+    ['a page that holds the whole chat', [...olderTurn(1, 'old-a'), ...olderTurn(7, 'old-b')]]
   ])('keep their place and the turn draws once after %s', (_label, pageHead) => {
     const window = [
       ...toChatMessages([...olderTurn(1, 'old-a'), ...olderTurn(7, 'old-b')]),
