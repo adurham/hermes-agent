@@ -38,6 +38,15 @@ const tool = (id: number, call: string): SessionMessage =>
 const answer = (id: number, text: string): SessionMessage =>
   ({ id, role: 'assistant', content: text, timestamp: at(id) }) as SessionMessage
 
+const processComplete = (id: number): SessionMessage =>
+  ({
+    id,
+    role: 'user',
+    content: 'Background Process Finished',
+    timestamp: at(id),
+    display_kind: 'process_complete'
+  }) as SessionMessage
+
 const olderTurn = (first: number, tag: string): SessionMessage[] => [
   user(first, `${tag} prompt`),
   narration(first + 1, `${tag} look one`, `${tag}-1`),
@@ -115,5 +124,43 @@ describe('local notices inside a steered turn', () => {
     // Arrival order: after the turn's prompt, before anything newer than the turn.
     const side = merged.findIndex(message => message.id === 'btw-complete-btw_1')
     expect(side).toBeGreaterThan(merged.findIndex(message => chatMessageText(message) === 'steered prompt'))
+  })
+
+  it('stay inside their own turn when a later turn whose prompt only the page holds follows it', () => {
+    // The background process the turn started finished after it and ran its
+    // own turn; the window drew that turn's reply but never its stored prompt.
+    const auto: PersistedTurn = { row_ids: [18, 19], complete: true, user_row_ids: [18], submission_id: 'auto' }
+
+    const window = [
+      ...toChatMessages([...olderTurn(1, 'old-a'), ...olderTurn(7, 'old-b')]),
+      live('user-sub-steer', 'user', 'steered prompt', { rowId: 13 }),
+      live('assistant-stream-1', 'assistant', 'live look', { interim: false }),
+      ...notices,
+      live('user-other', 'user', 'change course', { rowId: 16 }),
+      live('assistant-stream-2', 'assistant', 'steered answer', { rowId: 17, persistedTurn: receipt }),
+      live('assistant-auto', 'assistant', 'auto reply', { rowId: 19, persistedTurn: auto })
+    ]
+
+    const page = toChatMessages([
+      ...olderTurn(1, 'old-a').slice(3),
+      ...olderTurn(7, 'old-b'),
+      ...turnRows,
+      user(16, 'change course'),
+      answer(17, 'steered answer'),
+      processComplete(18),
+      answer(19, 'auto reply')
+    ])
+
+    const merged = refresh(page, window)
+    const indexOf = (text: string) => merged.findIndex(message => chatMessageText(message).includes(text))
+
+    for (const text of ['SIDE ANSWER', 'answering from a conversation snapshot', 'auto reply', 'change course']) {
+      expect(count(merged, text), text).toBe(1)
+    }
+
+    // In front of the steer, as drawn live: never after the next turn's prompt.
+    expect(indexOf('SIDE ANSWER')).toBeGreaterThan(indexOf('steered prompt'))
+    expect(indexOf('SIDE ANSWER')).toBeLessThan(indexOf('change course'))
+    expect(indexOf('Switched to fallback model')).toBeLessThan(indexOf('change course'))
   })
 })

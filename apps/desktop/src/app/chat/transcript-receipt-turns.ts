@@ -106,23 +106,63 @@ function receiptTurnIndices(window: ChatMessage[], end: number, pageRows: Set<nu
   return windowTurnIndices(window, end, bounds.first, bounds.last, bounds.receipt)
 }
 
+/** The window without the turns the page holds whole, and where their notices go. */
+export interface ReceiptTurnDrop {
+  window: ChatMessage[]
+  /**
+   * A local notice drawn inside a dropped turn, by message id, mapped to the
+   * stored id of the next dropped row of that turn (a steer prompt, the final
+   * answer). The page carries that row, so the notice goes in front of the
+   * page's copy and stays inside its own turn. Anchored to the next row the
+   * window still holds instead, it slid below a later turn whose prompt only
+   * the page carries (a background-process completion turn).
+   */
+  noticeAnchors: Map<string, number>
+}
+
+/** Stored id of the first dropped row after `at` that has one. */
+function nextDroppedRowId(window: ChatMessage[], indices: number[], at: number): number | undefined {
+  for (const index of indices) {
+    const ids = index > at ? transcriptRowIds(window[index]) : []
+
+    if (ids.length) {
+      return ids[0]
+    }
+  }
+
+  return undefined
+}
+
 /** Drop the window rows whose turn the page holds whole, by the turn's receipt. */
-export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
+export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMessage[]): ReceiptTurnDrop {
   const pageRows = new Set(page.flatMap(transcriptRowIds))
+  const noticeAnchors = new Map<string, number>()
 
   if (!pageRows.size) {
-    return window
+    return { window, noticeAnchors }
   }
 
   const dropped = new Set<number>()
 
   window.forEach((message, index) => {
-    if (message.persistedTurn && !message.pending) {
-      receiptTurnIndices(window, index, pageRows).forEach(at => dropped.add(at))
+    if (!message.persistedTurn || message.pending) {
+      return
+    }
+
+    const indices = receiptTurnIndices(window, index, pageRows)
+
+    indices.forEach(at => dropped.add(at))
+
+    for (let at = indices[0] ?? index; at < index; at += 1) {
+      const anchor = isLocalSystemNotice(window[at]) ? nextDroppedRowId(window, indices, at) : undefined
+
+      if (anchor !== undefined) {
+        noticeAnchors.set(window[at].id, anchor)
+      }
     }
   })
 
-  return dropped.size ? window.filter((_, index) => !dropped.has(index)) : window
+  return { window: dropped.size ? window.filter((_, index) => !dropped.has(index)) : window, noticeAnchors }
 }
 
 /**
