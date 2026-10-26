@@ -4,8 +4,8 @@
  * The turn persists its narrated tool round before the tool runs, so the
  * history a re-attaching window fetches already holds that round while the
  * live stream keeps drawing the same segment (#127288, #127665). Each step
- * leaves the chat mid-turn by a different road (switch away and back, reload,
- * a second switch during the running tool) and holds the settled turn to the
+ * leaves the chat mid-turn by a different road (switch away and back during
+ * the answer or the running tool, a steer, a socket drop) and holds the settled turn to the
  * transcript oracle, whose in-page sampler also fails a transient double.
  */
 
@@ -21,7 +21,9 @@ import {
   currentSessionId,
   launchCoreApp,
   recordWebSockets,
+  routePrimaryWebSocket,
   send,
+  startTcpProxy,
   waitForInteractive,
   writeProviderHome,
   type WsRecorder
@@ -104,7 +106,7 @@ async function withApp(
 }
 
 test('re-attaching to a running tool turn renders each segment once', async () => {
-  await withApp('reattach', async ({ page, provider, sandbox, ws }) => {
+  await withApp('reattach', async ({ app, page, provider, sandbox, ws }) => {
     const session: OracleTarget = { sessionId: '', expectUserMarkers: [] }
 
     await test.step('switch away and back while the answer after a tool streams', async () => {
@@ -153,22 +155,164 @@ test('re-attaching to a running tool turn renders each segment once', async () =
       await assertTranscriptOracle(page, ws, provider, session, 're-attach during the tool')
     })
 
-    await test.step('reload while the answer after a tool streams', async () => {
+    await test.step('a steer during the answer, then switch away and back mid-turn', async () => {
       const hold = gate()
-      provider.script(U(4), [
-        { text: words(AI(4), 'narrating', 'again'), toolCalls: [echo('reattach-c')] },
-        { text: words(A(4), 'answer', 'across', 'a', 'reload'), holdAfterFirstChunk: hold }
+      const steerHold = gate()
+      provider.script(U(5), [
+        { text: words(AI(5), 'narrating', 'before', 'a', 'steer'), toolCalls: [echo('reattach-s')] },
+        { text: words(A(5), 'answer', 'interrupted', 'by', 'steer'), holdAfterFirstChunk: hold }
       ])
-      await send(page, `${U(4)} reload mid answer`, 'Enter', ws)
-      await provider.streamStarted(U(4), 1)
-      await expect(viewport(page)).toContainText(A(4))
-      session.expectUserMarkers.push(U(4))
-      await page.reload()
-      await expect(viewport(page)).toContainText(AI(4), { timeout: 60_000 })
-      await installDuplicateSampler(page)
+      provider.script(U(6), [
+        { text: words(AI(6), 'steered', 'narration'), toolCalls: [echo('reattach-s2')] },
+        { text: words(A(6), 'steered', 'answer'), holdAfterFirstChunk: steerHold }
+      ])
+      await send(page, `${U(5)} steer me`, 'Enter', ws)
+      await provider.streamStarted(U(5), 1)
+      await expect(viewport(page)).toContainText(A(5))
+      await send(page, `${U(6)} change course`, 'Enter', ws)
+      session.expectUserMarkers.push(U(5), U(6))
       hold.open()
-      await settled(page, ws, A(4))
-      await assertTranscriptOracle(page, ws, provider, session, 're-attach after a reload')
+      await provider.streamStarted(U(6), 1)
+      await openSession(page, '', '')
+      await openSession(page, session.sessionId, AI(6))
+      steerHold.open()
+      await settled(page, ws, A(6))
+      await assertTranscriptOracle(page, ws, provider, session, 'steer then re-attach')
     })
+
+    await test.step('socket drop and reconnect while the answer after a tool streams', async () => {
+      const backendPort = Number(new URL(ws.sockets[0]!.url).port)
+      const proxy = await startTcpProxy(backendPort)
+
+      try {
+        await routePrimaryWebSocket(app, backendPort, proxy.port)
+        await page.reload()
+        await waitForInteractive(app, page)
+        await installDuplicateSampler(page)
+        await expect.poll(() => proxy.connections()).toBeGreaterThan(0)
+        await openSession(page, session.sessionId, A(6))
+        const hold = gate()
+        provider.script(U(7), [
+          { text: words(AI(7), 'narrating', 'before', 'the', 'drop'), toolCalls: [echo('reattach-d')] },
+          { text: words(A(7), 'answer', 'across', 'the', 'drop'), holdAfterFirstChunk: hold }
+        ])
+        await send(page, `${U(7)} across a drop`, 'Enter', ws)
+        await provider.streamStarted(U(7), 1)
+        await expect(viewport(page)).toContainText(A(7))
+        session.expectUserMarkers.push(U(7))
+        const socketsBefore = ws.sockets.length
+        expect(proxy.dropAll()).toBeGreaterThan(0)
+        await expect.poll(() => ws.sockets.length, { timeout: 60_000 }).toBeGreaterThan(socketsBefore)
+        await expect.poll(() => proxy.connections(), { timeout: 60_000 }).toBeGreaterThan(0)
+        hold.open()
+        await settled(page, ws, A(7))
+        session.lossyWire = [U(7)]
+        await assertTranscriptOracle(page, ws, provider, session, 'reconnect during a tool turn')
+      } finally {
+        await proxy.close()
+      }
+    })
+
   })
 })
+
+/**
+ * Route the primary socket through the test and, once, right after the first
+ * server event `pick` matches, deliver copies of the frames `replay` selects
+ * from what has been delivered so far, under seqs the backend never used: the
+ * shape a replay after a reconnect produces (#140397, #144609). Every other
+ * frame passes through unchanged and is recorded in `ws`.
+ */
+async function routeRedelivery(
+  page: Page,
+  ws: WsRecorder,
+  pick: (msg: any) => boolean,
+  replay: (delivered: any[], picked: any) => any[] = (_delivered, picked) => [picked]
+) {
+  const delivered: any[] = []
+
+  const state = { redelivered: false }
+
+  const parse = (raw: string | Buffer) => {
+    try {
+      return JSON.parse(String(raw))
+    } catch {
+      return null
+    }
+  }
+
+  await page.routeWebSocket(/\/api\/ws/, client => {
+    const server = client.connectToServer()
+    const socket = ws.sockets.push({ id: ws.sockets.length, url: client.url(), closed: false }) - 1
+
+    client.onMessage(raw => {
+      const msg = parse(raw)
+
+      if (typeof msg?.method === 'string') {
+        ws.sent.push({ socket, method: msg.method, params: msg.params })
+      }
+
+      server.send(raw)
+    })
+    server.onMessage(raw => {
+      const msg = parse(raw)
+
+      if (msg?.method === 'event' && msg.params) {
+        ws.events.push({
+          socket,
+          type: String(msg.params.type ?? ''),
+          sessionId: String(msg.params.session_id ?? ''),
+          seq: typeof msg.params.seq === 'number' ? msg.params.seq : null,
+          payload: msg.params.payload
+        })
+      }
+
+      client.send(raw)
+
+      if (msg?.method === 'event') {
+        delivered.push(msg)
+      }
+
+      if (!state.redelivered && pick(msg)) {
+        state.redelivered = true
+        replay(delivered, msg).forEach((frame, index) =>
+          client.send(JSON.stringify({ ...frame, params: { ...frame.params, seq: frame.params.seq + 100_000 + index } }))
+        )
+      }
+    })
+  })
+
+  return state
+}
+
+test('a tool completion redelivered under a newer seq renders one tool row', async () => {
+  await withApp('redeliver', async ({ app, page, provider, ws }) => {
+    const session: OracleTarget = { sessionId: '', expectUserMarkers: [] }
+    const tag = `redeliver-${nonce}`
+
+    const redelivery = await routeRedelivery(
+      page,
+      ws,
+      msg => msg?.method === 'event' && msg.params?.type === 'tool.complete' && JSON.stringify(msg.params.payload ?? {}).includes(tag)
+    )
+
+    await page.reload()
+    await waitForInteractive(app, page)
+    await installDuplicateSampler(page)
+    provider.script(U(1), [
+      { text: words(AI(1), 'narrating', 'before', 'the', 'tool'), toolCalls: [echo(tag)] },
+      { text: words(A(1), 'answer', 'after', 'the', 'tool') }
+    ])
+    await send(page, `${U(1)} one tool`, 'Enter', ws)
+    await settled(page, ws, A(1))
+    session.sessionId = await currentSessionId(page)
+    session.expectUserMarkers.push(U(1))
+    expect(redelivery.redelivered).toBe(true)
+    await page.screenshot({ path: test.info().outputPath('redelivered-turn.png') })
+    await assertTranscriptOracle(page, ws, provider, session, 'redelivered tool completion')
+    await page.screenshot({ path: test.info().outputPath('redelivered-tool-row.png') })
+    const rows = viewport(page).locator('[data-tool-row]').filter({ hasText: `core-${tag}` })
+    await expect(rows).toHaveCount(1)
+  })
+})
+

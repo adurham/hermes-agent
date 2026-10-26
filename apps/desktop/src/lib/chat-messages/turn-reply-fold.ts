@@ -25,6 +25,10 @@ import type { ChatMessage, ChatMessagePart } from './types'
  *   least one tool call, is a live segment re-drawn after a re-attach: that
  *   leading run is dropped and the new remainder stays (#127288).
  *
+ * A user row whose stored row id an earlier user row already carries is the
+ * same prompt twice: it is dropped and its turn joins the earlier one, so the
+ * reply copies under it fold too.
+ *
  * Text alone never trims a bubble that adds anything new: equal commentary in
  * two tool rounds is authored twice and stays, matching hydration
  * (`dedupeRepeatedTextInParts`). Render-only; the store keeps every row.
@@ -264,8 +268,22 @@ export function foldTurnReplyDuplicates(messages: ChatMessage[], cache?: TurnRep
     turn = []
   }
 
+  const userRows = new Set<number>()
+
   for (const message of messages) {
     if (message.role === 'user' && !message.hidden) {
+      // The same stored prompt delivered twice (a history read beside the
+      // bound live row) is one turn, not two.
+      if (message.rowId !== undefined && userRows.has(message.rowId)) {
+        fold.dropped.add(message)
+
+        continue
+      }
+
+      if (message.rowId !== undefined) {
+        userRows.add(message.rowId)
+      }
+
       flush()
     } else if (isReplyBubble(message)) {
       turn.push(message)

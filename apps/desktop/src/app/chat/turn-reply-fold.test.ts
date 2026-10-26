@@ -89,6 +89,19 @@ describe('a turn reply renders once', () => {
     expect(texts.filter(value => value === FINAL)).toHaveLength(1)
   })
 
+  it('a stored prompt delivered twice is one turn, and its reply copies fold', () => {
+    const { result } = renderHook(() =>
+      useRuntimeMessageRepository([
+        { id: 'user-temp-1', role: 'user', parts: [text('check the config')], rowId: 41 },
+        { id: 'assistant-stream-1', role: 'assistant', parts: [text(ANSWER)] },
+        { id: 'row-41', role: 'user', parts: [text('check the config')], rowId: 41 },
+        { id: 'row-42', role: 'assistant', parts: [text(ANSWER)], rowId: 42 }
+      ])
+    )
+
+    expect(result.current.messages.map(item => item.message.id)).toEqual(['user-temp-1', 'row-42'])
+  })
+
   it('keeps commentary the model authored twice in two tool rounds', () => {
     const transcript: ChatMessage[] = [
       { id: 'u1', role: 'user', parts: [text('run both')] },
