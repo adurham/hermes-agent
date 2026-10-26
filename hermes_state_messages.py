@@ -22,6 +22,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+from hermes_state_compaction_display import _next_message_id, hide_rewritten_tool_copies
 from hermes_state_detached_results import SessionDetachedResultsMixin
 from hermes_state_todo import SessionTodoResultMixin
 from hermes_state_identity import (
@@ -881,7 +882,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
         # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
         self._carry_parent_timestamps(conn, session_id, compacted_messages)
+        first_new_id = _next_message_id(conn)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+        hide_rewritten_tool_copies(self, conn, session_id, first_new_id)
         if unseen:
             _ids, unseen_tool_calls = self._tail_rows_after_watermark(
                 conn,
@@ -1004,7 +1007,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
         # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
         self._carry_parent_timestamps(conn, session_id, compacted_messages)
+        first_new_id = _next_message_id(conn)
         inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+        hide_rewritten_tool_copies(self, conn, session_id, first_new_id)
         if tail_ids:
             self._clone_message_rows(conn, tail_ids)
             inserted += len(tail_ids)
