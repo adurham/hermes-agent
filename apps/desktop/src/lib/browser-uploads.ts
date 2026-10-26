@@ -51,20 +51,26 @@ function rememberBounded<K, V>(cache: Map<K, V>, key: K, value: V): void {
 // Decoded as the data URL's charset=utf-8 did, and escaped for a double-quoted attribute (`&`
 // first) so no byte of the page parses as markup of this same-origin wrapper.
 // A srcdoc document inherits the wrapper's blob: base URL, so `#anchor` links would resolve to
-// blob:…#anchor and do nothing. A page without its own <base> gets about:srcdoc, placed after
-// any doctype so the page keeps its rendering mode.
+// blob:…#anchor and do nothing. A page without its own <base> gets about:srcdoc, placed inside
+// the page's own <head> start tag (else its <html> tag, else after any doctype): a base before
+// <head> opens an implicit head, and the parser then drops the authored tag and its attributes.
+// After the doctype, the page keeps its rendering mode.
 const SRCDOC_BASE = '<base href="about:srcdoc">'
 const LEADING_DOCTYPE = /^\s*<!doctype[^>]*>/i
 const BASE_ELEMENT = /<base[\s/>]/i
+const START_TAG_REST = String.raw`(?=[\s/>])(?:"[^"]*"|'[^']*'|[^'">])*>`
+const HEAD_START = new RegExp(`<head${START_TAG_REST}`, 'i')
+const HTML_START = new RegExp(`<html${START_TAG_REST}`, 'i')
 
 function withSrcdocBase(page: string): string {
   if (BASE_ELEMENT.test(page)) {
     return page
   }
 
-  const doctype = LEADING_DOCTYPE.exec(page)?.[0] ?? ''
+  const anchor = HEAD_START.exec(page) ?? HTML_START.exec(page) ?? LEADING_DOCTYPE.exec(page)
+  const at = anchor ? anchor.index + anchor[0].length : 0
 
-  return doctype + SRCDOC_BASE + page.slice(doctype.length)
+  return page.slice(0, at) + SRCDOC_BASE + page.slice(at)
 }
 
 function sandboxedHtmlBlob(bytes: Uint8Array): Blob {

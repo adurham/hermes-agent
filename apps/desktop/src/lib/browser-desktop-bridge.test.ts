@@ -841,6 +841,55 @@ describe('browser-hosted Desktop bridge', () => {
     expect(await srcdocOf(based)).toBe(based)
   })
 
+  it('puts the about:srcdoc base inside the page\'s own <head>, so the head keeps its attributes', async () => {
+    const win = mutableWindow()
+    seedWebappSession('served-token')
+    const blobs: Blob[] = []
+
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(blob => {
+      blobs.push(blob as Blob)
+
+      return `blob:http://127.0.0.1:9119/page-${blobs.length}`
+    })
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    const parsedSrcdocOf = async (page: string) => {
+      await win.hermesDesktop!.saveImageBuffer(new TextEncoder().encode(page), '.html')
+      const wrapper = new DOMParser().parseFromString(await blobs.at(-1)!.text(), 'text/html')
+      const srcdoc = wrapper.querySelector('iframe')!.getAttribute('srcdoc')!
+
+      return { doc: new DOMParser().parseFromString(srcdoc, 'text/html'), srcdoc }
+    }
+
+    // A base before <head> would open an implicit head, and the authored tag's attributes would be lost.
+    const report = '<!DOCTYPE html><HTML lang="en"><Head id="report-assets" data-x="1"><title>r</title></Head><body><a href="#sec">x</a></body></HTML>'
+    const withHead = await parsedSrcdocOf(report)
+    expect(withHead.srcdoc).toBe(report.replace('data-x="1">', 'data-x="1"><base href="about:srcdoc">'))
+    expect(withHead.doc.compatMode).toBe('CSS1Compat')
+    expect(withHead.doc.head.id).toBe('report-assets')
+    expect(withHead.doc.head.dataset.x).toBe('1')
+    expect(withHead.doc.querySelectorAll('base')).toHaveLength(1)
+    expect(withHead.doc.querySelector('base')!.parentElement).toBe(withHead.doc.head)
+    expect(withHead.doc.querySelector('base')!.getAttribute('href')).toBe('about:srcdoc')
+
+    // Without a <head>, the base goes right after <html>, which keeps its attributes too.
+    const headless = '<!doctype html><html lang="fr" data-theme="dark"><body><p>x</p></body></html>'
+    const withHtml = await parsedSrcdocOf(headless)
+    expect(withHtml.srcdoc).toBe(headless.replace('data-theme="dark">', 'data-theme="dark"><base href="about:srcdoc">'))
+    expect(withHtml.doc.documentElement.lang).toBe('fr')
+    expect(withHtml.doc.documentElement.dataset.theme).toBe('dark')
+    expect(withHtml.doc.querySelectorAll('base')).toHaveLength(1)
+    expect(withHtml.doc.querySelector('base')!.parentElement).toBe(withHtml.doc.head)
+
+    // <header> is not a <head>: the base stays after the doctype.
+    const banner = '<!doctype html><header id="top"><h1>t</h1></header><p>x</p>'
+    const withHeader = await parsedSrcdocOf(banner)
+    expect(withHeader.srcdoc).toBe(banner.replace('<!doctype html>', '<!doctype html><base href="about:srcdoc">'))
+    expect(withHeader.doc.querySelectorAll('base')).toHaveLength(1)
+    expect(withHeader.doc.querySelector('header')!.id).toBe('top')
+  })
+
   it('stages non-image buffers as browser-local object URLs', async () => {
     const win = mutableWindow()
     seedWebappSession('served-token')
