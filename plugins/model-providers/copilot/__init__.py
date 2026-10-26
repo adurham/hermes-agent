@@ -12,9 +12,10 @@ from providers.base import ProviderProfile
 
 from .catalog import HOSTNAMES, METADATA_HOSTNAMES, MODELS_DEV_ID, CopilotCatalogMixin
 from .credentials import CopilotCredentialsMixin
+from .wire import CopilotWireMixin
 
 
-class CopilotProfile(CopilotCatalogMixin, CopilotCredentialsMixin, ProviderProfile):
+class CopilotProfile(CopilotWireMixin, CopilotCatalogMixin, CopilotCredentialsMixin, ProviderProfile):
     """GitHub Copilot / GitHub Models — editor headers + reasoning."""
 
     def build_api_kwargs_extras(

@@ -1662,11 +1662,6 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     return None
 
 
-def _copilot_api_mode(provider: str, model: str, api_key: str) -> str:
-    from hermes_cli.models import copilot_model_api_mode
-    return copilot_model_api_mode(model, api_key=api_key)
-
-
 def _opencode_api_mode(provider: str, model: str, api_key: str) -> str:
     # Re-derive api_mode from the effective model rather than the persisted api_mode: the opencode providers
     # serve both anthropic_messages and chat_completions models, so the previous session's mode must not
@@ -1691,19 +1686,24 @@ def _nous_api_mode(provider: str, model: str, api_key: str) -> str:
 # Per-provider api_mode overrides applied after validation, keyed on the final target provider
 # (the key sets are disjoint, so exactly one — or none — fires).
 _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
-    **dict.fromkeys(("copilot", "github-copilot"), _copilot_api_mode),
     **dict.fromkeys(("opencode-zen", "opencode-go", "opencode"), _opencode_api_mode),
     **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
 
 
 def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Optional[str]:
     """api_mode re-derived from the FINAL model for providers that serve several wire formats behind one
-    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous); None when the
-    provider's wire is fixed by its endpoint. A persisted api_mode from an earlier model of such a provider
-    is never authoritative — resume paths must call this instead of honoring the row (#96066)."""
+    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Nous, and any provider profile
+    declaring ``api_mode_for_model``); None when the provider's wire is fixed by its endpoint. A persisted
+    api_mode from an earlier model of such a provider is never authoritative — resume paths must call this
+    instead of honoring the row (#96066)."""
     from hermes_cli.models import opencode_provider_family
     key = str(provider or "").strip().lower()
     override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
+    if override is None and key:
+        from providers import get_provider_profile
+        profile = get_provider_profile(key)
+        if profile is not None:
+            return profile.api_mode_for_model(model, api_key=api_key or "")
     return override(key, model, api_key) if override is not None else None
 
 

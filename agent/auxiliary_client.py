@@ -2210,13 +2210,10 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 return GeminiNativeClient(api_key=api_key, base_url=base_url), model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
-        elif base_url_host_matches(base_url, "githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
-            headers = copilot_default_headers()
         elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
             headers = build_nvidia_nim_headers(base_url)
         else:
-            headers = _profile_default_headers(provider_id)
+            headers = _route_client_headers(base_url, provider_id) or _profile_default_headers(provider_id)
         extra = {"default_headers": headers} if headers else {}
         merged = _apply_user_default_headers(extra.get("default_headers"))
         if merged:
@@ -2226,22 +2223,24 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
     return None, None
 
 
+def _route_client_headers(base_url: str, provider: str, *, is_vision: bool = False) -> Optional[dict]:
+    from agent.provider_route_hooks import route_answer
+    headers = route_answer("client_headers", provider=provider or "", base_url=base_url, has_images=is_vision)
+    return dict(headers) if headers else None
+
+
 def _endpoint_default_headers(
     base_url: str, provider: str, *, is_vision: bool = False, xai: bool = False,
 ) -> Optional[dict]:
     """Provider-specific client headers by endpoint host, merged with user ``model.default_headers``.
 
-    Kimi Code needs the claude-code User-Agent; Copilot needs its request headers
-    (``is_vision`` adds Copilot-Vision-Request); NVIDIA NIM and (optionally) xAI have
-    their own fingerprints; anything else falls back to the provider profile.
+    Kimi Code needs the claude-code User-Agent; a profile's ``client_headers`` (``is_vision`` = image
+    client), NVIDIA NIM and (optionally) xAI have their own; else the provider profile.
     """
     if base_url_host_matches(base_url, "api.kimi.com"):
         headers: dict = {"User-Agent": "claude-code/0.1.0"}
-    elif base_url_host_matches(base_url, "githubcopilot.com"):
-        from providers import get_provider_profile
-        get_provider_profile("copilot")  # loads the plugin package that owns these credentials
-        from plugins.model_providers.copilot.credentials import copilot_request_headers
-        headers = dict(copilot_request_headers(is_agent_turn=True, is_vision=is_vision))
+    elif route := _route_client_headers(base_url, provider, is_vision=is_vision):
+        headers = route
     elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
         headers = dict(build_nvidia_nim_headers(base_url))
     elif xai and base_url_host_matches(base_url, "x.ai"):
@@ -5307,15 +5306,12 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             return _route_client(req, client, final_model)
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
-    # Copilot GPT-5+ models (except gpt-5-mini) are only reachable via the Responses API;
-    # wrap so call_llm() transparently routes through responses.stream().
-    if provider == "copilot" and final_model and not req.raw_codex:
-        with contextlib.suppress(ImportError):
-            from hermes_cli.models import _should_use_copilot_responses_api
-            if _should_use_copilot_responses_api(final_model):
-                logger.debug("resolve_provider_client: copilot model %s needs "
-                             "Responses API — wrapping with CodexAuxiliaryClient", final_model)
-                client = CodexAuxiliaryClient(client, final_model)
+    # A profile serving this model only on the Responses API: route call_llm() through responses.stream().
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider) if final_model and not req.raw_codex else None
+    if profile is not None and profile.api_mode_for_model(final_model) == "codex_responses":
+        logger.debug("resolve_provider_client: %s model %s needs Responses API — wrapping", provider, final_model)
+        client = CodexAuxiliaryClient(client, final_model)
     # api_mode handling for any API-key provider (direct OpenAI + codex model) and Anthropic-wire
     # endpoints (api.kimi.com/coding, /anthropic gateways) without per-provider branches.
     client = _wrap_transport(req, client, final_model, raw_base_url, api_key)
@@ -5722,13 +5718,13 @@ def get_auxiliary_extra_body() -> dict:
 
 
 def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
-    """Max-tokens kwarg for the auxiliary provider: direct OpenAI/Copilot and newer OpenAI-family
-    models (by ``model`` name, so custom endpoints fronting gpt-5.x are caught) need max_completion_tokens."""
-    _custom_host = base_url_hostname(_current_custom_base_url()) or ""
-    direct_openai_family = (
-        not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None
-        and (_custom_host in ("api.openai.com", "api.githubcopilot.com") or _custom_host.endswith(".githubcopilot.com"))
-    )
+    """Max-tokens kwarg for the auxiliary provider: direct OpenAI, a custom endpoint whose profile declares
+    it, and newer OpenAI-family models (by ``model`` name: custom endpoints fronting gpt-5.x) need max_completion_tokens."""
+    from agent.provider_route_hooks import route_answer
+    _custom_base = _current_custom_base_url()
+    direct_openai_family = not _scoped_key_env("OPENROUTER_API_KEY") and _read_nous_auth() is None and (
+        base_url_hostname(_custom_base) == "api.openai.com"
+        or route_answer("max_tokens_param", base_url=_custom_base, model=model or "") == "max_completion_tokens")
     if direct_openai_family or model_forces_max_completion_tokens(model):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
