@@ -598,14 +598,29 @@ def recover_for_provider(name: Optional[str]) -> None:
     from hermes_constants import get_hermes_home, hermes_home_key
     from providers import get_provider_profile
     home = Path(get_hermes_home())
+    # A terminal user sees outcomes now, also those another process (the gateway this CLI started) kept;
+    # otherwise (Desktop, gateway, a detached turn) the home's first agent in any process delivers them.
+    say = (lambda message: print(message, file=sys.stderr)) if _interactive() or _terminal_front_end else None
+    if say is not None:
+        for message in _claim_notices(home):
+            say(message)
     if hermes_home_key(home) in _attempted:  # this process already tried: skip the config/auth/.env reads
         return
     if plugin_present(feature.plugin, home) or get_provider_profile(str(name).strip().lower()) is not None:
         return
     if feature_in_use(feature, home, process_env=True):
-        # A terminal user sees the outcome now; otherwise (Desktop, gateway, a detached turn) the home's
-        # first agent in any process delivers it.
-        recover_at_startup(say=(lambda message: print(message, file=sys.stderr)) if _interactive() else None)
+        recover_at_startup(say=say)
+
+
+_terminal_front_end = False
+
+
+def serve_notices_on_stderr() -> None:
+    """This process is a terminal front end (the classic CLI, whose turns run in the gateway): outcomes of
+    :func:`recover_for_provider` print to its stderr even when its output is piped (``hermes chat -q``),
+    since a resolution that fails before any agent exists (no credentials) leaves no agent to deliver them."""
+    global _terminal_front_end
+    _terminal_front_end = True
 
 
 def profile_env_names() -> frozenset[str]:

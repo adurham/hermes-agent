@@ -17,6 +17,7 @@ import hermes_cli.left_core_migration as lcm
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
+    monkeypatch.setattr(lcm, "_terminal_front_end", False)
     for name in ("HERMES_INFERENCE_PROVIDER", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     import hermes_cli.memory_provider_migration as mpm
@@ -166,4 +167,21 @@ def test_an_interactive_terminal_sees_the_resolution_outcome_now_and_only_there(
     monkeypatch.setattr(lcm, "_interactive", lambda: True)
     lcm.recover_for_provider("copilot")
     assert capsys.readouterr().err.count("GitHub Copilot moved out of core") == 1
+    assert "moved out of core" not in _agent_start_in_another_process()
+
+
+def test_a_piped_cli_front_end_prints_the_outcome_and_what_another_process_kept(tmp_path, monkeypatch,
+                                                                               installs_ok, capsys):
+    """``hermes chat -q`` with output piped: its turn runs in the gateway, and a resolution that fails
+    before any agent exists (no credentials) leaves none to deliver what the migration kept. The classic
+    CLI is a terminal front end: it prints outcomes on stderr, also one its gateway kept, exactly once."""
+    home = _copilot_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(lcm, "_interactive", lambda: False)
+    lcm._queue_notice(home, "kept by the gateway's start")
+    lcm.serve_notices_on_stderr()
+    lcm.recover_for_provider("copilot")
+    lcm.recover_for_provider("copilot")
+    err = capsys.readouterr().err
+    assert err.count("kept by the gateway's start") == 1
+    assert err.count("GitHub Copilot moved out of core") == 1
     assert "moved out of core" not in _agent_start_in_another_process()
