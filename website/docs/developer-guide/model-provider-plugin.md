@@ -301,7 +301,7 @@ meaning says otherwise.
 | `resolve_api_key_secret()` | Provider-owned `(runtime_api_key, source)` | `None` (env/pool ladder) |
 | `runtime_base_url()` | Base URL derived from the credential | `None` (env or default) |
 | `prepare_pool_entry()` | Turns the selected pool row's secret into the runtime key | the secret as-is |
-| `seed_pool_credentials()` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself; overriding it replaces generic env seeding (return `[]` for none) | not overridden = generic env seeding |
+| `seed_pool_credentials(suppressed_sources, explicitly_configured)` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself, skipping sources in `suppressed_sources` (plain values, so it works under `plugins.isolation: host`); overriding it replaces generic env seeding (return `[]` for none) | not overridden = generic env seeding |
 | `remove_credential_source()` | `hermes auth remove`: `(sources_to_suppress, hints)` | `None` (generic removal) |
 | `refresh_runtime_credentials()` | Re-mints `(api_key, base_url)` on `unauthorized` \| `stale` \| `auxiliary_unauthorized`; error path only | `None` |
 | `is_stale_credential_error()` | A non-auth error really means the credential went stale (pure) | `False` |
@@ -322,7 +322,7 @@ meaning says otherwise.
 | `replay_message_carriers()` | Captured `message_carrier_*` values to put back on a replayed assistant message | `{}` |
 | `replays_function_thought_signature()` | Replayed tool calls keep `function.thought_signature` | `False` |
 | `picker_catalog` | `(force_refresh) -> list`: the provider's own model-picker catalog, tried before the generic fetch | `None` |
-| `static_models` | Curated ids registered as this provider's row of the static catalog | `()` |
+| `static_models` | Curated ids answered as this provider's row of the static catalog (looked up per profile home, never copied into the shared table) | `()` |
 | `catalog_credential_files` | Credential files whose mtime joins every cached catalog's fingerprint | `()` |
 | `probe_models()` | `(ids or None, probed_url, resolved_base_url)` for a `/models` probe this provider answers | `None` (generic HTTP probe) |
 | `invalidate_catalog_cache()` | Drops in-process catalog memos (`/model --refresh`) | no-op |

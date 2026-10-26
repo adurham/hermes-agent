@@ -173,7 +173,6 @@ class AcmeProfile(ProviderProfile):
 | `process_args` | External-process default argv tail | `()` |
 | `process_command_env_vars` | Env vars overriding the binary, in priority order | `()` |
 | `process_args_env_var` | Env var overriding argv (shlex-split) | `""` |
-| `process_command_fallback` | Serves a pinned `delegation.command` no profile's `process_command` names; first registered wins | `False` |
 | `fallback_models` | Curated picker list when the live fetch fails | `()` |
 | `model_aliases` | Short name → model id; `/model <alias>` resolves here first | `{}` |
 | `hostname` | Base hostname for URL → provider reverse mapping (derived from `base_url` when empty) | `""` |
@@ -221,7 +220,7 @@ class AcmeProfile(ProviderProfile):
 | `resolve_api_key_secret()` | Provider-owned `(runtime_api_key, source)` | `None` (env/pool ladder) |
 | `runtime_base_url()` | Base URL derived from the credential | `None` (env or default) |
 | `prepare_pool_entry()` | Turns the selected pool row's secret into the runtime key | the secret as-is |
-| `seed_pool_credentials()` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself | `None` (generic env seeding) |
+| `seed_pool_credentials(suppressed_sources, explicitly_configured)` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself, skipping sources in `suppressed_sources` | `None` (generic env seeding) |
 | `remove_credential_source()` | `hermes auth remove`: `(sources_to_suppress, hints)` | `None` (generic removal) |
 | `refresh_runtime_credentials()` | Re-mints `(api_key, base_url)` on `unauthorized` \| `stale` \| `auxiliary_unauthorized`; error path only | `None` |
 | `is_stale_credential_error()` | A non-auth error really means the credential went stale (pure) | `False` |
