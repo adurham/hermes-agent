@@ -49,8 +49,8 @@ class GatewayClientError(ValueError):
     pass
 
 
-_DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. "
-                 "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
+DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. "
+                "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
 
 
 class GatewayRPCError(GatewayClientError):
@@ -200,7 +200,7 @@ class GatewayClient:
         except (ConnectionClosed, OSError, ValueError, TimeoutError):
             pass
         finally:
-            error = GatewayClientError(_DISCONNECTED)
+            error = GatewayClientError(DISCONNECTED)
             for future in self.pending.values():
                 if not future.done():
                     future.set_exception(error)
@@ -225,7 +225,7 @@ class GatewayClient:
                 await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
             except (ConnectionClosed, OSError) as exc:
                 # The frame may have left before the socket died: the same unknown outcome as a lost answer.
-                raise GatewayClientError(_DISCONNECTED) from exc
+                raise GatewayClientError(DISCONNECTED) from exc
             budget = DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout
             return await asyncio.wait_for(future, None if budget == float("inf") else budget)
         finally:
