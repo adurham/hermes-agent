@@ -440,7 +440,10 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     without making every model lookup perform two filesystem stats.
     """
     now = time.monotonic()
-    if home is None or not (
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    # Safe mode fires zero user customization: same gate as ``_discover_providers``.
+    if home is None or safe_worker_enabled() or not (
         force
         or layer.stamp_checked_at is None
         or now - layer.stamp_checked_at >= _PLUGIN_DIR_STAMP_TTL_SECONDS
