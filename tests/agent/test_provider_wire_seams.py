@@ -130,15 +130,14 @@ def test_user_turn_attribution_is_consumed_by_the_first_call_only(wire_profile):
     assert "X-Attr" not in (_payload(agent, api_call_count=2).get("extra_headers") or {})  # tool-loop follow-up
 
 
-def test_every_attempt_of_the_first_call_keeps_user_turn_attribution(wire_profile):
-    # A 429/5xx retry (or a fallback activation) rebuilds the payload for the SAME API call: still the user's.
+def test_only_the_first_attempt_of_a_user_turn_carries_user_attribution(wire_profile):
+    # A 429/5xx retry (or a fallback activation) rebuilds the payload for the same API call; like Hermes
+    # always has, it goes out with the route's default attribution (billing parity), not the user's.
     agent = _agent("wirefake", HOST)
     agent._is_user_initiated_turn = True
     assert _payload(agent, api_call_count=1).get("extra_headers") == {"X-Attr": "user"}
-    assert _payload(agent, api_call_count=1).get("extra_headers") == {"X-Attr": "user"}  # retried attempt
+    assert "X-Attr" not in (_payload(agent, api_call_count=1).get("extra_headers") or {})  # retried attempt
     assert "X-Attr" not in (_payload(agent, api_call_count=2).get("extra_headers") or {})
-    agent.reset_session_state()
-    assert "X-Attr" not in (_payload(agent, api_call_count=1).get("extra_headers") or {})
 
 
 def test_route_without_attribution_still_consumes_the_turn_flag(wire_profile):

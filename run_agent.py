@@ -406,8 +406,8 @@ class AIAgent(
         self._compaction_prompt_drift_logged = False
         # Who wrote the current turn. build_turn_context() sets it at the start of every turn.
         self._turn_author = None
-        # First API call of a user turn (provider request_headers) and the api_call_count that claimed it.
-        self._is_user_initiated_turn, self._user_initiated_api_call = False, None
+        # True for the first API call of a user turn, False for tool-loop follow-ups (provider request_headers).
+        self._is_user_initiated_turn = False
 
         self._transition_context_engine_session(
             old_session_id=old_session_id, new_session_id=getattr(self, "session_id", None),

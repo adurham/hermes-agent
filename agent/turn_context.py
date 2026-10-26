@@ -1127,7 +1127,6 @@ def build_turn_context(
     # Turn-initiator state for per-request provider headers: the first API call of this
     # user turn is user-initiated; tool-loop follow-ups are agent-initiated.
     agent._is_user_initiated_turn = True
-    agent._user_initiated_api_call = None
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message

@@ -40,16 +40,15 @@ def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
     api_kwargs["extra_headers"] = _xh
 
 
-def _apply_user_turn_request_headers(agent: Any, api_kwargs: Any, api_call_count: Any) -> None:
-    """Provider per-request headers (turn attribution). The first API call of a user turn consumes the
-    turn flag exactly once, whatever the route answers (or if its hook fails), and claims its
-    ``api_call_count``: every attempt of that call (retry, fallback activation) rebuilds the payload with
-    the same count and keeps the attribution; tool-loop follow-ups get the route's default."""
-    if getattr(agent, "_is_user_initiated_turn", False):
-        agent._is_user_initiated_turn = False
-        agent._user_initiated_api_call = api_call_count
-    if getattr(agent, "_user_initiated_api_call", None) != api_call_count:
+def _apply_user_turn_request_headers(agent: Any, api_kwargs: Any) -> None:
+    """Provider per-request headers (turn attribution). Only the first payload built in a user turn (the
+    first attempt of its first API call) is user-initiated, and it consumes the turn flag exactly once,
+    whatever the route answers (or if its hook fails). Every later build of the turn (a 429/5xx retry, a
+    fallback activation, a tool-loop follow-up) gets the route's default: the historical billing
+    behaviour, kept on purpose."""
+    if not getattr(agent, "_is_user_initiated_turn", False):
         return
+    agent._is_user_initiated_turn = False
     from agent.provider_route_hooks import route_answer
     _request_headers = route_answer(
         "request_headers", provider=agent.provider or "", base_url=agent.base_url or "",
@@ -152,7 +151,7 @@ def build_request_payload(
     # retry must bypass the cache.
     if agent._empty_content_retries > 0 and agent._is_openrouter_url():
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
-    _apply_user_turn_request_headers(agent, api_kwargs, api_call_count)
+    _apply_user_turn_request_headers(agent, api_kwargs)
     try:
         from hermes_cli.middleware import apply_llm_request_middleware
 
