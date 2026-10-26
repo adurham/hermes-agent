@@ -17,6 +17,9 @@ _OPENROUTER_REASONING_PREFIXES = (
     "qwen/qwen3", "tencent/hy", "xiaomi/",
 )
 
+# Hosts whose reasoning gate core owns: a plugin claiming one in ``hostnames`` never replaces it.
+_CORE_REASONING_GATED_HOSTS = ("nousresearch.com", "ai-gateway.vercel.sh", "ollama.com")
+
 # Probe results cache per (model, base_url). Definitive values cache permanently; an
 # "unknown" value (empty list / None) caches 60s so a transient failure neither sticks
 # for the session nor round-trips every turn.
@@ -92,9 +95,7 @@ class ReasoningParamsMixin:
         url = self._base_url_lower
         if base_url_host_matches(url, "nousresearch.com") or base_url_host_matches(url, "ai-gateway.vercel.sh"):
             return True
-        from providers import profile_for_host
-
-        if (profile := profile_for_host(str(getattr(self, "base_url", None) or ""))) is not None:
+        if (profile := self._reasoning_endpoint_profile()) is not None:
             # A claimed endpoint gates on its own catalog: reasoning goes out iff it declares a payload.
             from agent.provider_route_hooks import ask_profile
             return ask_profile(profile, "reasoning_payload", None, self.model, None,
@@ -137,13 +138,23 @@ class ReasoningParamsMixin:
             return False
         return bool(_cached_probe(self, "_ollama_thinking_cache", ollama_model_supports_thinking, None, lambda v: v is not None))
 
-    def _endpoint_reasoning_payload(self) -> dict | None:
-        """``reasoning_payload`` of the profile claiming this endpoint for the agent's model and
-        ``reasoning_config`` (``providers.profile_for_host``), or None when no profile claims it."""
+    def _reasoning_endpoint_profile(self):
+        """The profile claiming this endpoint (``providers.profile_for_host``) that gates its reasoning, or None.
+        Endpoints core gates itself (Nous Portal, Vercel AI Gateway, LM Studio, Ollama Cloud, OpenRouter) keep
+        core's gate even when a plugin claims their host for metadata or auxiliary routing."""
+        url = self._base_url_lower
+        if ((self.provider or "").strip().lower() == "lmstudio" or self._is_openrouter_url()
+                or any(base_url_host_matches(url, host) for host in _CORE_REASONING_GATED_HOSTS)):
+            return None
         from providers import profile_for_host
 
+        return profile_for_host(str(getattr(self, "base_url", None) or ""))
+
+    def _endpoint_reasoning_payload(self) -> dict | None:
+        """``reasoning_payload`` of the profile gating this endpoint's reasoning for the agent's model and
+        ``reasoning_config`` (``_reasoning_endpoint_profile``), or None when no profile does."""
         base_url = getattr(self, "base_url", None)
-        profile = profile_for_host(str(base_url or ""))
+        profile = self._reasoning_endpoint_profile()
         if profile is None:
             return None
         from agent.provider_route_hooks import ask_profile
