@@ -44,21 +44,6 @@ def _make_agent(monkeypatch, base_url, api_mode="chat_completions"):
         skip_memory=True,
     )
 
-class TestIsCopilotUrl:
-    """_is_copilot_url() detects GitHub Copilot endpoints."""
-
-    def test_standard_copilot_url(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
-        assert agent._is_copilot_url() is True
-
-    def test_github_models_url(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://models.github.ai/inference")
-        assert agent._is_copilot_url() is True
-
-    def test_openrouter_url(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "https://openrouter.ai/api/v1")
-        assert agent._is_copilot_url() is False
-
 class TestUserInitiatedTurnFlag:
     """_is_user_initiated_turn lifecycle."""
 
