@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from agent.acp_client import _ACP_PROBE_CACHE, ACPClient, _acp_supported, _model_selection_request
+from tests.waiting import wait_until
 
 
 class _AcmeClient(ACPClient):
@@ -325,9 +326,7 @@ def test_cli_that_stops_reading_is_reported_with_its_exit_text(tmp_path):
 
     def spawn_then_wait_for_the_close():
         proc = real_spawn()
-        deadline = time.monotonic() + 30
-        while not closed.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(closed.exists, timeout=30, what="the fixture CLI closed its stdin")
         return proc
 
     client._spawn = spawn_then_wait_for_the_close
@@ -353,9 +352,7 @@ def test_cli_that_stops_reading_but_keeps_running_fails_fast(tmp_path):
 
     def spawn_then_wait_for_the_close():
         proc = real_spawn()
-        deadline = time.monotonic() + 30
-        while not closed.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(closed.exists, timeout=30, what="the fixture CLI closed its stdin")
         return proc
 
     client._spawn = spawn_then_wait_for_the_close
