@@ -175,9 +175,11 @@ import {
   resolveResumeOwner
 } from './resume-owner'
 import {
+  livePromptStreamId,
   liveTurnSettledDuringResume,
   reconcileAuthoritativeChatMessages,
-  reconcileAuthoritativeMessages
+  reconcileAuthoritativeMessages,
+  resumedStreamTarget
 } from './resume-reconcile'
 import { backgroundRuntimeOptions, runtimeOwner, runtimeOwnerProfile } from './runtime-owner'
 import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
@@ -272,15 +274,6 @@ interface FreshSessionDraftOptions {
   replaceRoute?: boolean
   rotateFreshDraftKey?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
-}
-
-/** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
-function livePromptStreamId(
-  ...projections: ({ streamId: string } | null)[]
-): { awaitingResponse: false; sawAssistantPayload: true; streamId: string } | Record<string, never> {
-  const live = projections.find(Boolean)
-
-  return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
 }
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
@@ -2346,7 +2339,14 @@ export function useSessionActions({
             ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection
               ? {
-                  streamId: resumedRunning ? (clearedClarifyProjection.streamId ?? state.streamId) : null
+                  streamId: resumedRunning
+                    ? resumedStreamTarget(visibleMessagesForView, resumed.session_id, [
+                        clearedClarifyProjection.streamId,
+                        pendingConnectionProjection?.streamId,
+                        state.streamId,
+                        inFlightRecovery.streamId
+                      ])
+                    : null
                 }
               : {})
           }),

@@ -64,3 +64,31 @@ export function reconcileAuthoritativeMessages(
     authoritativeMessages
   )
 }
+
+/** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
+export function livePromptStreamId(
+  ...projections: ({ streamId: string } | null)[]
+): { awaitingResponse: false; sawAssistantPayload: true; streamId: string } | Record<string, never> {
+  const live = projections.find(Boolean)
+
+  return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
+}
+
+/**
+ * The row a resumed running turn's next deltas extend: the first candidate id
+ * the resumed transcript holds, else the backend projection's live row
+ * (`assistant-stream-<runtime id>`). A cold resume (window reload, app restart)
+ * has no stream target of its own, and keeping that empty one made the next
+ * delta open a second bubble beside the row the resume had just restored, so
+ * the reply split in two and its final text drew twice until the next refresh.
+ */
+export function resumedStreamTarget(
+  messages: ChatMessage[],
+  runtimeId: string,
+  candidates: (null | string | undefined)[]
+): null | string {
+  const ids = new Set(messages.map(message => message.id))
+  const held = [...candidates, `assistant-stream-${runtimeId}`].find(id => id && ids.has(id))
+
+  return held ?? candidates.find(Boolean) ?? null
+}
