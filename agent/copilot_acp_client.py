@@ -6,8 +6,8 @@ import former module helpers (``ACP_MARKER_BASE_URL``, ``_build_subprocess_env``
 ``_acp_supported``, ``_model_selection_request``, ``_effective_timeout``) and patch
 ``subprocess.Popen`` through it. So the module keeps its whole former surface: the
 Copilot-flavoured names keep their former defaults (launch env vars, the ``copilot-acp``
-placeholder, the ``copilotEnablement`` model filter, the ``gh copilot`` extension banner
-helpers), and the generic rest is served from :mod:`agent.acp_client`. The first access of
+placeholder, the ``copilotEnablement`` model filter, the deprecated ``gh copilot`` extension
+diagnosis), and the generic rest is served from :mod:`agent.acp_client`. The first access of
 any of these names warns once per process. Remove no sooner than two minor releases after the
 deprecation (the plugin compat contract in ``plugins/AGENTS.md``).
 """
@@ -54,7 +54,7 @@ def _is_gh_extension_banner(stderr_text: str) -> bool:
 
 
 class _DeprecatedCopilotACPClient(ACPClient):
-    """ACPClient with the historical launch defaults, labels and model filter."""
+    """ACPClient with the historical launch defaults, labels, model filter and early-exit diagnosis."""
 
     default_command = "copilot"
     default_args = ("--acp", "--stdio")
@@ -70,6 +70,9 @@ class _DeprecatedCopilotACPClient(ACPClient):
 
     def model_entry_disabled(self, entry: dict[str, Any]) -> bool:
         return _copilot_disabled(entry)
+
+    def early_exit_error(self, stderr_text: str) -> str | None:
+        return _GH_EXTENSION_ERROR + stderr_text if _is_gh_extension_banner(stderr_text) else None
 
 
 _DeprecatedCopilotACPClient.__name__ = _DeprecatedCopilotACPClient.__qualname__ = "CopilotACPClient"

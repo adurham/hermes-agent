@@ -167,6 +167,16 @@ def test_cursor_acp_pinned_import_shape(agent, tmp_path):
     assert methods().count("session/set_model") == 1
 
 
+def test_alias_keeps_the_former_gh_extension_diagnosis(tmp_path):
+    from agent.copilot_acp_client import CopilotACPClient
+
+    script = tmp_path / "old_gh_copilot.py"
+    script.write_text("import sys; print('gh-copilot has been deprecated', file=sys.stderr); sys.exit(1)\n", encoding="utf-8")
+    client = CopilotACPClient(command=sys.executable, args=[str(script)], acp_cwd=str(tmp_path))
+    with pytest.raises(RuntimeError, match="deprecated `gh copilot` extension"):
+        client.list_models(timeout_seconds=30)
+
+
 # Every top-level name agent/copilot_acp_client.py had before the deprecation (0c771d7a5ba).
 _FORMER_SURFACE = (
     "ACP_MARKER_BASE_URL", "Any", "Callable", "CopilotACPClient", "Iterator", "Path", "SimpleNamespace",
