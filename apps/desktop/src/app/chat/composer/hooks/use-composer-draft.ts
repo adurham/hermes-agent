@@ -29,6 +29,7 @@ import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
 import { migrateQueuedPrompts } from '@/store/composer-queue'
 
+import { type ComposerStoreWriter, createComposerStoreWriter } from '../composer-store-writer'
 import {
   cloneAttachments,
   DRAFT_PERSIST_DEBOUNCE_MS,
@@ -109,16 +110,24 @@ export function useComposerDraft({
   // assistant-ui's composer mutators throw when the core isn't bound yet (a
   // startup/thread-swap window); the DOM + draftRef hold the text and the
   // subscription reconciles once it binds, so swallow the premature write.
-  const setComposerText = useCallback(
-    (value: string) => {
-      try {
-        aui.composer().setText(value)
-      } catch {
-        // Composer core not bound yet — DOM/draftRef carry the text.
-      }
-    },
-    [aui]
-  )
+  const auiRef = useRef(aui)
+  auiRef.current = aui
+  const storeWriterRef = useRef<ComposerStoreWriter | null>(null)
+
+  storeWriterRef.current ??= createComposerStoreWriter(value => {
+    try {
+      auiRef.current.composer().setText(value)
+    } catch {
+      // Composer core not bound yet — DOM/draftRef carry the text.
+    }
+  })
+
+  const storeWriter = storeWriterRef.current
+
+  const setComposerText = useCallback((value: string) => storeWriter.now(value), [storeWriter])
+
+
+  useEffect(() => () => storeWriter.cancel(), [storeWriter])
 
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef('')
@@ -426,29 +435,36 @@ export function useComposerDraft({
 
   // Read the editor's current plain text into draftRef + composer state. This
   // closes the "queued rAF flush hasn't run yet" window so scope-swap/pagehide
-  // persistence captures the latest keystrokes.
-  const syncDraftFromEditor = useCallback(() => {
-    const editor = editorRef.current
+  // persistence captures the latest keystrokes. `typing` marks ChatBar's
+  // coalesced per-keystroke flush, whose store write may wait for a typing
+  // pause so the transcript's store subscribers do not re-render on every
+  // character (see composer-store-writer.ts); every other caller lands the
+  // text now, pending keystrokes included.
+  const syncDraftFromEditor = useCallback(
+    (typing = false, editor: HTMLDivElement | null = editorRef.current) => {
+      if (!editor) {
+        return draftRef.current
+      }
 
-    if (!editor) {
-      return draftRef.current
-    }
+      // Same normalize-then-sanitize the rAF flush does. An emptied editor still
+      // holds the placeholder <br> that keeps the contenteditable from collapsing
+      // to a sliver, and that serializes as "\n" — so an editor the user just
+      // cleared would otherwise stash a one-newline draft and come back non-empty.
+      normalizeComposerEditorDom(editor)
 
-    // Same normalize-then-sanitize the rAF flush does. An emptied editor still
-    // holds the placeholder <br> that keeps the contenteditable from collapsing
-    // to a sliver, and that serializes as "\n" — so an editor the user just
-    // cleared would otherwise stash a one-newline draft and come back non-empty.
-    normalizeComposerEditorDom(editor)
+      const text = sanitizeComposerInput(composerPlainText(editor))
 
-    const text = sanitizeComposerInput(composerPlainText(editor))
+      if (text !== draftRef.current) {
+        draftRef.current = text
+        storeWriter[typing ? 'typing' : 'now'](text)
+      } else if (!typing) {
+        storeWriter.flush()
+      }
 
-    if (text !== draftRef.current) {
-      draftRef.current = text
-      setComposerText(text)
-    }
-
-    return text
-  }, [setComposerText])
+      return text
+    },
+    [storeWriter]
+  )
 
   // Imperative draft sync — the spine of the "work only when work is to be
   // performed" model. Subscribing to the composer runtime directly (not
@@ -462,7 +478,15 @@ export function useComposerDraft({
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const sync = () => {
+      // Typed text the store has not seen yet is newer than the store: mirroring
+      // it now would roll draftRef (and an unfocused editor) back. The pending
+      // write lands shortly and runs this again.
+      if (storeWriter.pending()) {
+        return
+      }
+
       const text = composerRuntime.getState().text
+      storeWriter.observed(text)
       draftRef.current = text
 
       const editor = editorRef.current
@@ -507,7 +531,7 @@ export function useComposerDraft({
       unsubscribe()
       window.clearTimeout(draftPersistTimerRef.current)
     }
-  }, [composerRuntime, queueEditRef])
+  }, [composerRuntime, queueEditRef, storeWriter])
 
   const insertText = (text: string) => {
     const base = draftRef.current
