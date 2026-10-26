@@ -4,6 +4,55 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### Fix — 2026-10-25 (Fable review of the continuation gate: ownership as the discriminator, idle re-closes as refusals)
+
+Fable ruled on the first version of the gate (entry below). Its verdict: the decision table was right, the
+gaps were (a) what the bounce enforces afterwards, (b) the budget accounting, (c) the label was the wrong
+discriminator, and (d) the queue was dropped at the cap. Implemented in that order:
+
+1. **`open_items` entries are `{item, owner: "agent"|"user", needs}`.** The gate keys on the owner the model
+   commits to, not on the status word:
+   - any `owner="agent"` item is work the model can do → `WORK_OPEN`, whatever the status;
+   - `deferred` → `WORK_OPEN` always (with no items it names nothing);
+   - an `owner="user"` item must carry `needs` → otherwise `WORK_OPEN` (a stop with no ask in it);
+   - `blocked`/`need_input` are terminal only with a user-owned item (or a legacy `blocker`);
+   - `done` carrying only well-formed user items is a **legitimate status report** → `CLOSE`. This is the
+     over-fire guard that replaced the old "done + any item bounces" rule.
+   A bare string item is accepted as `owner="agent"` — the pre-owner shape, and what a model ignoring the
+   schema emits, must not become an escape hatch. `render_summary` splits the two: agent items under
+   `Open:`, user items under `Waiting on you:` with `(needs: …)` — so a model that files its own work under
+   "user" produces an operator-visible lie instead of an invisible one.
+2. **The bounce now enforces a tool call.** A close reached with ZERO tool calls since the hand-back is
+   `IDLE`: it spends the REJECTION budget (then `ESCAPE`), not the continuation budget. That is the rule
+   that defeats "restate the plan thinner".
+3. **Budget is charged by re-entry, and only a ceiling.** `agent.turn_continuations` is now a runaway
+   ceiling (default **20**), not a per-item budget: one continuation can legitimately run dozens of tool
+   calls, and the old default of 3 punished honest incremental work on a six-item list. Idle re-closes are
+   already capped by the rejection budget.
+4. **At the ceiling the queue is carried, not dropped.** `carry_open_items` writes the agent-owned items
+   into the agent's own todo list (`[left open by the turn contract] …`, ids `open-<session tag>-<n>`) and
+   the reply is delivered with `Open (turn budget exhausted — still undone):`.
+
+Counters: `continued`, `idle_continuation`, `deferred_delivered` (plus `closed`/`rejected`/`escaped`/
+`harness_error`). The status line during a bounce reads `↻ continuing — N open, working item 1`.
+
+Deliberate deviation from the ruling: Fable asked that the bounce's ephemeral user row stay in the
+transcript (marked as harness) so the model can see later why the turn restarted. This fork strips
+`_turn_contract_nudge` rows at turn end (`_EPHEMERAL_SCAFFOLDING_FLAGS`) — a synthetic user row persisted
+into the next turn is read back as operator speech, which is a worse failure. The row is visible for the
+whole turn it is needed in.
+
+Fable's pre-flight checks: the base prompt was grepped for competing turn-ending instructions — none (the
+only hit is the execution-discipline line that rewards doing the work before reporting, which points the
+same way). Restarting the owner's running sessions is the owner's call; until then the live counters say
+nothing about this change either way.
+
+Tests: `tests/agent/test_turn_contract.py` — 66 pass. Mutation check on the two new rules (drop the
+`agent_work_open` branch and the idle branch): exactly 5 tests fail, 61 pass; restored, 66 pass.
+`ruff check` clean. Deployed-tree smoke (install clone): deferred+agent items → `continue`; a re-close with
+no tool call → `idle`; a `done` report carrying only a user-owned item with `needs` → `close`, rendered as
+`Waiting on you:`.
+
 ### Fix — 2026-10-25 (the turn contract delivered declared work as a report: 28 deferred closes, 0 continued)
 
 Symptom (owner-reported): "new attack surface / then nothing", "closes this script / then nothing with open
