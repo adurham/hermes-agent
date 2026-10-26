@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _PURE_HOOKS = frozenset({"request_headers", "max_tokens_param"})
 _PURE_MEMO: dict[tuple, Any] = {}
 _PURE_MEMO_MAX = 512
+_MISSING = object()
 
 
 def _overrides(profile: Any, hook: str) -> bool:
@@ -47,11 +48,13 @@ def _ask(profile: Any, hook: str, kwargs: dict[str, Any]) -> Any:
     from providers import registry_generation
 
     key = (registry_generation(), id(profile), type(profile), hook, tuple(sorted(kwargs.items())))
-    if key not in _PURE_MEMO:
+    # One read into a local: another thread may clear() the memo between a check and a re-read.
+    answer = _PURE_MEMO.get(key, _MISSING)
+    if answer is _MISSING:
+        answer = getattr(profile, hook)(**kwargs)
         if len(_PURE_MEMO) >= _PURE_MEMO_MAX:
             _PURE_MEMO.clear()
-        _PURE_MEMO[key] = getattr(profile, hook)(**kwargs)
-    answer = _PURE_MEMO[key]
+        _PURE_MEMO[key] = answer
     return dict(answer) if isinstance(answer, dict) else answer
 
 

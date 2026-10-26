@@ -116,3 +116,36 @@ def test_pure_per_request_hook_is_asked_once_per_argument_set(request):
     assert len(profile.calls) == 1
     route_answer("request_headers", provider="custom", base_url=url, model="m", user_initiated=False)
     assert len(profile.calls) == 2
+
+
+class _ClearedByAnotherThread(dict):
+    """A memo another thread clears right after every write (the 512-entry reset racing a request)."""
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.clear()
+
+    def __contains__(self, key):  # a check that passes, then the entry is gone before the read
+        found = super().__contains__(key)
+        self.clear()
+        return found
+
+
+def test_pure_hook_answer_survives_a_concurrent_memo_clear(request, monkeypatch):
+    from agent import provider_route_hooks
+
+    profile = _CountingWire(name="l4-cleared-memo", hostnames=("cleared-memo.test",))
+    profile.calls = []
+    providers.list_providers()
+    providers.register_provider(profile)
+
+    def _cleanup():
+        providers._REGISTRY.pop(profile.name, None)
+        providers._PROVIDER_LIST_CACHE = None
+
+    request.addfinalizer(_cleanup)
+    monkeypatch.setattr(provider_route_hooks, "_PURE_MEMO", _ClearedByAnotherThread())
+    answer = provider_route_hooks.route_answer(
+        "request_headers", provider="custom", base_url="https://api.cleared-memo.test/v1", model="m",
+        user_initiated=True)
+    assert answer == {"X-Count": "user"}
