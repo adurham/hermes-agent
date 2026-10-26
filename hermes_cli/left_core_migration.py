@@ -591,16 +591,18 @@ def recover_for_provider(name: Optional[str]) -> None:
     """Runtime resolution of *name*, a provider a left-core plugin supplies, in a home that uses it and lacks
     the plugin: run :func:`recover_at_startup` now. The CLI and Desktop resolve the provider before the agent
     (whose start runs the migration) exists, so they would otherwise stop at "unknown provider" on a home no
-    ``hermes update`` migrated. Outcomes print to an interactive terminal, else wait for the home's first agent."""
+    ``hermes update`` migrated. Outcomes print in a declared terminal front end (:func:`serve_notices_on_stderr`),
+    else wait for the home's first agent."""
     feature = _provider_feature(name or "")
     if feature is None:
         return
     from hermes_constants import get_hermes_home, hermes_home_key
     from providers import get_provider_profile
     home = Path(get_hermes_home())
-    # A terminal user sees outcomes now, also those another process (the gateway this CLI started) kept;
-    # otherwise (Desktop, gateway, a detached turn) the home's first agent in any process delivers them.
-    say = (lambda message: print(message, file=sys.stderr)) if _interactive() or _terminal_front_end else None
+    # A terminal front end shows outcomes now, also those another process (the gateway this CLI started) kept;
+    # otherwise (Desktop, gateway, a detached turn) the home's first agent in any process delivers them. Never
+    # inferred from a TTY: a foreground `hermes gateway run` has one, and its resolutions serve the chat user.
+    say = (lambda message: print(message, file=sys.stderr)) if _terminal_front_end else None
     if say is not None:
         for message in _claim_notices(home):
             say(message)
@@ -617,8 +619,9 @@ _terminal_front_end = False
 
 def serve_notices_on_stderr() -> None:
     """This process is a terminal front end (the classic CLI, whose turns run in the gateway): outcomes of
-    :func:`recover_for_provider` print to its stderr even when its output is piped (``hermes chat -q``),
-    since a resolution that fails before any agent exists (no credentials) leaves no agent to deliver them."""
+    :func:`recover_for_provider` print to its stderr, also when its output is piped (``hermes chat -q``),
+    since a resolution that fails before any agent exists (no credentials) leaves no agent to deliver them.
+    Only a declaration counts: a foreground gateway has a TTY too, and its outcomes belong to the chat user."""
     global _terminal_front_end
     _terminal_front_end = True
 

@@ -161,13 +161,17 @@ def test_a_resolution_outcome_reaches_the_first_agent_of_any_process_once(tmp_pa
     assert "moved out of core" not in second
 
 
-def test_an_interactive_terminal_sees_the_resolution_outcome_now_and_only_there(tmp_path, monkeypatch, installs_ok,
-                                                                                capsys):
+def test_a_tty_without_a_declared_front_end_keeps_the_outcome_for_the_chat_agent(tmp_path, monkeypatch, installs_ok,
+                                                                                 capsys):
+    """A foreground `hermes gateway run` has a TTY, but its resolutions serve the chat user: the outcome (and
+    its "run `hermes auth add copilot`" instruction) stays kept for the chat agent, not the gateway terminal."""
     _copilot_home(tmp_path, monkeypatch)
     monkeypatch.setattr(lcm, "_interactive", lambda: True)
     lcm.recover_for_provider("copilot")
-    assert capsys.readouterr().err.count("GitHub Copilot moved out of core") == 1
-    assert "moved out of core" not in _agent_start_in_another_process()
+    assert installs_ok == ["github-copilot"]
+    assert capsys.readouterr().err == ""
+    chat = _agent_start_in_another_process()
+    assert chat.count("GitHub Copilot moved out of core") == 1 and "hermes auth add copilot" in chat
 
 
 def test_a_piped_cli_front_end_prints_the_outcome_and_what_another_process_kept(tmp_path, monkeypatch,
