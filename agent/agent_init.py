@@ -1069,10 +1069,10 @@ def _client_kwargs_from_routed(client, timeout) -> dict[str, Any]:
 
 
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
-    # A feature that left core for a catalog plugin (Home Assistant) is installed for a home that
-    # used it, once per process, before discovery so its tools are in this agent's snapshot.
+    # A feature that left core (Home Assistant) is installed once per process before discovery, so its tools
+    # are in this snapshot; outcomes wait for a turn someone sees (deliver_kept_startup_notices), maybe not ours.
     from hermes_cli.left_core_migration import recover_at_startup
-    recover_at_startup(say=getattr(agent, "_emit_startup_warning", None))
+    recover_at_startup()
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
     try:

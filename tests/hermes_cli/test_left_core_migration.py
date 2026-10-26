@@ -250,6 +250,22 @@ def test_gateway_start_outcome_waits_for_the_first_agent(tmp_path, monkeypatch):
     assert lcm.recover_at_startup(say=said.append) == [] and len(said) == 1
 
 
+@pytest.mark.parametrize("gateway_start", [False, True])
+def test_an_agent_start_install_of_a_platform_keeps_the_restart_hint(tmp_path, monkeypatch, gateway_start):
+    """An agent start keeps its outcome for the next turn someone sees, with the hint to restart the gateway
+    serving the home; the gateway's own start loads the platform right after, so it needs none."""
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import pm.install
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(lcm, "_install_into", lambda h, consent=None: lambda name: {"ok": True})
+    monkeypatch.setattr(lcm, "_gateway_serves", lambda h: True)
+    assert lcm.recover_at_startup(gateway_start=gateway_start) == ["homeassistant"]
+    kept = lcm._claim_notices(home)
+    assert kept[0].startswith("✓ Home Assistant moved out of core")
+    assert any("hermes gateway restart" in message for message in kept) is not gateway_start
+
+
 
 def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
     """At most one automatic install per home: after `hermes plugins remove`, neither `hermes update`

@@ -20,8 +20,8 @@ Installs go through the normal catalog install path at the reviewed pin (kill li
 constraints, enable). Unattended dependency consent covers only these rows: the feature shipped in
 core, so its users already accepted its dependencies. Agent/gateway start always installs with it
 (nothing can answer a prompt there); ``hermes update`` in a terminal still asks. Every outcome
-reaches the user (terminal, Desktop, chat); a gateway-start outcome waits for the home's first agent
-to deliver it.
+reaches the user (terminal, Desktop, chat); an outcome no terminal shows waits in the home for its next
+turn someone sees (:func:`claim_kept_notices`).
 """
 
 from __future__ import annotations
@@ -592,7 +592,7 @@ def recover_for_provider(name: Optional[str]) -> None:
     the plugin: run :func:`recover_at_startup` now. The CLI and Desktop resolve the provider before the agent
     (whose start runs the migration) exists, so they would otherwise stop at "unknown provider" on a home no
     ``hermes update`` migrated. Outcomes print in a declared terminal front end (:func:`serve_notices_on_stderr`),
-    else wait for the home's first agent."""
+    else wait for the home's next turn someone sees."""
     feature = _provider_feature(name or "")
     if feature is None or _installs_held.get():  # held: a read-only diagnostic consumes no kept notice either
         return
@@ -600,7 +600,7 @@ def recover_for_provider(name: Optional[str]) -> None:
     from providers import get_provider_profile
     home = Path(get_hermes_home())
     # A terminal front end shows outcomes now, also those another process (the gateway this CLI started) kept;
-    # otherwise (Desktop, gateway, a detached turn) the home's first agent in any process delivers them. Never
+    # otherwise (Desktop, gateway, a detached turn) the home's next watched turn in any process gets them. Never
     # inferred from a TTY: a foreground `hermes gateway run` has one, and its resolutions serve the chat user.
     say = (lambda message: print(message, file=sys.stderr)) if _terminal_front_end else None
     if say is not None:
@@ -705,8 +705,8 @@ def installs_held():
 
 
 def defer_startup_notice(message: str) -> None:
-    """Hand *message* to the active home's first agent (its startup-warning sink, through
-    :func:`recover_at_startup`), once. For boot-path work that runs before any agent exists."""
+    """Hand *message* to the active home's next turn someone sees (:func:`claim_kept_notices`), once.
+    For boot-path work that runs before any agent exists."""
     from hermes_constants import get_hermes_home
     logger.warning(message)
     _queue_notice(Path(get_hermes_home()), message)
@@ -730,7 +730,7 @@ def _notices_locked(home: Path):
 
 
 def _queue_notice(home: Path, message: str) -> None:
-    """Keep *message* for *home*'s first agent in ANY process (:func:`_claim_notices`): the process that
+    """Keep *message* for *home*'s next watched turn in ANY process (:func:`_claim_notices`): the process that
     produced it (a CLI resolving the provider, a gateway start) often runs no agent for that home itself.
     A line already kept is not kept again: every start with ``allow_lazy_installs`` off reports the same row."""
     import json
@@ -765,6 +765,12 @@ def _claim_notices(home: Path) -> list[str]:
         except ValueError:  # a line from outside Hermes: skip it only
             continue
     return messages
+
+
+def claim_kept_notices() -> list[str]:
+    """Every notice kept for the active home in any process, for a turn someone sees (exactly once)."""
+    from hermes_constants import get_hermes_home
+    return _claim_notices(Path(get_hermes_home()))
 
 
 def plugin_present(plugin: str, home: Path) -> bool:
@@ -1086,12 +1092,13 @@ def _gateway_serves(home: Path) -> bool:
         return False
 
 
-def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[str]:
-    """Agent/gateway start hook for the active home: one attempt per process per home. With *say*
-    (an agent's startup-warning sink) outcomes are delivered now, together with any an earlier attempt or
-    boot maintenance (:func:`defer_startup_notice`) kept for this home in any process; without it they are
-    logged and kept in the home (:func:`_queue_notice`) for its first agent, in whichever process.
-    Returns installed plugin names."""
+def recover_at_startup(*, say: Optional[Callable[[str], None]] = None, gateway_start: bool = False) -> list[str]:
+    """Agent/gateway start hook for the active home: one attempt per process per home. With *say* (a
+    terminal's sink) outcomes are delivered now, together with any an earlier attempt or boot maintenance
+    (:func:`defer_startup_notice`) kept for this home in any process; without it they are logged and kept in
+    the home (:func:`_queue_notice`) for its next turn someone sees (:func:`claim_kept_notices`), in
+    whichever process. *gateway_start*: the gateway itself, which needs no restart hint. Returns installed
+    plugin names."""
     from agent.safe_worker_policy import worker_config_snapshot
     if _installs_held.get():
         return []
@@ -1148,7 +1155,7 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
         for feature in features:
             if _install_one(home, feature, install=_install_into(home, consent=True), say=report, process_env=True):
                 installed.append(feature.plugin)
-                if say is not None and feature.platform and _gateway_serves(home):
+                if not gateway_start and feature.platform and _gateway_serves(home):
                     report(f"Restart the gateway (`hermes gateway restart`) so it serves {feature.label}.")
         return installed
     except Exception as exc:  # never take agent/gateway start down

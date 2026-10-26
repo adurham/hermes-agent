@@ -651,6 +651,8 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None  # send once
+    from agent.status_output import deliver_kept_startup_notices
+    deliver_kept_startup_notices(agent)
     if getattr(agent, "_pending_startup_notices", None) or getattr(agent, "_pending_startup_prints", None):
         # gateway: init ran before this turn's callbacks / viewer print sink
         agent._replay_startup_warnings()
