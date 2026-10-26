@@ -221,15 +221,15 @@ def normalize_provider(name: str, overlay_profiles: Optional[list] = None) -> st
 
 
 def _get_overlay(canonical: str) -> tuple[Optional[HermesOverlay], str]:
-    """``(overlay, label)`` for a canonical id: the static table, else a profile's ``provider_overlay``
-    (a profile labels its own id; a models.dev id keeps the catalog spelling)."""
+    """``(overlay, label)`` for a canonical id: the static table, else a profile's ``provider_overlay``,
+    labelled with the profile's ``display_name`` also when keyed by its models.dev id: without a
+    models.dev catalog (offline, blocked) that label is the one picker rows and headings show."""
     if canonical in HERMES_OVERLAYS:
         return HERMES_OVERLAYS[canonical], _LABEL_OVERRIDES.get(canonical, canonical)
     prof = _overlay_profile(canonical)
     if prof is None or _profile_overlay_key(prof) != canonical:
         return None, canonical
-    label = (prof.display_name or canonical) if canonical == prof.name else canonical
-    return HermesOverlay(**prof.provider_overlay), _LABEL_OVERRIDES.get(canonical, label)
+    return HermesOverlay(**prof.provider_overlay), _LABEL_OVERRIDES.get(canonical, prof.display_name or canonical)
 
 
 def is_actual_route(provider: str = "", base_url: str = "") -> bool:

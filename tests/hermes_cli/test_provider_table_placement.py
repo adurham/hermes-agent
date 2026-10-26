@@ -122,3 +122,24 @@ def test_profile_models_dev_id_resolves_at_lookup_time(monkeypatch):
     assert md._models_dev_to_hermes_ids("zz-catalog") == ["zz-hosted"]
     assert md.models_dev_provider_map() == {"zz-hosted": "zz-catalog"}
     assert md.PROVIDER_TO_MODELS_DEV == {}  # never merged into the static dict
+
+
+def test_models_dev_keyed_overlay_row_keeps_the_profile_slug_and_label_offline(monkeypatch):
+    """A profile whose overlay is keyed by its models.dev id lists under its own name and display_name
+    when no models.dev catalog is at hand (offline, blocked): not under the catalog id."""
+    import agent.models_dev as md
+    from hermes_cli import providers as prov
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    hosted = ProviderProfile(
+        name="zz-hosted", aliases=("zz-hosted-alias",), display_name="ZZ Hosted", models_dev_id="zz-catalog",
+        overlay_aliases=("zzh",), provider_overlay={"extra_env_vars": ("ZZ_HOSTED_TOKEN",)})
+    _use_profiles(monkeypatch, hosted)
+    monkeypatch.setattr(md, "_MODELS_DEV_TO_PROVIDER", None)
+    monkeypatch.setattr(md, "fetch_models_dev", lambda *a, **k: {})
+    monkeypatch.setattr(prov, "_models_dev_info", lambda canonical, allow_network=True: None)
+    monkeypatch.setenv("ZZ_HOSTED_TOKEN", "zz-test-token")
+
+    assert prov.get_label("zz-hosted") == prov.get_label("zzh") == "ZZ Hosted"
+    rows = [r for r in list_authenticated_providers(current_provider="zz-catalog") if "zz" in r["slug"]]
+    assert [(r["slug"], r["name"], r["is_current"]) for r in rows] == [("zz-hosted", "ZZ Hosted", True)]
