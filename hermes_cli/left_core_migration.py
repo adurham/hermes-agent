@@ -29,6 +29,8 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -655,6 +657,18 @@ def moved_plugin_hint(name: str) -> str:
 
 _attempted: set[str] = set()
 _undelivered: dict[str, list[str]] = {}
+_installs_held: ContextVar[bool] = ContextVar("left_core_installs_held", default=False)
+
+
+@contextmanager
+def installs_held():
+    """No migration attempt inside (a read-only diagnostic such as ``hermes doctor``, whose provider checks run
+    the runtime resolver): the unknown-provider and host hints still name the install command."""
+    token = _installs_held.set(True)
+    try:
+        yield
+    finally:
+        _installs_held.reset(token)
 
 
 def defer_startup_notice(message: str) -> None:
@@ -986,6 +1000,8 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
     logged and queued for the home's first agent.
     Returns installed plugin names."""
     from agent.safe_worker_policy import worker_config_snapshot
+    if _installs_held.get():
+        return []
     if worker_config_snapshot() is not None:
         # A frozen safe/ignore-user-config worker never reads the profile's config.yaml and never
         # installs customizations; the owner process runs this migration for the home.

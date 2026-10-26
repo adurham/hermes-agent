@@ -100,3 +100,19 @@ def test_a_route_configured_outside_the_main_model_installs_when_resolved(tmp_pa
     _copilot_home(tmp_path, monkeypatch, config)
     _resolve(requested="copilot")
     assert installs == [("github-copilot", True)]
+
+
+def test_doctor_installs_nothing_and_names_the_install(tmp_path, monkeypatch, installs, capsys):
+    """`hermes doctor` is read-only: its auxiliary routing check resolves through the runtime resolver,
+    which must not fetch the plugin there; the failed check names the install command instead."""
+    from types import SimpleNamespace
+    from hermes_cli import doctor
+    from hermes_cli.doctor_config import _check_config_file
+    home = _copilot_home(tmp_path, monkeypatch, "model:\n  provider: nous\nauxiliary:\n  vision:\n"
+                                                "    provider: copilot\n    model: gpt-4.1\n")
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "DOCTOR_CHECKS", ((None, _check_config_file),))
+    doctor.run_doctor(SimpleNamespace(fix=False, ack=None, live=False))
+    assert installs == []
+    assert not (home / "plugins" / "github-copilot").exists()
+    assert "hermes plugins install github-copilot" in capsys.readouterr().out
