@@ -3,11 +3,7 @@ import type { ExportedMessageRepository, ThreadMessage } from '@assistant-ui/rea
 import { useMemo, useRef } from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import {
-  createTurnReplyFoldCache,
-  foldTurnReplyDuplicates,
-  withUniqueToolCallIdsWithinMessage
-} from '@/lib/chat-messages'
+import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 import { coalesceToolOnlyAssistants, createToolMergeCache, toRuntimeMessage } from '@/lib/chat-runtime'
 
 // The exact fallback status ExportedMessageRepository.fromBranchableArray uses.
@@ -31,7 +27,6 @@ const FALLBACK_STATUS = getAutoStatus(false, false, false, false, undefined)
 export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMessageRepository {
   const cacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
   const toolMergeCacheRef = useRef(createToolMergeCache())
-  const turnFoldCacheRef = useRef(createTurnReplyFoldCache())
 
   return useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
@@ -40,11 +35,7 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     let visibleParentId: string | null = null
     let headId: string | null = null
 
-    // One reply renders once per turn, whichever merge path let a second copy
-    // into the store (live overlay, committed row, re-attach, replay).
-    const folded = foldTurnReplyDuplicates(messages, turnFoldCacheRef.current)
-
-    for (const message of coalesceToolOnlyAssistants(folded, toolMergeCacheRef.current)) {
+    for (const message of coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)) {
       // A repeated id is a transcript bug upstream, but it must not reach the
       // repository: MessageRepository throws on the second link ("A message
       // with the same id already exists in the parent tree") and takes the
