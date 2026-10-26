@@ -37,8 +37,8 @@ def layer_env(tmp_path, monkeypatch):
     monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
     monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
     monkeypatch.setattr(providers, "_HOME_LAYERS", {})
-    clock = types.SimpleNamespace(now=1000.0)
-    monkeypatch.setattr(providers, "time", types.SimpleNamespace(monotonic=lambda: clock.now, time_ns=time.time_ns))
+    clock = types.SimpleNamespace(now=1000.0, ns=time.time_ns())
+    monkeypatch.setattr(providers, "time", types.SimpleNamespace(monotonic=lambda: clock.now, time_ns=lambda: clock.ns))
     stats = []
     real = providers._plugin_dir_stamps
     monkeypatch.setattr(providers, "_plugin_dir_stamps", lambda h: stats.append(1) or real(h))
@@ -96,16 +96,26 @@ def test_runtime_registration_is_found_despite_a_cached_miss(layer_env):
     assert providers.get_provider_profile("late-runtime") is not None
 
 
-def test_install_in_the_same_timestamp_tick_is_found_after_the_ttl(layer_env):
+def test_install_in_the_same_timestamp_tick_is_found_after_the_ttl(layer_env, monkeypatch):
     """A kernel with a coarse timestamp clock (or FAT/HFS+ rounding) gives every directory change
     within one tick the same mtime, so the stamp read at the last scan can equal the stamp after an
-    install: the new plugin must still be found once the TTL has passed."""
+    install: the new plugin must still be found once the TTL has passed, even when the scan itself
+    outlasts the tick."""
     import providers
 
     home, clock, _stats = layer_env
+    real_scan = providers._scan_home_layer
+
+    def slow_scan(*args):
+        real_scan(*args)
+        clock.ns += 3 * 10**9  # plugin imports took longer than one mtime tick
+
+    monkeypatch.setattr(providers, "_scan_home_layer", slow_scan)
     _install(home, "tick-b")
-    assert providers.get_provider_profile("tick-b") is not None
     model_providers = home / "plugins" / "model-providers"
+    for path in (home / "plugins", model_providers):  # fresh: inside the current tick
+        os.utime(path, ns=(clock.ns, clock.ns))
+    assert providers.get_provider_profile("tick-b") is not None
     before = model_providers.stat()
 
     _install(home, "tick-a")
@@ -119,7 +129,7 @@ def test_settled_unchanged_plugin_dirs_are_not_rescanned(layer_env, monkeypatch)
 
     home, clock, _stats = layer_env
     _install(home, "settled")
-    hour_ago = time.time_ns() - 3600 * 10**9
+    hour_ago = clock.ns - 3600 * 10**9
     for path in (home / "plugins", home / "plugins" / "model-providers"):
         os.utime(path, ns=(hour_ago, hour_ago))
     scans = []

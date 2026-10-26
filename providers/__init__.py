@@ -455,11 +455,14 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
         return False
     stamps = _plugin_dir_stamps(home)
     if stamps != layer.stamps:
+        # Judge the stamps' age before scanning: a slow scan must not let a stamp read before it
+        # look settled afterwards and get remembered over an install that landed mid-scan.
+        settled = _plugin_dir_stamps_settled(stamps)
         _scan_home_layer(layer, key)
         # A stamp still inside its mtime tick may not move for an install landing in that same
         # tick, which would hide the plugin until some later change: keep it unremembered so the
         # next periodic check scans again, until the stamps settle.
-        layer.stamps = stamps if _plugin_dir_stamps_settled(stamps) else ()
+        layer.stamps = stamps if settled else ()
         # Publish the completed layer -- stamps AND check time -- before auth
         # sync: it calls list_providers(), which re-enters this function. An
         # unpublished stamp rescanned forever; an unpublished check time
