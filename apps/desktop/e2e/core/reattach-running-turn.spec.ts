@@ -160,9 +160,10 @@ test('re-attaching to a running tool turn renders each segment once', async () =
 
     await test.step('reload while the answer after a tool streams', async () => {
       const hold = gate()
+      const finish = gate()
       provider.script(U(4), [
         { text: words(AI(4), 'narrating', 'again'), toolCalls: [echo('reattach-c')] },
-        { text: words(A(4), 'answer', 'across', 'a', 'reload'), holdAfterFirstChunk: hold }
+        { text: words(A(4), 'answer', 'across', 'a', 'reload'), holdAfterFirstChunk: hold, holdBeforeFinish: finish }
       ])
       await send(page, `${U(4)} reload mid answer`, 'Enter', ws)
       await provider.streamStarted(U(4), 1)
@@ -172,6 +173,17 @@ test('re-attaching to a running tool turn renders each segment once', async () =
       await expect(viewport(page)).toContainText(AI(4), { timeout: 60_000 })
       await installDuplicateSampler(page)
       hold.open()
+
+      // Before the turn completes, the rest of the answer extends the reply the
+      // reloaded window restored: one bubble, not a second one beside it.
+      const answer = viewport(page)
+        .locator('[data-slot="aui_assistant-message-root"]')
+        .filter({ hasText: 'across a reload' })
+
+      await expect(answer).toHaveCount(1, { timeout: 60_000 })
+      await page.screenshot({ path: test.info().outputPath('reload-mid-turn.png') })
+      await expect(answer).toContainText(A(4))
+      finish.open()
       await settled(page, ws, A(4))
       await assertTranscriptOracle(page, ws, provider, session, 're-attach after a reload')
     })
