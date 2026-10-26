@@ -181,6 +181,19 @@ def test_unknown_left_core_provider_names_the_install_on_every_surface(acme_row)
     assert lcm.provider_install_hint("other") == ""
 
 
+def test_an_enabled_plugin_that_failed_to_load_gets_its_error_not_enable(acme_row, monkeypatch):
+    from types import SimpleNamespace
+    from hermes_cli import plugins
+    (acme_row / "plugins" / "acme-llm").mkdir(parents=True)
+    (acme_row / "config.yaml").write_text("model:\n  provider: acme\nplugins:\n  enabled: [acme-llm]\n",
+                                          encoding="utf-8")
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: SimpleNamespace(list_plugins=lambda: [
+        {"name": "acme-llm", "key": "acme-llm", "enabled": False, "error": "ImportError: cannot import name 'x'"}]))
+    hint = lcm.provider_install_hint("acme")
+    assert "ImportError: cannot import name 'x'" in hint and "hermes plugins update acme-llm" in hint
+    assert "enable" not in hint.replace("enabled", "")
+
+
 def test_runtime_resolution_installs_the_plugin_first_for_a_home_using_it(acme_row, monkeypatch):
     calls = []
     monkeypatch.setattr(lcm, "recover_at_startup", lambda **kw: calls.append(kw) or [])

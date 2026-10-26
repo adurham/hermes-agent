@@ -531,7 +531,8 @@ def _provider_feature(name: str) -> Optional[LeftCoreFeature]:
 
 def provider_install_hint(name: str) -> str:
     """For a provider name nothing resolves to that a left-core plugin supplies: the sentence naming its
-    install command for the active home (its enable command when installed but not loaded), else ``""``.
+    install command for the active home (its enable command when installed but not enabled; its load error and
+    update command when enabled but it failed to load), else ``""``.
     Appended to every "unknown provider" error (runtime resolution, ``/model``, ``hermes model``, ``hermes
     auth add``)."""
     feature = _provider_feature(name)
@@ -541,9 +542,22 @@ def provider_install_hint(name: str) -> str:
     home = Path(get_hermes_home())
     if not plugin_present(feature.plugin, home):
         return f"{_install_sentence(feature)}."
-    enable = _install_command(feature.plugin, home).replace(" install ", " enable ")
+    command = _install_command(feature.plugin, home)
+    if _bundled_plugin_selected(home, feature.plugin):  # enabled, yet no profile: its load failed
+        error = _load_error(feature)
+        return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is enabled but failed "
+                f"to load{f' ({error})' if error else ''}: run `{command.replace(' install ', ' update ')}`, or "
+                f"see `hermes logs` for the cause.")
     return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is installed but not "
-            f"loaded: run `{enable}`.")
+            f"loaded: run `{command.replace(' install ', ' enable ')}`.")
+
+
+def _load_error(feature: LeftCoreFeature) -> str:
+    """The plugin loader's recorded error for *feature*'s plugin in this process, else ``""``."""
+    from hermes_cli.plugins import get_plugin_manager
+    names = {feature.plugin, feature.plugin_key} - {""}
+    return next((str(p["error"]) for p in get_plugin_manager().list_plugins()
+                 if p.get("error") and names & {p.get("name"), p.get("key")}), "")
 
 
 def provider_left_core(name: str) -> bool:
