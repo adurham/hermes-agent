@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
@@ -251,6 +251,10 @@ class ProviderProfile:
     # Per-model metadata in the canonical model_overrides schema. Partial entries
     # patch catalog metadata; explicit user overrides still win. Exact model IDs.
     model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    # Every field below was added after the released positional layout above: keyword-only, so a
+    # plugin subclass's own positional options keep their constructor slots.
+    _: KW_ONLY
 
     # ── L6: provider-owned setup + sign-in surfaces (all optional; None/empty = core's generic path) ──
     # ``account_card``: Accounts-tab card overrides ``{name, flow, cli_command, docs_url}`` for the
