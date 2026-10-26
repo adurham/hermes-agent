@@ -563,7 +563,7 @@ def _refresh_exchanged_token() -> Optional[tuple[str, Optional[str]]]:
     raw token only if the exchange itself is unavailable."""
     try:
         new_token, token_source = resolve_copilot_token()
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- moved verbatim from core (hermes_cli/copilot_auth.py, credential_pool, client_lifecycle, auth.py)
         logger.debug("Copilot credential refresh failed: %s", exc)
         return None
     new_token, enterprise_base_url = (new_token.strip() if isinstance(new_token, str) else ""), None
@@ -574,7 +574,7 @@ def _refresh_exchanged_token() -> Optional[tuple[str, Optional[str]]]:
         api_token, exchanged_base_url = get_copilot_api_token(new_token)
         if isinstance(api_token, str) and api_token.strip():
             new_token, enterprise_base_url = api_token.strip(), exchanged_base_url
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- moved verbatim from core (hermes_cli/copilot_auth.py, credential_pool, client_lifecycle, auth.py)
         logger.debug("Copilot 401 re-exchange failed, using resolved token: %s", exc)
     logger.info("Copilot credentials refreshed from %s", token_source)
     return new_token, enterprise_base_url
@@ -591,7 +591,7 @@ def _reexchange_stale_token() -> Optional[tuple[str, Optional[str]]]:
         raw_token = raw_token.strip()
         evict_cached_exchanged_token(raw_token)
         api_token, enterprise_base_url = get_copilot_api_token(raw_token)
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- moved verbatim from core (hermes_cli/copilot_auth.py, credential_pool, client_lifecycle, auth.py)
         logger.debug("Copilot stale-credential recovery failed: %s", exc)
         return None
     if not isinstance(api_token, str) or not api_token.strip():
@@ -635,7 +635,7 @@ class CopilotCredentialsMixin:
                 return api_token, source
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
-        except Exception:
+        except Exception:  # health: allow BLE001 S110 -- moved verbatim from core (hermes_cli/copilot_auth.py, credential_pool, client_lifecycle, auth.py)
             pass
         return "", ""
 
@@ -649,7 +649,7 @@ class CopilotCredentialsMixin:
                 resolved = (get_copilot_api_token(raw_token)[1] or "").strip()
                 if resolved:
                     base_url = resolved
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- moved verbatim from core (hermes_cli/copilot_auth.py, credential_pool, client_lifecycle, auth.py)
             logger.debug("Copilot base URL resolution fell back to default: %s", exc)
         return base_url
 
@@ -700,7 +700,7 @@ class CopilotCredentialsMixin:
                     _warn_raw_degradation_once(token)
             return [{"source": source_name, "access_token": api_token, "base_url": enterprise_base_url,
                      "label": source}]
-        except Exception as exc:
+        except Exception as exc:  # health: allow BLE001 -- moved verbatim from core (hermes_cli/copilot_auth.py, credential_pool, client_lifecycle, auth.py)
             logger.debug("Copilot token seed failed: %s", exc)
             return []
 
@@ -744,7 +744,7 @@ def copilot_cli_auth_evidence() -> tuple[bool, Optional[str]]:
             val = os.getenv(env_var, "").strip()
             if val and validate_copilot_token(val)[0]:
                 return True, f"env: {env_var}"
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- moved verbatim from core (hermes_cli/copilot_auth.py, credential_pool, client_lifecycle, auth.py)
         logger.debug("copilot-acp env token evidence check failed: %s", exc)
     # 2. The Copilot CLI's own plaintext token store (written by `copilot login` when no OS keychain
     #    is available). The file is JSONC — strip //-comment lines before parsing.
@@ -758,7 +758,7 @@ def copilot_cli_auth_evidence() -> tuple[bool, Optional[str]]:
             if isinstance(tokens, dict) and any(
                 isinstance(v, str) and v.strip() for v in tokens.values()):
                 return True, "~/.copilot/config.json"
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- moved verbatim from core (hermes_cli/copilot_auth.py, credential_pool, client_lifecycle, auth.py)
         logger.debug("copilot-acp CLI config evidence check failed: %s", exc)
     # 3. Known on-disk GitHub Copilot credential stores (the same files models.py fingerprints).
     for cred_path in ("~/.config/github-copilot/hosts.json", "~/.config/github-copilot/apps.json"):

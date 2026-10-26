@@ -1301,7 +1301,6 @@ def _first_exchangeable_copilot_token(raw_tokens) -> str:
     from providers import get_provider_profile
     get_provider_profile("copilot")  # loads the plugin package that owns these credentials
     from plugins.model_providers.copilot.credentials import exchange_copilot_token, validate_copilot_token
-
     for raw in raw_tokens:
         raw = str(raw or "").strip()
         if not raw or not validate_copilot_token(raw)[0]:
@@ -2283,11 +2282,8 @@ def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
         from plugins.model_providers.copilot.credentials import copilot_request_headers
         return copilot_request_headers(is_agent_turn=is_agent_turn)
     except ImportError:
-        return {
-            "Editor-Version": COPILOT_EDITOR_VERSION,
-            "User-Agent": "HermesAgent/1.0",
-            "Openai-Intent": "conversation-edits",
-            "x-initiator": "agent" if is_agent_turn else "user"}
+        return {"Editor-Version": COPILOT_EDITOR_VERSION, "User-Agent": "HermesAgent/1.0",
+                "Openai-Intent": "conversation-edits", "x-initiator": "agent" if is_agent_turn else "user"}
 
 
 _COPILOT_CHAT_ENDPOINTS = {"/chat/completions", "/responses", "/v1/messages"}
