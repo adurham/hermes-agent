@@ -4,6 +4,60 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### Fix — 2026-10-25 (the turn contract delivered declared work as a report: 28 deferred closes, 0 continued)
+
+Symptom (owner-reported): "new attack surface / then nothing", "closes this script / then nothing with open
+items still there", "it's not treating those open items as things that CAN be done". The ZZZ session was the
+worst case: it ended every turn with a three-item "Open:" block and stopped.
+
+Measured before touching anything (`~/.hermes/state.db`, 3 days, 359 sessions): **435 closes — done 299,
+deferred 68, blocked 20, need_input 48.** Of the `deferred` closes that could be read from the tool result
+(28 with the exact stored shape), **0 were followed by an assistant row that used a tool; 22 were followed
+by a user row** (the owner had to type a prompt to restart the work) and 6 ended the session. ZZZ RCE:
+12 deferred closes, 12 stops. Nest camera session: 10/10. So `open_items` was never a queue — it was a
+polite way to stop, and the harness delivered it as the answer.
+
+Root cause: the contract made the model *declare* unfinished work but gave the declaration no consequence.
+`contract_decision` returned `CLOSE` for any payload at all — `deferred`, `done` carrying items, `blocked`
+with no blocker — and `render_summary` even **dropped `open_items` when the status was `done`**, so a
+contradictory close produced ghost tasks the operator never saw. The status field was decoration; the only
+enforced rule was "call end_turn".
+
+Fix — the status field is now load-bearing (`agent/end_turn.py::close_verdict`):
+1. `deferred` is a claim that work remains *that the model can still do*. It cannot end the turn. The loop
+   appends a user row with the items numbered and the instruction to act on item 1, clears the payload, and
+   continues (`CONTINUE`). Same mechanism as the existing REJECT path (`reprompt=True` → the loop's
+   `_verdict("continue")`), so no new loop wiring beyond the branch.
+2. `done` carrying `open_items` is the same claim in the wrong words → also `CONTINUE`. This closes the
+   escape hatch: gating only `deferred` would have left 299-of-435 closes free to stop with a list.
+3. `blocked` / `need_input` are terminal only with a non-empty `blocker`; a terminal status with no blocker
+   is a bare stop with a label → `CONTINUE`.
+4. Budget: `agent.turn_continuations` (default **3**, `0` restores the old deliver-anything behaviour). At
+   the cap the reply is delivered with `Open (turn budget exhausted — still undone):` and counted as
+   `deferred_delivered` — deliberately not `closed`, so the contract's go/no-go metric keeps its meaning.
+5. `render_summary` now renders open items for every status that carries them (the `done` drop is gone).
+6. Model-facing text changed with the mechanism: the `end_turn` schema, its status enum, and
+   `TURN_CONTRACT_GUIDANCE` now say `open_items` is a work queue, that `done` requires it empty, and that
+   `deferred` hands the turn straight back.
+
+Config: `agent.turn_continuations: 3` added to `hermes_cli/config_defaults.py`. Counters gain `continued`
+(each bounce) and `deferred_delivered` (budget exhausted) in `~/.hermes/state/turn_contract.json`.
+
+Tests: `tests/agent/test_turn_contract.py` — `TestCloseVerdict` (deferred regardless of items; done+items;
+terminal without blocker; done/blocked-with-blocker stop; the render no longer drops `done` items; the nudge
+numbers items) and `TestLoopVerdict` (+6: deferred handed back with its items in the nudge, done+items,
+blocked without blocker, blocked with blocker delivered, budget exhaustion labelled, budget 0 restores old
+behaviour). 56 pass in the file. **Mutation-checked**: neutering the gate (`if False:` → `CLOSE`) fails
+exactly the 5 gate tests and passes the other 51; restored, 56 pass. `ruff check` clean on all five files.
+
+Known trade-off: a genuine status report written as `done` + "remaining: X, Y" now costs one extra
+round-trip; the model's sanctioned exits are `blocked`/`need_input` with a named blocker, or doing the work.
+`agent.turn_continuations: 0` reverts the whole gate if it over-fires — watch `continued` vs `closed` in the
+counter file before raising the budget.
+
+Deploy note: running sessions keep the old code until restarted; new sessions pick this up from
+`~/.hermes/hermes-agent` after the install-dir sync.
+
 ### Fix — 2026-10-25 (every `web_extract` failed: a search-only shared `web.backend` was inherited as the FETCH backend)
 
 Symptom: `✗ Fetch www.notebookcheck.net 1.7s [Brave Search (Free) is a search-only backend and cannot
