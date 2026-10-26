@@ -1,7 +1,7 @@
 """Per-attempt request assembly for the conversation turn's retry loop: re-apply the
 reasoning echo pad and prompt-cache decoration for the CURRENT provider (a fallback may
 differ from the primary), build ``api_kwargs``, run the surrogate/ASCII chokepoints, Codex
-preflight, OpenRouter cache bypass, Copilot ``x-initiator``, the LLM request middleware,
+preflight, OpenRouter cache bypass, provider per-request headers, the LLM request middleware,
 the ``pre_api_request`` hook and the debug dump. Nothing here imports
 ``agent.conversation_loop`` at module level.
 """
@@ -132,11 +132,17 @@ def build_request_payload(
     # retry must bypass the cache.
     if agent._empty_content_retries > 0 and agent._is_openrouter_url():
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
-    # Copilot x-initiator: first call of a user turn is "user" (billed premium);
-    # tool-loop follow-ups keep the default "agent".
-    if getattr(agent, "_is_user_initiated_turn", False) and agent._is_copilot_url():
-        _set_extra_header(api_kwargs, "x-initiator", "user")
-        agent._is_user_initiated_turn = False
+    # Provider per-request headers (turn attribution): the first call of a user turn is consumed
+    # by the route that attributes it; tool-loop follow-ups get the route's default.
+    if getattr(agent, "_is_user_initiated_turn", False):
+        from agent.provider_route_hooks import route_answer
+        _request_headers = route_answer(
+            "request_headers", provider=agent.provider or "", base_url=agent.base_url or "",
+            model=agent.model or "", user_initiated=True)
+        if _request_headers:
+            for _key, _value in _request_headers.items():
+                _set_extra_header(api_kwargs, _key, _value)
+            agent._is_user_initiated_turn = False
     try:
         from hermes_cli.middleware import apply_llm_request_middleware
 

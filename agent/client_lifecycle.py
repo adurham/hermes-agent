@@ -43,7 +43,6 @@ _ROUTE_DEFAULT_HEADERS = (
     ("ai-gateway.vercel.sh", lambda self, url: _lazy_attr("agent.auxiliary_client", "_ai_gateway_headers")()),
     ("integrate.api.nvidia.com", lambda self, url: _lazy_attr("agent.auxiliary_client", "build_nvidia_nim_headers")(url)),
     ("api.routermint.com", lambda self, url: _routermint_headers()),
-    ("githubcopilot.com", lambda self, url: _lazy_attr("hermes_cli.models", "copilot_default_headers")()),
     ("api.kimi.com", lambda self, url: _lazy_attr("agent.auxiliary_client", "_ai_gateway_headers")()),
     ("portal.qwen.ai", lambda self, url: _qwen_portal_headers()),
     ("chatgpt.com", lambda self, url: _lazy_attr("agent.codex_headers", "codex_cloudflare_headers")(
@@ -449,10 +448,14 @@ class ClientLifecycleMixin:
         # No SDK retry loop: the outer loop owns retries/rotation/fallback, and SDK retries stretch a hung
         # request ~3x past our stale detector.
         request_kwargs["max_retries"] = 0
-        is_copilot = base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
-        if is_copilot and self._api_kwargs_have_image_parts(api_kwargs or {}):
-            from hermes_cli.copilot_auth import copilot_request_headers
-            request_kwargs["default_headers"] = copilot_request_headers(is_agent_turn=True, is_vision=True)
+        if self._api_kwargs_have_image_parts(api_kwargs or {}):
+            # Image requests get the route's image client headers on a request-scoped client (cache-keyed apart).
+            from agent.provider_route_hooks import route_answer
+            image_headers = route_answer("client_headers", provider=self.provider or "",
+                                         base_url=str(request_kwargs.get("base_url", "")),
+                                         api_key=str(request_kwargs.get("api_key", "") or ""), has_images=True)
+            if image_headers:
+                request_kwargs["default_headers"] = {**(request_kwargs.get("default_headers") or {}), **image_headers}
         cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_kwargs)
         if cached is not None:
             return cached
@@ -941,12 +944,18 @@ class ClientLifecycleMixin:
                 self._client_kwargs["default_headers"] = build(self, base_url)
                 break
         else:
-            # No URL-specific headers — fall back to profile.default_headers, else clear.
+            # No URL-specific headers — a profile's endpoint headers, else profile.default_headers, else clear.
             self._client_kwargs.pop("default_headers", None)
+            from agent.provider_route_hooks import route_answer
+            route_headers = route_answer("client_headers", provider=self.provider or "", base_url=base_url,
+                                         api_key=str(self._client_kwargs.get("api_key", "") or ""))
+            if route_headers:
+                self._client_kwargs["default_headers"] = dict(route_headers)
             with suppress(Exception):
                 from providers import get_provider_profile
                 profile = get_provider_profile(self.provider)
-                if profile and profile.default_headers and (profile_headers := dict(profile.default_headers)):
+                if (not route_headers and profile and profile.default_headers
+                        and (profile_headers := dict(profile.default_headers))):
                     self._client_kwargs["default_headers"] = profile_headers
         # User overrides win over URL/profile defaults for the same route; a swap to another endpoint must not
         # inherit them.

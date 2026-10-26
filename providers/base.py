@@ -414,6 +414,40 @@ class ProviderProfile:
         """
         return None
 
+    # ── L1 wire seams (per-model wire, endpoint-keyed headers, max-tokens param) ──
+    # Endpoint-keyed hooks take the request's ``base_url``: core asks the named provider's profile first,
+    # then any registered profile overriding the hook (``agent.provider_route_hooks``), so a ``custom``
+    # route pointed at this provider's host is served too. Return None / ``{}`` for an endpoint that is
+    # not yours. All four are pure: no I/O unless the docstring says so.
+
+    def api_mode_for_model(self, model: str, *, api_key: str | None = None) -> str | None:
+        """Wire (``api_mode``) this provider serves *model* on, or None to keep the static ``api_mode``.
+
+        ``api_key=None`` is the pure hot path (agent init, fallback, aux client builds): answer from the
+        id alone. A string ``api_key`` comes from resolution-time callers (``/model``, runtime resolve),
+        which may consult a cached live catalog with that credential to normalize the id first.
+        """
+        return None
+
+    def client_headers(
+        self, *, base_url: str, api_key: str = "", has_images: bool = False,
+    ) -> dict[str, str] | None:
+        """Default headers for an OpenAI client built for *base_url*, or None when this profile has no
+        endpoint-specific headers there (core then uses the static ``default_headers``). ``has_images``
+        asks for the headers of a request-scoped client carrying native image parts. Core merges user
+        ``model.default_headers`` over the result and re-adds missing keys on snapshot rebuilds."""
+        return None
+
+    def request_headers(self, *, base_url: str, model: str = "", user_initiated: bool = False) -> dict[str, str]:
+        """Per-request headers (``extra_headers``) for *base_url*; ``user_initiated`` is True only on the
+        first API call of a user turn (attribution). Hot path: pure and cheap."""
+        return {}
+
+    def max_tokens_param(self, *, base_url: str, model: str = "") -> str | None:
+        """``"max_completion_tokens"`` / ``"max_tokens"`` for requests to *base_url*, or None for the
+        core heuristic (direct OpenAI / Azure host or newer OpenAI model families)."""
+        return None
+
     def listed(self) -> bool:
         """Whether discovery surfaces may offer this provider.
 

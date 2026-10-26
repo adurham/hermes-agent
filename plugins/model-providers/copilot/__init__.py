@@ -10,8 +10,10 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+from .wire import CopilotWireMixin
 
-class CopilotProfile(ProviderProfile):
+
+class CopilotProfile(CopilotWireMixin, ProviderProfile):
     """GitHub Copilot / GitHub Models — editor headers + reasoning."""
 
     def build_api_kwargs_extras(
