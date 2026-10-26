@@ -233,9 +233,11 @@ def camofox_in_use(home: Path, *, process_env: bool = False) -> bool:
 def _provider_choices(home: Path) -> set[str]:
     """Every provider *home* routes inference through, read with core's own loaders: config.yaml with the
     managed overlay (``read_yaml_layers``): ``model``, the fallback chain (``get_fallback_chain``: legacy
-    ``fallback_model`` merged), each ``auxiliary.<task>``, ``delegation`` and its fallback chain, every MoA
-    preset's reference models and aggregator (``normalize_moa_config``); the ``auth.json``
-    ``active_provider`` the resolver's auto rung follows; and the provider each cron job pinned."""
+    ``fallback_model`` merged), each ``auxiliary.<task>``, ``delegation`` and its fallback chain, every
+    delegation backend route (:func:`_delegation_backend_routes`) and its chain, every MoA preset's reference
+    models and aggregator (``normalize_moa_config``); the ``auth.json`` ``active_provider`` the resolver's auto
+    rung follows; the cron-wide ``cron.model_provider`` and the provider each cron job pinned."""
+    from cron.scheduler_preflight import cron_default_provider
     from gateway import config_loader
     from hermes_cli.fallback_config import get_fallback_chain
     from hermes_cli.moa_config import normalize_moa_config
@@ -248,11 +250,15 @@ def _provider_choices(home: Path) -> set[str]:
 
     def block(value) -> dict:
         return value if isinstance(value, dict) else {}
+    def with_chain(slot: dict) -> list[dict]:
+        return [slot, *get_fallback_chain({"fallback_providers": slot.get("fallback_providers")})]
     delegation = block(cfg.get("delegation"))
     slots = [block(cfg.get("model")), *get_fallback_chain(cfg), *map(block, block(cfg.get("auxiliary")).values()),
-             delegation, *get_fallback_chain({"fallback_providers": delegation.get("fallback_providers")})]
+             *with_chain(delegation), {"provider": cron_default_provider(cfg)}]
     for preset in normalize_moa_config(cfg.get("moa"))["presets"].values():
         slots += [*map(block, preset.get("reference_models") or []), block(preset.get("aggregator"))]
+    for route in _delegation_backend_routes(delegation):
+        slots += with_chain(route)
     import json
     try:
         jobs = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8-sig")).get("jobs")
@@ -262,6 +268,16 @@ def _provider_choices(home: Path) -> set[str]:
     chosen = {str(slot.get("provider") or "").strip().lower() for slot in slots}
     chosen.add(str(_auth_store(home).get("active_provider") or "").strip().lower())
     return chosen - {""}
+
+
+def _delegation_backend_routes(delegation: dict) -> list[dict]:
+    """The routes of every ``delegation.backends.<name>`` block: each entry of its ``options`` list (the
+    ``model_map`` backend's titled provider/model routes, the shape ``web_routers/delegation.py`` writes).
+    While a backend is active, these are the only routes delegated children take. The backends are
+    plugins, so no core loader reads them; any backend using the ``options`` shape counts."""
+    backends = delegation.get("backends")
+    blocks = [b for b in backends.values() if isinstance(b, dict)] if isinstance(backends, dict) else []
+    return [o for b in blocks if isinstance(b.get("options"), list) for o in b["options"] if isinstance(o, dict)]
 
 
 def providers_selected(home: Path, names: tuple[str, ...], *, process_env: bool = False) -> set[str]:

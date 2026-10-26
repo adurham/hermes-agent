@@ -62,6 +62,12 @@ def _home(tmp_path: Path, *, env: str = "", config: str = "", auth: dict | None 
     ("", "HERMES_INFERENCE_PROVIDER=copilot\n", None, None),
     ("", "", {"active_provider": "copilot"}, None),
     ("", "", None, [{"id": "j1", "provider": "copilot", "model": "gpt-5.4"}]),
+    ("cron:\n  model: gpt-5.4\n  model_provider: copilot\n", "", None, None),
+    ("delegation:\n  backend: model_map\n  backends:\n    model_map:\n      options:\n        - name: fast\n"
+     "          provider: copilot\n          model: gpt-5.4\n", "", None, None),
+    ("delegation:\n  backends:\n    model_map:\n      options:\n        - name: deep\n          provider: nous\n"
+     "          fallback_providers:\n            - provider: github-copilot\n              model: gpt-5.4\n",
+     "", None, None),
 ])
 def test_copilot_in_use_is_any_provider_slot_naming_it(tmp_path, config, env, auth, jobs):
     assert lcm.copilot_in_use(_home(tmp_path, config=config, env=env, auth=auth, jobs=jobs)) is True

@@ -88,3 +88,15 @@ def test_a_failed_attempt_is_not_rechecked_on_every_resolution(tmp_path, monkeyp
         lcm.recover_for_provider("copilot")
     assert len(calls) == first
 
+
+
+@pytest.mark.parametrize("config", [
+    "model:\n  provider: nous\ncron:\n  model_provider: copilot\n",
+    "model:\n  provider: nous\ndelegation:\n  backends:\n    model_map:\n      options:\n"
+    "        - name: fast\n          provider: copilot\n          model: gpt-5.4\n",
+])
+def test_a_route_configured_outside_the_main_model_installs_when_resolved(tmp_path, monkeypatch, installs, config):
+    """A cron run or a routed delegate resolves the provider its config slot names: that is use."""
+    _copilot_home(tmp_path, monkeypatch, config)
+    _resolve(requested="copilot")
+    assert installs == [("github-copilot", True)]
