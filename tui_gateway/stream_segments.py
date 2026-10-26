@@ -44,3 +44,32 @@ class TurnSegments:
         self.segment += 1
         self.offset = 0
         return stamp
+
+
+#: Where a tui_gateway session holds its running prompt turn's cursor (set at turn start, dropped at
+#: turn end): ``server._emit`` reads it, so every road that emits a turn's frames stamps them the same.
+SESSION_KEY = "_turn_segments"
+
+
+def stamp_reply_frame(segments: TurnSegments | None, event: str, payload: dict | None) -> dict | None:
+    """``payload`` with ``segments``' identity when ``event`` is a reply frame; anything else unchanged.
+
+    The one stamping rule for every emitter: tui_gateway's ``_emit`` (in-process turn, and the
+    compute-host child whose frames the parent relays verbatim) and the session authority's
+    ``TurnRunner``. It runs beneath the emit call, so a caller's frames are the same with and
+    without turn isolation. A ``None`` delta (segment boundary) carries no text to dedupe.
+    """
+    if segments is None:
+        return payload
+    if event == "message.start":
+        return {**(payload or {}), **segments.start()}
+    if event == "message.interim" and payload is not None:
+        return {**payload, **segments.seal()}
+    if event == "message.delta" and payload is not None and isinstance(payload.get("text"), str):
+        return {**payload, **segments.delta(payload["text"])}
+    return payload
+
+
+def stamp_session_frame(session: dict | None, event: str, payload: dict | None) -> dict | None:
+    """:func:`stamp_reply_frame` with the cursor of the prompt turn ``session`` is running, if any."""
+    return stamp_reply_frame((session or {}).get(SESSION_KEY), event, payload)

@@ -209,17 +209,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     def _stamp_segment(self, generation, event_type, payload):
         """The turn's wire identity on its reply frames (tui_gateway/stream_segments.py), so a viewer
-        upserts a re-sent delta or seal instead of painting a second copy (#144609)."""
-        if event_type not in ("message.delta", "message.interim"):
-            return payload
+        upserts a re-sent delta or seal instead of painting a second copy (#144609). The same
+        stamping rule as tui_gateway's ``_emit``, with one cursor per execution generation."""
+        from tui_gateway.stream_segments import TurnSegments, stamp_reply_frame
         segments = getattr(self, "_segments", None)
         if segments is None or segments[0] != generation:
-            from tui_gateway.stream_segments import TurnSegments
             segments = self._segments = (generation, TurnSegments())
-        if event_type == "message.interim":
-            return {**payload, **segments[1].seal()}
-        text = payload.get("text")
-        return {**payload, **segments[1].delta(text)} if isinstance(text, str) else payload
+        return stamp_reply_frame(segments[1], event_type, payload)
 
     def _publish_api_tool(self, event_type, call_id, tool_name, args, result=None):
         """The retained tool payload reaches the API observers of this exact admission only;
