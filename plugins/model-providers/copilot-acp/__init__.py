@@ -15,10 +15,13 @@ from providers.base import ProviderProfile
 class CopilotACPProfile(ProviderProfile):
     """GitHub Copilot ACP — external process, no REST models endpoint."""
 
-    def external_auth_evidence(self) -> tuple[bool, str | None]:
-        """The Copilot CLI's token stores, read without spawning it."""
-        from plugins.model_providers.copilot.credentials import copilot_cli_auth_evidence
-
+    def external_auth_evidence(self) -> tuple[bool, str | None] | None:
+        """The Copilot CLI's token stores, read without spawning it; None (binary check) without the
+        copilot plugin that owns the token rules."""
+        try:
+            from plugins.model_providers.copilot.credentials import copilot_cli_auth_evidence
+        except ImportError:
+            return None
         return copilot_cli_auth_evidence()
 
     def create_client(self, **client_kwargs: Any) -> Any:
