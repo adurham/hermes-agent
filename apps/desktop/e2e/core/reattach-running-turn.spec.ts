@@ -5,8 +5,11 @@
  * history a re-attaching window fetches already holds that round while the
  * live stream keeps drawing the same segment (#127288, #127665). Each step
  * leaves the chat mid-turn by a different road (switch away and back during
- * the answer or the running tool, a steer, a socket drop) and holds the settled turn to the
- * transcript oracle, whose in-page sampler also fails a transient double.
+ * the answer or the running tool, a reload, a steer, a socket drop) and holds
+ * the settled turn to the transcript oracle, whose in-page sampler also fails a
+ * transient double. The last two specs re-send frames the backend already
+ * delivered under new seqs; the turn's wire identity (turn_id, segment, offset)
+ * is what lets the renderer upsert them.
  */
 
 import fs from 'node:fs'
@@ -155,6 +158,23 @@ test('re-attaching to a running tool turn renders each segment once', async () =
       await assertTranscriptOracle(page, ws, provider, session, 're-attach during the tool')
     })
 
+    await test.step('reload while the answer after a tool streams', async () => {
+      const hold = gate()
+      provider.script(U(4), [
+        { text: words(AI(4), 'narrating', 'again'), toolCalls: [echo('reattach-c')] },
+        { text: words(A(4), 'answer', 'across', 'a', 'reload'), holdAfterFirstChunk: hold }
+      ])
+      await send(page, `${U(4)} reload mid answer`, 'Enter', ws)
+      await provider.streamStarted(U(4), 1)
+      await expect(viewport(page)).toContainText(A(4))
+      session.expectUserMarkers.push(U(4))
+      await page.reload()
+      await expect(viewport(page)).toContainText(AI(4), { timeout: 60_000 })
+      await installDuplicateSampler(page)
+      hold.open()
+      await settled(page, ws, A(4))
+      await assertTranscriptOracle(page, ws, provider, session, 're-attach after a reload')
+    })
     await test.step('a steer during the answer, then switch away and back mid-turn', async () => {
       const hold = gate()
       const steerHold = gate()
@@ -316,3 +336,39 @@ test('a tool completion redelivered under a newer seq renders one tool row', asy
   })
 })
 
+test('a narrated segment replayed after a message.start renders once', async () => {
+  await withApp('replay-segment', async ({ app, page, provider, ws }) => {
+    const session: OracleTarget = { sessionId: '', expectUserMarkers: [] }
+
+    const isEvent = (msg: any, type: string) => msg?.method === 'event' && msg.params?.type === type
+
+    // When the tool starts, replay the turn's message.start and the narration
+    // deltas after it: the segment a superseded attempt re-streams.
+    const redelivery = await routeRedelivery(
+      page,
+      ws,
+      msg => isEvent(msg, 'tool.start') && JSON.stringify(msg.params.payload ?? {}).includes(`replay-${nonce}`),
+      delivered => {
+        const start = delivered.findLastIndex(frame => isEvent(frame, 'message.start'))
+
+        return [delivered[start], ...delivered.slice(start + 1).filter(frame => isEvent(frame, 'message.delta'))]
+      }
+    )
+
+    await page.reload()
+    await waitForInteractive(app, page)
+    await installDuplicateSampler(page)
+    provider.script(U(1), [
+      { text: words(AI(1), 'commentary', 'before', 'the', 'tool'), toolCalls: [echo(`replay-${nonce}`)] },
+      { text: words(A(1), 'a', 'different', 'final', 'answer') }
+    ])
+    await send(page, `${U(1)} commentary then answer`, 'Enter', ws)
+    await settled(page, ws, A(1))
+    session.sessionId = await currentSessionId(page)
+    session.expectUserMarkers.push(U(1))
+    expect(redelivery.redelivered).toBe(true)
+    await page.screenshot({ path: test.info().outputPath('replayed-segment.png') })
+    session.lossyWire = [U(1)]
+    await assertTranscriptOracle(page, ws, provider, session, 'replayed narrated segment')
+  })
+})

@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 
 from .method_ctx import HandlerRegistry, bind_module
+from .stream_segments import TurnSegments
 
 _registry = HandlerRegistry()
 
@@ -505,6 +506,8 @@ class _TurnRun:
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
+    #: The turn id + segment cursor stamped on this turn's message.* frames.
+    segments: TurnSegments = dataclasses.field(default_factory=TurnSegments)
 
 
 def _adopt_out_of_band_turns(session: dict) -> None:
@@ -762,7 +765,7 @@ def _invoke_agent(
             delta, hold["held"] = hold["held"] + delta, ""
         with session["history_lock"]:
             _append_inflight_delta(session, delta)
-        payload = {"text": delta}
+        payload = {"text": delta, **st.segments.delta(delta)}
         if streamer and (r := streamer.feed(delta)) is not None:
             payload["rendered"] = r
         if st.tts_queue is not None and isinstance(delta, str):
@@ -774,7 +777,8 @@ def _invoke_agent(
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
         if getattr(agent, "_mute_notification_reply", False):
             return
-        _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
+        _emit("message.interim", sid,
+              {"text": text, "already_streamed": already_streamed, **st.segments.seal()})
     agent.interim_assistant_callback = (
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
@@ -1131,8 +1135,10 @@ def _run_prompt_submit(
         "kind=%s chars=%s images=%d",
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
+    from tui_gateway.stream_segments import TurnSegments  # bound functions run in server's globals
+    segments = TurnSegments()
     if not muted:
-        _emit("message.start", sid)
+        _emit("message.start", sid, segments.start())
 
     def run_body():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
@@ -1142,6 +1148,7 @@ def _run_prompt_submit(
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
+        st.segments = segments
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None,
             notification_category=(display_metadata or {}).get("notification_category"))
         goal_followup = None
