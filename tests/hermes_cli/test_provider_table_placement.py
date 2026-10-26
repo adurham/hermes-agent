@@ -70,8 +70,8 @@ def test_provider_overlay_defines_the_models_dev_keyed_provider(monkeypatch):
     from hermes_cli import providers as prov
 
     overlaid = ProviderProfile(
-        name="zz-acp", aliases=("zz-acp-agent",), display_name="ZZ ACP", base_url="acp://zz",
-        auth_type="external_process",
+        name="zz-acp", aliases=("zz-acp-agent", "zz-acp-cli"), display_name="ZZ ACP", base_url="acp://zz",
+        auth_type="external_process", overlay_aliases=("zz-acp-agent",),
         provider_overlay={"transport": "codex_responses", "auth_type": "external_process",
                           "base_url_override": "acp://zz", "base_url_env_var": "ZZ_ACP_BASE_URL"})
     plain = ProviderProfile(name="zz-plain", aliases=("zzp",), base_url="https://zz.test/v1")
@@ -80,11 +80,34 @@ def test_provider_overlay_defines_the_models_dev_keyed_provider(monkeypatch):
 
     assert prov.normalize_provider("ZZ-ACP-Agent") == "zz-acp"
     assert prov.normalize_provider("zzp") == "zzp"  # no overlay: the providers layer leaves it alone
+    assert prov.normalize_provider("zz-acp-cli") == "zz-acp-cli"  # only overlay_aliases name the overlay
     pdef = prov.get_provider("zz-acp-agent")
     assert (pdef.id, pdef.name, pdef.transport, pdef.base_url, pdef.base_url_env_var, pdef.source) == (
         "zz-acp", "ZZ ACP", "codex_responses", "acp://zz", "ZZ_ACP_BASE_URL", "hermes")
     assert prov.determine_api_mode("zz-acp") == "codex_responses"
     assert "zz-acp" in prov.hermes_overlays() and "zz-plain" not in prov.hermes_overlays()
+
+
+def test_mirrored_alias_keys_keep_the_overlay_route(monkeypatch):
+    """An overlay-declaring profile's own alias keys in the auth registry share its one row: resolving
+    an alias goes through the overlay (transport, base-URL env var), not the lossy-collapse registry rung."""
+    from types import SimpleNamespace
+
+    from hermes_cli import auth
+    from hermes_cli import providers as prov
+
+    overlaid = ProviderProfile(
+        name="zz-acp", aliases=("zz-acp-agent",), display_name="ZZ ACP", base_url="acp://zz",
+        overlay_aliases=("zz-acp-agent",), provider_overlay={"transport": "codex_responses",
+                                                             "base_url_override": "acp://zz"})
+    _use_profiles(monkeypatch, overlaid)
+    monkeypatch.setattr(prov, "_models_dev_info", lambda canonical, allow_network=True: None)
+    row = SimpleNamespace(id="zz-acp", name="ZZ ACP", api_key_env_vars=(), inference_base_url="acp://zz")
+    monkeypatch.setattr(auth, "PROVIDER_REGISTRY", {"zz-acp": row, "zz-acp-agent": row})
+
+    pdef = prov.resolve_provider_full("zz-acp-agent")
+
+    assert (pdef.id, pdef.transport, pdef.source) == ("zz-acp", "codex_responses", "hermes")
 
 
 def test_profile_models_dev_id_resolves_at_lookup_time(monkeypatch):

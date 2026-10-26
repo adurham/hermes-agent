@@ -16,4 +16,5 @@ PICKER_FIELDS = dict(
     aggregator=True,
     # models.dev lists GitHub Copilot under GITHUB_TOKEN only; Hermes also reads these two.
     provider_overlay={"extra_env_vars": ("COPILOT_GITHUB_TOKEN", "GH_TOKEN")},
+    overlay_aliases=("github",),
 )

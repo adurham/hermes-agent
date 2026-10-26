@@ -12,4 +12,5 @@ PICKER_FIELDS = dict(
     catalog_aliases=True,
     provider_overlay={"transport": "codex_responses", "auth_type": "external_process",
                       "base_url_override": "acp://copilot", "base_url_env_var": "COPILOT_ACP_BASE_URL"},
+    overlay_aliases=("github-copilot-acp",),
 )

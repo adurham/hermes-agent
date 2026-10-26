@@ -168,11 +168,11 @@ def _overlay_profiles() -> list:
 
 
 def _overlay_profile(name: str):
-    """The overlay-declaring profile *name* (its id, models.dev id or an alias) belongs to, or None."""
+    """The overlay-declaring profile *name* (its id, models.dev id or an overlay alias) belongs to, or None."""
     if not name:
         return None
     return next((prof for prof in _overlay_profiles()
-                 if name in (prof.name, prof.models_dev_id, *prof.aliases)), None)
+                 if name in (prof.name, prof.models_dev_id, *prof.overlay_aliases)), None)
 
 
 def _profile_overlay_key(prof) -> str:
@@ -526,7 +526,11 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
         _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
         if _pcfg is None:
             return None
-        if sum(1 for _rid in _AUTH_PROVIDER_REGISTRY if normalize_provider(_rid) == canonical) > 1:
+        _rows = [_row for _rid, _row in _AUTH_PROVIDER_REGISTRY.items() if normalize_provider(_rid) == canonical]
+        # A profile-declared overlay routes its own mirrored alias keys through the built-in chain.
+        if all(_row is _pcfg for _row in _rows) and _overlay_profile(canonical) is not None:
+            return None
+        if len(_rows) > 1:
             return ProviderDef(id=_pcfg.id, name=_pcfg.name, transport="openai_chat",
                                api_key_env_vars=tuple(_pcfg.api_key_env_vars or ()), base_url=_pcfg.inference_base_url or "",
                                source="hermes-auth-registry")

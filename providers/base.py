@@ -718,6 +718,8 @@ class ProviderProfile:
     # HermesOverlay fields (transport, auth_type, extra_env_vars, base_url_override, base_url_env_var) for
     # the provider's models.dev-keyed definition, keyed by ``models_dev_id`` or ``name``; {} = none.
     provider_overlay: dict = field(default_factory=dict)
+    # Extra names that normalize to the ``provider_overlay`` definition (its id, else ``name``); () = none.
+    overlay_aliases: tuple = ()
 
     # --- I2-auth: hermes-auth registry row mirrored from this profile (hermes_cli/auth_plugin_providers.py) ---
     # auth_type of the registry row when credential resolution differs from the setup flow ``auth_type`` names
