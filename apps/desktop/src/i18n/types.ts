@@ -2438,6 +2438,7 @@ catalog: CatalogTranslations
     exported: string
     failedImport: string
     failedExport: string
+    exportNeedsHost: (name: string) => string
     allProfiles: string
     showAllProfiles: string
     switchToProfile: (name: string) => string

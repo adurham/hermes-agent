@@ -980,7 +980,8 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
 
 @router.get("/api/fs/read-text")
 async def fs_read_text(path: str, request: Request = None, profile: Optional[str] = None):
-    backend = await asyncio.to_thread(_fs_backend, profile)
+    # A staged paste or pick previews from this host, as read-data-url reads it back to send.
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
             data, size, target = await asyncio.to_thread(
@@ -1003,7 +1004,9 @@ async def fs_read_text(path: str, request: Request = None, profile: Optional[str
         }
     profile_home = _fs_profile_home(profile)
     target = _agent_fs_path(path, profile_home=profile_home)
-    _hosted_fs_read_guard(target, request)
+    # The same staged-file exception read-data-url makes under a locked files root.
+    if not await asyncio.to_thread(_is_host_file, str(target), profile):
+        _hosted_fs_read_guard(target, request)
     target, st = _fs_regular_file(target, profile_home)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
@@ -1032,7 +1035,8 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     Stale-on-disk detection is the client's job (re-read before save).
     """
     text = payload.content or ""
-    backend = await asyncio.to_thread(_fs_backend, profile)
+    # Save where read-text read: a staged paste or pick on this host, all else on the SSH machine.
+    backend = await asyncio.to_thread(_remote_fs_backend, payload.path, profile)
     if backend is not None:
         try:
             target, byte_size = await asyncio.to_thread(
