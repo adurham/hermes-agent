@@ -346,10 +346,14 @@ class GatewayTurnPersistenceMixin:
             # The caller addresses an API conversation by its id and every API door re-validates that
             # binding (``restore_api_session``): a rotated entry would refuse each later request to it
             # (``admission_conflict``). A conversation its chat moved past has no route of its own to
-            # reset (gateway/session_detached.py). Either caller gets the typed ``compression_exhausted``
-            # result instead, never a reset that did not happen.
+            # reset (gateway/session_detached.py): its app viewer gets the start-fresh guidance a
+            # failed overflow turn gives. Never a reset that did not happen.
             logger.info("Keeping session %s after compression exhaustion.",
                         session_entry.session_id if session_entry else "?")
+            from gateway.run import _context_overflow_reply
+            guidance = _context_overflow_reply() if detached_route_of(source) else ""
+            if guidance not in (response or ""):
+                response = f"{response}\n\n{guidance}" if response else guidance
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             if not self._hmwa_defer_exhaustion_reset(session_entry, session_key, source):
                 session_entry = await self._hmwa_rotate_exhausted_session(session_entry, session_key, source)

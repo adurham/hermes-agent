@@ -158,7 +158,9 @@ async def test_the_old_conversation_never_drives_the_chats_topic_or_claims_a_res
     entry = runner.session_store.get_or_create_session(detached)
     response, kept = await runner._hmwa_compression_exhaustion_reset(
         {'compression_exhausted': True}, 'too long', entry, entry.session_key, detached)
-    assert (response, kept.session_id) == ('too long', ref_a.session_id)
+    # The app viewer is told how to go on (the guidance a failed overflow turn gives), never "reset".
+    from gateway.run import _context_overflow_reply
+    assert (response, kept.session_id) == (f'too long\n\n{_context_overflow_reply()}', ref_a.session_id)
 
 
 @pytest.mark.asyncio
