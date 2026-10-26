@@ -738,7 +738,7 @@ def _claim_notices(home: Path) -> list[str]:
     except OSError:  # nothing kept, or another process claimed it first
         return []
     try:
-        lines = claimed.read_text(encoding="utf-8").splitlines()
+        lines = claimed.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         lines = []
     finally:
