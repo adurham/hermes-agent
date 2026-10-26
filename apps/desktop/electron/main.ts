@@ -333,6 +333,7 @@ import {
   LINUX_GPU_SILENT_RETRY_GRACE_S,
   linuxGpuChildDeathPath,
   linuxGpuFallbackMarker,
+  linuxGpuFallbackReasonForDeath,
   linuxGpuMarkerAfterSuccessfulBoot,
   readLinuxGpuMarker,
   shouldEngageSilentGpuRetryFallback,
@@ -1123,8 +1124,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       linuxGpuFallbackActive = true
       linuxGpuFallbackSticky = true
 
-      const reason =
-        String(details?.reason || '').toLowerCase() === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+      const reason = linuxGpuFallbackReasonForDeath(details?.reason)
 
       try {
         writeLinuxGpuMarker(app.getPath('userData'), linuxGpuFallbackMarker(reason, app.getVersion()))

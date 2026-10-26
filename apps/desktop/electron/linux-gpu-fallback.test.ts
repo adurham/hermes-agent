@@ -5,6 +5,7 @@ import {
   disableGpuSwitchNeededForReason,
   linuxGpuChildDeathPath,
   linuxGpuFallbackMarker,
+  linuxGpuFallbackReasonForDeath,
   linuxGpuMarkerAfterSuccessfulBoot,
   parseLinuxGpuMarker,
   shouldEngageSilentGpuRetryFallback,
@@ -321,5 +322,17 @@ describe('shouldEngageSilentGpuRetryFallback', () => {
     expect(shouldEngageSilentGpuRetryFallback({ platform: 'darwin', gpuChildPresent: false, graceElapsed: true })).toBe(
       false
     )
+  })
+})
+
+describe("Electron's real GPU launch-failure reason", () => {
+  // Electron emits `launch-failed`; the recovery matched only `launch-failure`,
+  // so a GPU child that never launched left Chromium's retry loop spinning (#134888).
+  it('takes the bounded --disable-gpu step and records a launch failure', () => {
+    const details = { type: 'GPU', reason: 'launch-failed', exitCode: 1002 }
+
+    expect(linuxGpuChildDeathPath({ platform: 'linux', details })).toBe('disable-gpu')
+    expect(shouldRelaunchForLinuxGpuCrash({ platform: 'linux', details })).toBe(true)
+    expect(linuxGpuFallbackReasonForDeath(details.reason)).toBe('gpu-launch-failure')
   })
 })

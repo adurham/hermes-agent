@@ -16,7 +16,17 @@ interface NvidiaEglRecoveryOptions extends Omit<NvidiaEglFallbackOptions, 'marke
   queueMarker: (write: () => void) => void
   relaunch: () => void
   log: (message: string) => void
+  now?: () => number
 }
+
+/**
+ * How long after the first window reveals a GPU-process death still counts as
+ * this launch failing to bring the GPU up. Later deaths (session logout or OOM
+ * killing the GPU child, a driver reset after suspend) are runtime events that
+ * Chromium recovers from itself; pinning every future launch to SwiftShader for
+ * them turned healthy hosts into 4-9 core CPU burns (#131321, #141753).
+ */
+export const NVIDIA_GPU_DEATH_WITNESS_GRACE_MS = 60_000
 
 /** Persist only for the lock owner, and never turn intentional teardown into GPU failure. */
 export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
@@ -26,6 +36,8 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
   let primary = false
   let quitting = false
   let relaunchAttempted = false
+  let healthyAt: number | null = null
+  const now = options.now ?? Date.now
 
   const persist = (marker: NvidiaEglMarker): void => {
     try {
@@ -49,6 +61,8 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
       if (!primary || quitting || relaunchAttempted) {
         return
       }
+
+      healthyAt ??= now()
 
       persist(nvidiaEglMarkerAfterSuccessfulBoot({ ...options, fallbackActive: decision.enable }))
     },
@@ -76,6 +90,7 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
         !primary ||
         quitting ||
         teardownInProgress ||
+        (healthyAt !== null && now() - healthyAt > NVIDIA_GPU_DEATH_WITNESS_GRACE_MS) ||
         !nvidiaEglFallbackAllowed(options) ||
         !shouldRelaunchForNvidiaGpuDeath({
           platform: options.platform,

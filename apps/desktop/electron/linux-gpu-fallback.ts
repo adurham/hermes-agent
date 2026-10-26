@@ -43,7 +43,16 @@ export const BOOT_ABORTS_BEFORE_LINUX_GPU_FALLBACK = 2
 export const LINUX_GPU_SILENT_RETRY_GRACE_S = 30
 
 /** `child-process-gone` reasons that witness a broken GPU child. */
-const GPU_FAILURE_REASONS = new Set(['crashed', 'launch-failure'])
+// `launch-failed` is the reason Electron actually emits (`Details['reason']`);
+// `launch-failure` never arrives but stays so a legacy spelling still matches.
+const GPU_FAILURE_REASONS = new Set(['crashed', 'launch-failed', 'launch-failure'])
+
+/** Marker reason for a GPU-child death, keyed on Electron's real reason spelling. */
+export function linuxGpuFallbackReasonForDeath(reason: unknown): LinuxGpuFallbackReason {
+  const normalized = String(reason || '').toLowerCase()
+
+  return normalized === 'launch-failed' || normalized === 'launch-failure' ? 'gpu-launch-failure' : 'gpu-crash'
+}
 
 export type LinuxGpuMarkerState = 'booting' | 'fallback' | 'ok'
 

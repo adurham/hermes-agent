@@ -57,9 +57,11 @@ export const NVIDIA_EGL_FALLBACK_MARKER_FILENAME = 'nvidia-egl-fallback.json'
  * included on purpose: in #40077 the GPU process exited with exit_code=15 —
  * Chromium's own GPU health check SIGTERM — not a crash reason.
  */
-export const NVIDIA_GPU_DEATH_REASONS: ReadonlySet<Details['reason']> = new Set<Details['reason']>([
+export const NVIDIA_GPU_DEATH_REASONS: ReadonlySet<string> = new Set<string>([
   'crashed',
-  'launch-failed',
+  'launch-failed' satisfies Details['reason'],
+  // Never emitted by Electron; kept so a recorded/legacy spelling still matches.
+  'launch-failure',
   'killed'
 ])
 
@@ -275,8 +277,12 @@ export function decideNvidiaEglFallback(options: NvidiaEglFallbackOptions): Nvid
   }
 
   // An abort is evidence only for the build and driver that actually attempted it.
-  // Legacy unqualified booting records get one fresh probe, as do stale fallbacks.
-  if (marker?.state === 'booting' && sameBuild) {
+  // A legacy unqualified booting record is trusted only when this launch has no
+  // stronger identity to compare it with; a stamped build re-probes it once.
+  const unqualified = !marker?.version && !marker?.driverVersion && !marker?.build
+  const hasBuildIdentity = Boolean(buildIdentity && buildIdentity !== appVersion)
+
+  if (marker?.state === 'booting' && (sameBuild || (unqualified && !hasBuildIdentity))) {
     return {
       enable: true,
       reason: 'previous launch aborted mid-boot with the GPU probe live',
@@ -289,7 +295,7 @@ export function decideNvidiaEglFallback(options: NvidiaEglFallbackOptions): Nvid
 
 export interface NvidiaGpuDeathOptions {
   platform?: NodeJS.Platform | string
-  details: { type?: string; reason?: Details['reason'] } | null
+  details: { type?: string; reason?: string } | null
   /** The fallback is already active this launch (sticky marker or override). */
   fallbackActive: boolean
   /** This process already attempted the one-shot relaunch. */
@@ -313,9 +319,9 @@ export function shouldRelaunchForNvidiaGpuDeath({
   }
 
   const type = String(details?.type ?? '').toLowerCase()
-  const reason = details?.reason
+  const reason = String(details?.reason ?? '').toLowerCase()
 
-  return (type === 'gpu' || type === 'gpu-process') && Boolean(reason && NVIDIA_GPU_DEATH_REASONS.has(reason))
+  return (type === 'gpu' || type === 'gpu-process') && NVIDIA_GPU_DEATH_REASONS.has(reason)
 }
 
 /**

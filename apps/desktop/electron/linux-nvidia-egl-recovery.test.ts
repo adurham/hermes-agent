@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { launchBuildIdentity } from './launch-build-identity'
 import { createLaunchMarkerWriter } from './launch-marker-writer'
 import { nvidiaEglMarkerPath, readNvidiaEglMarker, writeNvidiaEglMarker } from './linux-nvidia-egl-fallback'
-import { createNvidiaEglRecovery } from './linux-nvidia-egl-recovery'
+import { createNvidiaEglRecovery, NVIDIA_GPU_DEATH_WITNESS_GRACE_MS } from './linux-nvidia-egl-recovery'
 
 let userData: string
 const driverVersion = '600.1.2'
@@ -158,5 +158,28 @@ describe('NVIDIA persisted recovery lifecycle', () => {
     first.healthy()
     first.cleanExit()
     expect(readNvidiaEglMarker(userData)?.state).toBe('fallback')
+  })
+})
+
+describe('NVIDIA GPU-death witness window', () => {
+  it('a GPU child killed long after a healthy boot (logout, OOM) does not pin the next launch to SwiftShader', () => {
+    let clock = 1_000
+    const first = launch({ now: () => clock })
+    first.healthy()
+    clock += NVIDIA_GPU_DEATH_WITNESS_GRACE_MS + 1
+
+    expect(first.gpuDied({ type: 'GPU', reason: 'killed', exitCode: 15 })).toBe(false)
+    expect(first.relaunch).not.toHaveBeenCalled()
+    expect(launch().decision.enable).toBe(false)
+  })
+
+  it('a GPU death right after the first reveal is still this launch failing', () => {
+    let clock = 1_000
+    const first = launch({ now: () => clock })
+    first.healthy()
+    clock += 5_000
+
+    expect(first.gpuDied({ type: 'GPU', reason: 'killed', exitCode: 15 })).toBe(true)
+    expect(launch().decision.enable).toBe(true)
   })
 })

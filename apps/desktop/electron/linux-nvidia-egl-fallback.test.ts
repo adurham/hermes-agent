@@ -101,10 +101,7 @@ describe('decideNvidiaEglFallback — behavioral probe', () => {
     // Chromium's "GPU process isn't usable" FATAL abort can kill the process
     // before the child-process-gone handler runs; the unresolved `booting`
     // marker is the evidence it leaves behind.
-    const decision = decideNvidiaEglFallback({
-      ...PROBE,
-      marker: { state: 'booting', version: PROBE.appVersion, driverVersion: PROBE.driverVersion }
-    })
+    const decision = decideNvidiaEglFallback({ ...PROBE, marker: { state: 'booting' } })
 
     expect(decision.enable).toBe(true)
     expect(decision.reason).toContain('aborted')
@@ -173,6 +170,8 @@ describe('shouldRelaunchForNvidiaGpuDeath', () => {
   })
 
   it('relaunches on a GPU launch failure', () => {
+    expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'launch-failure' } })).toBe(true)
+    // Electron's real spelling (`Details['reason']`); the recovery never fired on it before.
     expect(shouldRelaunchForNvidiaGpuDeath({ ...BASE, details: { type: 'GPU', reason: 'launch-failed' } })).toBe(true)
   })
 
