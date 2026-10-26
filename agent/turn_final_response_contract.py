@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 from agent.end_turn import (
     CLOSE,
+    CONTINUE,
+    CONTINUE_EXHAUSTED,
     ESCAPE,
     HARNESS_ERROR,
     MAX_TURN_CONTRACT_REJECTIONS,
@@ -24,11 +26,14 @@ from agent.end_turn import (
     TURN_CONTRACT_NUDGE,
     attempted_end_turn_close,
     clear_end_turn,
+    close_verdict,
+    continuation_nudge,
     contract_decision,
     end_turn_payload,
     record_turn_contract_event,
     recover_close,
     render_summary,
+    turn_continuation_budget,
     turn_contract_enabled,
 )
 from agent.message_metadata import append_message
@@ -66,9 +71,11 @@ def apply_turn_contract(
     # ending on prose, never for being blocked (2026-10-25: 31 "rejections" were this).
     attempt = attempted_end_turn_close(messages) if payload is None else None
     rejections = getattr(agent, "_turn_contract_rejections", 0)
+    continuations = getattr(agent, "_turn_continuations", 0)
     decision = contract_decision(
         payload=payload, tool_calls_this_turn=tool_calls_this_turn, rejections=rejections,
-        close_attempted=attempt is not None,
+        close_attempted=attempt is not None, continuations=continuations,
+        max_continuations=turn_continuation_budget(agent),
     )
     if decision == CLOSE:
         # Closed properly: the payload IS the reply. Trailing prose, if any, is ignored —
@@ -82,8 +89,56 @@ def apply_turn_contract(
         )
         clear_end_turn(agent)
         agent._turn_contract_rejections = 0
+        agent._turn_continuations = 0
         record_turn_contract_event("closed")
         return ContractVerdict(True, CLOSE, final_response=reply)
+    if decision in (CONTINUE, CONTINUE_EXHAUSTED):
+        # The status field is load-bearing: `deferred` says work remains that the model can
+        # still do, and `done` carrying items says the same thing in the wrong words. Either
+        # way the turn is handed back with those items as the assignment, not delivered as a
+        # plan. Measured 2026-10-25: 28 of 28 such closes in three days were followed by a user
+        # row, none by work — the items were a report the operator had to convert into an order.
+        _verdict, reason = close_verdict(payload or {})
+        items = (payload or {}).get("open_items") or []
+        if decision == CONTINUE:
+            agent._turn_continuations = continuations + 1
+            record_turn_contract_event("continued")
+            logger.warning(
+                "turn-contract: CONTINUE[%s] — %d open item(s) after %d tool call(s); handing the "
+                "turn back (continuation %d/%d, model=%s provider=%s)",
+                reason, len(items), tool_calls_this_turn, continuations + 1,
+                turn_continuation_budget(agent), agent.model, agent.provider,
+            )
+            agent._emit_diagnostic_status(
+                "↻ Turn closed with work still open — continuing"
+            )
+            clear_end_turn(agent)
+            final_msg["content"] = render_summary(payload or {})
+            append_message(messages, final_msg)
+            append_message(messages, {
+                "role": "user",
+                "content": continuation_nudge(payload or {}, reason),
+                "_turn_contract_nudge": True,
+            })
+            return ContractVerdict(True, CONTINUE, reprompt=True)
+        # Budget spent: deliver what there is, but say so in the reply instead of letting an
+        # undone list read like a plan the operator agreed to.
+        reply = render_summary(
+            payload or {}, open_label="Open (turn budget exhausted — still undone):",
+        )
+        final_msg["content"] = reply
+        record_turn_contract_event("deferred_delivered")
+        logger.error(
+            "turn-contract: CONTINUE_EXHAUSTED[%s] — %d open item(s) survived %d continuation(s); "
+            "delivering (model=%s provider=%s)",
+            reason, len(items), continuations, agent.model, agent.provider,
+        )
+        agent._emit_diagnostic_status(
+            "⚠ Turn ended with work still open after the continuation budget — answer delivered"
+        )
+        clear_end_turn(agent)
+        agent._turn_continuations = 0
+        return ContractVerdict(True, CONTINUE_EXHAUSTED, final_response=reply)
     if decision == HARNESS_ERROR:
         # The model did what it was told and the harness could not run end_turn (dispatch
         # gate without the name, executor exception, bridge rejection). Deliver — the summary
