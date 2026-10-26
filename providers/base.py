@@ -688,3 +688,12 @@ class ProviderProfile:
     def replays_function_thought_signature(self, *, model: str | None, base_url: str) -> bool:
         """True when replayed tool calls keep ``function.thought_signature`` (stripped everywhere else)."""
         return False
+
+    # --- I2-static: provider-table placement ---
+    picker_after: str = ""  # provider slug this row follows in the provider list ("" = appended)
+    picker_group: tuple = ()  # (group_id, label, description): fold with same-group rows in interactive pickers
+    catalog_aliases: bool = False  # ``aliases`` also normalize in the model catalog (``/model``, pickers)
+    aggregator: bool = False  # catalog re-exposes many vendors' models (vendor/family ids, alias resolution)
+    # HermesOverlay fields (transport, auth_type, extra_env_vars, base_url_override, base_url_env_var) for
+    # the provider's models.dev-keyed definition, keyed by ``models_dev_id`` or ``name``; {} = none.
+    provider_overlay: dict = field(default_factory=dict)

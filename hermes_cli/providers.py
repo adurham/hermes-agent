@@ -39,9 +39,6 @@ HERMES_OVERLAYS: dict[str, HermesOverlay] = {
                                 base_url_env_var="HERMES_QWEN_BASE_URL"),
     "lmstudio": HermesOverlay(extra_env_vars=("LM_API_KEY",), base_url_override="http://127.0.0.1:1234/v1",
                               base_url_env_var="LM_BASE_URL"),
-    "copilot-acp": HermesOverlay(transport="codex_responses", auth_type="external_process",
-                                 base_url_override="acp://copilot", base_url_env_var="COPILOT_ACP_BASE_URL"),
-    "github-copilot": HermesOverlay(extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN")),
     "anthropic": HermesOverlay(transport="anthropic_messages", extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")),
     "zai": HermesOverlay(extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), base_url_env_var="GLM_BASE_URL"),
     "kimi-for-coding": HermesOverlay(base_url_env_var="KIMI_BASE_URL"),
@@ -122,8 +119,7 @@ _ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "nvidia": ("nim", "nvidia-nim", "build-nvidia", "nemotron"),
     "kimi-for-coding": ("kimi", "kimi-coding", "kimi-coding-cn", "moonshot"),
     "stepfun": ("step", "stepfun-coding-plan"), "minimax-cn": ("minimax-china", "minimax_cn"),
-    "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
-    "copilot-acp": ("github-copilot-acp",), "openai-codex": ("chatgpt", "chatgpt-codex"),
+    "anthropic": ("claude", "claude-code"), "openai-codex": ("chatgpt", "chatgpt-codex"),
     "vercel": ("ai-gateway", "aigateway", "vercel-ai-gateway"),
     "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
     "deepseek": ("deep-seek",), "alibaba": ("dashscope", "aliyun", "qwen", "alibaba-cloud"),
@@ -147,7 +143,7 @@ ALIASES: dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.item
 
 _LABEL_OVERRIDES: dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
-    "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
+    "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
@@ -165,10 +161,51 @@ TRANSPORT_TO_API_MODE: dict[str, str] = {
 
 # -- Helper functions ---------------------------------------------------------
 
+def _overlay_profiles() -> list:
+    """Registered profiles that declare a ``provider_overlay`` (no plugin-dir rescan on a miss)."""
+    from providers import list_providers
+    return [prof for prof in list_providers() if prof.provider_overlay]
+
+
+def _overlay_profile(name: str):
+    """The overlay-declaring profile *name* (its id, models.dev id or an alias) belongs to, or None."""
+    if not name:
+        return None
+    return next((prof for prof in _overlay_profiles()
+                 if name in (prof.name, prof.models_dev_id, *prof.aliases)), None)
+
+
+def _profile_overlay_key(prof) -> str:
+    return prof.models_dev_id or prof.name
+
+
+def hermes_overlays() -> dict[str, HermesOverlay]:
+    """``HERMES_OVERLAYS`` plus the overlays registered profiles declare (``provider_overlay``)."""
+    merged = dict(HERMES_OVERLAYS)
+    for prof in _overlay_profiles():
+        merged.setdefault(_profile_overlay_key(prof), HermesOverlay(**prof.provider_overlay))
+    return merged
+
+
 def normalize_provider(name: str) -> str:
     """Resolve aliases and normalise casing to a canonical provider id."""
     key = name.strip().lower()
-    return ALIASES.get(key, key)
+    if key in ALIASES:
+        return ALIASES[key]
+    prof = _overlay_profile(key) if key not in HERMES_OVERLAYS else None
+    return _profile_overlay_key(prof) if prof is not None else key
+
+
+def _get_overlay(canonical: str) -> tuple[Optional[HermesOverlay], str]:
+    """``(overlay, label)`` for a canonical id: the static table, else a profile's ``provider_overlay``
+    (a profile labels its own id; a models.dev id keeps the catalog spelling)."""
+    if canonical in HERMES_OVERLAYS:
+        return HERMES_OVERLAYS[canonical], _LABEL_OVERRIDES.get(canonical, canonical)
+    prof = _overlay_profile(canonical)
+    if prof is None or _profile_overlay_key(prof) != canonical:
+        return None, canonical
+    label = (prof.display_name or canonical) if canonical == prof.name else canonical
+    return HermesOverlay(**prof.provider_overlay), _LABEL_OVERRIDES.get(canonical, label)
 
 
 def is_actual_route(provider: str = "", base_url: str = "") -> bool:
@@ -200,7 +237,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     Hermes-only overlay (nous, openai-codex, …); plugin provider profiles with a concrete endpoint."""
     canonical = normalize_provider(name)
     mdev_info = _models_dev_info(canonical, allow_network)
-    overlay = HERMES_OVERLAYS.get(canonical)
+    overlay, overlay_label = _get_overlay(canonical)
     if mdev_info is not None:
         ov = overlay or HermesOverlay()
         env_vars = list(mdev_info.env)
@@ -210,7 +247,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
         return _overlay_pdef(canonical, ov, mdev_info.name, tuple(env_vars), ov.base_url_override or mdev_info.api,
                              mdev_info.doc, "models.dev")
     if overlay is not None:
-        return _overlay_pdef(canonical, overlay, _LABEL_OVERRIDES.get(canonical, canonical), overlay.extra_env_vars,
+        return _overlay_pdef(canonical, overlay, overlay_label, overlay.extra_env_vars,
                              overlay.base_url_override, "", "hermes")
     # Plugin-registered profiles (plugins/model-providers/<name>/) absent from models.dev and
     # HERMES_OVERLAYS would otherwise be "Unknown provider" in /model, --provider and model-switch
@@ -482,7 +519,7 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
     """Exact Hermes registry ids win over LOSSY alias collapsing (kimi-coding-cn must stay distinct
     from kimi-coding instead of collapsing through the shared models.dev alias "kimi-for-coding").
     A collapse is lossy only when MULTIPLE registry providers normalize to the same canonical name;
-    single-entry rewrites ("copilot" -> "github-copilot") are correct routing and keep resolving
+    single-entry rewrites (a Hermes id -> its models.dev id) are correct routing and keep resolving
     through the built-in chain so overlay transports apply."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
