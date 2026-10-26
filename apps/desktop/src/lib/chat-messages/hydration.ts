@@ -244,6 +244,22 @@ function messageInterrupted(metadata: SessionMessage['display_metadata']): boole
   return parseDisplayMetadata(metadata)?.interrupted === true
 }
 
+/** An assistant row read into the tool bubble before it. A reply stopped after a
+ *  tool round folds in here, and its row still says the reply was stopped. */
+function foldIntoToolBubble(
+  bubble: ChatMessage,
+  message: SessionMessage,
+  parts: ChatMessagePart[],
+  durableComplete: boolean | undefined
+): void {
+  bubble.parts = [...bubble.parts, ...parts]
+  bubble.durableComplete = durableComplete
+
+  if (messageInterrupted(message.display_metadata)) {
+    bubble.interrupted = true
+  }
+}
+
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
   const reactions = parseDisplayMetadata(metadata)?.reactions
 
@@ -587,8 +603,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
 
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
-        activeAssistant.parts = [...activeAssistant.parts, ...parts]
-        activeAssistant.durableComplete = durableComplete
+        foldIntoToolBubble(activeAssistant, message, parts, durableComplete)
         activeAssistant.timestamp = earliestTimestamp(
           activeAssistant.timestamp,
           message.timestamp,
