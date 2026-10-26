@@ -20,7 +20,6 @@ def catalog(monkeypatch):
     monkeypatch.setattr(cat, "_PROVIDER_LABELS", dict(cat._PROVIDER_LABELS))
     monkeypatch.setattr(cat, "PROVIDER_GROUPS", {k: (lbl, d, list(m)) for k, (lbl, d, m) in cat.PROVIDER_GROUPS.items()})
     monkeypatch.setattr(cat, "_SLUG_TO_GROUP", dict(cat._SLUG_TO_GROUP))
-    monkeypatch.setattr(cat, "_PROVIDER_ALIASES", dict(cat._PROVIDER_ALIASES))
     monkeypatch.setattr(cat, "_AGGREGATOR_PROVIDERS", set(cat._AGGREGATOR_PROVIDERS))
     return cat
 
@@ -29,6 +28,8 @@ def _use_profiles(monkeypatch, *profiles):
     import providers
 
     monkeypatch.setattr(providers, "list_providers", lambda: list(profiles))
+    # The new profile list stands for a registration, which moves the generation.
+    monkeypatch.setattr(providers, "_REGISTRY_GENERATION", providers._REGISTRY_GENERATION + 1)
 
 
 def test_picker_fields_place_plugin_rows(catalog, monkeypatch):

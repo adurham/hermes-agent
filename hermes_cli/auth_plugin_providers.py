@@ -17,6 +17,7 @@ right after ``PROVIDER_REGISTRY`` exists, and by ``agent.credential_pool``.
 """
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Callable, Optional
 
@@ -35,48 +36,51 @@ PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
 PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
 
 
-def _absent_mirrored(ids) -> set[str]:
-    """The plugin-mirrored ids among *ids* that the bound home has no profile for."""
-    mirrored = [pid for pid in ids if pid in PLUGIN_MIRRORED_PROVIDERS]
-    if not mirrored:
-        return set()
-    from providers import names_without_profile
-    return names_without_profile(mirrored)
-
-
 class HomeScopedRegistry(dict):
-    """``PROVIDER_REGISTRY``: process-wide storage, read per profile home.
+    """``PROVIDER_REGISTRY``: process-wide storage, each row read as the bound profile home sees it.
 
-    Plugin profiles are per ``$HERMES_HOME`` but their mirrored rows (and the alias keys pointing at
-    them) live in one process-wide dict, and one process serves many profiles (multiplex gateway,
-    Desktop ``serve``). Every read hides a mirrored row whose provider has no profile in the bound
-    home, so a profile without the plugin never resolves, auto-detects or reads credentials for a
-    provider another profile installed. Built-in rows are never hidden; writes are plain dict writes.
+    One process serves many profile homes (multiplex gateway, Desktop ``serve``) and each home
+    installs its own provider plugins, so no read returns a row another home rewrote: a mirrored row
+    is hidden from a home without that provider and built from the home's own profile when only the
+    home declares it; a ``$HERMES_HOME`` plugin's declared fields (:func:`override_registry_row`) land
+    on a per-home copy; an alias key follows the bound home's plugin that claims it. Built-in rows a
+    home does not override are returned as stored; writes are plain dict writes.
     """
 
-    def _hidden(self) -> set[str]:
-        return _absent_mirrored({row.id for row in dict.values(self)}) if PLUGIN_MIRRORED_PROVIDERS else set()
-
-    def _shown(self, row: Any) -> bool:
-        return row.id not in PLUGIN_MIRRORED_PROVIDERS or not _absent_mirrored((row.id,))
+    def _view(self, key: str, row: Any, resolve: Callable[[str], tuple]) -> Any:
+        """*row* (stored under *key*) for the bound home; None = hidden there."""
+        if key != row.id:
+            claimant = resolve(key)[0]
+            if claimant is not None and claimant.name != row.id:
+                row = dict.get(self, claimant.name)
+                if row is None or row.id != claimant.name:
+                    return None
+        user, shared = resolve(row.id)
+        mirrored = row.id in PLUGIN_MIRRORED_PROVIDERS
+        if user is None:
+            return row if shared is not None or not mirrored else None
+        if row.id in _REGISTRY_PLUGIN_SKIP or not (mirrored or row.id in _builtin_ids()):
+            return row
+        return _home_row(row, user, from_profile=mirrored and shared is None)
 
     def __getitem__(self, key: str) -> Any:
-        row = dict.__getitem__(self, key)
-        if not self._shown(row):
+        row = self._view(key, dict.__getitem__(self, key), _resolver())
+        if row is None:
             raise KeyError(key)
         return row
 
     def get(self, key: str, default: Any = None) -> Any:
         row = dict.get(self, key)
-        return row if row is not None and self._shown(row) else default
+        row = None if row is None else self._view(key, row, _resolver())
+        return default if row is None else row
 
     def __contains__(self, key: object) -> bool:
-        row = dict.get(self, key)
-        return row is not None and self._shown(row)
+        return self.get(key) is not None
 
     def items(self) -> list[tuple[str, Any]]:
-        hidden = self._hidden()
-        return [(key, row) for key, row in dict.items(self) if row.id not in hidden]
+        resolve = _resolver()
+        views = ((key, self._view(key, row, resolve)) for key, row in dict.items(self))
+        return [(key, row) for key, row in views if row is not None]
 
     def keys(self) -> list[str]:
         return [key for key, _ in self.items()]
@@ -89,6 +93,37 @@ class HomeScopedRegistry(dict):
 
     def __len__(self) -> int:
         return len(self.items())
+
+
+def _resolver() -> Callable[[str], tuple]:
+    from providers import bound_profile_resolver
+    return bound_profile_resolver()
+
+
+def _builtin_ids() -> frozenset:
+    from hermes_cli.auth import BUILTIN_PROVIDER_IDS
+    return BUILTIN_PROVIDER_IDS
+
+
+# (id(stored row), id(home profile)) -> (stored row, home profile, that home's row). Holding both
+# keeps the ids from being reused; a re-imported plugin is a new profile object, so a new entry.
+_HOME_ROWS: dict[tuple[int, int], tuple[Any, Any, Any]] = {}
+
+
+def _home_row(row: Any, pp: Any, *, from_profile: bool) -> Any:
+    """The row a home whose own plugin *pp* declares *row*'s provider reads: built from *pp* when no
+    process-wide profile backs the row (``from_profile``), else a copy carrying *pp*'s declared fields."""
+    cached = _HOME_ROWS.get((id(row), id(pp)))
+    if cached is not None:
+        return cached[2]
+    home = _profile_row(pp) if from_profile else None
+    if home is None:
+        home = copy.copy(row)
+        override_registry_row(home, pp)
+    if len(_HOME_ROWS) >= 512:
+        _HOME_ROWS.clear()
+    _HOME_ROWS[(id(row), id(pp))] = (row, pp, home)
+    return home
 
 
 def _api_key_env_fields(pp: Any) -> tuple[tuple, str]:
@@ -104,23 +139,31 @@ def register_plugin_provider(pp: Any) -> None:
     Registering is what lets an out-of-tree provider pass ``resolve_provider()``'s known-provider
     gate ("Unknown provider"); OAuth-shaped plugins carry their own login via ``auth_handler``.
     """
-    from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig, _api_key_provider
+    from hermes_cli.auth import PROVIDER_REGISTRY
 
-    if pp.name in _REGISTRY_PLUGIN_SKIP:
+    pconfig = _profile_row(pp)
+    if pconfig is None:
         return
-    auth_type = registry_auth_type(pp)
-    if auth_type == "api_key":
-        if not pp.env_vars:
-            return
-        key_vars, url_var = _api_key_env_fields(pp)
-        pconfig = _api_key_provider(pp.name, pp.display_name or pp.name, pp.base_url, key_vars,
-                                    pp.base_url_env_var or url_var)
-    else:
-        pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, auth_type, inference_base_url=pp.base_url,
-                                 base_url_env_var=pp.base_url_env_var)
     _insert_row(PROVIDER_REGISTRY, pconfig, pp.registry_after)
     PLUGIN_MIRRORED_PROVIDERS.add(pp.name)
     mirror_aliases(pconfig, pp)
+
+
+def _profile_row(pp: Any) -> Optional[Any]:
+    """The registry row *pp* declares, or None (a skipped name, an api-key profile without env vars)."""
+    from hermes_cli.auth import ProviderConfig, _api_key_provider
+
+    if pp.name in _REGISTRY_PLUGIN_SKIP:
+        return None
+    auth_type = registry_auth_type(pp)
+    if auth_type == "api_key":
+        if not pp.env_vars:
+            return None
+        key_vars, url_var = _api_key_env_fields(pp)
+        return _api_key_provider(pp.name, pp.display_name or pp.name, pp.base_url, key_vars,
+                                 pp.base_url_env_var or url_var)
+    return ProviderConfig(pp.name, pp.display_name or pp.name, auth_type, inference_base_url=pp.base_url,
+                          base_url_env_var=pp.base_url_env_var)
 
 
 def registry_auth_type(pp: Any) -> str:
@@ -170,7 +213,9 @@ def override_registry_row(pconfig: Any, pp: Any) -> None:
     """A ``$HERMES_HOME`` plugin re-registering a name that already has a row wins for the fields
     it declares — ``display_name``, ``base_url`` and, on api-key rows, ``env_vars`` (#48450, #116668). ``register_provider()``
     is last-writer-wins for the profile; without this the runtime kept reading the built-in
-    endpoint. In place, so alias rows sharing the object follow; idempotent, so re-sync is free.
+    endpoint. A ``$HERMES_HOME`` layer plugin's fields land on that home's own copy of the row
+    (:class:`HomeScopedRegistry`), so another served home keeps the built-in endpoint; a process-wide
+    registration (every home reads it) rewrites the stored row in place.
     """
     if pp.display_name:
         pconfig.name = pp.display_name
@@ -186,7 +231,7 @@ def sync_plugin_provider_registry() -> int:
     """Mirror provider-plugin profiles into ``PROVIDER_REGISTRY``; return how many were added.
 
     Idempotent (existing entries are never replaced — a user plugin re-registering a bundled name
-    only rewrites the fields it declares, see :func:`override_registry_row`), so it is safe from
+    wins for the fields it declares in its own home only, see :class:`HomeScopedRegistry`), so it is safe from
     resolution paths. It runs at
     auth import and again whenever a name is missing (:func:`registry_lookup`) or when ``providers``
     finishes discovery, because the import-time pass can observe a *partial* profile list: a plugin
@@ -198,6 +243,7 @@ def sync_plugin_provider_registry() -> int:
     try:
         from providers import list_providers, provider_source
         profiles = list_providers()
+        home_profile = lambda name: _resolver()(name)[0]
     except Exception:
         return 0
     added = 0
@@ -207,8 +253,10 @@ def sync_plugin_provider_registry() -> int:
             # own, more specific declaration and stays as written.
             core_row = pp.name in BUILTIN_PROVIDER_IDS or pp.name in PLUGIN_MIRRORED_PROVIDERS
             if core_row and pp.name not in _REGISTRY_PLUGIN_SKIP and provider_source(pp.name) == "user":
-                override_registry_row(PROVIDER_REGISTRY[pp.name], pp)
-                mirror_aliases(PROVIDER_REGISTRY[pp.name], pp)
+                row = dict.__getitem__(PROVIDER_REGISTRY, pp.name)
+                if home_profile(pp.name) is not pp:  # registered process-wide: every home reads it
+                    override_registry_row(row, pp)
+                mirror_aliases(row, pp)
             continue
         register_plugin_provider(pp)
         added += pp.name in PROVIDER_REGISTRY
@@ -228,7 +276,10 @@ def registry_lookup(provider_id: str) -> Optional[Any]:
     from hermes_cli.auth import PROVIDER_REGISTRY
 
     pconfig = PROVIDER_REGISTRY.get(provider_id)
-    if pconfig is None and sync_plugin_provider_registry():
+    if pconfig is None:
+        # Re-read whatever the count says: a home's first plugin scan runs inside the sync's own
+        # ``list_providers()`` and mirrors its rows in that nested pass.
+        sync_plugin_provider_registry()
         pconfig = PROVIDER_REGISTRY.get(provider_id)
     return pconfig
 

@@ -6,7 +6,7 @@ maps. Split out of ``hermes_cli.models``.
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 
 class CuratedFallbackModels(list[str]):
@@ -371,6 +371,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
 # through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
 # credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
+_BUILTIN_SLUGS = frozenset(_canonical_slugs)
 
 
 def _plugin_provider_enters_picker(pp) -> bool:
@@ -412,8 +413,8 @@ def sync_plugin_provider_catalog() -> int:
 
 
 def _admit_plugin_provider(pp) -> None:
-    """Add one plugin profile to the picker tables: row (at ``picker_after``), label, group,
-    catalog aliases and the aggregator set."""
+    """Add one plugin profile to the picker tables: row (at ``picker_after``), label, group and the
+    aggregator set. Its catalog aliases are read per home (:class:`_CatalogAliases`)."""
     label = pp.display_name or pp.name
     entry = ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)")
     slugs = [p.slug for p in CANONICAL_PROVIDERS]
@@ -427,9 +428,6 @@ def _admit_plugin_provider(pp) -> None:
         if pp.name not in members:
             members.append(pp.name)
         _SLUG_TO_GROUP[pp.name] = gid
-    if pp.catalog_aliases:
-        for alias in pp.aliases:
-            _PROVIDER_ALIASES.setdefault(alias, pp.name)
     if pp.aggregator:
         _AGGREGATOR_PROVIDERS.add(pp.name)
 
@@ -515,7 +513,61 @@ def group_providers(slugs):
     return rows
 
 
-_PROVIDER_ALIASES = dict((
+class _CatalogAliases(dict):
+    """``_PROVIDER_ALIASES``: the built-in alias table plus the ``catalog_aliases`` of the bound home's
+    plugin profiles, resolved per read and never copied in: two served homes may give one alias to
+    different providers. A built-in alias always wins; among plugins the first registered does."""
+
+    _memo: tuple[tuple, dict[str, str]] = ((), {})
+
+    def _plugin_aliases(self) -> dict[str, str]:
+        try:
+            from providers import bound_registry_key, list_providers
+            token = bound_registry_key()
+            if self._memo[0] == token:
+                return self._memo[1]
+            profiles = list_providers()
+        except Exception:
+            return {}
+        found: dict[str, str] = {}
+        for pp in profiles:
+            if pp.catalog_aliases and pp.name not in _BUILTIN_SLUGS:
+                for alias in pp.aliases:
+                    if not dict.__contains__(self, alias):
+                        found.setdefault(alias, pp.name)
+        self._memo = (token, found)
+        return found
+
+    def __getitem__(self, key: str) -> str:
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return self._plugin_aliases()[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return self._plugin_aliases().get(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return dict.__contains__(self, key) or key in self._plugin_aliases()
+
+    def items(self) -> list[tuple[str, str]]:
+        return [*dict.items(self), *self._plugin_aliases().items()]
+
+    def keys(self) -> list[str]:
+        return [key for key, _ in self.items()]
+
+    def values(self) -> list[str]:
+        return [value for _, value in self.items()]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self) -> int:
+        return len(self.items())
+
+
+_PROVIDER_ALIASES = _CatalogAliases((
     ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"), ("google", "gemini"),
     ("google-gemini", "gemini"), ("google-ai-studio", "gemini"), ("google-vertex", "vertex"), ("vertex-ai", "vertex"),
     ("gcp-vertex", "vertex"), ("vertexai", "vertex"), ("kimi", "kimi-coding"), ("moonshot", "kimi-coding"),
