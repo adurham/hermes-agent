@@ -335,6 +335,37 @@ def test_cli_that_stops_reading_is_reported_with_its_exit_text(tmp_path):
         with client._session(30):
             pass
 
+_DEAF_ACP_CLI = """import os, sys, time
+os.close(0)  # stops reading but keeps running
+open(sys.argv[1], "w").close()
+time.sleep(120)
+"""
+
+
+def test_cli_that_stops_reading_but_keeps_running_fails_fast(tmp_path):
+    """Alive with its stdin closed: the request can never be read, so the write's broken pipe is the
+    answer; waiting for a reply would hang for the whole request timeout."""
+    server = tmp_path / "deaf_acp.py"
+    server.write_text(_DEAF_ACP_CLI, encoding="utf-8")
+    closed = tmp_path / "stdin-closed"
+    client = _AcmeClient(command=sys.executable, args=[str(server), str(closed)], acp_cwd=str(tmp_path))
+    real_spawn = client._spawn
+
+    def spawn_then_wait_for_the_close():
+        proc = real_spawn()
+        deadline = time.monotonic() + 30
+        while not closed.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return proc
+
+    client._spawn = spawn_then_wait_for_the_close
+    started = time.monotonic()
+    with pytest.raises(OSError):
+        with client._session(900):
+            pass
+    assert time.monotonic() - started < 60
+
+
 def test_model_discovery_does_not_allow_file_requests(tmp_path):
     """``list_models`` opens a session only to read the catalog: an fs request on that path is refused."""
     target = tmp_path / "should-not-be-read.txt"

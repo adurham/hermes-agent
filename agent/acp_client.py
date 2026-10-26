@@ -15,6 +15,7 @@ Subclasses customise the launch defaults and vendor quirks through class attribu
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -454,9 +455,13 @@ class ACPClient:
             try:
                 proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
                 proc.stdin.flush()
-            except BrokenPipeError:  # the CLI stopped reading (dying): report its exit text, not a bare EPIPE
+            except OSError as exc:  # the CLI stopped reading: EPIPE, or EINVAL on a Windows pipe
+                if not isinstance(exc, BrokenPipeError) and exc.errno != errno.EINVAL:
+                    raise
                 with contextlib.suppress(subprocess.TimeoutExpired):
-                    proc.wait(timeout=5)
+                    proc.wait(timeout=5)  # dying: report its exit text below, not a bare EPIPE
+                if proc.poll() is None:  # alive but deaf: fail now, not after the whole request timeout
+                    raise
             deadline = session_deadline
             while time.monotonic() < deadline and proc.poll() is None:
                 try:
