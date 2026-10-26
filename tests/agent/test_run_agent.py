@@ -1330,37 +1330,6 @@ class TestBuildApiKwargs:
         assert "reasoning" not in kwargs.get("extra_body", {})
 
 
-    def test_reasoning_sent_for_copilot_gpt5(self, agent):
-        """Copilot/GitHub Models: GPT-5 reasoning goes in extra_body.reasoning."""
-        from agent.transports import get_transport
-        from providers import get_provider_profile
-
-        transport = get_transport("chat_completions")
-        profile = get_provider_profile("copilot")
-        msgs = [{"role": "user", "content": "hi"}]
-        kwargs = transport.build_kwargs(
-            model="gpt-5.4",
-            messages=msgs,
-            tools=None,
-            supports_reasoning=True,
-            provider_profile=profile,
-        )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
-
-
-    def test_core_responses_preserves_supported_xhigh(self, agent, monkeypatch):
-        """The core GitHub Responses path must preserve a supported xhigh."""
-        from plugins.model_providers.copilot import catalog as copilot_catalog
-
-        monkeypatch.setattr(copilot_catalog, "github_model_reasoning_efforts",
-            lambda _model: ["none", "low", "medium", "high", "xhigh"],
-        )
-        agent.model, agent.base_url = "gpt-5.5", "https://api.githubcopilot.com"
-        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
-
-        assert agent._endpoint_reasoning_payload() == {"effort": "xhigh"}
-
-
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
         agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"

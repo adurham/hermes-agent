@@ -1,7 +1,7 @@
 """Cross-writer invariant: every private-credential file is 0600 from the moment its temp file exists.
 
 The credential writers (auth.json, MCP OAuth tokens, secret-source cache, iron-proxy state, the
-exchanged-JWT store, the Photon sidecar record, pairing data, the vault blob, the third-party
+Photon sidecar record, pairing data, the vault blob, the third-party
 credential file, the spawn ledger, the meet-node token) all funnel through ``utils.atomic_json_write`` / ``atomic_write_text`` /
 ``atomic_write_bytes`` with ``mode=0o600``. The contract under test: the *temp* file is created
 with mode 0600 (``O_EXCL``) BEFORE any byte lands and the final file carries 0600 — never
@@ -17,9 +17,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import providers as _providers
-_providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
-from plugins.model_providers.copilot import credentials as copilot_credentials
 pytestmark = pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
 
 _PRIVATE = stat.S_IRUSR | stat.S_IWUSR
@@ -73,8 +70,6 @@ def _writers(home: Path, monkeypatch):
         ("secret-source cache", lambda: cache.write("k", CachedFetch(secrets={"A": "b"}, fetched_at=1.0), 60, home),
          cache.path(home)),
         ("iron-proxy mappings", lambda: iron_proxy.write_mappings([]), home / "proxy" / "mappings.json"),
-        ("exchanged JWT store", lambda: copilot_credentials._save_jwt_to_disk("fp", "jwt", 9e12, None),
-         copilot_credentials._jwt_disk_path()),
         ("photon sidecar record", lambda: photon_adapter._write_runtime_record(1, "tok", 2), photon_record),
         ("pairing", lambda: pairing._save_json_file(home / "pairing" / "p.json", {"a": 1}), home / "pairing" / "p.json"),
         ("vault blob", lambda: vault._write_all([]), vault._vault_path),
