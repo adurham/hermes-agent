@@ -216,6 +216,13 @@ $script:UiState = [hashtable]::Synchronized(@{
     acknowledged_receipt = $null
 })
 $script:UiServer = $null     # @{ Listener; Runspace; PowerShell; Port; BrowserProc; Profile }
+# `hermes update` publishes its own stages (hermes_cli/update_stage.py: downloading, dependencies,
+# each app build, packaging) into this file, as it does under posix.sh. The step loop relays them
+# to the window, which otherwise read "Updating code and dependencies" for a whole 20-60 minute
+# run (#139952, #135363), and to the hand-off log, whose timestamps then name the slow stage.
+$script:ChildStageFile = Join-Path ([IO.Path]::GetTempPath()) ("hermes-update-status.{0}" -f $PID)
+$env:HERMES_UPDATE_STATUS_FILE = $script:ChildStageFile
+$script:ChildStageSeen = $null
 
 function Get-UiHtmlPath {
     # Lives next to this script in the checkout. Missing file = fall back to
@@ -995,7 +1002,23 @@ function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
     return $false
 }
 
+function Sync-ChildStage {
+    # Best-effort: an unreadable or half-replaced file leaves the current stage on screen.
+    try {
+        $stream = [IO.File]::Open($script:ChildStageFile, 'Open', 'Read', 'ReadWrite, Delete')
+        try { $text = (New-Object IO.StreamReader($stream)).ReadToEnd() } finally { $stream.Dispose() }
+        $message = [string](ConvertFrom-Json $text).message
+    } catch { return }
+    if (-not $message -or $message -ceq $script:ChildStageSeen) { return }
+    $script:ChildStageSeen = $message
+    Write-HandoffLog ("stage: {0}" -f $message)
+    Publish-UiProgress $message
+}
+
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
+    # A stage left by the previous step must not replace the one the orchestrator just published.
+    Remove-Item -LiteralPath $script:ChildStageFile -Force -ErrorAction SilentlyContinue
+    $script:ChildStageSeen = $null
     # The window does not stream child output, so no line-pump: both pipes
     # drain asynchronously (no deadlock however chatty the child) while a small
     # DoEvents loop keeps the marquee animating through long silent
@@ -1075,6 +1098,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $progressLogStamp = Get-StepProgressLogStamp
     $jobActivity = [HermesUpdateJob]::Activity($job)
     $stalled = $false
+    $nextStageCheck = Get-Date
     while ($true) {
         $moved = $false
         $outDone = Step-PipeDrain $stdoutReader ([ref]$outTask) $outBuffer $outSink ([ref]$moved)
@@ -1156,6 +1180,10 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         }
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
         Update-MarkerHeartbeat
+        if ((Get-Date) -ge $nextStageCheck) {
+            Sync-ChildStage
+            $nextStageCheck = (Get-Date).AddSeconds(1)
+        }
     }
     # Bounded overload deliberately: the argument-less overload also waits on
     # redirected streams, which is the very wait we just bounded. HasExited is

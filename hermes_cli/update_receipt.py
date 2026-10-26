@@ -501,11 +501,26 @@ def record_skip(name: str, reason: str) -> None:
     _record("skip", f"update skip {name}", name, reason)
 
 
+# The stage a pipeline mark hands over to, as the Desktop hand-off window names it. Without these
+# the window read "Updating code and dependencies" for a whole 20-60 min run (#139952, #135363).
+_NEXT_STAGE_LABEL = {
+    "snapshot": "Downloading updates",
+    "apply": "Updating dependencies",
+    "deps": "Building the apps",
+    "build": "Restarting Hermes services",
+}
+
+
 def record_stage(name: str, outcome: str, **facts: str) -> None:
     """Mark the END of a pipeline stage (``success``/``failed``/``skipped``) with a timestamp."""
     _record("stage", f"update stage {name}", name, outcome, **facts)
     # Each stage boundary refreshes the durable running record (a kill names its last stage).
     persist_running_receipt()
+    # A failed backup does not stop the update; any other failed stage ends it.
+    if name in _NEXT_STAGE_LABEL and (outcome != "failed" or name == "snapshot"):
+        from hermes_cli.update_stage import publish_stage
+
+        publish_stage(_NEXT_STAGE_LABEL[name])
 
 
 def record_fact(key: str, value: Any) -> None:
