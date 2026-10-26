@@ -1022,6 +1022,8 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
     except Exception as exc:  # network, uv, kill list — report, do not raise
         result = {"ok": False, "error": str(exc)}
     if result.get("ok"):
+        from providers import refresh_bound_home
+        refresh_bound_home()  # a provider plugin resolves in this same call, not after the stamp TTL
         try:
             _record_migration(home, feature)
         except Exception as exc:  # the next run sees the plugin dir and records it then

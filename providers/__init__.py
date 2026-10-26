@@ -411,6 +411,12 @@ def _home_layer(*, force_stamp_check: bool = False) -> _HomeLayer:
     return layer
 
 
+def refresh_bound_home() -> None:
+    """Re-scan the bound home's plugin dirs now and forget its remembered misses: a plugin was just
+    installed there, and the periodic check (or a name's miss back-off) would hide it for up to a TTL."""
+    _home_layer(force_stamp_check=True).misses.clear()
+
+
 def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
     try:
         from hermes_constants import get_hermes_home, hermes_home_key

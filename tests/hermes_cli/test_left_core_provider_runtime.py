@@ -247,3 +247,40 @@ def test_a_piped_cli_front_end_prints_the_outcome_and_what_another_process_kept(
     assert err.count("kept by the gateway's start") == 1
     assert err.count("GitHub Copilot moved out of core") == 1
     assert "moved out of core" not in _agent_start_in_another_process()
+
+
+_INSTALLED_PROVIDER = """
+from providers import register_provider
+from providers.base import ProviderProfile
+
+register_provider(ProviderProfile(name="copilot", display_name="Stand-in", auth_type="api_key",
+                                  env_vars=("COPILOT_GITHUB_TOKEN",), base_url="https://copilot.stand-in.test/v1"))
+"""
+
+
+def test_a_provider_installed_during_resolution_resolves_in_that_same_call(tmp_path, monkeypatch):
+    """A fast (cached) install lands inside the plugin-dir stamp TTL: the resolution that triggered it must
+    see the new profile, not answer "installed but not loaded: run hermes plugins enable"."""
+    import sys
+
+    import providers
+    home = _copilot_home(tmp_path, monkeypatch)
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "stand-in-token")
+    monkeypatch.setattr(providers, "_HOME_LAYERS", {})
+
+    def install(identifier, *, force, enable, catalog_name=None, assume_deps_consent=None, **kw):
+        plugin = home / "plugins" / "github-copilot"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: github-copilot\nkind: model-provider\n", encoding="utf-8")
+        (plugin / "__init__.py").write_text(_INSTALLED_PROVIDER, encoding="utf-8")
+        return {"ok": True}
+    import hermes_cli.plugins_cmd as pc
+    monkeypatch.setattr(pc, "dashboard_install_plugin", install)
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    try:
+        runtime = resolve_runtime_provider()
+        assert (runtime["provider"], runtime["base_url"]) == ("copilot", "https://copilot.stand-in.test/v1")
+    finally:
+        for name in [m for m in sys.modules if m.startswith("_hermes_user_provider")]:
+            del sys.modules[name]
