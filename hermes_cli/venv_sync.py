@@ -370,6 +370,49 @@ def _tree_matches_completed_stamp(root: Path) -> bool:
     return info.commit == commit and not info.dirty
 
 
+def _may_retry_completion(root: Path, command: list[str], *, current: bool) -> bool:
+    """Whether this launch runs the owed repair now; a suppressed one says why when it matters."""
+    import sys
+
+    if not current and command[:1] == ["update"]:
+        # `hermes update` is the remedy every backed-off launch names: it always tries the repair.
+        return True
+    may_retry, attempts, backoff = completion_retry_state(root)
+    if not may_retry and attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
+        # The tail has failed often enough that every relaunch re-running it
+        # does more harm than good (#122206: "every launch burns ~4 minutes").
+        # Leave the marker for an explicit `hermes update`; say so once.
+        print(
+            f"hermes: a source update could not be finished automatically "
+            f"({attempts} attempts); run `hermes update` from a shell to finish it",
+            file=sys.stderr, flush=True,
+        )
+    elif not may_retry and not current:
+        # Inside the backoff window a finished-dependencies tail waits silently (the record's age
+        # tracks the wait); stale dependencies are worth one line in front of the user.
+        print(
+            f"hermes: running with the previous dependencies after {attempts} failed syncs; "
+            f"next automatic retry in {max(1, backoff // 60)} min, or run `hermes update` to finish it",
+            file=sys.stderr, flush=True,
+        )
+    return may_retry
+
+
+def _relaunch_target(python: Path, *, same: bool) -> Path | None:
+    """*python*, unless this process is already a relaunch into that same interpreter.
+
+    A relaunched child that asks to relaunch into itself again would find the same install state
+    in the next child too: exec'ing would loop forever (#122513), so it boots as it is.
+    """
+    import sys
+
+    if same and getattr(sys, "_hermes_relaunched", False):
+        print("hermes: relaunching did not leave this install current; running with the "
+              "dependencies it has — run `hermes update` to finish it", file=sys.stderr, flush=True)
+        return None
+    return python
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -426,20 +469,12 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return _prepare_borrowed_launch(root, owner, current=current)
     pending = completion_pending_path(root)
     owed_to_cli = current and pending.is_file() and _supervised_child()
-    _may_retry, _attempts, _backoff = completion_retry_state(root)
-    if not _may_retry and _attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
-        # The tail has failed often enough that every relaunch re-running it
-        # does more harm than good (#122206: "every launch burns ~4 minutes").
-        # Leave the marker for an explicit `hermes update`; say so once.
-        print(
-            f"hermes: a source update could not be finished automatically "
-            f"({_attempts} attempts); run `hermes update` from a shell to finish it",
-            file=sys.stderr, flush=True,
-        )
-    elif not _may_retry:
-        # Backoff window not yet elapsed: skip this launch's retry without
-        # noise (the record's age tracks the wait), leaving the marker armed.
-        pass
+    if not _may_retry_completion(root, command, current=current):
+        if not current:
+            # No repair ran, so this install is exactly as stale as it was: a relaunch would land
+            # back here with the same answer and exec again, forever. Boot on the previous
+            # dependency generation, as a launch whose sync failed does.
+            return None
     elif not owed_to_cli and (not current or pending.is_file()):
         # The marker alone first (a process the live update spawned runs under its claim and
         # inherits no checkout lock); install_root still names the checkout whose held lock
@@ -480,7 +515,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
     if not current or not same:
         publish_launchers(root)
-        return python
+        return _relaunch_target(python, same=same)
     if owed_to_cli:
         # Left owed, not dropped: say so (once, in the process that boots) where an
         # operator of the unit will read it.
@@ -656,7 +691,9 @@ def relaunch_command(
         if option in ("-W", "-X") and index < len(original):
             options.append(original[index])
             index += 1
-    prefix = f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+    # _hermes_relaunched marks the child this starts (not processes it spawns) for _relaunch_target.
+    prefix = (f"import sys, runpy; sys.path.insert(0, {str(root)!r}); sys.argv = {argv!r}; "
+              "sys._hermes_relaunched = True; ")
     if argv[0] == "-c":
         body = f"exec({original[index + 1]!r})"
     elif module and module != "__main__":

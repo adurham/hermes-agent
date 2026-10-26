@@ -370,7 +370,7 @@ def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, mon
             venv_sync.prepare_launch(root, [])
     assert venv_sync.completion_pending_path(root).is_file()
 
-    assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
+    assert venv_sync.prepare_launch(root, []) is None, "a backed-off stale launch must not relaunch"
     assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS, "the same failing repair re-ran"
 
     (root / "uv.lock").write_text("# corrected source update\n", encoding="utf-8")
