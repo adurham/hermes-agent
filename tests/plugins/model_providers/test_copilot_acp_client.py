@@ -11,7 +11,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.copilot_acp_client import CopilotACPClient
+import providers
+
+providers.get_provider_profile("copilot-acp")  # discovery imports the bundled plugin package
+from plugins.model_providers.copilot_acp.client import CopilotACPClient
 
 
 class _FakeProcess:
@@ -217,8 +220,8 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
     # Hermeticity: the --acp support probe (PR #87308) calls subprocess.run
     # before Popen; stub it inconclusive so no real CLI on the host box can
     # flip the resolution this test asserts.
-    with _patch("agent.copilot_acp_client.subprocess.run", side_effect=FileNotFoundError):
-        with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+    with _patch("agent.acp_client.subprocess.run", side_effect=FileNotFoundError):
+        with _patch("agent.acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
             with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
                 client._run_prompt("hello", timeout_seconds=1)
 
@@ -236,8 +239,8 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
     # Hermeticity: the --acp support probe (PR #87308) calls subprocess.run
     # before Popen; stub it inconclusive so no real CLI on the host box can
     # flip the resolution this test asserts.
-    with _patch("agent.copilot_acp_client.subprocess.run", side_effect=FileNotFoundError):
-        with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+    with _patch("agent.acp_client.subprocess.run", side_effect=FileNotFoundError):
+        with _patch("agent.acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
             with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
                 client._run_prompt("hello", timeout_seconds=1)
 
@@ -249,7 +252,7 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
 import subprocess as _subprocess
 
-from agent.copilot_acp_client import _ACP_PROBE_CACHE, _acp_supported
+from agent.acp_client import _ACP_PROBE_CACHE, _acp_supported
 
 
 @pytest.fixture(autouse=True)
@@ -265,7 +268,7 @@ def _completed(returncode=0, stdout=""):
 
 def test_probe_true_when_help_advertises_acp():
     with _patch(
-        "agent.copilot_acp_client.subprocess.run",
+        "agent.acp_client.subprocess.run",
         return_value=_completed(stdout="Usage: copilot [--acp] [--stdio]"),
     ):
         assert _acp_supported("copilot", ["--acp", "--stdio"]) is True
@@ -274,7 +277,7 @@ def test_probe_true_when_help_advertises_acp():
 def test_probe_false_when_help_lacks_acp_and_run_prompt_fast_fails(tmp_path):
     client = _make_home_client(tmp_path)
     with _patch(
-        "agent.copilot_acp_client.subprocess.run",
+        "agent.acp_client.subprocess.run",
         return_value=_completed(stdout="Usage: claude [--print] [--model]"),
     ):
         with pytest.raises(RuntimeError, match="ACP transport not supported"):
@@ -285,11 +288,11 @@ def test_probe_inconclusive_falls_through_to_spawn_error(tmp_path):
     """Missing binary: probe must NOT mask the established spawn error."""
     client = _make_home_client(tmp_path)
     with _patch(
-        "agent.copilot_acp_client.subprocess.run",
+        "agent.acp_client.subprocess.run",
         side_effect=FileNotFoundError("copilot not found"),
     ):
         with _patch(
-            "agent.copilot_acp_client.subprocess.Popen",
+            "agent.acp_client.subprocess.Popen",
             side_effect=FileNotFoundError("copilot not found"),
         ):
             with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
@@ -301,7 +304,7 @@ def test_probe_inconclusive_falls_through_to_spawn_error(tmp_path):
 
 
 def test_probe_skipped_for_custom_args_without_acp():
-    with _patch("agent.copilot_acp_client.subprocess.run") as run_mock:
+    with _patch("agent.acp_client.subprocess.run") as run_mock:
         assert _acp_supported("mycli", ["--custom-transport"]) is True
     run_mock.assert_not_called()
 
@@ -340,9 +343,15 @@ def _session_with_config_options():
     }
 
 
-def test_model_selection_prefers_stable_config_option():
-    from agent.copilot_acp_client import _model_selection_request
+def _model_selection_request(session, requested_model):
+    """The generic selector with the Copilot client's placeholder id and enablement hook."""
+    from agent.acp_client import _model_selection_request as select
 
+    return select(session, requested_model, placeholder=CopilotACPClient.placeholder_model,
+                  disabled=CopilotACPClient(acp_cwd="/tmp").model_entry_disabled)
+
+
+def test_model_selection_prefers_stable_config_option():
     assert _model_selection_request(
         _session_with_config_options(), "gpt-5.6-terra"
     ) == (
@@ -352,24 +361,18 @@ def test_model_selection_prefers_stable_config_option():
 
 
 def test_model_selection_rejects_disabled_config_option():
-    from agent.copilot_acp_client import _model_selection_request
-
     assert _model_selection_request(
         _session_with_config_options(), "claude-fable-5"
     ) is None
 
 
 def test_model_selection_rejects_unknown_config_option():
-    from agent.copilot_acp_client import _model_selection_request
-
     assert _model_selection_request(
         _session_with_config_options(), "not-served-here"
     ) is None
 
 
 def test_model_selection_falls_back_to_legacy_extension():
-    from agent.copilot_acp_client import _model_selection_request
-
     legacy_session = {
         "sessionId": "s1",
         "models": {
@@ -386,8 +389,6 @@ def test_model_selection_falls_back_to_legacy_extension():
 
 
 def test_model_selection_skips_provider_virtual_slug():
-    from agent.copilot_acp_client import _model_selection_request
-
     assert _model_selection_request(
         _session_with_config_options(), "copilot-acp"
     ) is None
@@ -588,3 +589,40 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
         assert "exited early: fatal: agent segfaulted" in str(exc)
     else:
         raise AssertionError("session on a dead CLI must raise")
+
+
+def test_aiagent_uses_copilot_acp_client():
+    from unittest.mock import MagicMock
+
+    from run_agent import AIAgent
+
+    tool_defs = [{"type": "function", "function": {
+        "name": "web_search", "description": "web_search tool", "parameters": {"type": "object", "properties": {}}}}]
+    client_module = sys.modules[CopilotACPClient.__module__]
+    with (
+        patch("model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI") as mock_openai,
+        patch.object(client_module, "CopilotACPClient") as mock_acp_client,
+    ):
+        acp_client = MagicMock()
+        mock_acp_client.return_value = acp_client
+
+        agent = AIAgent(
+            api_key="copilot-acp",
+            base_url="acp://copilot",
+            provider="copilot-acp",
+            acp_command="/usr/local/bin/copilot",
+            acp_args=["--acp", "--stdio"],
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent.client is acp_client
+    mock_openai.assert_not_called()
+    mock_acp_client.assert_called_once()
+    assert mock_acp_client.call_args.kwargs["base_url"] == "acp://copilot"
+    assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
+    assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
+    assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]

@@ -265,12 +265,25 @@ def test_process_supplied_catalog_root_remains_supported(catalog_env: Path):
     assert get_entry("demo") is not None
 
 
+def _copilot_acp_launch_resolvers():
+    """(command, args) resolvers of the copilot-acp client's env-driven launch fallback."""
+    import providers
+
+    providers.get_provider_profile("copilot-acp")  # discovery imports the bundled plugin package
+    from plugins.model_providers.copilot_acp.client import CopilotACPClient
+
+    def launch():
+        return CopilotACPClient(acp_cwd=os.getcwd())
+
+    return (lambda: launch()._acp_command), (lambda: launch()._acp_args)
+
+
 def test_rejected_copilot_controls_do_not_change_live_resolvers(
     client: TestClient,
     catalog_env: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from agent.copilot_acp_client import _resolve_args, _resolve_command
+    _resolve_command, _resolve_args = _copilot_acp_launch_resolvers()
 
     monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "/opt/trusted/copilot")
     monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio")
@@ -302,7 +315,7 @@ def test_preexisting_copilot_controls_remain_usable(
     catalog_env: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from agent.copilot_acp_client import _resolve_args, _resolve_command
+    _resolve_command, _resolve_args = _copilot_acp_launch_resolvers()
     from hermes_cli.env_loader import load_hermes_dotenv
 
     monkeypatch.setenv("HERMES_COPILOT_ACP_COMMAND", "parent-placeholder")

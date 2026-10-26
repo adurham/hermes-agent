@@ -17,7 +17,7 @@ class CopilotACPProfile(ProviderProfile):
 
     def create_client(self, **client_kwargs: Any) -> Any:
         """Build the ACP stdio shim rather than an HTTP client."""
-        from agent.copilot_acp_client import CopilotACPClient
+        from .client import CopilotACPClient
 
         return CopilotACPClient(**client_kwargs)
 
@@ -73,6 +73,8 @@ copilot_acp = CopilotACPProfile(
     process_args=("--acp", "--stdio"),
     process_command_env_vars=("HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"),
     process_args_env_var="HERMES_COPILOT_ACP_ARGS",
+    # A delegation.command no other profile claims has always run through this ACP client.
+    process_command_fallback=True,
 )
 
 register_provider(copilot_acp)
