@@ -3638,14 +3638,14 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = 
     return f"{normalized}:{entry_id}:{digest}"
 
 
-# Ordered (host, provider) tables for inferring a backend from a client base URL.
+# Ordered (host, provider) tables for inferring a backend from a client base URL (then profile ``hostnames``).
 _POOL_PROVIDER_BY_HOST = (
     ("chatgpt.com", "openai-codex"), ("openrouter.ai", "openrouter"),
     ("inference-api.nousresearch.com", "nous"), ("api.anthropic.com", "anthropic"),
-    ("githubcopilot.com", "copilot"), ("api.kimi.com", "kimi-coding"), ("api.x.ai", "xai-oauth"),
+    ("api.kimi.com", "kimi-coding"), ("api.x.ai", "xai-oauth"),
 )
 _AUTH_REFRESH_PROVIDER_BY_HOST = (
-    ("api.githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
+    ("chatgpt.com", "openai-codex"),
     ("api.anthropic.com", "anthropic"), ("inference-api.nousresearch.com", "nous"),
     # An aux call that inherits the main xai-oauth route arrives as "auto"; without this row the
     # 403 bad-credentials rung skipped the refresh and benched the only grant (#84845).
@@ -3654,11 +3654,12 @@ _AUTH_REFRESH_PROVIDER_BY_HOST = (
 
 
 def _provider_for_host(base_url: str, table: tuple[tuple[str, str], ...]) -> Optional[str]:
-    """First provider in ``table`` whose host matches ``base_url``, else None."""
+    """First provider in ``table`` whose host matches ``base_url``, else a profile claiming the host."""
     for host, provider in table:
         if base_url_host_matches(base_url, host):
             return provider
-    return None
+    from providers import profile_for_host
+    return getattr(profile_for_host(base_url), "name", None)
 
 
 def _recoverable_pool_provider(
@@ -5545,7 +5546,6 @@ def _deepinfra_strict_vision_backend(model: Optional[str]) -> tuple[Optional[Any
 # through resolve_provider_client so anthropic/* picks wrap onto /v1/messages (a bare _try_nous
 # client 404s). openai-codex has no safe default model; callers set auxiliary.<task>.model.
 _STRICT_VISION_BACKENDS: dict[str, Callable[[Optional[str]], tuple[Optional[Any], Optional[str]]]] = {
-    "copilot": lambda model: resolve_provider_client("copilot", model, is_vision=True),
     "openrouter": lambda model: _try_openrouter(model=model),
     "nous": lambda model: resolve_provider_client("nous", model, is_vision=True),
     "openai-codex": lambda model: resolve_provider_client("openai-codex", model, is_vision=True),
