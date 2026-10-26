@@ -277,6 +277,7 @@ def settle_unrecovered_error(
     result), else the interruptible error backoff. ``FailoverReason.billing`` (402) is deliberately
     treated as non-retryable (#31273)."""
     from agent.conversation_loop import _arm_fallback_restart, _credential_refresh_profile
+    from agent.provider_route_hooks import ask_on_error_path
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
@@ -325,13 +326,14 @@ def settle_unrecovered_error(
         if (
             not _retry.provider_stale_refresh_attempted
             and (profile := _credential_refresh_profile(agent)) is not None
-            and profile.is_stale_credential_error(
-                status_code=status_code, message=str(getattr(api_error, "message", "") or api_error)
+            and ask_on_error_path(
+                profile, "is_stale_credential_error", False,
+                status_code=status_code, message=str(getattr(api_error, "message", "") or api_error),
             )
         ):
             _retry.provider_stale_refresh_attempted = True
             if agent._try_refresh_provider_runtime_credentials(reason="stale"):
-                agent._buffer_vprint("🔐 " + (profile.credential_refresh_notice(reason="stale") or (
+                agent._buffer_vprint("🔐 " + (ask_on_error_path(profile, "credential_refresh_notice", "", reason="stale") or (
                     f"{profile.display_name or profile.name} credential renewed after a "
                     "stale-credential error. Retrying request...")))
                 retry_count = 0

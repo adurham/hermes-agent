@@ -436,7 +436,8 @@ def _refresh_credentials_after_401(
     if not _retry.provider_auth_refresh_attempted and (profile := _credential_refresh_profile(agent)) is not None:
         _retry.provider_auth_refresh_attempted = True
         if agent._try_refresh_provider_runtime_credentials(reason="unauthorized"):
-            agent._buffer_vprint("🔐 " + (profile.credential_refresh_notice(reason="unauthorized") or (
+            from agent.provider_route_hooks import ask_on_error_path
+            agent._buffer_vprint("🔐 " + (ask_on_error_path(profile, "credential_refresh_notice", "", reason="unauthorized") or (
                 f"{profile.display_name or profile.name} credentials refreshed after 401. Retrying request...")))
             return True
     if (

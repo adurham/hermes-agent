@@ -118,6 +118,25 @@ def ask_profile(profile: Any, hook: str, fallback: Any, *args: Any, scope: Any =
         return fallback
 
 
+def ask_on_error_path(profile: Any, hook: str, fallback: Any, **kwargs: Any) -> Any:
+    """*profile*'s answer to an API-error-path *hook* (credential refresh, stale-credential test, refresh
+    notice), asked every time: a lost plugin host may be back for the next error. A raise answers
+    *fallback* ("not refreshed"), logged with its traceback once per (provider, hook) per process, so the
+    original API error still reaches the fallback walk instead of escaping its handler."""
+    try:
+        return getattr(profile, hook)(**kwargs)
+    except Exception:  # health: allow BLE001 -- plugin hook boundary; logged with traceback once below
+        key = (getattr(profile, "name", "?"), hook)
+        if key not in _ERROR_PATH_WARNED:
+            _ERROR_PATH_WARNED.add(key)
+            logger.warning("provider %s: %s hook failed; handling the API error without it", key[0], hook,
+                           exc_info=True)
+        return fallback
+
+
+_ERROR_PATH_WARNED: set[tuple] = set()
+
+
 def route_answer(hook: str, *, provider: str = "", scope: Any = None, **kwargs: Any) -> Any:
     """First truthy answer of *hook* across ``route_profiles``; None when no profile claims the endpoint.
     Failures follow ``ask_profile``'s policy (*scope* = the agent, when there is one)."""

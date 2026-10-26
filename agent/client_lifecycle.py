@@ -814,9 +814,10 @@ class ClientLifecycleMixin:
         and rebuild the shared client (caller enforces the single-shot guard). ``reason``:
         ``unauthorized`` (401) or ``stale`` (a non-auth error the profile reads as a stale credential)."""
         from agent.conversation_loop import _credential_refresh_profile
+        from agent.provider_route_hooks import ask_on_error_path
         profile = _credential_refresh_profile(self)
-        refreshed = profile.refresh_runtime_credentials(reason=reason) if profile else None
-        if not refreshed:
+        refreshed = ask_on_error_path(profile, "refresh_runtime_credentials", None, reason=reason) if profile else None
+        if not (isinstance(refreshed, (tuple, list)) and len(refreshed) == 2 and refreshed[0]):
             return False
         token, base_url = refreshed
         self.api_key = token
