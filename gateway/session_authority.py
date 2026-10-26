@@ -280,12 +280,15 @@ class SessionAuthority:
         *sid*'s own mount moves onto the route: a detached one comes back, a local one ``/handoff``
         took over or one another chat held (a cross-chat ``/resume``) follows it, so its open viewers'
         turns and Stops reach the chat that holds it now (#143286)."""
-        from gateway.session_detached import detach
+        from gateway.session_detached import detach, forget_detached
         for other_sid, other in self.sessions.items():
             if other.route == route and other_sid != sid:
                 detach(self, other, other_sid)
         if (live := self.sessions.get(sid)) is not None and live.route != route:
+            left = live.route if live.detached else None
             live.source, live.route = source, route
+            if left is not None:
+                forget_detached(self, left)
 
     def agent(self, ref):
         live = self.sessions[ref.session_id]

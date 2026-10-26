@@ -71,6 +71,23 @@ def lane_source(source):
     return replace_source(source, detached_route=None)
 
 
+def forget_detached(authority, key) -> None:
+    """*key* names no live conversation any more (it came back onto its chat, or retired): its
+    cached agent commits and goes, as at any boundary (a later idle eviction would commit it while the
+    conversation runs elsewhere), and the store forgets the ids it owned (``detached_entry``)."""
+    runner = authority.runner
+    evict = getattr(runner, '_evict_cached_agent_at_boundary', None)
+    if evict is not None:
+        evict(key)
+    drop_owner_hints(runner.session_store, key)
+
+
+def drop_owner_hints(store, key) -> None:
+    hints = getattr(store, '_session_owner_hints', None) or {}
+    for session_id in [sid for sid, owner in list(hints.items()) if owner == key]:
+        hints.pop(session_id, None)
+
+
 def _route_authority(runner, store, route):
     """The authority owning *route*: its key names the profile, whatever scope the writer runs in."""
     from gateway.session_authorities import authority_for_home
@@ -137,6 +154,10 @@ def detached_entry(store, source):
     db = store._db_for_key(key)
     row = db.get_session(session_id) if db is not None else None
     tip = (db.get_compression_tip(session_id) if db is not None else None) or session_id
+    # No route names it, so its by-id reads and writes (history, transcript, compression) find their
+    # profile's store through the key; ``forget_detached`` drops these.
+    hints = store._lazy('_session_owner_hints', dict)
+    hints[session_id] = hints[tip] = key
     now = datetime.now()
     # Never a new conversation (that would fire session:start and first-contact notes).
     started = datetime.fromtimestamp(row['started_at']) if row and row.get('started_at') else now - timedelta(seconds=1)

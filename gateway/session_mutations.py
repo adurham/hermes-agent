@@ -427,6 +427,9 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
             evict = getattr(authority.runner, '_evict_cached_agent', None)
             if callable(evict):
                 evict(candidate.route)
+            if candidate.detached:  # the ids its key owned in the store (session_detached.detached_entry)
+                from gateway.session_detached import drop_owner_hints
+                drop_owner_hints(authority.runner.session_store, candidate.route)
     from gateway.session_local_mcp import release_editor_mcp
     release_editor_mcp(authority, session_ids)
     from gateway.session_worker_construct import release_session_prefill
