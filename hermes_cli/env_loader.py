@@ -16,7 +16,7 @@ from pathlib import Path
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
 from hermes_cli.left_core_migration import profile_env_names
-from utils import atomic_replace, load_yaml_file_readonly, mkstemp_beside
+from utils import atomic_replace, mkstemp_beside
 
 logger = logging.getLogger(__name__)
 
@@ -824,8 +824,10 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
 
 def _load_secrets_config(home_path: Path) -> dict:
     """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv."""
+    from hermes_cli.config_backend import config_exists, read_config_doc_readonly
+
     config_path = home_path / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return {}
     # Prefer the shared raw-config cache: this is the first config.yaml read of a normal startup, so
     # populating it lets main.py's early bridge and hermes_logging reuse one parse instead of 3-4.
@@ -839,7 +841,7 @@ def _load_secrets_config(home_path: Path) -> dict:
             pass
     # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        data = load_yaml_file_readonly(config_path) or {}
+        data = read_config_doc_readonly(config_path) or {}
     except Exception:
         return {}
     return data.get("secrets") or {}
