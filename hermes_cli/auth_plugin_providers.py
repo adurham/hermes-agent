@@ -22,10 +22,10 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Providers handled outside the registry: copilot/kimi/zai have bespoke token refresh in auth.py;
+# Providers handled outside the registry: kimi/zai have bespoke token refresh in auth.py;
 # openrouter/custom are aggregator/user-supplied and runtime_provider relies on
 # ``openrouter not in PROVIDER_REGISTRY``.
-_REGISTRY_PLUGIN_SKIP = frozenset({"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"})
+_REGISTRY_PLUGIN_SKIP = frozenset({"kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"})
 
 PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
 
@@ -52,15 +52,35 @@ def register_plugin_provider(pp: Any) -> None:
 
     if pp.name in _REGISTRY_PLUGIN_SKIP:
         return
-    if pp.auth_type == "api_key":
+    auth_type = registry_auth_type(pp)
+    if auth_type == "api_key":
         if not pp.env_vars:
             return
-        pconfig = _api_key_provider(pp.name, pp.display_name or pp.name, pp.base_url, *_api_key_env_fields(pp))
+        key_vars, url_var = _api_key_env_fields(pp)
+        pconfig = _api_key_provider(pp.name, pp.display_name or pp.name, pp.base_url, key_vars,
+                                    pp.base_url_env_var or url_var)
     else:
-        pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, pp.auth_type, inference_base_url=pp.base_url)
-    PROVIDER_REGISTRY[pp.name] = pconfig
+        pconfig = ProviderConfig(pp.name, pp.display_name or pp.name, auth_type, inference_base_url=pp.base_url,
+                                 base_url_env_var=pp.base_url_env_var)
+    _insert_row(PROVIDER_REGISTRY, pconfig, pp.registry_after)
     PLUGIN_MIRRORED_PROVIDERS.add(pp.name)
     mirror_aliases(pconfig, pp)
+
+
+def registry_auth_type(pp: Any) -> str:
+    """The ``auth_type`` *pp*'s registry row carries (``registry_auth_type`` wins over ``auth_type``)."""
+    return pp.registry_auth_type or pp.auth_type
+
+
+def _insert_row(registry: dict, pconfig: Any, after: str) -> None:
+    """Add *pconfig* right after the *after* row (in place: callers hold the dict), else append."""
+    if after not in registry:
+        registry[pconfig.id] = pconfig
+        return
+    rows = list(registry.items())
+    at = [key for key, _ in rows].index(after) + 1
+    registry.clear()
+    registry.update(rows[:at] + [(pconfig.id, pconfig)] + rows[at:])
 
 
 def _user_owns_alias(pp: Any, alias: str) -> bool:
@@ -98,7 +118,7 @@ def override_registry_row(pconfig: Any, pp: Any) -> None:
         pconfig.name = pp.display_name
     if pp.base_url:
         pconfig.inference_base_url = pp.base_url
-    if pp.auth_type == "api_key" == pconfig.auth_type and pp.env_vars:
+    if registry_auth_type(pp) == "api_key" == pconfig.auth_type and pp.env_vars:
         pconfig.api_key_env_vars, url_var = _api_key_env_fields(pp)
         if url_var:
             pconfig.base_url_env_var = url_var
@@ -135,6 +155,14 @@ def sync_plugin_provider_registry() -> int:
         register_plugin_provider(pp)
         added += pp.name in PROVIDER_REGISTRY
     return added
+
+
+def canonical_registry_rows() -> list[tuple[str, Any]]:
+    """``PROVIDER_REGISTRY`` items in order, minus the alias keys :func:`mirror_aliases` points at a
+    plugin's row, so a scan or listing sees each provider once, under its own id."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    return [(pid, pconfig) for pid, pconfig in PROVIDER_REGISTRY.items() if pid == pconfig.id]
 
 
 def registry_lookup(provider_id: str) -> Optional[Any]:
@@ -209,7 +237,7 @@ def plugin_missing_auth_handler_error(provider: str, action: str) -> Optional[Sy
     if provider not in PLUGIN_MIRRORED_PROVIDERS:
         return None
     profile = plugin_profile(provider)
-    if profile is None or profile.auth_type == "api_key" or plugin_auth_handler(provider) is not None:
+    if profile is None or registry_auth_type(profile) == "api_key" or plugin_auth_handler(provider) is not None:
         return None
     return SystemExit(
         f"Provider '{provider}' declares auth_type '{profile.auth_type}' but its plugin ships no "

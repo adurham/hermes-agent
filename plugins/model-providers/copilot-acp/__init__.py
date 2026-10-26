@@ -11,6 +11,7 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+from .auth_rows import AUTH_ROW_FIELDS
 from .catalog import acp_picker_catalog, clear_session_memo
 from .picker import PICKER_FIELDS
 from .setup import SETUP_FIELDS
@@ -92,7 +93,7 @@ copilot_acp = CopilotACPProfile(
     # A delegation.command no other profile claims has always run through this ACP client.
     process_command_fallback=True,
     picker_catalog=acp_picker_catalog, static_models=("copilot-acp",),
-    **SETUP_FIELDS, **PICKER_FIELDS,
+    **SETUP_FIELDS, **PICKER_FIELDS, **AUTH_ROW_FIELDS,
 )
 
 register_provider(copilot_acp)
