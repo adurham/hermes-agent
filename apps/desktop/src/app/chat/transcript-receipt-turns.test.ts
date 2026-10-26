@@ -139,6 +139,38 @@ describe('a refreshed page that holds the live turn whole', () => {
     expect(count(merged, 'live look')).toBe(1)
   })
 
+  it('draws a stopped turn once when a page merged before its interrupted completion', () => {
+    const receipt: PersistedTurn = {
+      row_ids: [17, 18, 19, 20],
+      complete: false,
+      user_row_id: 17,
+      user_row_ids: [17],
+      submission_id: 'sub-race'
+    }
+
+    const page = toChatMessages([
+      ...olderTurn(1, 'old-a').slice(3),
+      ...olderTurn(9, 'old-b'),
+      ...liveRows,
+      answer(20, 'partial')
+    ])
+
+    // Stop settled the turn on screen, a refresh merged the page (which holds
+    // the turn's stored rows) while the live rows had no stored id, and only
+    // then did the interrupted completion bring the receipt.
+    const refreshed = graftRefreshedTailOntoBackfill(page, [
+      ...toChatMessages(windowRows),
+      live('user-sub-race', 'user', 'steered prompt'),
+      live('assistant-stream-1', 'assistant', 'live look partial')
+    ])
+
+    const stopped = texts(bindStoppedTurnReceipt(refreshed, receipt))
+
+    expect(count(stopped, 'steered prompt')).toBe(1)
+    expect(count(stopped, 'live look')).toBe(1)
+    expect(count(stopped, 'old-b answer')).toBe(1)
+  })
+
   it('keeps a live turn the page does not reach yet', () => {
     const receipt: PersistedTurn = { row_ids: [17, 18, 19, 20, 21], complete: false, submission_id: 'sub-late' }
 
