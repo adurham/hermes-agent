@@ -112,3 +112,35 @@ export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMe
 
   return dropped.size ? window.filter((_, index) => !dropped.has(index)) : window
 }
+
+/**
+ * The newest page can start inside an older tool turn. History folds that turn
+ * under its first stored row, so the page's fold carries only the rows from
+ * the page boundary on, under a different first row than the window's fold of
+ * the same turn. Paired by first row, both folds rendered and the turn's later
+ * narration and answer appeared again under the whole turn (#141771). A page
+ * fold whose stored rows the window's fold all carries, while the window's
+ * fold also carries rows older than the page, is that turn cut by the page
+ * boundary: the window's whole fold stays and the page's partial copy goes.
+ */
+export function dropPageFoldsCutByTheBoundary(window: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
+  const pageRows = page.flatMap(transcriptRowIds)
+
+  if (!pageRows.length) {
+    return page
+  }
+
+  const pageFirst = Math.min(...pageRows)
+
+  const wholeFolds = window
+    .map(message => new Set(transcriptRowIds(message)))
+    .filter(rows => [...rows].some(id => id < pageFirst))
+
+  const cut = (message: ChatMessage) => {
+    const rows = transcriptRowIds(message)
+
+    return rows.length > 0 && wholeFolds.some(whole => rows.every(id => whole.has(id)))
+  }
+
+  return page.some(cut) ? page.filter(message => !cut(message)) : page
+}

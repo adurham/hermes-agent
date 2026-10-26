@@ -94,6 +94,19 @@ describe('a refreshed page that holds the live turn whole', () => {
     }
   })
 
+  it('draws an older turn the page boundary cuts once', () => {
+    const window = [...toChatMessages(windowRows), live('user-x', 'user', 'next prompt', { rowId: 17 })]
+
+    // The page starts at the first turn's second narration row: its fold of
+    // that turn is addressed by a row the window's fold carries inside it.
+    const page = toChatMessages([...olderTurn(1, 'old-a').slice(3), ...olderTurn(9, 'old-b'), user(17, 'next prompt')])
+    const merged = texts(graftRefreshedTailOntoBackfill(page, window))
+
+    for (const text of ['old-a look one', 'old-a look two', 'old-a look three', 'old-a answer', 'next prompt']) {
+      expect(count(merged, text), text).toBe(1)
+    }
+  })
+
   it('keeps a live turn the page does not reach yet', () => {
     const receipt: PersistedTurn = { row_ids: [17, 18, 19, 20, 21], complete: false, submission_id: 'sub-late' }
 
