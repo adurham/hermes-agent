@@ -412,7 +412,7 @@ class MyAgentProfile(ProviderProfile):
 
 Keep the class attributes in step with the profile's `process_*` fields. Override `_handle_server_message(msg, *, process, cwd, text_parts, reasoning_parts, allow_file_requests=True)` to render extra `session/update` kinds (call `super()` for the rest). `hermes_cli.auth.resolve_external_process_provider_credentials(name)` returns the resolved `command`/`args`/`base_url` for a `fetch_models()` probe.
 
-`agent.copilot_acp_client.CopilotACPClient` is a deprecated alias of `ACPClient` with the old GitHub Copilot launch defaults; importing it warns once per process. Subclass `ACPClient` instead (set `placeholder_model` to your own placeholder id). The alias stays for at least two minor releases.
+`agent.copilot_acp_client.CopilotACPClient` is a deprecated alias of `ACPClient` with the old GitHub Copilot launch defaults. The module keeps its whole former surface for listed catalog plugins pinned to it (`ACP_MARKER_BASE_URL`, its former private helpers, `subprocess` for `Popen` patching); the first access of any of its names warns once per process. Subclass `ACPClient` instead (set `placeholder_model` to your own placeholder id). The alias stays for at least two minor releases.
 
 ### Picker rows for non-api-key plugins
 
