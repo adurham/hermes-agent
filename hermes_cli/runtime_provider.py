@@ -292,7 +292,8 @@ def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key:
         return "chat_completions"
     try:
         return profile.api_mode_for_model(model_name, api_key=api_key) or "chat_completions"
-    except Exception:
+    except Exception:  # plugin hook (live catalog fetch): degrade to chat_completions, never fail resolution
+        logger.debug("%s api_mode_for_model(%s) failed", provider, model_name, exc_info=True)
         return "chat_completions"
 
 
