@@ -49,7 +49,10 @@ def test_overlay_names_still_resolve_through_profiles(counted_profiles):
 
 
 def test_registry_wide_alias_check_reads_profiles_once(counted_profiles):
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.providers import _lossy_alias_registry_pdef
 
+    PROVIDER_REGISTRY.get("kimi-coding")  # a home's first registry read mirrors its plugin scan, once
+    counted_profiles.clear()
     assert _lossy_alias_registry_pdef("kimi-coding", "kimi-for-coding") is not None
     assert len(counted_profiles) == 1

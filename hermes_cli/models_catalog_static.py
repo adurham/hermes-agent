@@ -521,16 +521,12 @@ class _CatalogAliases(dict):
     _memo: tuple[tuple, dict[str, str]] = ((), {})
 
     def _plugin_aliases(self) -> dict[str, str]:
-        try:
-            from providers import bound_registry_key, list_providers
-            token = bound_registry_key()
-            if self._memo[0] == token:
-                return self._memo[1]
-            profiles = list_providers()
-        except Exception:
-            return {}
+        from providers import bound_registry_key, list_providers
+        token = bound_registry_key()
+        if self._memo[0] == token:
+            return self._memo[1]
         found: dict[str, str] = {}
-        for pp in profiles:
+        for pp in list_providers():
             if pp.catalog_aliases and pp.name not in _BUILTIN_SLUGS:
                 for alias in pp.aliases:
                     if not dict.__contains__(self, alias):
