@@ -1778,6 +1778,7 @@ export const jaOverrides = {
     exported: 'プロファイルをエクスポートしました',
     failedImport: 'プロファイルのインポートに失敗しました',
     failedExport: 'プロファイルのエクスポートに失敗しました',
+    exportNeedsHost: name => `ブラウザーではプロファイルのアーカイブを保存できません。Hermes ホストで次を実行してください: hermes profile export ${name}`,
     allProfiles: 'すべてのプロファイル',
     showAllProfiles: 'すべてのプロファイルを表示',
     switchToProfile: name => `${name} に切り替え`,
@@ -3028,6 +3029,7 @@ export const jaOverrides = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `これらの名前は ${shell} に安全に入力できません: ${paths}`,
     terminalReadOnly: '読み取り専用の出力',
     terminalReadOnlyHelp:
       'プロンプトに応答するには、バックグラウンドのコマンドを停止し、新しいターミナルで実行してください。新しいターミナルは別のシェルを開き、このプロセスには接続しません。',
@@ -3636,6 +3638,7 @@ export const jaOverrides = {
     imageAttach: '画像を添付',
     imageWriteFailed: '画像のディスクへの書き込みに失敗しました。',
     imageAttachFailed: '画像の添付に失敗しました',
+    attachFailed: '添付に失敗しました',
     pastedContent: '貼り付けた内容',
     pasteAttachFailed: '貼り付けたテキストを添付できませんでした',
     attachImages: '画像を添付',
@@ -3643,6 +3646,7 @@ export const jaOverrides = {
     noClipboardImage: 'クリップボードに画像が見つかりません',
     clipboardPasteFailed: 'クリップボードからの貼り付けに失敗しました',
     dropFiles: 'ファイルをドロップ',
+    dropFilesMore: (count: number) => `ほか ${count} 件`,
     handoff: {
       pickPlatform: '送信先を選択',
       success: platform => `${platform} に引き継ぎました。いつでもここで再開できます。`,

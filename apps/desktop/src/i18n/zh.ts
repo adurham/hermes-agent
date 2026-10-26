@@ -2688,6 +2688,7 @@ export const zhOverrides = {
     exported: '配置档案已导出',
     failedImport: '导入配置档案失败',
     failedExport: '导出配置档案失败',
+    exportNeedsHost: name => `浏览器无法保存配置档案归档。请在 Hermes 主机上运行：hermes profile export ${name}`,
     allProfiles: '全部配置档案',
     showAllProfiles: '显示全部配置档案',
     switchToProfile: name => `切换到 ${name}`,
@@ -4030,6 +4031,7 @@ export const zhOverrides = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `无法在 ${shell} 中安全地输入这些名称：${paths}`,
     terminalReadOnly: '只读输出',
     terminalReadOnlyHelp:
       '如需回应提示，请停止后台命令，再在新终端中运行。新终端会打开独立的 shell，不会连接到此进程。',
@@ -4610,6 +4612,7 @@ export const zhOverrides = {
     imageAttach: '附加图片',
     imageWriteFailed: '无法将图片写入磁盘。',
     imageAttachFailed: '附加图片失败',
+    attachFailed: '附加失败',
     pastedContent: '粘贴内容',
     pasteAttachFailed: '无法附加粘贴的文本',
     attachImages: '附加图片',
@@ -4617,6 +4620,7 @@ export const zhOverrides = {
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
     dropFiles: '拖放文件',
+    dropFilesMore: (count: number) => `以及另外 ${count} 项`,
     handoff: {
       pickPlatform: '选择目标平台',
       success: platform => `已移交到 ${platform}。随时可在此处恢复。`,
