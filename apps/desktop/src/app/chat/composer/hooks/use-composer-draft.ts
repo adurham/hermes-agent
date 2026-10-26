@@ -126,7 +126,6 @@ export function useComposerDraft({
 
   const setComposerText = useCallback((value: string) => storeWriter.now(value), [storeWriter])
 
-
   useEffect(() => () => storeWriter.cancel(), [storeWriter])
 
   const editorRef = useRef<HTMLDivElement | null>(null)
@@ -433,6 +432,51 @@ export function useComposerDraft({
     }
   }, [setComposerText, target])
 
+  // Schedule the debounced per-session stash of `text`. Browsing history /
+  // editing a queued prompt suppress it so recalled text never clobbers the
+  // draft. A text already scheduled for this scope keeps its timer: typed text
+  // is scheduled at the keystroke, and the coalesced store write that lands it
+  // later must not restart the window (a window closed inside it loses the draft).
+  const scheduleDraftPersist = (text: string) => {
+    if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
+      return
+    }
+
+    const scope = draftScopeRef.current
+
+    // An edited (or cleared) restored draft is a new message: it no longer retries the old send.
+    if (draftRetryRef.current && !draftRetryTextMatches(draftRetryRef.current, text)) {
+      draftRetryRef.current = undefined
+      writeDraftRetry(scope, undefined)
+    }
+
+    const pending = pendingDraftPersistRef.current
+
+    if (pending && pending.scope === scope && pending.text === text) {
+      return
+    }
+
+    const entry = { scope, text }
+    pendingDraftPersistRef.current = entry
+    window.clearTimeout(draftPersistTimerRef.current)
+    draftPersistTimerRef.current = window.setTimeout(() => {
+      // Integrity guard (defense-in-depth, #54527): only commit if this is
+      // still the pending write on file. A session swap or a newer
+      // keystroke clears/replaces it before firing in the normal case; this
+      // catches any future call site that skips that bookkeeping instead of
+      // silently filing text under the wrong session.
+      if (!isPendingDraftPersistCurrent(pendingDraftPersistRef.current, entry)) {
+        return
+      }
+
+      pendingDraftPersistRef.current = null
+      stashAt(scope, text)
+    }, DRAFT_PERSIST_DEBOUNCE_MS)
+  }
+
+  const scheduleDraftPersistRef = useRef(scheduleDraftPersist)
+  scheduleDraftPersistRef.current = scheduleDraftPersist
+
   // Read the editor's current plain text into draftRef + composer state. This
   // closes the "queued rAF flush hasn't run yet" window so scope-swap/pagehide
   // persistence captures the latest keystrokes. `typing` marks ChatBar's
@@ -457,6 +501,12 @@ export function useComposerDraft({
       if (text !== draftRef.current) {
         draftRef.current = text
         storeWriter[typing ? 'typing' : 'now'](text)
+
+        // The runtime subscription schedules the stash once the store sees
+        // the text; a deferred typing write must not delay it past the keystroke.
+        if (storeWriter.pending()) {
+          scheduleDraftPersistRef.current(text)
+        }
       } else if (!typing) {
         storeWriter.flush()
       }
@@ -473,8 +523,6 @@ export function useComposerDraft({
   // text into draftRef, (2) repaint the editor only when the change came from
   // OUTSIDE it (programmatic clear/restore/insert; the focused editor is the
   // source otherwise), and (3) schedule the debounced per-session stash.
-  // Browsing history / editing a queued prompt suppress the stash so recalled
-  // text never clobbers the draft.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const sync = () => {
@@ -495,34 +543,7 @@ export function useComposerDraft({
         renderComposerContents(editor, text, { trailingCommitted: true })
       }
 
-      if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
-        return
-      }
-
-      const scope = draftScopeRef.current
-
-      // An edited (or cleared) restored draft is a new message: it no longer retries the old send.
-      if (draftRetryRef.current && !draftRetryTextMatches(draftRetryRef.current, text)) {
-        draftRetryRef.current = undefined
-        writeDraftRetry(scope, undefined)
-      }
-
-      const entry = { scope, text }
-      pendingDraftPersistRef.current = entry
-      window.clearTimeout(draftPersistTimerRef.current)
-      draftPersistTimerRef.current = window.setTimeout(() => {
-        // Integrity guard (defense-in-depth, #54527): only commit if this is
-        // still the pending write on file. A session swap or a newer
-        // keystroke clears/replaces it before firing in the normal case; this
-        // catches any future call site that skips that bookkeeping instead of
-        // silently filing text under the wrong session.
-        if (!isPendingDraftPersistCurrent(pendingDraftPersistRef.current, entry)) {
-          return
-        }
-
-        pendingDraftPersistRef.current = null
-        stashAt(scope, text)
-      }, DRAFT_PERSIST_DEBOUNCE_MS)
+      scheduleDraftPersistRef.current(text)
     }
 
     const unsubscribe = composerRuntime.subscribe(sync)
@@ -679,6 +700,10 @@ export function useComposerDraft({
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.
+  // beforeunload covers closing the window: Electron tears the renderer down
+  // before a pagehide-time localStorage write lands (live: a close right after
+  // the last keystroke kept the beforeunload write and lost the pagehide one).
+  // The handler never cancels the unload.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const flushPendingDraftPersist = () => {
@@ -694,9 +719,11 @@ export function useComposerDraft({
       stashAt(scope, latestText)
     }
 
+    window.addEventListener('beforeunload', flushPendingDraftPersist)
     window.addEventListener('pagehide', flushPendingDraftPersist)
 
     return () => {
+      window.removeEventListener('beforeunload', flushPendingDraftPersist)
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
