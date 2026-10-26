@@ -980,15 +980,20 @@ def _cmd_clean_markers(db, args):
         print(f"✓ Cleared {report['rows_affected']} row(s).")
 
 
+_BACKFILL_LABELS = {"backfill": "Rebuilding index", "backfill_cjk": "Building CJK index"}
+_COUNTED_PHASES = frozenset({*_BACKFILL_LABELS, "teardown"})
+
+
 def _optimize_progress_line(info) -> str:
     phase, pct = info.get("phase"), f"{info.get('percent', 0):3d}%"
     counts = f"({info.get('indexed', 0):,}/{info.get('total', 0):,}"
-    if phase == "backfill":
-        return f"  Rebuilding index: {pct} {counts})"
+    paced = " — paced: another process is using the database" if info.get("paced") else ""
+    if phase in _BACKFILL_LABELS:
+        return f"  {_BACKFILL_LABELS[phase]}: {pct} {counts} messages){paced}"
     if phase == "teardown":
         table = str(info.get("table", "")).removeprefix("fts_v22_trash_")
         return (f"  Reclaiming old index: table {info.get('table_index', 0)}/{info.get('table_count', 0)} "
-                f"({table}) {pct} {counts} rows)")
+                f"({table}) {pct} {counts} rows){paced}")
     elapsed = int(info.get("elapsed", 0))
     return (f"  Compacting database (VACUUM): {elapsed // 60}m {elapsed % 60:02d}s elapsed, "
             f"{info.get('size_bytes', 0) / 2**20:,.1f} MB → ~{info.get('estimated_bytes', 0) / 2**20:,.1f} MB")
@@ -1008,7 +1013,7 @@ class _OptimizeProgress:
             # The phase or table moved on, so the previous one ran to completion.
             self.close(completed=True)
             self._key = key
-        if phase == "done" or (phase in ("backfill", "teardown") and not info.get("total") and not info.get("table")):
+        if phase == "done" or (phase in _COUNTED_PHASES and not info.get("total") and not info.get("table")):
             return
         self._last = info
         self._draw(_optimize_progress_line(info))
@@ -1021,17 +1026,11 @@ class _OptimizeProgress:
 
     def close(self, completed: bool = False) -> None:
         last = self._last
-        if completed and last and last.get("phase") in ("backfill", "teardown"):
+        if completed and last and last.get("phase") in _COUNTED_PHASES:
             self._draw(_optimize_progress_line({**last, "percent": 100, "indexed": last.get("total", 0)}))
         if self._line:
             print(flush=True)
         self._last, self._line = None, ""
-
-
-def _store_has_foreign_holder(db_path) -> bool:
-    from hermes_state_holders import held_store_refusal
-
-    return held_store_refusal(db_path, command="optimize-storage") is not None
 
 
 def _cmd_optimize_storage(db, args):
@@ -1068,15 +1067,12 @@ def _cmd_optimize_storage(db, args):
         if resp not in ("y", "yes"):
             print("Cancelled.")
             return
-    # The holder check was skipped under --force: if someone really holds the store, keep the old
-    # duty-cycle pause so their writes are not starved (slower, but they stay responsive).
-    yield_to_writers = bool(getattr(args, "force", False)) and _store_has_foreign_holder(db_path)
-    if yield_to_writers:
-        print("  Another process is using the database (--force): pacing the rebuild so it stays responsive.")
+    # optimize_fts_storage re-scans for holders itself (--force past one, or a writer that opens the
+    # store mid-run) and paces while one is there; the progress line says so.
     progress = _OptimizeProgress()
     print("Optimizing search-index storage…")
     try:
-        result = db.optimize_fts_storage(progress_cb=progress, vacuum=do_vacuum, yield_to_writers=yield_to_writers)
+        result = db.optimize_fts_storage(progress_cb=progress, vacuum=do_vacuum)
     except KeyboardInterrupt:
         progress.close()
         print("Interrupted — no data was lost; re-run to resume.")
@@ -1084,11 +1080,11 @@ def _cmd_optimize_storage(db, args):
     except Exception as e:
         progress.close()
         print(f"Error: optimization failed: {e}\nNo data was lost. Re-run to resume.")
-        return
+        return 1
     progress.close()
     if not result.get("ok"):
         print(f"Could not optimize: {result.get('reason', 'unknown')}")
-        return
+        return 1
     print("✓ Search index optimized.")
     _print_size_change(db, before_mb, prefix="  ")
     if result.get("vacuumed") is False:

@@ -172,8 +172,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
             "large fraction of state.db (the old layout stored duplicate "
             "copies of every message and indexed tool output). Runs "
             "foreground with progress for every phase (refusing while a gateway "
-            "or other Hermes process holds state.db) and VACUUMs at the end. Safe to interrupt and "
-            "re-run — it resumes where it left off. No conversation data is "
+            "or other Hermes process holds state.db, pacing itself if one opens it mid-run) and "
+            "VACUUMs at the end. Safe to interrupt and re-run — it resumes where it left off. No conversation data is "
             "changed; only the search index is rebuilt.")
     _flag(sessions_optimize_storage, "--no-vacuum", default=False,
         help="Skip the final VACUUM (index is rebuilt but freed pages aren't returned to the OS until a later VACUUM)")

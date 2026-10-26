@@ -538,15 +538,16 @@ class SessionFtsSetupMixin:
     # One blocking rebuild held the write lock ~16 min on a 25 GB DB, so the
     # backfill and teardown run in chunks: each its own bounded transaction (WAL
     # growth stays small), resumable from its marker (claimed by CAS), and a
-    # progress tick. They run back to back with no pause: the only driver is the
-    # foreground `hermes sessions optimize-storage`, which refuses while any other
-    # process holds state.db (held_store_refusal, #110054), so there is no writer
-    # to yield to; a fixed 0.2 s pause after each few-ms chunk was >95% of the
-    # wall time. Chunk size (in ROWS, never an id span: a pruned store has id gaps)
-    # adapts toward TARGET seconds, since rows cost ~1000x more in trigram_data
-    # than in docsize. `--force` past a live holder (yield_to_writers) keeps the
-    # duty cycle instead: chunks near PACED_TARGET, a pause of max(MIN_PAUSE,
-    # cost x DUTY_FACTOR) after each, so that holder's writes are not starved.
+    # progress tick. They run back to back with no pause while no other process
+    # holds state.db: the foreground `hermes sessions optimize-storage` refuses to
+    # start under a holder (held_store_refusal, #110054), and a fixed 0.2 s pause
+    # after each few-ms chunk was >95% of the wall time. Chunk size (in ROWS, never
+    # an id span: a pruned store has id gaps) adapts toward TARGET seconds, since
+    # rows cost ~1000x more in trigram_data than in docsize. A side thread re-runs
+    # the holder scan every _HOLDER_SCAN_INTERVAL_S (`--force` past a holder, or a
+    # writer that opens the store mid-run): while one is there the duty cycle comes
+    # back — chunks near PACED_TARGET, a pause of max(MIN_PAUSE, cost x
+    # DUTY_FACTOR) after each — so that holder's writes are not starved.
     _FTS_REBUILD_CHUNK_ROWS = 500       # first chunk of every phase and trash table; later ones adapt
     _FTS_REBUILD_CHUNK_MIN_ROWS = 50
     _FTS_REBUILD_CHUNK_MAX_ROWS = 100_000
