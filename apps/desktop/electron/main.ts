@@ -738,8 +738,7 @@ const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 // Glass: macOS vibrancy, or Windows 11 22H2+ system backdrop. Computed once
 // so the renderer, the persisted default, and every chat window agree.
 const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
-// Linux has no glass material and Settings drops the whole row there, so a
-// Linux window must never be handed a fade (see nativeOpacityFor).
+// Settings drops the row on Linux, so nativeOpacityFor keeps the fade off there.
 const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
 
@@ -1499,11 +1498,7 @@ nativeTheme.themeSource = readPersistedThemeSource()
 // — a matte blur with full-contrast text. macOS uses vibrancy; Windows 11
 // uses DWM acrylic/mica/tabbed. Persisted so a cold launch applies it at
 // window creation, before the renderer reports its value.
-// macOS + Windows only. Electron documents `setOpacity` as a no-op on Linux,
-// but a Linux window really does render faded when handed the value: X11
-// carries it as `_NET_WM_WINDOW_OPACITY` and a native Wayland surface
-// composites it into the frame. So the platform gate has to be applied to the
-// value itself — see nativeOpacityFor — and not just to the Settings row.
+// macOS + Windows only, gated at the value itself (see nativeOpacityFor).
 const TRANSLUCENCY_CONFIG_PATH = path.join(app.getPath('userData'), 'translucency.json')
 
 function readPersistedTranslucency() {
