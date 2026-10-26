@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from agent.message_metadata import MESSAGE_UID, message_uid_or_none
 from hermes_cli.timefmt import coerce_epoch
-from hermes_state_common import _placeholders
+from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _parse_tool_calls
 
 
@@ -28,14 +28,16 @@ class SessionCoverageMixin:
         was read, or left unnamed so coverage fell back to the watermark) is already in the compacted
         set as a carried copy; cloning it too stores the message twice, with a fresh id and timestamp
         each (#137197). A claim never drops a different message, so each proof is checked against the
-        row: a dict that names a row by ``_row_id`` claims only that row; a ``message_uid`` match also needs
-        the same identity (a same-uid row with other content is another version, kept); identity plus
+        row: a dict that names a row by ``_row_id`` claims only that row; a ``message_uid`` match with other
+        content claims only when no active row outside *tail_ids* carries that uid (the compressor rewrote
+        its own carry: summary merged in, images stripped), else it is another version and is kept; identity plus
         timestamp, or identity alone for a dict carrying no stamps at all, never claims a row whose uid
         differs from the dict's. Each dict claims at most one row and each row is claimed once.
 
-        ``weak`` holds the rows claimed by identity alone (with or without a timestamp): two surfaces can
-        store the same text, so the caller archives those as compacted history, never rewinds them out of
-        display, and a wrong claim stays visible.
+        ``weak`` holds the rows claimed by identity alone (with or without a timestamp) or by a uid whose content
+        differs: two surfaces can store the same text, and a rewritten carry is not the stored text, so the
+        caller archives those as compacted history, never rewinds them out of display, and a wrong claim stays
+        visible.
         """
         if not tail_ids or not compacted_messages:
             return {}, set()
@@ -65,15 +67,18 @@ class SessionCoverageMixin:
         carried: dict[int, int] = {}
         weak: set[int] = set()
         claimed: set[int] = set()
-        for row in conn.execute(
-            f"SELECT id, role, content, tool_call_id, tool_calls, timestamp, {MESSAGE_UID} FROM messages "
+        rows = conn.execute(
+            f"SELECT id, session_id, role, content, tool_call_id, tool_calls, timestamp, {MESSAGE_UID} FROM messages "
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id", tail_ids,
-        ).fetchall():
+        ).fetchall()
+        held_elsewhere = self._uids_active_outside(conn, rows, tail_ids, by_uid)
+        for row in rows:
             row_id, row_uid = int(row["id"]), row[MESSAGE_UID] or None
             identity = self._row_identity(
                 row["role"], self._decode_content(row["content"]), row["tool_call_id"],
                 _parse_tool_calls(row["tool_calls"]))
-            index, strong = self._claim_tail_row(row, row_id, row_uid, identity, by_row, by_uid, by_key, bare)
+            index, strong = self._claim_tail_row(
+                row, row_id, row_uid, identity, by_row, by_uid, by_key, bare, held_elsewhere)
             if index is not None and index not in claimed:
                 claimed.add(index)
                 carried[row_id] = index
@@ -82,12 +87,35 @@ class SessionCoverageMixin:
         return carried, weak
 
     @staticmethod
-    def _claim_tail_row(row, row_id, row_uid, identity, by_row, by_uid, by_key, bare) -> tuple[Optional[int], bool]:
-        """The carrying dict index for one tail row and whether the proof names that row (``_row_id`` / uid)."""
+    def _uids_active_outside(conn, rows, tail_ids: list[int], by_uid: dict[str, Any]) -> set[str]:
+        """uids of tail *rows* a held dict names that an ACTIVE row outside *tail_ids* (a covered row, below the
+        watermark) also carries: there the dict's own original is that row, so the tail row is another version."""
+        wanted = sorted({row[MESSAGE_UID] for row in rows if row[MESSAGE_UID] in by_uid})
+        if not wanted:
+            return set()
+        tail, session_id = set(tail_ids), rows[0]["session_id"]
+        return {
+            found[MESSAGE_UID]
+            for chunk in _id_chunks(wanted)
+            for found in conn.execute(
+                f"SELECT id, {MESSAGE_UID} FROM messages WHERE session_id = ? AND active = 1 "
+                f"AND {MESSAGE_UID} IN ({_placeholders(chunk)})", (session_id, *chunk)).fetchall()
+            if int(found["id"]) not in tail
+        }
+
+    @staticmethod
+    def _claim_tail_row(
+        row, row_id, row_uid, identity, by_row, by_uid, by_key, bare, held_elsewhere,
+    ) -> tuple[Optional[int], bool]:
+        """The carrying dict index for one tail row and whether the proof names that row with its stored
+        content (``_row_id`` / uid); a uid carry the compressor rewrote is a weak claim."""
         if (named := by_row.get(row_id)) is not None and named[1] == identity:
             return named[0], True
-        if row_uid is not None and (by_id := by_uid.get(row_uid)) is not None and by_id[1] == identity:
-            return by_id[0], True
+        if row_uid is not None and (by_id := by_uid.get(row_uid)) is not None:
+            if by_id[1] == identity:
+                return by_id[0], True
+            if row_uid not in held_elsewhere:
+                return by_id[0], False
         timestamp = coerce_epoch(row["timestamp"], field="message timestamp")
         if timestamp is not None and (keyed := by_key.get((*identity, timestamp))) is not None:
             if keyed[1] is None:  # a dict uid equal to the row's already matched above

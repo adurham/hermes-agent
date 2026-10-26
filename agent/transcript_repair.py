@@ -10,10 +10,11 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, RESTORED_FROM_STORE, copy_identity_fields, message_uid_or_none)
+    ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, RESTORED_FROM_STORE, TOOL_CALL_UIDS,
+    copy_identity_fields, message_uid_or_none)
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
-from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
+from hermes_state_messages import _MESSAGE_WRITE_COLUMNS, SessionMessagesMixin
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
@@ -142,15 +143,35 @@ def _active_uid_dedupe(
     return durable
 
 
+# Owned columns a restore projection may leave off the dict: ``token_count`` is never decoded, the summary
+# flag only on request, and the underscore identity maps are lost to any wire strip. A dict without a value
+# says nothing about the column, so the row's value stands (the flush row turns an absent summary flag into
+# False, so falsy is the absent case); a dict that carries a value is compared as usual.
+_RESTORE_MAY_OMIT = (
+    ("token_count", "token_count"), ("_compressed_summary", "_compressed_summary"),
+    ("tool_call_uids", TOOL_CALL_UIDS), ("absorbed_message_uids", ABSORBED_MESSAGE_UIDS))
+
+
 def _same_as_stored(
     msg: dict[str, Any], rows: list[sqlite3.Row],
     serialize_message_fn: Callable[[dict[str, Any], float], Mapping[str, Any]],
+    encode_content_fn: Callable[[Any], Any], decode_content_fn: Callable[[Any], Any],
 ) -> bool:
-    """*msg* serializes to the owned columns of one of its uid's active *rows*: the re-handed copy, not an edit."""
+    """*msg* serializes to the owned columns of one of its uid's active *rows*: the re-handed copy, not an edit.
+
+    The row is seen through the restore lens (``_loaded_view_content``: user/assistant text sanitized and
+    stripped on load), because that is what the dict was rebuilt from; the dict's own content is never
+    normalized, so text that differs after the lens is an edit and inserts.
+    """
     for row in rows:
-        serialized = serialize_message_fn(msg, float(row["timestamp"]))
-        if serialized["token_count"] is None:  # a restored dict never decodes token_count: unknown, not NULL
-            serialized = {**serialized, "token_count": row["token_count"]}
+        serialized = dict(serialize_message_fn(msg, float(row["timestamp"])))
+        for column, key in _RESTORE_MAY_OMIT:
+            if not msg.get(key):
+                serialized[column] = row[column]
+        if serialized["content"] == encode_content_fn(
+            SessionMessagesMixin._loaded_view_content(row["role"], decode_content_fn(row["content"]))
+        ):
+            serialized["content"] = row["content"]
         if all(row[column] == serialized[column] for column in _OWNED_COLUMNS):
             return True
     return False
@@ -194,7 +215,7 @@ def resolve_and_repair_transcript_batch(
                 isinstance(msg, dict)
                 and (stored := durable_uids.get(message_uid_or_none(msg) or ""))
                 and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
-                and _same_as_stored(msg, stored, serialize_message_fn)
+                and _same_as_stored(msg, stored, serialize_message_fn, encode_content_fn, decode_content_fn)
             ):
                 # Restored logical message, no row address and no CAS version (the wire strip removes
                 # every underscore-prefixed field): its uid already names an ACTIVE durable row holding

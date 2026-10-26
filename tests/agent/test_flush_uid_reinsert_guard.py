@@ -145,3 +145,45 @@ def test_restored_snapshot_rewrite_still_lands(tmp_path):
         f"final contents {contents}"
     )
     assert _row_count(db, sid) == 2, "the rewrite must not add rows"
+
+_READ_CALL = [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\": \"a.txt\"}"}}]
+
+
+@pytest.mark.parametrize("turn, strip_all", [
+    pytest.param([{"role": "user", "content": "q"}, {"role": "assistant", "content": "Answer line.\n"}], False,
+                 id="assistant-trailing-newline"),
+    pytest.param([{"role": "user", "content": "  please do X\n"}, {"role": "assistant", "content": "done"}], False,
+                 id="user-edge-whitespace"),
+    pytest.param([{"role": "user", "content": "<memory-context>\nfact: likes tea\n</memory-context>\n\nwhat do I like?"},
+                  {"role": "assistant", "content": "tea"}], False, id="user-memory-context-block"),
+    pytest.param(None, False, id="compaction-summary-row"),
+    pytest.param([{"role": "user", "content": "read it"},
+                  {"role": "assistant", "content": "Reading.", "tool_calls": _READ_CALL, "finish_reason": "tool_calls"},
+                  {"role": "tool", "content": "line1", "tool_call_id": "call_1"},
+                  {"role": "assistant", "content": "one line"}], True, id="tool-call-row-underscore-fields-lost"),
+])
+def test_restore_normalised_rows_are_not_reinserted_but_edits_land(tmp_path, turn, strip_all):
+    """Restore hands back text sanitized and stripped, no summary flag and (across a wire) no underscore
+    identity maps: the guard compares through that lens, so the copy is skipped while an edit still lands."""
+    agent, db = _make_agent_with_db(tmp_path)
+    sid = agent.session_id
+    if turn is None:
+        db.append_messages_batch(sid, [{"role": "user", "content": "q0"}, {"role": "assistant", "content": "a1"}])
+        db.archive_and_compact(sid, [{"role": "user", "content": "[CONTEXT COMPACTION] summary",
+                                      "_compressed_summary": True}, {"role": "assistant", "content": "a1"}])
+        live = db.get_messages_as_conversation(sid)
+    else:
+        live = [{**m, "timestamp": 1000.0 + i} for i, m in enumerate(turn)]
+    agent._flush_messages_to_session_db(live)
+    active = lambda: db._read_one("SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1", (sid,))[0]
+    stored = active()
+
+    restored = [{k: v for k, v in m.items() if not (k.startswith("_") if strip_all else k == _DB_PERSISTED_MARKER)}
+                for m in db.get_messages_as_conversation(sid)]
+    agent._flush_messages_to_session_db(live + restored)
+    assert active() == stored, "a restored copy of a durable row was inserted again"
+
+    edited = {k: v for k, v in db.get_messages_as_conversation(sid)[-1].items() if k != _DB_PERSISTED_MARKER}
+    edited["content"] += " (edited)"
+    agent._flush_messages_to_session_db(live + restored + [edited])
+    assert edited["content"] in [m["content"] for m in db.get_messages_as_conversation(sid)]
