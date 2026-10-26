@@ -45,7 +45,9 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   (row field `terminal_backend`: unknown-backend errors name the install command).
   A model provider that leaves core (GitHub Copilot → `github-copilot`) lists its ids and aliases
   (`providers`: unknown-provider errors name the install, runtime resolution installs it first for a
-  home that uses it, models.dev never stands in) and the env core kept profile-managed (`profile_env`);
+  home that uses it, models.dev never stands in), the env core kept profile-managed (`profile_env`), the
+  executable/argv subset env writers refuse on every home (`launch_env`), and the hosts core served by
+  host for any provider name (`hosts`: a route there is use; a request rejected there names the install);
   `notice` adds a per-home sentence to every outcome (a credential source the plugin no longer reads).
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
   connectors, analytics dashboards, paid-service tie-ins ship as standalone plugin repos
