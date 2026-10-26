@@ -50,9 +50,25 @@ function rememberBounded<K, V>(cache: Map<K, V>, key: K, value: V): void {
 // navigate a frame to a URL over 2 MiB, so a base64 data URL left any page above ~1.5 MB blank.
 // Decoded as the data URL's charset=utf-8 did, and escaped for a double-quoted attribute (`&`
 // first) so no byte of the page parses as markup of this same-origin wrapper.
+// A srcdoc document inherits the wrapper's blob: base URL, so `#anchor` links would resolve to
+// blob:…#anchor and do nothing. A page without its own <base> gets about:srcdoc, placed after
+// any doctype so the page keeps its rendering mode.
+const SRCDOC_BASE = '<base href="about:srcdoc">'
+const LEADING_DOCTYPE = /^\s*<!doctype[^>]*>/i
+const BASE_ELEMENT = /<base[\s/>]/i
+
+function withSrcdocBase(page: string): string {
+  if (BASE_ELEMENT.test(page)) {
+    return page
+  }
+
+  const doctype = LEADING_DOCTYPE.exec(page)?.[0] ?? ''
+
+  return doctype + SRCDOC_BASE + page.slice(doctype.length)
+}
+
 function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
-  const srcdoc = new TextDecoder('utf-8')
-    .decode(bytes)
+  const srcdoc = withSrcdocBase(new TextDecoder('utf-8').decode(bytes))
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
