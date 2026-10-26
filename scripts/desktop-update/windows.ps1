@@ -882,7 +882,9 @@ function Start-DesktopRelaunch {
     if (-not $spawned) {
         try {
             # Fallback keeps the old behavior (console tie-in and all) --
-            # a tethered Desktop beats no Desktop.
+            # a tethered Desktop beats no Desktop. Unlike the WMI and explorer rungs it inherits
+            # this script's environment: the stage relay is the update's, never the app's.
+            Remove-Item Env:HERMES_UPDATE_STATUS_FILE -ErrorAction SilentlyContinue
             $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru
             Start-Sleep -Milliseconds 1500
             if ($p -and -not $p.HasExited) { $spawned = $true }
