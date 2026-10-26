@@ -21,8 +21,8 @@ import time
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
 from hermes_cli.pty_session import (
-    WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry,
-    RegistryFull, _close_ws, run_reaper,
+    _VIEWER_SEND_ERRORS, _VIEWER_SEND_TIMEOUT_SECONDS, WS_CLOSE_VIEWER_STALLED,
+    WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry, RegistryFull, _close_ws, run_reaper,
 )
 from hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import assert_named_profile_home_live, get_hermes_home
@@ -32,6 +32,10 @@ RETENTION_SECONDS = 15 * 60
 _MAX_SHELLS = 16
 # Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
+# How often a reader held up by that bound checks that the tab is still there (``_queue_frame``).
+# Once the connection is gone a check fails within about three: the first can still reach the
+# kernel before the peer's reset comes back.
+_LIVENESS_PROBE_SECONDS = 1.0
 # How long a resize that undoes the previous one waits for the program to answer that one (``_resize``).
 _RESIZE_ANSWER_SECONDS = 1.0
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
@@ -300,21 +304,46 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return session, owner
 
 
+async def _queue_frame(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future, msg) -> None:
+    """``inbox.put(msg)``, checking that the tab is still there while the inbox stays full.
+
+    A full inbox stops the reader taking frames. That backpressure bounds what a tab can queue, but
+    it also leaves the tab's close unread behind those frames, and short of reading them only a send
+    can find out that the connection is gone. So while the put waits, the tab gets an empty binary
+    frame (no output, which the client ignores) every ``_LIVENESS_PROBE_SECONDS``; attach has already
+    sent the replay, so it is never taken for one. A send that fails means the connection is gone:
+    ``ended`` is set, which cancels a write waiting on the program, and the put goes on waiting
+    unprobed.
+    """
+    while not ended.done():
+        try:
+            return await asyncio.wait_for(inbox.put(msg), _LIVENESS_PROBE_SECONDS)
+        except TimeoutError:
+            pass
+        try:
+            await asyncio.wait_for(ws.send_bytes(b""), _VIEWER_SEND_TIMEOUT_SECONDS)
+        except _VIEWER_SEND_ERRORS:
+            ended.set_result(None)
+    await inbox.put(msg)
+
+
 async def _read_frames(ws: WebSocket, inbox: asyncio.Queue, ended: asyncio.Future) -> None:
     """Queue inbound frames. The last item is None, or the error that ended reading
     (re-raised by ``_pump_input`` so the route's handlers still see it). ``ended`` gets the same
-    item as soon as reading ends, before it is queued: a write waiting on the shell, or a full
-    inbox behind it, must not keep the pump from seeing that the socket is gone."""
+    item as soon as reading ends, before it is queued, or None as soon as a full inbox finds the
+    socket gone (``_queue_frame``): a write waiting on the shell, or a full inbox behind it, must
+    not keep the pump from seeing that the socket is gone."""
     end = None
     try:
         while (msg := await ws.receive()).get("type") != "websocket.disconnect":
-            await inbox.put(msg)
+            await _queue_frame(ws, inbox, ended, msg)
     except RuntimeError:  # a superseding/drain task already closed us
         pass
     # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
     except Exception as exc:
         end = exc
-    ended.set_result(end)
+    if not ended.done():
+        ended.set_result(end)
     await inbox.put(end)
 
 
