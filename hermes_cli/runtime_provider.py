@@ -288,13 +288,16 @@ def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key:
                 and profile.api_mode_for_model(model_name) == "chat_completions"):
             return "chat_completions"
         return configured_mode
-    if not model_name or profile is None:
+    if profile is None:
         return "chat_completions"
+    declared = profile.api_mode or "chat_completions"  # the hook's None means "keep the static api_mode"
+    if not model_name:
+        return declared
     try:
-        return profile.api_mode_for_model(model_name, api_key=api_key) or "chat_completions"
-    except Exception:  # plugin hook (live catalog fetch): degrade to chat_completions, never fail resolution
+        return profile.api_mode_for_model(model_name, api_key=api_key) or declared
+    except Exception:  # plugin hook (live catalog fetch): degrade to the declared wire, never fail resolution
         logger.debug("%s api_mode_for_model(%s) failed", provider, model_name, exc_info=True)
-        return "chat_completions"
+        return declared
 
 
 def _azure_inferred_api_mode(effective_model: str, api_mode: str) -> str:
