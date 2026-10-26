@@ -2170,12 +2170,12 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
             return _try_anthropic()
-        if provider_id == "copilot":
-            # Explicit-config gate: ambient gh-CLI credentials must not silently become aux fallback (#114740).
-            with contextlib.suppress(ImportError):
-                from hermes_cli.auth import is_provider_explicitly_configured
-                if not is_provider_explicitly_configured("copilot"):
-                    continue
+        from providers import get_provider_profile
+        if getattr(get_provider_profile(provider_id), "ambient_credentials", False):
+            # Explicit-config gate: ambient credentials (another tool's login) must not silently become aux fallback (#114740).
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured(provider_id):
+                continue
         model = _get_aux_model_for_provider(provider_id) or None
         if model is None:
             continue  # skip provider if we don't know a valid aux model
@@ -2238,7 +2238,9 @@ def _endpoint_default_headers(
     if base_url_host_matches(base_url, "api.kimi.com"):
         headers: dict = {"User-Agent": "claude-code/0.1.0"}
     elif base_url_host_matches(base_url, "githubcopilot.com"):
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from providers import get_provider_profile
+        get_provider_profile("copilot")  # loads the plugin package that owns these credentials
+        from plugins.model_providers.copilot.credentials import copilot_request_headers
         headers = dict(copilot_request_headers(is_agent_turn=True, is_vision=is_vision))
     elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
         headers = dict(build_nvidia_nim_headers(base_url))
@@ -3819,16 +3821,6 @@ def _creds_have_api_key(creds: dict[str, Any]) -> bool:
     return bool(str(creds.get("api_key", "") or "").strip())
 
 
-def _refresh_copilot_credentials() -> bool:
-    from hermes_cli.copilot_auth import _jwt_cache, _token_fingerprint, exchange_copilot_token, resolve_copilot_token
-    raw_token, _source = resolve_copilot_token()
-    if not str(raw_token or "").strip():
-        return False
-    _jwt_cache.pop(_token_fingerprint(raw_token), None)
-    exchange_copilot_token(raw_token)
-    return True
-
-
 def _refresh_codex_credentials() -> bool:
     from hermes_cli.auth import resolve_codex_runtime_credentials
     return _creds_have_api_key(resolve_codex_runtime_credentials(force_refresh=True))
@@ -3878,7 +3870,7 @@ def _refresh_vertex_credentials() -> bool:
 
 # Each refresher returns True when a usable credential exists; the caller then evicts cached clients.
 _CREDENTIAL_REFRESHERS: dict[str, Callable[..., bool]] = {
-    "copilot": _refresh_copilot_credentials, "openai-codex": _refresh_codex_credentials,
+    "openai-codex": _refresh_codex_credentials,
     "nous": _refresh_nous_credentials, "anthropic": _refresh_anthropic_credentials,
     "xai-oauth": _refresh_xai_oauth_credentials, "vertex": _refresh_vertex_credentials,
 }
@@ -3889,7 +3881,11 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
     normalized = _normalize_aux_provider(provider)
     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
     if refresher is None:
-        return False
+        from providers import get_provider_profile
+        profile = get_provider_profile(normalized)
+        if profile is None:
+            return False
+        refresher = lambda: profile.refresh_runtime_credentials(reason="auxiliary_unauthorized")
     try:
         if not (refresher(failed_api_key) if normalized == "anthropic" else refresher()):
             return False
@@ -5290,9 +5286,8 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
             if not api_key and is_actual_local_base_url(raw_base_url):
                 api_key = ACTUAL_LOCAL_NOAUTH_PLACEHOLDER
     if not api_key:
-        tried_sources = list(pconfig.api_key_env_vars) + (["gh auth token"] if provider == "copilot" else [])
         logger.debug("resolve_provider_client: provider %s has no API key configured (tried: %s)",
-                     provider, ", ".join(tried_sources))
+                     provider, ", ".join(pconfig.api_key_env_vars))
         return None, None
     base_url = _to_openai_base_url(raw_base_url)
     # Explicit base_url override: a fallback_model/custom_providers entry pointing a built-in name elsewhere.

@@ -9,6 +9,9 @@ from unittest.mock import patch
 
 import pytest
 import hermes_yaml as yaml
+import providers as _providers
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
+from plugins.model_providers.copilot import credentials as copilot_credentials
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -937,11 +940,9 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
     from hermes_cli.auth import is_source_suppressed
     from hermes_cli.auth_commands import auth_remove_command
 
-    with patch(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+    with patch.object(copilot_credentials, "resolve_copilot_token",
         return_value=("ghp_fake", "gh"),
-    ), patch(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+    ), patch.object(copilot_credentials, "get_copilot_api_token",
         return_value=("ghu_fake_api", None),
     ):
         auth_remove_command(SimpleNamespace(provider="copilot", target="1"))

@@ -518,7 +518,9 @@ def _copilot_obtain_token() -> bool:
         return False
     if choice == "1":
         try:
-            from hermes_cli.copilot_auth import copilot_device_code_login
+            from providers import get_provider_profile
+            get_provider_profile("copilot")  # loads the plugin package that owns these credentials
+            from plugins.model_providers.copilot.credentials import copilot_device_code_login
             token = copilot_device_code_login()
             if not token:
                 print("  Login cancelled or failed.")
@@ -539,7 +541,9 @@ def _copilot_obtain_token() -> bool:
             return False
         # Validate token type
         with contextlib.suppress(ImportError):
-            from hermes_cli.copilot_auth import validate_copilot_token
+            from providers import get_provider_profile
+            get_provider_profile("copilot")  # loads the plugin package that owns these credentials
+            from plugins.model_providers.copilot.credentials import validate_copilot_token
             valid, msg = validate_copilot_token(new_key)
             if not valid:
                 print(f"  ✗ {msg}")

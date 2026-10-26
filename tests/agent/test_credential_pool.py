@@ -8,6 +8,9 @@ import time
 from datetime import datetime, timezone, UTC
 
 import pytest
+import providers as _providers
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
+from plugins.model_providers.copilot import credentials as copilot_credentials
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -1391,8 +1394,7 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+    monkeypatch.setattr(copilot_credentials, "resolve_copilot_token",
         lambda: ("gho_fake_token_abc123", "gh auth token"),
     )
 
@@ -1427,8 +1429,7 @@ def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
         },
     )
 
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+    monkeypatch.setattr(copilot_credentials, "resolve_copilot_token",
         lambda: ("gho_fake_token_abc123", "gh auth token"),
     )
 
@@ -1439,8 +1440,7 @@ def test_load_pool_skips_exchange_for_suppressed_copilot(tmp_path, monkeypatch):
         exchange_called = True
         raise AssertionError("exchange must not run for a suppressed source")
 
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+    monkeypatch.setattr(copilot_credentials, "get_copilot_api_token",
         _boom,
     )
 
@@ -1470,8 +1470,7 @@ def test_load_pool_respects_env_var_copilot_suppression(tmp_path, monkeypatch):
         },
     )
 
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+    monkeypatch.setattr(copilot_credentials, "resolve_copilot_token",
         lambda: ("gho_fake_token_env", "GH_TOKEN"),
     )
 
@@ -1482,8 +1481,7 @@ def test_load_pool_respects_env_var_copilot_suppression(tmp_path, monkeypatch):
         exchange_called = True
         raise AssertionError("exchange must not run for a suppressed env source")
 
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+    monkeypatch.setattr(copilot_credentials, "get_copilot_api_token",
         _boom,
     )
 
@@ -1510,12 +1508,10 @@ def test_load_pool_gh_cli_suppression_does_not_block_env_tokens(tmp_path, monkey
         },
     )
 
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.resolve_copilot_token",
+    monkeypatch.setattr(copilot_credentials, "resolve_copilot_token",
         lambda: ("gho_fake_token_env", "GH_TOKEN"),
     )
-    monkeypatch.setattr(
-        "hermes_cli.copilot_auth.get_copilot_api_token",
+    monkeypatch.setattr(copilot_credentials, "get_copilot_api_token",
         lambda token: ("capi_exchanged_token", None),
     )
 
@@ -1529,7 +1525,7 @@ def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, m
     """With every copilot source suppressed, resolve_copilot_token (which
     shells out to ``gh auth token``) must not run at all."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    from hermes_cli.copilot_auth import COPILOT_ENV_VARS
+    from plugins.model_providers.copilot.credentials import COPILOT_ENV_VARS
     _write_auth_store(
         tmp_path,
         {
@@ -1544,7 +1540,7 @@ def test_load_pool_skips_resolve_when_all_copilot_sources_suppressed(tmp_path, m
     def _boom():
         raise AssertionError("resolve_copilot_token must not run when all sources are suppressed")
 
-    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", _boom)
+    monkeypatch.setattr(copilot_credentials, "resolve_copilot_token", _boom)
 
     from agent.credential_pool import load_pool
     pool = load_pool("copilot")
@@ -1560,16 +1556,17 @@ def test_load_pool_copilot_exchange_only_when_selected_and_warns_once(tmp_path, 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
-    from agent.credential_pool import _reset_copilot_raw_degradation_warned, load_pool
-    _reset_copilot_raw_degradation_warned()
-    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_raw_initial", "gh auth token"))
+    from agent.credential_pool import load_pool
+    from plugins.model_providers.copilot.credentials import _reset_raw_degradation_warned
+    _reset_raw_degradation_warned()
+    monkeypatch.setattr(copilot_credentials, "resolve_copilot_token", lambda: ("gho_raw_initial", "gh auth token"))
     exchanges = []
 
     def degraded_exchange(token):
         exchanges.append(token)
         return token, None  # exchange unavailable -> RAW token, no enterprise URL
 
-    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", degraded_exchange)
+    monkeypatch.setattr(copilot_credentials, "get_copilot_api_token", degraded_exchange)
 
     def degradation_warnings():
         return [r for r in caplog.records if "Copilot token exchange degraded to RAW token" in r.message]
@@ -1594,7 +1591,7 @@ def test_load_pool_copilot_exchange_only_when_selected_and_warns_once(tmp_path, 
         assert len(exchanges) == 2 and len(degradation_warnings()) == 1
 
         # A different token is a different degradation: warned again, once.
-        monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("gho_raw_rotated", "gh auth token"))
+        monkeypatch.setattr(copilot_credentials, "resolve_copilot_token", lambda: ("gho_raw_rotated", "gh auth token"))
         load_pool("copilot")
         assert len(degradation_warnings()) == 2
 

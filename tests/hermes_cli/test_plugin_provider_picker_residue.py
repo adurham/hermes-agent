@@ -121,6 +121,7 @@ def test_any_external_process_plugin_counts_as_signed_in_when_its_binary_resolve
     """The Desktop ``explicit_only`` filter (``build_model_options_payload`` behind
     ``tui_gateway/methods_complete.py::model.options``) keeps an out-of-tree ACP row exactly like the
     bundled one: binary resolves → auth evidence; missing binary → hidden."""
+    import providers
     from hermes_cli import auth
     from hermes_cli.inventory import _external_process_signed_in, _filter_explicit_provider_rows
 
@@ -141,4 +142,4 @@ def test_any_external_process_plugin_counts_as_signed_in_when_its_binary_resolve
     assert [r["slug"] for r in _filter_explicit_provider_rows(rows, _Ctx())] == ["example-acp"]
     # Bundled Copilot keeps its token-store evidence: a resolving binary alone is not a sign-in there.
     assert auth._external_process_auth_evidence("copilot-acp", str(tmp_path / "copilot")) == \
-        auth._copilot_acp_auth_evidence()
+        providers.get_provider_profile("copilot-acp").external_auth_evidence()

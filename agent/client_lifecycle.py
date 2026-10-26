@@ -451,7 +451,9 @@ class ClientLifecycleMixin:
         request_kwargs["max_retries"] = 0
         is_copilot = base_url_host_matches(str(request_kwargs.get("base_url", "")), "githubcopilot.com")
         if is_copilot and self._api_kwargs_have_image_parts(api_kwargs or {}):
-            from hermes_cli.copilot_auth import copilot_request_headers
+            from providers import get_provider_profile
+            get_provider_profile("copilot")  # loads the plugin package that owns these credentials
+            from plugins.model_providers.copilot.credentials import copilot_request_headers
             request_kwargs["default_headers"] = copilot_request_headers(is_agent_turn=True, is_vision=True)
         cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_kwargs)
         if cached is not None:
@@ -806,77 +808,22 @@ class ClientLifecycleMixin:
             logger.info("Vertex AI OAuth token refreshed")
         return ok
 
-    def _apply_copilot_token(self, token: str, enterprise_base_url: Any, *, reason: str) -> bool:
+    def _try_refresh_provider_runtime_credentials(self, *, reason: str) -> bool:
+        """Re-mint the live credential through the provider profile's ``refresh_runtime_credentials``
+        and rebuild the shared client (caller enforces the single-shot guard). ``reason``:
+        ``unauthorized`` (401) or ``stale`` (a non-auth error the profile reads as a stale credential)."""
+        from agent.conversation_loop import _credential_refresh_profile
+        profile = _credential_refresh_profile(self)
+        refreshed = profile.refresh_runtime_credentials(reason=reason) if profile else None
+        if not refreshed:
+            return False
+        token, base_url = refreshed
         self.api_key = token
-        if enterprise_base_url:
-            self.base_url = enterprise_base_url.rstrip("/")
+        if base_url:
+            self.base_url = base_url.rstrip("/")
         self._sync_client_kwargs_credentials()
         self._apply_client_headers_for_base_url(str(self.base_url or ""))
-        return self._replace_primary_openai_client(reason=reason)
-
-    def _try_refresh_copilot_client_credentials(self) -> bool:
-        """Refresh Copilot credentials and rebuild the shared OpenAI client (caller enforces the single-shot guard).
-
-        The raw GitHub token is stable; the short-TTL *exchanged* IDE token is what expires mid-turn (``401 IDE
-        token expired``), so force a fresh exchange rather than re-resolving the raw token.
-        """
-        if not self._is_copilot_provider():
-            return False
-        try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
-            new_token, token_source = resolve_copilot_token()
-        except Exception as exc:
-            logger.debug("Copilot credential refresh failed: %s", exc)
-            return False
-        new_token, enterprise_base_url = (new_token.strip() if isinstance(new_token, str) else ""), None
-        if not new_token:
-            return False
-        # Fall back to the raw token only if the exchange itself is unavailable.
-        try:
-            evict_cached_exchanged_token(new_token)
-            api_token, exchanged_base_url = get_copilot_api_token(new_token)
-            if isinstance(api_token, str) and api_token.strip():
-                new_token, enterprise_base_url = api_token.strip(), exchanged_base_url
-        except Exception as exc:
-            logger.debug("Copilot 401 re-exchange failed, using resolved token: %s", exc)
-        ok = self._apply_copilot_token(new_token, enterprise_base_url, reason="copilot_credential_refresh")
-        if ok:
-            logger.info("Copilot credentials refreshed from %s", token_source)
-        return ok
-
-    def _try_recover_stale_copilot_credential(self) -> bool:
-        """Force a fresh Copilot token exchange + client rebuild after a 400 (single-shot, caller-guarded).
-
-        Copilot surfaces a stale credential as ``400 model_not_available_for_integrator`` / ``model_not_supported``
-        — typically a raw ``ghu_`` token cached when the startup exchange degraded (restricted integrator allowlist).
-        """
-        if not self._is_copilot_provider():
-            return False
-        try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token, evict_cached_exchanged_token
-            raw_token, token_source = resolve_copilot_token()
-            if not isinstance(raw_token, str) or not raw_token.strip():
-                return False
-            raw_token = raw_token.strip()
-            # Evict the cached (possibly degraded/raw) exchanged token so the exchange hits the network.
-            evict_cached_exchanged_token(raw_token)
-            api_token, enterprise_base_url = get_copilot_api_token(raw_token)
-        except Exception as exc:
-            logger.debug("Copilot stale-credential recovery failed: %s", exc)
-            return False
-        if not isinstance(api_token, str) or not api_token.strip():
-            return False
-        # Exchange STILL degraded to the raw token: a rebuild won't help — don't burn the single-shot retry.
-        if api_token == raw_token and not enterprise_base_url:
-            logger.warning(
-                "Copilot stale-credential recovery: exchange still degraded to raw token; skipping retry "
-                "(network/exchange endpoint unavailable)."
-            )
-            return False
-        ok = self._apply_copilot_token(api_token.strip(), enterprise_base_url, reason="copilot_stale_credential_recovery")
-        if ok:
-            logger.info("Copilot credentials re-exchanged after stale-credential 400 (source=%s)", token_source)
-        return ok
+        return self._replace_primary_openai_client(reason=f"{profile.name}_credential_{reason}")
 
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)

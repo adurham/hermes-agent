@@ -376,19 +376,10 @@ def _model_level_key_env(provider_id: str) -> str:
 
 def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
-    if provider_id == "copilot":
-        # The dedicated copilot auth module does proper token validation/exchange.
-        try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-            token, source = resolve_copilot_token()
-            if token:
-                api_token, _base_url = get_copilot_api_token(token)
-                return api_token, source
-        except ValueError as exc:
-            logger.warning("Copilot token validation failed: %s", exc)
-        except Exception:
-            pass
-        return "", ""
+    profile = _credential_profile(provider_id)
+    owned = profile.resolve_api_key_secret() if profile else None
+    if owned is not None:  # provider-owned resolution (token validation / exchange) is final
+        return owned
 
     # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
@@ -1596,11 +1587,17 @@ def _config_model_provider() -> tuple[Any, Optional[str]]:
         return None, None
 
 
-# API-key providers never auto-selected from env: GitHub tokens are commonly present for repo/tool
-# access and must not hijack inference; LM Studio is a local server whose availability isn't
-# implied by LM_API_KEY (may be offline; no-auth setup uses a placeholder). Both need an explicit
-# choice.
-_NO_AUTO_DETECT_PROVIDERS = frozenset({"copilot", "lmstudio"})
+# API-key providers never auto-selected from env: LM Studio is a local server whose availability
+# isn't implied by LM_API_KEY (may be offline; no-auth setup uses a placeholder), and a profile with
+# ``ambient_credentials`` reads tokens commonly present for other purposes (repo/tool access) that
+# must not hijack inference. Both need an explicit choice.
+_NO_AUTO_DETECT_PROVIDERS = frozenset({"lmstudio"})
+
+
+def _credential_profile(provider_id: str) -> Any:
+    """The provider's registered profile (credential seams), or None."""
+    from providers import get_provider_profile
+    return get_provider_profile(provider_id)
 
 
 def _env_key_auto_detected(
@@ -1609,6 +1606,8 @@ def _env_key_auto_detected(
     preempts a logged-in OAuth provider so a stale key in ~/.hermes/.env never switches silently."""
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS:
+            continue
+        if getattr(_credential_profile(pid), "ambient_credentials", False):
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(scoped_key_env(env_var)):
@@ -2080,49 +2079,16 @@ def _external_process_auth_evidence(provider_id: str, resolved_command: Optional
     """Best-effort POSITIVE evidence ``(verified, source)`` that an external-process CLI is authed.
 
     False means "not verifiable from here", NOT "signed out". Subprocess-free (spawning the CLI from
-    status endpoints/pickers re-creates the cold-start stall copilot_auth.py avoids). Generic evidence
+    status endpoints/pickers re-creates a cold-start stall). Generic evidence
     for any external-process profile is its binary resolving: the subprocess owns real auth and Hermes
     has nothing else to inspect, so out-of-tree ACP rows pass credential-gated surfaces (Desktop
-    ``explicit_only`` picker) like the bundled one, whose CLI additionally exposes readable token stores."""
-    if provider_id == "copilot-acp":
-        return _copilot_acp_auth_evidence()
+    ``explicit_only`` picker); a profile whose CLI exposes readable token stores answers
+    ``external_auth_evidence()`` instead."""
+    evidence = _credential_profile(provider_id)
+    evidence = evidence.external_auth_evidence() if evidence else None
+    if evidence is not None:
+        return evidence
     return (True, f"command: {resolved_command}") if resolved_command else (False, None)
-
-
-def _copilot_acp_auth_evidence() -> tuple[bool, Optional[str]]:
-    """Copilot CLI token stores readable without spawning it (env tokens, plaintext config, hosts.json)."""
-    # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
-    try:
-        from hermes_cli.copilot_auth import COPILOT_ENV_VARS, validate_copilot_token
-        for env_var in COPILOT_ENV_VARS:
-            val = os.getenv(env_var, "").strip()
-            if val and validate_copilot_token(val)[0]:
-                return True, f"env: {env_var}"
-    except Exception as exc:
-        logger.debug("copilot-acp env token evidence check failed: %s", exc)
-    # 2. The Copilot CLI's own plaintext token store (written by `copilot login` when no OS keychain
-    #    is available). The file is JSONC — strip //-comment lines before parsing.
-    try:
-        cli_config = os.path.expanduser("~/.copilot/config.json")
-        if os.path.isfile(cli_config):
-            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
-                raw = "\n".join(
-                    line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
-            tokens = (json.loads(raw) if raw.strip() else {}).get("copilotTokens")
-            if isinstance(tokens, dict) and any(
-                isinstance(v, str) and v.strip() for v in tokens.values()):
-                return True, "~/.copilot/config.json"
-    except Exception as exc:
-        logger.debug("copilot-acp CLI config evidence check failed: %s", exc)
-    # 3. Known on-disk GitHub Copilot credential stores (the same files models.py fingerprints).
-    for cred_path in ("~/.config/github-copilot/hosts.json", "~/.config/github-copilot/apps.json"):
-        try:
-            expanded = os.path.expanduser(cred_path)
-            if os.path.isfile(expanded) and os.path.getsize(expanded) > 2:
-                return True, cred_path
-        except OSError:
-            continue
-    return False, None
 
 
 def _external_process_spec(
@@ -2257,29 +2223,12 @@ def _default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
     return env_url.rstrip("/") if env_url else default
 
 
-def _copilot_runtime_base_url(api_key: str, default: str, env_url: str) -> str:
-    """Copilot's API base comes from the token-exchange response (endpoints.api, proxy-ep fallback),
-    authoritative for Enterprise / proxied accounts; falls back to the registry default."""
-    base_url = _default_api_key_base_url(api_key, default, env_url)
-    try:
-        from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
-        raw_token, _ = resolve_copilot_token()
-        if raw_token:
-            resolved = (get_copilot_api_token(raw_token)[1] or "").strip()
-            if resolved:
-                base_url = resolved
-    except Exception as exc:
-        logger.debug("Copilot base URL resolution fell back to default: %s", exc)
-    return base_url
-
-
 # Providers whose runtime base URL is not simply env-override-or-registry-default:
 # ``(api_key, registry_default, env_override) -> base_url``.
 _API_KEY_BASE_URL_RESOLVERS: dict[str, Callable[[str, str, str], str]] = {
     "kimi-coding": _resolve_kimi_base_url,
     "kimi-coding-cn": _resolve_kimi_base_url,
     "zai": _resolve_zai_base_url,
-    "copilot": _copilot_runtime_base_url,
     "lmstudio": lambda *a: _normalize_lmstudio_runtime_base_url(_default_api_key_base_url(*a)),
     "actual": lambda *a: normalize_actual_base_url(_default_api_key_base_url(*a))}
 
@@ -2301,9 +2250,12 @@ def resolve_api_key_provider_credentials(provider_id: str) -> dict[str, Any]:
 
     env_url = _provider_env_base_url(pconfig)
     resolve_url = _API_KEY_BASE_URL_RESOLVERS.get(provider_id, _default_api_key_base_url)
-    base_url = resolve_url(api_key, pconfig.inference_base_url, env_url)
+    profile = _credential_profile(provider_id)
+    base_url = (profile.runtime_base_url(api_key=api_key, default=pconfig.inference_base_url, env_url=env_url)
+                if profile else None)
+    base_url = resolve_url(api_key, pconfig.inference_base_url, env_url) if base_url is None else base_url
     # An API-key provider must never hand back an empty base URL (a set-but-empty
-    # COPILOT_API_BASE_URL or similar env override otherwise wedges chat inference).
+    # <PROVIDER>_BASE_URL env override otherwise wedges chat inference).
     if not _nonempty_str(base_url):
         base_url = pconfig.inference_base_url
 

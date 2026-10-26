@@ -15,7 +15,7 @@ from hermes_cli.auth import (
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     _resolve_kimi_base_url,
 )
-from hermes_cli.copilot_auth import _try_gh_cli_token
+from plugins.model_providers.copilot.credentials import _try_gh_cli_token
 
 
 # =============================================================================
@@ -32,6 +32,9 @@ from hermes_cli.copilot_auth import _try_gh_cli_token
 # missing HF_TOKEN/DEEPINFRA_API_KEY, which made the auto-detection tests
 # env-dependent (they failed on any machine with HF_TOKEN exported).
 from hermes_cli.auth import PROVIDER_REGISTRY as _REGISTRY
+import providers as _providers
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
+from plugins.model_providers.copilot import credentials as copilot_credentials
 
 _EXTRA_ENV_VARS = (
     # Checked directly in resolve_provider("auto"), not via the registry.
@@ -191,7 +194,7 @@ class TestResolveApiKeyProviderCredentials:
 
 
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch, tmp_path):
-        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+        from plugins.model_providers.copilot.credentials import _invalidate_gh_cli_token_cache
         from hermes_platform.resolver import known_dirs
 
         _invalidate_gh_cli_token_cache()
@@ -214,7 +217,7 @@ class TestResolveApiKeyProviderCredentials:
             calls.append(cmd)
             return _Result()
 
-        monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
+        monkeypatch.setattr(copilot_credentials.subprocess, "run", _fake_run)
 
         assert _try_gh_cli_token() == "gh-cli-secret"
         assert calls == [[str(gh), "auth", "token"]]
@@ -260,7 +263,7 @@ class TestRuntimeProviderResolution:
         assert result["api_key"] == "auto-kimi-key"
 
     def test_runtime_copilot_uses_gh_cli_token(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(copilot_credentials, "_try_gh_cli_token", lambda: "gho_cli_secret")
         from hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="copilot")
         assert result["provider"] == "copilot"
@@ -269,7 +272,7 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "https://api.githubcopilot.com"
 
     def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(copilot_credentials, "_try_gh_cli_token", lambda: "gho_cli_secret")
         monkeypatch.setattr(
             "hermes_cli.runtime_provider._get_model_config",
             lambda: {"provider": "copilot", "default": "gpt-5.4"},
@@ -324,7 +327,7 @@ class TestHasAnyProviderConfigured:
         hermes_home.mkdir()
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
-        monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("", ""))
+        monkeypatch.setattr(copilot_credentials, "resolve_copilot_token", lambda: ("", ""))
         # Clear all provider env vars so earlier checks don't short-circuit
         _all_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                       "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
