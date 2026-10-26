@@ -636,7 +636,9 @@ class ProviderProfile:
 
     def seed_pool_credentials(self, *, is_suppressed: Callable[[str], bool],
                               explicitly_configured: Callable[[], bool]) -> list[dict] | None:
-        """Pool rows ``{source, access_token, base_url, label}`` this provider seeds itself; None = generic env seeding."""
+        """Pool rows ``{source, access_token, base_url, label}`` this provider seeds itself. Overriding it
+        replaces generic env seeding (that loop would overwrite exchanged tokens with the raw env value),
+        so an override returns ``[]`` for none; only the base implementation keeps generic env seeding."""
         return None
 
     def remove_credential_source(self, source: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:

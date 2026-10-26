@@ -302,7 +302,7 @@ meaning says otherwise.
 | `resolve_api_key_secret()` | Provider-owned `(runtime_api_key, source)` | `None` (env/pool ladder) |
 | `runtime_base_url()` | Base URL derived from the credential | `None` (env or default) |
 | `prepare_pool_entry()` | Turns the selected pool row's secret into the runtime key | the secret as-is |
-| `seed_pool_credentials()` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself | `None` (generic env seeding) |
+| `seed_pool_credentials()` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself; overriding it replaces generic env seeding (return `[]` for none) | not overridden = generic env seeding |
 | `remove_credential_source()` | `hermes auth remove`: `(sources_to_suppress, hints)` | `None` (generic removal) |
 | `refresh_runtime_credentials()` | Re-mints `(api_key, base_url)` on `unauthorized` \| `stale` \| `auxiliary_unauthorized`; error path only | `None` |
 | `is_stale_credential_error()` | A non-auth error really means the credential went stale (pure) | `False` |
