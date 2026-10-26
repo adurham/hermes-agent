@@ -59,22 +59,21 @@ def owner_worker_subject():
     return f'uid:{os.getuid()}'  # windows-footgun: ok — POSIX branch
 
 
-def reserve_admission_worker(authority, *, admission_id, process, principal_id, hello):
+def reserve_admission_worker(authority, *, admission_id, process, principal_id, hello, worker_subject=None):
     """Return a private bootstrap scope; never accept caller-selected kind/target.
 
     Only the owner process may reserve its live direct exec child. The admission
     supplies physical session and generation; its durable principal must match
     the producer. Do not publish the returned secret on any client event stream.
 
-    The adoption claim binds ``owner_worker_subject()``, the only identity a worker ticket can
-    carry, never the admission's principal: an automation principal is a route
-    (``automation:<session key>``), not a ticket subject, so a claim bound to it refused every
+    The adoption claim binds ``worker_subject``, the identity the worker will authenticate
+    as (``owner_worker_subject``), when given. An automation admission's principal is a route
+    (``automation:<session key>``), never a ticket subject, so a claim bound to it refused every
     adopt and each bot DM or completion wake on a managed session ended interrupted (#144139).
     """
     authority._require_admission_open()
     pid, birth = verify_worker_identity(process, hello)
     secret = secrets.token_urlsafe(32)
-    subject = owner_worker_subject()
 
     def write(conn):
         _epoch(conn, authority.epoch)
@@ -101,7 +100,7 @@ def reserve_admission_worker(authority, *, admission_id, process, principal_id, 
                          "WHERE admission_id=?", (sid, admission_id))
         scope = dict(profile_id=authority.profile_id, session_id=sid, execution_id=execution_id,
                      generation=generation, pid=pid, birth=birth, secret=secret)
-        claim = admission_fingerprint(canonical_target=sid, payload=scope | {'principal': subject})
+        claim = admission_fingerprint(canonical_target=sid, payload=scope | {'principal': worker_subject or principal_id})
         conn.execute("INSERT INTO worker_executions(execution_id,session_id,kind,owner_epoch,generation,status,adoption_digest) "
                      "VALUES(?,?,'compute',?,?,'registered',?)",
                      (execution_id, sid, authority.epoch, generation, _secret_digest(claim)))

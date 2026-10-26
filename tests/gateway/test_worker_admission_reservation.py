@@ -58,7 +58,7 @@ def test_started_admission_binds_only_exact_owned_process_and_principal(tmp_path
 @pytest.mark.asyncio
 async def test_reserved_process_uses_existing_authenticated_adoption_and_persistence(tmp_path):
     from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
+    from gateway.session_worker_reservation import reserve_admission_worker
     db = SessionDB(tmp_path / 'state.db')
     process = subprocess.Popen([sys.executable, '-c', 'import sys; sys.stdin.read()'], stdin=subprocess.PIPE,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -70,7 +70,7 @@ async def test_reserved_process_uses_existing_authenticated_adoption_and_persist
         admitted = admit_session_input(db, epoch=epoch, principal_id='human', session_id='owned', request_id='input', payload={})
         claim_session_input(db, epoch=epoch, session_id='owned')
         scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process, principal_id='human', hello=hello(process))
-        actor = SimpleNamespace(subject=owner_worker_subject(), profile_id=str(tmp_path), capabilities={'worker:adopt'})
+        actor = SimpleNamespace(subject='human', profile_id=str(tmp_path), capabilities={'worker:adopt'})
         connection = SimpleNamespace(authority=authority, actor=actor)
         identity = {k: v for k, v in scope.items() if k != 'epoch'}
         with pytest.raises(Exception, match='permission_denied'):
