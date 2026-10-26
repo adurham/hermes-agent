@@ -3,7 +3,11 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.models import azure_foundry_model_api_mode, copilot_model_api_mode, curated_models_for_provider, fetch_api_models, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_model_ids
+from hermes_cli.models import azure_foundry_model_api_mode, curated_models_for_provider, fetch_api_models, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_model_ids
+import providers as _providers
+
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (wire module)
+from plugins.model_providers.copilot.wire import model_api_mode as copilot_model_api_mode
 from hermes_cli.models_local import fetch_lmstudio_models
 from hermes_cli.models_validate import validate_requested_model
 

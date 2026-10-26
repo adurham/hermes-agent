@@ -11,7 +11,6 @@ from typing import Any
 from utils import base_url_host_matches
 
 _COPILOT_HOST = "githubcopilot.com"  # api.githubcopilot.com plus the api.<plan>.githubcopilot.com variants
-_GITHUB_MODELS_HOST = "models.github.ai"
 
 # Constructor kwargs for the profile's L3 fields. ``github_responses`` is persisted on encrypted reasoning
 # items in session history: renaming it orphans every stored blob (one cold cache + dropped reasoning on resume).
@@ -37,9 +36,6 @@ def _is_copilot_host(base_url: str) -> bool:
 
 class CopilotResponsesMixin:
     """Endpoint ownership, catalog-clamped reasoning payloads and the ``/chat/completions`` carriers."""
-
-    def serves_endpoint(self, base_url: str) -> bool:
-        return _is_copilot_host(base_url) or base_url_host_matches(str(base_url or ""), _GITHUB_MODELS_HOST)
 
     def reasoning_payload(self, model: str | None, reasoning_config: dict | None, *, base_url: str) -> dict | None:
         from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts

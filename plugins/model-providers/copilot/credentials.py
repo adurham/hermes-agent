@@ -719,6 +719,11 @@ class CopilotCredentialsMixin:
         refresher = _RUNTIME_REFRESHERS.get(reason)
         return refresher() if refresher else None
 
+    def credential_refresh_notice(self, *, reason: str) -> str:
+        if reason == "stale":
+            return "Copilot credential re-exchanged after model_not_available 400. Retrying request..."
+        return "Copilot credentials refreshed after 401. Retrying request..." if reason == "unauthorized" else ""
+
     def is_stale_credential_error(self, *, status_code: Optional[int], message: str) -> bool:
         """A 400 that is really a STALE / DEGRADED credential (status 400 AND an integrator /
         model-not-supported marker, so a wrong model name never triggers the re-exchange)."""

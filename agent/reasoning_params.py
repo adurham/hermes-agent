@@ -92,9 +92,9 @@ class ReasoningParamsMixin:
         url = self._base_url_lower
         if base_url_host_matches(url, "nousresearch.com") or base_url_host_matches(url, "ai-gateway.vercel.sh"):
             return True
-        from agent.endpoint_profile import endpoint_profile
+        from providers import profile_for_host
 
-        if (profile := endpoint_profile(getattr(self, "base_url", None))) is not None:
+        if (profile := profile_for_host(str(getattr(self, "base_url", None) or ""))) is not None:
             # A claimed endpoint gates on its own catalog: reasoning goes out iff it declares a payload.
             try:
                 return profile.reasoning_payload(self.model, None, base_url=self.base_url) is not None
@@ -140,11 +140,11 @@ class ReasoningParamsMixin:
 
     def _endpoint_reasoning_payload(self) -> dict | None:
         """``reasoning_payload`` of the profile claiming this endpoint for the agent's model and
-        ``reasoning_config`` (``ProviderProfile.serves_endpoint``), or None when no profile claims it."""
-        from agent.endpoint_profile import endpoint_profile
+        ``reasoning_config`` (``providers.profile_for_host``), or None when no profile claims it."""
+        from providers import profile_for_host
 
         base_url = getattr(self, "base_url", None)
-        profile = endpoint_profile(base_url)
+        profile = profile_for_host(str(base_url or ""))
         if profile is None:
             return None
         return profile.reasoning_payload(self.model, self.reasoning_config, base_url=str(base_url))

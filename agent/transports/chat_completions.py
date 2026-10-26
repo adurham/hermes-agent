@@ -616,7 +616,7 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body["thinking"] = {"type": "disabled" if thinking_off else "enabled"}
 
         if supports_reasoning:
-            # An endpoint claimed by a profile (ProviderProfile.serves_endpoint) takes its verbatim payload.
+            # An endpoint claimed by a profile (providers.profile_for_host) takes its verbatim payload.
             if params.get("profile_endpoint", False):
                 if params.get("endpoint_reasoning") is not None:
                     extra_body["reasoning"] = params["endpoint_reasoning"]

@@ -331,10 +331,9 @@ def settle_unrecovered_error(
         ):
             _retry.provider_stale_refresh_attempted = True
             if agent._try_refresh_provider_runtime_credentials(reason="stale"):
-                agent._buffer_vprint(
-                    f"🔐 {profile.display_name or profile.name} credential renewed after a "
-                    "stale-credential error. Retrying request..."
-                )
+                agent._buffer_vprint("🔐 " + (profile.credential_refresh_notice(reason="stale") or (
+                    f"{profile.display_name or profile.name} credential renewed after a "
+                    "stale-credential error. Retrying request...")))
                 retry_count = 0
                 return _verdict("continue")
         # ``should_fallback=False`` marks a deterministic failure no other provider can fix (the

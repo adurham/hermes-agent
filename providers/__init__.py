@@ -59,6 +59,8 @@ _ALIASES: dict[str, str] = {}
 _SOURCES: dict[str, str] = {}
 _current_source: str | None = None
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
+# Bumped by every registration (process-wide or per-home layer): memos over the registry key on it.
+_REGISTRY_GENERATION = 0
 _discovered = False
 _discovering = False
 _PLUGIN_DIR_STAMP_TTL_SECONDS = 1.0
@@ -127,7 +129,8 @@ def register_provider(profile: ProviderProfile) -> None:
     bundled profiles without editing repo code. A registration made while a
     ``$HERMES_HOME`` plugin is being imported lands in that home's layer.
     """
-    global _PROVIDER_LIST_CACHE
+    global _PROVIDER_LIST_CACHE, _REGISTRY_GENERATION
+    _REGISTRY_GENERATION += 1
     layer = _REGISTRATION_TARGET.get()
     if layer is not None:
         layer.registry[profile.name] = profile
@@ -257,21 +260,49 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     return target_profile is not None and target_profile.supports_vision_tool_messages is False
 
 
+_HOST_PROFILE_MEMO: dict[tuple, tuple[tuple, ProviderProfile | None]] = {}
+
+
+def registry_generation() -> int:
+    """Counter bumped by every provider registration; key memos of profile answers on it."""
+    return _REGISTRY_GENERATION
+
+
+def _host_claims(host: str, claimed: str) -> bool:
+    claimed = str(claimed or "").strip().lower().rstrip(".")
+    return bool(claimed) and (host == claimed or host.endswith("." + claimed))
+
+
 def profile_for_host(url: str, *, metadata: bool = False) -> ProviderProfile | None:
     """The registered profile whose declared ``hostnames`` match *url*'s host (exact or subdomain).
 
-    *metadata* also matches ``metadata_hostnames``. Resolved per call against the bound home's
-    providers, so a ``$HERMES_HOME`` plugin installed after import (or in another profile) is seen.
+    *metadata* also matches ``metadata_hostnames``. Resolved against the bound home's providers, so a
+    ``$HERMES_HOME`` plugin installed after import (or in another profile) is seen; memoized per
+    (home, host) until the registry changes, because wire paths ask on every request.
     """
-    from utils import base_url_host_matches
+    from agent.safe_worker_policy import safe_worker_enabled
+    from utils import base_url_hostname
 
-    if not url:
+    host = base_url_hostname(url) if url else ""
+    if not host or safe_worker_enabled():
         return None
+    if not _discovered:
+        _discover_providers()
+    layer, home, key = _bound_home_layer()
+    _refresh_home_layer(layer, home, key)
+    token = (_REGISTRY_GENERATION, id(_REGISTRY), len(_REGISTRY), len(layer.registry))
+    memo_key = (key, host, metadata)
+    cached = _HOST_PROFILE_MEMO.get(memo_key)
+    if cached is not None and cached[0] == token:
+        return cached[1]
+    found = None
     for profile in list_providers():
         hosts = (*profile.hostnames, *profile.metadata_hostnames) if metadata else profile.hostnames
-        if any(base_url_host_matches(url, host) for host in hosts):
-            return profile
-    return None
+        if any(_host_claims(host, claimed) for claimed in hosts):
+            found = profile
+            break
+    _HOST_PROFILE_MEMO[memo_key] = (token, found)
+    return found
 
 
 def list_providers() -> list[ProviderProfile]:

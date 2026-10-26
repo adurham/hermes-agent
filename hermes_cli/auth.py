@@ -1604,10 +1604,11 @@ def _env_key_auto_detected(
     scoped_key_env: Callable[[str], str], oauth_active: Optional[str]) -> Optional[str]:
     """First registry api_key provider (registry order) with a usable env key, warning when it
     preempts a logged-in OAuth provider so a stale key in ~/.hermes/.env never switches silently."""
+    from providers import list_providers
+
+    ambient = {p.name for p in list_providers() if p.ambient_credentials}  # never per-pid lookups: a miss walks the ladder
     for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS:
-            continue
-        if getattr(_credential_profile(pid), "ambient_credentials", False):
+        if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS or pid in ambient:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(scoped_key_env(env_var)):

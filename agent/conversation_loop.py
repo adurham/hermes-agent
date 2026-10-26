@@ -364,22 +364,13 @@ def _apply_active_turn_redirect(agent: Any, messages: list[dict[str, Any]], text
 
 def _credential_refresh_profile(agent: Any) -> Any:
     """The profile owning the live credential's runtime refresh: the agent's provider by name, else
-    (a ``custom`` route at a provider's host) the registered profile whose hostname the base URL
-    targets. Only profiles that override ``refresh_runtime_credentials`` qualify."""
-    from providers import get_provider_profile, list_providers
-    from providers.base import ProviderProfile
+    (a ``custom`` route at a provider's host) the profile serving the base URL's host. Only profiles
+    that override ``refresh_runtime_credentials`` qualify."""
+    from agent.provider_route_hooks import route_profiles
 
-    def _refreshes(profile: Any) -> bool:
-        return type(profile).refresh_runtime_credentials is not ProviderProfile.refresh_runtime_credentials
-
-    named = get_provider_profile((getattr(agent, "provider", "") or "").strip().lower())
-    if named is not None and _refreshes(named):
-        return named
-    base_url = str(getattr(agent, "base_url", "") or "")
-    if not base_url:
-        return None
-    return next((p for p in list_providers()
-                 if _refreshes(p) and p.get_hostname() and base_url_host_matches(base_url, p.get_hostname())), None)
+    profiles = route_profiles("refresh_runtime_credentials", (getattr(agent, "provider", "") or "").strip().lower(),
+                              str(getattr(agent, "base_url", "") or ""))
+    return profiles[0] if profiles else None
 
 
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:

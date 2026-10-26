@@ -112,17 +112,17 @@ class _WireRoute(NamedTuple):
     model: Any
     base_url: str
     gemini: bool  # the route consumes the Gemini text-turn signature
-    profile: Any  # endpoint profile (``ProviderProfile.serves_endpoint``) or None
+    profile: Any  # profile serving the host (``providers.profile_for_host``) or None
     keep_fn_sig: bool  # replayed tool calls keep ``function.thought_signature``
     keys: tuple[str, ...]  # every message-level carrier key core knows about
 
 
 def _wire_route(model: Any, base_url: Any) -> _WireRoute:
-    from agent.endpoint_profile import endpoint_profile
+    from providers import profile_for_host
     from agent.transports.chat_completions import _model_consumes_thought_signature
 
     url = str(base_url or "")
-    profile = endpoint_profile(url)
+    profile = profile_for_host(url)
     keep_fn_sig = profile is not None and profile.replays_function_thought_signature(model=model, base_url=url)
     # Same gate as tool-call extra_content, so the two signature carriers can never disagree.
     return _WireRoute(model, url, _model_consumes_thought_signature(model), profile, keep_fn_sig, _message_keys())

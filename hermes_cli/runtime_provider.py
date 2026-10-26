@@ -260,27 +260,38 @@ def _effective_model(model_cfg: dict[str, Any], target_model: Optional[str]) -> 
     return target_model or model_cfg.get("default") or ""
 
 
-def _copilot_runtime_api_mode(model_cfg: dict[str, Any], api_key: str, *, target_model: Optional[str] = None) -> str:
-    configured_mode = _configured_api_mode("copilot", model_cfg)
-    if configured_mode:
-        # A stale/incompatible explicit ``codex_responses`` must not override Copilot's hard
-        # per-model requirement. Copilot serves ``gpt-5-mini`` on chat completions only; a
-        # Responses-API request there silently succeeds but returns no reasoning/thinking
-        # content (#46527). The stale value commonly survives an ordinary flow: the Copilot
-        # OAuth setup writes ``api_mode: codex_responses`` (correct for the gpt-5.4-mini it
-        # initially selects), then the user switches to gpt-5-mini without the mode being
-        # recomputed. The check is the pure-regex Copilot exception — no network call; a
-        # legitimate ``codex_responses`` for GPT-5 variants like gpt-5.4-mini is still honored.
-        model_name = str(_effective_model(model_cfg, target_model)).strip()
-        if (configured_mode == "codex_responses" and model_name
-                and not _models._should_use_copilot_responses_api(model_name)):
-            return "chat_completions"
-        return configured_mode
+def _per_model_profile(provider: str) -> Any:
+    """The provider's profile when it routes ``api_mode`` per model (``ProviderProfile.api_mode_for_model``)."""
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(provider) if provider else None
+    if profile is None or type(profile).api_mode_for_model is ProviderProfile.api_mode_for_model:
+        return None
+    return profile
+
+
+def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key: str, *,
+                              target_model: Optional[str] = None) -> str:
+    """api_mode for a provider that routes per model: its hard per-model wire wins over a stale persisted
+    ``codex_responses`` (pure check, no network); otherwise the profile decides with the live key."""
+    profile = _per_model_profile(provider)
+    configured_mode = _configured_api_mode(provider, model_cfg)
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
     # codex_responses from a GPT-5 default fails with "model ... does not support Responses API".
     model_name = str(_effective_model(model_cfg, target_model)).strip()
+    if configured_mode:
+        # A stale explicit ``codex_responses`` (written by setup for the model first picked, kept after a
+        # switch to a chat-only model) must not override the provider's per-model requirement: the
+        # Responses request silently succeeds but returns no reasoning content (#46527).
+        if (configured_mode == "codex_responses" and model_name and profile is not None
+                and profile.api_mode_for_model(model_name) == "chat_completions"):
+            return "chat_completions"
+        return configured_mode
+    if not model_name or profile is None:
+        return "chat_completions"
     try:
-        return _models.copilot_model_api_mode(model_name, api_key=api_key) if model_name else "chat_completions"
+        return profile.api_mode_for_model(model_name, api_key=api_key) or "chat_completions"
     except Exception:
         return "chat_completions"
 
@@ -314,8 +325,8 @@ def _configured_or_fallback_api_mode(provider: str, model_cfg: dict[str, Any], b
 def _api_key_provider_api_mode(provider: str, model_cfg: dict[str, Any], api_key: str, base_url: str, effective_model: Any, *,
                                opencode_by_model: bool) -> str:
     """api_mode for a registry ``api_key`` provider (explicit and env/config paths)."""
-    if provider == "copilot":
-        return _copilot_runtime_api_mode(model_cfg, api_key, target_model=effective_model)
+    if _per_model_profile(provider) is not None:
+        return _profile_runtime_api_mode(provider, model_cfg, api_key, target_model=effective_model)
     if provider == "xai":
         # Ramp Router: Responses-native host — /v1/chat/completions is only a minimal compatibility shim,
         # while reasoning and caching support live on /v1/responses (docs.router.com/api/endpoint). Mirrors
@@ -600,9 +611,10 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
     if provider == "nous":
         return nous_api_mode(effective_model), (_nous_inference_env_override() or "") or base_url
-    if provider == "copilot":
-        api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""), target_model=effective_model)
-        return api_mode, base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
+    if _per_model_profile(provider) is not None:
+        api_mode = _profile_runtime_api_mode(provider, model_cfg, getattr(entry, "runtime_api_key", ""),
+                                             target_model=effective_model)
+        return api_mode, base_url or PROVIDER_REGISTRY[provider].inference_base_url
     if provider == "azure-foundry":
         api_mode = "chat_completions"
         if _cfg_provider(model_cfg) == "azure-foundry":

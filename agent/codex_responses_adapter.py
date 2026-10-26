@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class ResponsesEndpointQuirks(NamedTuple):
     """Responses wire quirks of the endpoint, from the ``responses_*`` fields of the profile claiming it
-    (``ProviderProfile.serves_endpoint``). Defaults are the generic wire."""
+    (``providers.profile_for_host``). Defaults are the generic wire."""
     replay_item_ids: bool = True
     prompt_cache_key: bool = True
     issuer_kind: str = ""
@@ -38,9 +38,9 @@ _GENERIC_ENDPOINT = ResponsesEndpointQuirks()
 def responses_endpoint_quirks(base_url: Any) -> ResponsesEndpointQuirks:
     """Quirks for *base_url*; the generic wire when no registered profile claims it (or none is installed).
     Pure function of the URL and the registry, so every turn replays the same bytes for the same history."""
-    from agent.endpoint_profile import endpoint_profile
+    from providers import profile_for_host
 
-    profile = endpoint_profile(base_url)
+    profile = profile_for_host(str(base_url or ""))
     if profile is None:
         return _GENERIC_ENDPOINT
     return ResponsesEndpointQuirks(

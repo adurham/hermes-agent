@@ -37,7 +37,7 @@ def wire_profile():
             return "max_completion_tokens" if base_url_host_matches(base_url, "wirefake.test") else None
 
     providers.list_providers()  # discovery first, so the fake survives it
-    profile = WireFakeProfile(name="wirefake", base_url=HOST)
+    profile = WireFakeProfile(name="wirefake", base_url=HOST, hostnames=("wirefake.test",))
     providers.register_provider(profile)
     yield profile, seen_keys
     import hermes_cli.auth

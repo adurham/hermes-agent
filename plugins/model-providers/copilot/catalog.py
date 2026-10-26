@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-# Copilot business/enterprise accounts are served from ``api.<plan>.githubcopilot.com``.
-HOSTNAMES = ("githubcopilot.com",)
-# GitHub Models (models.github.ai, and the ~8K-capped free tier at models.inference.ai.azure.com)
-# share the Copilot catalog but take plain GitHub tokens.
-METADATA_HOSTNAMES = ("models.github.ai", "models.inference.ai.azure.com")
+# Copilot business/enterprise accounts are served from ``api.<plan>.githubcopilot.com``; GitHub Models
+# (models.github.ai) speaks the same wire (Responses quirks, reasoning payloads, x-initiator billing).
+# Per-site differences (carriers, editor headers: githubcopilot.com only) live in the hooks, keyed on base_url.
+HOSTNAMES = ("githubcopilot.com", "models.github.ai")
+# The ~8K-capped GitHub Models free tier shares the Copilot catalog only (model metadata lookups).
+METADATA_HOSTNAMES = ("models.inference.ai.azure.com",)
 MODELS_DEV_ID = "github-copilot"
 
 

@@ -10,6 +10,7 @@ from hermes_cli import runtime_provider as rp
 
 _providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
 from plugins.model_providers.copilot import credentials as copilot_credentials
+from plugins.model_providers.copilot import wire as copilot_wire
 
 
 def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeypatch):
@@ -28,7 +29,7 @@ def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeyp
     monkeypatch.setattr(copilot_credentials, "resolve_copilot_token", lambda: ("ghu_raw_gh_token", "gh auth token"))
     monkeypatch.setattr(copilot_credentials, "get_copilot_api_token",
                         lambda tok: ("tid=exchanged;exp=1", "https://api.enterprise.ghe.example"))
-    monkeypatch.setattr(rp._models, "copilot_model_api_mode", lambda *a, **k: "chat_completions")
+    monkeypatch.setattr(copilot_wire, "model_api_mode", lambda *a, **k: "chat_completions")
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
 
     resolved = rp.resolve_runtime_provider(requested="copilot", target_model="gpt-4.1")

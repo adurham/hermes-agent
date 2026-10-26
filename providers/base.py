@@ -467,12 +467,12 @@ class ProviderProfile:
 
     def request_headers(self, *, base_url: str, model: str = "", user_initiated: bool = False) -> dict[str, str]:
         """Per-request headers (``extra_headers``) for *base_url*; ``user_initiated`` is True only on the
-        first API call of a user turn (attribution). Hot path: pure and cheap."""
+        first API call of a user turn (attribution). Pure: core memoizes the answer per argument set."""
         return {}
 
     def max_tokens_param(self, *, base_url: str, model: str = "") -> str | None:
         """``"max_completion_tokens"`` / ``"max_tokens"`` for requests to *base_url*, or None for the
-        core heuristic (direct OpenAI / Azure host or newer OpenAI model families)."""
+        core heuristic (direct OpenAI / Azure host or newer OpenAI model families). Pure: memoized per arguments."""
         return None
 
     def listed(self) -> bool:
@@ -652,6 +652,10 @@ class ProviderProfile:
         """True when a non-auth error really means the credential went stale (pure, no I/O)."""
         return False
 
+    def credential_refresh_notice(self, *, reason: str) -> str:
+        """Status line after ``refresh_runtime_credentials(reason=...)`` succeeded; "" = generic wording."""
+        return ""
+
     def request_rejection_hint(self, *, status_code: int | None, base_url: str) -> tuple[str, ...]:
         """User-facing lines explaining an endpoint's hard rejection of *any* route (pure); default none."""
         return ()
@@ -661,7 +665,7 @@ class ProviderProfile:
         return None
 
     # ── Lane L3: Responses-route quirks and message-level reasoning carriers ───
-    # Every field and hook below applies only on endpoints the profile claims via ``serves_endpoint``;
+    # Every field and hook below applies only on hosts the profile declares in ``hostnames``;
     # the defaults are the generic wire. Hot path: answers must be pure and cheap (no I/O).
     responses_replay_item_ids: bool = True  # replayed Responses ``message`` items keep their ``id``
     responses_prompt_cache_key: bool = True  # the Responses body carries ``prompt_cache_key``
@@ -672,10 +676,6 @@ class ProviderProfile:
     message_carrier_opaque: str = ""  # top-level assistant key of an opaque reasoning blob (latest streamed wins)
     message_carrier_text: str = ""  # top-level assistant key of readable reasoning text (streamed parts concatenate)
     replays_tool_call_signatures: bool = False  # tool calls keep Gemini ``extra_content`` signatures (by provider name)
-
-    def serves_endpoint(self, base_url: str) -> bool:
-        """True when *base_url* is this provider's own backend, so the L3 fields and hooks apply to it."""
-        return False
 
     def reasoning_payload(self, model: str | None, reasoning_config: dict | None, *, base_url: str) -> dict | None:
         """Verbatim ``reasoning`` object the endpoint takes for *model* (catalog-clamped), or None for none."""

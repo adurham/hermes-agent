@@ -1,4 +1,4 @@
-"""Generic endpoint seams (``ProviderProfile.serves_endpoint`` + the L3 fields/hooks) through a fake relay profile.
+"""Generic endpoint seams (``hostnames`` via ``providers.profile_for_host`` + the L3 fields/hooks) through a fake relay profile.
 
 The relay is not any shipped provider: the contract is that a profile claiming an endpoint controls its
 Responses item-id replay, cache-key routing, issuer stamp, reasoning shape and message-level reasoning
@@ -10,16 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 from providers.base import ProviderProfile
-from utils import base_url_host_matches
 
 RELAY = "https://relay.example/v1"
 OTHER = "https://other.example/v1"
 
 
 class _RelayProfile(ProviderProfile):
-    def serves_endpoint(self, base_url: str) -> bool:
-        return base_url_host_matches(base_url, "relay.example")
-
     def reasoning_payload(self, model, reasoning_config, *, base_url):
         return {"effort": "low"}
 
@@ -28,16 +24,22 @@ class _RelayProfile(ProviderProfile):
 
 
 @pytest.fixture
-def relay(monkeypatch):
+def relay(request):
     import providers
 
     profile = _RelayProfile(
-        name="relay-fake", responses_replay_item_ids=False, responses_prompt_cache_key=False,
+        name="relay-fake", hostnames=("relay.example",), responses_replay_item_ids=False, responses_prompt_cache_key=False,
         responses_issuer_kind="relay_kind", responses_trusts_completed_status=False,
         responses_profile_reasoning=True, message_carrier_opaque="blob", message_carrier_text="blob_text",
     )
-    real = providers.list_providers
-    monkeypatch.setattr(providers, "list_providers", lambda: [profile, *real()])
+    providers.list_providers()  # discovery first, so the fixture registration is not shadowed
+    providers.register_provider(profile)
+
+    def _cleanup():
+        providers._REGISTRY.pop(profile.name, None)
+        providers._PROVIDER_LIST_CACHE = None
+
+    request.addfinalizer(_cleanup)
     return profile
 
 

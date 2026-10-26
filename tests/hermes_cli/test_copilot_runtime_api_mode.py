@@ -6,17 +6,22 @@ from types import SimpleNamespace
 
 import pytest
 
+import providers as _providers
+
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (wire module)
+from plugins.model_providers.copilot import wire as copilot_wire
+
 
 def test_copilot_runtime_api_mode_still_uses_default_without_target(monkeypatch):
     from hermes_cli import runtime_provider as rp
 
     monkeypatch.setattr(
-        "hermes_cli.models.copilot_model_api_mode",
+        copilot_wire, "model_api_mode",
         lambda model, api_key=None: "codex_responses" if str(model).startswith("gpt-5") else "chat_completions",
     )
 
-    assert rp._copilot_runtime_api_mode(
-        {"provider": "copilot", "default": "gpt-5.5"},
+    assert rp._profile_runtime_api_mode(
+        "copilot", {"provider": "copilot", "default": "gpt-5.5"},
         "token",
     ) == "codex_responses"
 
@@ -44,7 +49,7 @@ def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
     model_cfg = {"provider": "copilot", "default": configured_model}
     monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
     monkeypatch.setattr(rp, "resolve_provider", lambda *_args, **_kwargs: "copilot")
-    # Keep this a real copilot_model_api_mode decision without making a live
+    # Keep this a real Copilot model_api_mode decision without making a live
     # catalog request. The API-mode contract is determined by the model family.
     monkeypatch.setattr(models, "fetch_github_model_catalog", lambda **_kwargs: [])
 

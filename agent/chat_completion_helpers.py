@@ -1442,8 +1442,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     _is_or = agent._is_openrouter_url()
     _host = agent._base_url_lower
     _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio"
-    from agent.endpoint_profile import endpoint_profile
-    _profile_endpoint = endpoint_profile(agent.base_url) is not None
+    from providers import profile_for_host
+    _profile_endpoint = profile_for_host(str(agent.base_url or "")) is not None
 
     # _fixed_temperature_for_model may return the OMIT_TEMPERATURE sentinel
     # (temperature omitted entirely), a numeric override, or None.

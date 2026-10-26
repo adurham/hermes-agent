@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import providers
 from providers.base import ProviderProfile
+from utils import base_url_host_matches
 
 
 class _OwnCreds(ProviderProfile):
@@ -24,7 +25,7 @@ class _OwnCreds(ProviderProfile):
         return ("capped",) if status_code == 413 and "acme.example" in base_url else ()
 
 
-_ACME = _OwnCreds(name="acme", base_url="https://api.acme.example/v1")
+_ACME = _OwnCreds(name="acme", base_url="https://api.acme.example/v1", hostnames=("acme.example",))
 _PLAIN = ProviderProfile(name="plain", base_url="https://api.plain.example/v1")
 
 
@@ -32,6 +33,8 @@ def _registry(monkeypatch):
     profiles = {"acme": _ACME, "plain": _PLAIN}
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: profiles.get(name))
     monkeypatch.setattr(providers, "list_providers", lambda: list(profiles.values()))
+    monkeypatch.setattr(providers, "profile_for_host", lambda url, metadata=False: next(
+        (p for p in profiles.values() if any(base_url_host_matches(url, h) for h in p.hostnames)), None))
 
 
 def test_profile_seeded_rows_land_in_the_pool_and_skip_the_generic_env_loop(monkeypatch):

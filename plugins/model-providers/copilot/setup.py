@@ -100,7 +100,10 @@ def model_flow_copilot(config, current_model="", args=None):
     comes from ``setup_reasoning_efforts`` there)."""
     from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
     from hermes_cli.model_setup_flows_common import _persist_model, _pick_model_or_prompt, _say
-    from hermes_cli.models import fetch_api_models, copilot_model_api_mode
+    from hermes_cli.models import fetch_api_models
+
+    from .wire import model_api_mode
+
     del config, args
     provider_id = "copilot"
     pconfig = PROVIDER_REGISTRY[provider_id]
@@ -132,7 +135,7 @@ def model_flow_copilot(config, current_model="", args=None):
         return
     selected = _normalize(selected)
     _persist_model(selected, provider_id, base_url=effective_base,
-                   api_mode=copilot_model_api_mode(selected, catalog=catalog, api_key=api_key))
+                   api_mode=model_api_mode(selected, catalog=catalog, api_key=api_key))
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 

@@ -2,7 +2,7 @@
 honor a stale/incompatible explicit ``api_mode``.
 
 The gateway resolves and snapshots the primary provider/model at startup via
-``resolve_runtime_provider`` -> ``_copilot_runtime_api_mode``. When the config
+``resolve_runtime_provider`` -> ``_profile_runtime_api_mode``. When the config
 carries a stale ``api_mode: codex_responses`` (e.g. the Copilot OAuth setup
 wrote it for the ``gpt-5.4-mini`` it initially selects, then the user switched
 to ``gpt-5-mini``) the old code honored the stale ``codex_responses`` verbatim.
@@ -10,7 +10,11 @@ That dispatches gpt-5-mini through the Responses API — which Copilot serves on
 chat completions only — and the response comes back with no reasoning/thinking
 content (the symptom in #46527).
 """
-from hermes_cli.runtime_provider import _copilot_runtime_api_mode
+from functools import partial
+
+from hermes_cli.runtime_provider import _profile_runtime_api_mode
+
+_copilot_runtime_api_mode = partial(_profile_runtime_api_mode, "copilot")
 
 
 def test_stale_codex_responses_vetoed_for_gpt5_mini():

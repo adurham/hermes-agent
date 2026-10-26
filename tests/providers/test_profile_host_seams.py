@@ -68,3 +68,51 @@ def test_live_context_length_answers_after_cache_with_credentials(fake_profile):
     ctx = _resolve_provider_aware_context_length("m-1", "https://api.fake-llm.test/v1", "sk-x", NAME, NAME)
     assert ctx == 777_000
     assert fake_profile.calls == [("m-1", "sk-x", "https://api.fake-llm.test/v1")]
+
+
+def test_profile_for_host_answers_follow_registry_changes(request):
+    """Host answers are memoized for the wire hot path, but a profile registered later is seen at once."""
+    host = "https://api.late-claim.test/v1"
+    providers.list_providers()
+    assert providers.profile_for_host(host) is None
+    late = ProviderProfile(name="l4-late-claim", hostnames=("late-claim.test",))
+    providers.register_provider(late)
+
+    def _cleanup():
+        providers._REGISTRY.pop(late.name, None)
+        providers._PROVIDER_LIST_CACHE = None
+
+    request.addfinalizer(_cleanup)
+    assert providers.profile_for_host(host) is late
+    _cleanup()
+    assert providers.profile_for_host(host) is None
+
+
+class _CountingWire(ProviderProfile):
+    def request_headers(self, *, base_url, model="", user_initiated=False):
+        self.calls.append((base_url, model, user_initiated))
+        return {"X-Count": "user"} if user_initiated else {}
+
+
+def test_pure_per_request_hook_is_asked_once_per_argument_set(request):
+    """``request_headers`` is pure: a hosted plugin answers once per distinct request shape, not per call."""
+    from agent.provider_route_hooks import route_answer
+
+    profile = _CountingWire(name="l4-counting-wire", hostnames=("counting-wire.test",))
+    profile.calls = []
+    providers.list_providers()
+    providers.register_provider(profile)
+
+    def _cleanup():
+        providers._REGISTRY.pop(profile.name, None)
+        providers._PROVIDER_LIST_CACHE = None
+
+    request.addfinalizer(_cleanup)
+    url = "https://api.counting-wire.test/v1"
+    for _ in range(3):
+        answer = route_answer("request_headers", provider="custom", base_url=url, model="m", user_initiated=True)
+        assert answer == {"X-Count": "user"}
+        answer["mutated"] = "1"  # callers own their copy; the memo is never poisoned
+    assert len(profile.calls) == 1
+    route_answer("request_headers", provider="custom", base_url=url, model="m", user_initiated=False)
+    assert len(profile.calls) == 2
