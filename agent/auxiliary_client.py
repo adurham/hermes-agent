@@ -543,25 +543,23 @@ _LOCAL_SERVER_ALIASES = {
     "llama.cpp": "custom", "llama-cpp": "custom",
 }
 
-_ALIAS_TABLE: Optional[dict[str, str]] = None
+_ALIAS_TABLES: dict[str, tuple[int, dict[str, str]]] = {}  # home key -> (registry generation, table)
 
 
 def _provider_alias_table() -> dict[str, str]:
-    """The same alias table the main provider path resolves against (hermes_cli.auth).
-
-    A hand-copied mirror here rots silently every time auth grows a family — the local
-    servers (#106010) and the OpenCode entries were both missed that way. Local-server
-    names stay pinned on top: that set doubles as the guard for the /v1 tail and the
-    no-key-borrow rule in the custom branch below.
-    """
-    global _ALIAS_TABLE
-    if _ALIAS_TABLE is None:
-        merged: dict[str, str] = dict(_LOCAL_SERVER_ALIASES)
+    """The alias table the main provider path resolves against (hermes_cli.auth), per home and registry
+    generation: plugin aliases are per home. A hand-copied mirror rots silently (#106010); local-server
+    names stay in: they guard the /v1 tail and the custom-branch no-key-borrow rule."""
+    from providers import bound_registry_key
+    home, generation = bound_registry_key()
+    cached = _ALIAS_TABLES.get(home)
+    if cached is None or cached[0] != generation:
+        cached = (generation, dict(_LOCAL_SERVER_ALIASES))
         with contextlib.suppress(Exception):
             from hermes_cli.auth import _plugin_aliases
-            merged.update(_plugin_aliases())
-        _ALIAS_TABLE = merged
-    return _ALIAS_TABLE
+            cached[1].update(_plugin_aliases())
+        _ALIAS_TABLES[home] = cached
+    return cached[1]
 
 def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()

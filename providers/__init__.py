@@ -268,6 +268,19 @@ def registry_generation() -> int:
     return _REGISTRY_GENERATION
 
 
+def bound_registry_key() -> tuple[str, int]:
+    """``(bound home key, registry generation)`` after the periodic plugin-dir check.
+
+    Key for per-home memos of profile-derived answers: each profile home has its own plugins, and
+    any registration (a plugin installed while the process runs) moves the generation.
+    """
+    if not _discovered:
+        _discover_providers()
+    layer, home, key = _bound_home_layer()
+    _refresh_home_layer(layer, home, key)
+    return key, _REGISTRY_GENERATION
+
+
 def _host_claims(host: str, claimed: str) -> bool:
     claimed = str(claimed or "").strip().lower().rstrip(".")
     return bool(claimed) and (host == claimed or host.endswith("." + claimed))
