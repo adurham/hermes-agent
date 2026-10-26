@@ -398,9 +398,6 @@ def sync_plugin_provider_catalog() -> int:
         profiles = list_providers()
     except Exception:
         return 0
-    for pp in profiles:
-        if pp.static_models:
-            _PROVIDER_MODELS.setdefault(pp.name, list(pp.static_models))
     pending = [pp for pp in profiles if _plugin_provider_enters_picker(pp)]
     added = 0
     while pending:

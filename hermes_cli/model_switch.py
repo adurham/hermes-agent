@@ -802,9 +802,9 @@ def resolve_alias(raw_input: str, current_provider: str, user_providers: Optiona
     # models.dev catalog merged with static _PROVIDER_MODELS entries it may be missing.
     catalog = list_provider_models(current_provider)
     try:
-        from hermes_cli.models import _PROVIDER_MODELS
+        from hermes_cli.models import static_catalog
         seen = {m.lower() for m in catalog}
-        catalog.extend(m for m in _PROVIDER_MODELS.get(current_provider, []) if m.lower() not in seen)
+        catalog.extend(m for m in static_catalog(current_provider) if m.lower() not in seen)
     except Exception:
         pass
 

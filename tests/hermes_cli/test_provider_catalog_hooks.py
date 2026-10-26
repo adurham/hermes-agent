@@ -55,17 +55,13 @@ def test_picker_catalog_none_falls_through_to_the_profile_fallback(only_acme):
     assert models.provider_model_ids("acme-cat") == ["acme-fallback"]
 
 
-def test_static_models_register_a_core_static_catalog_row(only_acme, monkeypatch):
+def test_static_models_act_as_the_providers_static_catalog_row(only_acme):
     only_acme(_acme(static_models=("acme-small", "acme-large")))
-    rows = dict(static._PROVIDER_MODELS)
-    monkeypatch.setattr(static, "_PROVIDER_MODELS", rows)
-    monkeypatch.setattr(models, "_PROVIDER_MODELS", rows)
-    monkeypatch.setattr(static, "_plugin_provider_enters_picker", lambda pp: False)
 
-    static.sync_plugin_provider_catalog()
-
-    assert rows["acme-cat"] == ["acme-small", "acme-large"]
+    assert models.static_catalog("acme-cat") == ["acme-small", "acme-large"]
     assert models.get_default_model_for_provider("acme-cat") == "acme-small"
+    assert "acme-cat" in models.static_catalog_providers()
+    assert "acme-cat" not in static._PROVIDER_MODELS  # resolved per lookup, never copied into the shared table
 
 
 def test_probe_models_hook_answers_its_endpoint_and_declines_others(only_acme, monkeypatch):

@@ -731,8 +731,8 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     ``models._profile_live_catalog``; generic /models probe for unregistered providers).
     Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, probe_profile_catalog
-    curated = _PROVIDER_MODELS.get(provider_id, [])
+    from hermes_cli.models import fetch_api_models, probe_profile_catalog, static_catalog
+    curated = static_catalog(provider_id)
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
     special = _SPECIAL_MODEL_LISTS.get(provider_id)

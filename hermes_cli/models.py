@@ -563,10 +563,28 @@ def recommended_nous_default_model() -> dict[str, Any]:
             "free_tier": bool(free_tier)}
 
 
+def static_catalog(provider: str) -> list[str]:
+    """Curated ids for *provider*: its built-in row, else the bound home's profile ``static_models``.
+    Resolved per lookup, never copied into the shared table: two served homes may register the same
+    provider name with different models (or only one of them has the plugin)."""
+    if provider in _PROVIDER_MODELS:
+        return _PROVIDER_MODELS[provider]
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider) if provider else None
+    return list(profile.static_models) if profile is not None else []
+
+
+def static_catalog_providers() -> list[str]:
+    """Every provider with a static catalog row in the bound home: built-ins, then plugin profiles."""
+    from providers import list_providers
+    plugin_rows = [p.name for p in list_providers() if p.static_models and p.name not in _PROVIDER_MODELS]
+    return [*_PROVIDER_MODELS, *dict.fromkeys(plugin_rows)]
+
+
 def get_default_model_for_provider(provider: str) -> str:
     """Cost-safe default model for a provider, or "" — the NON-INTERACTIVE fallback when a provider
     is configured but no model was ever selected."""
-    models = _PROVIDER_MODELS.get(provider, [])
+    models = static_catalog(provider)
     if provider in _SILENT_DEFAULT_PROVIDERS:
         preferred = get_preferred_silent_default_model(provider)
         # Trust the preferred default even without a static catalog (OpenRouter's picker list is
@@ -946,7 +964,7 @@ def curated_models_for_provider(
         return [(m, "") for m in live]
 
     # Fallback to static catalog
-    models = _PROVIDER_MODELS.get(normalized, [])
+    models = static_catalog(normalized)
     return [(m, "") for m in models]
 
 
@@ -958,7 +976,7 @@ def _provider_keys(provider: str) -> set[str]:
 
 def _provider_catalog_names(provider: str) -> tuple[str, ...]:
     """Active picker models plus retired aliases recognized for detection."""
-    return tuple(_PROVIDER_MODELS.get(provider, [])) + _PROVIDER_RETIRED_ALIASES.get(provider, ())
+    return tuple(static_catalog(provider)) + _PROVIDER_RETIRED_ALIASES.get(provider, ())
 
 
 def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
@@ -983,13 +1001,13 @@ def _resolve_static_model_alias(
     def _match(provider: str) -> Optional[str]:
         prefix = f"{identity.vendor}/{identity.family}" if provider in _AGGREGATOR_PROVIDERS else identity.family
         prefix = prefix.lower()
-        return next((m for m in _PROVIDER_MODELS.get(provider, []) if m.lower().startswith(prefix)), None)
+        return next((m for m in static_catalog(provider) if m.lower().startswith(prefix)), None)
 
     # Current provider first, then native vendors, then aggregators / borrow-list providers the user
     # is already on — so `sonnet` resolves to anthropic before any re-exposing provider.
     skip = current_keys | _AGGREGATOR_PROVIDERS | _BORROWED_MODEL_PROVIDERS
     candidates = [
-        *current_keys, *(p for p in _PROVIDER_MODELS if p not in skip),
+        *current_keys, *(p for p in static_catalog_providers() if p not in skip),
         *(p for p in _AGGREGATOR_PROVIDERS if p in current_keys),
         *(p for p in _BORROWED_MODEL_PROVIDERS if p in current_keys)]
     for provider in candidates:
@@ -1017,7 +1035,7 @@ def detect_static_provider_for_model(
     # provider's default. Skip "custom" (no catalog) and "openrouter" (needs an explicit model).
     resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
     if resolved_provider not in {"custom", "openrouter"}:
-        default_models = _PROVIDER_MODELS.get(resolved_provider, [])
+        default_models = static_catalog(resolved_provider)
         if resolved_provider in _PROVIDER_LABELS and default_models and resolved_provider not in current_keys:
             # Cost-safe default, not ``default_models[0]``: metered aggregators list most-capable-first,
             # so [0] would silently escalate `/model nous` to the priciest flagship.
@@ -1042,7 +1060,7 @@ def _static_catalog_matches(name: str, current_provider: str):
     # auto-switch TO them. A custom endpoint (custom / custom:*) is never auto-switched away
     # from: the user configured it deliberately and may serve the same model name there.
     if current_provider != "custom" and not current_provider.startswith("custom:"):
-        for pid in _PROVIDER_MODELS:
+        for pid in static_catalog_providers():
             if pid in current_keys or pid in _AGGREGATOR_PROVIDERS or pid in _BORROWED_MODEL_PROVIDERS:
                 continue
             if _model_in_provider_catalog(name_lower, {pid}):
@@ -1394,7 +1412,7 @@ def _stepfun_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
     live = _api_key_provider_live(normalized, force_refresh)
     if not live:
         return live
-    curated = list(_PROVIDER_MODELS.get(normalized, []))
+    curated = list(static_catalog(normalized))
     return _merge_unique(live, curated, key=_model_dedup_key) if curated else live
 
 
@@ -1440,7 +1458,7 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     if not is_official_openai_host(base):
         return live
     live_lower = {m.lower() for m in live}
-    curated = list(_PROVIDER_MODELS.get(normalized, []))
+    curated = list(static_catalog(normalized))
     # Curated order, only models the account has access to; an account serving none of them (rare)
     # falls back to curated so the picker still offers sane defaults.
     discovered = [m for m in curated if m.lower() in live_lower]
@@ -1596,7 +1614,7 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
     if not live:
         rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
     else:
-        curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
+        curated = list(static_catalog(normalized)) or list(profile.fallback_models or ())
         if not curated:
             rows = live
         else:
@@ -1707,7 +1725,7 @@ def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
     # model, flux-*, ahead of its chat models).
     # A provider with a live fetcher that declined is serving a placeholder; one without any live
     # source is serving its authoritative catalog.
-    curated_static = (CuratedFallbackModels if fetcher is not None else list)(_PROVIDER_MODELS.get(normalized, []))
+    curated_static = (CuratedFallbackModels if fetcher is not None else list)(static_catalog(normalized))
     if normalized not in _MODELS_DEV_PREFERRED:
         return _chat_catalog_rows(_drop_delisted_opencode_models(normalized, curated_static))
     # models.dev keeps listing retired Zen ids too: filter after the merge, not before.
