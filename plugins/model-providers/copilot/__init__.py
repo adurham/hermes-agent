@@ -10,6 +10,7 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+from .auth_rows import AUTH_ROW_FIELDS
 from .catalog import HOSTNAMES, METADATA_HOSTNAMES, MODELS_DEV_ID, CopilotCatalogMixin
 from .credentials import CopilotCredentialsMixin
 from .responses import RESPONSES_PROFILE_FIELDS, CopilotResponsesMixin
@@ -45,7 +46,7 @@ copilot = CopilotProfile(
     name="copilot", aliases=("github-copilot", "github-models", "github-model", "github"),
     env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), base_url="https://api.githubcopilot.com",
     auth_type="copilot", ambient_credentials=True, **RESPONSES_PROFILE_FIELDS, **SETUP_FIELDS,
-    hostnames=HOSTNAMES, metadata_hostnames=METADATA_HOSTNAMES, models_dev_id=MODELS_DEV_ID,
+    hostnames=HOSTNAMES, metadata_hostnames=METADATA_HOSTNAMES, models_dev_id=MODELS_DEV_ID, **AUTH_ROW_FIELDS,
 )
 
 register_provider(copilot)

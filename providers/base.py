@@ -688,3 +688,13 @@ class ProviderProfile:
     def replays_function_thought_signature(self, *, model: str | None, base_url: str) -> bool:
         """True when replayed tool calls keep ``function.thought_signature`` (stripped everywhere else)."""
         return False
+
+    # --- I2-auth: hermes-auth registry row mirrored from this profile (hermes_cli/auth_plugin_providers.py) ---
+    # auth_type of the registry row when credential resolution differs from the setup flow ``auth_type`` names
+    # (an env-token provider with its own login); "" = ``auth_type``.
+    registry_auth_type: str = ""
+    # Env var overriding ``base_url`` on the registry row when it is not listed in ``env_vars``; "" = none.
+    base_url_env_var: str = ""
+    # Registry id this provider's row sits right after, keeping its place in priority-ordered scans
+    # (aux api-key chain, env auto-detect); "" or an unknown id = appended.
+    registry_after: str = ""
