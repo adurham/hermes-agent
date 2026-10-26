@@ -338,8 +338,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("tencent-tokenhub", "Tencent TokenHub", "Tencent TokenHub (Hy4 preview via tokenhub.tencentmaas.com)"),
     ("tencent-tokenplan", "Tencent TokenPlan", "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"),
     ("nvidia", "NVIDIA NIM", "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
-    ("copilot", "GitHub Copilot", "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
-    ("copilot-acp", "GitHub Copilot ACP", "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
     ("huggingface", "Hugging Face", "Hugging Face Inference Providers"),
     ("gemini", "Google AI Studio", "Google AI Studio (Native Gemini API)"),
     ("vertex", "Google Vertex AI", "Google Vertex AI (Gemini via GCP; OAuth2 service account or ADC, GCP billing/quotas)"),
@@ -392,30 +390,55 @@ def sync_plugin_provider_catalog() -> int:
     plugin whose own imports pull ``hermes_cli.models`` in mid-``_discover_providers()``, or a
     profile registered later at runtime, would otherwise never reach the picker, ``hermes model``,
     ``/model`` or the Desktop ``model.options`` list until restart — the catalog twin of the auth
-    registry window (#102123). Idempotent by slug; built-in rows are never rewritten.
+    registry window (#102123). Idempotent by slug; built-in rows are never rewritten. A row lands
+    after its ``picker_after`` slug when that row exists, else at the end.
     """
     try:
         from providers import list_providers
         profiles = list_providers()
     except Exception:
         return 0
-    added = 0
     for pp in profiles:
         if pp.static_models:
             _PROVIDER_MODELS.setdefault(pp.name, list(pp.static_models))
-        if not _plugin_provider_enters_picker(pp):
-            continue
-        label = pp.display_name or pp.name
-        CANONICAL_PROVIDERS.append(ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)"))
-        _canonical_slugs.add(pp.name)
-        _PROVIDER_LABELS[pp.name] = label
-        added += 1
+    pending = [pp for pp in profiles if _plugin_provider_enters_picker(pp)]
+    added = 0
+    while pending:
+        # Rows anchored on a still-pending row wait for it, so a chain keeps its declared order.
+        names = {pp.name for pp in pending}
+        ready = [pp for pp in pending if pp.picker_after not in names] or pending
+        for pp in ready:
+            _admit_plugin_provider(pp)
+            added += 1
+        pending = [pp for pp in pending if pp not in ready]
     return added
+
+
+def _admit_plugin_provider(pp) -> None:
+    """Add one plugin profile to the picker tables: row (at ``picker_after``), label, group,
+    catalog aliases and the aggregator set."""
+    label = pp.display_name or pp.name
+    entry = ProviderEntry(pp.name, label, pp.description or f"{label} (direct API)")
+    slugs = [p.slug for p in CANONICAL_PROVIDERS]
+    anchor = pp.picker_after
+    CANONICAL_PROVIDERS.insert(slugs.index(anchor) + 1 if anchor in slugs else len(slugs), entry)
+    _canonical_slugs.add(pp.name)
+    _PROVIDER_LABELS[pp.name] = label
+    if pp.picker_group:
+        gid, group_label, group_desc = pp.picker_group
+        members = PROVIDER_GROUPS.setdefault(gid, (group_label, group_desc, []))[2]
+        if pp.name not in members:
+            members.append(pp.name)
+        _SLUG_TO_GROUP[pp.name] = gid
+    if pp.catalog_aliases:
+        for alias in pp.aliases:
+            _PROVIDER_ALIASES.setdefault(alias, pp.name)
+    if pp.aggregator:
+        _AGGREGATOR_PROVIDERS.add(pp.name)
 
 
 _PROVIDER_LABELS: dict[str, str] = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
-sync_plugin_provider_catalog()
 
 
 def listed_canonical_providers() -> list[ProviderEntry]:
@@ -444,7 +467,6 @@ PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
     "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "qwen-oauth"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription", ["opencode-zen", "opencode-go"]),
-    "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
     "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
 }
 
@@ -497,9 +519,7 @@ def group_providers(slugs):
 
 
 _PROVIDER_ALIASES = dict((
-    ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"), ("github", "copilot"),
-    ("github-copilot", "copilot"), ("github-models", "copilot"), ("github-model", "copilot"),
-    ("github-copilot-acp", "copilot-acp"), ("copilot-acp-agent", "copilot-acp"), ("google", "gemini"),
+    ("glm", "zai"), ("z-ai", "zai"), ("z.ai", "zai"), ("zhipu", "zai"), ("google", "gemini"),
     ("google-gemini", "gemini"), ("google-ai-studio", "gemini"), ("google-vertex", "vertex"), ("vertex-ai", "vertex"),
     ("gcp-vertex", "vertex"), ("vertexai", "vertex"), ("kimi", "kimi-coding"), ("moonshot", "kimi-coding"),
     ("kimi-cn", "kimi-coding-cn"), ("moonshot-cn", "kimi-coding-cn"), ("step", "stepfun"),
@@ -561,7 +581,9 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-_AGGREGATOR_PROVIDERS = frozenset({"nous", "openrouter", "ai-gateway", "copilot", "kilocode"})
+# Plugin profiles with ``aggregator=True`` join at sync time (``sync_plugin_provider_catalog``).
+_AGGREGATOR_PROVIDERS: set[str] = {"nous", "openrouter", "ai-gateway", "kilocode"}
+sync_plugin_provider_catalog()  # every table it extends is defined above
 
 
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last

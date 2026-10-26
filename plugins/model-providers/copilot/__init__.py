@@ -12,6 +12,7 @@ from providers.base import ProviderProfile
 
 from .catalog import CATALOG_FIELDS, HOSTNAMES, METADATA_HOSTNAMES, MODELS_DEV_ID, CopilotCatalogMixin
 from .credentials import CopilotCredentialsMixin
+from .picker import PICKER_FIELDS
 from .responses import RESPONSES_PROFILE_FIELDS, CopilotResponsesMixin
 from .setup import SETUP_FIELDS
 from .wire import CopilotWireMixin
@@ -46,6 +47,7 @@ copilot = CopilotProfile(
     env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), base_url="https://api.githubcopilot.com",
     auth_type="copilot", ambient_credentials=True, **RESPONSES_PROFILE_FIELDS, **SETUP_FIELDS,
     hostnames=HOSTNAMES, metadata_hostnames=METADATA_HOSTNAMES, models_dev_id=MODELS_DEV_ID, **CATALOG_FIELDS,
+    **PICKER_FIELDS,
 )
 
 register_provider(copilot)
