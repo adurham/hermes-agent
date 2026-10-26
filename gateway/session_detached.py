@@ -17,8 +17,10 @@ replies reach its viewers only, never the chat, which now gets only its new conv
   session's does: its sends publish nothing, viewers read the canonical event stream.
 
 The key carries no platform slot, so a reader that parses a chat out of a session key
-(``gateway.run._parse_session_key``) finds none and delivers nowhere. The chat naming the
-conversation again (``/resume``) moves it back onto the chat's route (``SessionAuthority.name_lane``).
+(``gateway.run._parse_session_key``) finds none and delivers nowhere. Its turns bind the session
+variables a Desktop session's turn binds (``session_env_source``), so a reminder, a kanban subscription
+or a ``send_message`` it starts names the app, never the chat. The chat naming the conversation again
+(``/resume``) moves it back onto the chat's route (``SessionAuthority.name_lane``).
 
 Every route change reaches ``name_lane`` from one place: the session store announces each conversation a
 route comes to name (``SessionStore.route_named``: ``/new``, ``/resume``, ``/branch``, ``/handoff``,
@@ -86,6 +88,18 @@ def drop_owner_hints(store, key) -> None:
     hints = getattr(store, '_session_owner_hints', None) or {}
     for session_id in [sid for sid, owner in list(hints.items()) if owner == key]:
         hints.pop(session_id, None)
+
+
+def session_env_source(runner, source):
+    """The source a turn's session variables (``HERMES_SESSION_PLATFORM``, ``_CHAT_ID``, ...) name.
+    A conversation its chat moved past binds the local view a Desktop session's turn binds
+    (``local_source``): whatever it schedules for "here" reaches the apps, never the chat."""
+    key = detached_route_of(source)
+    if key is None:
+        return source
+    from gateway.session_authorities import active_authority
+    from gateway.session_local_recovery import local_source
+    return local_source(active_authority(runner), detached_session_id(key), source.user_id)
 
 
 def _route_authority(runner, store, route):

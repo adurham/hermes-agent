@@ -54,6 +54,23 @@ async def test_the_chats_context_exhaustion_reset_moves_the_old_conversation_off
 
 
 @pytest.mark.asyncio
+async def test_what_the_old_conversation_schedules_for_here_names_the_app_not_the_chat(monkeypatch):
+    """F3: a detached turn binds the session variables a Desktop session's turn binds, so a reminder,
+    kanban subscription or send_message origin it creates never names the chat."""
+    from gateway.session import build_session_context
+    from gateway.session_context import get_session_env
+    from tools.cronjob_job_args import _origin_from_env
+    runner, _adapter, authority, _source, _sent, _ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
+    live = authority.sessions[ref_a.session_id]
+    entry = runner.session_store.get_or_create_session(live.source)
+    with runner._session_env_scope(build_session_context(live.source, runner.config, entry)):
+        env = {name: get_session_env(f'HERMES_SESSION_{name}') for name in ('PLATFORM', 'CHAT_ID', 'KEY')}
+        origin = _origin_from_env()
+    assert env == {'PLATFORM': 'local', 'CHAT_ID': ref_a.session_id, 'KEY': live.route}
+    assert origin is None or origin['platform'] == 'local', origin
+
+
+@pytest.mark.asyncio
 async def test_the_chats_resume_drops_the_agent_the_app_cached_for_the_old_conversation(monkeypatch):
     """F6: the agent cached under A's detached key goes when the chat takes A back, instead of being
     reused or committing memory at a later idle eviction while A runs in the chat."""
