@@ -197,6 +197,20 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
 _ANY_HEAD = object()
 
 
+# Which queued row runs next. Internal producer wakes (``automation:<route>``: background-process
+# completions, watch matches, heartbeats, async-delegation results) share the session's FIFO with
+# people's input, but a person waiting must never sit behind them: a burst of completions during a
+# long turn otherwise ran as N model turns before the message the user typed after Ctrl+C (#141822).
+# FIFO holds within each class; wakes run once no person's input is queued.
+AUTOMATION_PRINCIPAL_PREFIX = 'automation:'
+QUEUED_HEAD_ORDER_SQL = "(principal_id LIKE 'automation:%'), seq"
+
+
+def queued_head_key(row) -> tuple:
+    """Python twin of ``QUEUED_HEAD_ORDER_SQL`` for callers that pick the head from a listing."""
+    return (str(row['principal_id']).startswith(AUTOMATION_PRINCIPAL_PREFIX), row['seq'])
+
+
 def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_ANY_HEAD) -> dict | bool | None:
     """Claim the FIFO head. ``_guard(conn)`` (owner admission gate) raises to refuse inside the
     write transaction, so a drain that began while this waited on the writer still wins.
@@ -217,7 +231,8 @@ def claim_session_input(db, *, epoch: int, session_id: str, _guard=None, head=_A
             raise RuntimeStoreError('unknown_execution')
         if blocked or workers:
             return None
-        row = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' ORDER BY seq LIMIT 1", (session_id,)).fetchone()
+        row = conn.execute("SELECT * FROM session_admissions WHERE target_session_id=? AND status='queued' "
+                           "ORDER BY " + QUEUED_HEAD_ORDER_SQL + " LIMIT 1", (session_id,)).fetchone()
         if head is not _ANY_HEAD and (row['admission_id'] if row is not None else None) != head:
             return False
         if row is None:

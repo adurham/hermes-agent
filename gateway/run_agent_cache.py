@@ -325,6 +325,28 @@ class GatewayAgentCacheMixin:
         self._persist_active_agents()
         return True
 
+    def live_active_session_lease_ids(self) -> set[str]:
+        """Ids of the active-session leases this runner's live turns hold.
+
+        The gateway claims one slot per live local turn (``gateway/run_busy._claim_active_session_slot``,
+        surface ``gateway:<platform>``) and keeps it on the turn's state until the turn ends. Those
+        leases are this process's own — they are registered as a ``hermes_cli.active_sessions`` lease
+        source so a process-wide orphan sweep (``tui_gateway.session_reaper``) can never reclaim them
+        while the turn is still running. Without that, the module the sweep lives in used to be
+        imported for helpers by this very process, and the sweep's TUI-only vouching set reclaimed
+        the gateway's leases seconds after each claim.
+        """
+        ids: set[str] = set()
+        # Snapshot first: this runs on the reaper thread while the asyncio loop may insert sessions.
+        for state in list(self._sessions_map().values()):
+            lease = getattr(getattr(state, "turn", None), "lease", None)
+            if lease is None or getattr(lease, "released", False):
+                continue
+            lease_id = str(getattr(lease, "lease_id", "") or "")
+            if lease_id:
+                ids.add(lease_id)
+        return ids
+
     def _drop_turn_slot(self, session_key: str, *, run_generation: Optional[int] = None) -> None:
         """Release the running-agent slot and evict the cached instance (/stop, eviction, reaper).
         ``_interrupt_requested`` is cleared only by the turn finalizer, so on a hung/still-draining

@@ -358,6 +358,8 @@ def _init_session(
             "auth_user_id": _transport_auth_user_id(current_transport()),
         }
         _session_todo_state(_sessions[sid])
+    # This backend now serves a session: only from here does its idle reaper have anything to own.
+    _ensure_idle_reaper_started()
     _hydrate_session_cwd(sid, key, session_db, profile_home)
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
@@ -508,6 +510,7 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         with _sessions_lock:
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
+        _ensure_idle_reaper_started()
         # A PRIOR runtime for this stored id may still be sentinel-parked with a reap Timer armed; cancel +
         # finalize it quietly so the reap doesn't broadcast session.reclaimed (storm).
         _cancel_ws_orphan_reap(sid)

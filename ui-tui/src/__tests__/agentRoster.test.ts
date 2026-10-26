@@ -32,6 +32,36 @@ it('never rolls event progress back when an older live snapshot arrives', () => 
   }
 })
 
+it('carries the live fallback identity from the roster snapshot onto the row', () => {
+  const data = {
+    subagents: [
+      {
+        subagent_id: 'lane',
+        model: 'deepseek-v4.1-flash',
+        provider: 'deepseek',
+        fallback_active: true,
+        primary_model: 'claude-opus-5-5',
+        primary_provider: 'claude-subscription',
+        model_label: '⚠ deepseek-v4.1-flash (fallback from claude-opus-5-5)'
+      },
+      { subagent_id: 'steady', model: 'glm-5.3', fallback_active: false }
+    ],
+    delegations: []
+  }
+
+  const [lane, steady] = mergeAgentRoster([], data)
+  expect(lane).toMatchObject({
+    model: 'deepseek-v4.1-flash',
+    provider: 'deepseek',
+    fallbackActive: true,
+    primaryModel: 'claude-opus-5-5',
+    primaryProvider: 'claude-subscription',
+    modelLabel: '⚠ deepseek-v4.1-flash (fallback from claude-opus-5-5)'
+  })
+  expect(steady?.model).toBe('glm-5.3')
+  expect(steady?.fallbackActive).toBe(false)
+})
+
 it('lets the agents shortcut leave the composer without stealing redo', () => {
   const key = { ctrl: true, shift: false, meta: false } as Parameters<typeof shouldPassThroughToGlobalHandler>[1]
   expect(shouldPassThroughToGlobalHandler('t', key)).toBe(true)

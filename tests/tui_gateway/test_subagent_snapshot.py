@@ -305,6 +305,51 @@ def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(ru
         db.close()
 
 
+def test_list_reports_the_model_that_is_actually_answering_for_a_running_fallback_child(runtime):
+    """A running child that silently failed over must reach the Subagents panel as its FALLBACK model
+    with the fallback marker — not as the model it was dispatched with. The registry record's ``model``
+    is a dispatch-time snapshot; the roster RPC must resolve the live identity and must not strip the
+    fallback fields. A child still on its primary keeps reporting its own model, unmarked."""
+    from tools.delegate_tool_child_run import _register_child
+    from tools.delegate_tool_registry import _active_subagents, _unregister_subagent
+
+    _server, owner, transport, call = runtime
+    failed_over = SimpleNamespace(_subagent_id="lane", _delegate_depth=1, model="claude-opus-5-5",
+                                  provider="claude-subscription")
+    steady = SimpleNamespace(_subagent_id="steady", _delegate_depth=1, model="glm-5.3", provider="zai")
+    for child in (failed_over, steady):
+        _register_child(child, None, "task", owner_session_id="ui-owner",
+                        owner_transport=transport, owner_session_record=owner)
+    try:
+        # Registered (dispatch-time snapshot) as the assigned model...
+        assert _active_subagents["lane"]["model"] == "claude-opus-5-5"
+        # ...then try_activate_fallback() swaps the live child mid-run, without touching the record.
+        failed_over._primary_runtime = {"model": "claude-opus-5-5", "provider": "claude-subscription"}
+        failed_over.model, failed_over.provider = "deepseek-v4.1-flash", "deepseek"
+        failed_over._fallback_activated = True
+
+        rows = {r["subagent_id"]: r for r in call("subagent.list")["result"]["subagents"]}
+        lane = rows["lane"]
+        assert lane["status"] == "running"
+        assert lane["model"] == "deepseek-v4.1-flash"
+        assert lane["provider"] == "deepseek"
+        assert lane["fallback_active"] is True
+        assert lane["primary_model"] == "claude-opus-5-5"
+        assert lane["primary_provider"] == "claude-subscription"
+        assert "deepseek-v4.1-flash" in lane["model_label"] and "claude-opus-5-5" in lane["model_label"]
+
+        plain = rows["steady"]
+        assert plain["model"] == "glm-5.3" and plain["provider"] == "zai"
+        assert plain["fallback_active"] is False
+        assert plain["primary_model"] is None and plain["primary_provider"] is None
+        assert plain["model_label"] == "glm-5.3"
+        # The live agent object never crosses the wire.
+        assert "agent" not in lane and "owner_session_record" not in lane
+    finally:
+        _unregister_subagent("lane")
+        _unregister_subagent("steady")
+
+
 def test_list_surfaces_failed_delegations_that_outlived_the_live_roster(runtime):
     """A failed child is gone from the live roster (ended, or a renderer reload dropped it); the
     durable row still reaches ``delegations`` for its own session only (#97202)."""

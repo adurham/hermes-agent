@@ -602,6 +602,11 @@ export interface SubagentListResponse {
     depth?: number | null
     goal?: string | null
     model?: string | null
+    provider?: string | null
+    fallback_active?: boolean | null
+    primary_model?: string | null
+    primary_provider?: string | null
+    model_label?: string | null
     started_at?: number | null
     status?: string | null
     tool_count?: number | null

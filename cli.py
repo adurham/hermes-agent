@@ -1327,6 +1327,24 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
+# Upper bound on how long an approval-prompt notifier (osascript) may run before the reaper kills it.
+_ATTENTION_NOTIFY_TIMEOUT_S = 30.0
+
+
+def _reap_attention_notifier(proc) -> None:
+    """Wait on a fire-and-forget notifier child so it never lingers as a zombie.
+
+    Runs on a daemon thread; kills a hung notifier after ``_ATTENTION_NOTIFY_TIMEOUT_S``.
+    """
+    try:
+        proc.wait(timeout=_ATTENTION_NOTIFY_TIMEOUT_S)
+    except Exception:
+        with suppress(Exception):
+            proc.kill()
+        with suppress(Exception):
+            proc.wait()
+
+
 class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
@@ -1383,7 +1401,21 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         self._active_session_lease = lease
         with suppress(Exception):
             atexit.register(self._release_active_session)
+        # This process's own lease is one a process-wide orphan sweep must never reclaim while it is
+        # held (the sweep lives in tui_gateway.session_reaper, whose vouching set is the TUI backend's
+        # session map — this CLI session is not in it).
+        with suppress(Exception):
+            from hermes_cli.active_sessions import register_lease_source
+            register_lease_source(self)
         return True
+
+    def live_active_session_lease_ids(self) -> set[str]:
+        """The active-session lease this CLI process currently holds (a lease-source hook)."""
+        lease = getattr(self, "_active_session_lease", None)
+        if lease is None or getattr(lease, "released", False):
+            return set()
+        lease_id = str(getattr(lease, "lease_id", "") or "")
+        return {lease_id} if lease_id else set()
 
     def _release_active_session(self) -> None:
         lease = getattr(self, "_active_session_lease", None)
@@ -3124,12 +3156,20 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                     f'display notification "{_summary}" '
                     f'with title "{_title}" sound name "Submarine"'
                 )
-                _subprocess.Popen(
+                _proc = _subprocess.Popen(
                     ["osascript", "-e", _applescript],
                     stdout=_subprocess.DEVNULL,
                     stderr=_subprocess.DEVNULL,
                     start_new_session=True,
                 )
+                # Reap the child off the prompt path: a dropped Popen handle is never
+                # waited on, leaving one <defunct> osascript per prompt for the CLI's life.
+                threading.Thread(
+                    target=_reap_attention_notifier,
+                    args=(_proc,),
+                    name="attention-notify-reaper",
+                    daemon=True,
+                ).start()
             except Exception:
                 # Notification failure must never block the prompt.
                 pass

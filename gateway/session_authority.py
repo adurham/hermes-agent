@@ -1009,7 +1009,10 @@ class SessionAuthority:
             pending = list_session_admissions(self.db, session_id=ref.session_id)
             if any(row['status'] == 'unknown' for row in pending):
                 raise RuntimeStoreError('unknown_execution')
-            first = next((row for row in pending if row['status'] == 'queued'), None)
+            # The same head ``claim_session_input`` will claim (people before internal wakes), so the
+            # preclaim checks below validate the row that actually runs.
+            from hermes_state_runtime import queued_head_key
+            first = min((row for row in pending if row['status'] == 'queued'), key=queued_head_key, default=None)
             from gateway.config import Platform
             if live.source.platform == Platform.LOCAL:
                 # A reasoning command or a model pick made while the previous turn ran lands here, at the

@@ -39,6 +39,13 @@ export function mergeAgentRoster(events: SubagentProgress[], data: SubagentListR
       goal: s.goal || previous?.goal || 'Starting agent',
       delegationId: s.delegation_id ?? previous?.delegationId,
       model: s.model ?? previous?.model,
+      // Effective-model identity: the roster resolves it live, so a child that failed over
+      // renders its fallback with the warning marker instead of its assigned model.
+      provider: s.provider ?? previous?.provider,
+      fallbackActive: s.fallback_active ?? previous?.fallbackActive,
+      primaryModel: s.primary_model ?? previous?.primaryModel,
+      primaryProvider: s.primary_provider ?? previous?.primaryProvider,
+      modelLabel: s.model_label ?? previous?.modelLabel,
       startedAt: s.started_at != null ? s.started_at * 1000 : previous?.startedAt,
       // Snapshot replies may predate progress/completion events already rendered.
       status: previous && previous.status !== 'queued' ? previous.status : s.status === 'queued' ? 'queued' : 'running',

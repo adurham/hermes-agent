@@ -16,6 +16,9 @@ from hermes_state_runtime import RuntimeStoreError
 _SUBAGENT_FIELDS = (
     'subagent_id', 'parent_id', 'depth', 'goal', 'delegation_id', 'model',
     'started_at', 'status', 'tool_count', 'last_tool', 'accepting_steer',
+    # Effective-model identity, resolved live per read (``subagent_snapshot``): ``model`` is what the
+    # child is ACTUALLY answering with, so a silently failed-over child is not shown as its assignment.
+    'provider', 'fallback_active', 'primary_model', 'primary_provider', 'model_label',
 )
 _TAIL_BYTES = 16384
 _PROCESS_TAIL_CHARS = 32768  # main's dock tail view (cli_process_dock.process_tail)
@@ -210,8 +213,7 @@ async def read(connection, ref, params, *, kind):
         _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
         if kind == 'subagents':
-            return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
-                                  for record in records], 'delegations': []}
+            return {'subagents': [subagent_snapshot(record) for record in records], 'delegations': []}
         if kind == 'tail':
             return subagent_tail(records, params['subagent_id'])
         return {'processes': process_snapshot(authority, ref, agent, records)}
@@ -406,6 +408,16 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
     return agent, subagent_records(
         agent, session_id=session_id, session_db=session_db, route=route,
         include_fallback_evicted=include_fallback_evicted)
+
+
+def subagent_snapshot(record):
+    """One ``subagent.list`` row. The record's ``model`` is a dispatch-time snapshot that goes stale
+    the moment ``try_activate_fallback()`` swaps the child, so the effective identity is re-read off
+    the live child agent (``_live_model_fields``) before projecting."""
+    registry = sys.modules.get('tools.delegate_tool_registry')
+    live = registry._live_model_fields(record) if registry is not None else {}
+    merged = {**record, **live}
+    return {key: merged.get(key) for key in _SUBAGENT_FIELDS}
 
 
 def physical_target(authority, ref):

@@ -12,6 +12,10 @@ method = _registry.method
 _SUBAGENT_SNAPSHOT_FIELDS = (
     "subagent_id", "parent_id", "depth", "goal", "delegation_id", "model",
     "started_at", "status", "tool_count", "last_tool", "accepting_steer",
+    # Effective-model identity (see ``_live_model_fields``): ``model`` above is overwritten with the
+    # model that is ACTUALLY answering, so a child that silently failed over shows its fallback
+    # rather than the model it was dispatched with.
+    "provider", "fallback_active", "primary_model", "primary_provider", "model_label",
 )
 _SUBAGENT_TAIL_BYTES = 16384
 
@@ -56,7 +60,12 @@ def _(rid, params):
     transport, owner = _current_session_steer_authority(session_id)
     if transport is None or owner is None:
         return _err(rid, 4001, "session not found or not owned by this transport")
+    from tools.delegate_tool_registry import _live_model_fields
+
     live = _visible_subagent_records(session_id, transport, owner)
+    # The record's ``model`` is a dispatch-time snapshot that goes stale the moment the child fails
+    # over; resolve the effective identity off the live agent (record copies keep the ``agent`` ref).
+    live = [{**r, **_live_model_fields(r)} for r in live]
     return _ok(rid, {
         "subagents": [{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live],
         "delegations": _failed_delegations(session_id, owner),

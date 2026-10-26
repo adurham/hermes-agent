@@ -649,6 +649,14 @@ class SubagentSnapshot(Result):
     tool_count: int | None = None
     last_tool: str | None = None
     accepting_steer: bool | None = None
+    # Effective-model identity (``delegate_tool_registry._live_model_fields``): ``model``/``provider``
+    # are what the child is ACTUALLY running on; the ``primary_*`` pair is set only while a fallback
+    # is active.
+    provider: str | None = None
+    fallback_active: bool | None = None
+    primary_model: str | None = None
+    primary_provider: str | None = None
+    model_label: str | None = None
 
 
 class FailedDelegation(Result):

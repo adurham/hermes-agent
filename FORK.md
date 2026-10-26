@@ -4,6 +4,79 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### Fixes — 2026-10-26 (queue starvation, subagent completions, model truth, daemon leak, lease reclaim)
+
+The owner reported "it feels worse than it's been in a while": messages piling up in the queue, Ctrl+C not
+flushing it, process messages appearing in the wrong place, and processes stacking. Measured, the complaints
+were real and the step change dated to the v0.22.5 merge (2026-10-24). Seven distinct defects, each with a
+regression test that fails without its fix:
+
+1. **Queue head order — a human message beats any automation wake.** Wakes land in the same per-session
+   queue as human messages, filed under an `automation:<route>` sender, and both claim paths picked purely
+   by age (`hermes_state_runtime.claim_session_input`, `gateway/session_authority._claim_next`). A
+   completion that arrived during a long turn was therefore OLDER than the message typed after Ctrl+C and
+   ran first, as its own model turn. Live: on `local-fdedc…` turn #941 was followed by four
+   `process_complete` rows running as generations 81–85 before the next human message #976. One ordering
+   rule now lives in `QUEUED_HEAD_ORDER_SQL = "(principal_id LIKE 'automation:%'), seq"` with the Python
+   twin `queued_head_key`, used by both claim paths; wakes keep FIFO among themselves. Tests:
+   `tests/gateway/test_fifo_human_before_wakes.py` (end-to-end through the real drain: long turn → two
+   wakes → interrupt → next message runs first, wakes follow in order, nothing left queued).
+2. **Subagent completion hold released on a blind timer.** `should_hold_completion_event` held a
+   subagent-owned completion while the child was live, but the 30-minute cap (`_EVENT_MAX_HOLD_SECONDS`)
+   released it regardless of whether the child was still working. History over delivered messages: 467 in
+   parent chats, 298 while the child was still writing afterwards, 286 of those at ≥30 min and 84 in the
+   30–31 min window, none under 30. `_owner_idle_seconds` now requires the owner to be idle for the same
+   30 minutes before the cap releases, falling back to the old timer only when the child has no activity
+   clock. All three delivery paths (CLI drain, TUI poller, gateway watcher) share the check. Test:
+   `tests/gateway/test_subagent_completion_hold.py` (3 of 4 fail with the fix off).
+3. **Completion ownership — a sibling cannot take another session's completion.** Completions go on the
+   shared queue keyed by the CHAT key, which a compression chain, sibling sessions and subagents all share;
+   `_owns_event` only compared keys, so A→compressed-to-C meant sibling B could take A's completion. The
+   event now records its spawner (`parent_session_id`) and `_spawner_veto` runs first, via
+   `spawner_lineage()` (tri-state: only a definite False re-queues; undecided keeps the old routing).
+   Audit of history: 3,942 delivered, 0 misrouted — this closes the path, it was not the reported symptom.
+   Test: `tests/tools/test_process_completion_ownership.py` (real spawned+killed process, real state.db).
+4. **The Subagents panel now shows the model that answered.** The roster RPC returned the record's `model`,
+   snapshotted at dispatch and never updated, and `_SUBAGENT_SNAPSHOT_FIELDS` omitted the fallback keys
+   entirely — so a child assigned Opus and silently fallen back to DSv4-flash rendered as Opus. The field
+   list now carries provider/fallback_active/primary_model/primary_provider/model_label, rows are built
+   from the child's LIVE identity per call (`_live_model_fields`), the Desktop sidecar has the same fix, and
+   the pydantic contract + generated TS/OpenRPC were regenerated. Tests:
+   `tests/tui_gateway/test_subagent_snapshot.py` (through the real `server.dispatch`),
+   `tests/gateway/test_local_viewer_events_turn.py`, `ui-tui/src/__tests__/agentRoster.test.ts`.
+5. **browser-harness daemons leaked by a LIVE owner.** ppid=1 is normal (every daemon detaches); the bug
+   was that nothing stopped an idle daemon: the janitor closed idle Chrome sessions but not their daemons,
+   the cleaner thread only started on the managed-Chromium route, and emergency cleanup only ran when a
+   browser session existed. Four daemons from gateway 22785 (up since Oct 25 19:31) were still alive hours
+   after their Chrome ports died. Fix: per-call idle tracking, `stop_idle_harness_daemons(idle_s)` wired
+   into the janitor (never mid-call, respects another live owner's claim), cleaner always started, exit
+   stops driven daemons unconditionally. Test: `tests/tools/test_browser_harness_orphans.py` (real
+   detached daemon on a real socket; the janitor test fails with the fix reverted).
+6. **Approval-prompt zombies.** `cli.py` started `osascript` for the prompt notification via `Popen` and
+   never waited, so each prompt left a `<defunct>` while `notify_on_prompt: true`. The handle now goes to a
+   daemon reaper thread (`_reap_attention_notifier`, 30 s cap, then kill+wait), so the prompt path never
+   blocks. Test: `tests/hermes_cli/test_approval_notification_reaping.py` (fake osascript on PATH, checks
+   `ps -o stat=`; the reaping test fails before the fix).
+7. **Session-lease reclaim — the reaper swept leases it could not see.** `tui_gateway/server.py` started the
+   idle reaper at module import, and the gateway imports that module for helpers, so the reaper ran inside
+   the gateway while `_own_live_lease_ids()` only knew the TUI `_sessions` map — the gateway's own
+   `turn.lease` slots looked orphaned (78 `Reclaimed … lease(s)` lines on Oct 25, one per 5-minute scan).
+   Fix: `_ensure_idle_reaper_started()` replaces the import-time start and is called from
+   `session_registry._init_session`, `_claim_or_reuse_live`, `methods_session._create_session` and the
+   compute_host fallback (a backend that only creates chats must still run TTL/flush/cap/reclaim); plus a
+   weak lease-source registry (`active_sessions.register_lease_source` / `held_lease_ids`) so a process can
+   vouch for leases outside the TUI map, wired for `GatewayRunner` (run_startup) and `HermesCLI`.
+   `held_lease_ids` fails CLOSED — a raising source skips the sweep entirely (None = keep all leases),
+   which `_own_live_lease_ids` and `release_orphaned_leases` propagate; `live_active_session_lease_ids`
+   snapshots with `list()` to avoid a dict-mutation race on the reaper thread. Test:
+   `tests/tui_gateway/test_foreign_process_lease_reclaim.py` (incl. `session.create` over the real
+   `handle_request`, the compute_host fallback, fail-closed, and the iteration race).
+
+Verification: 89 passed across the lease/TUI/CLI-lease set, 161 passed across the queue/hold/ownership/
+browser/zombie set, 8 passing UI tests after rebuilding `ui-tui/packages/hermes-ink`. Not proven live: the
+gateway has not been restarted onto this code, so no failover panel render, no idle-daemon stop and no
+post-fix reclaim count have been observed on a running gateway.
+
 ### Fix — 2026-10-25 (Fable review of the continuation gate: ownership as the discriminator, idle re-closes as refusals)
 
 Fable ruled on the first version of the gate (entry below). Its verdict: the decision table was right, the
