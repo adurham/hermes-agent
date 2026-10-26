@@ -5,14 +5,32 @@ contract whichever backend it reached: ``ok``/``provider``/``model``/``source``,
 failure (naming the configured pin, never the fallback chain's tail), ``free_tier_route`` on success.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def missing_credentials_suffix(provider) -> str:
     """``" <hint>"`` from *provider*'s profile (``ProviderProfile.missing_credentials_hint``) for a
-    "No usable credentials found" message, else ``""``."""
+    "No usable credentials found" message, else ``""``. Plugin boundary: a raising hook (or a plugin
+    host that is down) or a non-string answer yields ``""`` and is logged once per provider, so the
+    AuthError it decorates (and the fallback chain walking on it) is never replaced."""
     from providers import get_provider_profile
-    profile = get_provider_profile(str(provider or "").strip().lower()) if provider else None
-    hint = profile.missing_credentials_hint() if profile is not None else None
-    return f" {hint.strip()}" if hint and hint.strip() else ""
+    name = str(provider or "").strip().lower()
+    profile = get_provider_profile(name) if name else None
+    if profile is None:
+        return ""
+    try:
+        hint = profile.missing_credentials_hint()
+    except Exception:  # health: allow BLE001 -- plugin hook boundary; logged with traceback once below
+        if name not in _HINT_FAILURES_LOGGED:
+            _HINT_FAILURES_LOGGED.add(name)
+            logger.warning("%s missing_credentials_hint failed; showing the error without it", name, exc_info=True)
+        return ""
+    return f" {hint.strip()}" if isinstance(hint, str) and hint.strip() else ""
+
+
+_HINT_FAILURES_LOGGED: set[str] = set()
 
 
 def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resolve=None):

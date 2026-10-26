@@ -58,6 +58,36 @@ def test_readiness_check_appends_the_profile_hint(hinted_provider, profile_cls, 
     assert verdict["error"] == f"No usable credentials found for fake-hinted.{suffix}"
 
 
+class _RaisingHintProfile(ProviderProfile):
+    def missing_credentials_hint(self):
+        raise RuntimeError("plugin host is down")
+
+
+class _ListHintProfile(ProviderProfile):
+    def missing_credentials_hint(self):
+        return ["not", "a", "string"]
+
+
+@pytest.mark.parametrize("profile_cls", [_RaisingHintProfile, _ListHintProfile])
+def test_a_broken_hint_keeps_the_auth_error_and_the_fallback_chain(hinted_provider, monkeypatch, caplog, profile_cls):
+    hinted_provider(profile_cls)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-fake")
+    from hermes_cli import runtime_readiness
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider, resolve_runtime_with_fallback
+
+    monkeypatch.setattr(runtime_readiness, "_HINT_FAILURES_LOGGED", set(), raising=False)
+    for _ in range(2):
+        with pytest.raises(AuthError) as excinfo:
+            resolve_runtime_provider(requested="fake-hinted")
+        assert str(excinfo.value) == "No usable credentials found for provider 'fake-hinted'. Set FAKE_HINTED_KEY."
+    runtime, entry = resolve_runtime_with_fallback(
+        {"fallback_providers": [{"provider": "openrouter", "model": "acme/model"}]}, requested="fake-hinted")
+    assert (runtime["provider"], entry["provider"]) == ("openrouter", "openrouter")
+    warned = [r for r in caplog.records if "missing_credentials_hint failed" in r.getMessage()]
+    assert len(warned) == (1 if profile_cls is _RaisingHintProfile else 0)  # once per provider, not per call
+
+
 _AUTH_REQUIRED_AGENT = """import json, sys
 for line in sys.stdin:
     request = json.loads(line)
