@@ -254,10 +254,13 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 
 | Field | Purpose |
 |---|---|
-| `process_command` | Default binary, e.g. `"copilot"` |
-| `process_args` | Default argv tail, e.g. `("--acp", "--stdio")` |
+| `process_command` | Default binary, e.g. `"kimchi"`. A pinned `delegation.command` naming the same binary runs on this provider |
+| `process_args` | Default argv tail, e.g. `("--mode", "acp")` |
 | `process_command_env_vars` | Env vars that override the binary, checked in order |
 | `process_args_env_var` | Env var that overrides argv (shlex-split) |
+| `process_command_fallback` | `True` makes this provider run a pinned `delegation.command` no profile's `process_command` names (default `False`; first registered wins, none = the spawn fails) |
+
+The `process_command_env_vars` and `process_args_env_var` names are executable authority: Hermes' generic env writers (dashboard, MCP and connector installs, `save_env_value`) refuse them, so set them in `.env` or the shell.
 
 The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
 

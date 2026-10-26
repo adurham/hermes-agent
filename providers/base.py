@@ -217,10 +217,15 @@ class ProviderProfile:
     # resolve_external_process_provider_credentials() reads them instead of
     # hardcoding one vendor's binary. Env vars are checked in order and win
     # over the static defaults, so an operator can point at a custom build.
-    process_command: str = ""            # default binary, e.g. "copilot"
-    process_args: tuple = ()             # default argv tail, e.g. ("--acp", "--stdio")
+    process_command: str = ""            # default binary, e.g. "kimchi"
+    process_args: tuple = ()             # default argv tail, e.g. ("--mode", "acp")
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
+
+    # ── L5: external-process (ACP) seams ──
+    # Serves a pinned ``delegation.command`` whose binary no profile's process_command names (a
+    # generic ACP stdio client); the first registered profile setting it wins.
+    process_command_fallback: bool = False
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.

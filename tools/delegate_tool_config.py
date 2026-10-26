@@ -327,6 +327,35 @@ def _require_pinned_command(command: Optional[str], message: str) -> None:
     if command and not _shutil.which(command):
         raise ValueError(message)
 
+def _process_command_provider(
+    command: str, provider: Optional[str], api_mode: Optional[str],
+) -> tuple[str, Optional[str]]:
+    """(provider, api_mode) that runs a pinned ``delegation.command``: the selected provider when it is
+    already an external-process one; else the external-process profile whose ``process_command`` names the
+    same binary; else the profile flagged ``process_command_fallback``. No candidate fails the spawn."""
+    from providers import get_provider_profile, list_providers
+
+    selected = get_provider_profile(provider or "")
+    if selected is not None and selected.auth_type == "external_process":
+        return provider, api_mode
+    candidates = [p for p in list_providers() if p.auth_type == "external_process"]
+    binary = _command_stem(command)
+    match = next((p for p in candidates if p.process_command and _command_stem(p.process_command) == binary), None)
+    match = match or next((p for p in candidates if p.process_command_fallback), None)
+    if match is None:
+        raise ValueError(
+            f"Pinned delegation command '{command}' does not belong to any installed external-process provider. "
+            "Install the provider plugin for it, or remove delegation.command from config.yaml.")
+    return match.name, match.api_mode or "chat_completions"
+
+
+def _command_stem(command: str) -> str:
+    """Binary name of ``command`` without directory or a Windows launcher suffix (``kimchi.cmd`` -> ``kimchi``)."""
+    name = os.path.basename(command.strip().replace("\\", "/")).lower()
+    stem, ext = os.path.splitext(name)
+    return stem if ext in {".exe", ".cmd", ".bat", ".ps1"} else name
+
+
 def _credential_bundle(model, provider, base_url, api_key, api_mode, request_overrides, **extra) -> dict:
     """The child credential dict every branch of ``_resolve_delegation_credentials`` returns."""
     return {
@@ -529,7 +558,7 @@ def _resolve_child_runtime(
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
     # provider/base_url are one bundle: all from the override, or all from the parent. Per-field fallback built
-    # children like an override provider pointed at the PARENT's endpoint (e.g. copilot credentials on the
+    # children like an override provider pointed at the PARENT's endpoint (e.g. one provider's credentials on the
     # parent's Codex URL), which 404s on every request and can't be rescued by the fallback chain, whose dedup
     # matches provider+model and so skips the entry as a self-loop. _inherit_parent_endpoint recovers the
     # parent's live endpoint (with its key), which is meaningless for a different provider.
@@ -571,10 +600,8 @@ def _resolve_child_runtime(
     effective_acp_args = list(
         override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or [])
     )
-    # A pinned provider must use direct API calls; inheriting the parent's ACP
-    # transport would bypass the override credentials entirely.
-    # Inheriting acp_command unconditionally causes run_agent.py to initialize CopilotACPClient, bypassing
-    # override credentials entirely (issue #16816).
+    # A pinned provider must use direct API calls; inheriting the parent's ACP transport would build the
+    # ACP client and bypass the override credentials entirely (issue #16816).
     if override_provider and not override_acp_command:
         effective_acp_command, effective_acp_args = None, []
     # Defensive: validate trusted delegation.command exists on PATH before honoring it. An explicitly pinned
@@ -582,11 +609,8 @@ def _resolve_child_runtime(
     # transport would run the child somewhere the user explicitly routed it away from. Normally unreachable
     # via delegate_task, which pre-validates the command in _resolve_delegation_credentials.
     if override_acp_command:
-        from providers import get_provider_profile
-        profile = get_provider_profile(effective_provider or "")
-        # A generic process command does not imply the legacy ACP protocol.
-        if profile is None or profile.auth_type != "external_process":
-            effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
+        effective_provider, effective_api_mode = _process_command_provider(
+            override_acp_command, effective_provider, effective_api_mode)
 
     # A named provider identity is endpoint-scoped. Preserve it only when the
     # child inherits the exact parent route; an override owns its final identity.
