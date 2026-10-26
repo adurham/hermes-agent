@@ -53,7 +53,7 @@ async def test_late_bootstrap_handshake_cannot_rearm_a_recovered_admission(tmp_p
     (which refuses the foreign epoch and exits), stranding the FIFO where Discard cannot reach it."""
     import hermes_state_runtime as rt
     from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         db.create_session('owned', 'cli')
         epoch = begin_runtime_epoch(db, instance_id='owner')
@@ -69,7 +69,7 @@ async def test_late_bootstrap_handshake_cannot_rearm_a_recovered_admission(tmp_p
             restarted = begin_runtime_epoch(db, instance_id='restarted')
             rt.recover_session_inputs(db, epoch=restarted)
             owner = SimpleNamespace(db=db, epoch=restarted, profile_id=str(tmp_path), _require_admission_open=lambda: None)
-            actor = SimpleNamespace(subject='human', profile_id=str(tmp_path), capabilities={'worker:adopt'})
+            actor = SimpleNamespace(subject=owner_worker_subject(), profile_id=str(tmp_path), capabilities={'worker:adopt'})
             identity = {k: v for k, v in scope.items() if k != 'epoch'}
             with pytest.raises(rt.RuntimeStoreError, match='stale_epoch'):
                 await worker_request(SimpleNamespace(authority=owner, actor=actor), None, identity, operation='adopt')

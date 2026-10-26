@@ -10,7 +10,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_reserved_worker_persists_while_runtime_drains(tmp_path):
     from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import reserve_admission_worker
+    from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
     from tests.gateway.test_worker_admission_reservation import hello
     from hermes_state import SessionDB
     from hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input, RuntimeStoreError
@@ -26,7 +26,7 @@ async def test_reserved_worker_persists_while_runtime_drains(tmp_path):
         claim_session_input(db, epoch=epoch, session_id='owned')
         scope = reserve_admission_worker(authority, admission_id=row['admission_id'], process=process,
                                          principal_id='human', hello=hello(process))
-        actor = SimpleNamespace(subject='human', profile_id=str(tmp_path), capabilities={'worker:adopt'})
+        actor = SimpleNamespace(subject=owner_worker_subject(), profile_id=str(tmp_path), capabilities={'worker:adopt'})
         connection = SimpleNamespace(authority=authority, actor=actor)
         identity = {k: v for k, v in scope.items() if k != 'epoch'}
         await worker_request(connection, None, identity, operation='adopt')

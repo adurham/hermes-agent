@@ -51,8 +51,7 @@ async def test_worker_adopts_an_automation_admission_as_the_owner_user(reserved)
     from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
     authority, admitted, process = reserved
     scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process,
-                                     principal_id=AUTOMATION, hello=_hello(process),
-                                     worker_subject=owner_worker_subject())
+                                     principal_id=AUTOMATION, hello=_hello(process))
     identity = {k: v for k, v in scope.items() if k != 'epoch'}
     receipt = await worker_request(_connection(authority, owner_worker_subject()), None, identity, operation='adopt')
     assert receipt['execution_id'] == scope['execution_id']
@@ -61,11 +60,10 @@ async def test_worker_adopts_an_automation_admission_as_the_owner_user(reserved)
 @pytest.mark.asyncio
 async def test_the_claim_still_refuses_any_other_subject(reserved):
     from gateway.session_worker import worker_request
-    from gateway.session_worker_reservation import owner_worker_subject, reserve_admission_worker
+    from gateway.session_worker_reservation import reserve_admission_worker
     authority, admitted, process = reserved
     scope = reserve_admission_worker(authority, admission_id=admitted['admission_id'], process=process,
-                                     principal_id=AUTOMATION, hello=_hello(process),
-                                     worker_subject=owner_worker_subject())
+                                     principal_id=AUTOMATION, hello=_hello(process))
     identity = {k: v for k, v in scope.items() if k != 'epoch'}
     for subject in (AUTOMATION, 'uid:999999'):
         with pytest.raises(Exception, match='permission_denied'):
