@@ -494,14 +494,18 @@ def test_concurrent_processes_never_drop_each_others_ledger_rows(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fcntl lock holder")
-def test_a_stalled_ledger_lock_holder_never_blocks_register_child(tmp_path, monkeypatch):
+def test_a_stalled_ledger_lock_holder_never_blocks_register_child(tmp_path, monkeypatch, caplog):
     """A holder stopped mid-write (SIGSTOP, a debugger) kept the lock: every spawn_owned on the
-    machine then waited forever. Past the timeout the row is written under the thread lock alone."""
+    machine then waited forever. Past the timeout the row is written under the thread lock alone, and
+    that is logged once at WARNING (rows of concurrent writers can be lost meanwhile)."""
     import fcntl
+    import logging
     import threading
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(pi, "_LEDGER_LOCK_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(pi, "_ledger_lock_warned", False)
+    caplog.set_level(logging.DEBUG, logger=pi.logger.name)
     ledger = pi._ledger_path()
     ledger.parent.mkdir(parents=True, exist_ok=True)
     with open(ledger.with_name(ledger.name + ".lock"), "a+b") as holder:
@@ -512,5 +516,8 @@ def test_a_stalled_ledger_lock_holder_never_blocks_register_child(tmp_path, monk
         writer.start()
         writer.join(timeout=10)
         assert done == [True], "register_child waited on a stalled lock holder"
+        assert pi.register_child(os.getpid(), "stalled-again") is True  # a second write past the lock
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "spawn ledger lock" in r.getMessage()]
+    assert len(warnings) == 1, f"{len(warnings)} warnings for two writes past a stalled lock"
     rows = json.loads(ledger.read_text(encoding="utf-8"))
-    assert any(r.get("purpose") == "stalled-lock" for r in rows), "the row was not written past the timeout"
+    assert any(r.get("purpose") == "stalled-again" for r in rows), "the row was not written past the timeout"

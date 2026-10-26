@@ -463,6 +463,7 @@ def _new_entry(
 # A ledger writer stopped mid-write (SIGSTOP, a debugger) must not stall every spawn_owned on the
 # machine: past this the write goes ahead under the thread lock alone, as when no lock can be taken.
 _LEDGER_LOCK_TIMEOUT_S = 2.0
+_ledger_lock_warned = False
 
 
 def _append_entry(entry: LedgerEntry) -> bool:
@@ -481,7 +482,13 @@ def _append_entry(entry: LedgerEntry) -> bool:
         try:
             held.enter_context(_FileLock(path.with_name(path.name + ".lock"), timeout=_LEDGER_LOCK_TIMEOUT_S))
         except (RuntimeError, OSError):
-            # Best-effort like the write itself: the thread lock is then the only guard.
+            # Best-effort like the write itself: the thread lock is then the only guard, so a row another
+            # Hermes process writes meanwhile can be lost. Say so once where it shows (agent.log).
+            global _ledger_lock_warned
+            if not _ledger_lock_warned:
+                _ledger_lock_warned = True
+                logger.warning("spawn ledger lock unavailable (a stalled holder, or no file locks here); writing "
+                               "without it, so concurrent Hermes processes may drop each other's rows")
             logger.debug("spawn ledger lock unavailable", exc_info=True)
         entries = _read_ledger_or_quarantine(path) or []
         # Drop malformed entries, our own stale entry, and provably dead pids.
