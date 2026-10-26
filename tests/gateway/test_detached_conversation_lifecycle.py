@@ -71,6 +71,17 @@ async def test_what_the_old_conversation_schedules_for_here_names_the_app_not_th
 
 
 @pytest.mark.asyncio
+async def test_the_old_conversation_is_live_again_once_the_app_uses_it(monkeypatch):
+    """F4: the chat's /new ended A's row; the app's turn reopens it, as an API or local turn reopens
+    theirs, so its background results and a rotating compression are not refused as ended."""
+    _runner, _adapter, authority, _source, _sent, _ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
+    assert authority.db.get_session(ref_a.session_id)['end_reason'] == 'session_reset'
+    assert await _app_turn(authority, ref_a, 'from the app') == ('terminal', 'completed')
+    row = authority.db.get_session(ref_a.session_id)
+    assert (row['ended_at'], row['end_reason']) == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_the_chats_resume_drops_the_agent_the_app_cached_for_the_old_conversation(monkeypatch):
     """F6: the agent cached under A's detached key goes when the chat takes A back, instead of being
     reused or committing memory at a later idle eviction while A runs in the chat."""
