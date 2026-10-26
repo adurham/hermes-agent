@@ -5,11 +5,12 @@ reaches the chat, and the old one stays fully usable from the apps. Real Gateway
 (``send`` recorded), SessionAuthority, drain and SessionStore over a real SessionDB; the agent run is
 the stand-in of ``test_authority_lane_moves_on``.
 """
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from tests.gateway.test_authority_lane_moves_on import _app_turn, _chat, _gateway
+from tests.gateway.test_authority_lane_moves_on import _app, _app_turn, _chat, _gateway
 from tests.waiting import async_wait_until
 
 
@@ -79,6 +80,37 @@ async def test_the_old_conversation_is_live_again_once_the_app_uses_it(monkeypat
     assert await _app_turn(authority, ref_a, 'from the app') == ('terminal', 'completed')
     row = authority.db.get_session(ref_a.session_id)
     assert (row['ended_at'], row['end_reason']) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_stop_from_either_side_reaches_the_apps_turn_after_the_chat_resumes_it(monkeypatch):
+    """F5: the app's turn on A is running when the chat ``/resume``s A. That turn keeps its own key;
+    the app's Stop and the chat's /stop both still reach it."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.session_contract import Submission
+    runner, adapter, authority, source, sent, ran, gates, lane, ref_a = await _moved_on(monkeypatch)
+    stops = []
+    agent = SimpleNamespace(interrupt=lambda *a, **k: stops.append('interrupt'), session_id=ref_a.session_id)
+    prepare = runner._hmwa_prepare_turn
+
+    async def adopting(event, source, session_entry, session_key, *args):
+        if event.text == 'slow app turn':
+            runner._running_agents[session_key] = agent  # the turn's agent, as a real build installs it
+        return await prepare(event, source, session_entry, session_key, *args)
+    monkeypatch.setattr(runner, '_hmwa_prepare_turn', adopting)
+    gates['slow app turn'] = asyncio.Event()
+    await authority.submit(_app(), Submission('slow', ref_a, {'text': 'slow app turn'}, 'queue'))
+    await async_wait_until(lambda: ran and ran[-1][0] == 'slow app turn', what='the app turn to start')
+    await _chat(adapter, source, sent, '/resume First chat')
+    assert authority.sessions[ref_a.session_id].route == lane
+
+    assert authority._runs_own_agent(ref_a) and authority.agent(ref_a) is agent  # the app's Stop target
+    before = len(sent)
+    await adapter.handle_message(MessageEvent(text='/stop', source=source, message_id='stop'))
+    await async_wait_until(lambda: len(sent) > before, what='the /stop reply')
+    from agent.i18n import t
+    assert sent[before:] != [t('gateway.stop.no_active')] and stops
+    gates['slow app turn'].set()
 
 
 @pytest.mark.asyncio

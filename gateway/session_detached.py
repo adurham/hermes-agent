@@ -90,6 +90,21 @@ def drop_owner_hints(store, key) -> None:
         hints.pop(session_id, None)
 
 
+def running_key(runner, route, session_id) -> str:
+    """The key a turn of *session_id* runs under: its detached key while a turn that started there
+    still runs (the chat took the conversation back meanwhile), so a Stop from the chat or the app
+    reaches it; else *route*."""
+    key = detached_key(route, session_id)
+    return key if key in (getattr(runner, '_running_agents', None) or {}) else route
+
+
+def chat_running_key(runner, route, entry) -> str:
+    """``running_key`` for the conversation the chat's *route* names (*entry*, its routing entry)."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner)
+    return route if authority is None else running_key(runner, route, authority.logical_owner(entry.session_id))
+
+
 def session_env_source(runner, source):
     """The source a turn's session variables (``HERMES_SESSION_PLATFORM``, ``_CHAT_ID``, ...) name.
     A conversation its chat moved past binds the local view a Desktop session's turn binds

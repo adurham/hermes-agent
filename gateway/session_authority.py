@@ -291,9 +291,10 @@ class SessionAuthority:
                 forget_detached(self, left)
 
     def agent(self, ref):
+        from gateway.session_detached import running_key
         live = self.sessions[ref.session_id]
         lookup = getattr(self.runner, '_resident_agent_for', None) or self.runner._cached_agent_for
-        return lookup(live.route)
+        return lookup(running_key(self.runner, live.route, ref.session_id))
 
     def _pending_rows(self, ref):
         """Pending admissions as the event stream presents them: a settlement committed but not yet
@@ -942,9 +943,10 @@ class SessionAuthority:
         """The route's running slot holds a real agent (not the claim's pending sentinel), so the
         Stop above reached the turn's own agent, not a cached one it may still replace."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.session_detached import running_key
         live = self.sessions[ref.session_id]
         running = getattr(self.runner, '_running_agents', None) or {}
-        agent = running.get(live.route)
+        agent = running.get(running_key(self.runner, live.route, ref.session_id))
         return agent is not None and agent is not _AGENT_PENDING_SENTINEL
 
     def steer_agent(self, ref, generation, text):
