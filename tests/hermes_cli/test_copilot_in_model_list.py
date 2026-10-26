@@ -98,6 +98,15 @@ def _fresh_acp_memo(monkeypatch):
     monkeypatch.setattr(models, "_copilot_acp_session_memo", None)
 
 
+def _copilot_acp_client():
+    import providers
+
+    providers.get_provider_profile("copilot-acp")  # discovery imports the bundled plugin package
+    from plugins.model_providers.copilot_acp.client import CopilotACPClient
+
+    return CopilotACPClient
+
+
 @pytest.mark.parametrize(
     ("session_probe", "github_token", "github_models", "expected"),
     [
@@ -111,7 +120,7 @@ def _fresh_acp_memo(monkeypatch):
 def test_copilot_acp_catalog_prefers_authenticated_session(
         _fresh_acp_memo, session_probe, github_token, github_models, expected):
     with patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value=_ACP_CREDS), \
-         patch("agent.copilot_acp_client.CopilotACPClient.list_models", **session_probe) as list_models, \
+         patch.object(_copilot_acp_client(), "list_models", **session_probe) as list_models, \
          patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=github_token), \
          patch("hermes_cli.models._fetch_github_models", return_value=github_models) as github:
         assert provider_model_ids("copilot-acp", force_refresh=True) == expected
@@ -126,7 +135,7 @@ def test_copilot_acp_session_probe_is_memoized_across_model_switch_validation(_f
     from hermes_cli.models_validate import validate_requested_model
 
     with patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value=_ACP_CREDS), \
-         patch("agent.copilot_acp_client.CopilotACPClient.list_models", return_value=["gpt-5.6-terra"]) as list_models, \
+         patch.object(_copilot_acp_client(), "list_models", return_value=["gpt-5.6-terra"]) as list_models, \
          patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=""), \
          patch("hermes_cli.models._fetch_github_models", return_value=[]):
         for _ in range(3):
@@ -136,7 +145,7 @@ def test_copilot_acp_session_probe_is_memoized_across_model_switch_validation(_f
 
     models._copilot_acp_session_memo = None  # (teardown in _fresh_acp_memo restores it)
     with patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value=_ACP_CREDS), \
-         patch("agent.copilot_acp_client.CopilotACPClient.list_models", side_effect=RuntimeError("not signed in")) as list_models, \
+         patch.object(_copilot_acp_client(), "list_models", side_effect=RuntimeError("not signed in")) as list_models, \
          patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=""), \
          patch("hermes_cli.models._fetch_github_models", return_value=[]):
         for _ in range(3):

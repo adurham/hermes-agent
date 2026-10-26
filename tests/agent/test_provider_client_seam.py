@@ -84,7 +84,7 @@ def test_a_broken_plugin_falls_through_instead_of_taking_the_turn_down(registere
 
 
 def test_copilot_acp_still_gets_its_acp_client_via_its_profile():
-    from agent.copilot_acp_client import CopilotACPClient
+    from plugins.model_providers.copilot_acp.client import CopilotACPClient
 
     assert isinstance(_build("copilot-acp", "acp://copilot"), CopilotACPClient)
     assert isinstance(_build("", "acp://copilot"), CopilotACPClient)
@@ -92,7 +92,7 @@ def test_copilot_acp_still_gets_its_acp_client_via_its_profile():
 
 def test_skip_flags_replace_the_isinstance_checks_for_in_and_out_of_tree_clients():
     from agent.auxiliary_client import _maybe_wrap_anthropic, _to_async_client
-    from agent.copilot_acp_client import CopilotACPClient
+    from plugins.model_providers.copilot_acp.client import CopilotACPClient
     from agent.gemini_native_adapter import GeminiNativeClient
 
     assert CopilotACPClient.HERMES_SKIP_TRANSPORT_WRAP and CopilotACPClient.HERMES_SKIP_ASYNC_WRAP

@@ -250,7 +250,7 @@ def fetch_account_usage(self, *, api_key=None, base_url=None):
 
 ## External-process (ACP) providers
 
-An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external_process"`, describe how to launch the binary, and supply the client with `create_client`. No core edits are needed — `hermes -m <name>`, `/model`, credential resolution, runtime resolution and the auxiliary client (compression, vision) all key on `auth_type`, not on the provider name. `plugins/model-providers/copilot-acp/` is the in-tree example.
+An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external_process"`, describe how to launch the binary, and supply the client with `create_client`. No core edits are needed — `hermes -m <name>`, `/model`, credential resolution, runtime resolution and the auxiliary client (compression, vision) all key on `auth_type`, not on the provider name. `plugins/model-providers/copilot-acp/` is the in-tree example (its `client.py` subclasses the public `ACPClient` below).
 
 | Field | Purpose |
 |---|---|
@@ -260,6 +260,37 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 | `process_args_env_var` | Env var that overrides argv (shlex-split) |
 
 The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
+
+#### The public ACP client: `agent.acp_client.ACPClient`
+
+For an agent CLI that speaks the [Agent Client Protocol](https://agentclientprotocol.com) on stdio, return an `ACPClient` (or a subclass) from `create_client` instead of writing your own shim. It is an OpenAI-client facade (`client.chat.completions.create(...)`, streaming included) that starts one short-lived ACP session per request, applies the requested model over ACP (`session/set_config_option`, else `session/set_model`), forwards Hermes' tools as a prompt-level bridge, answers `fs/read_text_file` / `fs/write_text_file` inside the session cwd with Hermes' file-safety rules, cancels permission requests, and lists the session's models with `list_models(timeout_seconds=...)`. It already declares both `HERMES_SKIP_*` attributes.
+
+```python
+from agent.acp_client import ACPClient
+
+class MyAgentClient(ACPClient):
+    default_command = "myagent"            # used only when the caller passes no command/args
+    default_args = ("--acp",)
+    command_env_vars = ("MYAGENT_ACP_COMMAND",)
+    args_env_var = "MYAGENT_ACP_ARGS"
+    marker_base_url = "acp://myagent"
+    placeholder_model = "myagent-acp"      # "session default": never sent as a model selection
+    label = "MyAgent ACP"                  # product name in errors and logs
+
+    def model_entry_disabled(self, entry):  # optional: vendor _meta marking a model unavailable
+        return False
+
+    def early_exit_error(self, stderr_text):  # optional: friendlier error for a known crash banner
+        return None
+
+class MyAgentProfile(ProviderProfile):
+    def create_client(self, **client_kwargs):
+        return MyAgentClient(**client_kwargs)
+```
+
+Keep the class attributes in step with the profile's `process_*` fields. Override `_handle_server_message(msg, *, process, cwd, text_parts, reasoning_parts, allow_file_requests=True)` to render extra `session/update` kinds (call `super()` for the rest). `hermes_cli.auth.resolve_external_process_provider_credentials(name)` returns the resolved `command`/`args`/`base_url` for a `fetch_models()` probe.
+
+`agent.copilot_acp_client.CopilotACPClient` is a deprecated alias of `ACPClient` with the old GitHub Copilot launch defaults; importing it warns once per process. Subclass `ACPClient` instead (set `placeholder_model` to your own placeholder id). The alias stays for at least two minor releases.
 
 ### Picker rows for non-api-key plugins
 

@@ -17,7 +17,7 @@ class CopilotACPProfile(ProviderProfile):
 
     def create_client(self, **client_kwargs: Any) -> Any:
         """Build the ACP stdio shim rather than an HTTP client."""
-        from agent.copilot_acp_client import CopilotACPClient
+        from .client import CopilotACPClient
 
         return CopilotACPClient(**client_kwargs)
 
