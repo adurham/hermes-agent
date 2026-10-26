@@ -29,6 +29,9 @@ def main():
         print('--keep-stash'); return 0
     if sys.argv[1:2] == ['update']:
         sys.path.insert(0, os.environ['HANDOFF_REPO'])
+        # The fixture install ships its own hermes_cli package: load the tree's.
+        for name in [m for m in sys.modules if m == 'hermes_cli' or m.startswith('hermes_cli.')]:
+            del sys.modules[name]
         from hermes_cli.update_stage import publish_stage
         publish_stage('Packaging the desktop app')
         hold = Path(os.environ['HANDOFF_HOLD'])
