@@ -56,23 +56,16 @@ function receiptPromptIndex(window: ChatMessage[], receipt: PersistedTurn, befor
   return -1
 }
 
-/** Window indices of the receipt turn ending at `end`, or none when its identity is incomplete. */
-function receiptTurnIndices(window: ChatMessage[], end: number, pageRows: Set<number>): number[] {
-  const receipt = window[end].persistedTurn
+/** First and last stored row of the receipt on `message`, when it names any. */
+function receiptBounds(message: ChatMessage): null | { first: number; last: number; receipt: PersistedTurn } {
+  const receipt = message.persistedTurn
   const rows = (receipt?.row_ids ?? []).filter(isRowId)
 
-  if (!receipt || !rows.length) {
-    return []
-  }
+  return receipt && rows.length ? { first: Math.min(...rows), last: Math.max(...rows), receipt } : null
+}
 
-  const first = Math.min(...rows)
-  const last = Math.max(...rows)
-  const pageLast = Math.max(...pageRows)
-
-  if (!pageRows.has(first) || pageLast < last) {
-    return []
-  }
-
+/** Window indices of the turn ending at `end`, or none when its identity is incomplete. */
+function windowTurnIndices(window: ChatMessage[], end: number, first: number, last: number, receipt: PersistedTurn) {
   const start = receiptPromptIndex(window, receipt, end)
 
   if (start < 0) {
@@ -102,6 +95,17 @@ function receiptTurnIndices(window: ChatMessage[], end: number, pageRows: Set<nu
   return indices
 }
 
+/** Window indices of the receipt turn ending at `end` that the page holds whole. */
+function receiptTurnIndices(window: ChatMessage[], end: number, pageRows: Set<number>): number[] {
+  const bounds = receiptBounds(window[end])
+
+  if (!bounds || !pageRows.has(bounds.first) || Math.max(...pageRows) < bounds.last) {
+    return []
+  }
+
+  return windowTurnIndices(window, end, bounds.first, bounds.last, bounds.receipt)
+}
+
 /** Drop the window rows whose turn the page holds whole, by the turn's receipt. */
 export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
   const pageRows = new Set(page.flatMap(transcriptRowIds))
@@ -119,6 +123,48 @@ export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMe
   })
 
   return dropped.size ? window.filter((_, index) => !dropped.has(index)) : window
+}
+
+/**
+ * A turn stopped during its tool run ends on stored rows no page paints: the
+ * tool result folds into its call and the empty closing assistant row is
+ * skipped. A page that holds the turn therefore never reaches its last row,
+ * the window's live copy was never dropped, and the page's copy of the
+ * narration and tool drew beside it. When the page holds the stopped turn's
+ * first row but not its last, the window's live copy (its receipt bound by the
+ * interrupted completion, carrying the "Response stopped" mark) is the whole
+ * turn, and the page's rows inside the receipt are the partial copy that goes.
+ */
+export function dropPageRowsOfStoppedTurns(window: ChatMessage[], page: ChatMessage[]): ChatMessage[] {
+  const pageRows = new Set(page.flatMap(transcriptRowIds))
+
+  if (!pageRows.size) {
+    return page
+  }
+
+  const pageLast = Math.max(...pageRows)
+  const liveRows = new Set<number>()
+
+  window.forEach((message, index) => {
+    const bounds = message.interrupted && !message.pending ? receiptBounds(message) : null
+
+    if (
+      bounds &&
+      pageRows.has(bounds.first) &&
+      pageLast < bounds.last &&
+      windowTurnIndices(window, index, bounds.first, bounds.last, bounds.receipt).length
+    ) {
+      bounds.receipt.row_ids.filter(isRowId).forEach(id => liveRows.add(id))
+    }
+  })
+
+  const partial = (message: ChatMessage) => {
+    const rows = transcriptRowIds(message)
+
+    return rows.length > 0 && rows.every(id => liveRows.has(id))
+  }
+
+  return liveRows.size && page.some(partial) ? page.filter(message => !partial(message)) : page
 }
 
 /**

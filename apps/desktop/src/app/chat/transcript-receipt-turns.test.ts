@@ -171,6 +171,54 @@ describe('a refreshed page that holds the live turn whole', () => {
     expect(count(stopped, 'old-b answer')).toBe(1)
   })
 
+  it('draws a turn stopped during its tool run once, keeping its stopped mark', () => {
+    // No reply text: the turn ends on its tool result and an empty assistant
+    // row, neither of which a page paints.
+    const receipt: PersistedTurn = {
+      row_ids: [17, 18, 19, 20],
+      complete: false,
+      user_row_id: 17,
+      user_row_ids: [17],
+      submission_id: 'sub-tool-stop'
+    }
+
+    const stopped = bindStoppedTurnReceipt(
+      [
+        ...toChatMessages(windowRows),
+        live('user-sub-tool-stop', 'user', 'steered prompt'),
+        {
+          ...live('assistant-stream-1', 'assistant', 'live look'),
+          parts: [
+            { type: 'text', text: 'live look' },
+            {
+              type: 'tool-call',
+              toolCallId: 'live-1',
+              toolName: 'terminal',
+              args: { command: 'echo' },
+              argsText: '{"command":"echo"}',
+              interrupted: true
+            }
+          ],
+          interrupted: true,
+          pending: false
+        }
+      ],
+      receipt
+    )
+
+    const page = toChatMessages([
+      ...olderTurn(1, 'old-a').slice(3),
+      ...olderTurn(9, 'old-b'),
+      ...liveRows,
+      answer(20, '')
+    ])
+    const merged = graftRefreshedTailOntoBackfill(page, stopped)
+
+    expect(count(texts(merged), 'steered prompt')).toBe(1)
+    expect(count(texts(merged), 'live look')).toBe(1)
+    expect(merged.find(message => chatMessageText(message).includes('live look'))?.interrupted).toBe(true)
+  })
+
   it('keeps a live turn the page does not reach yet', () => {
     const receipt: PersistedTurn = { row_ids: [17, 18, 19, 20, 21], complete: false, submission_id: 'sub-late' }
 

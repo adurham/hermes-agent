@@ -15,7 +15,11 @@
  * drift on the next page.
  */
 
-import { dropPageFoldsCutByTheBoundary, dropReceiptTurnsThePageHolds } from '@/app/chat/transcript-receipt-turns'
+import {
+  dropPageFoldsCutByTheBoundary,
+  dropPageRowsOfStoppedTurns,
+  dropReceiptTurnsThePageHolds
+} from '@/app/chat/transcript-receipt-turns'
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { getOlderSessionMessages, getSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
@@ -372,7 +376,8 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
   // A turn the page holds whole is the page's to draw, whatever stored ids
   // its live rows managed to bind (see transcript-receipt-turns).
   const previousTrailing = place(dropReceiptTurnsThePageHolds(previous, refreshedTail), false)
-  const refreshedTrailing = place(dropPageFoldsCutByTheBoundary(previous, refreshedTail), true)
+  const freshRows = dropPageRowsOfStoppedTurns(previous, dropPageFoldsCutByTheBoundary(previous, refreshedTail))
+  const refreshedTrailing = place(freshRows, true)
 
   const stored = [...byRowId.entries()]
     .sort((left, right) => left[0] - right[0])
