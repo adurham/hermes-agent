@@ -83,6 +83,8 @@ class _HomeLayer:
     stamp_checked_at: float | None = None
     # name -> when its miss last forced a stamp check (see ``_miss_recheck_due``)
     misses: dict[str, float] = field(default_factory=dict)
+    # plugin dir name -> the error its import raised (``plugin_load_error``), until an import succeeds
+    errors: dict[str, str] = field(default_factory=dict)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -596,6 +598,7 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
             register_provider(profile)
     except Exception as exc:  # health: allow BLE001 -- plugin load boundary (moved from _import_plugin_dir): one broken plugin never breaks discovery
         logger.warning("Failed to load user provider plugin %s in the plugin host: %s", plugin_dir.name, exc)
+        _note_load_result(plugin_dir, exc)
         return
     finally:
         _current_source = None
@@ -626,13 +629,33 @@ def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
+        _note_load_result(plugin_dir, None)
     except Exception as exc:  # health: allow BLE001 -- plugin import boundary (moved from _import_plugin_dir): one broken plugin never breaks discovery
         logger.warning(
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
         sys.modules.pop(module_name, None)
+        _note_load_result(plugin_dir, exc)
     finally:
         _current_source = None
+
+
+def _note_load_result(plugin_dir: Path, exc: BaseException | None) -> None:
+    """Record (or clear) a ``$HERMES_HOME`` plugin's import error on the home layer importing it: the
+    general plugin manager lists a model-provider dir with no error, so this is the only record of why it
+    registered nothing."""
+    layer = _REGISTRATION_TARGET.get()
+    if layer is None:  # bundled: process-wide, never a home's plugin
+        return
+    if exc is None:
+        layer.errors.pop(plugin_dir.name, None)
+    else:
+        layer.errors[plugin_dir.name] = f"{type(exc).__name__}: {exc}"
+
+
+def plugin_load_error(plugin: str) -> str:
+    """The error the bound home's provider plugin dir *plugin* raised on its last import, else ``""``."""
+    return _home_layer().errors.get(plugin, "")
 
 
 def _discover_entry_point_providers() -> None:

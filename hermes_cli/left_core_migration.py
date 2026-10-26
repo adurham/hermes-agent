@@ -137,23 +137,29 @@ def spotify_in_use(home: Path, *, process_env: bool = False) -> bool:
     return _toolset_listed(_read_config(home), frozenset({"spotify"}))
 
 
-def _bundled_plugin_selected(home: Path, plugin: str) -> bool:
-    """*plugin*'s bundled copy was on for *home*: its key or name in ``plugins.enabled`` and neither in
-    ``plugins.disabled`` (which wins, as in the loader), read with the managed overlay applied like the
-    loader's config, so an administrator's pinned list counts."""
+def _plugin_lists(home: Path, plugin: str) -> tuple[bool, bool]:
+    """Whether *plugin*'s key or name is in *home*'s ``plugins.enabled`` / ``plugins.disabled``, read with the
+    managed overlay applied like the loader's config, so an administrator's pinned list counts."""
     from gateway import config_loader
     feature = next(f for f in LEFT_CORE if f.plugin == plugin)
     try:
         plugins = config_loader.read_yaml_layers(home).get("plugins")
     except Exception:  # malformed config.yaml: the loader enables nothing from it either
         logger.debug("left-core: unreadable config for %s", home, exc_info=True)
-        return False
+        return False, False
     plugins = plugins if isinstance(plugins, dict) else {}
 
     def listed(key: str) -> bool:
         names = plugins.get(key)
         return isinstance(names, list) and any(str(n) in (feature.plugin_key, feature.plugin) for n in names)
-    return listed("enabled") and not listed("disabled")
+    return listed("enabled"), listed("disabled")
+
+
+def _bundled_plugin_selected(home: Path, plugin: str) -> bool:
+    """*plugin*'s bundled copy was on for *home*: in ``plugins.enabled`` and not in ``plugins.disabled``
+    (which wins, as in the loader)."""
+    enabled, disabled = _plugin_lists(home, plugin)
+    return enabled and not disabled
 
 
 def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
@@ -540,8 +546,8 @@ def _provider_feature(name: str) -> Optional[LeftCoreFeature]:
 
 def provider_install_hint(name: str) -> str:
     """For a provider name nothing resolves to that a left-core plugin supplies: the sentence naming its
-    install command for the active home (its enable command when installed but not enabled; its load error and
-    update command when enabled but it failed to load), else ``""``.
+    install command for the active home (its enable command when installed but disabled; its load error and
+    update command when installed but it failed to load), else ``""``.
     Appended to every "unknown provider" error (runtime resolution, ``/model``, ``hermes model``, ``hermes
     auth add``)."""
     feature = _provider_feature(name)
@@ -552,21 +558,20 @@ def provider_install_hint(name: str) -> str:
     if not plugin_present(feature.plugin, home):
         return f"{_install_sentence(feature)}."
     command = _install_command(feature.plugin, home)
-    if _bundled_plugin_selected(home, feature.plugin):  # enabled, yet no profile: its load failed
-        error = _load_error(feature)
-        return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is enabled but failed "
-                f"to load{f' ({error})' if error else ''}: run `{command.replace(' install ', ' update ')}`, or "
-                f"see `hermes logs` for the cause.")
-    return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is installed but not "
-            f"loaded: run `{command.replace(' install ', ' enable ')}`.")
+    if _plugin_lists(home, feature.plugin)[1]:
+        return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is installed but "
+                f"disabled: run `{command.replace(' install ', ' enable ')}`.")
+    # A model-provider plugin loads without plugins.enabled: present, not disabled and no profile = its load failed.
+    error = _load_error(feature)
+    return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin, which is installed but failed "
+            f"to load{f' ({error})' if error else ''}: run `{command.replace(' install ', ' update ')}`, or "
+            f"see `hermes logs` for the cause.")
 
 
 def _load_error(feature: LeftCoreFeature) -> str:
-    """The plugin loader's recorded error for *feature*'s plugin in this process, else ``""``."""
-    from hermes_cli.plugins import get_plugin_manager
-    names = {feature.plugin, feature.plugin_key} - {""}
-    return next((str(p["error"]) for p in get_plugin_manager().list_plugins()
-                 if p.get("error") and names & {p.get("name"), p.get("key")}), "")
+    """The error *feature*'s provider plugin raised on import in the active home, else ``""``."""
+    from providers import plugin_load_error
+    return plugin_load_error(feature.plugin)
 
 
 def provider_left_core(name: str) -> bool:

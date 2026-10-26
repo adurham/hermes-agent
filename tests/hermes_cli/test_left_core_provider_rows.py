@@ -175,22 +175,25 @@ def test_unknown_left_core_provider_names_the_install_on_every_surface(acme_row)
     for text in (str(err.value), str(_unknown_provider_exit("acme")), _unknown_provider_message("ACME")):
         assert "Acme LLM moved out of core into the 'acme-llm' plugin" in text
         assert "hermes plugins install acme-llm" in text
-    (acme_row / "plugins" / "acme-llm").mkdir(parents=True)  # installed but not loaded
-    assert "hermes plugins enable acme-llm" in lcm.provider_install_hint("acme")
+    (acme_row / "plugins" / "acme-llm").mkdir(parents=True)
+    (acme_row / "config.yaml").write_text("model:\n  provider: acme\nplugins:\n  disabled: [acme-llm]\n",
+                                          encoding="utf-8")
+    assert "hermes plugins enable acme-llm" in lcm.provider_install_hint("acme")  # installed but disabled
     assert lcm.provider_install_hint("other") == ""
 
 
-def test_an_enabled_plugin_that_failed_to_load_gets_its_error_not_enable(acme_row, monkeypatch):
-    from types import SimpleNamespace
-    from hermes_cli import plugins
-    (acme_row / "plugins" / "acme-llm").mkdir(parents=True)
-    (acme_row / "config.yaml").write_text("model:\n  provider: acme\nplugins:\n  enabled: [acme-llm]\n",
-                                          encoding="utf-8")
-    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: SimpleNamespace(list_plugins=lambda: [
-        {"name": "acme-llm", "key": "acme-llm", "enabled": False, "error": "ImportError: cannot import name 'x'"}]))
+@pytest.mark.parametrize("listed", ["", "plugins:\n  enabled: [acme-llm]\n"])
+def test_a_provider_plugin_that_failed_to_load_gets_its_error_not_enable(acme_row, listed):
+    """A model-provider plugin loads without `plugins.enabled`: installed, not disabled and no profile means
+    its import failed. The hint carries the error providers discovery recorded for this home."""
+    plugin = acme_row / "plugins" / "acme-llm"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: acme-llm\nkind: model-provider\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text("from acme_sdk import client\n", encoding="utf-8")
+    (acme_row / "config.yaml").write_text("model:\n  provider: acme\n" + listed, encoding="utf-8")
     hint = lcm.provider_install_hint("acme")
-    assert "ImportError: cannot import name 'x'" in hint and "hermes plugins update acme-llm" in hint
-    assert "enable" not in hint.replace("enabled", "")
+    assert "ModuleNotFoundError: No module named 'acme_sdk'" in hint and "hermes plugins update acme-llm" in hint
+    assert "enable" not in hint
 
 
 def test_runtime_resolution_installs_the_plugin_first_for_a_home_using_it(acme_row, monkeypatch):
