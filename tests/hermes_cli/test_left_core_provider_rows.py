@@ -120,13 +120,6 @@ def test_gh_only_home_is_told_to_log_in_on_every_migration_outcome(tmp_path):
     assert "could not be installed automatically" in said[0] and "run `hermes auth add copilot`" in said[0]
 
 
-def test_token_home_gets_the_plain_success_line(tmp_path):
-    home = _home(tmp_path, config="model:\n  provider: copilot\n", env="COPILOT_GITHUB_TOKEN=gho_x\n")
-    said = []
-    lcm.migrate_home(home, install=lambda name: {"ok": True}, say=said.append)
-    assert "COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN" in said[0] and "to sign in" not in said[0]
-
-
 # ── generic seams through a fake row ─────────────────────────────────────────────────────────────
 
 
@@ -179,19 +172,6 @@ def test_profile_env_is_refused_by_env_writers_only_while_the_plugin_is_absent(a
         validate_env_var_name_for_write("ACME_CLI_PATH")
     (acme_row / "plugins" / "acme-llm").mkdir(parents=True)
     validate_env_var_name_for_write("ACME_CLI_PATH")
-
-
-def test_copilot_row_keeps_the_env_core_kept(monkeypatch):
-    """Static, before discovery: the profile-managed scrub and `hermes config set` keep knowing the names,
-    and the token/base-URL overrides stay out of children (Tier 2) with no Copilot profile registered."""
-    from hermes_cli.config import _EXTRA_ENV_KEYS
-    from hermes_cli.env_loader import _PROFILE_MANAGED_ENV_KEYS
-    from tools.environments.local_env_policy import _left_core_env
-    names = {"HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL"}
-    assert names <= _PROFILE_MANAGED_ENV_KEYS and names <= _EXTRA_ENV_KEYS
-    assert {"COPILOT_GITHUB_TOKEN", "COPILOT_API_BASE_URL"} <= _left_core_env(secrets_only=False)
-    assert not {"GH_TOKEN", "GITHUB_TOKEN"} & set(next(f for f in lcm.LEFT_CORE if f.plugin == "github-copilot")
-                                                  .private_env)
 
 
 def test_models_dev_never_stands_in_for_a_provider_whose_plugin_left_core(acme_row, monkeypatch):

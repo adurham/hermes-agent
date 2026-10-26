@@ -507,9 +507,11 @@ def recover_for_provider(name: Optional[str]) -> None:
     feature = _provider_feature(name or "")
     if feature is None:
         return
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, hermes_home_key
     from providers import get_provider_profile
     home = Path(get_hermes_home())
+    if hermes_home_key(home) in _attempted:  # this process already tried: skip the config/auth/.env reads
+        return
     if plugin_present(feature.plugin, home) or get_provider_profile(str(name).strip().lower()) is not None:
         return
     if feature.in_use(home, process_env=True):
