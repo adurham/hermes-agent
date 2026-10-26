@@ -16,7 +16,6 @@ import hermes_cli.left_core_migration as lcm
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
-    monkeypatch.setattr(lcm, "_undelivered", {})
     monkeypatch.delenv("HASS_TOKEN", raising=False)
     # A catalog that lists every left-core plugin; never the network.
     import hermes_cli.memory_provider_migration as mpm

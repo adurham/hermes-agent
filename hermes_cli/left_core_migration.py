@@ -591,7 +591,7 @@ def recover_for_provider(name: Optional[str]) -> None:
     """Runtime resolution of *name*, a provider a left-core plugin supplies, in a home that uses it and lacks
     the plugin: run :func:`recover_at_startup` now. The CLI and Desktop resolve the provider before the agent
     (whose start runs the migration) exists, so they would otherwise stop at "unknown provider" on a home no
-    ``hermes update`` migrated. Outcomes are logged and wait for the home's first agent, as at gateway start."""
+    ``hermes update`` migrated. Outcomes print to an interactive terminal, else wait for the home's first agent."""
     feature = _provider_feature(name or "")
     if feature is None:
         return
@@ -603,7 +603,9 @@ def recover_for_provider(name: Optional[str]) -> None:
     if plugin_present(feature.plugin, home) or get_provider_profile(str(name).strip().lower()) is not None:
         return
     if feature_in_use(feature, home, process_env=True):
-        recover_at_startup()
+        # A terminal user sees the outcome now; otherwise (Desktop, gateway, a detached turn) the home's
+        # first agent in any process delivers it.
+        recover_at_startup(say=(lambda message: print(message, file=sys.stderr)) if _interactive() else None)
 
 
 def profile_env_names() -> frozenset[str]:
@@ -670,7 +672,6 @@ def moved_plugin_hint(name: str) -> str:
 
 
 _attempted: set[str] = set()
-_undelivered: dict[str, list[str]] = {}
 _installs_held: ContextVar[bool] = ContextVar("left_core_installs_held", default=False)
 
 
@@ -688,9 +689,52 @@ def installs_held():
 def defer_startup_notice(message: str) -> None:
     """Hand *message* to the active home's first agent (its startup-warning sink, through
     :func:`recover_at_startup`), once. For boot-path work that runs before any agent exists."""
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_constants import get_hermes_home
     logger.warning(message)
-    _undelivered.setdefault(hermes_home_key(Path(get_hermes_home())), []).append(message)
+    _queue_notice(Path(get_hermes_home()), message)
+
+
+def _notice_file(home: Path) -> Path:
+    return home / "cache" / "left-core-notices.jsonl"
+
+
+def _queue_notice(home: Path, message: str) -> None:
+    """Keep *message* for *home*'s first agent in ANY process (:func:`_claim_notices`): the process that
+    produced it (a CLI resolving the provider, a gateway start) often runs no agent for that home itself."""
+    import json
+    path = _notice_file(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:  # one short append per line: concurrent writers interleave
+            fh.write(json.dumps(message) + "\n")
+    except OSError as exc:
+        logger.debug("left-core notice not kept for %s: %s", home, exc)
+
+
+def _claim_notices(home: Path) -> list[str]:
+    """Take every notice kept for *home*, exactly once across processes: the rename is the claim, so of
+    several agents starting at once only one gets (and delivers) them."""
+    import json
+    import threading
+    path = _notice_file(home)
+    claimed = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}")
+    try:
+        os.replace(path, claimed)
+    except OSError:  # nothing kept, or another process claimed it first
+        return []
+    try:
+        lines = claimed.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    finally:
+        claimed.unlink(missing_ok=True)
+    messages = []
+    for line in lines:
+        try:
+            messages.append(str(json.loads(line)))
+        except ValueError:  # a torn write: skip that line only
+            continue
+    return messages
 
 
 def plugin_present(plugin: str, home: Path) -> bool:
@@ -1014,9 +1058,9 @@ def _gateway_serves(home: Path) -> bool:
 
 def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[str]:
     """Agent/gateway start hook for the active home: one attempt per process per home. With *say*
-    (an agent's startup-warning sink) outcomes are delivered now, together with any a gateway-start
-    attempt or boot maintenance (:func:`defer_startup_notice`) queued for this home; without it they are
-    logged and queued for the home's first agent.
+    (an agent's startup-warning sink) outcomes are delivered now, together with any an earlier attempt or
+    boot maintenance (:func:`defer_startup_notice`) kept for this home in any process; without it they are
+    logged and kept in the home (:func:`_queue_notice`) for its first agent, in whichever process.
     Returns installed plugin names."""
     from agent.safe_worker_policy import worker_config_snapshot
     if _installs_held.get():
@@ -1032,7 +1076,7 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
 
     def deliver(message: str) -> None:
         if say is None:
-            _undelivered.setdefault(key, []).append(message)
+            _queue_notice(home, message)
             return
         try:
             say(message)
@@ -1040,7 +1084,7 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
             logger.debug("left-core migration notification failed", exc_info=True)
 
     if say is not None:
-        for message in _undelivered.pop(key, []):
+        for message in _claim_notices(home):
             deliver(message)
     if key in _attempted:
         return []

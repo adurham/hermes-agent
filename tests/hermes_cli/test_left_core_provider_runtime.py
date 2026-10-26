@@ -17,7 +17,6 @@ import hermes_cli.left_core_migration as lcm
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
-    monkeypatch.setattr(lcm, "_undelivered", {})
     for name in ("HERMES_INFERENCE_PROVIDER", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
         monkeypatch.delenv(name, raising=False)
     import hermes_cli.memory_provider_migration as mpm
@@ -116,3 +115,55 @@ def test_doctor_installs_nothing_and_names_the_install(tmp_path, monkeypatch, in
     assert installs == []
     assert not (home / "plugins" / "github-copilot").exists()
     assert "hermes plugins install github-copilot" in capsys.readouterr().out
+
+
+@pytest.fixture
+def installs_ok(monkeypatch):
+    calls = []
+
+    def fake_install(identifier, *, force, enable, catalog_name=None, assume_deps_consent=None, **kw):
+        from hermes_constants import get_hermes_home
+        calls.append(catalog_name)
+        (Path(get_hermes_home()) / "plugins" / catalog_name).mkdir(parents=True)
+        return {"ok": True}
+    import hermes_cli.plugins_cmd as pc
+    monkeypatch.setattr(pc, "dashboard_install_plugin", fake_install)
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    return calls
+
+
+def _agent_start_in_another_process() -> str:
+    """What a fresh process's agent start (its startup-warning sink) delivers for ``HERMES_HOME``."""
+    import os
+    import subprocess
+    import sys
+    code = ("import hermes_cli.left_core_migration as m; "
+            "m.recover_at_startup(say=lambda message: print('NOTICE', message))")
+    root = Path(__file__).resolve().parents[2]
+    out = subprocess.run([sys.executable, "-c", code], cwd=root, env={**os.environ, "PYTHONPATH": str(root)},
+                         capture_output=True, text=True, timeout=120, check=True)
+    return "".join(line for line in out.stdout.splitlines(keepends=True) if line.startswith("NOTICE"))
+
+
+def test_a_resolution_outcome_reaches_the_first_agent_of_any_process_once(tmp_path, monkeypatch, installs_ok,
+                                                                          capsys):
+    """A detached turn: the CLI process resolves the provider (and installs), the agent runs in another
+    process. The outcome is kept in the home and the first agent anywhere delivers it, exactly once."""
+    _copilot_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(lcm, "_interactive", lambda: False)
+    lcm.recover_for_provider("copilot")  # process 1: no agent here
+    assert installs_ok == ["github-copilot"]
+    assert capsys.readouterr().err == ""
+    first, second = _agent_start_in_another_process(), _agent_start_in_another_process()
+    assert first.count("GitHub Copilot moved out of core") == 1
+    assert "run `hermes auth add copilot`" in first  # no token the plugin reads: the gh-only hint rides along
+    assert "moved out of core" not in second
+
+
+def test_an_interactive_terminal_sees_the_resolution_outcome_now_and_only_there(tmp_path, monkeypatch, installs_ok,
+                                                                                capsys):
+    _copilot_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(lcm, "_interactive", lambda: True)
+    lcm.recover_for_provider("copilot")
+    assert capsys.readouterr().err.count("GitHub Copilot moved out of core") == 1
+    assert "moved out of core" not in _agent_start_in_another_process()

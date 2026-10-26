@@ -25,7 +25,6 @@ ACME = lcm.LeftCoreFeature(
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
-    monkeypatch.setattr(lcm, "_undelivered", {})
     for name in ("HERMES_INFERENCE_PROVIDER", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ACME_CLI_PATH"):
         monkeypatch.delenv(name, raising=False)
     import hermes_cli.memory_provider_migration as mpm
@@ -198,7 +197,7 @@ def test_runtime_resolution_installs_the_plugin_first_for_a_home_using_it(acme_r
     calls = []
     monkeypatch.setattr(lcm, "recover_at_startup", lambda **kw: calls.append(kw) or [])
     lcm.recover_for_provider("acme")
-    assert calls == [{}]
+    assert len(calls) == 1
     lcm.recover_for_provider("openrouter")
     (acme_row / "config.yaml").write_text("model:\n  provider: nous\n", encoding="utf-8")
     lcm.recover_for_provider("acme")  # requested, but this home never chose it: no install
