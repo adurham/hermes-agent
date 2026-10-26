@@ -44,6 +44,11 @@ def load_hosted_profiles(plugin_dir: Path, module_name: str) -> tuple[list[Any],
     return hosted, in_process
 
 
+def is_hosted_profile(profile: Any) -> bool:
+    """True for a profile proxy whose code runs in the plugin host."""
+    return type(profile).__module__ == __name__
+
+
 def _fingerprint(plugin_dir: Path) -> str:
     digest = hashlib.sha256(f"{_CACHE_VERSION}|{sys.executable}".encode())
     try:

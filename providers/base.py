@@ -631,11 +631,12 @@ class ProviderProfile:
         """Turn the selected pool row's secret into the runtime key (may update ``entry``); default as-is."""
         return api_key
 
-    def seed_pool_credentials(self, *, is_suppressed: Callable[[str], bool],
-                              explicitly_configured: Callable[[], bool]) -> list[dict] | None:
-        """Pool rows ``{source, access_token, base_url, label}`` this provider seeds itself. Overriding it
-        replaces generic env seeding (that loop would overwrite exchanged tokens with the raw env value),
-        so an override returns ``[]`` for none; only the base implementation keeps generic env seeding."""
+    def seed_pool_credentials(self, *, suppressed_sources: frozenset[str],
+                              explicitly_configured: bool) -> list[dict] | None:
+        """Pool rows ``{source, access_token, base_url, label}`` this provider seeds itself; skip any source in
+        ``suppressed_sources`` (``hermes auth remove``). Plain data, so it crosses ``plugins.isolation: host``.
+        Overriding it replaces generic env seeding (that loop would overwrite exchanged tokens with the raw env
+        value), so an override returns ``[]`` for none; only the base implementation keeps generic env seeding."""
         return None
 
     def remove_credential_source(self, source: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:

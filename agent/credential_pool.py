@@ -2637,12 +2637,12 @@ def _seed_profile_singleton(seed: _Seeder) -> None:
     validates or exchanges. The profile gates its own work on suppression and explicit config."""
     from providers import get_provider_profile
     profile = get_provider_profile(seed.provider)
-    if profile is None:
+    if profile is None or not _profile_seeds_pool(seed.provider):
         return
-    from hermes_cli.auth import is_provider_explicitly_configured
-    rows = profile.seed_pool_credentials(
-        is_suppressed=lambda source: seed.is_suppressed(seed.provider, source),
-        explicitly_configured=lambda: is_provider_explicitly_configured(seed.provider))
+    from hermes_cli.auth import is_provider_explicitly_configured, suppressed_credential_sources
+    rows = profile.seed_pool_credentials(  # values, not callbacks: a hosted profile gets plain JSON
+        suppressed_sources=suppressed_credential_sources(seed.provider),
+        explicitly_configured=is_provider_explicitly_configured(seed.provider))
     pconfig = PROVIDER_REGISTRY.get(seed.provider)
     for row in rows or ():
         seed.upsert(row["source"], {

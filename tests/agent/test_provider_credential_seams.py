@@ -11,8 +11,8 @@ from utils import base_url_host_matches
 
 
 class _OwnCreds(ProviderProfile):
-    def seed_pool_credentials(self, *, is_suppressed, explicitly_configured):
-        return [] if is_suppressed("env:ACME_TOKEN") else [
+    def seed_pool_credentials(self, *, suppressed_sources, explicitly_configured):
+        return [] if "env:ACME_TOKEN" in suppressed_sources else [
             {"source": "env:ACME_TOKEN", "access_token": "minted", "base_url": None, "label": "ACME_TOKEN"}]
 
     def remove_credential_source(self, source):
