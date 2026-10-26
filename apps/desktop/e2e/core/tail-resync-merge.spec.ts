@@ -55,6 +55,9 @@ const SEED_ROUNDS = 10
 const SEED_TURNS = 6
 const CHECKED_TURNS = 3
 const OBSERVE_MS = 13_000
+// The app's own line between a reader at the bottom and one in history
+// (RUN_START_SNAP_THRESHOLD_PX in thread/list.tsx).
+const OFF_BOTTOM_PX = 64
 
 const SHOTS = process.env.HERMES_E2E_SHOT_DIR
 
@@ -102,17 +105,27 @@ async function withApp(
   }
 }
 
-/** How often each marker shows in the visible thread, and whether they read in order. */
+/**
+ * How often each marker shows in the visible thread, whether they read in
+ * order, and whether the thread still follows its bottom. innerText skips the
+ * off-screen turns content-visibility leaves unrendered, so the marker count is
+ * only meaningful while the view sits at the newest turn: nothing here scrolls,
+ * and a view that stopped following is the symptom itself (a settled turn's
+ * row-height jump read as a scroll-up), reported as such.
+ */
 async function turnShape(
   page: Page,
   markers: string[]
-): Promise<{ counts: number[]; doubled: string[]; ordered: boolean }> {
-  const text = await page.evaluate(() => {
+): Promise<{ counts: number[]; doubled: string[]; offBottom: number; ordered: boolean }> {
+  const { offBottom, text } = await page.evaluate(() => {
     const el = ([...document.querySelectorAll('[data-slot="aui_thread-viewport"]')] as HTMLElement[]).find(
       node => node.getClientRects().length > 0
     )
 
-    return el ? el.innerText.replace(/\s+/g, ' ') : ''
+    return {
+      offBottom: el ? Math.round(el.scrollHeight - el.clientHeight - el.scrollTop) : -1,
+      text: el ? el.innerText.replace(/\s+/g, ' ') : ''
+    }
   })
 
   const counts = markers.map(marker => text.split(marker).length - 1)
@@ -126,6 +139,7 @@ async function turnShape(
   return {
     counts,
     doubled: [...seen].filter(([, count]) => count > 1).map(([marker, count]) => `${marker}x${count}`),
+    offBottom,
     ordered: positions.every((at, i) => at >= 0 && (i === 0 || at > positions[i - 1]))
   }
 }
@@ -155,6 +169,7 @@ async function observeTurn(page: Page, markers: string[], label: string): Promis
   const deadline = Date.now() + OBSERVE_MS
   let shot = false
   let nextReturn = 0
+  let previousOffBottom = 0
 
   while (Date.now() < deadline) {
     if (Date.now() >= nextReturn) {
@@ -164,9 +179,14 @@ async function observeTurn(page: Page, markers: string[], label: string): Promis
 
     const shape = await turnShape(page, markers)
 
-    if (shape.counts.some(count => count !== 1) || !shape.ordered || shape.doubled.length) {
+    // Off the bottom on two samples in a row: a follow that lags one frame
+    // behind a resize is not a view that stopped following.
+    const lostBottom = shape.offBottom > OFF_BOTTOM_PX && previousOffBottom > OFF_BOTTOM_PX
+    previousOffBottom = shape.offBottom
+
+    if (shape.counts.some(count => count !== 1) || !shape.ordered || shape.doubled.length || lostBottom) {
       bad.push(
-        `${markers.map((m, i) => `${m}x${shape.counts[i]}`).join(' ')} ordered=${shape.ordered} doubled=${shape.doubled.join(',')}`
+        `${markers.map((m, i) => `${m}x${shape.counts[i]}`).join(' ')} ordered=${shape.ordered} doubled=${shape.doubled.join(',')} offBottom=${shape.offBottom}px`
       )
 
       if (SHOTS && !shot) {
