@@ -3,7 +3,7 @@ import { mergeUsage } from '@hermes/shared'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
+import { concatPartsByToolCall, sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
   assistantTextPart,
   type ChatMessage,
@@ -1596,25 +1596,6 @@ export function removeRepresentedLocalLiveProjection(
 }
 
 /**
- * Concatenate an activation row's parts with the re-fetched row's parts, but
- * let the fresher side win per tool call: a re-delivered `open_requests` marks
- * the cached row changed, and a raw concat would render the same call twice —
- * interleaved with reasoning from between the copies. Non-tool parts concat
- * unchanged.
- */
-function mergeActivationStreamParts(activationParts: ChatMessage['parts'], currentParts: ChatMessage['parts']) {
-  const deliveredIds = new Set(
-    currentParts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
-  )
-
-  const activationTail = activationParts.filter(
-    part => !(part.type === 'tool-call' && deliveredIds.has(part.toolCallId))
-  )
-
-  return [...activationTail, ...currentParts]
-}
-
-/**
  * Overlay messages that changed while activation waited on REST. Existing ids
  * replace the older activation row; only rows added or changed since the warm
  * cache baseline are appended. This is identity-based, never text-based.
@@ -1747,7 +1728,7 @@ export function overlayConcurrentMessageChanges(
 
       const replacement =
         activationText && !currentText.startsWith(activationText)
-          ? { ...current, parts: mergeActivationStreamParts(activationStream.parts, current.parts) }
+          ? { ...current, parts: concatPartsByToolCall(activationStream.parts, current.parts) }
           : current
 
       nextIndexById.delete(activationStream.id)
