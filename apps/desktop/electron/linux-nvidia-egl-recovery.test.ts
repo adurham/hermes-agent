@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { launchBuildIdentity } from './launch-build-identity'
 import { createLaunchMarkerWriter } from './launch-marker-writer'
+import { linuxGpuChildDeathPath } from './linux-gpu-fallback'
 import { nvidiaEglMarkerPath, readNvidiaEglMarker, writeNvidiaEglMarker } from './linux-nvidia-egl-fallback'
 import { createNvidiaEglRecovery, NVIDIA_GPU_DEATH_WITNESS_GRACE_MS } from './linux-nvidia-egl-recovery'
 
@@ -181,5 +182,19 @@ describe('NVIDIA GPU-death witness window', () => {
 
     expect(first.gpuDied({ type: 'GPU', reason: 'killed', exitCode: 15 })).toBe(true)
     expect(launch().decision.enable).toBe(true)
+  })
+
+  it('a crash long after a healthy boot takes neither the SwiftShader nor the --disable-gpu relaunch', () => {
+    let clock = 1_000
+    const first = launch({ now: () => clock })
+    first.healthy()
+    clock += NVIDIA_GPU_DEATH_WITNESS_GRACE_MS + 1
+    const details = { type: 'GPU', reason: 'crashed', exitCode: 139 } as const
+
+    // main.ts asks both ladders about the same death.
+    expect(linuxGpuChildDeathPath({ platform: 'linux', details, runtimeDeath: first.afterBootWindow() })).toBeNull()
+    expect(first.gpuDied(details)).toBe(false)
+    expect(first.relaunch).not.toHaveBeenCalled()
+    expect(readNvidiaEglMarker(userData)).toEqual({ state: 'ok' })
   })
 })

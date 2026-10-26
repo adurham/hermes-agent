@@ -1085,7 +1085,8 @@ if (IS_WINDOWS || process.platform === 'linux') {
       alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
       alreadySoftware,
       sandboxRelaunchAttempted: windowsNoSandboxRelaunchAttempted,
-      softwareRelaunchAttempted: linuxGpuRelaunchAttempted
+      softwareRelaunchAttempted: linuxGpuRelaunchAttempted,
+      runtimeDeath: nvidiaEglRecovery.afterBootWindow()
     })
 
     // One event must not schedule both ANGLE and disable-gpu relaunches.

@@ -340,8 +340,10 @@ export function linuxGpuChildDeathPath(options: {
   alreadySoftware?: boolean
   sandboxRelaunchAttempted?: boolean
   softwareRelaunchAttempted?: boolean
+  /** The GPU survived this boot's witness window; Chromium recovers a later death itself. */
+  runtimeDeath?: boolean
 }): LinuxGpuDeathPath {
-  if ((options.platform ?? process.platform) !== 'linux') {
+  if ((options.platform ?? process.platform) !== 'linux' || options.runtimeDeath) {
     return null
   }
 

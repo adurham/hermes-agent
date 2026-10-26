@@ -38,6 +38,7 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
   let relaunchAttempted = false
   let healthyAt: number | null = null
   const now = options.now ?? Date.now
+  const afterBootWindow = (): boolean => healthyAt !== null && now() - healthyAt > NVIDIA_GPU_DEATH_WITNESS_GRACE_MS
 
   const persist = (marker: NvidiaEglMarker): void => {
     try {
@@ -57,6 +58,8 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
   return {
     decision,
     startupMessage: `[gpu] NVIDIA ANGLE fallback=${decision.enable} (${decision.reason ?? 'not selected'}); previous=${previous?.state ?? 'none'}; build=${options.buildIdentity ?? options.appVersion}; driver=${options.driverVersion}`,
+    /** A GPU death now is a runtime event: no recovery ladder may relaunch or write a fallback for it. */
+    afterBootWindow,
     healthy(): void {
       if (!primary || quitting || relaunchAttempted) {
         return
@@ -90,7 +93,7 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
         !primary ||
         quitting ||
         teardownInProgress ||
-        (healthyAt !== null && now() - healthyAt > NVIDIA_GPU_DEATH_WITNESS_GRACE_MS) ||
+        afterBootWindow() ||
         !nvidiaEglFallbackAllowed(options) ||
         !shouldRelaunchForNvidiaGpuDeath({
           platform: options.platform,
