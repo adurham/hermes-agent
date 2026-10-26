@@ -422,7 +422,7 @@ def _bound_home_layer() -> tuple[_HomeLayer, Path | None, str]:
     try:
         from hermes_constants import get_hermes_home, hermes_home_key
 
-        home = get_hermes_home()
+        home = Path(get_hermes_home())
         key = hermes_home_key(home)
     except Exception:
         home, key = None, ""
