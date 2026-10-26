@@ -16,8 +16,9 @@ def test_streaming_capability_preserves_positional_plugin_construction():
     class PluginProfile(ProviderProfile):
         plugin_option: str = "default"
 
-    # All pre-existing base and subclass fields retain their positional slots.
-    legacy_fields = [f for f in fields(PluginProfile) if f.name != "supports_streaming"]
+    # All pre-existing base and subclass fields retain their positional slots; fields added since
+    # (supports_streaming and the provider seams) are keyword-only, so they take none.
+    legacy_fields = [f for f in fields(PluginProfile) if not f.kw_only]
     values: list[Any] = [object() for _ in legacy_fields]
     profile = PluginProfile(*values, supports_streaming=True)
     for field, value in zip(legacy_fields, values):
