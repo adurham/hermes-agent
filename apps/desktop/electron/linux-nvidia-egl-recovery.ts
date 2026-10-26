@@ -13,7 +13,8 @@ import {
 
 interface NvidiaEglRecoveryOptions extends Omit<NvidiaEglFallbackOptions, 'marker'> {
   userData: string
-  queueMarker: (write: () => void) => void
+  /** This process owns the single-instance lock; a secondary launch never persists. */
+  primary: boolean
   /** Extra argv for the relaunch; non-empty only when the witness could not be persisted. */
   relaunch: (extraArgs: readonly string[]) => void
   argv?: readonly string[]
@@ -37,7 +38,7 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
   const previous = readNvidiaEglMarker(options.userData)
   const decision = decideNvidiaEglFallback({ ...options, marker: previous })
   const supported = (options.platform ?? process.platform) === 'linux' && options.driverMajor !== null
-  let primary = false
+  const primary = supported && options.primary
   let quitting = false
   let relaunchAttempted = false
   let healthyAt: number | null = null
@@ -59,11 +60,9 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
     }
   }
 
-  if (supported) {
-    options.queueMarker(() => {
-      primary = true
-      persist(decision.nextMarker)
-    })
+  // Before GPU children start: a `booting` record left by an abort is itself the witness.
+  if (primary) {
+    persist(decision.nextMarker)
   }
 
   return {

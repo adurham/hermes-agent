@@ -5,7 +5,6 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { launchBuildIdentity } from './launch-build-identity'
-import { createLaunchMarkerWriter } from './launch-marker-writer'
 import { linuxGpuChildDeathPath } from './linux-gpu-fallback'
 import { nvidiaEglMarkerPath, readNvidiaEglMarker, writeNvidiaEglMarker } from './linux-nvidia-egl-fallback'
 import { createNvidiaEglRecovery, NVIDIA_GPU_DEATH_WITNESS_GRACE_MS } from './linux-nvidia-egl-recovery'
@@ -20,7 +19,6 @@ const build = (commit = 'a'.repeat(40)) =>
   })
 
 function launch(overrides: Partial<Parameters<typeof createNvidiaEglRecovery>[0]> = {}, primary = true) {
-  const writer = createLaunchMarkerWriter()
   const relaunch = vi.fn()
   const log = vi.fn()
 
@@ -32,13 +30,11 @@ function launch(overrides: Partial<Parameters<typeof createNvidiaEglRecovery>[0]
     buildIdentity: build(),
     platform: 'linux',
     env: {},
-    queueMarker: write => writer.queue(write),
+    primary,
     relaunch,
     log,
     ...overrides
   })
-
-  writer.flush(primary)
 
   return { ...recovery, relaunch, log }
 }

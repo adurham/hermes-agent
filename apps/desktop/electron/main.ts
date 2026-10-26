@@ -323,7 +323,6 @@ import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createKeepAwakeController } from './keep-awake-controller'
 import { launchBuildIdentity } from './launch-build-identity'
-import { createLaunchMarkerWriter } from './launch-marker-writer'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -722,6 +721,43 @@ if (USER_DATA_OVERRIDE || process.env.HERMES_DATA_DIR_SUFFIX) {
   app.setPath('userData', resolvedUserData)
 }
 
+// Only the lock owner may persist launch recovery markers, adopt a workspace or start a
+// backend, so the lock is taken as soon as userData is final (#131055, #143056).
+// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
+// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
+// so Chromium's own liveness probe keeps refusing every later launch and the
+// app silently exits. Clear a provably-dead owner and retry once; always log
+// when the lock is legitimately lost so the exit is diagnosable.
+function acquireSingleInstanceLock(): boolean {
+  if (app.requestSingleInstanceLock()) {
+    return true
+  }
+
+  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
+
+  if (stalePid !== null) {
+    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
+
+    return app.requestSingleInstanceLock()
+  }
+
+  return false
+}
+
+const isPrimaryInstance: boolean = acquireSingleInstanceLock()
+
+if (!isPrimaryInstance) {
+  console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
+  app.exit(0)
+}
+
+// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
+// backend and every other child get the real one (the profile scratch dir) back.
+if (process.env.HERMES_DESKTOP_TMPDIR) {
+  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
+  delete process.env.HERMES_DESKTOP_TMPDIR
+}
+
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
@@ -782,8 +818,6 @@ if (REMOTE_DISPLAY_REASON) {
 // (that path stays owned by STATUS_BREAKPOINT / #38216). Must run before app
 // `ready`. Skip applying switches when the remote-display block above already
 // did; still honor a sticky per-version marker so Start Menu launches recover.
-const launchMarkerWriter = createLaunchMarkerWriter()
-
 let windowsGpuStackCookieFallbackActive = false
 let windowsGpuStackCookieFallbackSticky = false
 let windowsGpuStackCookieRelaunchAttempted = false
@@ -801,7 +835,13 @@ if (IS_WINDOWS) {
   windowsGpuStackCookieFallbackActive = gpuStackCookieDecision.enable
   windowsGpuStackCookieFallbackSticky = gpuStackCookieDecision.nextMarker.state === 'fallback'
 
-  launchMarkerWriter.queue(() => writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker))
+  if (isPrimaryInstance) {
+    try {
+      writeGpuStackCookieMarker(windowsGpuUserData, gpuStackCookieDecision.nextMarker)
+    } catch {
+      void 0
+    }
+  }
 
   if (gpuStackCookieDecision.enable && !REMOTE_DISPLAY_REASON) {
     app.disableHardwareAcceleration()
@@ -875,7 +915,7 @@ const nvidiaEglRecovery = createNvidiaEglRecovery({
   platform: process.platform,
   isWsl: IS_WSL,
   remoteDisplayReason: REMOTE_DISPLAY_REASON,
-  queueMarker: write => launchMarkerWriter.queue(write),
+  primary: isPrimaryInstance,
   log: message => {
     console.warn(`[hermes] ${message}`)
     void app.whenReady().then(() => {
@@ -926,7 +966,13 @@ if (process.platform === 'linux') {
   linuxGpuFallbackActive = linuxGpuDecision.enable
   linuxGpuFallbackSticky = linuxGpuDecision.nextMarker.state === 'fallback'
 
-  launchMarkerWriter.queue(() => writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker))
+  if (isPrimaryInstance) {
+    try {
+      writeLinuxGpuMarker(linuxGpuUserData, linuxGpuDecision.nextMarker)
+    } catch {
+      void 0
+    }
+  }
 
   if (linuxGpuDecision.enable && linuxGpuDecision.reason !== 'already-enabled' && !LINUX_GPU_SOFTWARE_ACTIVE) {
     app.disableHardwareAcceleration()
@@ -1024,7 +1070,9 @@ if (IS_WINDOWS || process.platform === 'linux') {
     )
   }
 
-  launchMarkerWriter.queue(() => writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker))
+  if (isPrimaryInstance) {
+    writeSandboxMarker(windowsUserData, sandboxDecision.nextMarker)
+  }
 
   // One coalesced Linux GPU-child recovery (#86073, #124843, #121954): the
   // sandbox signature is tried first (that host's matrix shows --disable-gpu
@@ -1184,45 +1232,6 @@ if (INSTALL_STAMP) {
 }
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
-
-// Only the lock-owning destination may adopt a workspace or start a backend.
-// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
-// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
-// so Chromium's own liveness probe keeps refusing every later launch and the
-// app silently exits. Clear a provably-dead owner and retry once; always log
-// when the lock is legitimately lost so the exit is diagnosable.
-function acquireSingleInstanceLock(): boolean {
-  if (app.requestSingleInstanceLock()) {
-    return true
-  }
-
-  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
-
-  if (stalePid !== null) {
-    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
-
-    return app.requestSingleInstanceLock()
-  }
-
-  return false
-}
-
-const isPrimaryInstance: boolean = acquireSingleInstanceLock()
-
-if (!isPrimaryInstance) {
-  console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
-  launchMarkerWriter.flush(false)
-  app.exit(0)
-} else {
-  launchMarkerWriter.flush(true)
-}
-
-// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
-// backend and every other child get the real one (the profile scratch dir) back.
-if (process.env.HERMES_DESKTOP_TMPDIR) {
-  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
-  delete process.env.HERMES_DESKTOP_TMPDIR
-}
 
 const HERMES_HOME: string = resolveDesktopHermesHome({
   home: app.getPath('home'),

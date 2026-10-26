@@ -6,7 +6,6 @@ import { app } from 'electron'
 
 import { INSTALL_STAMP } from '../install-stamp'
 import { launchBuildIdentity } from '../launch-build-identity'
-import { createLaunchMarkerWriter } from '../launch-marker-writer'
 import { readNvidiaEglMarker } from '../linux-nvidia-egl-fallback'
 import { createNvidiaEglRecovery } from '../linux-nvidia-egl-recovery'
 
@@ -22,7 +21,7 @@ const options: { userData: string; eventsFile: string; commandFile: string; quit
 
 app.setPath('userData', options.userData)
 app.disableHardwareAcceleration()
-const writer = createLaunchMarkerWriter()
+const primary = app.requestSingleInstanceLock()
 
 const report = (event: string, data: Record<string, unknown> = {}) => {
   appendFileSync(options.eventsFile, `${JSON.stringify({ event, ...data })}\n`, 'utf8')
@@ -36,13 +35,10 @@ const recovery = createNvidiaEglRecovery({
   driverMajor: 600,
   driverVersion: '600.1.2',
   env: {},
-  queueMarker: write => writer.queue(write),
+  primary,
   relaunch: () => report('relaunch'),
   log: message => report('log', { message })
 })
-
-const primary = app.requestSingleInstanceLock()
-writer.flush(primary)
 
 if (!primary) {
   report('secondary', { marker: readNvidiaEglMarker(options.userData) })
