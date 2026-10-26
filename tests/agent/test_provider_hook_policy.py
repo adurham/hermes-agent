@@ -71,6 +71,27 @@ def _replay(self, values, *, model, base_url):
     return {k: values[k] for k in ("hp_opaque", "hp_text") if values.get(k)}
 
 
+def test_a_failed_hook_warns_per_session_and_is_asked_again_after_a_reset(make_profile, caplog):
+    from agent.provider_route_hooks import ask_profile
+
+    calls = []
+
+    def flaky(self, *, base_url, model="", user_initiated=False):
+        calls.append(model)
+        raise RuntimeError("plugin bug")
+
+    profile = make_profile(request_headers=flaky)
+    first, second = _agent(), _agent()
+    with caplog.at_level(logging.WARNING, logger="agent.provider_route_hooks"):
+        for agent in (first, first, second):
+            assert ask_profile(profile, "request_headers", {}, base_url=HOST, model="m", scope=agent) == {}
+        first.reset_session_state()
+        assert ask_profile(profile, "request_headers", {}, base_url=HOST, model="m", scope=first) == {}
+    assert len(calls) == 3  # first once (sticky), second once, first again after /new
+    warned = [r for r in caplog.records if "request_headers hook failed" in r.getMessage()]
+    assert len(warned) == 3  # one per session, not one per process
+
+
 def test_long_history_asks_the_replay_hook_once_per_carrier_key_set(make_profile):
     calls = []
 

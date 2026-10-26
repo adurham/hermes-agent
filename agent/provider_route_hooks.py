@@ -26,7 +26,8 @@ _PURE_HOOKS = frozenset({"request_headers", "max_tokens_param", "reasoning_paylo
 _PURE_MEMO: dict[tuple, Any] = {}
 _PURE_MEMO_MAX = 512
 _MISSING = object()
-# (profile name, hook) pairs whose failure was already logged: one warning per pair per process.
+# (profile name, hook) pairs whose failure a scopeless (one-shot) caller already logged: one warning per
+# pair per process there; a scoped caller (an agent) warns once per pair per session.
 _WARNED: set[tuple] = set()
 
 
@@ -96,10 +97,11 @@ def hook_failed(profile: Any, hook: str, scope: Any = None) -> bool:
 def ask_profile(profile: Any, hook: str, fallback: Any, *args: Any, scope: Any = None, **kwargs: Any) -> Any:
     """*profile*'s answer to the per-request *hook* (documented-pure hooks are memoized).
 
-    ONE failure policy for every per-request profile hook: a failure is logged once per (profile, hook)
-    per process and answers *fallback* (the generic answer); *scope* (the agent) then keeps answering
-    *fallback* without asking again, so a session's request bytes never flip between turns after a
-    plugin bug or a lost plugin host. ``scope=None`` (one-shot auxiliary calls) asks again next call.
+    ONE failure policy for every per-request profile hook: a failure answers *fallback* (the generic
+    answer) and *scope* (the agent) keeps answering it without asking again until its session resets, so
+    a session's request bytes never flip between turns after a plugin bug or a lost plugin host. It is
+    logged once per (profile, hook) per session, so each served profile's agent reports its own
+    degradation. ``scope=None`` (one-shot auxiliary calls) asks again next call, warning once per process.
     """
     failed = _failures(scope)
     sticky = _sticky_key(profile, hook)
@@ -109,7 +111,7 @@ def ask_profile(profile: Any, hook: str, fallback: Any, *args: Any, scope: Any =
         return _ask(profile, hook, args, kwargs)
     except Exception as exc:  # plugin code: a broken hook degrades to generic behaviour, never fails the request
         failed.add(sticky)
-        if sticky[2:] not in _WARNED:
+        if scope is not None or sticky[2:] not in _WARNED:
             _WARNED.add(sticky[2:])
             logger.warning("provider %s: %s hook failed (%s: %s); using the generic answer for the rest of "
                            "the session", sticky[2], hook, type(exc).__name__, exc, exc_info=True)
