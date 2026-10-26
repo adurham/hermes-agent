@@ -131,3 +131,58 @@ async def test_the_old_conversation_runs_beside_the_chats_turn_and_resume_brings
     assert await _app_turn(authority, ref_a, 'after resume') == ('terminal', 'completed')
     assert ran[-1] == ('after resume', a, lane)  # back on the chat's route
     assert sent[chat_replies:] == [f"reply to 'after resume' from {a}"]
+
+
+@pytest.mark.asyncio
+async def test_the_old_conversation_never_drives_the_chats_topic_or_claims_a_reset(monkeypatch):
+    """Review on #144840: a detached turn's compression must not rewrite the chat's Telegram topic
+    binding (the chat would fall back into A), and its context exhaustion has no route to reset."""
+    from gateway.session_detached import detach
+    from gateway.session_identity import replace_source
+    runner, adapter, authority, source, sent, _ran, _gates = await _gateway(monkeypatch)
+    await _chat(adapter, source, sent, 'hello')
+    ref_a = authority.register(source)
+    await _chat(adapter, source, sent, '/new')
+    detached = authority.sessions[ref_a.session_id].source
+    assert detached.detached_route  # /new detached A
+    monkeypatch.setattr(runner, '_is_telegram_dm', lambda source: True)
+    monkeypatch.setattr(runner, '_telegram_topic_mode_enabled', lambda source: True)
+    topic = replace_source(source, thread_id='9')
+    assert runner._is_telegram_topic_lane(topic)
+    live = authority.sessions[ref_a.session_id]
+    live.source = replace_source(topic, detached_route=None)
+    live.route = runner.session_store._generate_session_key(topic)
+    detach(authority, live, ref_a.session_id)
+    assert not runner._is_telegram_topic_lane(live.source)
+
+    entry = runner.session_store.get_or_create_session(detached)
+    response, kept = await runner._hmwa_compression_exhaustion_reset(
+        {'compression_exhausted': True}, 'too long', entry, entry.session_key, detached)
+    assert (response, kept.session_id) == ('too long', ref_a.session_id)
+
+
+@pytest.mark.asyncio
+async def test_an_app_prompt_queued_for_the_old_conversation_runs_after_a_restart(monkeypatch):
+    """Review on #144840: the routing index names only the chat's current conversation, so boot
+    recovery of queued input never reached a detached one; its queued app prompt now runs."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.run_runtime import recover_profile_native_sessions
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Submission
+    runner, adapter, authority, source, sent, _ran, _gates = await _gateway(monkeypatch)
+    await _chat(adapter, source, sent, 'hello')
+    ref_a = authority.register(source)
+    await _chat(adapter, source, sent, '/new')
+    await _chat(adapter, source, sent, 'hello again')
+    authority._schedule = lambda ref: None  # accepted, then the gateway stops before running it
+    await authority.submit(_app(), Submission('queued', ref_a, {'text': 'queued over the restart'}, 'queue'))
+
+    restarted = GatewayRunner(GatewayConfig())
+    restarted.adapters = dict(runner.adapters)
+    cold = await initialize_session_authority(restarted, profile_id='default', instance_id='restarted')
+    scheduled = []
+    cold._schedule = scheduled.append
+    outcome = await recover_profile_native_sessions(restarted, cold)
+    assert outcome.get(ref_a.session_id) == 'detached' and scheduled == [ref_a]
+    assert cold.sessions[ref_a.session_id].detached

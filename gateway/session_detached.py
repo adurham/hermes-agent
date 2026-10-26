@@ -57,6 +57,26 @@ def detach(authority, live, session_id) -> None:
     live.source = replace_source(live.source, detached_route=live.route)
 
 
+def recover_detached_sessions(authority, pending):
+    """Boot: schedule the queued input of conversations their chats moved past (an app prompt
+    accepted during a restart's after-turn wait). The routing index names only each chat's current
+    conversation, so native recovery never binds these, and no chat message will wake them."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_route_recovery import restore_routed_session
+    scheduled = []
+    from hermes_state_runtime import list_session_admissions
+    for session_id in sorted(pending):
+        if session_id in authority.sessions or not any(  # a lost (unknown) turn waits for /discard
+                row['status'] == 'queued' for row in list_session_admissions(authority.db, session_id=session_id)):
+            continue
+        if restore_routed_session(authority, session_id) is None:
+            continue
+        if authority.sessions[session_id].detached:
+            authority._schedule(SessionRef(authority.profile_id, session_id))
+            scheduled.append(session_id)
+    return scheduled
+
+
 def detached_entry(store, source):
     """The routing entry a detached *source* resolves to: its own conversation, at the compression
     tip a turn writes to. Never stored: the chat's route stays the only one this conversation has."""
