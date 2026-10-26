@@ -64,6 +64,9 @@ _REGISTRY_GENERATION = 0
 _discovered = False
 _discovering = False
 _PLUGIN_DIR_STAMP_TTL_SECONDS = 1.0
+# Widest directory mtime granularity in use (FAT rounds to 2 s, HFS+ to 1 s; a kernel without
+# fine-grained timestamps stamps every change within one ~4 ms clock tick alike).
+_PLUGIN_DIR_MTIME_TICK_NS = 2_000_000_000
 
 
 @dataclass
@@ -453,7 +456,10 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     stamps = _plugin_dir_stamps(home)
     if stamps != layer.stamps:
         _scan_home_layer(layer, key)
-        layer.stamps = stamps
+        # A stamp still inside its mtime tick may not move for an install landing in that same
+        # tick, which would hide the plugin until some later change: keep it unremembered so the
+        # next periodic check scans again, until the stamps settle.
+        layer.stamps = stamps if _plugin_dir_stamps_settled(stamps) else ()
         # Publish the completed layer -- stamps AND check time -- before auth
         # sync: it calls list_providers(), which re-enters this function. An
         # unpublished stamp rescanned forever; an unpublished check time
@@ -473,6 +479,12 @@ def _plugin_dir_stamps(home: Path) -> tuple:
         except OSError:
             return None
     return (stamp(home / "plugins"), stamp(home / "plugins" / "model-providers"))
+
+
+def _plugin_dir_stamps_settled(stamps: tuple) -> bool:
+    """Whether every stamp is at least one mtime tick away from now (either side: clock skew)."""
+    now = time.time_ns()
+    return all(s is None or abs(now - s) >= _PLUGIN_DIR_MTIME_TICK_NS for s in stamps)
 
 
 def _user_plugins_dir() -> Path | None:
