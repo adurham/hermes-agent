@@ -33,18 +33,25 @@ def test_ambient_credential_profile_keeps_identity_when_catalog_fails():
         assert ac._preserve_provider_with_base_url("plain-key") is False
 
 
-def test_ack_detector_transition_cue_names_any_registered_provider():
+def test_ack_detector_transition_cue_names_only_acp_agents():
+    """"Launching it on <X>" is a pending launch only for an ACP agent (an external_process profile: its
+    name, alias or binary); "Launching it on Nous." names an inference provider and is a final answer."""
     from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
 
     agent = SimpleNamespace(_strip_think_blocks=lambda s: s)
+    acp = ProviderProfile(name="acme-acp", aliases=("acme",), auth_type="external_process", process_command="acmecli")
+    nous = ProviderProfile(name="nous", aliases=("nous-portal",), base_url="https://api.nous.test/v1")
 
     def ack(text):
         return looks_like_codex_intermediate_ack(agent, "go", text, [], require_workspace=False)
 
-    with patch("providers.list_providers", return_value=[ACME, PLAIN]):
-        assert ack("Launching it on acme-cloud via acpx.") is True
+    with patch("providers.list_providers", return_value=[acp, nous, PLAIN]):
+        assert ack("Launching it on acme-acp via acpx.") is True
         assert ack("Relaunching the session on acme.") is True
+        assert ack("Launching it on acmecli via acpx.") is True
         assert ack("Starting the job on monday.") is False
+        assert ack("Launching it on Nous.") is False
+        assert ack("Relaunching the session on plain-key.") is False
 
 
 def test_declared_message_carriers_are_unpriced():

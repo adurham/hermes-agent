@@ -3182,7 +3182,7 @@ def looks_like_codex_intermediate_ack(
         return False
     # Some tool-using providers narrate the next action in terse log style: "Brief written. Creating the
     # session now." Bare gerunds are too ambiguous ("Reading the traceback explains the failure" is a final
-    # answer), so this path also requires an explicit transition cue such as "now", "on <provider> via acpx",
+    # answer), so this path also requires an explicit transition cue such as "now", "on <ACP agent> via acpx",
     # "actual log", or "then launching". Completed reports and questions stay final.
     action_clause_pattern = re.compile(
         r"(?:^|[.!…—–]\s+|\n+\s*|,\s+then\s+)"
@@ -3225,15 +3225,14 @@ def looks_like_codex_intermediate_ack(
         r"\s+now\s*[—–-]\s*see\s+https?://\S+"
         r"(?:\s+for\s+progress)?\s*$"
     )
-    from providers import list_providers  # "relaunching it on <any registered provider name or alias>"
-    provider_names = sorted({n.lower() for p in list_providers() for n in (p.name, *p.aliases) if n})
+    from providers import list_providers  # "relaunching it on <an ACP agent: its name, alias or binary>"
+    provider_names = sorted({n.lower() for p in list_providers() if p.auth_type == "external_process"
+                             for n in (p.name, *p.aliases, p.process_command) if n})
     provider_tail_pattern = re.compile(
         r"\s+(?:it|(?:the\s+)?(?:session|worker|agent|job|process))\s+"
         rf"on\s+(?:{'|'.join(map(re.escape, provider_names)) or '(?!)'})(?:\s+via\s+acpx)?\s*$"
     )
-    actual_log_tail_pattern = re.compile(
-        r"\s+(?:the\s+)?actual\s+(?:log|output)\s*$"
-    )
+    actual_log_tail_pattern = re.compile(r"\s+(?:the\s+)?actual\s+(?:log|output)\s*$")
     health_check_tail_pattern = re.compile(
         r"\s+whether\b.*\b(?:healthy|ready|running|available|reachable|working)\s*$"
     )
