@@ -851,6 +851,9 @@ class SessionStore(
         # session_id -> owning key for ids proven but not yet published in ``_entries`` (a
         # compression child row is written before its reroute is published).
         self._session_owner_hints: dict[str, str] = {}
+        # Called with (key, session id, origin) once a route names another conversation; the owner
+        # wires it so a conversation its chat moved past detaches at once (gateway/session_detached.py).
+        self.route_named = None
         from gateway.session_db_recovery import RecoverableHandleCache
 
         self._db_handle_cache = RecoverableHandleCache(
@@ -996,6 +999,8 @@ class SessionStore(
         finally:
             if create_kwargs:
                 self._row_settled(create_kwargs["session_id"])
+        if observed is None or decision.entry.session_id != observed.session_id:
+            self._announce_route(session_key, decision.entry)
         return decision.entry
 
     def _apply_route_checks(
@@ -1183,6 +1188,7 @@ class SessionStore(
             )
         finally:
             self._row_settled(session_id)
+        self._announce_route(session_key, new_entry)
         return new_entry
 
     def _replace_route_locked(self, session_key, old_entry, session_id, now, **fields) -> SessionEntry:
@@ -1328,6 +1334,7 @@ class SessionStore(
                 )
         finally:
             self._row_settled(target_session_id)
+        self._announce_route(session_key, new_entry)
         return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> list[SessionEntry]:

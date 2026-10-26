@@ -539,6 +539,7 @@ async def move_route_wakes(runner, session_key, old_session_id):
     from functools import partial
     from gateway.session_authority import LiveSession
     from gateway.session_contract import Principal
+    from gateway.session_detached import lane_source
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_runtime import list_session_admissions
     old = SessionRef(authority.profile_id, authority.logical_owner(old_session_id))
@@ -561,7 +562,9 @@ async def move_route_wakes(runner, session_key, old_session_id):
             continue  # claimed meanwhile: it runs where it is
         payload = deepcopy(row['payload'])
         payload['native_text_v1']['automation']['owner'] = new.session_id
-        authority.sessions.setdefault(new.session_id, LiveSession(authority.sessions[old.session_id].source, session_key))
+        # The old conversation left the route at its rotation (gateway/session_detached.py).
+        authority.sessions.setdefault(new.session_id, LiveSession(lane_source(authority.sessions[old.session_id].source),
+                                                                  session_key))
         await tracked_write(authority, partial(
             admit_session_input, authority.db, epoch=authority.epoch, principal_id=row['principal_id'],
             session_id=new.session_id, request_id=row['request_id'], payload=payload,
@@ -632,6 +635,9 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_runtime import rehome_queued_inputs
 
+    from gateway.session_detached import lane_source
+    chat_source = lane_source(live.source)  # the rotation detaches the old conversation off the route
+
     def rotate_and_move():
         entry = runner.session_store.reset_session(session_key)
         if entry is None:
@@ -640,7 +646,7 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
         if new == old:
             return entry, None, []
         if authority.db.get_session(new.session_id) is None:
-            authority.db.create_session(new.session_id, source=live.source.platform.value)
+            authority.db.create_session(new.session_id, source=chat_source.platform.value)
         # An admission that reserved the old route before this rotation commits after it.
         authority.rotated_owners[old.session_id] = session_key
         return entry, new, rehome_queued_inputs(
@@ -652,7 +658,7 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
         new = result[1]
         if new is None:
             return result, None
-        fresh = authority.sessions.setdefault(new.session_id, LiveSession(live.source, session_key))
+        fresh = authority.sessions.setdefault(new.session_id, LiveSession(chat_source, session_key))
         await fresh.claim_gate.acquire()
         return result, fresh
 

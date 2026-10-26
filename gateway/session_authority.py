@@ -1488,6 +1488,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     if epochs is None:
         epochs = store._local_authority_epochs = {}
     epochs[db_key] = epoch
+    from gateway.session_detached import watch_routes
+    watch_routes(runner, store)
     from gateway.session_local_recovery import recover_local_sessions
     recover_local_sessions(authority)
     return authority

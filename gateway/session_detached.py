@@ -19,9 +19,14 @@ replies reach its viewers only, never the chat, which now gets only its new conv
 The key carries no platform slot, so a reader that parses a chat out of a session key
 (``gateway.run._parse_session_key``) finds none and delivers nowhere. The chat naming the
 conversation again (``/resume``) moves it back onto the chat's route (``SessionAuthority.name_lane``).
+
+Every route change reaches ``name_lane`` from one place: the session store announces each conversation a
+route comes to name (``SessionStore.route_named``: ``/new``, ``/resume``, ``/branch``, ``/handoff``,
+the context-exhaustion auto-reset, a reset policy, a topic binding heal), wired by ``watch_routes``.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 
 _SLOT = 'detached'
@@ -55,6 +60,52 @@ def detach(authority, live, session_id) -> None:
     local_adapter(authority)  # its delivery; a messaging-only gateway has none yet
     live.route = detached_key(live.route, session_id)
     live.source = replace_source(live.source, detached_route=live.route)
+
+
+def lane_source(source):
+    """*source* as its chat's own, a detached copy's pin dropped: what a conversation that takes the
+    chat's route over starts from (the route moved first, so the one it replaced is detached by now)."""
+    if detached_route_of(source) is None:
+        return source
+    from gateway.session_identity import replace_source
+    return replace_source(source, detached_route=None)
+
+
+def _route_authority(runner, store, route):
+    """The authority owning *route*: its key names the profile, whatever scope the writer runs in."""
+    from gateway.session_authorities import authority_for_home
+    from hermes_constants import hermes_home_key
+    registry = getattr(runner, 'session_authorities', None)
+    if store._named_profile_for_key(route) is None:  # the launch profile's own key
+        if registry is None:
+            return getattr(runner, 'session_authority', None)
+        return next((a for a in registry.serving() if hermes_home_key(a.profile_id) == registry.launch_key), None)
+    home = store._profile_home_for_key(route)
+    return authority_for_home(runner, home) if home is not None else None
+
+
+def watch_routes(runner, store) -> None:
+    """Wire *store*'s route announcements to the owning authority's ``name_lane``. A store write off
+    the owner loop (a worker thread) hands the move to the loop, ahead of the writer's own resumption,
+    so nothing on the loop sees the new route before the conversation it replaced has left it."""
+    loop = asyncio.get_running_loop()
+
+    def route_named(route, session_id, origin):
+        authority = _route_authority(runner, store, route)
+        if authority is None or origin is None:
+            return
+
+        def name():
+            authority.name_lane(route, authority.logical_owner(session_id), origin)
+        try:
+            on_loop = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            name()
+        elif not loop.is_closed():
+            loop.call_soon_threadsafe(name)
+    store.route_named = route_named
 
 
 def recover_detached_sessions(authority, pending):
