@@ -121,10 +121,7 @@ def _reasoning_preview(agent: Any, content: str, assistant_message: Any = None) 
     reasoning (#132477, #118934, #13007)."""
     extractor = getattr(agent, "_extract_reasoning", None)
     if callable(extractor) and assistant_message is not None:
-        try:
-            extracted = extractor(assistant_message)
-        except Exception:
-            extracted = None
+        extracted = extractor(assistant_message)
         if isinstance(extracted, str) and extracted.strip():
             return extracted.strip()
     if not content:

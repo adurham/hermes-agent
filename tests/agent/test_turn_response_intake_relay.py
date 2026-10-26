@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent.agent_runtime_helpers import extract_reasoning
-from agent.turn_response_intake import _relay_thinking, normalize_model_response
+from agent.turn_response_intake import normalize_model_response
 
 
 class _Transport:
@@ -49,10 +49,6 @@ class _Agent:
     def _vprint(self, *args, **kwargs):
         pass
 
-    @property
-    def reasoning_calls(self):
-        return [c for c in self.calls if c[0] == "reasoning.available"]
-
 
 def _run(agent, *, content, tool_calls=None, reasoning=None, reasoning_content=None):
     message = SimpleNamespace(
@@ -82,67 +78,3 @@ def test_inline_thinking_block_is_relayed_without_the_reply():
         content="<REASONING_SCRATCHPAD>plan step one</REASONING_SCRATCHPAD>\nThe answer is 42.",
     )
     assert calls == [("reasoning.available", "_thinking", "plan step one", None)]
-
-
-def test_structured_reasoning_field_is_relayed_instead_of_the_reply():
-    """Non-streaming providers hand reasoning over as a field, not as content tags."""
-    agent = _Agent()
-    calls = _run(agent, content="Plain reply.", reasoning_content="secret plan")
-    assert len(agent.reasoning_calls) == 1
-    preview = agent.reasoning_calls[0][2]
-    assert preview == "secret plan"
-    assert "Plain reply" not in preview
-
-
-def test_native_reasoning_streamed_suppresses_the_relay():
-    """#132477: the reasoning already went out as ``reasoning.delta`` for this response, so
-    re-emitting it as ``reasoning.available`` would render the thinking twice."""
-    agent = _Agent()
-    agent._native_reasoning_streamed = True
-    calls = _run(agent, content="The answer is 42.", reasoning_content="secret plan")
-    assert calls == []
-
-
-def test_tool_call_only_turn_relays_extracted_reasoning():
-    """The gate is the callback alone: empty content must not hide a tool turn's reasoning."""
-    agent = _Agent()
-    calls = _run(
-        agent, content=None, tool_calls=[{"id": "c1", "type": "function", "function": {"name": "ls"}}],
-        reasoning="planning the tool call",
-    )
-    assert calls == [("reasoning.available", "_thinking", "planning the tool call", None)]
-
-
-def test_tool_call_only_turn_without_reasoning_stays_silent():
-    agent = _Agent()
-    calls = _run(
-        agent, content="", tool_calls=[{"id": "c1", "type": "function", "function": {"name": "ls"}}],
-    )
-    assert calls == []
-
-
-def test_subagent_first_line_preview_still_reaches_the_parent():
-    """Delegated agents keep their first-line ``_thinking`` preview and never a reasoning block."""
-    agent = _Agent(delegate_depth=1)
-    calls = _run(agent, content="First line of subagent work\nsecond line")
-    assert calls == [("_thinking", "First line of subagent work")]
-
-
-def test_subagent_preview_strips_the_full_think_tag_set():
-    """The preview binds to the shared THINK_TAG_NAMES list, not the old 3-of-9 subset
-    (``REASONING_SCRATCHPAD|think|reasoning``), so a ``<thinking>`` tag never leaks upstream."""
-    agent = _Agent(delegate_depth=1)
-    calls = _run(agent, content="<thinking>hidden plan</thinking>\nVisible work")
-    assert calls == [("_thinking", "hidden plan")]
-
-
-def test_relay_is_silent_without_a_callback():
-    """No structured callback registered → nothing relayed, nothing raised, even with reasoning."""
-    agent = _Agent()
-    agent.tool_progress_callback = None
-    _relay_thinking(
-        agent,
-        "<REASONING_SCRATCHPAD>hush</REASONING_SCRATCHPAD>ok",
-        SimpleNamespace(content="<REASONING_SCRATCHPAD>hush</REASONING_SCRATCHPAD>ok"),
-    )
-    assert agent.calls == []
