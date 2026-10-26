@@ -197,24 +197,53 @@ def _completion_attempts_path(project_root: Path) -> Path:
     return completion_pending_path(project_root).with_name("source-completion-attempts")
 
 
-def _record_completion_attempt(root: Path, *, failed: bool) -> None:
+#: What a launch-time dependency sync consumes. A failed sync is recorded against
+#: these inputs (#139952): relaunching over the same inputs repeats the same doomed
+#: repair and backs off, while a corrected source update is a fresh repair.
+_SYNC_INPUTS = ("pyproject.toml", "uv.lock", "pm/lock.json")
+
+
+def _sync_inputs_digest(root: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    for name in _SYNC_INPUTS:
+        try:
+            digest.update((root / name).read_bytes())
+        except OSError:
+            digest.update(b"-")
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _read_completion_attempts(record: Path) -> tuple[int, str | None]:
+    """``(attempts, inputs digest or None)``; raises OSError/ValueError when unreadable."""
+    lines = record.read_text(encoding="utf-8-sig").split()
+    return int(lines[0]) if lines else 0, lines[1] if len(lines) > 1 else None
+
+
+def _record_completion_attempt(root: Path, *, failed: bool, inputs: str | None = None) -> None:
     """Track consecutive completion-tail failures beside the pending marker.
 
     The pending marker itself is armed *before* the tail runs (a crash between
     the dependency commit and the tail must leave the obligation), so the
     marker alone cannot distinguish "never tried" from "tried and failed N
     times". The attempts record can: success clears both, failure bumps it.
+    *inputs* (a failed dependency sync's input digest) restarts the count when
+    the failures before it were for other inputs.
     """
     record = _completion_attempts_path(root)
     if not failed:
         record.unlink(missing_ok=True)
         return
     try:
-        attempts = int(record.read_text(encoding="utf-8-sig").strip() or "0") + 1
+        attempts, recorded = _read_completion_attempts(record)
     except (OSError, ValueError):
-        attempts = 1
+        attempts, recorded = 0, None
+    if inputs is not None and recorded is not None and recorded != inputs:
+        attempts = 0
     try:
-        record.write_text(f"{attempts}\n", encoding="utf-8")
+        record.write_text(f"{attempts + 1}\n" + (f"{inputs}\n" if inputs else ""), encoding="utf-8")
     except OSError:
         pass  # a read-only install state degrades to unbounded retries, never blocks boot
 
@@ -230,10 +259,11 @@ def completion_retry_state(project_root: Path, *, now=None) -> tuple[bool, int, 
 
     record = _completion_attempts_path(project_root)
     try:
-        attempts = int(record.read_text(encoding="utf-8-sig").strip() or "0")
+        attempts, inputs = _read_completion_attempts(record)
     except (OSError, ValueError):
         return True, 0, 0
-    if attempts <= 0:
+    if attempts <= 0 or (inputs is not None and inputs != _sync_inputs_digest(project_root)):
+        # Failed syncs of other inputs say nothing about this tree's repair.
         return True, 0, 0
     if attempts >= COMPLETION_RETRY_MAX_ATTEMPTS:
         return False, attempts, 0
@@ -518,7 +548,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
             # it, every Desktop relaunch bypasses the retry backoff and starts
             # the same expensive repair again.
             if not completed:
-                _record_completion_attempt(root, failed=True)
+                _record_completion_attempt(root, failed=True, inputs=_sync_inputs_digest(root))
             raise
         if completed:
             clear_completion(root)

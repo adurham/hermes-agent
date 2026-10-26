@@ -349,19 +349,34 @@ def test_failed_launch_keeps_previous_completion_and_retries(tmp_path, monkeypat
     assert not (root / ".update-incomplete").exists()
 
 
-def test_failed_dependency_sync_counts_toward_completion_retry_limit(tmp_path, monkeypatch):
-    """A failure before the completion child still leaves an armed tail to bound (#139952)."""
+def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, monkeypatch):
+    """A failed launch sync counts toward the retry bound, so relaunches stop redoing the same
+    failing repair (#139952); a corrected source update is a different repair and runs."""
     import pm
+    from hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
-    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
-    monkeypatch.setattr(pm, "sync_venv", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("sync failed")))
+    syncs = []
 
+    def failing_sync(*args, **kwargs):
+        syncs.append(args)
+        raise RuntimeError("sync failed")
+
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    monkeypatch.setattr(pm, "sync_venv", failing_sync)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
+    for _ in range(venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS):
+        with pytest.raises(RuntimeError, match="sync failed"):
+            venv_sync.prepare_launch(root, [])
+    assert venv_sync.completion_pending_path(root).is_file()
+
+    assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
+    assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS, "the same failing repair re-ran"
+
+    (root / "uv.lock").write_text("# corrected source update\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="sync failed"):
         venv_sync.prepare_launch(root, [])
-
-    assert venv_sync.completion_pending_path(root).is_file()
-    assert venv_sync._completion_attempts_path(root).read_text(encoding="utf-8").strip() == "1"
+    assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS + 1, "changed inputs were not retried"
 
 
 def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, completion_tail):
