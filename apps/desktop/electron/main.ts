@@ -738,8 +738,8 @@ const DARWIN_MAJOR = IS_MAC ? Number.parseInt(os.release(), 10) || 0 : 0
 // Glass: macOS vibrancy, or Windows 11 22H2+ system backdrop. Computed once
 // so the renderer, the persisted default, and every chat window agree.
 const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
-// Clear rides setOpacity, a documented no-op on Linux, so neither mode works
-// there and Settings drops the row entirely.
+// Linux has no glass material and Settings drops the whole row there, so a
+// Linux window must never be handed a fade (see nativeOpacityFor).
 const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
 
