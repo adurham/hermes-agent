@@ -252,6 +252,28 @@ class ProviderProfile:
     # patch catalog metadata; explicit user overrides still win. Exact model IDs.
     model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
 
+    # ── L6: provider-owned setup + sign-in surfaces (all optional; None/empty = core's generic path) ──
+    # ``account_card``: Accounts-tab card overrides ``{name, flow, cli_command, docs_url}`` for the
+    # Desktop/dashboard (``/api/providers/oauth``); non-empty also lists a Keys-tab profile there.
+    account_card: dict[str, str] = field(default_factory=dict)
+    # ``account_status() -> Mapping``: that card's live status (``logged_in``, ``source``, ``source_label``…);
+    # subprocess- and network-free, it runs on every Accounts list. None = ``auth.get_auth_status(name)``.
+    account_status: Callable[[], Any] | None = None
+    # In-app device-code sign-in (Desktop "Login" button; the card's flow becomes ``device_code``):
+    # ``start_device_login() -> {user_code, verification_url, expires_in, interval, state}`` asks the
+    # provider for a code; ``poll_device_login(state) -> {status: pending|approved|denied|expired,
+    # interval?, credential?, message?}`` makes ONE poll; ``save_device_login(credential)`` persists it.
+    # Core owns the wait loop and cancellation and calls save inside the session's profile scope.
+    start_device_login: Callable[[], Any] | None = None
+    poll_device_login: Callable[[Any], Any] | None = None
+    save_device_login: Callable[[Any], None] | None = None
+    # ``model_setup_flow(config, current_model, args)``: this provider's own ``hermes model`` step
+    # (credential prompt, catalog, persist); None = the generic flow for its auth_type.
+    model_setup_flow: Callable[[Any, str, Any], Any] | None = None
+    # ``setup_reasoning_efforts(model) -> tuple | None``: levels the setup effort picker offers for
+    # *model*; ``()`` = no reasoning control, None = the generic ladder gated by models.dev.
+    setup_reasoning_efforts: Callable[[str], Any] | None = None
+
     # ── Hooks (override in subclass for complex providers) ───
 
     def fetch_account_usage(
