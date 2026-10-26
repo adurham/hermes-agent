@@ -55,6 +55,7 @@ import {
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
+import { relaunchApp } from './app-relaunch'
 import {
   appVersionInfo,
   type AppVersionInfo,
@@ -925,7 +926,7 @@ const nvidiaEglRecovery = createNvidiaEglRecovery({
   },
   relaunch: extraArgs => {
     // The persisted witness selects ANGLE next launch; argv carries it only when unwritable.
-    app.relaunch({ args: [...process.argv.slice(1), ...extraArgs] })
+    relaunchApp(app, { args: [...process.argv.slice(1), ...extraArgs] })
     void exitAfterBackendShutdown(0)
   }
 })
@@ -1106,7 +1107,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
     )
 
     try {
-      app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+      relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
       void exitAfterBackendShutdown(0)
     } catch (error) {
       console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
@@ -1158,7 +1159,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       )
 
       try {
-        app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+        relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
         console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
@@ -1185,7 +1186,7 @@ if (IS_WINDOWS || process.platform === 'linux') {
       )
 
       try {
-        app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+        relaunchApp(app, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
         void exitAfterBackendShutdown(0)
       } catch (error) {
         console.error(`[hermes] --disable-gpu relaunch failed: ${error?.message || error}`)
@@ -2862,7 +2863,7 @@ async function waitForUpdateToFinish() {
       running: INSTALL_STAMP,
       resourcesPath: process.resourcesPath,
       relaunch: extraArgs =>
-        app.relaunch({ args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
+        relaunchApp(app, { args: [...buildNoSandboxRelaunchArgs(process.argv.slice(1)), ...extraArgs] }),
       exit: () => void exitAfterBackendShutdown(0),
       log: rememberLog
     })
@@ -13890,7 +13891,7 @@ function createWindow() {
           )
 
           try {
-            app.relaunch({ args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
+            relaunchApp(app, { args: buildDisableGpuRelaunchArgs(process.argv.slice(1)) })
             void exitAfterBackendShutdown(0)
           } catch (err) {
             rememberLog(`[renderer] GPU-disable relaunch failed: ${err?.message || err}`)
@@ -13944,7 +13945,7 @@ function createWindow() {
         rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
 
         try {
-          app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+          relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
           void exitAfterBackendShutdown(0)
         } catch (err) {
           rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
@@ -17262,7 +17263,7 @@ ipcMain.handle('hermes:version', async (_event, scope?: { connectionId?: string;
 // bundle now lives there.
 ipcMain.handle('hermes:app:relaunch', async () => {
   rememberLog('[updates] renderer requested an app relaunch (swapped bundle pending)')
-  app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+  relaunchApp(app, { args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
   void exitAfterBackendShutdown(0)
 })
 
