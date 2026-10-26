@@ -58,6 +58,21 @@ _EVENT_MAX_HOLD_SECONDS = 1800
 # Key stamped on a held event dict the first time it is gated, so the hold
 # duration is measured from first-hold rather than from enqueue time.
 _EVENT_HELD_AT_KEY = "_event_held_at_monotonic"
+# Absolute ceiling on any hold, regardless of the owner's activity clock
+# (``delegation.completion_hold_max_seconds``). The activity-aware bound above
+# never fires for a child that is wedged but still ticking (a retry loop), so
+# without this a completion could be held for the life of the process.
+_EVENT_HOLD_CEILING_DEFAULT_SECONDS = 4 * 3600
+# Stamped (with the hold duration in seconds) on an event released by the
+# ceiling; the formatter turns it into an explicit note for the parent.
+_EVENT_HOLD_CEILING_KEY = "_event_released_at_hold_ceiling_seconds"
+# Spawner-veto re-queue bound (see ProcessRegistry._record_spawner_veto): an
+# event every drainer provably does not own is dropped once it has been vetoed
+# at least this many times AND for at least the hold ceiling.
+_SPAWNER_VETO_MAX_ATTEMPTS = 20
+_SPAWNER_VETO_ATTEMPTS_KEY = "_spawner_veto_attempts"
+_SPAWNER_VETO_FIRST_AT_KEY = "_spawner_veto_first_at_monotonic"
+_SPAWNER_VETO_CLAIMANTS_KEY = "_spawner_veto_claimants"
 
 
 def _monotonic() -> float:
@@ -1847,6 +1862,38 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # own ``owns_event`` (which cannot see lineage): the notice stays for its owner.
         if ProcessRegistry._spawner_veto(evt, session_id):
             return False
+        return ProcessRegistry._owns_event_by_route(evt, session_key, owns_event, is_async_delegation)
+
+    @staticmethod
+    def _record_spawner_veto(evt: dict, session_id: str) -> bool:
+        """Count one veto of ``evt`` by ``session_id``; True when the event is exhausted and must
+        be dropped instead of requeued.
+
+        Without a bound, an event whose spawner no live session can ever prove (the spawner ended
+        without a compression continuation, or its lineage was pruned) is requeued on every drain
+        forever and silently lost at the next restart. Exhausted = vetoed at least
+        ``_SPAWNER_VETO_MAX_ATTEMPTS`` times AND for at least the hold ceiling. Both are required:
+        an idle CLI drains ~10x/s, so a bare counter would let a sibling exhaust the owner's notice
+        in seconds while the real spawner is merely mid-turn.
+
+        Terminal action is DROP (with a warning), never delivery to the route key's chat: every
+        drainer here has PROVEN it is not the spawner, so delivering would be exactly the
+        cross-session leak the veto exists to stop. The result itself is not lost — it was written
+        to the durable receipt before the event was queued, and the spawner's lineage still reads it
+        via ``process_manage`` (poll/log by session_id).
+        """
+        now = _monotonic()
+        attempts = int(evt.get(_SPAWNER_VETO_ATTEMPTS_KEY) or 0) + 1
+        evt[_SPAWNER_VETO_ATTEMPTS_KEY] = attempts
+        first = evt.setdefault(_SPAWNER_VETO_FIRST_AT_KEY, now)
+        claimants = evt.setdefault(_SPAWNER_VETO_CLAIMANTS_KEY, [])
+        if session_id not in claimants:
+            claimants.append(session_id)
+        return attempts >= _SPAWNER_VETO_MAX_ATTEMPTS and now - first >= _completion_hold_ceiling_seconds()
+
+    @staticmethod
+    def _owns_event_by_route(evt: dict, session_key: str, owns_event, is_async_delegation: bool) -> bool:
+        """Route-key/``owns_event`` half of ``_owns_event`` (the spawner veto already applied)."""
         evt_session_key = str(evt.get("session_key") or "")
         requires_positive_proof = is_async_delegation or bool(evt_session_key or evt.get("origin_ui_session_id"))
         if owns_event is not None and requires_positive_proof:
@@ -1890,7 +1937,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         Skips completions per ``_drain_should_skip`` (gateway/TUI pass
         ``skip_poll_observed=False``). Routing (``_owns_event``): a completion that names a
         spawner this session does not own by compression lineage is requeued before any other
-        check; then async-delegation events always need ownership proof, ordinary events once
+        check (bounded: ``_record_spawner_veto`` drops an event no drainer can ever own instead of
+        requeueing it forever); then async-delegation events always need ownership proof, ordinary events once
         they carry ``session_key`` or ``origin_ui_session_id``; ``owns_event(evt)`` (strongest;
         the TUI passes a compression-chain-aware check) consumes ONLY on True, ``session_key``
         uses plain equality; non-owned events are re-queued for their owner. No filter consumes
@@ -1950,7 +1998,21 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # they carry routing metadata. Ownerless ordinary events preserve
             # legacy single-session delivery.
             is_async_delegation = evt.get("type") == "async_delegation"
-            if not self._owns_event(evt, session_key, owns_event, is_async_delegation, session_id):
+            # Same verdict as _owns_event, split so a veto is counted toward the bounded requeue.
+            if self._spawner_veto(evt, session_id):
+                if self._record_spawner_veto(evt, session_id):
+                    logger.warning(
+                        "Dropping process completion %s: no draining session could prove it owns spawner %s "
+                        "after %d drains over %.0fs (vetoed by: %s). The result stays readable by the "
+                        "spawner's lineage via process_manage poll/log.",
+                        evt.get("session_id", ""), evt.get("parent_session_id", ""),
+                        evt.get(_SPAWNER_VETO_ATTEMPTS_KEY, 0),
+                        _monotonic() - float(evt.get(_SPAWNER_VETO_FIRST_AT_KEY) or _monotonic()),
+                        ", ".join(evt.get(_SPAWNER_VETO_CLAIMANTS_KEY) or []))
+                    continue
+                requeue.append(evt)
+                continue
+            if not self._owns_event_by_route(evt, session_key, owns_event, is_async_delegation):
                 requeue.append(evt)
                 continue
             # Routing happened first so a foreign session cannot drop the owner's
@@ -2917,6 +2979,12 @@ def should_hold_completion_event(evt: dict) -> bool:
     released every completion of a long-running child into the parent chat
     exactly 30 minutes in, mid-task. When the owner exposes no activity clock
     the bound falls back to time-since-first-hold.
+
+    Activity is not progress, though: a child wedged in a retry loop ticks its
+    clock forever. So ``delegation.completion_hold_max_seconds`` (default 4h)
+    is an absolute ceiling — past it the event is released whatever the
+    owner's activity, stamped with ``_EVENT_HOLD_CEILING_KEY`` so the delivered
+    notice says it was held past the ceiling while its subagent still ran.
     """
     if evt.get("type") != "completion":
         return False
@@ -2926,10 +2994,25 @@ def should_hold_completion_event(evt: dict) -> bool:
     if held_at is None:
         held_at = _monotonic()
         evt[_EVENT_HELD_AT_KEY] = held_at
-    if _monotonic() - held_at < _EVENT_MAX_HOLD_SECONDS:
+    held_for = _monotonic() - held_at
+    if held_for < _EVENT_MAX_HOLD_SECONDS:
         return True
+    if held_for >= _completion_hold_ceiling_seconds():
+        evt[_EVENT_HOLD_CEILING_KEY] = int(held_for)
+        return False
     idle = _owner_idle_seconds(evt)
     return idle is not None and idle < _EVENT_MAX_HOLD_SECONDS
+
+
+def _completion_hold_ceiling_seconds() -> float:
+    """``delegation.completion_hold_max_seconds``: absolute hold ceiling, floored at the activity
+    bound (a lower value would re-introduce the mid-task release). Never raises."""
+    try:
+        val = float(ProcessRegistry._config_value(
+            "delegation", "completion_hold_max_seconds", _EVENT_HOLD_CEILING_DEFAULT_SECONDS))
+    except Exception:
+        val = float(_EVENT_HOLD_CEILING_DEFAULT_SECONDS)
+    return max(val, float(_EVENT_MAX_HOLD_SECONDS))
 
 
 # --- the "process_manage" tool schema + handler -----------------------------------

@@ -261,7 +261,7 @@ def _start_daemon(scripts, runtime: Path, name: str):
     return daemon, sock, pid_file
 
 
-def _drive_exec(monkeypatch, scripts, session: str):
+def _drive_exec(monkeypatch, scripts, session: str, cdp: str = "http://127.0.0.1:9400"):
     """A browser_exec that runs a fake CLI instead of a real browser.
 
     The browser config is stubbed through ``_read_browser_cfg`` — browser_use_cli's own seam — and never
@@ -270,7 +270,7 @@ def _drive_exec(monkeypatch, scripts, session: str):
     hand its 30s default to every later test in this process.
     """
     monkeypatch.setattr(bu, "_find_cli", lambda: [sys.executable, str(scripts["cli"])])
-    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9400")
+    monkeypatch.setenv("BROWSER_CDP_URL", cdp)
     monkeypatch.setattr(bu, "_read_browser_cfg", lambda: {"backend": "browser-use"})
     monkeypatch.setattr("tools.browser_tool_cdp._resolve_cdp_override", lambda url: url)
     return json.loads(bu.browser_exec("print('payload')", session=session))
@@ -521,3 +521,196 @@ def test_a_clean_exit_stops_driven_daemons_even_with_no_browser_session(monkeypa
     lifecycle._emergency_cleanup_all_sessions()
 
     assert stopped == [identity], "a clean exit left a driven harness daemon running"
+
+
+# ── the idle gate is a DEAD Chrome, not a quiet agent ────────────────────────────────────────────
+def _free_dead_port() -> int:
+    """A loopback port nothing listens on (bound, read, released)."""
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+
+def test_a_daemon_whose_chrome_is_still_live_is_never_idle_stopped(runtime, harness_scripts, monkeypatch,
+                                                                     _no_janitor_thread):
+    """An agent pausing for a long model turn is not done browsing: while the daemon's Chrome still listens,
+    no amount of idle time stops it."""
+    from tools import browser_tool_lifecycle as lifecycle
+    scripts = harness_scripts
+    monkeypatch.setattr(bu, "_driven_daemons", {})
+    monkeypatch.setattr(bu, "_daemon_cdp", {})
+    monkeypatch.setattr(bu, "_base_subprocess_env", lambda: _served_env(runtime, scripts))
+    chrome = socket.socket()  # the live Chrome's CDP port
+    chrome.bind(("127.0.0.1", 0))
+    chrome.listen(8)
+    cdp = f"http://127.0.0.1:{chrome.getsockname()[1]}"
+    daemon, sock, pid_file = _start_daemon(scripts, runtime, "thinking")
+    try:
+        assert _drive_exec(monkeypatch, scripts, session="thinking", cdp=cdp)["success"]
+        assert cdp in bu._daemon_cdp.values(), "the daemon's Chrome endpoint was not tracked"
+        later = time.monotonic() + 24 * 3600
+        monkeypatch.setattr(bu, "_monotonic", lambda: later)
+        lifecycle._cleanup_inactive_browser_sessions()
+        assert daemon.poll() is None, "a daemon whose Chrome is still live was stopped for being idle"
+        assert sock.exists() and bu._driven_daemons, "a live-Chrome daemon stopped being tracked"
+    finally:
+        chrome.close()
+        if daemon.poll() is None:
+            daemon.kill()
+        daemon.wait(timeout=10)
+
+
+def test_a_daemon_whose_chrome_died_is_stopped_once_past_idle(runtime, harness_scripts, monkeypatch,
+                                                               _no_janitor_thread):
+    """The measured leak: the daemon outlives its Chrome (CDP port dead). Past ``idle_s`` it is stopped;
+    before ``idle_s`` it is not (no churn around a Chrome restart)."""
+    from tools import browser_tool_lifecycle as lifecycle
+    scripts = harness_scripts
+    monkeypatch.setattr(bu, "_driven_daemons", {})
+    monkeypatch.setattr(bu, "_daemon_cdp", {})
+    monkeypatch.setattr(bu, "_base_subprocess_env", lambda: _served_env(runtime, scripts))
+    cdp = f"http://127.0.0.1:{_free_dead_port()}"
+    daemon, sock, pid_file = _start_daemon(scripts, runtime, "orphaned-chrome")
+    try:
+        assert _drive_exec(monkeypatch, scripts, session="orphaned-chrome", cdp=cdp)["success"]
+        assert bu._cdp_endpoint_alive(cdp) is False
+        lifecycle._cleanup_inactive_browser_sessions()
+        assert daemon.poll() is None, "stopped before idle_s: a Chrome restart would churn the daemon"
+
+        later = time.monotonic() + 24 * 3600
+        monkeypatch.setattr(bu, "_monotonic", lambda: later)
+        lifecycle._cleanup_inactive_browser_sessions()
+        daemon.wait(timeout=10)
+        assert not sock.exists() and not pid_file.exists()
+        assert not bu._driven_daemons and not bu._daemon_cdp
+    finally:
+        if daemon.poll() is None:
+            daemon.kill()
+            daemon.wait(timeout=10)
+            pytest.fail("a daemon whose Chrome died outlived idle_s")
+
+
+# ── exit is claim-aware, like the idle stop ──────────────────────────────────────────────────────
+def test_exit_leaves_a_daemon_another_live_owner_still_claims(runtime, monkeypatch):
+    """A clean exit of THIS process must not take down a daemon a live peer (same dirs + BU_NAME) drives:
+    only our claim goes."""
+    from hermes_constants import hermes_home_key
+    from tools import browser_tool, browser_tool_lifecycle as lifecycle
+    identity = tuple(_identity(runtime, "shared-exit", runtime))
+    monkeypatch.setattr(bu, "_driven_daemons", {identity: hermes_home_key()})
+    mine = _record_path(identity)
+    _write_record(mine, identity, runtime, os.getpid(), bu._process_start_time(os.getpid()))
+    stopped = []
+    monkeypatch.setattr(bu, "_reload_daemons", lambda daemons: stopped.extend(daemons))
+    monkeypatch.setattr(browser_tool, "_cleanup_done", False)
+    monkeypatch.setattr(browser_tool, "_active_sessions", {})
+    monkeypatch.setattr(lifecycle, "_reap_orphaned_browser_sessions", lambda: None)
+    monkeypatch.setattr(lifecycle, "_stop_all_lightpanda", lambda: None)
+    monkeypatch.setattr(lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        _write_record(_record_path(identity, other.pid), identity, runtime, other.pid,
+                      bu._process_start_time(other.pid))
+
+        lifecycle._emergency_cleanup_all_sessions()
+
+        assert stopped == [], "exit stopped a daemon a live peer still drives"
+        assert not mine.exists(), "this process's claim outlived its exit"
+        assert _record_path(identity, other.pid).exists(), "the live peer's claim was dropped"
+        assert not bu._driven_daemons
+    finally:
+        other.kill()
+        other.wait(timeout=10)
+
+
+# ── a wedged daemon is escalated, but only once its pid is proven ────────────────────────────────
+_IGNORES_SIGTERM = ("import signal, sys, time\n"
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                    "open(sys.argv[1], 'w').write('ready')\n"
+                    "time.sleep(120)\n")
+
+
+def _wedged_setup(runtime, tmp_path, monkeypatch, name):
+    hang = tmp_path / "hang_reload.py"
+    hang.write_text("import time\ntime.sleep(120)\n", encoding="utf-8")  # --reload never returns
+    monkeypatch.setattr(bu, "_find_cli", lambda: [sys.executable, str(hang)])
+    monkeypatch.setattr(bu, "_base_subprocess_env", lambda: {
+        "BH_RUNTIME_DIR": str(runtime), "BH_RUNTIME_DIR_SHARED": "1",
+        "BH_TMP_DIR": str(tmp_path), "BH_TMP_DIR_SHARED": "1"})
+    monkeypatch.setattr(bu, "_RELOAD_TIMEOUT_S", 1)
+    monkeypatch.setattr(bu, "_KILL_GRACE_S", 1.0)
+    monkeypatch.setattr(bu, "_reload_failures", {})
+    sent = []
+    real = bu._signal_pid
+    monkeypatch.setattr(bu, "_signal_pid", lambda pid, sig: (sent.append((pid, sig)), real(pid, sig)))
+    identity = (str(runtime), "1", str(tmp_path), "1", name)
+    _write_record(_record_path(identity), identity, runtime, os.getpid(), bu._process_start_time(os.getpid()))
+    return identity, runtime / f"bu-{name}.pid", sent
+
+
+def _stubborn(tmp_path, tag):
+    ready = tmp_path / f"{tag}.ready"
+    proc = subprocess.Popen([sys.executable, "-c", _IGNORES_SIGTERM, str(ready)], start_new_session=True)
+    for _ in range(1000):
+        if ready.exists():
+            break
+        time.sleep(0.01)
+    return proc
+
+
+def test_a_wedged_daemon_is_sigtermed_then_sigkilled_after_two_failed_reloads(runtime, tmp_path, monkeypatch):
+    import signal
+    identity, pid_file, sent = _wedged_setup(runtime, tmp_path, monkeypatch, "wedged")
+    daemon = _stubborn(tmp_path, "wedged")
+    try:
+        pid_file.write_text(str(daemon.pid))
+        assert bu._reload_daemons([identity]) == [identity], "first failure should only be retried"
+        assert sent == [] and daemon.poll() is None
+        assert _record_path(identity).exists()
+
+        assert bu._reload_daemons([identity]) == []
+        assert sent == [(daemon.pid, signal.SIGTERM), (daemon.pid, signal.SIGKILL)], sent
+        daemon.wait(timeout=10)
+        assert not _record_path(identity).exists(), "the killed daemon's record was kept"
+        assert not pid_file.exists()
+        assert identity not in bu._reload_failures
+    finally:
+        if daemon.poll() is None:
+            daemon.kill()
+        daemon.wait(timeout=10)
+
+
+def test_a_successful_reload_resets_the_failure_count(runtime, tmp_path, monkeypatch):
+    identity, pid_file, sent = _wedged_setup(runtime, tmp_path, monkeypatch, "flaky")
+    hang = bu._find_cli()
+    assert bu._reload_daemons([identity]) == [identity]
+    monkeypatch.setattr(bu, "_find_cli", lambda: [sys.executable, "-c", "pass"])
+    assert bu._reload_daemons([identity]) == []
+    assert identity not in bu._reload_failures
+    _write_record(_record_path(identity), identity, runtime, os.getpid(), bu._process_start_time(os.getpid()))
+    monkeypatch.setattr(bu, "_find_cli", lambda: hang)
+    assert bu._reload_daemons([identity]) == [identity], "a success did not reset the count"
+    assert sent == []
+
+
+def test_a_wedged_daemon_whose_pid_no_longer_matches_is_never_signalled(runtime, tmp_path, monkeypatch):
+    """Between failures the pid file came to name a different process: identity unproven, so the record is
+    dropped and NOTHING is signalled — neither the original pid nor the new one."""
+    identity, pid_file, sent = _wedged_setup(runtime, tmp_path, monkeypatch, "moved")
+    first = _stubborn(tmp_path, "first")
+    stranger = _stubborn(tmp_path, "stranger")
+    try:
+        pid_file.write_text(str(first.pid))
+        assert bu._reload_daemons([identity]) == [identity]
+        pid_file.write_text(str(stranger.pid))  # e.g. a fresh daemon, or a recycled pid
+        assert bu._reload_daemons([identity]) == []
+        assert sent == [], f"signalled a pid not proven to be the daemon: {sent}"
+        assert first.poll() is None and stranger.poll() is None
+        assert not _record_path(identity).exists(), "the unprovable record was kept (retried forever)"
+    finally:
+        for proc in (first, stranger):
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)

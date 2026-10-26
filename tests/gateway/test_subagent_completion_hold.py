@@ -182,3 +182,90 @@ def test_gateway_watcher_holds_working_child_past_max_hold(registry, live_child,
     assert polls.n == 5  # 80 minutes of holding, well past the 30-minute bound
     assert attempts == [], "the watcher released a still-working subagent's completion to the parent"
     adapter.handle_message.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------------------------
+# Absolute ceiling: activity is not progress. A child wedged in a retry loop ticks its activity
+# clock forever, so the activity-aware bound alone would pin its completions for the life of the
+# process. delegation.completion_hold_max_seconds releases them regardless, with a note.
+# ---------------------------------------------------------------------------------------------
+
+
+def _write_config(text):
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "config.yaml").write_text(text)
+
+
+def test_ceiling_releases_completion_of_child_still_ticking(registry, live_child, clock):
+    owner = "sa-0-holdceil"
+    child = live_child(owner, last_activity_ts=time.time())
+    _session, evt = _real_subagent_completion(registry, owner)
+    registry.completion_queue.put(evt)
+
+    assert registry.drain_notifications(session_key="parent-key") == []  # stamps first hold
+    clock.now += pr._completion_hold_ceiling_seconds() + 1
+    child.last_activity_ts = time.time()  # wedged-but-ticking: activity never stops
+    assert pr.event_owner_still_running(evt) is True
+    assert pr._owner_idle_seconds(evt) < pr._EVENT_MAX_HOLD_SECONDS
+
+    results = registry.drain_notifications(session_key="parent-key")
+    assert len(results) == 1, "the ceiling did not release a completion held past it"
+    text = results[0][1]
+    assert f"Started by subagent {owner}" in text
+    assert "past the delegation.completion_hold_max_seconds ceiling" in text
+    assert registry.completion_queue.empty()
+
+
+def test_below_ceiling_working_child_still_held(registry, live_child, clock):
+    owner = "sa-0-holdbelow"
+    child = live_child(owner, last_activity_ts=time.time())
+    _session, evt = _real_subagent_completion(registry, owner)
+
+    assert pr.should_hold_completion_event(evt) is True
+    clock.now += pr._completion_hold_ceiling_seconds() - 60  # past the 30-min bound, below the ceiling
+    child.last_activity_ts = time.time()
+    assert pr.should_hold_completion_event(evt) is True
+    assert pr._EVENT_HOLD_CEILING_KEY not in evt
+
+
+def test_ceiling_is_config_backed_and_floored(registry, live_child, clock):
+    owner = "sa-0-holdcfg"
+    child = live_child(owner, last_activity_ts=time.time())
+    _session, evt = _real_subagent_completion(registry, owner)
+
+    assert pr._completion_hold_ceiling_seconds() == 4 * 3600  # DEFAULT_CONFIG
+    _write_config("delegation:\n  completion_hold_max_seconds: 3600\n")
+    assert pr._completion_hold_ceiling_seconds() == 3600
+    assert pr.should_hold_completion_event(evt) is True
+    clock.now += 3601
+    child.last_activity_ts = time.time()
+    assert pr.should_hold_completion_event(evt) is False
+    assert evt[pr._EVENT_HOLD_CEILING_KEY] == 3601
+    # Below the activity bound would re-introduce the mid-task release: floored.
+    _write_config("delegation:\n  completion_hold_max_seconds: 60\n")
+    assert pr._completion_hold_ceiling_seconds() == pr._EVENT_MAX_HOLD_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_held_completion_does_not_consume_a_human_queue_slot(registry, live_child, clock, tmp_path,
+                                                                   monkeypatch):
+    """A held completion waits in the unbounded in-process completion_queue; the human-message cap
+    (ADMISSION_QUEUE_MAX, session_admissions FIFO) is not touched until the event is RELEASED and
+    admitted as a turn. So a full complement of human inputs is still accepted while it is held."""
+    from hermes_state_runtime import ADMISSION_QUEUE_MAX, list_session_admissions
+    from tests.gateway.test_session_authority_cancel_settlement import _authority, _submit
+
+    owner = "sa-0-holdslot"
+    live_child(owner, last_activity_ts=time.time())
+    _session, evt = _real_subagent_completion(registry, owner)
+    registry.completion_queue.put(evt)
+    assert registry.drain_notifications(session_key="parent-key") == []  # held
+    assert registry.completion_queue.maxsize == 0  # unbounded: holding never blocks a producer
+
+    db, authority = _authority(tmp_path, monkeypatch)
+    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
+    with db:
+        for n in range(ADMISSION_QUEUE_MAX):
+            assert (await _submit(authority, f'human-{n}')).status == 'queued'
+        assert len(list_session_admissions(db, session_id='s')) == ADMISSION_QUEUE_MAX
+    assert registry.completion_queue.qsize() == 1  # still held, not lost

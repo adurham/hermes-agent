@@ -4,6 +4,59 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### Follow-up — 2026-10-26 (Fable review dispositions on the seven fixes above)
+
+The seven landed as one commit; the review's dispositions were applied as a second pass, each item with a
+test that fails without it:
+
+1. **Queue order — parity test found a real bug.** `QUEUED_HEAD_ORDER_SQL` used `LIKE`, which is ASCII
+   case-insensitive in SQLite, so a principal like `Automation:x` (principals come from `actor.subject`)
+   sorted as an internal wake in SQL but as a person in `queued_head_key`: the claim and the preclaim check
+   validated different rows and `_claim_next` would pin a head `claim_session_input` refuses. Now `GLOB`,
+   case-sensitive, built from the same `AUTOMATION_PRINCIPAL_PREFIX` constant. New
+   `tests/hermes_state/test_queued_head_order_parity.py` compares the SQL head with the Python head over 14
+   principals (case variants, `automation_x`, `x:automation:y`, `%`/`*`/`[`) and every head/seq mix for
+   queues of 2–4, plus an end-to-end claim on the real `SessionDB`.
+2. **Subagent hold — absolute ceiling.** The activity-aware bound alone let a wedged-but-ticking child pin its
+   completions forever. `delegation.completion_hold_max_seconds` (default 14400, floored at the 30-minute
+   activity bound) releases the event with an explicit "held past the ceiling; the subagent may be stuck"
+   note. Held events wait in the unbounded in-memory `completion_queue`, never in `session_admissions`, so a
+   held event cannot consume a human message's slot.
+3. **Spawner veto — terminal state.** An event every candidate drainer can prove it does not own was re-queued
+   forever. It is now dropped after `_SPAWNER_VETO_MAX_ATTEMPTS` (20) vetoes AND the hold ceiling, logging the
+   process, spawner and vetoing sessions; the result itself was already durable and remains readable through
+   `process_manage`.
+4. **Lease fail-closed — visible and rate-limited.** `held_lease_ids()` still returns `None` (skip the sweep)
+   when a source raises, but now logs once per failure streak at WARNING, then DEBUG with streak/total, and
+   logs recovery; `lease_source_failures()` exposes the counters so a silently disabled reclaim is visible.
+   The 30 s `_SELF_ORPHAN_GRACE_SECONDS` window that protects a lease acquired mid-sweep already existed; it
+   is now pinned by a test that fails when the grace is removed.
+5. **browser-harness idle stop — the predicate was wrong.** "No `browser_exec` for `idle_s`" (300 s) can stop a
+   daemon while an agent is mid-task between calls. The daemon is now stoppable only when it is not in flight,
+   past `idle_s`, AND its recorded CDP endpoint is dead (`_cdp_endpoint_alive`, one local connect) — the fact
+   the leak was measured by. The idle check and the in-flight mark share one lock. A daemon with no recorded
+   endpoint (cloud/remote) falls back to the old time rule.
+6. **browser-harness exit — claim-aware, and one path removed.** `stop_harness_daemons(claim_aware=True)` drops
+   only our record when another live Hermes process also drives the daemon; the exit handler's second,
+   unconditional stop after `cleanup_all_browsers()` is gone. At exit the other owner wins; on
+   `/browser connect` the backend swap wins.
+7. **browser-harness wedged daemon — bounded escalation.** `--reload` timeouts used to be retried forever.
+   Two consecutive failures now escalate: verify the pid against the pid+start-time fingerprint from the pid
+   file, SIGTERM, wait ~5 s, SIGKILL, then remove socket/pid files and the record. A mismatch, missing pid
+   file or unreadable start time only drops the record with a warning and signals nothing. Success resets the
+   count.
+
+Review points accepted and recorded rather than fixed: wakes starve under continuous human input (delivery
+latency is unbounded while a person keeps typing); each released wake still runs as its own model turn — there
+is no coalescing of several completions into one turn; and the 32-entry admission cap is unchanged, so a
+burst of wakes can still refuse a human message with `queue_full`. Seven fixes in one commit also cost
+attribution, as the review noted; later waves land per-fix commits.
+
+Verification (mine, not the lanes'): 33 passed across the hold/veto/parity/lease files, 17 passed on
+tests/tools/test_browser_harness_orphans.py. Still unmeasured: the "Reclaimed N orphaned active-session
+lease(s)" counter, which needs a gateway restart onto this code, and the daemon idle stop, which needs a live
+gateway.
+
 ### Fixes — 2026-10-26 (queue starvation, subagent completions, model truth, daemon leak, lease reclaim)
 
 The owner reported "it feels worse than it's been in a while": messages piling up in the queue, Ctrl+C not

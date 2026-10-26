@@ -1531,6 +1531,11 @@ DEFAULT_CONFIG = {
         # notifications to the PARENT; false suppresses them (the child's result is the
         # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
+        # A still-running subagent's process completions are held from the parent chat until the
+        # child exits (released early only after 30 min of child INACTIVITY). This is the absolute
+        # ceiling (seconds): past it the completion is delivered with a "held past the ceiling" note
+        # even if the child is still ticking (e.g. a retry loop). Floored at 1800.
+        "completion_hold_max_seconds": 14400,
     },
     # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
     # every API call for few-shot priming. Never saved to sessions/logs/trajectories.

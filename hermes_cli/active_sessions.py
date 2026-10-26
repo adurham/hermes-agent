@@ -12,6 +12,7 @@ import logging
 import collections
 import math
 import os
+import threading
 import time
 import uuid
 import weakref
@@ -444,15 +445,45 @@ def held_lease_ids() -> Optional[set[str]]:
     the sweep would reclaim them — the exact bug this registry exists to prevent.
     ``_drop_self_orphans`` treats ``None`` as "keep every lease", so the sweep is skipped.
     """
+    global _lease_source_failures, _lease_source_failure_streak
     ids: set[str] = set()
     for owner in list(_LEASE_SOURCES):
         try:
             ids |= {str(lease_id) for lease_id in (owner.live_active_session_lease_ids() or ()) if lease_id}
         except Exception:
-            logger.warning("lease source %r failed; skipping orphaned-lease reclaim this pass",
-                           owner, exc_info=True)
+            with _LEASE_SOURCE_FAILURE_LOCK:
+                _lease_source_failures += 1
+                _lease_source_failure_streak += 1
+                streak, total = _lease_source_failure_streak, _lease_source_failures
+            # A broken source fails every sweep (5 min) for the life of the process: warn once per
+            # failure streak, then count at debug. ``lease_source_failures()`` keeps it visible.
+            if streak == 1:
+                logger.warning("lease source %r failed; skipping orphaned-lease reclaim until it "
+                               "recovers (total failures: %d)", owner, total, exc_info=True)
+            else:
+                logger.debug("lease source %r still failing (streak %d, total %d); orphaned-lease "
+                             "reclaim skipped", owner, streak, total, exc_info=True)
             return None
+    with _LEASE_SOURCE_FAILURE_LOCK:
+        if _lease_source_failure_streak:
+            logger.info("lease sources recovered after %d failed pass(es); orphaned-lease reclaim resumes",
+                        _lease_source_failure_streak)
+            _lease_source_failure_streak = 0
     return ids
+
+
+# Fail-closed accounting for ``held_lease_ids``: while any source raises, orphaned leases are never
+# reclaimed. The counter makes that state observable instead of a single buried warning.
+_LEASE_SOURCE_FAILURE_LOCK = threading.Lock()
+_lease_source_failures = 0
+_lease_source_failure_streak = 0
+
+
+def lease_source_failures() -> dict[str, int]:
+    """``{"total": n, "streak": m}``: lease-source failures this process has seen, and how many
+    consecutive passes (ending now) skipped orphaned-lease reclaim because one failed."""
+    with _LEASE_SOURCE_FAILURE_LOCK:
+        return {"total": _lease_source_failures, "streak": _lease_source_failure_streak}
 
 
 def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

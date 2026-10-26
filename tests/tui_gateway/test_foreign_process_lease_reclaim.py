@@ -329,3 +329,112 @@ def test_reaper_start_is_idempotent_and_names_its_thread(monkeypatch):
     first._alive = False  # a dead reaper is restarted, not left dead
     server._ensure_idle_reaper_started()
     assert len(created) == 2 and server._idle_reaper_thread is created[1]
+
+
+def test_a_persistently_broken_lease_source_warns_once_and_counts_every_skip(monkeypatch, caplog):
+    """A source that always raises fails every 5-minute sweep for the process's life.
+
+    Still fail closed (every pass skipped), but warn once per failure streak and count the rest, so a
+    "leases are never reclaimed" state is observable via ``lease_source_failures()`` instead of a
+    warning every sweep that people learn to ignore.
+    """
+    import logging
+
+    monkeypatch.setattr(active_sessions, "_SELF_ORPHAN_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(active_sessions, "_lease_source_failures", 0)
+    monkeypatch.setattr(active_sessions, "_lease_source_failure_streak", 0)
+    # Own registry: the weak set may still hold a broken source another test left referenced.
+    import weakref
+    monkeypatch.setattr(active_sessions, "_LEASE_SOURCES", weakref.WeakSet())
+    key = "agent:main:local:dm:local-broken-source-leaked-000000000000000000"
+    leaked = _claim_gateway_lease(key)
+
+    class _Broken:
+        def live_active_session_lease_ids(self):
+            raise RuntimeError("boom")
+
+    broken = _Broken()
+    register_lease_source(broken)
+    try:
+        caplog.set_level(logging.DEBUG, logger=active_sessions.__name__)
+        for _ in range(4):
+            server._reclaim_orphaned_leases()
+
+        failures = [r for r in caplog.records
+                    if r.name == active_sessions.__name__ and "lease source" in r.getMessage()]
+        assert [r.levelno for r in failures] == [logging.WARNING] + [logging.DEBUG] * 3
+        assert active_sessions.lease_source_failures() == {"total": 4, "streak": 4}
+        # Fail closed every pass: the leak nobody vouches for is kept while ownership is unknown.
+        assert [e["lease_id"] for e in _entries_for(key)] == [leaked.lease_id]
+
+        # Recovery resets the streak (total stays as history) and the next broken streak warns again.
+        active_sessions._LEASE_SOURCES.discard(broken)  # the backend recovered / retired
+        assert active_sessions.held_lease_ids() is not None
+        assert active_sessions.lease_source_failures() == {"total": 4, "streak": 0}
+        broken = _Broken()
+        register_lease_source(broken)
+        caplog.clear()
+        assert active_sessions.held_lease_ids() is None
+        assert [r.levelno for r in caplog.records
+                if r.name == active_sessions.__name__ and "lease source" in r.getMessage()] == [logging.WARNING]
+        assert active_sessions.lease_source_failures() == {"total": 5, "streak": 1}
+    finally:
+        leaked.release()
+
+
+def test_a_lease_acquired_mid_sweep_survives_and_an_aged_unvouched_one_does_not(monkeypatch):
+    """Acquire race: the sweep snapshots ``held_lease_ids()`` and THEN takes the registry lock.
+
+    A lease written in between is in the registry but in no snapshot. ``_drop_self_orphans``'s
+    ``_SELF_ORPHAN_GRACE_SECONDS`` (real value, not patched) is what keeps it; once it is older than
+    the grace and still unvouched it is a real orphan and the sweep reclaims it.
+    """
+    import weakref
+
+    monkeypatch.setattr(active_sessions, "_LEASE_SOURCES", weakref.WeakSet())
+    assert active_sessions._SELF_ORPHAN_GRACE_SECONDS > 0
+    key = "agent:main:local:dm:local-acquired-mid-sweep-0000000000000000000"
+    acquired: list = []
+
+    class _AcquiresDuringSnapshot:
+        """Its turn claims a lease right after reporting (the snapshot is already taken)."""
+
+        def live_active_session_lease_ids(self):
+            if not acquired:
+                acquired.append(_claim_gateway_lease(key))
+            return set()
+
+    source = _AcquiresDuringSnapshot()
+    register_lease_source(source)
+    try:
+        server._reclaim_orphaned_leases()
+        assert acquired, "the source never ran: the race was not exercised"
+        lease = acquired[0]
+        assert [e["lease_id"] for e in _entries_for(key)] == [lease.lease_id], (
+            "a lease acquired between the held-ids snapshot and the reclaim pass was reclaimed")
+
+        # Just inside the grace: still kept.
+        _age_entries(key, active_sessions._SELF_ORPHAN_GRACE_SECONDS - 5)
+        server._reclaim_orphaned_leases()
+        assert [e["lease_id"] for e in _entries_for(key)] == [lease.lease_id]
+
+        # Past the grace and still vouched for by no source: a genuine orphan, reclaimed.
+        _age_entries(key, active_sessions._SELF_ORPHAN_GRACE_SECONDS + 5)
+        server._reclaim_orphaned_leases()
+        assert _entries_for(key) == []
+    finally:
+        for lease in acquired:
+            lease.release()
+
+
+def _age_entries(session_id: str, age_seconds: float) -> None:
+    import time
+
+    from hermes_constants import get_default_hermes_root
+
+    state_path = active_sessions._state_path(get_default_hermes_root())
+    entries = active_sessions._read_entries(state_path)
+    for entry in entries:
+        if entry.get("session_id") == session_id:
+            entry["started_at"] = time.time() - age_seconds
+    active_sessions._write_entries(state_path, entries)

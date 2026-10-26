@@ -85,6 +85,15 @@ def _emergency_cleanup_all_sessions():
     # Real-profile Chrome is launched directly (not by agent-browser), so the
     # session cleanup never reaps it.
     _best_effort("Real-profile chrome cleanup on exit", _real_profile._terminate_real_profile_chrome)
+    # Browser Use harness daemons this process drove — FIRST, and claim-aware: cleanup_all_browsers() below
+    # also stops them, but unconditionally (it serves /browser disconnect, where the backend swap must win).
+    # At exit the other live owner wins: a daemon another live Hermes process also drives keeps running and
+    # only our record is dropped. Not gated on ``_active_sessions``: a CDP-override or BU-cloud exec never
+    # creates a session there, so a clean CLI exit would otherwise leave every daemon it drove running.
+    def _stop_harness():
+        from tools.browser_use_cli import stop_harness_daemons
+        stop_harness_daemons(claim_aware=True)
+    _best_effort("Browser Use harness daemon stop on exit", _stop_harness)
     if _bt._active_sessions:
         _bt.logger.info("Emergency cleanup: closing %s active session(s)...", len(_bt._active_sessions))
         try:
@@ -100,13 +109,6 @@ def _emergency_cleanup_all_sessions():
                 _bt._recording_sessions.clear()
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
     _best_effort("Lightpanda cleanup on exit", _stop_all_lightpanda)
-    # Browser Use harness daemons this process drove. Not gated on ``_active_sessions``: a CDP-override or
-    # BU-cloud exec never creates a session there, so the block above skipped them and a clean CLI exit
-    # left every daemon it drove running detached forever. Idempotent after cleanup_all_browsers().
-    def _stop_harness():
-        from tools.browser_use_cli import stop_harness_daemons
-        stop_harness_daemons()
-    _best_effort("Browser Use harness daemon stop on exit", _stop_harness)
     # Safe even if we never used the browser — owner_pid liveness protects daemons
     # owned by other live hermes processes.
     _best_effort("Orphan reap on exit", _reap_orphaned_browser_sessions)
