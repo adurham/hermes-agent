@@ -38,4 +38,6 @@ export {
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'
 export type { PendingClarifyProjection, SettledClarifyProjection } from './tool-parts'
+export { createTurnReplyFoldCache, foldTurnReplyDuplicates } from './turn-reply-fold'
+export type { TurnReplyFoldCache } from './turn-reply-fold'
 export type { ChatMessage, ChatMessagePart, GatewayEventPayload, TimelinePartMetadata } from './types'
