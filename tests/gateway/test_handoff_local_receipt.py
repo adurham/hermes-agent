@@ -499,6 +499,7 @@ async def test_a_moved_conversation_mounted_by_startup_recovery_stays_writable_o
         cold.authorize(owner, a, 'session:read')
         for capability in ('session:submit', 'session:control'):
             cold.authorize(owner, a, capability)  # Teknium's ruling: writable, detached off the lane
+        assert cold.sessions[a.session_id].detached and cold.agent(a) is None  # never the lane's
     finally:
         runner.session_store.close_all_db_handles()
 
@@ -529,6 +530,7 @@ async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path
     await _handoff(runner, warm, a.session_id, first)
     await _handoff(runner, warm, chat('Chat B').session_id, first)
     warm.authorize(owner, a, 'session:submit')  # Teknium's ruling: writable, detached off the lane
+    assert warm.sessions[a.session_id].detached and warm.agent(a) is None  # never chat 4242's
     await _resume_gateway(runner, warm)._handle_resume_command(
         MessageEvent(text='/resume --all Chat A', source=second))
     route = runner.session_store._generate_session_key(second)
@@ -542,6 +544,7 @@ async def test_a_moved_conversation_resumed_on_another_chat_moves_there(tmp_path
     warm.register(second)
     for capability in ('session:submit', 'session:control'):
         warm.authorize(owner, a, capability)  # Teknium's ruling: writable, detached off the lane
+    assert warm.sessions[a.session_id].route != route and warm.agent(a) is None  # never chat 77's
 
 
 @pytest.mark.asyncio

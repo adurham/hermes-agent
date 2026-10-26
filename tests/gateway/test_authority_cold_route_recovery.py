@@ -28,8 +28,14 @@ class _Runner(GatewayAuthorizationMixin):
         self.adapters = {}
         self._draining = False
 
-    def _cached_agent_for(self, route):  # no turn ran in these fixtures: no route holds an agent
-        return None
+    def _cached_agent_for(self, route):
+        """A chat's route holds the agent of the conversation it names (a stand-in: no turn ran), so
+        ``agent(ref) is None`` proves a conversation the chat moved past never reaches it."""
+        from gateway.run import _parse_session_key
+        platform = (_parse_session_key(route) or {}).get('platform')
+        if platform in (None, 'local'):
+            return None
+        return self.__dict__.setdefault('_lane_agents', {}).setdefault(route, SimpleNamespace(route=route))
 
 
 def _source(platform='telegram', chat_id='4242', profile=None, chat_name=None):
