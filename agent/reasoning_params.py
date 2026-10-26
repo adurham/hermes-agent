@@ -1,6 +1,6 @@
 """Provider reasoning-parameter policy for ``AIAgent``.
 
-When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Models capability probes,
+When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / endpoint-profile capability probes,
 ``reasoning_content`` echo families, and strict-API tool-call sanitising.
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
@@ -92,11 +92,12 @@ class ReasoningParamsMixin:
         url = self._base_url_lower
         if base_url_host_matches(url, "nousresearch.com") or base_url_host_matches(url, "ai-gateway.vercel.sh"):
             return True
-        if base_url_host_matches(url, "models.github.ai") or base_url_host_matches(url, "githubcopilot.com"):
-            try:
-                from hermes_cli.models import github_model_reasoning_efforts
+        from agent.endpoint_profile import endpoint_profile
 
-                return bool(github_model_reasoning_efforts(self.model))
+        if (profile := endpoint_profile(getattr(self, "base_url", None))) is not None:
+            # A claimed endpoint gates on its own catalog: reasoning goes out iff it declares a payload.
+            try:
+                return profile.reasoning_payload(self.model, None, base_url=self.base_url) is not None
             except Exception:
                 return False
         if (self.provider or "").strip().lower() == "lmstudio":
@@ -137,21 +138,16 @@ class ReasoningParamsMixin:
             return False
         return bool(_cached_probe(self, "_ollama_thinking_cache", ollama_model_supports_thinking, None, lambda v: v is not None))
 
-    def _github_models_reasoning_extra_body(self) -> dict | None:
-        """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
-        try:
-            from hermes_cli.models import clamp_github_reasoning_effort, github_model_reasoning_efforts
-        except Exception:
-            return None
+    def _endpoint_reasoning_payload(self) -> dict | None:
+        """``reasoning_payload`` of the profile claiming this endpoint for the agent's model and
+        ``reasoning_config`` (``ProviderProfile.serves_endpoint``), or None when no profile claims it."""
+        from agent.endpoint_profile import endpoint_profile
 
-        supported = github_model_reasoning_efforts(self.model)
-        if not supported:
+        base_url = getattr(self, "base_url", None)
+        profile = endpoint_profile(base_url)
+        if profile is None:
             return None
-
-        cfg = self.reasoning_config if isinstance(self.reasoning_config, dict) else {}
-        if cfg.get("enabled") is False:
-            return None
-        return {"effort": clamp_github_reasoning_effort(cfg.get("effort"), supported)}
+        return profile.reasoning_payload(self.model, self.reasoning_config, base_url=str(base_url))
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """``build_assistant_message``; a held turn's row with visible text comes back typed hidden

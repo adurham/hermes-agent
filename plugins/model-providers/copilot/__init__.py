@@ -10,8 +10,10 @@ from typing import Any
 from providers import register_provider
 from providers.base import ProviderProfile
 
+from .responses import RESPONSES_PROFILE_FIELDS, CopilotResponsesMixin
 
-class CopilotProfile(ProviderProfile):
+
+class CopilotProfile(CopilotResponsesMixin, ProviderProfile):
     """GitHub Copilot / GitHub Models — editor headers + reasoning."""
 
     def build_api_kwargs_extras(
@@ -38,7 +40,7 @@ class CopilotProfile(ProviderProfile):
 copilot = CopilotProfile(
     name="copilot", aliases=("github-copilot", "github-models", "github-model", "github"),
     env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), base_url="https://api.githubcopilot.com",
-    auth_type="copilot",
+    auth_type="copilot", **RESPONSES_PROFILE_FIELDS,
 )
 
 register_provider(copilot)

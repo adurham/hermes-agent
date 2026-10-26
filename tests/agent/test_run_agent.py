@@ -1354,10 +1354,10 @@ class TestBuildApiKwargs:
             "hermes_cli.models.github_model_reasoning_efforts",
             lambda _model: ["none", "low", "medium", "high", "xhigh"],
         )
-        agent.model = "gpt-5.5"
+        agent.model, agent.base_url = "gpt-5.5", "https://api.githubcopilot.com"
         agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
 
-        assert agent._github_models_reasoning_extra_body() == {"effort": "xhigh"}
+        assert agent._endpoint_reasoning_payload() == {"effort": "xhigh"}
 
 
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
