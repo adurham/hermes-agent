@@ -2,6 +2,7 @@ import type { PersistedTurn } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { bindStoppedTurnReceipt } from '@/app/session/hooks/use-message-stream/interrupted-reply'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import type { SessionMessage } from '@/types/hermes'
 
@@ -105,6 +106,37 @@ describe('a refreshed page that holds the live turn whole', () => {
     for (const text of ['old-a look one', 'old-a look two', 'old-a look three', 'old-a answer', 'next prompt']) {
       expect(count(merged, text), text).toBe(1)
     }
+  })
+
+  it('draws a stopped turn once after its interrupted completion binds the receipt', () => {
+    const receipt: PersistedTurn = {
+      row_ids: [17, 18, 19, 20],
+      complete: false,
+      user_row_id: 17,
+      user_row_ids: [17],
+      submission_id: 'sub-stop'
+    }
+
+    const stopped = bindStoppedTurnReceipt(
+      [
+        ...toChatMessages(windowRows),
+        live('user-sub-stop', 'user', 'steered prompt'),
+        live('assistant-stream-1', 'assistant', 'live look partial')
+      ],
+      receipt
+    )
+
+    const page = toChatMessages([
+      ...olderTurn(1, 'old-a').slice(3),
+      ...olderTurn(9, 'old-b'),
+      ...liveRows,
+      answer(20, 'partial')
+    ])
+
+    const merged = texts(graftRefreshedTailOntoBackfill(page, stopped))
+
+    expect(count(merged, 'steered prompt')).toBe(1)
+    expect(count(merged, 'live look')).toBe(1)
   })
 
   it('keeps a live turn the page does not reach yet', () => {

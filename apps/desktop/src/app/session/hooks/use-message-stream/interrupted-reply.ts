@@ -1,3 +1,5 @@
+import type { PersistedTurn } from '@hermes/shared'
+
 import {
   assistantTextPart,
   type ChatMessage,
@@ -6,6 +8,8 @@ import {
   renderMediaTags
 } from '@/lib/chat-messages'
 import { generatedImageEchoSources, stripGeneratedImageEchoes } from '@/lib/generated-images'
+
+import { bindReceiptUserRows } from './receipt-user-rows'
 
 const flat = (text: string) => text.replace(/\s+/g, ' ').trim()
 
@@ -63,4 +67,30 @@ export function extendInterruptedReply(messages: ChatMessage[], rawText: string,
       pending: false
     }
   ]
+}
+
+/**
+ * A stopped turn keeps the stored identity its interrupted `message.complete`
+ * names: the turn's user bubbles take their stored row ids and its last reply
+ * bubble carries the receipt. Without them every row of the stopped turn is an
+ * unstored live row, and a later read of a page that holds the turn draws it a
+ * second time, prompt included (#139741).
+ */
+export function bindStoppedTurnReceipt(
+  messages: ChatMessage[],
+  receipt: null | PersistedTurn | undefined
+): ChatMessage[] {
+  if (!receipt?.row_ids?.length) {
+    return messages
+  }
+
+  const bound = bindReceiptUserRows(messages, receipt)
+  const lastUserIndex = bound.findLastIndex(message => message.role === 'user')
+  const target = bound.findLastIndex(message => message.role === 'assistant' && !message.hidden)
+
+  if (target < 0 || target < lastUserIndex || bound[target].persistedTurn) {
+    return bound
+  }
+
+  return bound.map((message, index) => (index === target ? { ...message, persistedTurn: receipt } : message))
 }

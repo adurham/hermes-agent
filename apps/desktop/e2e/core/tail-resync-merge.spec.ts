@@ -238,6 +238,52 @@ test('a long chat keeps each finished tool turn once, in order, after the newest
   })
 })
 
+test('a long chat keeps a stopped turn and its resend once after the newest page merges', async () => {
+  test.setTimeout(900_000)
+
+  await withApp('tail-resync-stop', async ({ page, provider, ws }) => {
+    await test.step(`seed ${SEED_TURNS} wide tool turns (more than one page of rows)`, () =>
+      seedLongChat(page, provider, ws))
+
+    const shown: string[] = []
+
+    for (let c = 0; c < CHECKED_TURNS; c += 1) {
+      const n = SEED_TURNS + 1 + 2 * c
+
+      await test.step(`turn ${n}: stopped mid-answer, then turn ${n + 1} resends`, async () => {
+        const hold = gate()
+        provider.script(U(n), [
+          { text: words(N(n, 1), 'looking'), toolCalls: [echo(`s${n}`)] },
+          { text: words(A(n), 'partial', 'answer', 'that', 'never', 'ends'), holdAfterFirstChunk: hold }
+        ])
+        await send(page, `${U(n)} stop me`, 'Enter', ws)
+        await provider.streamStarted(U(n), 1)
+        await expect(viewport(page)).toContainText(A(n))
+        await stopButton(page).filter({ visible: true }).first().click()
+        hold.open()
+        await expect(stopButton(page)).toHaveCount(0, { timeout: 30_000 })
+
+        shown.push(U(n), N(n, 1), A(n))
+        const stopped = await observeTurn(page, shown, `stopped-${n}`)
+
+        expect(stopped.slice(0, 5), `stopped turn ${n} rendered once after the page merge`).toEqual([])
+
+        provider.script(U(n + 1), [
+          { text: words(N(n + 1, 1), 'again'), toolCalls: [echo(`r${n}`)] },
+          { text: words(A(n + 1), 'resent', 'answer') }
+        ])
+        await send(page, `${U(n + 1)} resend`, 'Enter', ws)
+        await settled(page, ws, A(n + 1))
+
+        shown.push(U(n + 1), N(n + 1, 1), A(n + 1))
+        const resent = await observeTurn(page, shown, `resent-${n + 1}`)
+
+        expect(resent.slice(0, 5), `resent turn ${n + 1} rendered once after the page merge`).toEqual([])
+      })
+    }
+  })
+})
+
 test('a long chat keeps a steered tool turn once, in order, after the newest page merges', async () => {
   test.setTimeout(900_000)
 

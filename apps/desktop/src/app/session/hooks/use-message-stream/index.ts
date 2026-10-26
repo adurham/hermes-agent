@@ -49,7 +49,7 @@ import {
 } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { extendInterruptedReply } from './interrupted-reply'
+import { bindStoppedTurnReceipt, extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { admitSegmentDelta, admitSegmentSeal, type SegmentCursor, type SegmentStamp } from './segment-identity'
@@ -776,8 +776,10 @@ export function useMessageStream({
         if (state.interrupted) {
           return {
             ...state,
-            messages:
+            messages: bindStoppedTurnReceipt(
               status === 'interrupted' ? extendInterruptedReply(state.messages, text, occurredAt) : state.messages,
+              persistedTurn
+            ),
             awaitingResponse: false,
             busy: false,
             needsInput: false,
