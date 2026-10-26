@@ -92,6 +92,9 @@ _HOME_LAYERS_LOCK = threading.Lock()
 # across the import itself — a thread mid-``import hermes_cli.auth`` (whose import calls
 # ``list_providers()``) would block on it while the scanning thread waits on that module's import lock.
 _REGISTRATION_TARGET: ContextVar[_HomeLayer | None] = ContextVar("_provider_registration_target", default=None)
+# Profile names an in-process import may register (None = all). Set while a hosted plugin's
+# profiles that cannot cross the host boundary are imported here: its hosted siblings stay hosted.
+_REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -132,6 +135,9 @@ def register_provider(profile: ProviderProfile) -> None:
     ``$HERMES_HOME`` plugin is being imported lands in that home's layer.
     """
     global _PROVIDER_LIST_CACHE, _REGISTRY_GENERATION
+    only = _REGISTRATION_ONLY.get()
+    if only is not None and profile.name not in only:
+        return
     _REGISTRY_GENERATION += 1
     layer = _REGISTRATION_TARGET.get()
     if layer is not None:
@@ -558,23 +564,12 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
 
     ``source`` is "bundled" or "user"; it is recorded per registered profile (``_SOURCES``).
     """
-    global _current_source
-    init_file = plugin_dir / "__init__.py"
-    if not init_file.exists():
+    if not (plugin_dir / "__init__.py").exists():
         return
     if source != "bundled":
         from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
         if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
-            from hermes_cli.plugin_host_profiles import load_hosted_profiles
-            _current_source = source
-            try:
-                for profile in load_hosted_profiles(plugin_dir, _user_module_name(plugin_dir, home_key)):
-                    register_provider(profile)
-            except Exception as exc:
-                logger.warning("Failed to load user provider plugin %s in the plugin host: %s",
-                               plugin_dir.name, exc)
-            finally:
-                _current_source = None
+            _import_hosted_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
             return
 
     # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)
@@ -585,21 +580,53 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         module_name = f"plugins.model_providers.{plugin_dir.name.replace('-', '_')}"
     else:
         module_name = _user_module_name(plugin_dir, home_key)
+    _exec_plugin_module(plugin_dir, source, module_name)
 
+
+def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> None:
+    """Register a plugin's profiles as plugin-host proxies; a profile that cannot cross the host
+    boundary (e.g. it overrides ``create_client``) is imported in-process ALONE, with a warning,
+    so it never takes its hosted siblings down with it."""
+    global _current_source
+    from hermes_cli.plugin_host_profiles import load_hosted_profiles
+    _current_source = source
+    try:
+        hosted, in_process = load_hosted_profiles(plugin_dir, module_name)
+        for profile in hosted:
+            register_provider(profile)
+    except Exception as exc:  # health: allow BLE001 -- plugin load boundary (moved from _import_plugin_dir): one broken plugin never breaks discovery
+        logger.warning("Failed to load user provider plugin %s in the plugin host: %s", plugin_dir.name, exc)
+        return
+    finally:
+        _current_source = None
+    if not in_process:
+        return
+    for name, reason in in_process.items():
+        logger.warning("Provider plugin %s: profile %r cannot run in the plugin host (%s); loading it "
+                       "in-process, NOT isolated by plugins.isolation: host", plugin_dir.name, name, reason)
+    token = _REGISTRATION_ONLY.set(frozenset(in_process))
+    try:
+        _exec_plugin_module(plugin_dir, source, module_name)
+    finally:
+        _REGISTRATION_ONLY.reset(token)
+
+
+def _exec_plugin_module(plugin_dir: Path, source: str, module_name: str) -> None:
+    global _current_source
     if module_name in sys.modules:
         return  # already imported
 
     _current_source = source
     try:
         spec = importlib.util.spec_from_file_location(
-            module_name, init_file, submodule_search_locations=[str(plugin_dir)]
+            module_name, plugin_dir / "__init__.py", submodule_search_locations=[str(plugin_dir)]
         )
         if spec is None or spec.loader is None:
             return
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- plugin import boundary (moved from _import_plugin_dir): one broken plugin never breaks discovery
         logger.warning(
             "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
         )
