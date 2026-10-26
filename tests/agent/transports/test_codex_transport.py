@@ -46,12 +46,12 @@ class TestCodexBuildKwargs:
         from hermes_constants import resolve_reasoning_config
 
         reasoning = resolve_reasoning_config({"agent": {"reasoning_effort": effort}}, model)
-        agent = SimpleNamespace(model=model, reasoning_config=reasoning)
+        agent = SimpleNamespace(model=model, reasoning_config=reasoning, base_url="https://api.githubcopilot.com")
         kw = transport.build_kwargs(
             model=model, messages=[{"role": "user", "content": "Hi"}],
-            provider="github-copilot", is_github_responses=True,
+            provider="github-copilot", base_url="https://api.githubcopilot.com",
             reasoning_config=reasoning,
-            github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
+            profile_reasoning=ReasoningParamsMixin._endpoint_reasoning_payload(agent),
         )
         assert kw.get("reasoning") == ({"effort": expected, "summary": "auto"} if expected else None)
 
@@ -229,8 +229,8 @@ class TestCodexBuildKwargs:
         # restart, or load-balancer churn — replaying a stale id gets HTTP
         # 401 "input item ID does not belong to this connection", even for
         # ids well under the #27038 64-char length cap. build_kwargs must
-        # thread is_github_responses through to the input converter so the
-        # id never reaches the request.
+        # resolve the endpoint's replay_item_ids quirk from base_url and thread
+        # it to the input converter so the id never reaches the request.
         messages = [
             {"role": "system", "content": "You are Hermes."},
             {
@@ -250,7 +250,7 @@ class TestCodexBuildKwargs:
         ]
         kw = transport.build_kwargs(
             model="gpt-5.5", messages=messages, tools=[],
-            is_github_responses=True,
+            base_url="https://api.githubcopilot.com",
         )
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert "id" not in message_item
@@ -1869,7 +1869,7 @@ class TestCodexTransportXaiServiceTierStrip:
             model="gpt-5.5",
             messages=[{"role": "user", "content": "hi"}],
             tools=[],
-            is_github_responses=True,
+            base_url="https://api.githubcopilot.com",
             request_overrides={"service_tier": "priority"},
         )
         assert kw.get("service_tier") == "priority"

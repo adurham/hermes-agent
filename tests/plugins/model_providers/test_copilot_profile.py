@@ -136,5 +136,6 @@ def test_main_agent_github_clamp_never_escalates(monkeypatch, effort, expected):
     from agent.reasoning_params import ReasoningParamsMixin
 
     _patch_efforts(monkeypatch, ["minimal", "low", "medium", "high"])
-    agent = SimpleNamespace(model="gpt-5.4", reasoning_config={"enabled": True, "effort": effort})
-    assert ReasoningParamsMixin._github_models_reasoning_extra_body(agent) == {"effort": expected}
+    agent = SimpleNamespace(model="gpt-5.4", reasoning_config={"enabled": True, "effort": effort},
+                            base_url="https://api.githubcopilot.com")
+    assert ReasoningParamsMixin._endpoint_reasoning_payload(agent) == {"effort": expected}

@@ -637,3 +637,32 @@ class ProviderProfile:
     def external_auth_evidence(self) -> tuple[bool, str | None] | None:
         """Subprocess-free ``(verified, source)`` login evidence for an external CLI; None = binary resolves."""
         return None
+
+    # ── Lane L3: Responses-route quirks and message-level reasoning carriers ───
+    # Every field and hook below applies only on endpoints the profile claims via ``serves_endpoint``;
+    # the defaults are the generic wire. Hot path: answers must be pure and cheap (no I/O).
+    responses_replay_item_ids: bool = True  # replayed Responses ``message`` items keep their ``id``
+    responses_prompt_cache_key: bool = True  # the Responses body carries ``prompt_cache_key``
+    responses_issuer_kind: str = ""  # persisted stamp for encrypted reasoning minted here ("" = URL-derived)
+    responses_trusts_completed_status: bool = True  # False: a reasoning-only ``completed`` response continues
+    responses_native_compaction: bool = True  # False: never send ``context_management``
+    responses_profile_reasoning: bool = False  # True: ``reasoning`` = ``reasoning_payload`` + summary, no ``include``
+    message_carrier_opaque: str = ""  # top-level assistant key of an opaque reasoning blob (latest streamed wins)
+    message_carrier_text: str = ""  # top-level assistant key of readable reasoning text (streamed parts concatenate)
+    replays_tool_call_signatures: bool = False  # tool calls keep Gemini ``extra_content`` signatures (by provider name)
+
+    def serves_endpoint(self, base_url: str) -> bool:
+        """True when *base_url* is this provider's own backend, so the L3 fields and hooks apply to it."""
+        return False
+
+    def reasoning_payload(self, model: str | None, reasoning_config: dict | None, *, base_url: str) -> dict | None:
+        """Verbatim ``reasoning`` object the endpoint takes for *model* (catalog-clamped), or None for none."""
+        return None
+
+    def replay_message_carriers(self, values: dict[str, Any], *, model: str | None, base_url: str) -> dict[str, Any]:
+        """Captured message carriers (``message_carrier_*`` keys) to put back on a replayed assistant message."""
+        return {}
+
+    def replays_function_thought_signature(self, *, model: str | None, base_url: str) -> bool:
+        """True when replayed tool calls keep ``function.thought_signature`` (stripped everywhere else)."""
+        return False

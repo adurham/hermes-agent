@@ -12,10 +12,11 @@ from providers.base import ProviderProfile
 
 from .catalog import HOSTNAMES, METADATA_HOSTNAMES, MODELS_DEV_ID, CopilotCatalogMixin
 from .credentials import CopilotCredentialsMixin
+from .responses import RESPONSES_PROFILE_FIELDS, CopilotResponsesMixin
 from .wire import CopilotWireMixin
 
 
-class CopilotProfile(CopilotWireMixin, CopilotCatalogMixin, CopilotCredentialsMixin, ProviderProfile):
+class CopilotProfile(CopilotWireMixin, CopilotResponsesMixin, CopilotCatalogMixin, CopilotCredentialsMixin, ProviderProfile):
     """GitHub Copilot / GitHub Models — editor headers + reasoning."""
 
     def build_api_kwargs_extras(
@@ -42,7 +43,7 @@ class CopilotProfile(CopilotWireMixin, CopilotCatalogMixin, CopilotCredentialsMi
 copilot = CopilotProfile(
     name="copilot", aliases=("github-copilot", "github-models", "github-model", "github"),
     env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), base_url="https://api.githubcopilot.com",
-    auth_type="copilot", ambient_credentials=True,
+    auth_type="copilot", ambient_credentials=True, **RESPONSES_PROFILE_FIELDS,
     hostnames=HOSTNAMES, metadata_hostnames=METADATA_HOSTNAMES, models_dev_id=MODELS_DEV_ID,
 )
 

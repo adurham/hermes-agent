@@ -1417,11 +1417,9 @@ class _CodexCompletionsAdapter:
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
-        is_copilot = base_url_host_matches(host, "githubcopilot.com")
         # Same route classifier as the main transport, so the issuer stamp matches what it minted.
         route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
         is_xai = route.is_xai_responses
-        is_github = route.is_github_responses
         tools = kwargs.get("tools")
         if tools:
             # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
@@ -1467,8 +1465,8 @@ class _CodexCompletionsAdapter:
                     for tc in msg["tool_calls"]
                 ]}
             replay_messages.append(msg)
-        # Copilot binds replayed codex_message_items ids to a backend connection that doesn't
-        # survive credential rotation (401 on replay) — same guard as build_kwargs. Aux calls
+        # Endpoints that bind replayed codex_message_items ids to a backend connection 401 on a stale id
+        # (``replay_item_ids=False``) — same guard as build_kwargs. Aux calls
         # never send ``context_management`` (main-turn feature): no compaction checkpoint.
         # Auxiliary calls (context compression, flush_memories, MoA aggregation) go through this adapter
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
@@ -1476,7 +1474,7 @@ class _CodexCompletionsAdapter:
         # Aux requests run their own model; stamp/filter reasoning provenance against it, not the main agent's.
         issuer_kind = _classify_responses_issuer(base_url=host, **route._asdict())
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=is_copilot,
+            replay_messages, drop_replay_item_ids=not route.endpoint.replay_item_ids,
             current_issuer_kind=issuer_kind,
             current_issuer_model=wire_model, native_compaction_eligible=False,
         )
@@ -1490,7 +1488,7 @@ class _CodexCompletionsAdapter:
         timeout = kwargs.get("timeout")
         if timeout is not None:
             resp_kwargs["timeout"] = timeout
-        # Per-request HTTP headers (OpenCode session affinity, Copilot x-initiator) map to real
+        # Per-request HTTP headers (OpenCode session affinity, provider request headers) map to real
         # headers via the SDK kwarg — forward them.
         if isinstance(kwargs.get("extra_headers"), dict) and kwargs["extra_headers"]:
             resp_kwargs["extra_headers"] = dict(kwargs["extra_headers"])
@@ -1526,14 +1524,14 @@ class _CodexCompletionsAdapter:
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
-        # key where the main transport does: xAI takes it in extra_body, GitHub opts out.
+        # key where the main transport does: xAI takes it in extra_body, ``prompt_cache_key=False`` endpoints opt out.
         try:
             # Reuse the Responses transport's single authoritative hash algorithm and session-scope
             # normalization so equivalent static prefixes route to the same cache bucket across modes,
             # without concentrating unrelated sessions into one shared bucket (see #78941).
             from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
             from agent.transports.codex import _default_prompt_cache_retention_for_request
-            if not (is_xai or is_github) and "prompt_cache_key" not in resp_kwargs:
+            if not is_xai and route.endpoint.prompt_cache_key and "prompt_cache_key" not in resp_kwargs:
                 scope = _cache_scope_from_session_id(
                     _runtime_main_value("cache_scope") or _runtime_main_value("session_id")
                 )
