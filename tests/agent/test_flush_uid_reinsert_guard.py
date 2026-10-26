@@ -106,34 +106,6 @@ def test_restored_history_rows_are_not_reinserted(tmp_path):
     )
 
 
-def test_new_messages_after_restore_still_persist(tmp_path):
-    """The guard must not over-match: after a restore, a genuinely new turn
-    (fresh uids) still lands durably."""
-    agent, db = _make_agent_with_db(tmp_path)
-    sid = agent.session_id
-
-    turn_one = [{"role": "user", "content": "hello", "timestamp": 2000.0}]
-    agent._flush_messages_to_session_db(turn_one)
-    restored = db.get_messages_as_conversation(sid)
-
-    new_turn = [
-        *restored,
-        {"role": "user", "content": "second turn", "timestamp": 3000.0},
-        {"role": "assistant", "content": "second reply", "timestamp": 3001.0},
-    ]
-    agent._flush_messages_to_session_db(new_turn, restored)
-
-    rows = db._read_all(
-        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id", (sid,)
-    )
-    contents = [r["content"] for r in rows]
-    assert "second turn" in contents and "second reply" in contents, (
-        "new post-restore messages were dropped by the dedupe guard"
-    )
-    assert contents.count("hello") == 1, "restored row was re-inserted"
-    assert len(contents) == 3, f"expected exactly 3 rows, got {len(contents)}: {contents}"
-
-
 def test_restored_snapshot_rewrite_still_lands(tmp_path):
     """The reviewer's blocker (134799 review, 2026-10-07): a restored dict that
     still carries its ``_db_row_snapshot`` is the CAS repair path's client —

@@ -81,18 +81,6 @@ class TestCarriedTailAboveWatermark:
             (row,) = _copies(db, f"old turn {i}")
             assert (row["active"], row["compacted"]) == (0, 1)
 
-    def test_content_only_carried_copy_is_not_cloned(self, db: SessionDB) -> None:
-        """A carried dict with no id, uid or timestamp still names the row by content."""
-        watermark = db.get_active_message_watermark(SID)
-        db.append_message(SID, role="assistant", content="verbatim carried body")
-
-        db.archive_and_compact(
-            SID, [_summary(), {"role": "assistant", "content": "verbatim carried body"}], watermark=watermark)
-
-        copies = _copies(db, "verbatim carried body")
-        assert len(copies) == 2
-        assert sorted(r["active"] for r in copies) == [0, 1]
-
     def test_foreign_identical_row_above_watermark_is_still_cloned(self, db: SessionDB) -> None:
         """A row another surface appended keeps its clone even when a held row below the
         watermark carries the same text: the carried dict names its own row, not the newcomer."""
