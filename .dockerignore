@@ -90,6 +90,19 @@ apps/desktop/dist/
 apps/desktop/dist-webapp/
 apps/desktop/build/
 apps/desktop/release/
+# The negations above override the global dependency and secret rules.
+apps/**/node_modules
+apps/desktop/**/.env
+apps/desktop/**/.env.*
+apps/desktop/**/.vite
+apps/desktop/**/.cache
+apps/desktop/**/coverage
+apps/desktop/**/playwright-report
+apps/desktop/**/test-results
+apps/desktop/**/*.p12
+apps/desktop/**/*.pfx
+apps/desktop/**/*.pem
+apps/desktop/**/*.key
 
 # Test suite — not shipped in production images
 tests/
