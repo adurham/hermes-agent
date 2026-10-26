@@ -81,6 +81,16 @@ _OWNERS = {
         "messaging._ensure_whatsapp_bridge_dependencies = lambda bridge_dir: None\n"
         "messaging._spawn_whatsapp_pairing_process(out / 'session', 'bot')\n"
     ),
+    # `git repack` (here a `git` on PATH that execs the child, the way repack forks pack-objects): the
+    # owner dies inside the bounded wait.
+    "git-maintenance": (
+        "bindir = out / 'bin'; bindir.mkdir()\n"
+        "(bindir / 'git').write_text('#!/bin/sh\\nexec ' + child_cmd + '\\n', encoding='utf-8')\n"
+        "(bindir / 'git').chmod(0o755)\n"
+        "os.environ['PATH'] = str(bindir) + os.pathsep + os.environ['PATH']\n"
+        "from hermes_cli.git_commit_graph import run_bounded_git\n"
+        "threading.Thread(target=run_bounded_git, args=(str(out), ['repack', '-d'], 120.0), daemon=True).start()\n"
+    ),
     # A command provider that stalls: the owner dies inside its 120 s idle timeout.
     "tts-command": (
         "from tools.tts_command_provider import run_command_provider\n"
