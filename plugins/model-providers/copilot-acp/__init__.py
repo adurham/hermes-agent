@@ -15,6 +15,12 @@ from providers.base import ProviderProfile
 class CopilotACPProfile(ProviderProfile):
     """GitHub Copilot ACP — external process, no REST models endpoint."""
 
+    def external_auth_evidence(self) -> tuple[bool, str | None]:
+        """The Copilot CLI's token stores, read without spawning it."""
+        from plugins.model_providers.copilot.credentials import copilot_cli_auth_evidence
+
+        return copilot_cli_auth_evidence()
+
     def create_client(self, **client_kwargs: Any) -> Any:
         """Build the ACP stdio shim rather than an HTTP client."""
         from agent.copilot_acp_client import CopilotACPClient

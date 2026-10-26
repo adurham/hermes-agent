@@ -1298,7 +1298,9 @@ def resolve_fast_mode_overrides(
 def _first_exchangeable_copilot_token(raw_tokens) -> str:
     """Exchange stored GitHub tokens in order; the first that validates AND exchanges wins (every
     entry is tried so a later valid token survives an earlier malformed one)."""
-    from hermes_cli.copilot_auth import exchange_copilot_token, validate_copilot_token
+    from providers import get_provider_profile
+    get_provider_profile("copilot")  # loads the plugin package that owns these credentials
+    from plugins.model_providers.copilot.credentials import exchange_copilot_token, validate_copilot_token
 
     for raw in raw_tokens:
         raw = str(raw or "").strip()
@@ -2276,7 +2278,9 @@ def _payload_items(payload: Any) -> list[dict[str, Any]]:
 def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
     """Standard headers for Copilot API requests."""
     try:
-        from hermes_cli.copilot_auth import copilot_request_headers
+        from providers import get_provider_profile
+        get_provider_profile("copilot")  # loads the plugin package that owns these credentials
+        from plugins.model_providers.copilot.credentials import copilot_request_headers
         return copilot_request_headers(is_agent_turn=is_agent_turn)
     except ImportError:
         return {

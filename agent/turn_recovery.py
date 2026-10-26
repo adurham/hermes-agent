@@ -401,10 +401,10 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
 def _refresh_credentials_after_401(
     agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int]
 ) -> bool:
-    """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, copilot,
-    anthropic), printing user-facing diagnostics when the nous/anthropic refresh fails.
-    Returns True when a refresh succeeded and the call should be retried."""
-    from agent.conversation_loop import _is_copilot_provider
+    """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, a profile's
+    ``refresh_runtime_credentials``, anthropic), printing user-facing diagnostics when the
+    nous/anthropic refresh fails. Returns True when a refresh succeeded and the call should be retried."""
+    from agent.conversation_loop import _credential_refresh_profile
 
     if status_code != 401:
         return False
@@ -433,10 +433,11 @@ def _refresh_credentials_after_401(
             agent._buffer_vprint("🔐 Nous agent key refreshed after 401. Retrying request...")
             return True
         _print_nous_401_diagnostics(agent, api_error)
-    if _is_copilot_provider(agent) and not _retry.copilot_auth_retry_attempted:
-        _retry.copilot_auth_retry_attempted = True
-        if agent._try_refresh_copilot_client_credentials():
-            agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
+    if not _retry.provider_auth_refresh_attempted and (profile := _credential_refresh_profile(agent)) is not None:
+        _retry.provider_auth_refresh_attempted = True
+        if agent._try_refresh_provider_runtime_credentials(reason="unauthorized"):
+            agent._buffer_vprint(
+                f"🔐 {profile.display_name or profile.name} credentials refreshed after 401. Retrying request...")
             return True
     if (
         agent.api_mode == "anthropic_messages"

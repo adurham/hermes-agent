@@ -148,8 +148,7 @@ def _warm_gateway_module() -> None:
     """
     for mod in (
         "hermes_cli.gateway",
-        "hermes_cli.auth",  # provider auth state → copilot_auth → subprocess
-        "hermes_cli.copilot_auth",
+        "hermes_cli.auth",  # provider auth state
         "hermes_cli.runtime_provider",
         "hermes_cli.skin_engine",  # resolve_skin() config + skin engine init
         "hermes_cli.inventory",  # provider catalogs + models.dev cache

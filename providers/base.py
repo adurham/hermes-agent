@@ -536,3 +536,47 @@ class ProviderProfile:
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None
+
+    # ── Lane L2: provider-owned credential seams ──────────────────────────────
+    # Credentials are commonly ambient (another tool's login, a token exported for other purposes):
+    # never auto-detected as the inference provider, and the auxiliary fallback chain skips the
+    # provider unless the user explicitly configured it.
+    ambient_credentials: bool = field(default=False, kw_only=True)
+
+    def resolve_api_key_secret(self) -> tuple[str, str] | None:
+        """Provider-owned ``(runtime_api_key, source)`` resolution; None = generic env/pool ladder."""
+        return None
+
+    def runtime_base_url(self, *, api_key: str, default: str, env_url: str) -> str | None:
+        """Runtime base URL derived from the credential (e.g. an account endpoint); None = env or default."""
+        return None
+
+    def prepare_pool_entry(self, entry: Any, api_key: str) -> str:
+        """Turn the selected pool row's secret into the runtime key (may update ``entry``); default as-is."""
+        return api_key
+
+    def seed_pool_credentials(self, *, is_suppressed: Callable[[str], bool],
+                              explicitly_configured: Callable[[], bool]) -> list[dict] | None:
+        """Pool rows ``{source, access_token, base_url, label}`` this provider seeds itself; None = generic env seeding."""
+        return None
+
+    def remove_credential_source(self, source: str) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        """``hermes auth remove`` of *source*: ``(sources_to_suppress, hints)``; None = generic removal."""
+        return None
+
+    def refresh_runtime_credentials(self, *, reason: str) -> tuple[str, str | None] | None:
+        """Re-mint the live client's ``(api_key, base_url or None)`` on ``reason`` (``unauthorized`` |
+        ``stale`` | ``auxiliary_unauthorized``); None = nothing fresher. Error path only, I/O allowed."""
+        return None
+
+    def is_stale_credential_error(self, *, status_code: int | None, message: str) -> bool:
+        """True when a non-auth error really means the credential went stale (pure, no I/O)."""
+        return False
+
+    def request_rejection_hint(self, *, status_code: int | None, base_url: str) -> tuple[str, ...]:
+        """User-facing lines explaining an endpoint's hard rejection of *any* route (pure); default none."""
+        return ()
+
+    def external_auth_evidence(self) -> tuple[bool, str | None] | None:
+        """Subprocess-free ``(verified, source)`` login evidence for an external CLI; None = binary resolves."""
+        return None

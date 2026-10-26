@@ -1,5 +1,6 @@
-"""GitHub Copilot authentication utilities (credential order matches the Copilot CLI:
-COPILOT_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, then ``gh auth token``)."""
+"""GitHub Copilot credentials: token resolution (order matches the Copilot CLI: COPILOT_GITHUB_TOKEN,
+GH_TOKEN, GITHUB_TOKEN, then ``gh auth token``), device-code login, the GitHub→Copilot token exchange,
+and :class:`CopilotCredentialsMixin`, which fills core's generic ``ProviderProfile`` credential seams."""
 
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 from utils import atomic_json_write
@@ -509,3 +510,262 @@ def copilot_request_headers(
     if is_vision:
         headers["Copilot-Vision-Request"] = "true"
     return headers
+
+
+# ── ProviderProfile credential seams ────────────────────────────────────────────────────────────
+
+# Warn once per token per process when the exchange degrades to the raw token (#114740).
+_RAW_DEGRADATION_WARNED: set[str] = set()
+
+
+def _warn_raw_degradation_once(token: str) -> None:
+    """WARN once per token per process when Copilot exchange degrades to raw token (#114740)."""
+    from agent.credential_persistence import fingerprint_secret_value
+    fingerprint = fingerprint_secret_value(token) or "unknown"
+    if fingerprint in _RAW_DEGRADATION_WARNED:
+        return
+    _RAW_DEGRADATION_WARNED.add(fingerprint)
+    logger.warning(
+        "Copilot token exchange degraded to RAW token (exchange "
+        "unavailable); enterprise-only models may 400 with "
+        "model_not_available_for_integrator until exchange recovers."
+    )
+
+
+def _reset_raw_degradation_warned() -> None:
+    """Clear the degradation warning cache (for test isolation)."""
+    _RAW_DEGRADATION_WARNED.clear()
+
+
+# Every pool source the same token can be seeded under (gh_cli + one per env var).
+_POOL_SOURCES = ("gh_cli",) + tuple(f"env:{v}" for v in COPILOT_ENV_VARS)
+
+_STALE_CREDENTIAL_MARKERS = (
+    "model_not_available_for_integrator",
+    "not available for integrator",
+    "model_not_supported",
+    "the requested model is not supported",
+)
+
+_GITHUB_MODELS_FREE_TIER_HOST = "models.inference.ai.azure.com"
+_GITHUB_MODELS_HINT = (
+    "   💡 GitHub Models free tier (models.inference.ai.azure.com) caps every",
+    "      request at ~8K tokens. Hermes' system prompt + tool schemas baseline",
+    "      exceeds that floor, so this endpoint cannot run an agentic loop.",
+    "      Use the `copilot` provider with a Copilot subscription token (`hermes",
+    "      setup` → GitHub Copilot), or pick any other provider.",
+)
+
+
+def _refresh_exchanged_token() -> Optional[tuple[str, Optional[str]]]:
+    """401 on the main client: the raw GitHub token is stable, the short-TTL *exchanged* IDE token is
+    what expires mid-turn (``401 IDE token expired``), so force a fresh exchange; fall back to the
+    raw token only if the exchange itself is unavailable."""
+    try:
+        new_token, token_source = resolve_copilot_token()
+    except Exception as exc:
+        logger.debug("Copilot credential refresh failed: %s", exc)
+        return None
+    new_token, enterprise_base_url = (new_token.strip() if isinstance(new_token, str) else ""), None
+    if not new_token:
+        return None
+    try:
+        evict_cached_exchanged_token(new_token)
+        api_token, exchanged_base_url = get_copilot_api_token(new_token)
+        if isinstance(api_token, str) and api_token.strip():
+            new_token, enterprise_base_url = api_token.strip(), exchanged_base_url
+    except Exception as exc:
+        logger.debug("Copilot 401 re-exchange failed, using resolved token: %s", exc)
+    logger.info("Copilot credentials refreshed from %s", token_source)
+    return new_token, enterprise_base_url
+
+
+def _reexchange_stale_token() -> Optional[tuple[str, Optional[str]]]:
+    """Stale-credential 400 (``model_not_available_for_integrator``): typically a raw ``ghu_`` token
+    cached when the startup exchange degraded. Evict + re-exchange; None when still degraded (a
+    rebuild would not help, so the caller's single-shot retry is not burned)."""
+    try:
+        raw_token, token_source = resolve_copilot_token()
+        if not isinstance(raw_token, str) or not raw_token.strip():
+            return None
+        raw_token = raw_token.strip()
+        evict_cached_exchanged_token(raw_token)
+        api_token, enterprise_base_url = get_copilot_api_token(raw_token)
+    except Exception as exc:
+        logger.debug("Copilot stale-credential recovery failed: %s", exc)
+        return None
+    if not isinstance(api_token, str) or not api_token.strip():
+        return None
+    if api_token == raw_token and not enterprise_base_url:
+        logger.warning(
+            "Copilot stale-credential recovery: exchange still degraded to raw token; skipping retry "
+            "(network/exchange endpoint unavailable)."
+        )
+        return None
+    logger.info("Copilot credentials re-exchanged after stale-credential 400 (source=%s)", token_source)
+    return api_token.strip(), enterprise_base_url
+
+
+def _revalidate_in_memory_token() -> Optional[tuple[str, Optional[str]]]:
+    """Auxiliary-client 401: drop only the in-process JWT and exchange again (a persisted, still-valid
+    JWT and the negative cache are honoured); raises when the exchange fails."""
+    raw_token, _source = resolve_copilot_token()
+    if not str(raw_token or "").strip():
+        return None
+    _jwt_cache.pop(_token_fingerprint(raw_token), None)
+    api_token, _expires_at, base_url = exchange_copilot_token(raw_token)
+    return api_token, base_url
+
+
+_RUNTIME_REFRESHERS = {
+    "unauthorized": _refresh_exchanged_token,
+    "stale": _reexchange_stale_token,
+    "auxiliary_unauthorized": _revalidate_in_memory_token,
+}
+
+
+class CopilotCredentialsMixin:
+    """Fills the generic credential seams of ``providers.base.ProviderProfile`` for Copilot."""
+
+    def resolve_api_key_secret(self) -> tuple[str, str]:
+        try:
+            token, source = resolve_copilot_token()
+            if token:
+                api_token, _base_url = get_copilot_api_token(token)
+                return api_token, source
+        except ValueError as exc:
+            logger.warning("Copilot token validation failed: %s", exc)
+        except Exception:
+            pass
+        return "", ""
+
+    def runtime_base_url(self, *, api_key: str, default: str, env_url: str) -> str:
+        """The API base comes from the token-exchange response (endpoints.api, proxy-ep fallback),
+        authoritative for Enterprise / proxied accounts; falls back to the registry default."""
+        base_url = env_url.rstrip("/") if env_url else default
+        try:
+            raw_token, _ = resolve_copilot_token()
+            if raw_token:
+                resolved = (get_copilot_api_token(raw_token)[1] or "").strip()
+                if resolved:
+                    base_url = resolved
+        except Exception as exc:
+            logger.debug("Copilot base URL resolution fell back to default: %s", exc)
+        return base_url
+
+    def prepare_pool_entry(self, entry: Any, api_key: str) -> str:
+        """A pool row may still carry the RAW GitHub token: the seeder skips the exchange while
+        copilot is merely discovered (ambient gh login, not in config). Here copilot IS the runtime
+        target, and a raw token routes to the language-server integrator whose allowlist omits
+        enterprise-only models (400 model_not_available_for_integrator)."""
+        if not api_key or not validate_copilot_token(api_key)[0]:
+            return api_key  # already an exchanged API token
+        api_token, enterprise_base_url = get_copilot_api_token(api_key)
+        if api_token == api_key and not enterprise_base_url:
+            _warn_raw_degradation_once(api_key)
+            return api_key
+        entry.access_token = api_token
+        if enterprise_base_url:
+            entry.base_url = enterprise_base_url
+        return api_token
+
+    def seed_pool_credentials(self, *, is_suppressed: Callable[[str], bool],
+                              explicitly_configured: Callable[[], bool]) -> list[dict]:
+        # Tokens are resolved dynamically via env vars or `gh auth token`; they don't live in the
+        # auth store. All-sources gate BEFORE any work: resolve_copilot_token() shells out and the
+        # exchange retries 3x with backoff (~35s worst case); a user who suppressed every copilot
+        # source must not pay that on every pool load.
+        try:
+            if all(is_suppressed(s) for s in _POOL_SOURCES):
+                return []
+            token, source = resolve_copilot_token()
+            if not token:
+                return []
+            # Exact match: a substring test would classify GH_TOKEN/GITHUB_TOKEN as gh_cli and
+            # bypass a user's per-env-var suppression.
+            source_name = "gh_cli" if source == "gh auth token" else f"env:{source}"
+            if is_suppressed(source_name):  # per-source gate BEFORE the network exchange
+                return []
+            if not explicitly_configured():
+                # Only discovered here (ambient gh CLI login), not selected anywhere: no model is
+                # routed to it, so the exchange — and its degradation warning on every pool load —
+                # buys nothing (#114740). Seed the raw token; selecting copilot re-seeds and exchanges.
+                api_token, enterprise_base_url = token, None
+            else:
+                api_token, enterprise_base_url = get_copilot_api_token(token)
+                # A failed exchange falls back to the RAW token, which the Copilot API routes to the
+                # "copilot-language-server" integrator whose allowlist omits enterprise-only models
+                # -> HTTP 400 on every turn. Surface it once.
+                if api_token == token and not enterprise_base_url:
+                    _warn_raw_degradation_once(token)
+            return [{"source": source_name, "access_token": api_token, "base_url": enterprise_base_url,
+                     "label": source}]
+        except Exception as exc:
+            logger.debug("Copilot token seed failed: %s", exc)
+            return []
+
+    def remove_credential_source(self, source: str) -> Optional[tuple[tuple[str, ...], tuple[str, ...]]]:
+        """The same token is seeded as gh_cli AND env:<VAR> rows, so suppress every variant or the
+        duplicates resurrect the entry. gh CLI and shell state are left untouched."""
+        if source != "gh_cli" and not source.startswith("env:"):
+            return None
+        return _POOL_SOURCES, (
+            "Suppressed all copilot token sources (gh_cli + env vars) — they will not be re-seeded.",
+            "Note: Your gh CLI / shell environment is unchanged.",
+            "Run `hermes auth add copilot` to re-enable if needed.",
+        )
+
+    def refresh_runtime_credentials(self, *, reason: str) -> Optional[tuple[str, Optional[str]]]:
+        refresher = _RUNTIME_REFRESHERS.get(reason)
+        return refresher() if refresher else None
+
+    def is_stale_credential_error(self, *, status_code: Optional[int], message: str) -> bool:
+        """A 400 that is really a STALE / DEGRADED credential (status 400 AND an integrator /
+        model-not-supported marker, so a wrong model name never triggers the re-exchange)."""
+        lowered = (message or "").lower()
+        if status_code != 400 and "error code: 400" not in lowered:
+            return False
+        return any(marker in lowered for marker in _STALE_CREDENTIAL_MARKERS)
+
+    def request_rejection_hint(self, *, status_code: Optional[int], base_url: str) -> tuple[str, ...]:
+        """GitHub Models free tier caps requests at 8K tokens, under the system prompt + tool schema
+        floor; compression can't help, so say so."""
+        from utils import base_url_host_matches
+        if status_code == 413 and base_url_host_matches(base_url, _GITHUB_MODELS_FREE_TIER_HOST):
+            return _GITHUB_MODELS_HINT
+        return ()
+
+
+def copilot_cli_auth_evidence() -> tuple[bool, Optional[str]]:
+    """Copilot CLI token stores readable without spawning it (env tokens, plaintext config, hosts.json)."""
+    # 1. Supported env tokens — the same vars the Copilot CLI itself honors.
+    try:
+        for env_var in COPILOT_ENV_VARS:
+            val = os.getenv(env_var, "").strip()
+            if val and validate_copilot_token(val)[0]:
+                return True, f"env: {env_var}"
+    except Exception as exc:
+        logger.debug("copilot-acp env token evidence check failed: %s", exc)
+    # 2. The Copilot CLI's own plaintext token store (written by `copilot login` when no OS keychain
+    #    is available). The file is JSONC — strip //-comment lines before parsing.
+    try:
+        cli_config = os.path.expanduser("~/.copilot/config.json")
+        if os.path.isfile(cli_config):
+            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
+                raw = "\n".join(
+                    line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
+            tokens = (json.loads(raw) if raw.strip() else {}).get("copilotTokens")
+            if isinstance(tokens, dict) and any(
+                isinstance(v, str) and v.strip() for v in tokens.values()):
+                return True, "~/.copilot/config.json"
+    except Exception as exc:
+        logger.debug("copilot-acp CLI config evidence check failed: %s", exc)
+    # 3. Known on-disk GitHub Copilot credential stores (the same files models.py fingerprints).
+    for cred_path in ("~/.config/github-copilot/hosts.json", "~/.config/github-copilot/apps.json"):
+        try:
+            expanded = os.path.expanduser(cred_path)
+            if os.path.isfile(expanded) and os.path.getsize(expanded) > 2:
+                return True, cred_path
+        except OSError:
+            continue
+    return False, None
