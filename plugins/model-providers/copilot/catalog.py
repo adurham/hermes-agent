@@ -17,3 +17,8 @@ class CopilotCatalogMixin:
         from hermes_cli.models import get_copilot_model_context
 
         return get_copilot_model_context(model, api_key=api_key)
+
+    def normalize_model_id(self, model: str, *, api_key: str = "") -> str | None:
+        from hermes_cli.models import normalize_copilot_model_id
+
+        return normalize_copilot_model_id(model, api_key=api_key or None)

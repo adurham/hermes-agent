@@ -550,3 +550,7 @@ class ProviderProfile:
     def live_context_length(self, model: str, *, api_key: str = "", base_url: str = "") -> int | None:
         """Context window from the provider's live, credentialed catalog; consulted after the persistent cache."""
         return None
+
+    def normalize_model_id(self, model: str, *, api_key: str = "") -> str | None:
+        """Provider-native id for *model* (alias table, catalog repair); None = core's generic normalization."""
+        return None

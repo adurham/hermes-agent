@@ -53,6 +53,13 @@ class CopilotACPProfile(ProviderProfile):
         copilot = get_provider_profile("copilot")
         return copilot.live_context_length(model, api_key=api_key, base_url=base_url) if copilot else None
 
+    def normalize_model_id(self, model: str, *, api_key: str = "") -> str | None:
+        """Copilot id space; the ACP marker key never reaches the HTTP catalog."""
+        from providers import get_provider_profile
+
+        copilot = get_provider_profile("copilot")
+        return copilot.normalize_model_id(model) if copilot else None
+
 
 copilot_acp = CopilotACPProfile(
     name="copilot-acp", aliases=("github-copilot-acp", "copilot-acp-agent"),
