@@ -39,7 +39,6 @@ from hermes_cli.models_catalog_static import (
     _AGGREGATOR_PROVIDERS,
     _AZURE_FOUNDRY_RESPONSES_PREFIXES,
     _BORROWED_MODEL_PROVIDERS,
-    _COPILOT_MODEL_ALIASES,
     _LIVE_FIRST_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
@@ -67,11 +66,6 @@ from hermes_cli.models_local import (
 
 logger = logging.getLogger(__name__)
 
-COPILOT_BASE_URL = "https://api.githubcopilot.com"
-COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
-COPILOT_EDITOR_VERSION = "vscode/1.104.1"
-COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
-COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
 def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float, ssl_context=None):
     """Open catalog requests without forwarding headers across origins."""
@@ -620,18 +614,6 @@ def clamp_reasoning_effort_to_supported(
     else the nearest WEAKER supported level (never silently escalate cost), else the weakest; unknown
     supported-sets and bespoke level names pass through unchanged."""
     return _clamp_effort(effort, supported_efforts)
-
-
-def clamp_github_reasoning_effort(effort: Any, supported: list[str]) -> str:
-    """Copilot/GitHub Models effort for a non-empty *supported* list: the level itself when listed,
-    else the nearest WEAKER listed level; bespoke names the ladder can't place fall to ``medium``
-    (or the first listed level)."""
-    effort = str(effort or "medium").strip().lower()
-    if effort not in supported:
-        effort = _clamp_effort(effort, supported)
-        if effort not in supported:
-            effort = "medium" if "medium" in supported else supported[0]
-    return effort
 
 
 def _fetch_live_catalog_index(url: str, timeout: float, opener) -> Optional[tuple[list, dict[str, dict[str, Any]]]]:
@@ -1295,65 +1277,6 @@ def resolve_fast_mode_overrides(
     return {"speed": "fast"} if _is_anthropic_fast_model(model_id) else {"service_tier": "priority"}
 
 
-def _first_exchangeable_copilot_token(raw_tokens) -> str:
-    """Exchange stored GitHub tokens in order; the first that validates AND exchanges wins (every
-    entry is tried so a later valid token survives an earlier malformed one)."""
-    from providers import get_provider_profile
-    get_provider_profile("copilot")  # loads the plugin package that owns these credentials
-    from plugins.model_providers.copilot.credentials import exchange_copilot_token, validate_copilot_token
-    for raw in raw_tokens:
-        raw = str(raw or "").strip()
-        if not raw or not validate_copilot_token(raw)[0]:
-            continue
-        try:
-            api_token = exchange_copilot_token(raw)[0]  # (api_token, expires_at, base_url)
-        except Exception:
-            continue
-        if api_token:
-            return api_token
-    return ""
-
-
-def _copilot_cli_config_tokens() -> list[str]:
-    """``copilotTokens`` from the GitHub Copilot CLI's own plaintext store (JSONC — strip
-    ``//``-comment lines), written by ``copilot login`` on hosts without an OS keychain."""
-    cli_config = os.path.expanduser("~/.copilot/config.json")
-    if not os.path.isfile(cli_config):
-        return []
-    with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
-        raw_text = "\n".join(
-            line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
-    data = json.loads(raw_text) if raw_text.strip() else {}
-    tokens = data.get("copilotTokens")
-    return list(tokens.values()) if isinstance(tokens, dict) else []
-
-
-def _resolve_copilot_catalog_api_key() -> str:
-    """Best-effort GitHub token for the Copilot catalog: env vars / ``gh auth token`` via
-    ``resolve_api_key_provider_credentials``, then ``auth.json`` ``credential_pool.copilot[]``, then
-    ``~/.copilot/config.json`` ``copilotTokens`` (the ACP CLI's own store). Without the latter two,
-    keyless users see the picker fall back to the stale curated list on a silent 401."""
-    def _pool_token() -> str:
-        from hermes_cli.auth import read_credential_pool
-
-        return _first_exchangeable_copilot_token(
-            entry.get("access_token") for entry in read_credential_pool("copilot") if isinstance(entry, dict))
-
-    sources = (
-        lambda: _api_key_credentials("copilot")[0],
-        _pool_token,
-        lambda: _first_exchangeable_copilot_token(_copilot_cli_config_tokens()),
-    )
-    for source in sources:
-        try:
-            token = source()
-        except Exception:
-            continue
-        if token:
-            return token
-    return ""
-
-
 def _model_dedup_key(model_id: str) -> str:
     """Case-insensitive dedup key folded through the picker-search alias table, so a bare live wire
     id and its curated public slug (Kimi ``k3`` / ``kimi-k3``) don't both survive a merge."""
@@ -1418,46 +1341,6 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     except Exception:
         access_token = None
     return get_codex_model_ids(access_token=access_token, base_url=base_url)
-
-
-_COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
-_COPILOT_ACP_SESSION_FAIL_TTL = 30.0  # failed probes re-probe quickly so a fresh CLI login is picked up
-_copilot_acp_session_memo: Optional[tuple[float, float, Optional[list[str]]]] = None  # (at, ttl, models)
-
-
-def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
-    """Enabled models from a signed-in ``copilot --acp`` session, memoized for a few minutes —
-    successes AND failures. Model-switch validation (``models_validate._static_catalog``) reads
-    this uncached on every ``/model`` switch, and each miss is a CLI spawn + handshake (up to the
-    probe timeout), so without the memo every switch paid a subprocess. A failed probe is
-    memoized much more briefly so a user who signs in to the CLI right after a miss is picked up
-    on the next switch (or immediately via ``/model --refresh``, which clears this memo)."""
-    global _copilot_acp_session_memo
-    now = time.monotonic()
-    memo = _copilot_acp_session_memo
-    if not force_refresh and memo is not None and now - memo[0] < memo[1]:
-        return memo[2]
-    from providers import get_provider_profile
-
-    try:
-        live = get_provider_profile("copilot-acp").fetch_models() or None
-    except Exception:
-        logger.debug("copilot-acp session model discovery failed", exc_info=True)
-        live = None
-    _copilot_acp_session_memo = (now, _COPILOT_ACP_SESSION_MEMO_TTL if live else _COPILOT_ACP_SESSION_FAIL_TTL, live)
-    return live
-
-
-def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
-        return live
-    try:
-        live = _fetch_github_models(_resolve_copilot_catalog_api_key())
-        if live:
-            return live
-    except Exception:
-        pass
-    return CuratedFallbackModels(_PROVIDER_MODELS.get("copilot", []))
 
 
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
@@ -1617,13 +1500,12 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
         return None
 
 
-# Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None
-# falls through to the profile/curated path; a list is returned as-is (even empty).
+# Per-provider catalog sources tried before the generic profile fetch (a profile's ``picker_catalog``
+# hook fills the same slot, see ``_catalog_fetcher``). A fetcher returning None falls through to the
+# profile/curated path; a list is returned as-is (even empty).
 _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openrouter": lambda normalized, force_refresh: model_ids(force_refresh=force_refresh),
     "openai-codex": _codex_catalog,
-    "copilot": _copilot_catalog,
-    "copilot-acp": _copilot_catalog,
     "nous": _nous_catalog,
     "stepfun": _stepfun_catalog,
     "gmi": _api_key_provider_live,
@@ -1647,6 +1529,19 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 _OPENCODE_FREE_EXCLUDED_MODELS = frozenset(
     {"ox-alpha-free", "deepseek-v4-flash-free", "x-preview-f-free"}
 )
+
+
+def _catalog_fetcher(normalized: str):
+    """The built-in fetcher for *normalized*, else its profile's ``picker_catalog`` hook, else None."""
+    fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
+    if fetcher is not None:
+        return fetcher
+    from providers import get_provider_profile
+    from providers.base import ProviderProfile
+
+    profile = get_provider_profile(normalized)
+    hook = profile.picker_catalog if isinstance(profile, ProviderProfile) else None
+    return (lambda _normalized, force_refresh: hook(force_refresh)) if hook is not None else None
 
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
@@ -1838,8 +1733,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         relayed = _relay_model_catalog(normalized, relay)
         if relayed:
             return _chat_catalog_rows(relayed)
-        return _static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized))
-    fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
+        return _static_catalog(normalized, _catalog_fetcher(normalized))
+    fetcher = _catalog_fetcher(normalized)
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)
         if models is not None:
@@ -2035,8 +1930,9 @@ def _credential_fingerprint(provider: str) -> str:
                 _mtime_part(rel, get_hermes_home() / rel)
         except Exception:
             pass
-        for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
-                    "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
+        from providers import list_providers
+        profile_files = [rel for profile in list_providers() for rel in profile.catalog_credential_files]
+        for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json", *profile_files, "~/.minimax/credentials.json"):
             path = os.path.expanduser(rel)
             _mtime_part(path, path)
 
@@ -2162,10 +2058,11 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
-        # A fresh copilot-acp CLI login must show on the next /model switch: ``--refresh`` drops the
-        # 5-min session memo (and its failure memo) so it never serves a stale signed-out probe.
-        global _copilot_acp_session_memo
-        _copilot_acp_session_memo = None
+        # Provider-owned in-process memos (e.g. an external CLI's session catalog) must re-probe so a
+        # fresh login shows on the next switch.
+        from providers import list_providers
+        for profile in list_providers():
+            profile.invalidate_catalog_cache()
         from hermes_cli.models_cache_lock import write_under_cache_lock
         path = _provider_models_cache_path()
 
@@ -2269,212 +2166,6 @@ def _fetch_anthropic_models(
         return None
 
 
-def _payload_items(payload: Any) -> list[dict[str, Any]]:
-    data = payload.get("data", []) if isinstance(payload, dict) else payload
-    return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
-
-
-def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
-    """Standard headers for Copilot API requests."""
-    try:
-        from providers import get_provider_profile
-        get_provider_profile("copilot")  # loads the plugin package that owns these credentials
-        from plugins.model_providers.copilot.credentials import copilot_request_headers
-        return copilot_request_headers(is_agent_turn=is_agent_turn)
-    except ImportError:
-        return {"Editor-Version": COPILOT_EDITOR_VERSION, "User-Agent": "HermesAgent/1.0",
-                "Openai-Intent": "conversation-edits", "x-initiator": "agent" if is_agent_turn else "user"}
-
-
-_COPILOT_CHAT_ENDPOINTS = {"/chat/completions", "/responses", "/v1/messages"}
-
-
-def _copilot_catalog_item_is_text_model(
-    item: dict[str, Any], *, ignore_picker_flag: bool = False) -> bool:
-    if not str(item.get("id") or "").strip():
-        return False
-    if not ignore_picker_flag and item.get("model_picker_enabled") is False:
-        return False
-    capabilities = item.get("capabilities")
-    if isinstance(capabilities, dict):
-        model_type = str(capabilities.get("type") or "").strip().lower()
-        if model_type and model_type != "chat":
-            return False
-    supported_endpoints = item.get("supported_endpoints")
-    if isinstance(supported_endpoints, list):
-        endpoints = {e for endpoint in supported_endpoints if (e := str(endpoint).strip())}
-        if endpoints and not endpoints & _COPILOT_CHAT_ENDPOINTS:
-            return False
-    return True
-
-
-def _copilot_text_models(items: list[dict[str, Any]], *, ignore_picker_flag: bool = False) -> list[dict[str, Any]]:
-    """Chat-capable catalog rows, deduped by id, in catalog order."""
-    models: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for item in items:
-        model_id = str(item.get("id") or "").strip()
-        if model_id in seen_ids:
-            continue
-        if not _copilot_catalog_item_is_text_model(item, ignore_picker_flag=ignore_picker_flag):
-            continue
-        seen_ids.add(model_id)
-        models.append(item)
-    return models
-
-
-# Short-TTL cache of the filtered GitHub Copilot /models catalog (picker + context/normalize helpers
-# share it). Keyed by the api_key of the successful fetch so a credential swap never serves the
-# previous account's catalog; monotonic clock; lock-free (a race at worst duplicates one fetch).
-_github_model_catalog_cache: Optional[list[dict[str, Any]]] = None
-_github_model_catalog_cache_key: Optional[str] = None
-_github_model_catalog_cache_time: float = 0.0
-_GITHUB_MODEL_CATALOG_CACHE_TTL = 300  # 5 minutes
-
-
-def fetch_github_model_catalog(
-    api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[dict[str, Any]]]:
-    """Fetch the live GitHub Copilot model catalog for this account."""
-    global _github_model_catalog_cache, _github_model_catalog_cache_key
-    global _github_model_catalog_cache_time
-
-    if (
-        _github_model_catalog_cache is not None
-        and _github_model_catalog_cache_key == api_key
-        and (time.monotonic() - _github_model_catalog_cache_time) < _GITHUB_MODEL_CATALOG_CACHE_TTL
-    ):
-        return copy.deepcopy(_github_model_catalog_cache)  # deep: callers must not mutate cached dicts
-
-    attempts: list[dict[str, str]] = []
-    if api_key:
-        attempts.append({**copilot_default_headers(), "Authorization": f"Bearer {api_key}"})
-    attempts.append(copilot_default_headers())
-
-    for headers in attempts:
-        try:
-            items = _payload_items(_get_json(COPILOT_MODELS_URL, timeout=timeout, headers=headers))
-        except Exception:
-            continue
-        models = _copilot_text_models(items)
-        if not models and items:
-            # GitHub has been observed returning ``model_picker_enabled: false`` for EVERY model on
-            # some accounts, which would strand the picker on the stale curated fallback. The flag
-            # is a display hint, not an availability contract — retry without it (chat/endpoint
-            # checks still apply).
-            models = _copilot_text_models(items, ignore_picker_flag=True)
-        if models:
-            _github_model_catalog_cache = copy.deepcopy(models)
-            _github_model_catalog_cache_key = api_key
-            _github_model_catalog_cache_time = time.monotonic()
-            return models
-    return None
-
-
-# ─── Copilot catalog context-window helpers ───
-
-# Module-level cache: {model_id: max_prompt_tokens}
-_copilot_context_cache: dict[str, int] = {}
-_copilot_context_cache_time: float = 0.0
-_copilot_context_cache_key: Optional[str] = None  # fingerprint of the api_key the entry was fetched with
-_COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
-
-
-def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
-    """``max_prompt_tokens`` for a Copilot model from the live /models API (cached in-process 1h; a
-    miss on a fresh cache does not re-fetch), or None."""
-    global _copilot_context_cache, _copilot_context_cache_time, _copilot_context_cache_key
-
-    # Keyed on the credential like fetch_github_model_catalog: the catalog (and its limits) is
-    # per-account, so another profile's token must not be served this entry.
-    from agent.credential_persistence import fingerprint_secret_value
-    key_fp = fingerprint_secret_value(api_key)
-    if (_copilot_context_cache and _copilot_context_cache_key == key_fp
-            and (time.time() - _copilot_context_cache_time < _COPILOT_CONTEXT_CACHE_TTL)):
-        return _copilot_context_cache.get(model_id)
-
-    catalog = fetch_github_model_catalog(api_key=api_key)
-    if not catalog:
-        return None
-    cache: dict[str, int] = {}
-    for item in catalog:
-        mid = str(item.get("id") or "").strip()
-        max_prompt = ((item.get("capabilities") or {}).get("limits") or {}).get("max_prompt_tokens")
-        if mid and isinstance(max_prompt, int) and max_prompt > 0:
-            cache[mid] = max_prompt
-    _copilot_context_cache = cache
-    _copilot_context_cache_time = time.time()
-    _copilot_context_cache_key = key_fp
-    return cache.get(model_id)
-
-
-def _is_github_models_base_url(base_url: Optional[str]) -> bool:
-    return (base_url or "").strip().rstrip("/").lower().startswith(
-        (COPILOT_BASE_URL, "https://models.github.ai/inference", "https://models.inference.ai.azure.com")
-    )
-
-
-def _fetch_github_models(api_key: Optional[str] = None, timeout: float = 5.0) -> Optional[list[str]]:
-    catalog = fetch_github_model_catalog(api_key=api_key, timeout=timeout)
-    return [item.get("id", "") for item in catalog if item.get("id")] if catalog else None
-
-
-def _copilot_catalog_ids(
-    catalog: Optional[list[dict[str, Any]]] = None, api_key: Optional[str] = None) -> set[str]:
-    if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
-    return {mid for item in (catalog or []) if (mid := str(item.get("id") or "").strip())}
-
-
-def normalize_copilot_model_id(
-    model_id: Optional[str], *, catalog: Optional[list[dict[str, Any]]] = None,
-    api_key: Optional[str] = None) -> str:
-    raw = str(model_id or "").strip()
-    if not raw:
-        return ""
-
-    catalog_ids = _copilot_catalog_ids(catalog=catalog, api_key=api_key)
-    alias = _COPILOT_MODEL_ALIASES.get(raw)
-    if alias:
-        return alias
-
-    candidates = [raw]
-    if "/" in raw:
-        candidates.append(raw.split("/", 1)[1].strip())
-    if raw.endswith(("-mini", "-nano", "-chat")):
-        candidates.append(raw[:-5])
-
-    seen: set[str] = set()
-    for candidate in candidates:
-        if not candidate or candidate in seen:
-            continue
-        seen.add(candidate)
-        if candidate in _COPILOT_MODEL_ALIASES:
-            return _COPILOT_MODEL_ALIASES[candidate]
-        if candidate in catalog_ids:
-            return candidate
-
-    if "/" in raw:
-        stripped = raw.split("/", 1)[1].strip()
-        # Enterprise BYOK custom models expose ``owner/sub/model`` ids (two
-        # slashes). A strip guess that still contains "/" cannot be a Copilot
-        # id, so pass the input through untouched instead of corrupting it.
-        if stripped and "/" not in stripped:
-            return stripped
-    return raw
-
-
-def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
-    raw = (model_id or "").strip().lower()
-    if raw.startswith(("openai/o1", "openai/o3", "openai/o4", "o1", "o3", "o4")):
-        return list(COPILOT_REASONING_EFFORTS_O_SERIES)
-    normalized = normalize_copilot_model_id(model_id).lower()
-    if is_astra_model(normalized):
-        return list(CODEX_ASTRA_EFFORTS)
-    if normalized.startswith("gpt-5"):
-        return list(COPILOT_REASONING_EFFORTS_GPT5)
-    return []
-
-
 def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
     """``"codex_responses"`` for families that only accept the Responses API on Azure Foundry (GPT-5.x
     incl. gpt-5-mini, codex, o1/o3/o4), else None. Any ``vendor/`` prefix is stripped first."""
@@ -2571,32 +2262,6 @@ def normalize_opencode_base_url(
     return urllib.parse.urlunparse(parsed._replace(path=path))
 
 
-def github_model_reasoning_efforts(
-    model_id: Optional[str], *, catalog: Optional[list[dict[str, Any]]] = None,
-    api_key: Optional[str] = None) -> list[str]:
-    """Return supported reasoning-effort levels for a Copilot-visible model."""
-    normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
-    if not normalized:
-        return []
-
-    if catalog is None and api_key:
-        catalog = fetch_github_model_catalog(api_key=api_key)
-    catalog_entry = next((item for item in catalog if item.get("id") == normalized), None) if catalog else None
-    if catalog_entry is not None:
-        capabilities = catalog_entry.get("capabilities")
-        if isinstance(capabilities, dict):
-            # Structured catalog: the advertised list is authoritative (empty when absent).
-            supports = capabilities.get("supports")
-            efforts = supports.get("reasoning_effort") if isinstance(supports, dict) else None
-            if not isinstance(efforts, list):
-                return []
-            return list(dict.fromkeys(e for effort in efforts if (e := str(effort).strip().lower())))
-        # Legacy list-shaped capabilities: only a "reasoning" tag unlocks the pattern defaults.
-        if "reasoning" not in {str(c).strip().lower() for c in catalog_entry.get("capabilities", [])}:
-            return []
-    return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
-
-
 # Negative cache: monotonic timestamp of the last timed-out probe, keyed
 # by ``host:port`` so both URL candidates (``/v1`` + root) share one entry.
 # Without this, an unreachable endpoint (TCP blackhole — SYN draws no reply,
@@ -2638,9 +2303,12 @@ def probe_api_models(
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return _probe_result(None, None, "")
-    if _is_github_models_base_url(normalized):
-        models = _fetch_github_models(api_key=api_key, timeout=timeout)
-        return _probe_result(models, COPILOT_MODELS_URL, COPILOT_BASE_URL)
+    from providers import profile_for_host
+
+    owner = profile_for_host(normalized, metadata=True)
+    owned = owner.probe_models(base_url=normalized, api_key=api_key, timeout=timeout) if owner else None
+    if owned is not None:
+        return _probe_result(*owned)
 
     alternate_base = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates: list[tuple[str, bool]] = [(normalized, False)]
@@ -2663,8 +2331,6 @@ def probe_api_models(
         headers["anthropic-version"] = "2023-06-01"
     elif api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    if normalized.startswith(COPILOT_BASE_URL):
-        headers.update(copilot_default_headers())
     if isinstance(request_headers, dict):
         # Per-provider custom headers can contain secrets: merge last so endpoint config wins; never log.
         from hermes_cli.config import normalize_extra_headers

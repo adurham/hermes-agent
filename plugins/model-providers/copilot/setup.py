@@ -36,7 +36,7 @@ def _copilot_model_list(live_ids) -> list:
 def _copilot_catalog(api_key: str):
     """``(catalog, catalog_ids, normalize)`` for a GitHub token; *normalize* canonicalizes a
     model id against the catalog (identity when unknown)."""
-    from hermes_cli.models import fetch_github_model_catalog, normalize_copilot_model_id
+    from .catalog import fetch_github_model_catalog, normalize_copilot_model_id
     catalog = fetch_github_model_catalog(api_key)
     ids = [item.get("id", "") for item in catalog if item.get("id")] if catalog else []
 
@@ -141,7 +141,7 @@ def model_flow_copilot(config, current_model="", args=None):
 
 def setup_reasoning_efforts(model: str) -> tuple:
     """Copilot publishes a per-model effort set; ``()`` when the model takes none."""
-    from hermes_cli.models import github_model_reasoning_efforts
+    from .catalog import github_model_reasoning_efforts
     return tuple(github_model_reasoning_efforts(model) or ())
 
 

@@ -134,12 +134,12 @@ class TestRequestHeaders:
 
 
 class TestCopilotDefaultHeaders:
-    """The models.py copilot_default_headers uses copilot_credentials."""
+    """The catalog module's copilot_default_headers uses copilot_credentials."""
 
 
     def test_param_passthrough_both_values(self):
         """is_agent_turn param correctly maps to x-initiator for both True and False."""
-        from hermes_cli.models import copilot_default_headers
+        from plugins.model_providers.copilot.catalog import copilot_default_headers
         for is_agent, expected in [(True, "agent"), (False, "user")]:
             headers = copilot_default_headers(is_agent_turn=is_agent)
             assert headers["x-initiator"] == expected, (

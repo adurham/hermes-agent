@@ -338,7 +338,7 @@ def test_catalog_key_resolves_from_copilot_cli_store(tmp_path, monkeypatch, _cle
     # curated list (visibly wrong vs. what their subscription serves).
     from unittest.mock import patch as mock_patch
 
-    from hermes_cli import models as models_mod
+    from plugins.model_providers.copilot import catalog
 
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg_dir = tmp_path / ".copilot"
@@ -350,7 +350,7 @@ def test_catalog_key_resolves_from_copilot_cli_store(tmp_path, monkeypatch, _cle
     )
 
     with mock_patch.object(
-        models_mod, "_resolve_copilot_catalog_api_key", wraps=models_mod._resolve_copilot_catalog_api_key
+        catalog, "_resolve_copilot_catalog_api_key", wraps=catalog._resolve_copilot_catalog_api_key
     ), mock_patch.object(copilot_credentials, "exchange_copilot_token",
         return_value=("exchanged-api-token", 0.0, None),
     ), mock_patch(
@@ -359,7 +359,7 @@ def test_catalog_key_resolves_from_copilot_cli_store(tmp_path, monkeypatch, _cle
     ), mock_patch(
         "hermes_cli.auth.read_credential_pool", return_value=[]
     ):
-        key = models_mod._resolve_copilot_catalog_api_key()
+        key = catalog._resolve_copilot_catalog_api_key()
 
     assert key == "exchanged-api-token"
 
@@ -367,7 +367,7 @@ def test_catalog_key_resolves_from_copilot_cli_store(tmp_path, monkeypatch, _cle
 def test_catalog_key_empty_when_cli_store_absent(tmp_path, monkeypatch, _clean_copilot_env):
     from unittest.mock import patch as mock_patch
 
-    from hermes_cli import models as models_mod
+    from plugins.model_providers.copilot import catalog
 
     monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.copilot at all
 
@@ -377,6 +377,6 @@ def test_catalog_key_empty_when_cli_store_absent(tmp_path, monkeypatch, _clean_c
     ), mock_patch(
         "hermes_cli.auth.read_credential_pool", return_value=[]
     ):
-        key = models_mod._resolve_copilot_catalog_api_key()
+        key = catalog._resolve_copilot_catalog_api_key()
 
     assert key == ""

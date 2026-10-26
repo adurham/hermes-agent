@@ -34,6 +34,7 @@ from plugins.model_providers.copilot.credentials import _try_gh_cli_token
 from hermes_cli.auth import PROVIDER_REGISTRY as _REGISTRY
 import providers as _providers
 _providers.get_provider_profile("copilot")  # imports the copilot plugin package (credentials module)
+from plugins.model_providers.copilot import catalog as copilot_catalog
 from plugins.model_providers.copilot import credentials as copilot_credentials
 
 _EXTRA_ENV_VARS = (
@@ -277,8 +278,7 @@ class TestRuntimeProviderResolution:
             "hermes_cli.runtime_provider._get_model_config",
             lambda: {"provider": "copilot", "default": "gpt-5.4"},
         )
-        monkeypatch.setattr(
-            "hermes_cli.models.fetch_github_model_catalog",
+        monkeypatch.setattr(copilot_catalog, "fetch_github_model_catalog",
             lambda api_key=None, timeout=5.0: [
                 {
                     "id": "gpt-5.4",

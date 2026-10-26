@@ -12,6 +12,11 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.models as mod
+import providers as _providers
+
+_providers.get_provider_profile("copilot")  # imports the copilot plugin package (catalog module)
+from plugins.model_providers.copilot import catalog as copilot_catalog
+from plugins.model_providers.copilot_acp import catalog as acp_catalog
 
 
 @pytest.fixture(autouse=True)
@@ -73,9 +78,9 @@ def test_fallback_row_is_recorded_as_fallback_and_never_served_stale():
 
 
 def test_copilot_catalog_marks_the_static_list_as_fallback_on_a_failed_live_fetch():
-    with patch.object(mod, "_copilot_acp_session_models", return_value=None), \
-         patch.object(mod, "_resolve_copilot_catalog_api_key", return_value="tok"), \
-         patch.object(mod, "_fetch_github_models", side_effect=OSError("503")):
+    with patch.object(acp_catalog, "session_models", return_value=None), \
+         patch.object(copilot_catalog, "_resolve_copilot_catalog_api_key", return_value="tok"), \
+         patch.object(copilot_catalog, "_fetch_github_models", side_effect=OSError("503")):
         for slug in ("copilot", "copilot-acp"):
             rows = mod.provider_model_ids(slug)
             assert isinstance(rows, mod.CuratedFallbackModels), slug
