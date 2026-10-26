@@ -81,6 +81,8 @@ class _HomeLayer:
     aliases: dict[str, str] = field(default_factory=dict)
     stamps: tuple = ()
     stamp_checked_at: float | None = None
+    # name -> when its miss last forced a stamp check (see ``_miss_recheck_due``)
+    misses: dict[str, float] = field(default_factory=dict)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -216,7 +218,7 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     # periodic check. ``custom:<route>`` misses resolve to the generic profile below and the
     # picker asks for them once per model, so they wait for the periodic check.
     is_custom_route = isinstance(name, str) and name.lower().startswith("custom:")
-    if profile is None and not is_custom_route and not checked:
+    if profile is None and not is_custom_route and not checked and _miss_recheck_due(layer, name):
         if _refresh_home_layer(layer, home, key, force=True):
             profile = lookup(name)
     # Named custom routes share the generic wire policy unless a plugin
@@ -231,6 +233,23 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
         if _has_named_custom_provider(name, home, key):
             profile = lookup("custom")
     return profile
+
+
+def _miss_recheck_due(layer: _HomeLayer, name: str) -> bool:
+    """Whether a miss for *name* may force a plugin-dir check now: once per name per stamp TTL.
+
+    Registry ids with no profile (``openai-api``, ``xai-oauth`` …) are looked up on every request;
+    re-statting for each defeated the TTL. A new name still forces at once, so a just-installed
+    provider is found on its first request; a repeat miss waits for the periodic check.
+    """
+    now = time.monotonic()
+    last = layer.misses.get(name)
+    if last is not None and now - last < _PLUGIN_DIR_STAMP_TTL_SECONDS:
+        return False
+    if len(layer.misses) >= 512:
+        layer.misses.clear()
+    layer.misses[name] = now
+    return True
 
 
 def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool:
