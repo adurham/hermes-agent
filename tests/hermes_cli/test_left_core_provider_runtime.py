@@ -118,6 +118,24 @@ def test_doctor_installs_nothing_and_names_the_install(tmp_path, monkeypatch, in
     assert "hermes plugins install github-copilot" in capsys.readouterr().out
 
 
+def test_doctor_in_a_terminal_front_end_leaves_kept_notices_for_the_next_agent(tmp_path, monkeypatch, installs,
+                                                                               capsys):
+    """The classic CLI runs doctor in-process (console engine): a read-only diagnostic neither prints nor
+    consumes what a migration kept for the home's next agent."""
+    from types import SimpleNamespace
+    from hermes_cli import doctor
+    from hermes_cli.doctor_config import _check_config_file
+    home = _copilot_home(tmp_path, monkeypatch, "model:\n  provider: nous\nauxiliary:\n  vision:\n"
+                                                "    provider: copilot\n    model: gpt-4.1\n")
+    lcm._queue_notice(home, "kept by the gateway's start")
+    lcm.serve_notices_on_stderr()
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "DOCTOR_CHECKS", ((None, _check_config_file),))
+    doctor.run_doctor(SimpleNamespace(fix=False, ack=None, live=False))
+    assert "kept by the gateway's start" not in capsys.readouterr().err
+    assert lcm._claim_notices(home) == ["kept by the gateway's start"]
+
+
 @pytest.fixture
 def installs_ok(monkeypatch):
     calls = []

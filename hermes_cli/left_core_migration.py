@@ -594,7 +594,7 @@ def recover_for_provider(name: Optional[str]) -> None:
     ``hermes update`` migrated. Outcomes print in a declared terminal front end (:func:`serve_notices_on_stderr`),
     else wait for the home's first agent."""
     feature = _provider_feature(name or "")
-    if feature is None:
+    if feature is None or _installs_held.get():  # held: a read-only diagnostic consumes no kept notice either
         return
     from hermes_constants import get_hermes_home, hermes_home_key
     from providers import get_provider_profile
