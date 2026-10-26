@@ -451,7 +451,7 @@ class ClientLifecycleMixin:
         if self._api_kwargs_have_image_parts(api_kwargs or {}):
             # Image requests get the route's image client headers on a request-scoped client (cache-keyed apart).
             from agent.provider_route_hooks import route_answer
-            image_headers = route_answer("client_headers", provider=self.provider or "",
+            image_headers = route_answer("client_headers", provider=self.provider or "", scope=self,
                                          base_url=str(request_kwargs.get("base_url", "")),
                                          api_key=str(request_kwargs.get("api_key", "") or ""), has_images=True)
             if image_headers:
@@ -892,7 +892,7 @@ class ClientLifecycleMixin:
             # No URL-specific headers — a profile's endpoint headers, else profile.default_headers, else clear.
             self._client_kwargs.pop("default_headers", None)
             from agent.provider_route_hooks import route_answer
-            route_headers = route_answer("client_headers", provider=self.provider or "", base_url=base_url,
+            route_headers = route_answer("client_headers", provider=self.provider or "", base_url=base_url, scope=self,
                                          api_key=str(self._client_kwargs.get("api_key", "") or ""))
             if route_headers:
                 self._client_kwargs["default_headers"] = dict(route_headers)

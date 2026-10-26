@@ -1464,7 +1464,7 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
 
     _ephemeral_out = _consume_ephemeral_max_output(agent)
     from agent.reasoning_carriers import shape_wire_carriers
-    api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url)
+    api_messages = shape_wire_carriers(api_messages, model=agent.model, base_url=agent.base_url, scope=agent)
     # Strip image parts for non-vision models on BOTH paths (registered
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),

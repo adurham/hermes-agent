@@ -53,7 +53,7 @@ def _apply_user_turn_request_headers(agent: Any, api_kwargs: Any, api_call_count
     from agent.provider_route_hooks import route_answer
     _request_headers = route_answer(
         "request_headers", provider=agent.provider or "", base_url=agent.base_url or "",
-        model=agent.model or "", user_initiated=True)
+        model=agent.model or "", user_initiated=True, scope=agent)
     for _key, _value in (_request_headers or {}).items():
         _set_extra_header(api_kwargs, _key, _value)
 

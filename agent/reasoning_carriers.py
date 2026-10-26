@@ -115,17 +115,67 @@ class _WireRoute(NamedTuple):
     profile: Any  # profile serving the host (``providers.profile_for_host``) or None
     keep_fn_sig: bool  # replayed tool calls keep ``function.thought_signature``
     keys: tuple[str, ...]  # every message-level carrier key core knows about
+    scope: Any  # who remembers a failed hook (``provider_route_hooks.ask_profile``): the agent, or None
 
 
-def _wire_route(model: Any, base_url: Any) -> _WireRoute:
+def _wire_route(model: Any, base_url: Any, scope: Any = None) -> _WireRoute:
     from providers import profile_for_host
+    from agent.provider_route_hooks import ask_profile
     from agent.transports.chat_completions import _model_consumes_thought_signature
 
     url = str(base_url or "")
     profile = profile_for_host(url)
-    keep_fn_sig = profile is not None and profile.replays_function_thought_signature(model=model, base_url=url)
+    keep_fn_sig = profile is not None and bool(ask_profile(
+        profile, "replays_function_thought_signature", False, model=model, base_url=url, scope=scope))
     # Same gate as tool-call extra_content, so the two signature carriers can never disagree.
-    return _WireRoute(model, url, _model_consumes_thought_signature(model), profile, keep_fn_sig, _message_keys())
+    return _WireRoute(model, url, _model_consumes_thought_signature(model), profile, keep_fn_sig, _message_keys(),
+                      scope)
+
+
+# ``replay_message_carriers`` answers by which carrier keys are present (providers/base.py), so its answer
+# for one key set is kept as a key mapping and applied to every message with that key set: one hook call
+# per (route, key set) instead of one per carrier-bearing message per request.
+_REPLAY_PLANS: dict[tuple, Any] = {}
+_REPLAY_PLANS_MAX = 512
+_REWRITES = object()  # the hook rewrites values: ask it per message
+_FAILED = object()
+
+
+def _replay_plan(answer: Any, values: dict) -> Any:
+    """``((out key, source key), ...)`` reproducing *answer* from *values*; None when ambiguous."""
+    if not isinstance(answer, dict):
+        return _REWRITES
+    plan = []
+    for out_key, out_value in answer.items():
+        sources = [k for k, v in values.items() if v == out_value]
+        if not sources:
+            return _REWRITES
+        if len(sources) > 1:
+            return None
+        plan.append((out_key, sources[0]))
+    return tuple(plan)
+
+
+def _replay_carriers(route: _WireRoute, values: dict) -> dict:
+    from providers import registry_generation
+    from agent.provider_route_hooks import ask_profile, hook_failed
+
+    if hook_failed(route.profile, "replay_message_carriers", route.scope):
+        return {}
+    key = (registry_generation(), id(route.profile), type(route.profile), route.model, route.base_url,
+           tuple(sorted(values)))
+    plan = _REPLAY_PLANS.get(key)
+    if plan is not None and plan is not _REWRITES:
+        return {out: values[src] for out, src in plan}
+    answer = ask_profile(route.profile, "replay_message_carriers", _FAILED, values, model=route.model,
+                         base_url=route.base_url, scope=route.scope)
+    if answer is _FAILED:
+        return {}
+    if plan is None and (plan := _replay_plan(answer, values)) is not None:
+        if len(_REPLAY_PLANS) >= _REPLAY_PLANS_MAX:
+            _REPLAY_PLANS.clear()
+        _REPLAY_PLANS[key] = plan
+    return dict(answer or {})
 
 
 def _strip_function_signature(tool_calls: list) -> list:
@@ -164,15 +214,22 @@ def _shape(msg: Any, route: _WireRoute) -> Any:
     if route.gemini and values.get(_GEMINI_KEY):
         out[_GEMINI_KEY] = values[_GEMINI_KEY]
     if route.profile is not None:
-        out.update(route.profile.replay_message_carriers(values, model=route.model, base_url=route.base_url))
+        out.update(_replay_carriers(route, values))
     if fn_sig:
         out["tool_calls"] = _strip_function_signature(tool_calls)
     return out
 
 
-def shape_wire_carriers(messages: list, *, model: Any, base_url: Any) -> list:
+def shape_wire_carriers(messages: list, *, model: Any, base_url: Any, scope: Any = None) -> list:
     """Wire copy of ``messages`` with each carrier on the route that reads it and nowhere else.
-    Never mutates the input; unchanged messages are returned by identity."""
-    route = _wire_route(model, base_url)
+    Never mutates the input; unchanged messages are returned by identity. *scope* is the agent (failed
+    profile hooks stay failed for it; see ``provider_route_hooks.ask_profile``)."""
+    from agent.provider_route_hooks import hook_failed
+
+    route = _wire_route(model, base_url, scope)
+    failed_before = route.profile is None or hook_failed(route.profile, "replay_message_carriers", scope)
     shaped = [_shape(m, route) for m in messages]
+    if not failed_before and hook_failed(route.profile, "replay_message_carriers", scope):
+        # Failed mid-request: reshape so every message takes the fallback, as every later request will.
+        shaped = [_shape(m, route) for m in messages]
     return messages if all(a is b for a, b in zip(shaped, messages)) else shaped

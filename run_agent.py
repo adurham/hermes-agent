@@ -659,7 +659,7 @@ class AIAgent(
         if self._is_direct_openai_url() or self._is_azure_openai_url():
             return {"max_completion_tokens": value}
         from agent.provider_route_hooks import route_answer
-        declared = route_answer("max_tokens_param", provider=getattr(self, "provider", "") or "",
+        declared = route_answer("max_tokens_param", provider=getattr(self, "provider", "") or "", scope=self,
                                 base_url=getattr(self, "base_url", "") or "", model=self.model or "")
         if declared:
             return {declared: value}

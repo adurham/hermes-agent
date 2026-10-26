@@ -663,7 +663,8 @@ class ProviderProfile:
 
     # ── Lane L3: Responses-route quirks and message-level reasoning carriers ───
     # Every field and hook below applies only on hosts the profile declares in ``hostnames``;
-    # the defaults are the generic wire. Hot path: answers must be pure and cheap (no I/O).
+    # the defaults are the generic wire. Hot path: answers must be pure and cheap (no I/O). A hook that
+    # raises is logged once and answers the default for the rest of the session (provider_route_hooks).
     responses_replay_item_ids: bool = True  # replayed Responses ``message`` items keep their ``id``
     responses_prompt_cache_key: bool = True  # the Responses body carries ``prompt_cache_key``
     responses_issuer_kind: str = ""  # persisted stamp for encrypted reasoning minted here ("" = URL-derived)
@@ -675,15 +676,20 @@ class ProviderProfile:
     replays_tool_call_signatures: bool = False  # tool calls keep Gemini ``extra_content`` signatures (by provider name)
 
     def reasoning_payload(self, model: str | None, reasoning_config: dict | None, *, base_url: str) -> dict | None:
-        """Verbatim ``reasoning`` object the endpoint takes for *model* (catalog-clamped), or None for none."""
+        """Verbatim ``reasoning`` object the endpoint takes for *model* (catalog-clamped), or None for none.
+        Pure: memoized per arguments."""
         return None
 
     def replay_message_carriers(self, values: dict[str, Any], *, model: str | None, base_url: str) -> dict[str, Any]:
-        """Captured message carriers (``message_carrier_*`` keys) to put back on a replayed assistant message."""
+        """Captured message carriers (``message_carrier_*`` keys) to put back on a replayed assistant message.
+        Decide from which keys are present, not their content: core asks once per (model, base_url, key set)
+        and replays the same keys for every message with that key set (an answer whose values are not
+        copies of input values is asked per message)."""
         return {}
 
     def replays_function_thought_signature(self, *, model: str | None, base_url: str) -> bool:
-        """True when replayed tool calls keep ``function.thought_signature`` (stripped everywhere else)."""
+        """True when replayed tool calls keep ``function.thought_signature`` (stripped everywhere else).
+        Pure: memoized per arguments."""
         return False
 
     # --- I2-cat: provider-owned catalog sources ---

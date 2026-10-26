@@ -96,10 +96,9 @@ class ReasoningParamsMixin:
 
         if (profile := profile_for_host(str(getattr(self, "base_url", None) or ""))) is not None:
             # A claimed endpoint gates on its own catalog: reasoning goes out iff it declares a payload.
-            try:
-                return profile.reasoning_payload(self.model, None, base_url=self.base_url) is not None
-            except Exception:
-                return False
+            from agent.provider_route_hooks import ask_profile
+            return ask_profile(profile, "reasoning_payload", None, self.model, None,
+                               base_url=self.base_url, scope=self) is not None
         if (self.provider or "").strip().lower() == "lmstudio":
             # "off-only" (or absent) means no real reasoning capability.
             return any(opt and opt != "off" for opt in self._lmstudio_reasoning_options_cached())
@@ -147,7 +146,9 @@ class ReasoningParamsMixin:
         profile = profile_for_host(str(base_url or ""))
         if profile is None:
             return None
-        return profile.reasoning_payload(self.model, self.reasoning_config, base_url=str(base_url))
+        from agent.provider_route_hooks import ask_profile
+        return ask_profile(profile, "reasoning_payload", None, self.model, self.reasoning_config,
+                           base_url=str(base_url), scope=self)
 
     def _build_assistant_message(self, assistant_message, finish_reason: str) -> dict:
         """``build_assistant_message``; a held turn's row with visible text comes back typed hidden

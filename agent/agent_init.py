@@ -810,7 +810,7 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict
     _headers_for = _host_default_headers_factory(base_url)
     if _headers_for is not None:
         client_kwargs["default_headers"] = _headers_for(api_key, base_url)
-    elif _route_headers := route_answer("client_headers", provider=str(agent.provider or ""), base_url=base_url,
+    elif _route_headers := route_answer("client_headers", provider=str(agent.provider or ""), base_url=base_url, scope=agent,
                                         api_key=api_key if isinstance(api_key, str) else ""):
         client_kwargs["default_headers"] = _route_headers
     elif "default_headers" not in client_kwargs:
