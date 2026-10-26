@@ -167,11 +167,12 @@ def _overlay_profiles() -> list:
     return [prof for prof in list_providers() if prof.provider_overlay]
 
 
-def _overlay_profile(name: str):
-    """The overlay-declaring profile *name* (its id, models.dev id or an overlay alias) belongs to, or None."""
+def _overlay_profile(name: str, profiles: Optional[list] = None):
+    """The overlay-declaring profile *name* (its id, models.dev id or an overlay alias) belongs to, or
+    None. *profiles*: an ``_overlay_profiles()`` result a loop already fetched."""
     if not name:
         return None
-    return next((prof for prof in _overlay_profiles()
+    return next((prof for prof in (_overlay_profiles() if profiles is None else profiles)
                  if name in (prof.name, prof.models_dev_id, *prof.overlay_aliases)), None)
 
 
@@ -187,12 +188,35 @@ def hermes_overlays() -> dict[str, HermesOverlay]:
     return merged
 
 
-def normalize_provider(name: str) -> str:
-    """Resolve aliases and normalise casing to a canonical provider id."""
+_STATIC_CANONICAL_IDS: frozenset[str] = frozenset()
+
+
+def _is_static_canonical(key: str) -> bool:
+    """Whether *key* is a built-in canonical id (static tables + the auth registry's built-in rows).
+
+    Those never take a profile overlay's name, so ``normalize_provider`` answers them without
+    the per-home profile scan. Asked mid-``hermes_cli.auth`` import (plugin discovery), before its
+    built-in set exists, only the local tables answer and nothing is cached.
+    """
+    global _STATIC_CANONICAL_IDS
+    if not _STATIC_CANONICAL_IDS:
+        try:
+            from hermes_cli.auth import BUILTIN_PROVIDER_IDS
+        except ImportError:
+            return key in HERMES_OVERLAYS or key in _ALIAS_GROUPS
+        _STATIC_CANONICAL_IDS = BUILTIN_PROVIDER_IDS | frozenset(_ALIAS_GROUPS) | frozenset(HERMES_OVERLAYS)
+    return key in _STATIC_CANONICAL_IDS
+
+
+def normalize_provider(name: str, overlay_profiles: Optional[list] = None) -> str:
+    """Resolve aliases and normalise casing to a canonical provider id.
+
+    *overlay_profiles*: an ``_overlay_profiles()`` result, so a loop over many names reads the
+    profile list once instead of per name."""
     key = name.strip().lower()
     if key in ALIASES:
         return ALIASES[key]
-    prof = _overlay_profile(key) if key not in HERMES_OVERLAYS else None
+    prof = None if _is_static_canonical(key) else _overlay_profile(key, overlay_profiles)
     return _profile_overlay_key(prof) if prof is not None else key
 
 
@@ -529,9 +553,10 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
         _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
         if _pcfg is None:
             return None
-        _rows = [_row for _rid, _row in _AUTH_PROVIDER_REGISTRY.items() if normalize_provider(_rid) == canonical]
+        overlays = _overlay_profiles()
+        _rows = [_row for _rid, _row in _AUTH_PROVIDER_REGISTRY.items() if normalize_provider(_rid, overlays) == canonical]
         # A profile-declared overlay routes its own mirrored alias keys through the built-in chain.
-        if all(_row is _pcfg for _row in _rows) and _overlay_profile(canonical) is not None:
+        if all(_row is _pcfg for _row in _rows) and _overlay_profile(canonical, overlays) is not None:
             return None
         if len(_rows) > 1:
             return ProviderDef(id=_pcfg.id, name=_pcfg.name, transport="openai_chat",
