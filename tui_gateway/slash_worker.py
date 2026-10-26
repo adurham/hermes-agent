@@ -56,9 +56,11 @@ def _start_legacy_parent_watchdog(parent_pid: int, *, poll_s: float = 2.0, grace
         deadline = time.monotonic() + grace_s
         while _in_flight.is_set() and time.monotonic() < deadline:
             time.sleep(0.05)
+        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        flush_before_hard_exit()  # os._exit skips the opt-in metrics runtimes' atexit flush (bounded)
         os._exit(0)
 
-    # health: allow HX012 -- the loop only reads getppid() and calls os._exit; no profile-scoped state
+    # health: allow HX012 -- the loop reads getppid(), flushes the opt-in metrics and calls os._exit
     threading.Thread(target=_loop, daemon=True, name="slash-legacy-parent-watchdog").start()
 
 
