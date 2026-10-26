@@ -46,6 +46,13 @@ class CopilotACPProfile(ProviderProfile):
             # timeout — the base fetch_models contract is "None if the fetch failed".
             return None
 
+    def live_context_length(self, model: str, *, api_key: str = "", base_url: str = "") -> int | None:
+        """Same account catalog as the HTTP ``copilot`` provider (lane L4 seam)."""
+        from providers import get_provider_profile
+
+        copilot = get_provider_profile("copilot")
+        return copilot.live_context_length(model, api_key=api_key, base_url=base_url) if copilot else None
+
 
 copilot_acp = CopilotACPProfile(
     name="copilot-acp", aliases=("github-copilot-acp", "copilot-acp-agent"),

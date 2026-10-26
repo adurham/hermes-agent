@@ -257,6 +257,23 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     return target_profile is not None and target_profile.supports_vision_tool_messages is False
 
 
+def profile_for_host(url: str, *, metadata: bool = False) -> ProviderProfile | None:
+    """The registered profile whose declared ``hostnames`` match *url*'s host (exact or subdomain).
+
+    *metadata* also matches ``metadata_hostnames``. Resolved per call against the bound home's
+    providers, so a ``$HERMES_HOME`` plugin installed after import (or in another profile) is seen.
+    """
+    from utils import base_url_host_matches
+
+    if not url:
+        return None
+    for profile in list_providers():
+        hosts = (*profile.hostnames, *profile.metadata_hostnames) if metadata else profile.hostnames
+        if any(base_url_host_matches(url, host) for host in hosts):
+            return profile
+    return None
+
+
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name); the bound home's
     ``$HERMES_HOME`` plugins shadow process-wide profiles of the same name."""
