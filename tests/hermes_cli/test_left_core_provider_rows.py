@@ -175,14 +175,33 @@ def test_runtime_resolution_installs_the_plugin_first_for_a_home_using_it(acme_r
     assert len(calls) == 1
 
 
-def test_profile_env_is_refused_by_env_writers_only_while_the_plugin_is_absent(acme_row, monkeypatch):
+@pytest.mark.parametrize("plugin_dir", [False, True])  # absent, or installed but not loaded (disabled/failed)
+def test_launch_env_is_refused_by_env_writers_while_no_profile_declares_it(acme_row, monkeypatch, plugin_dir):
     from hermes_cli.config import validate_env_var_name_for_write
     import providers
+    monkeypatch.setattr(lcm, "LEFT_CORE", (replace(ACME, profile_env=("ACME_CLI_PATH", "ACME_BASE_URL"),
+                                                   launch_env=("ACME_CLI_PATH",)),))
     monkeypatch.setattr(providers, "list_providers", list)
+    if plugin_dir:
+        (acme_row / "plugins" / "acme-llm").mkdir(parents=True)
     with pytest.raises(ValueError, match="denylist"):
         validate_env_var_name_for_write("ACME_CLI_PATH")
-    (acme_row / "plugins" / "acme-llm").mkdir(parents=True)
-    validate_env_var_name_for_write("ACME_CLI_PATH")
+    validate_env_var_name_for_write("ACME_BASE_URL")  # an address, not executable authority
+
+
+@pytest.mark.parametrize("plugin_dir", [False, True])
+def test_copilot_launch_names_stay_refused_and_its_base_url_writable(tmp_path, monkeypatch, plugin_dir):
+    from hermes_cli.config import validate_env_var_name_for_write
+    import providers
+    home = _home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(providers, "list_providers", list)  # no profile registered: plugin not loaded
+    if plugin_dir:
+        (home / "plugins" / "github-copilot").mkdir(parents=True)
+    for name in ("HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH"):
+        with pytest.raises(ValueError, match="denylist"):
+            validate_env_var_name_for_write(name)
+    validate_env_var_name_for_write("COPILOT_ACP_BASE_URL")
 
 
 def test_models_dev_never_stands_in_for_a_provider_whose_plugin_left_core(acme_row, monkeypatch):

@@ -43,9 +43,8 @@ def external_process_launch_env_names() -> frozenset[str]:
 
 
 def env_writer_launch_denylist() -> frozenset[str]:
-    """:func:`external_process_launch_env_names` plus the ``profile_env`` a left-core row keeps for a provider
-    plugin the active home lacks: that plugin's profile, which would declare them, is not registered."""
-    from hermes_cli.left_core_migration import absent_plugin_profile_env
-    from hermes_constants import get_hermes_home
+    """:func:`external_process_launch_env_names` plus every left-core row's ``launch_env``: a plugin that is
+    not loaded (absent, disabled, failed, quarantined) registers no profile to declare them."""
+    from hermes_cli.left_core_migration import launch_env_names
 
-    return external_process_launch_env_names() | absent_plugin_profile_env(get_hermes_home())
+    return external_process_launch_env_names() | launch_env_names()

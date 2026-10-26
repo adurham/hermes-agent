@@ -418,11 +418,14 @@ class LeftCoreFeature:
     # never resolve through another rung (the models.dev catalog) while the plugin is not loaded.
     providers: tuple[str, ...] = ()
     # Env names the plugin's providers read that core kept profile-managed: scrubbed when inherited but
-    # absent from the profile's .env (env_loader._PROFILE_MANAGED_ENV_KEYS), routed to .env by `hermes
-    # config set` (config._EXTRA_ENV_KEYS), and refused by the generic env writers while the plugin is
-    # absent (executable/argv authority its profile otherwise declares). Read statically: env_loader runs
-    # before provider discovery.
+    # absent from the profile's .env (env_loader._PROFILE_MANAGED_ENV_KEYS) and routed to .env by `hermes
+    # config set` (config._EXTRA_ENV_KEYS). Read statically: env_loader runs before provider discovery.
     profile_env: tuple[str, ...] = ()
+    # The subset of those names that choose an executable or its argv: the generic env writers refuse them
+    # on every home (:func:`launch_env_names`), as core did. A loaded plugin's profile declares them itself;
+    # a home whose plugin is absent, disabled, failed to load or quarantined would otherwise accept a value
+    # that runs as the provider's binary once the plugin loads.
+    launch_env: tuple[str, ...] = ()
     # Hosts the plugin's providers serve (a host covers its subdomains). Core attached their wire quirks by
     # host for any provider name, so a home with a route at one (a ``custom`` endpoint included) uses the
     # feature (:func:`feature_in_use`), and a request rejected there names the install
@@ -494,6 +497,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         providers=_COPILOT_API + _COPILOT_ACP, hosts=("githubcopilot.com", "models.github.ai"),
         profile_env=("HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH",
                      "COPILOT_ACP_BASE_URL"),
+        launch_env=("HERMES_COPILOT_ACP_COMMAND", "HERMES_COPILOT_ACP_ARGS", "COPILOT_CLI_PATH"),
         notice=copilot_relogin_notice,
     ),
 )
@@ -591,10 +595,9 @@ def profile_env_names() -> frozenset[str]:
     return frozenset(name for feature in LEFT_CORE for name in feature.profile_env)
 
 
-def absent_plugin_profile_env(home: Path) -> frozenset[str]:
-    """``profile_env`` of the rows whose plugin *home* does not have: the generic env writers refuse them."""
-    return frozenset(name for feature in LEFT_CORE if feature.profile_env and not plugin_present(feature.plugin, home)
-                     for name in feature.profile_env)
+def launch_env_names() -> frozenset[str]:
+    """Every row's :attr:`LeftCoreFeature.launch_env` (static): the generic env writers refuse them."""
+    return frozenset(name for feature in LEFT_CORE for name in feature.launch_env)
 
 
 def legacy_plugin_alias(name: str) -> str:
