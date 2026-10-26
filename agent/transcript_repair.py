@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields, message_uid_or_none)
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, RESTORED_FROM_STORE, copy_identity_fields, message_uid_or_none)
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
@@ -110,10 +110,12 @@ def _active_logical_message_row(
 def _active_uid_dedupe(
     conn: sqlite3.Connection, session_id: str, messages: list[dict[str, Any]]
 ) -> set[str]:
-    """ACTIVE durable uids among *messages*' no-snapshot, no-``_row_id`` dicts — the re-insert guard.
+    """ACTIVE durable uids among *messages*' restored, no-snapshot, no-``_row_id`` rows — the re-insert guard.
 
-    A dict rebuilt from durable rows (crash/failed-turn history restore, session resume, a repaired
-    sequence, any wire-crossing handoff) carries its durable ``message_uid`` — identity is restored on
+    Only a row the agent flush marked ``RESTORED_FROM_STORE`` (it saw that uid durable in this session) is a
+    candidate: a copied uid alone is never proof, so a fresh identical message always inserts. A dict rebuilt
+    from durable rows (crash/failed-turn history restore, session resume, a repaired sequence, any
+    wire-crossing handoff) carries its durable ``message_uid`` — identity is restored on
     EVERY projection — but neither the persistence marker (underscore-prefixed, stripped before the
     wire) nor ``_row_id``/``DB_ROW_SNAPSHOT`` (same strip). Dicts that still carry a snapshot are
     excluded: the CAS path below owns them — it rewrites the active row in place, so their live edits
@@ -125,6 +127,7 @@ def _active_uid_dedupe(
         uid
         for msg in messages
         if isinstance(msg, dict)
+        and msg.get(RESTORED_FROM_STORE) is True
         and not isinstance(msg.get("_row_id"), int)
         and not isinstance(msg.get(DB_ROW_SNAPSHOT), str)
         and (uid := message_uid_or_none(msg))
