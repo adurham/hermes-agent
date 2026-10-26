@@ -14,7 +14,9 @@ import {
 interface NvidiaEglRecoveryOptions extends Omit<NvidiaEglFallbackOptions, 'marker'> {
   userData: string
   queueMarker: (write: () => void) => void
-  relaunch: () => void
+  /** Extra argv for the relaunch; non-empty only when the witness could not be persisted. */
+  relaunch: (extraArgs: readonly string[]) => void
+  argv?: readonly string[]
   log: (message: string) => void
   now?: () => number
 }
@@ -28,6 +30,8 @@ interface NvidiaEglRecoveryOptions extends Omit<NvidiaEglFallbackOptions, 'marke
  */
 export const NVIDIA_GPU_DEATH_WITNESS_GRACE_MS = 60_000
 
+const SWIFTSHADER_SWITCH = '--use-angle=swiftshader'
+
 /** Persist only for the lock owner, and never turn intentional teardown into GPU failure. */
 export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
   const previous = readNvidiaEglMarker(options.userData)
@@ -40,11 +44,18 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
   const now = options.now ?? Date.now
   const afterBootWindow = (): boolean => healthyAt !== null && now() - healthyAt > NVIDIA_GPU_DEATH_WITNESS_GRACE_MS
 
-  const persist = (marker: NvidiaEglMarker): void => {
+  // A relaunch that carried the fallback on argv because the marker was unwritable.
+  const argvFallback = (options.argv ?? process.argv).includes(SWIFTSHADER_SWITCH)
+
+  const persist = (marker: NvidiaEglMarker): boolean => {
     try {
       writeNvidiaEglMarker(options.userData, marker)
+
+      return true
     } catch (error) {
       options.log(`[gpu] could not persist NVIDIA recovery state: ${String(error)}`)
+
+      return false
     }
   }
 
@@ -98,7 +109,7 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
         !shouldRelaunchForNvidiaGpuDeath({
           platform: options.platform,
           details,
-          fallbackActive: decision.enable,
+          fallbackActive: decision.enable || argvFallback,
           relaunchAttempted
         })
       ) {
@@ -106,19 +117,22 @@ export function createNvidiaEglRecovery(options: NvidiaEglRecoveryOptions) {
       }
 
       relaunchAttempted = true
-      persist(
+
+      const persisted = persist(
         nvidiaEglFallbackMarker(
           options.appVersion ?? '',
           options.driverVersion ?? String(options.driverMajor),
           options.buildIdentity
         )
       )
+
       options.log(
-        `[gpu] NVIDIA GPU process died (${details.reason}, exit=${details.exitCode}); relaunching with SwiftShader`
+        `[gpu] NVIDIA GPU process died (${details.reason}, exit=${details.exitCode}); relaunching with SwiftShader${persisted ? '' : ' on argv (marker unwritable)'}`
       )
 
       try {
-        options.relaunch()
+        // Without the witness on disk the next launch would repeat this one.
+        options.relaunch(persisted ? [] : [SWIFTSHADER_SWITCH])
       } catch (error) {
         options.log(`[gpu] NVIDIA SwiftShader relaunch failed: ${String(error)}`)
       }

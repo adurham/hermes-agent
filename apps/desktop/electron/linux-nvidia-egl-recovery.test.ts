@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -159,6 +159,21 @@ describe('NVIDIA persisted recovery lifecycle', () => {
     first.healthy()
     first.cleanExit()
     expect(readNvidiaEglMarker(userData)?.state).toBe('fallback')
+  })
+})
+
+describe('NVIDIA witness that cannot be persisted', () => {
+  it('relaunches with SwiftShader on argv instead of repeating the launch, and that relaunch cannot loop', () => {
+    mkdirSync(nvidiaEglMarkerPath(userData))
+    const details = { type: 'GPU', reason: 'crashed', exitCode: 139 } as const
+    const first = launch()
+
+    expect(first.gpuDied(details)).toBe(true)
+    expect(first.relaunch).toHaveBeenCalledWith(['--use-angle=swiftshader'])
+
+    const relaunched = launch({ argv: ['electron', '.', '--use-angle=swiftshader'] })
+    expect(relaunched.gpuDied(details)).toBe(false)
+    expect(relaunched.relaunch).not.toHaveBeenCalled()
   })
 })
 

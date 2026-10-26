@@ -883,10 +883,9 @@ const nvidiaEglRecovery = createNvidiaEglRecovery({
       flushDesktopLogBufferSync()
     })
   },
-  relaunch: () => {
-    // The persisted witness selects ANGLE on the next launch. Do not carry an
-    // automatic --use-angle flag into later update relaunches.
-    app.relaunch({ args: process.argv.slice(1) })
+  relaunch: extraArgs => {
+    // The persisted witness selects ANGLE next launch; argv carries it only when unwritable.
+    app.relaunch({ args: [...process.argv.slice(1), ...extraArgs] })
     void exitAfterBackendShutdown(0)
   }
 })
