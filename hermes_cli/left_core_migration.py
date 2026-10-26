@@ -716,41 +716,53 @@ def _notice_file(home: Path) -> Path:
     return home / "cache" / "left-core-notices.jsonl"
 
 
+@contextmanager
+def _notices_locked(home: Path):
+    """The cross-process lock every append and claim of *home*'s kept notices holds: an append never lands
+    in a file a claimant already read, and a claimant never reads a half-written line."""
+    import threading
+    from hermes_cli.auth import _file_lock
+    path = _notice_file(home)
+    # A fresh holder: the helper's per-thread reentrancy must never skip one home's lock inside another's.
+    with _file_lock(path.with_name(f"{path.name}.lock"), threading.local(), 5.0,
+                    f"Timed out waiting for the left-core notice lock ({path})"):
+        yield path
+
+
 def _queue_notice(home: Path, message: str) -> None:
     """Keep *message* for *home*'s first agent in ANY process (:func:`_claim_notices`): the process that
-    produced it (a CLI resolving the provider, a gateway start) often runs no agent for that home itself."""
+    produced it (a CLI resolving the provider, a gateway start) often runs no agent for that home itself.
+    A line already kept is not kept again: every start with ``allow_lazy_installs`` off reports the same row."""
     import json
-    path = _notice_file(home)
+    line = json.dumps(message)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:  # one short append per line: concurrent writers interleave
-            fh.write(json.dumps(message) + "\n")
-    except OSError as exc:
+        with _notices_locked(home) as path:
+            if path.exists() and line in path.read_text(encoding="utf-8-sig").splitlines():
+                return
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+    except OSError as exc:  # unwritable home or lock timeout: the outcome is still logged
         logger.debug("left-core notice not kept for %s: %s", home, exc)
 
 
 def _claim_notices(home: Path) -> list[str]:
-    """Take every notice kept for *home*, exactly once across processes: the rename is the claim, so of
-    several agents starting at once only one gets (and delivers) them."""
+    """Take every notice kept for *home*, exactly once across processes: read and removed under the notice
+    lock, so of several agents starting at once only one gets (and delivers) them. A crash before the
+    removal leaves them for the next claimant rather than losing them."""
     import json
-    import threading
-    path = _notice_file(home)
-    claimed = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}")
-    try:
-        os.replace(path, claimed)
-    except OSError:  # nothing kept, or another process claimed it first
+    if not _notice_file(home).exists():  # the common case: no lock taken
         return []
     try:
-        lines = claimed.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
-        lines = []
-    finally:
-        claimed.unlink(missing_ok=True)
+        with _notices_locked(home) as path:
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+            path.unlink()
+    except OSError:  # another claimant took them first, or the lock timed out (they stay kept)
+        return []
     messages = []
-    for line in lines:
+    for line in dict.fromkeys(lines):
         try:
             messages.append(str(json.loads(line)))
-        except ValueError:  # a torn write: skip that line only
+        except ValueError:  # a line from outside Hermes: skip it only
             continue
     return messages
 
@@ -1092,10 +1104,15 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
     home = Path(get_hermes_home())
     key = hermes_home_key(home)
 
+    delivered: set[str] = set()
+
     def deliver(message: str) -> None:
         if say is None:
             _queue_notice(home, message)
             return
+        if message in delivered:  # a kept copy of what this attempt reports again (allow_lazy_installs off)
+            return
+        delivered.add(message)
         try:
             say(message)
         except Exception:

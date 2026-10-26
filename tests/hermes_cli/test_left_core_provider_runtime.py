@@ -118,6 +118,46 @@ def test_doctor_installs_nothing_and_names_the_install(tmp_path, monkeypatch, in
     assert "hermes plugins install github-copilot" in capsys.readouterr().out
 
 
+def test_an_append_racing_a_claim_is_delivered_not_lost(tmp_path, monkeypatch):
+    """A writer that opened the notice file before a claimant took it: its line still reaches a claimant."""
+    import builtins
+    import threading
+    home = _copilot_home(tmp_path, monkeypatch)
+    lcm._queue_notice(home, "first")
+    opened, go = threading.Event(), threading.Event()
+
+    def held_open(*args, **kwargs):  # the writer has its handle and stalls before writing
+        handle = builtins.open(*args, **kwargs)
+        opened.set()
+        go.wait(10)
+        return handle
+    monkeypatch.setattr(lcm, "open", held_open, raising=False)
+    writer = threading.Thread(target=lcm._queue_notice, args=(home, "second"))
+    writer.start()
+    assert opened.wait(10)
+    claimed: list[str] = []
+    claimant = threading.Thread(target=lambda: claimed.extend(lcm._claim_notices(home)))
+    claimant.start()
+    claimant.join(0.5)  # a claim that can run now (no lock) finishes here, before the writer writes
+    go.set()
+    writer.join(10)
+    claimant.join(10)
+    assert sorted(claimed + lcm._claim_notices(home)) == ["first", "second"]
+
+
+def test_repeated_starts_keep_one_copy_of_the_same_notice(tmp_path, monkeypatch, installs):
+    """With allow_lazy_installs off every gateway start reports the same row: the chat agent gets it once."""
+    home = _copilot_home(tmp_path, monkeypatch, "model:\n  provider: copilot\nsecurity:\n  allow_lazy_installs: false\n")
+    for _ in range(3):
+        monkeypatch.setattr(lcm, "_attempted", set())  # three gateway starts, no agent in between
+        lcm.recover_at_startup()
+    assert len(lcm._notice_file(home).read_text(encoding="utf-8").splitlines()) == 1
+    monkeypatch.setattr(lcm, "_attempted", set())
+    said: list[str] = []
+    lcm.recover_at_startup(say=said.append)  # a terminal's start: the kept copy, then its own report
+    assert len(said) == 1 and "allow_lazy_installs is off" in said[0]
+
+
 def test_doctor_in_a_terminal_front_end_leaves_kept_notices_for_the_next_agent(tmp_path, monkeypatch, installs,
                                                                                capsys):
     """The classic CLI runs doctor in-process (console engine): a read-only diagnostic neither prints nor
