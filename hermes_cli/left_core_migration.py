@@ -606,12 +606,15 @@ def recover_for_provider(name: Optional[str]) -> None:
     (whose start runs the migration) exists, so they would otherwise stop at "unknown provider" on a home no
     ``hermes update`` migrated. Outcomes print in a declared terminal front end (:func:`serve_notices_on_stderr`),
     else wait for the home's next turn someone sees."""
-    feature = _provider_feature(name or "")
-    if feature is None or _installs_held.get():  # held: a read-only diagnostic consumes no kept notice either
-        return
     from hermes_constants import get_hermes_home, hermes_home_key
     from providers import get_provider_profile
     home = Path(get_hermes_home())
+    name = str(name or "").strip().lower()
+    if name in ("", "auto"):  # the auto rung follows auth.json's active_provider (a core-era choice)
+        name = str(_auth_store(home).get("active_provider") or "").strip().lower()
+    feature = _provider_feature(name)
+    if feature is None or _installs_held.get():  # held: a read-only diagnostic consumes no kept notice either
+        return
     # A terminal front end shows outcomes now, also those another process (the gateway this CLI started) kept;
     # otherwise (Desktop, gateway, a detached turn) the home's next watched turn in any process gets them. Never
     # inferred from a TTY: a foreground `hermes gateway run` has one, and its resolutions serve the chat user.
@@ -621,7 +624,7 @@ def recover_for_provider(name: Optional[str]) -> None:
             say(message)
     if hermes_home_key(home) in _attempted:  # this process already tried: skip the config/auth/.env reads
         return
-    if plugin_present(feature.plugin, home) or get_provider_profile(str(name).strip().lower()) is not None:
+    if plugin_present(feature.plugin, home) or get_provider_profile(name) is not None:
         return
     if feature_in_use(feature, home, process_env=True):
         recover_at_startup(say=say)

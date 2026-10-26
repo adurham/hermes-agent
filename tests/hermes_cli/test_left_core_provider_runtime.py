@@ -90,6 +90,21 @@ def test_a_failed_attempt_is_not_rechecked_on_every_resolution(tmp_path, monkeyp
 
 
 
+def test_an_auto_route_following_the_stored_active_provider_installs_it(tmp_path, monkeypatch, installs):
+    """``provider: auto`` follows auth.json's ``active_provider``: a core-era copilot choice is use."""
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    home = _copilot_home(tmp_path, monkeypatch, "model:\n  provider: auto\n")
+    (home / "auth.json").write_text('{"active_provider": "copilot"}', encoding="utf-8")
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "gho_fixture")
+    try:
+        resolve_runtime_provider()
+    except AuthError:
+        pass  # the stand-in install failed: what matters is that it was attempted
+    assert installs == [("github-copilot", True)]
+
+
 @pytest.mark.parametrize("config", [
     "model:\n  provider: nous\ncron:\n  model_provider: copilot\n",
     "model:\n  provider: nous\ndelegation:\n  backends:\n    model_map:\n      options:\n"
