@@ -887,6 +887,9 @@ class _CodexResponseAssembler:
     terminal_service_tier = None  # the tier the backend SERVED (may differ from the one requested)
     # terminal_status defaults to "completed", so settlement needs an explicitly observed response.completed frame.
     saw_response_completed = False
+    # An assistant answer message item was announced (output_item.added, not commentary/analysis): its text deltas
+    # are real answer text even when its done event never arrives. Bare output_text deltas carry no such proof.
+    saw_answer_item_added = False
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
@@ -908,6 +911,8 @@ class _CodexResponseAssembler:
         item = _event_field(event, "item")
         item_type = _event_field(item, "type", "")
         self.active_message_phase = _message_phase(item) if item_type == "message" else None
+        if item_type == "message" and self.active_message_phase not in ("commentary", "analysis"):
+            self.saw_answer_item_added = True
         if self.active_message_phase == "commentary":
             self.commentary_text_deltas = []
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
@@ -1101,12 +1106,14 @@ class _CodexResponseAssembler:
         # Successful completion orders all output, even when no calls remain pending.
         # Done items stay authoritative; only successful streams settle missing done events.
         output: list[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
-        # Plain text deltas with no answer message item (the backend never sent its done event): synthesize one,
-        # also beside tool calls and commentary items, or the text said around a call is dropped from the turn
-        # and never shown (#143893). Commentary/analysis deltas never reach text_deltas.
-        if self.text_deltas and not any(
-                _event_field(item, "type", "") == "message" and _message_phase(item) not in ("commentary", "analysis")
-                for item in output):
+        # Plain text deltas with no output at all: synthesize one message item. Beside tool calls and commentary
+        # items, only an ANNOUNCED answer message whose done event never came is recovered, or the text said around
+        # a call is dropped from the turn (#143893); bare output_text beside commentary stays narration (length).
+        if self.text_deltas and (
+                (not output and not self.has_tool_calls)
+                or (self.saw_answer_item_added and not any(
+                    _event_field(item, "type", "") == "message"
+                    and _message_phase(item) not in ("commentary", "analysis") for item in output))):
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
             message = SimpleNamespace(type="message", role="assistant", status="completed", content=content)
             first_call = next((i for i, item in enumerate(output)
