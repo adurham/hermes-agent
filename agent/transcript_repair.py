@@ -109,8 +109,8 @@ def _active_logical_message_row(
 
 def _active_uid_dedupe(
     conn: sqlite3.Connection, session_id: str, messages: list[dict[str, Any]]
-) -> set[str]:
-    """ACTIVE durable uids among *messages*' restored, no-snapshot, no-``_row_id`` rows — the re-insert guard.
+) -> dict[str, list[sqlite3.Row]]:
+    """ACTIVE durable rows by uid among *messages*' restored, no-snapshot, no-``_row_id`` rows — the re-insert guard.
 
     Only a row the agent flush marked ``RESTORED_FROM_STORE`` (it saw that uid durable in this session) is a
     candidate: a copied uid alone is never proof, so a fresh identical message always inserts. A dict rebuilt
@@ -132,19 +132,28 @@ def _active_uid_dedupe(
         and not isinstance(msg.get(DB_ROW_SNAPSHOT), str)
         and (uid := message_uid_or_none(msg))
     })
-    durable: set[str] = set()
-    if not candidate_uids:
-        return durable
+    durable: dict[str, list[sqlite3.Row]] = {}
     for chunk in _id_chunks(candidate_uids):
-        durable.update(
-            row["message_uid"]
-            for row in conn.execute(
-                f"SELECT DISTINCT message_uid FROM messages "
-                f"WHERE session_id = ? AND active = 1 AND message_uid IN ({_placeholders(chunk)})",
-                (session_id, *chunk),
-            ).fetchall()
-        )
+        for row in conn.execute(
+            f"SELECT * FROM messages WHERE session_id = ? AND active = 1 AND message_uid IN ({_placeholders(chunk)})",
+            (session_id, *chunk),
+        ).fetchall():
+            durable.setdefault(row["message_uid"], []).append(row)
     return durable
+
+
+def _same_as_stored(
+    msg: dict[str, Any], rows: list[sqlite3.Row],
+    serialize_message_fn: Callable[[dict[str, Any], float], Mapping[str, Any]],
+) -> bool:
+    """*msg* serializes to the owned columns of one of its uid's active *rows*: the re-handed copy, not an edit."""
+    for row in rows:
+        serialized = serialize_message_fn(msg, float(row["timestamp"]))
+        if serialized["token_count"] is None:  # a restored dict never decodes token_count: unknown, not NULL
+            serialized = {**serialized, "token_count": row["token_count"]}
+        if all(row[column] == serialized[column] for column in _OWNED_COLUMNS):
+            return True
+    return False
 
 
 def resolve_and_repair_transcript_batch(
@@ -162,8 +171,8 @@ def resolve_and_repair_transcript_batch(
     its physical ``_row_id``, the pair (logical ``message_uid``, stored-row snapshot) recovers the newest
     active generation without matching mutable payload. Watermark-compaction clones are matched by their
     copied payload identity, not timestamp alone. Legacy blank assistant rows retain the narrow interrupted-
-    stream content repair. A snapshot-less restored dict whose uid is already an ACTIVE durable row is the
-    same logical message re-handed to the flush — stamped durable and skipped, never re-INSERTed. Returns
+    stream content repair. A snapshot-less restored dict whose uid is already an ACTIVE durable row with the
+    same payload is that message re-handed to the flush — stamped durable and skipped, never re-INSERTed. Returns
     only rows that need fresh inserts.
     """
     inserted_rows: list[dict[str, Any]] = []
@@ -183,12 +192,14 @@ def resolve_and_repair_transcript_batch(
             from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
             if (
                 isinstance(msg, dict)
-                and message_uid_or_none(msg) in durable_uids
+                and (stored := durable_uids.get(message_uid_or_none(msg) or ""))
                 and not msg.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                and _same_as_stored(msg, stored, serialize_message_fn)
             ):
                 # Restored logical message, no row address and no CAS version (the wire strip removes
-                # every underscore-prefixed field): its uid already names an ACTIVE durable row, so
-                # this is the re-insert defect, not a new message. Stamp durable; the row-addressed
+                # every underscore-prefixed field): its uid already names an ACTIVE durable row holding
+                # the same payload, so this is the re-insert defect, not a new message. Stamp durable; a
+                # restored dict edited since (other content) inserts as before, and the row-addressed
                 # repair above keeps snapshot-carrying rewrites live.
                 msg[_DB_PERSISTED_MARKER] = True
                 continue

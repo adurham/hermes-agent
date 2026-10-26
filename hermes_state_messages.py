@@ -867,13 +867,14 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         unseen = [row_id for row_id in active_ids if row_id not in covered_set]
         covered_active = [row_id for row_id in active_ids if row_id in covered_set]
         # An unseen row the compacted set already carries is superseded by that copy, not cloned (#137197).
-        carried_unseen = self._carried_tail_ids(conn, unseen, compacted_messages)
+        carried_unseen, weak_claims = self._carried_tail_ids(conn, unseen, compacted_messages)
         clone_ids = [row_id for row_id in unseen if row_id not in carried_unseen]
         tail_below = tail_count - self._carried_tail_slots(carried_unseen, len(compacted_messages), tail_count)
         rewind_ids = list(carried_ids)
         if tail_below > 0:
             rewind_ids += self._tail_originals(covered_active, tail_below, merged_away)
-        rewind_ids += unseen
+        # A row claimed by identity alone is archived as compacted history, never rewound out of display.
+        rewind_ids += [row_id for row_id in unseen if row_id not in weak_claims]
         rewind_ids = list(dict.fromkeys(rewind_ids))
         if rewind_ids:
             placeholders = _placeholders(rewind_ids)
@@ -990,7 +991,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             (session_id, int(watermark))).fetchall()]
         # A concurrent-tail row the compacted set already carries is superseded by that copy, not
         # cloned beside it (#137197); its carried dict then has no original below the watermark.
-        carried_tail = self._carried_tail_ids(conn, tail_ids, compacted_messages)
+        carried_tail, weak_claims = self._carried_tail_ids(conn, tail_ids, compacted_messages)
         clone_ids = [row_id for row_id in tail_ids if row_id not in carried_tail]
         _ids, tail_tool_calls = ([], 0) if not clone_ids else self._tail_rows_after_watermark(
             conn, f"SELECT id, tool_calls FROM messages WHERE id IN ({_placeholders(clone_ids)}) ORDER BY id",
@@ -1007,7 +1008,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 "ORDER BY id DESC LIMIT ?",
                 (session_id, *((int(watermark),) if bound else ()),
                  int(tail_below) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
-        rewind_ids += tail_ids
+        # A row claimed by identity alone is archived as compacted history, never rewound out of display.
+        rewind_ids += [row_id for row_id in tail_ids if row_id not in weak_claims]
         rewind_ids = list(dict.fromkeys(rewind_ids))
         if rewind_ids:
             placeholders = _placeholders(rewind_ids)

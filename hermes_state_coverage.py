@@ -20,23 +20,28 @@ class SessionCoverageMixin:
 
     def _carried_tail_ids(
         self, conn, tail_ids: list[int], compacted_messages: list[dict[str, Any]],
-    ) -> dict[int, int]:
-        """Rows of *tail_ids* that *compacted_messages* already carry -> ``{row id: index of the carrying dict}``.
+    ) -> tuple[dict[int, int], set[int]]:
+        """Rows of *tail_ids* that *compacted_messages* already carry -> ``({row id: carrying dict index}, weak)``.
 
         A row above the watermark is normally a concurrent append the summary never saw, so the commit
         clones it after the compacted set. A row the compressor ALSO held (flushed after the watermark
         was read, or left unnamed so coverage fell back to the watermark) is already in the compacted
         set as a carried copy; cloning it too stores the message twice, with a fresh id and timestamp
-        each (#137197). A dict names its row by ``_row_id``, by ``message_uid``, by identity plus
-        timestamp, or, carrying none of those, by identity alone. Each dict claims at most one row and
-        each row is claimed once, so a second row with the same text (another surface's append) keeps
-        its clone.
+        each (#137197). A claim never drops a different message, so each proof is checked against the
+        row: a dict that names a row by ``_row_id`` claims only that row; a ``message_uid`` match also needs
+        the same identity (a same-uid row with other content is another version, kept); identity plus
+        timestamp, or identity alone for a dict carrying no stamps at all, never claims a row whose uid
+        differs from the dict's. Each dict claims at most one row and each row is claimed once.
+
+        ``weak`` holds the rows claimed by identity alone (with or without a timestamp): two surfaces can
+        store the same text, so the caller archives those as compacted history, never rewinds them out of
+        display, and a wrong claim stays visible.
         """
         if not tail_ids or not compacted_messages:
-            return {}
+            return {}, set()
         by_row: dict[int, tuple[int, tuple[Any, ...]]] = {}
-        by_uid: dict[str, int] = {}
-        by_key: dict[tuple[Any, ...], int] = {}
+        by_uid: dict[str, tuple[int, tuple[Any, ...]]] = {}
+        by_key: dict[tuple[Any, ...], tuple[int, Optional[str]]] = {}
         bare: dict[tuple[Any, ...], list[int]] = {}
         for index, message in enumerate(compacted_messages):
             if not isinstance(message, dict):
@@ -48,40 +53,48 @@ class SessionCoverageMixin:
             if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
                 # Authoritative only while the stored identity still matches (a stale stamp names another row).
                 by_row.setdefault(row_id, (index, identity))
-            else:
-                row_id = None
+                continue
             uid = message_uid_or_none(message)
             if uid is not None:
-                by_uid.setdefault(uid, index)
+                by_uid.setdefault(uid, (index, identity))
             timestamp = coerce_epoch(message.get("timestamp"), field="message timestamp")
             if timestamp is not None:
-                by_key.setdefault((*identity, timestamp), index)
-            elif row_id is None and uid is None:
+                by_key.setdefault((*identity, timestamp), (index, uid))
+            elif uid is None:
                 bare.setdefault(identity, []).append(index)
         carried: dict[int, int] = {}
+        weak: set[int] = set()
         claimed: set[int] = set()
         for row in conn.execute(
             f"SELECT id, role, content, tool_call_id, tool_calls, timestamp, {MESSAGE_UID} FROM messages "
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id", tail_ids,
         ).fetchall():
+            row_id, row_uid = int(row["id"]), row[MESSAGE_UID] or None
             identity = self._row_identity(
                 row["role"], self._decode_content(row["content"]), row["tool_call_id"],
                 _parse_tool_calls(row["tool_calls"]))
-            index = None
-            if (named := by_row.get(int(row["id"]))) is not None and named[1] == identity:
-                index = named[0]
-            if index is None and row[MESSAGE_UID]:
-                index = by_uid.get(row[MESSAGE_UID])
-            if index is None:
-                timestamp = coerce_epoch(row["timestamp"], field="message timestamp")
-                if timestamp is not None:
-                    index = by_key.get((*identity, timestamp))
-                if index is None and (queue := bare.get(identity)):
-                    index = queue.pop(0)
+            index, strong = self._claim_tail_row(row, row_id, row_uid, identity, by_row, by_uid, by_key, bare)
             if index is not None and index not in claimed:
                 claimed.add(index)
-                carried[int(row["id"])] = index
-        return carried
+                carried[row_id] = index
+                if not strong:
+                    weak.add(row_id)
+        return carried, weak
+
+    @staticmethod
+    def _claim_tail_row(row, row_id, row_uid, identity, by_row, by_uid, by_key, bare) -> tuple[Optional[int], bool]:
+        """The carrying dict index for one tail row and whether the proof names that row (``_row_id`` / uid)."""
+        if (named := by_row.get(row_id)) is not None and named[1] == identity:
+            return named[0], True
+        if row_uid is not None and (by_id := by_uid.get(row_uid)) is not None and by_id[1] == identity:
+            return by_id[0], True
+        timestamp = coerce_epoch(row["timestamp"], field="message timestamp")
+        if timestamp is not None and (keyed := by_key.get((*identity, timestamp))) is not None:
+            if keyed[1] is None:  # a dict uid equal to the row's already matched above
+                return keyed[0], False
+        if queue := bare.get(identity):
+            return queue.pop(0), False
+        return None, False
 
     @staticmethod
     def _carried_tail_slots(carried: dict[int, int], compacted_count: int, tail_count: int) -> int:

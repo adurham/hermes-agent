@@ -903,6 +903,9 @@ class _CodexResponseAssembler:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
         self.pending_function_calls: dict[str, dict[str, Any]] = {}
         self.announced_output_order: dict[str, tuple] = {}
+        # Phase per announced message item id: a delta that names its item keeps that item's phase even after a
+        # later item (a function call) was announced, so commentary is never fused into the answer text.
+        self.message_phases: dict[str, str | None] = {}
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
@@ -918,6 +921,8 @@ class _CodexResponseAssembler:
         # Record first-observed ordering for EVERY announced item; .done must reuse it or a mixed
         # announced/pending stream without output_index values reorders the calls.
         item_id = str(_event_field(item, "id", ""))
+        if item_id and item_type == "message":
+            self.message_phases[item_id] = self.active_message_phase
         if item_id and item_id not in self.announced_output_order:
             self.announced_output_order[item_id] = (self.next_output_sequence, _event_field(event, "output_index"))
             self.next_output_sequence += 1
@@ -936,12 +941,13 @@ class _CodexResponseAssembler:
             return
         # Harmony commentary/analysis text is mid-turn narration, never the final answer: route to the
         # reasoning callback, keep only the item for replay.
-        if self.active_message_phase == "commentary":
+        phase = self.message_phases.get(str(_event_field(event, "item_id", "") or ""), self.active_message_phase)
+        if phase == "commentary":
             self.commentary_text_deltas.append(delta_text)
             # Legacy fallback when no first-class commentary consumer is installed.
             if self.on_commentary_message is None:
                 self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
-        elif self.active_message_phase == "analysis":
+        elif phase == "analysis":
             self._safe(self.on_reasoning_delta, "on_reasoning_delta", delta_text)
         else:
             self.text_deltas.append(delta_text)
@@ -1109,9 +1115,11 @@ class _CodexResponseAssembler:
         # Plain text deltas with no output at all: synthesize one message item. Beside tool calls and commentary
         # items, only an ANNOUNCED answer message whose done event never came is recovered, or the text said around
         # a call is dropped from the turn (#143893); bare output_text beside commentary stays narration (length).
+        # The recovery needs a terminal frame: a stream cut mid-turn (no terminal, a call still pending) must raise
+        # below and retry, never end the turn on the cut-off sentence with the call silently lost.
         if self.text_deltas and (
                 (not output and not self.has_tool_calls)
-                or (self.saw_answer_item_added and not any(
+                or (self.saw_terminal and self.saw_answer_item_added and not any(
                     _event_field(item, "type", "") == "message"
                     and _message_phase(item) not in ("commentary", "analysis") for item in output))):
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]

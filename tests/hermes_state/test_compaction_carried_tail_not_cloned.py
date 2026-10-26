@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.message_metadata import RESTORED_FROM_STORE
 from hermes_state import SessionDB
 
 SID = "sess1"
@@ -95,3 +96,29 @@ class TestCarriedTailAboveWatermark:
         assert len(copies) == 4, "held original + its carried copy, foreign original + its clone"
         assert sorted(r["active"] for r in copies) == [0, 0, 1, 1]
         assert len({r["message_uid"] for r in copies if r["active"]}) == 2
+
+
+def test_a_colliding_stored_row_is_never_dropped(db: SessionDB) -> None:
+    """A carried copy or a restored dict may only stand for the stored row it really is: a different message
+    that shares its text and timestamp, its uid with newer content, or bare text keeps a live row or stays
+    visible; a restored dict edited since its row was read keeps its edit."""
+    db.append_messages_batch(SID, [{"role": "user", "content": "ok", "timestamp": 1000.0},
+                                   {"role": "assistant", "content": "draft answer", "timestamp": 1001.0}])
+    held_ok, held_draft = db.get_messages_as_conversation(SID, include_row_ids=True)[-2:]
+    watermark = db.get_active_message_watermark(SID)
+    db.append_messages_batch(SID, [
+        {"role": "user", "content": "ok", "timestamp": 1000.0},  # another "ok" at the same second
+        {"role": "assistant", "content": "edited answer", "timestamp": 1002.0, "message_uid": held_draft["message_uid"]},
+        {"role": "user", "content": "continue", "timestamp": 1003.0}])  # another surface's identical text
+    db.archive_and_compact(SID, [_summary(), held_ok, held_draft, {"role": "user", "content": "continue"}],
+                           watermark=watermark, tail_count=3)
+
+    live = [m["content"] for m in db.get_messages_as_conversation(SID)]
+    assert live.count("ok") == 2 and "edited answer" in live
+    assert [m["content"] for m in db.get_messages(SID, include_compacted=True)].count("continue") == 2
+
+    restored = db.get_messages_as_conversation(SID)[-1]
+    restored.update({"content": "continue, and also this", RESTORED_FROM_STORE: True})
+    restored.pop("_db_persisted", None)
+    db.append_messages_batch(SID, [restored])
+    assert "continue, and also this" in [m["content"] for m in db.get_messages_as_conversation(SID)]
