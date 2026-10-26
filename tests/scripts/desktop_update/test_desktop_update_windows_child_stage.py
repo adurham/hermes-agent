@@ -10,17 +10,17 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
-import time
 
 import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.windows_handoff_support import _log
+from tests.waiting import wait_until
 
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 SCRIPT = ROOT / "scripts/desktop-update/windows.ps1"
 STAGE_CLI = """
-import os, sys, time
+import os, sys
 from pathlib import Path
 def main():
     if '--version' in sys.argv:
@@ -33,11 +33,9 @@ def main():
         for name in [m for m in sys.modules if m == 'hermes_cli' or m.startswith('hermes_cli.')]:
             del sys.modules[name]
         from hermes_cli.update_stage import publish_stage
+        from tests.waiting import wait_until
         publish_stage('Packaging the desktop app')
-        hold = Path(os.environ['HANDOFF_HOLD'])
-        deadline = time.monotonic() + 60
-        while not hold.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        wait_until(Path(os.environ['HANDOFF_HOLD']).exists, timeout=60, what='the test to release the update')
     return 0
 if __name__ == '__main__':
     sys.exit(main())
@@ -59,11 +57,10 @@ def test_handoff_shows_the_stage_the_update_publishes(tmp_path: Path) -> None:
              "HANDOFF_HOLD": str(hold), "HANDOFF_REPO": str(ROOT)},
     )
     try:
-        deadline = time.monotonic() + 90
-        while "stage: Packaging the desktop app" not in _log(home):
-            assert time.monotonic() < deadline and script.poll() is None, (
-                "the hand-off never relayed the update's own stage:\n" + _log(home)[-3000:])
-            time.sleep(0.2)
+        wait_until(lambda: "stage: Packaging the desktop app" in _log(home) or script.poll() is not None,
+                   timeout=90, what="the hand-off to relay the update's stage")
+        assert "stage: Packaging the desktop app" in _log(home), (
+            "the hand-off never relayed the update's own stage:\n" + _log(home)[-3000:])
     finally:
         hold.write_text("", encoding="utf-8")
         try:

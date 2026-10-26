@@ -159,6 +159,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     from hermes_cli.update_stage import publish_stage
 
     failures: list[tuple[str, BaseException]] = []
+    publish_stage("Building the apps")
 
     def attempt(name: str, step) -> bool:
         try:
