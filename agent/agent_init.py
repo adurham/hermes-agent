@@ -2179,7 +2179,7 @@ def _init_usage_state(agent):
 # Per-session usage accounting.
 _USAGE_STATE: dict[str, Any] = {
     "_user_turn_count": 0,
-    "_is_user_initiated_turn": False,  # first API call of a user turn (provider request_headers attribution)
+    "_is_user_initiated_turn": False, "_user_initiated_api_call": None,  # request_headers turn attribution
     # Usage anchors (agent/usage_anchor.py): last response's exact usage + transcript
     # snapshot; invalidated on compaction/session switch so stale anchors never suppress compression.
     "_usage_anchor": None,

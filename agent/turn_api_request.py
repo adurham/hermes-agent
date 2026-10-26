@@ -40,6 +40,24 @@ def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
     api_kwargs["extra_headers"] = _xh
 
 
+def _apply_user_turn_request_headers(agent: Any, api_kwargs: Any, api_call_count: Any) -> None:
+    """Provider per-request headers (turn attribution). The first API call of a user turn consumes the
+    turn flag exactly once, whatever the route answers (or if its hook fails), and claims its
+    ``api_call_count``: every attempt of that call (retry, fallback activation) rebuilds the payload with
+    the same count and keeps the attribution; tool-loop follow-ups get the route's default."""
+    if getattr(agent, "_is_user_initiated_turn", False):
+        agent._is_user_initiated_turn = False
+        agent._user_initiated_api_call = api_call_count
+    if getattr(agent, "_user_initiated_api_call", None) != api_call_count:
+        return
+    from agent.provider_route_hooks import route_answer
+    _request_headers = route_answer(
+        "request_headers", provider=agent.provider or "", base_url=agent.base_url or "",
+        model=agent.model or "", user_initiated=True)
+    for _key, _value in (_request_headers or {}).items():
+        _set_extra_header(api_kwargs, _key, _value)
+
+
 def _fire_pre_api_request_hook(
     agent: Any, api_kwargs: Any, api_messages: Any, _llm_middleware_trace: Any, *, messages: Any,
     original_user_message: Any, approx_tokens: Any, total_chars: Any, retry_count: Any,
@@ -134,17 +152,7 @@ def build_request_payload(
     # retry must bypass the cache.
     if agent._empty_content_retries > 0 and agent._is_openrouter_url():
         _set_extra_header(api_kwargs, "X-OpenRouter-Cache", "false")
-    # Provider per-request headers (turn attribution): the first call of a user turn is consumed
-    # by the route that attributes it; tool-loop follow-ups get the route's default.
-    if getattr(agent, "_is_user_initiated_turn", False):
-        from agent.provider_route_hooks import route_answer
-        _request_headers = route_answer(
-            "request_headers", provider=agent.provider or "", base_url=agent.base_url or "",
-            model=agent.model or "", user_initiated=True)
-        if _request_headers:
-            for _key, _value in _request_headers.items():
-                _set_extra_header(api_kwargs, _key, _value)
-            agent._is_user_initiated_turn = False
+    _apply_user_turn_request_headers(agent, api_kwargs, api_call_count)
     try:
         from hermes_cli.middleware import apply_llm_request_middleware
 

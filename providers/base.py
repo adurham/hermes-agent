@@ -467,7 +467,7 @@ class ProviderProfile:
 
     def request_headers(self, *, base_url: str, model: str = "", user_initiated: bool = False) -> dict[str, str]:
         """Per-request headers (``extra_headers``) for *base_url*; ``user_initiated`` is True only on the
-        first API call of a user turn (attribution). Pure: core memoizes the answer per argument set."""
+        first API call of a user turn, every attempt of it (attribution). Pure: core memoizes the answer per argument set."""
         return {}
 
     def max_tokens_param(self, *, base_url: str, model: str = "") -> str | None:

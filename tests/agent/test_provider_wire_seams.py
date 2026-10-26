@@ -111,13 +111,13 @@ def test_image_request_client_carries_image_client_headers(wire_profile):
     assert built[-1]["default_headers"]["X-Wire"] == "1"
 
 
-def _payload(agent):
+def _payload(agent, api_call_count=1):
     from agent.turn_api_request import build_request_payload
 
     agent._empty_content_retries = 0
     build = build_request_payload(
         agent, api_messages=[{"role": "user", "content": "hi"}], _moa_prepared_request=None,
-        tools_for_api=agent.tools, system_message="", api_call_count=1, api_request_id="r",
+        tools_for_api=agent.tools, system_message="", api_call_count=api_call_count, api_request_id="r",
         effective_task_id="t", turn_id="u")
     return build.api_kwargs
 
@@ -127,11 +127,32 @@ def test_user_turn_attribution_is_consumed_by_the_first_call_only(wire_profile):
     agent._is_user_initiated_turn = True
     assert _payload(agent).get("extra_headers") == {"X-Attr": "user"}
     assert agent._is_user_initiated_turn is False
-    assert "X-Attr" not in (_payload(agent).get("extra_headers") or {})  # tool-loop follow-up
+    assert "X-Attr" not in (_payload(agent, api_call_count=2).get("extra_headers") or {})  # tool-loop follow-up
 
 
-def test_route_without_attribution_leaves_the_turn_flag_set(wire_profile):
+def test_every_attempt_of_the_first_call_keeps_user_turn_attribution(wire_profile):
+    # A 429/5xx retry (or a fallback activation) rebuilds the payload for the SAME API call: still the user's.
+    agent = _agent("wirefake", HOST)
+    agent._is_user_initiated_turn = True
+    assert _payload(agent, api_call_count=1).get("extra_headers") == {"X-Attr": "user"}
+    assert _payload(agent, api_call_count=1).get("extra_headers") == {"X-Attr": "user"}  # retried attempt
+    assert "X-Attr" not in (_payload(agent, api_call_count=2).get("extra_headers") or {})
+    agent.reset_session_state()
+    assert "X-Attr" not in (_payload(agent, api_call_count=1).get("extra_headers") or {})
+
+
+def test_route_without_attribution_still_consumes_the_turn_flag(wire_profile):
     agent = _agent("custom", "https://llm.example.test/v1")
     agent._is_user_initiated_turn = True
     assert "X-Attr" not in (_payload(agent).get("extra_headers") or {})
-    assert agent._is_user_initiated_turn is True
+    assert agent._is_user_initiated_turn is False
+
+
+def test_failing_request_headers_hook_never_bills_a_follow_up_as_the_user(wire_profile):
+    profile, _ = wire_profile
+    agent = _agent("wirefake", HOST)
+    agent._is_user_initiated_turn = True
+    with patch.object(type(profile), "request_headers", side_effect=RuntimeError("plugin bug")):
+        assert "X-Attr" not in (_payload(agent, api_call_count=1).get("extra_headers") or {})
+    assert agent._is_user_initiated_turn is False
+    assert "X-Attr" not in (_payload(agent, api_call_count=2).get("extra_headers") or {})  # tool-loop follow-up
