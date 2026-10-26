@@ -1101,10 +1101,17 @@ class _CodexResponseAssembler:
         # Successful completion orders all output, even when no calls remain pending.
         # Done items stay authoritative; only successful streams settle missing done events.
         output: list[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
-        # With only plain text deltas (no tool calls), synthesize one message item.
-        if not output and self.text_deltas and not self.has_tool_calls:
+        # Plain text deltas with no answer message item (the backend never sent its done event): synthesize one,
+        # also beside tool calls and commentary items, or the text said around a call is dropped from the turn
+        # and never shown (#143893). Commentary/analysis deltas never reach text_deltas.
+        if self.text_deltas and not any(
+                _event_field(item, "type", "") == "message" and _message_phase(item) not in ("commentary", "analysis")
+                for item in output):
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
-            output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
+            message = SimpleNamespace(type="message", role="assistant", status="completed", content=content)
+            first_call = next((i for i, item in enumerate(output)
+                               if "function_call" in str(_event_field(item, "type", ""))), len(output))
+            output.insert(first_call, message)
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
