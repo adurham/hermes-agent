@@ -934,7 +934,7 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     """Install every left-core plugin *home* uses and lacks. Returns installed plugin names; never raises."""
     installed = []
     for feature in _pending(home, say=say, process_env=process_env):
-        if _install_one(home, feature, install=install, say=say):
+        if _install_one(home, feature, install=install, say=say, process_env=process_env):
             installed.append(feature.plugin)
     return installed
 
@@ -944,15 +944,19 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     unattended consent like the memory migration: homes of one group share dependency answers, and a
     failure names the rest of its group in one line instead of failing them one by one."""
     from hermes_cli.plugins_cmd_install import shared_dependency_answers
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     from pm.plugins_state import dependency_homes
 
     def labelled(home: Path) -> Callable[[str], None]:
         return lambda message: say(f"  [{_home_label(home)}] {message.lstrip()}")
 
+    def launched(home: Path) -> bool:  # this process's env (a shell export) is the launch home's, as at start
+        return hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
+
     pending: dict[tuple[str, bool], tuple[LeftCoreFeature, list[Path]]] = {}
     for home in dependency_homes():
         try:
-            features = _pending(home, say=labelled(home))
+            features = _pending(home, say=labelled(home), process_env=launched(home))
             consent = bool(features) and _home_consent(home)
         except Exception as exc:
             logger.debug("left-core migration skipped for %s: %s", home, exc)
@@ -969,7 +973,8 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
                     f"questions apply to all of them.")
             with shared_dependency_answers():
                 for index, home in enumerate(homes):
-                    if _install_one(home, feature, install=_install_into(home), say=labelled(home)):
+                    if _install_one(home, feature, install=_install_into(home), say=labelled(home),
+                                    process_env=launched(home)):
                         installed.append(feature.plugin)
                         continue
                     rest = homes[index + 1:]

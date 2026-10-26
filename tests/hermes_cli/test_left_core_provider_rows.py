@@ -131,6 +131,28 @@ def test_gh_only_home_is_told_to_log_in_on_every_migration_outcome(tmp_path):
     assert "could not be installed automatically" in said[0] and "run `hermes auth add copilot`" in said[0]
 
 
+def test_update_reads_the_launch_homes_exported_token_for_the_relogin_notice(tmp_path, monkeypatch):
+    """`hermes update` from a shell that exports GH_TOKEN: the launch home's agent will read it, so no
+    "sign in again" notice; a sibling profile never sees the launch shell's env."""
+    import pm.plugins_state as ps
+    launch, other = (_home(tmp_path / name, config="model:\n  provider: copilot\n").rename(tmp_path / name / name)
+                     for name in ("launch", "other"))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("GH_TOKEN", "gho_exported")
+    monkeypatch.setattr(ps, "dependency_homes", lambda: [launch, other])
+    monkeypatch.setattr(lcm, "_home_consent", lambda home: True)
+
+    def install_into(home, **kw):
+        return lambda name: (home / "plugins" / name).mkdir(parents=True) or {"ok": True}
+    monkeypatch.setattr(lcm, "_install_into", install_into)
+    said = []
+    lcm.migrate_all_homes(say=said.append)
+    by_home = {h: " ".join(m for m in said if lcm._home_label(h) in m) for h in (launch, other)}
+    assert "✓ GitHub Copilot moved out of core" in by_home[launch]
+    assert "run `hermes auth add copilot`" not in by_home[launch]
+    assert "run `hermes auth add copilot`" in by_home[other]
+
+
 # ── generic seams through a fake row ─────────────────────────────────────────────────────────────
 
 
