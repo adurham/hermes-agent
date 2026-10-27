@@ -727,9 +727,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 completion_queue.put(evt)
                 continue
             async with self._completion_event_scope(evt):
-                from tools.process_registry import _EVENT_HELD_AT_KEY
-                from tools.process_registry_notifications import should_surface_notification
-                if not should_surface_notification(evt) and _EVENT_HELD_AT_KEY not in evt:
+                from tools.process_registry_notifications import (
+                    held_delivery_exempt, should_surface_notification)
+                if not should_surface_notification(evt) and not held_delivery_exempt(evt):
                     continue
                 if self._load_background_notifications_mode() == "off":
                     continue
@@ -1228,9 +1228,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
         from gateway.wake import WakeNotAccepted
-        from tools.process_registry import _EVENT_HELD_AT_KEY
-        from tools.process_registry_notifications import should_surface_notification
-        if not should_surface_notification(evt) and _EVENT_HELD_AT_KEY not in evt:
+        from tools.process_registry_notifications import held_delivery_exempt, should_surface_notification
+        if not should_surface_notification(evt) and not held_delivery_exempt(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
@@ -1433,11 +1432,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """FORK delivery-point admission: a child-owned completion whose owner was already gone
         at first sight (never held, never seen running) is the true-leak class and stays suppressed
         (upstream's gate semantics); anything held or released by an owner exit is DELIVERED with
-        attribution (the drain-site rule, across consumers). Policy read happens inside the event's
-        owning profile scope."""
-        from tools.process_registry import _EVENT_HELD_AT_KEY
-        from tools.process_registry_notifications import should_surface_notification
-        if _EVENT_HELD_AT_KEY in completion_evt or seen_running:
+        attribution (the drain-site rule, across consumers), EXCEPT the nested-delegation class —
+        a grandchild's completion belongs to the grandchild's own parent subagent, whose result
+        already carries it, so the human's chat is not woken for it. Policy read happens inside the
+        event's owning profile scope."""
+        from tools.process_registry_notifications import (
+            held_delivery_exempt, is_nested_child_notification, should_surface_notification)
+        # A grandchild's completion is the nested class: its owner's own result already carries it
+        # (unread_completions) and the durable receipt keeps the output, so the human chat is not
+        # woken for it whether or not this watcher saw the process running.
+        if is_nested_child_notification(completion_evt):
+            return False
+        if held_delivery_exempt(completion_evt) or seen_running:
             return True
         async with self._completion_event_scope(completion_evt):
             return should_surface_notification(completion_evt)
@@ -1447,9 +1453,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # Filter each event before it can contaminate (or suppress) a foreground batch.
         # The shared queue may be drained outside the owning profile's runtime scope.
         async with self._completion_event_scope(evt):
-            from tools.process_registry import _EVENT_HELD_AT_KEY
-            from tools.process_registry_notifications import should_surface_notification
-            if not should_surface_notification(evt) and _EVENT_HELD_AT_KEY not in evt:
+            from tools.process_registry_notifications import (
+                held_delivery_exempt, should_surface_notification)
+            if not should_surface_notification(evt) and not held_delivery_exempt(evt):
                 return None
         # Lazy defaults: lifecycle tests build GatewayRunner via object.__new__.
         for attr, default in (
