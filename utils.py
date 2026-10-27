@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -66,12 +67,23 @@ def content_digest(data: bytes) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
-def racy_content_digest(path: str | Path, mtime_ns: int) -> str:
-    """``""`` once ``mtime_ns`` has settled; while it is racy, a digest of the file's bytes. A cache
-    keyed on a stat signature appends it, because two same-size in-place writes in one timestamp tick
-    share mtime, ctime, size and inode (kernels without multigrain timestamps). Read before the parse
-    it guards: a write in between then costs one re-parse instead of pinning the older content."""
-    if not mtime_is_racy(mtime_ns):
+def _frozen_config_worker(path: str | Path) -> bool:
+    """True for a ``config.yaml`` read inside a worker whose config is a frozen snapshot: such a
+    worker never opens a profile config file, so a cache key there stays stat-only."""
+    if Path(path).name != "config.yaml":
+        return False
+    policy = sys.modules.get("agent.safe_worker_policy")  # binding a snapshot imports it first
+    return policy is not None and policy.worker_config_snapshot() is not None
+
+
+def racy_content_digest(path: str | Path, sig: tuple[int, int, int, int]) -> str:
+    """``""`` once the :func:`file_signature` ``sig`` has settled; while it is racy, a digest of the
+    file's bytes. A cache keyed on a stat signature appends it, because two same-size in-place writes
+    in one timestamp tick share mtime, ctime, size and inode (kernels without multigrain timestamps).
+    Racy is judged on the later of mtime and ctime: userland can restore an older mtime after a write
+    (``cp -p``, ``rsync --inplace -t``), never ctime. Read before the parse it guards: a write in
+    between then costs one re-parse instead of pinning the older content."""
+    if not mtime_is_racy(max(sig[0], sig[3])) or _frozen_config_worker(path):
         return ""
     with open(path, "rb") as f:
         return content_digest(f.read())
@@ -85,15 +97,16 @@ def file_cache_version(path: str | Path, st: os.stat_result | None = None, *,
     re-validated on every read: a racily-stored entry costs one re-parse when the file settles.
     ``always_digest`` hashes on every call, for a signature stored and compared much later (a
     change detector whose false "changed" restarts something, or a "still the broken file" record),
-    where the racy digest turning empty would read as a change. Raises ``OSError`` like ``os.stat``;
-    given the caller's ``st`` it does not: a file gone or unreadable since that stat gets the error's
-    name as its digest, which no readable version matches."""
+    where the racy digest turning empty would read as a change. A worker with a frozen config
+    snapshot never hashes a ``config.yaml`` (the key is stat-only there, as before). Raises
+    ``OSError`` like ``os.stat``; given the caller's ``st`` it does not: a file gone or unreadable
+    since that stat gets the error's name as its digest, which no readable version matches."""
     sig = file_signature(Path(path).stat() if st is None else st)
     try:
-        if always_digest:
+        if always_digest and not _frozen_config_worker(path):
             with open(path, "rb") as f:
                 return (*sig, content_digest(f.read()))
-        return (*sig, racy_content_digest(path, sig[0]))  # sig[0] is st_mtime_ns
+        return (*sig, racy_content_digest(path, sig))
     except OSError as exc:
         if st is None:
             raise

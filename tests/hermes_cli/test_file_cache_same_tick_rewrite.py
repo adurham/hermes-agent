@@ -7,8 +7,11 @@ process: a revoked pairing kept its access, and a rotated key in the shared auth
 the profiles reading it. ``coarse_clock`` reports both writes in one frozen tick, which is what such a
 kernel returns, on this host too."""
 import json
+import os
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -74,3 +77,68 @@ def test_a_long_lived_signature_does_not_change_when_the_file_settles(tmp_path, 
     assert utils.file_cache_version(path, always_digest=True) == fresh
     path.write_text("model: b\n")
     assert utils.file_cache_version(path, always_digest=True) != fresh
+
+
+
+def test_an_mtime_restoring_rewrite_still_gets_a_content_digest(tmp_path):
+    """``cp -p`` / ``rsync --inplace -t`` put an old mtime back after writing; ctime still says fresh."""
+    import utils
+    path = tmp_path / "auth.json"
+    path.write_text('{"k": "aaaa"}')
+    old = time.time() - 3600
+    os.utime(path, (old, old))
+    path.write_text('{"k": "bbbb"}')  # same size, in place
+    os.utime(path, (old, old))
+    assert utils.file_cache_version(path)[-1] == utils.content_digest(path.read_bytes())
+
+
+_WORKER_PROBE = r"""
+import json, os, sys
+from pathlib import Path
+import utils
+utils.RACY_MTIME_WINDOW_NS = int(sys.argv[1])
+home = Path(os.environ["HERMES_HOME"])
+(home / "config.yaml").write_text("agent:\n  max_turns: 17\nskills:\n  external_dirs: []\n")
+from agent.safe_worker_policy import _bind_safe_worker_policy
+_bind_safe_worker_policy(safe_mode=True, ignore_user_config=True, config={"agent": {"max_turns": 3}})
+opens, current = {}, [None]
+def audit(event, args):
+    if event == "open" and str(args[0]).endswith("config.yaml") and current[0]:
+        opens[current[0]] = opens.get(current[0], 0) + 1
+sys.addaudithook(audit)
+from agent import skill_utils
+import providers
+from hermes_cli import free_tier_bootstrap, model_switch, profiles
+calls = {
+    "skills": skill_utils.get_external_skills_dirs,
+    "named_custom": lambda: providers._has_named_custom_provider("foo", home, "k"),
+    "alias_source": model_switch._direct_alias_source_identity,
+    "free_tier": free_tier_bootstrap._config_stamp,
+    "standalone": lambda: profiles.profile_is_standalone(home),
+}
+for name, call in calls.items():
+    current[0] = name
+    opens.setdefault(name, 0)
+    call()
+current[0] = None
+print(json.dumps(opens))
+"""
+
+
+def _worker_config_opens(tmp_path: Path, window_ns: int) -> dict:
+    home = tmp_path / f"home-{window_ns}"
+    home.mkdir()
+    env = {**os.environ, "HERMES_HOME": str(home)}
+    root = Path(__file__).resolve().parents[2]
+    out = subprocess.run([sys.executable, "-c", _WORKER_PROBE, str(window_ns)], cwd=root, env=env,
+                         capture_output=True, text=True, timeout=120, check=True)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_a_frozen_config_worker_opens_config_yaml_no_more_while_the_file_is_fresh(tmp_path):
+    """A safe worker reads its config from the bound snapshot: the content check on a just-written
+    ``config.yaml`` must not add an open of the profile file at any reader (fresh exec per leg, since
+    the policy binds once per process)."""
+    racy = _worker_config_opens(tmp_path, 10**15)
+    settled = _worker_config_opens(tmp_path, 0)
+    assert racy == settled, (racy, settled)

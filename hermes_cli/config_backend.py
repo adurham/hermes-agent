@@ -117,8 +117,10 @@ class FileBackend:
         return self.version_path(self.config_path(home))
 
     def cache_version(self, home: Path, version: tuple[Any, ...]) -> tuple[Any, ...]:
-        from utils import racy_content_digest  # utils.file_cache_version's rule, on this stat
-        return (*version, racy_content_digest(self.config_path(home), version[0]))
+        # utils.file_cache_version's rule. ``version`` is config_version's opaque token, so the
+        # racy test takes the file's own signature.
+        from utils import racy_content_digest
+        return (*version, racy_content_digest(self.config_path(home), self.version(home)))
 
     def exists(self, home: Path) -> bool:
         return self.config_path(home).exists()
