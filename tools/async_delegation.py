@@ -54,14 +54,20 @@ _MAX_DELIVERY_ATTEMPTS = 8
 # Pending completions older than this are dropped on restart replay instead of
 # re-run as a full-context turn; 48h keeps weekend results deliverable.
 _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
-# Terminal states in which a delegation never produced a result someone can still be waiting for:
-# it was interrupted, cancelled, or its child(ren) died. The completion still reaches a LIVE parent
-# through the in-process queue, but the durable row is written without a replay payload, because
-# replaying dead work into a later process/session is pure noise. Without this the row sits
-# ``delivery_state='pending'`` and is only cleared when it trips the age cap at a later startup
-# (deleg_49a11cc8: interrupted 2026-10-23, replayed-and-dropped at 72.3h on 2026-10-26).
+# Terminal states in which a delegation never produced a result: it was interrupted, cancelled, or
+# its child(ren) died. Liveness at the terminal transition decides what happens to the replay, not
+# the status: while the owning process is alive it can still push the failure to its parent (failure
+# notices are the outcome users most need pushed), so the row keeps its replay payload. Only when the
+# owner is provably gone -- nobody can ever claim the row -- is the replay retired at persist time.
+# Rows left behind are retired by ``_retire_dead_replays`` (owner gone at startup, or never claimed
+# within ``_DEAD_COMPLETION_GRACE_S``) instead of parking until the 48 h cap (deleg_49a11cc8:
+# interrupted 2026-10-23, replayed-and-dropped at 72.3h on 2026-10-26).
 _DEAD_COMPLETION_STATES = frozenset(
     {"error", "failed", "failure", "interrupted", "cancelled", "canceled", "timeout"})
+# A dead completion no consumer has ever claimed (delivery_attempts == 0) this long after it
+# completed has no consumer left even though its owner may still be running: retire its replay.
+# Well under _MAX_COMPLETION_REPLAY_AGE_S so a dead row never reaches the age-cap warning.
+_DEAD_COMPLETION_GRACE_S = 6 * 3600.0
 # A delivery claim older than this is abandoned and may be re-claimed.
 _CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
@@ -233,19 +239,33 @@ def _persist_completion(event: dict[str, Any], result: dict[str, Any]) -> None:
         return remote.complete(event, result)
     now = time.time()
     status = event.get("status", "completed")
-    # Dead work is delivered in-process only: the row keeps its result (still queryable) and its
-    # pending delivery state (the live parent's consumer must still be able to claim it), but
-    # carries no event payload, so no later process replays it. See _DEAD_COMPLETION_STATES.
-    replay = None if status in _DEAD_COMPLETION_STATES else json.dumps(event)
+    delegation_id = event["delegation_id"]
+    replay = json.dumps(event)
     with _DB_LOCK, _transaction() as conn:
+        owner = conn.execute("SELECT owner_pid, owner_started_at FROM async_delegations WHERE delegation_id=?",
+                             (delegation_id,)).fetchone()
+        # Dead work keeps its replay while its owner can still deliver it; it is retired here only when
+        # the owner is provably gone, i.e. nobody can ever claim it. See _DEAD_COMPLETION_STATES.
+        retire = status in _DEAD_COMPLETION_STATES and owner is not None and not _owner_can_consume(*owner)
+        # A retired row stays 'pending' with no payload: this process's in-process copy (queued by
+        # _push_completion_event) can still claim it, but no later process can replay it.
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                event_json=?, result_json=?, delivery_state='pending'
                WHERE delegation_id=?""",
-            (status, event.get("completed_at", now), now, replay, json.dumps(result), event["delegation_id"]))
-    if replay is None:
-        logger.info("Async delegation %s: terminal state %r; retiring its pending completion replay "
-                    "(delivered in-process only; result remains queryable)",
-                    event["delegation_id"], status)
+            (status, event.get("completed_at", now), now, None if retire else replay, json.dumps(result),
+             delegation_id))
+    if retire:
+        logger.info("Async delegation %s: terminal state %r and its owner process (pid %s) is gone; retiring "
+                    "its completion replay (result remains queryable)", delegation_id, status, owner[0])
+
+
+def _owner_can_consume(pid, started) -> bool:
+    """True unless the owning process is provably gone. This process always counts as alive; an
+    unavailable liveness probe proves nothing, so the row is kept."""
+    if pid is not None and int(pid) == os.getpid():
+        return True
+    alive = _owner_liveness()
+    return alive is None or alive(pid, started)
 
 
 def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
@@ -348,34 +368,40 @@ def recover_abandoned_delegations() -> int:
 
 
 def _retire_dead_replays(conn, now: float) -> int:
-    """Terminally retire pending completion replays left behind by a DEAD delegation.
+    """Terminally retire pending completion replays of DEAD delegations nobody can still consume.
 
-    Startup is the last chance to hand a previous process's completion to a consumer
-    (``restore_undelivered_completions``). For a delegation that ended without a result
-    (``_DEAD_COMPLETION_STATES``) nobody is left to want it, so re-offering it only parks the row in
-    the pending queue until ``_MAX_COMPLETION_REPLAY_AGE_S`` expires — the leak that kept
-    deleg_49a11cc8/deleg_4613deec pending for 72.3h/67.8h. Retire the replay now instead; ``state``
-    and ``result_json`` keep the outcome queryable.
+    A pending ``_DEAD_COMPLETION_STATES`` row (not under a live delivery claim) is marked
+    ``dropped`` when it completed more than ``_DEAD_COMPLETION_GRACE_S`` ago and was never claimed
+    (``delivery_attempts == 0``): its owner may be alive, but nothing has consumed it in hours
+    (the deleg_49a11cc8/deleg_4613deec shape that sat pending for 72.3h/67.8h).
 
-    A row whose owner process is still alive is left alone: that owner can still deliver its
-    in-process copy, and its pending row is the only durable record of that delivery.
+    Age, not owner liveness, is the trigger on purpose. A failure from the previous process -- a
+    child that died while the gateway was reloading -- must still be pushed once, and owner
+    liveness cannot tell that fresh row apart from a stale one that nobody wants. Only rows past
+    the grace window are retired, and the replay path below offers the rest.
+
+    ``state`` and ``result_json`` are untouched, so the outcome stays queryable
+    (``failed_delegations_for_session``, ``subagent.list``). Successful completions are never touched.
     """
-    alive = _owner_liveness()
-    if alive is None:
-        return 0  # cannot prove an owner is gone; never retire another process's live row
     retired = 0
-    rows = conn.execute("""SELECT delegation_id, state, owner_pid, owner_started_at
+    rows = conn.execute("""SELECT delegation_id, state, completed_at, updated_at, delivery_attempts
            FROM async_delegations
-           WHERE delivery_state='pending'
+           WHERE delivery_state='pending' AND state NOT IN ('running','finalizing')
              AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""", (now - _CLAIM_LEASE_S,)).fetchall()
-    for delegation_id, state, pid, started in rows:
-        if state not in _DEAD_COMPLETION_STATES or alive(pid, started):
+    for delegation_id, state, completed_at, updated_at, attempts in rows:
+        if state not in _DEAD_COMPLETION_STATES:
+            continue
+        age_basis = completed_at or updated_at
+        if not (attempts or 0) and age_basis and now - age_basis > _DEAD_COMPLETION_GRACE_S:
+            reason = (f"was never claimed in {(now - age_basis) / 3600.0:.1f}h "
+                      f"(grace {_DEAD_COMPLETION_GRACE_S / 3600.0:.1f}h)")
+        else:
             continue
         conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
                       delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'""", (now, delegation_id))
-        logger.info("Async delegation %s: terminal state %r with no owner left; retiring its pending "
-                    "completion replay (result remains queryable)", delegation_id, state)
+        logger.info("Async delegation %s: terminal state %r %s; retiring its pending completion replay "
+                    "(result remains queryable)", delegation_id, state, reason)
         retired += 1
     return retired
 
@@ -385,9 +411,9 @@ def restore_undelivered_completions(target_queue) -> int:
     Restored events are stamped ``restored=True`` in memory only: they came from a PREVIOUS
     process, so drains without an ownership filter must leave them for a consumer that can
     prove ownership. Rows older than ``_MAX_COMPLETION_REPLAY_AGE_S`` are terminally dropped
-    instead of replaying a turn nobody is waiting on. Rows whose delegation ended without a
-    result (``_DEAD_COMPLETION_STATES``) are retired here whether or not they are old: their
-    replay has no consumer left (``_retire_dead_replays``).
+    instead of replaying a turn nobody is waiting on. Pending rows of a delegation that ended
+    without a result (``_DEAD_COMPLETION_STATES``) are retired first when their owner is gone or
+    they went unclaimed past ``_DEAD_COMPLETION_GRACE_S`` (``_retire_dead_replays``).
 
     Every restored event is stamped ``restored=True`` (in-memory only — the stamp is added after the durable
     payload is deserialized and is never persisted). Restored events originate from a *previous* process, so
@@ -473,6 +499,9 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     with _orphan_lock:
         offered = {delegation_id for key, delegation_id in _offered if key == home}
     with _DB_LOCK, _transaction() as conn:
+        # Bound a never-claimed dead row by the grace window while this process runs, not only at the
+        # next start. Fresh failures (including one whose owner died mid-run) stay OFFERED below.
+        _retire_dead_replays(conn, now)
         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
                       owner_pid, owner_started_at, delivery_attempts
                FROM async_delegations
