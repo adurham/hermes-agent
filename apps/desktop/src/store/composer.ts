@@ -329,6 +329,9 @@ if (typeof window !== 'undefined' && hasDraftStash()) {
   if (adopted) {
     persistedDrafts = compactDraftStash(adopted, MAX_PERSISTED_DRAFTS, Date.now())
     writeDraftStash(persistedDrafts, SESSION_DRAFTS_STORAGE_KEY)
+  } else {
+    // A list another window left one write behind: rewrite it before its receipt expires.
+    healLegacyMirror(SESSION_DRAFTS_STORAGE_KEY)
   }
 }
 

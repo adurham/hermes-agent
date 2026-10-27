@@ -27,7 +27,10 @@
  * that copy was written there, and `adoptLegacyEdits` takes its changes (a key
  * gone from the list was sent or cleared there). Two windows writing in the
  * same instant can leave the list one write behind; the next stash write any
- * window hears about rewrites it (`healLegacyMirror`).
+ * window hears about rewrites it (`healLegacyMirror`). Until then the list is
+ * another window's mirror, not an older build's edit: every list this build
+ * writes leaves a receipt keyed by its hash just before it, so a list with a
+ * receipt is never adopted.
  */
 
 export const DRAFT_STASH_STORAGE_KEY = 'hermes:composer-drafts:v4'
@@ -51,6 +54,8 @@ interface StoredStash {
 // the cap bounds a long session's sends.
 const CLEARED_MARKER_TTL_MS = 10 * 60_000
 const MAX_CLEARED_MARKERS = 200
+const MIRROR_RECEIPT_PREFIX = 'hermes:composer-drafts:v3-mirror:'
+const MAX_MIRROR_RECEIPTS = 32
 
 /** a wins over b: saved later, or (same millisecond) by a fixed order so every window agrees. */
 export function newerEntry(a: StashEntry | undefined, b: StashEntry | undefined): boolean {
@@ -114,6 +119,55 @@ export function readDraftStash(): StashEntries {
   return entries
 }
 
+function hashText(text: string): string {
+  let a = 0x811c9dc5
+  let b = 0x9e3779b9
+
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index)
+    a = Math.imul(a ^ code, 0x01000193)
+    b = Math.imul(b ^ code, 0x5bd1e995)
+  }
+
+  return `${(a >>> 0).toString(36)}${(b >>> 0).toString(36)}`
+}
+
+const mirrorReceiptKey = (raw: string | null) => MIRROR_RECEIPT_PREFIX + hashText(raw ?? '')
+
+function readLegacyRaw(legacyKey: string): string | null | undefined {
+  try {
+    return window.localStorage.getItem(legacyKey)
+  } catch {
+    return undefined
+  }
+}
+
+/** Record that this build is about to write `raw` as the list; drop receipts past the marker lifetime or the cap. */
+function writeMirrorReceipt(raw: string | null, now: number): void {
+  const storage = window.localStorage
+
+  const receipts = Array.from({ length: storage.length }, (_, index) => storage.key(index))
+    .filter((key): key is string => key?.startsWith(MIRROR_RECEIPT_PREFIX) ?? false)
+    .map(key => [key, Number(storage.getItem(key))] as const)
+    .sort(([, a], [, b]) => b - a)
+
+  receipts.forEach(([key, at], index) => {
+    if (index >= MAX_MIRROR_RECEIPTS - 1 || !(now - at < CLEARED_MARKER_TTL_MS)) {
+      storage.removeItem(key)
+    }
+  })
+  storage.setItem(mirrorReceiptKey(raw), String(now))
+}
+
+/** The list as it stands is one this build wrote recently (an unfinished mirror), not an older build's. */
+function isOwnMirror(raw: string | null, now: number): boolean {
+  try {
+    return now - Number(window.localStorage.getItem(mirrorReceiptKey(raw)) ?? -Infinity) < CLEARED_MARKER_TTL_MS
+  } catch {
+    return false
+  }
+}
+
 /** The pre-v4 list (absent reads as empty); `null` when it is unreadable. */
 function parseLegacyDrafts(legacyKey: string): StashEntries | null {
   try {
@@ -169,7 +223,9 @@ function legacyChanges(entries: StashEntries, legacyKey: string): Map<string, st
  * there) as cleared markers, all stamped newest. `null` when nothing changed.
  */
 export function adoptLegacyEdits(entries: StashEntries, legacyKey: string, now: number): StashEntries | null {
-  if (readStoredStash().mirrored === false) {
+  const raw = readLegacyRaw(legacyKey)
+
+  if (readStoredStash().mirrored === false || raw === undefined || isOwnMirror(raw, now)) {
     return null
   }
 
@@ -228,11 +284,15 @@ function writeLegacyList(entries: StashEntries, legacyKey: string): boolean {
     }
   }
 
+  const raw = Object.keys(texts).length === 0 ? null : JSON.stringify(texts)
+
   try {
-    if (Object.keys(texts).length === 0) {
+    writeMirrorReceipt(raw, Date.now())
+
+    if (raw === null) {
       window.localStorage.removeItem(legacyKey)
     } else {
-      window.localStorage.setItem(legacyKey, JSON.stringify(texts))
+      window.localStorage.setItem(legacyKey, raw)
     }
 
     return true
@@ -244,8 +304,9 @@ function writeLegacyList(entries: StashEntries, legacyKey: string): boolean {
 /**
  * Write the legacy list, then the stash; `false` when storage refused the stash.
  * The list goes first so a stash write that fails leaves the list newer, and
- * the next boot adopts it; a list write that fails marks the stash `mirrored:
- * false`, so the next boot does not take the stale list for an older build's.
+ * the next boot adopts it (its receipt is dropped so it reads as unmirrored); a
+ * list write that fails marks the stash `mirrored: false`, so the next boot
+ * does not take the stale list for an older build's.
  */
 export function writeDraftStash(entries: StashEntries, legacyKey: string): boolean {
   const drafts: NonNullable<StoredStash['drafts']> = {}
@@ -270,6 +331,12 @@ export function writeDraftStash(entries: StashEntries, legacyKey: string): boole
 
     return true
   } catch {
+    try {
+      window.localStorage.removeItem(mirrorReceiptKey(window.localStorage.getItem(legacyKey)))
+    } catch {
+      // Storage refused everything: the next boot reads what is left.
+    }
+
     return false
   }
 }

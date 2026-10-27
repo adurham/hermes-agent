@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import type * as ComposerStore from './composer'
 import { clearSessionDraft, SESSION_DRAFTS_STORAGE_KEY, stashSessionDraft, takeSessionDraft } from './composer'
+import { DRAFT_STASH_STORAGE_KEY } from './composer-draft-stash'
 
 // Two windows share localStorage, but each reads its own copy and gets the
 // other's writes milliseconds later. A second module instance is the other
@@ -113,4 +114,28 @@ it('after a downgrade and re-upgrade, what the older build edited, sent and type
       'c typed there'
     ])
   }
+})
+
+it("a boot between two windows' unfinished mirror writes does not revive a sent draft", async () => {
+  // This window sends ALPHA while the other window, from a copy that still holds
+  // it, saves GAMMA: the other's legacy list lands last, this window's stash last.
+  window.localStorage.clear()
+  stashSessionDraft(ALPHA, 'sent here', [])
+  const beforeSend = snapshotStorage()
+  clearSessionDraft(ALPHA)
+  const afterSend = snapshotStorage()
+  restoreStorage(beforeSend)
+  vi.resetModules()
+  ;(await import('./composer')).stashSessionDraft(GAMMA, 'gamma there', [])
+  restoreStorage({ ...afterSend, ...snapshotStorage(), [DRAFT_STASH_STORAGE_KEY]: afterSend[DRAFT_STASH_STORAGE_KEY]! })
+
+  expect((await reopen()).takeSessionDraft(ALPHA).text).toBe('')
+})
+
+it('an unreadable legacy list leaves the stash drafts alone', async () => {
+  window.localStorage.clear()
+  stashSessionDraft(ALPHA, 'kept', [])
+  window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, '{not json')
+
+  expect((await reopen()).takeSessionDraft(ALPHA).text).toBe('kept')
 })
