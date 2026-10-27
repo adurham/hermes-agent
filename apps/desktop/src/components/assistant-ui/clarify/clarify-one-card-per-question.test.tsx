@@ -3,8 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { chatMessageArraysEquivalent } from '@/app/session/hooks/use-session-actions/message-equivalence'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
-import { chatMessageArraysEquivalent } from '@/app/session/hooks/use-session-actions/utils'
 import { I18nProvider } from '@/i18n'
 import { type ChatMessage, restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import { $settledClarifyResults, type ClarifyRequest, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
