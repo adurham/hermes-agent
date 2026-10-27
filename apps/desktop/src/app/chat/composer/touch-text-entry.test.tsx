@@ -25,8 +25,13 @@ function Editor({ touch }: { touch: boolean }) {
 
 const point = (x: number, y: number) => ({ clientX: x, clientY: y, identifier: 0 })
 
-function tap(editor: HTMLElement, from: [number, number], to: [number, number] = from) {
+function tap(editor: HTMLElement, from: [number, number], to: [number, number] = from, via?: [number, number]) {
   fireEvent.touchStart(editor, { touches: [point(...from)], changedTouches: [point(...from)] })
+
+  if (via) {
+    fireEvent.touchMove(editor, { touches: [point(...via)], changedTouches: [point(...via)] })
+  }
+
   fireEvent.touchEnd(editor, { touches: [], changedTouches: [point(...to)] })
 }
 
@@ -38,8 +43,10 @@ describe('composer text entry on a touch host (#145166)', () => {
     expect(editor.getAttribute('autocorrect')).toBe('on')
     expect(editor.getAttribute('spellcheck')).toBe('true')
 
-    // A swipe across the composer is a scroll, not a tap: focus stays put.
+    // A swipe across the composer is a scroll, not a tap, even one that
+    // comes back to where it started: focus stays put.
     tap(editor, [10, 10], [10, 60])
+    tap(editor, [10, 10], [10, 11], [10, 80])
     expect(editor.ownerDocument.activeElement).not.toBe(editor)
 
     tap(editor, [10, 10], [12, 11])

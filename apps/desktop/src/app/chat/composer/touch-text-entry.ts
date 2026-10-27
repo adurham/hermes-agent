@@ -19,6 +19,9 @@ export function composerTextEntryProps(touch: boolean) {
     : ({ autoCapitalize: 'off', autoCorrect: isMacPlatform() ? 'on' : 'off', spellCheck: false } as const)
 }
 
+const stillAt = (from: { x: number; y: number }, touch: { clientX: number; clientY: number }) =>
+  Math.hypot(touch.clientX - from.x, touch.clientY - from.y) <= TAP_MAX_MOVE_PX
+
 function placeCaretAt(editor: HTMLElement, x: number, y: number) {
   const range = document.caretRangeFromPoint?.(x, y)
   const selection = window.getSelection()
@@ -50,14 +53,20 @@ export function touchTapFocusHandlers() {
         return
       }
 
-      const still = Math.hypot(touch.clientX - began.x, touch.clientY - began.y) <= TAP_MAX_MOVE_PX
-
-      if (!still || event.timeStamp - began.at > TAP_MAX_MS) {
+      if (!stillAt(began, touch) || event.timeStamp - began.at > TAP_MAX_MS) {
         return
       }
 
       editor.focus()
       placeCaretAt(editor, touch.clientX, touch.clientY)
+    },
+    // A scroll that comes back near its start before lifting is still a scroll.
+    onTouchMove(event: ReactTouchEvent<HTMLElement>) {
+      const touch = event.touches[0]
+
+      if (start && (!touch || !stillAt(start, touch))) {
+        start = null
+      }
     },
     onTouchStart(event: ReactTouchEvent<HTMLElement>) {
       const touch = event.touches.length === 1 ? event.touches[0] : undefined
