@@ -114,25 +114,42 @@ export function readDraftStash(): StashEntries {
   return entries
 }
 
-/** The pre-v4 list: texts with no times, so every one counts as the oldest. */
-export function readLegacyDrafts(legacyKey: string): StashEntries {
+/** The pre-v4 list (absent reads as empty); `null` when it is unreadable. */
+function parseLegacyDrafts(legacyKey: string): StashEntries | null {
   try {
     const raw = window.localStorage.getItem(legacyKey)
-    const texts = raw ? (JSON.parse(raw) as Record<string, string>) : {}
+    const texts: unknown = raw ? JSON.parse(raw) : {}
+
+    if (!texts || typeof texts !== 'object' || Array.isArray(texts)) {
+      return null
+    }
 
     return new Map(
       Object.entries(texts)
-        .filter(([, text]) => typeof text === 'string' && text)
+        .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '')
         .map(([key, text]) => [key, { at: 0, text }])
     )
   } catch {
-    return new Map()
+    return null
   }
 }
 
-/** Keys whose text in the legacy list is not the stash's (a cleared marker reads as absent). */
-function legacyChanges(entries: StashEntries, legacyKey: string): Map<string, string | null> {
-  const legacy = readLegacyDrafts(legacyKey)
+/** The pre-v4 list: texts with no times, so every one counts as the oldest. */
+export function readLegacyDrafts(legacyKey: string): StashEntries {
+  return parseLegacyDrafts(legacyKey) ?? new Map()
+}
+
+/**
+ * Keys whose text in the legacy list is not the stash's (a cleared marker reads
+ * as absent); `null` when the list is unreadable, which proves nothing.
+ */
+function legacyChanges(entries: StashEntries, legacyKey: string): Map<string, string | null> | null {
+  const legacy = parseLegacyDrafts(legacyKey)
+
+  if (!legacy) {
+    return null
+  }
+
   const changes = new Map<string, string | null>()
 
   for (const key of new Set([...entries.keys(), ...legacy.keys()])) {
@@ -158,7 +175,7 @@ export function adoptLegacyEdits(entries: StashEntries, legacyKey: string, now: 
 
   const changes = legacyChanges(entries, legacyKey)
 
-  if (changes.size === 0) {
+  if (!changes?.size) {
     return null
   }
 
@@ -176,7 +193,7 @@ export function adoptLegacyEdits(entries: StashEntries, legacyKey: string, now: 
 export function healLegacyMirror(legacyKey: string): void {
   const entries = readDraftStash()
 
-  if (legacyChanges(entries, legacyKey).size > 0) {
+  if (legacyChanges(entries, legacyKey)?.size !== 0) {
     writeLegacyList(entries, legacyKey)
   }
 }
