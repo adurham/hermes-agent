@@ -40,3 +40,18 @@ async def test_a_reminder_the_app_set_on_the_old_conversation_fires_after_a_resu
     assert await asyncio.to_thread(deliver_to_local_chat, home, a, 'fire after restart') is None
     await async_wait_until(lambda: _noted(authority, a, 'fire after restart'), timeout=10, what='the note in A')
     assert authority.sessions[a].detached and sent[chat_before:] == []
+
+
+@pytest.mark.asyncio
+async def test_a_note_into_the_old_conversation_leaves_the_row_the_chats_new_ended_closed(monkeypatch):
+    """N2a: a reminder written into A as a note (no viewer, no turn) keeps the ``/new``'s end stamp, as
+    a note into a closed local session does; only a turn reopens the row."""
+    from gateway.session_cron import deliver_to_local_chat
+    _runner, _adapter, authority, _source, _sent, ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
+    a = ref_a.session_id
+    ran_before = len(ran)
+    assert await asyncio.to_thread(deliver_to_local_chat, Path(authority.db.db_path).parent, a, 'a reminder') is None
+    await async_wait_until(lambda: _noted(authority, a, 'a reminder'), timeout=10, what='the note in A')
+    await asyncio.wait_for(authority.sessions[a].task, 10)
+    assert ran[ran_before:] == []
+    assert authority.db.get_session(a)['end_reason'] == 'session_reset'

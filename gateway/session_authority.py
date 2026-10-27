@@ -1097,10 +1097,11 @@ class SessionAuthority:
                 check_api_turn(self, ref, first['payload'])
                 await tracked_write(self, partial(reopen_api_session, self, ref))
             elif first is not None and live.detached:
-                # The chat's /new ended its row; the app's turn makes it live again, as an API row's does.
-                from gateway.session_api import reopen_api_session
-                from gateway.session_runtime_workers import tracked_write
-                await tracked_write(self, partial(reopen_api_session, self, ref))
+                # The chat's /new ended its row; the app's turn makes it live again, as an API row's
+                # does. A note leaves it closed, as a local one's does (session_completion_notes).
+                from gateway.session_completion_notes import noted_completion, reopen_for_turn
+                if not noted_completion(first):
+                    await reopen_for_turn(self, ref)
             if first is not None and self._classic_turn_holds(live.route):
                 # A classic turn (fallback wake, CLI handoff, legacy resume) holds the route's slot:
                 # a claim now would hand this row to its busy path and settle it unrun. The head
