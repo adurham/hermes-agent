@@ -7,7 +7,7 @@ import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $notifications, clearNotifications } from '@/store/notifications'
-import { $busy, setActiveSessionId, setMessages } from '@/store/session'
+import { $awaitingResponse, $busy, setActiveSessionId, setMessages } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID } from './prompt-actions-harness'
@@ -476,6 +476,61 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     } as never)
 
     expect(submits).toHaveLength(1)
+    expect($notifications.get().some(n => n.kind === 'error')).toBe(true)
+  })
+
+  it.each([
+    ['fails', new JsonRpcGatewayError('generation failed', { code: 5035 })],
+    ['hits a stale target', new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })]
+  ])('an edit whose submit recovers the runtime and then %s leaves the composer idle', async (_label, failure) => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 }
+    ]
+
+    setActiveSessionId(RUNTIME_SESSION_ID)
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', seed as never))
+    setMessages(seed as never)
+
+    // The first runtime is gone: the submit resumes the stored session under a new runtime id,
+    // which moves the on-screen session to it, and the resent submit fails there.
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'recovered-runtime' } as never
+      }
+
+      if (method === 'prompt.submit') {
+        throw params?.session_id === RUNTIME_SESSION_ID ? new Error('session not found') : failure
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={async () => undefined}
+        seedMessages={seed}
+        storedSessionId="stored"
+      />
+    )
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+
+    expect(handle!.activeSessionIdRef.current).toBe('recovered-runtime')
+    expect($busy.get()).toBe(false)
+    expect($awaitingResponse.get()).toBe(false)
     expect($notifications.get().some(n => n.kind === 'error')).toBe(true)
   })
 

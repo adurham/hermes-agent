@@ -1299,11 +1299,11 @@ export function usePromptActions({
 
   // Roll an optimistic edit/truncation back to *messages* (the original history) so the UI stays in
   // sync with what's persisted instead of stranding a partial timeline; without *messages* only the
-  // busy state is cleared.
+  // busy state is cleared. *ownsForeground* is false when the foreground flags now belong to another
+  // session (the user switched away during a confirm).
   const rollBackEdit = useCallback(
-    (sessionId: string, messages?: ChatMessage[]) => {
-      // The foreground flags belong to whichever session is on screen now.
-      if (activeSessionIdRef.current === sessionId) {
+    (sessionId: string, messages?: ChatMessage[], ownsForeground = true) => {
+      if (ownsForeground) {
         setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
@@ -1318,7 +1318,7 @@ export function usePromptActions({
         ...(messages ? { messages } : {})
       }))
     },
-    [activeSessionIdRef, busyRef, updateSessionState]
+    [busyRef, updateSessionState]
   )
 
   // Stale target after compression/resume drift (the cached rowId and ordinal address the
@@ -1375,8 +1375,9 @@ export function usePromptActions({
           }
 
           // Nothing was cut and the refresh already replaced the optimistic edit: keep whatever
-          // history the session holds now and only drop the busy arm.
-          rollBackEdit(sessionId)
+          // history the session holds now and only drop the busy arm. A switch during the confirm
+          // leaves the foreground flags to the session now on screen.
+          rollBackEdit(sessionId, undefined, activeSessionIdRef.current === sessionId)
 
           return 'done'
         }
