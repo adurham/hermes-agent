@@ -166,6 +166,8 @@ _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
+# ``git add`` retries while excluding newly reported unreadable paths.
+_MAX_STAGE_ROUNDS = 5
 
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')
@@ -301,12 +303,107 @@ def _gitlink_paths(ls_tree_z: str) -> list[str]:
     ]
 
 
-def _uncaptured_note(nested_repos: list[str]) -> str:
-    """Checkpoint-message suffix naming nested repositories whose files were
-    not captured, so every /rollback listing discloses it."""
+def _uncaptured_note(nested_repos: list[str], what: str = "nested git repos") -> str:
+    """Checkpoint-message suffix naming paths whose files were not captured
+    (nested repositories, unreadable paths), so every /rollback listing
+    discloses it."""
     shown = ", ".join(nested_repos[:3])
     more = f" (+{len(nested_repos) - 3})" if len(nested_repos) > 3 else ""
-    return f" [nested git repos not captured: {shown}{more}]"
+    return f" [{what} not captured: {shown}{more}]"
+
+
+# ``git add`` diagnostics (LC_ALL=C) naming a work-tree path this user cannot
+# read. Group 1 is the path; ``_PARENT`` patterns name a file whose *parent*
+# directory is unsearchable, so the parent is what has to be skipped.
+_UNREADABLE_PATTERNS = (
+    re.compile(r"""^error: open\("(.+)"\): Permission denied$"""),
+    re.compile(r"^warning: could not open directory '(.+?)/?': Permission denied$"),
+    # A tracked path git can no longer lstat while refreshing the index.
+    re.compile(r"^(?!(?:error|warning|fatal): )(.+): Permission denied$"),
+)
+_UNREADABLE_PARENT_PATTERNS = (
+    re.compile(r"^fatal: unable to stat '(.+)': Permission denied$"),
+)
+
+
+def _unreadable_paths(stderr: str) -> list[str]:
+    """Work-tree-relative paths ``git add`` reported as permission-denied."""
+    found: list[str] = []
+    for line in stderr.splitlines():
+        line = line.strip()
+        path = None
+        for pattern in _UNREADABLE_PATTERNS:
+            m = pattern.match(line)
+            if m:
+                path = m.group(1)
+                break
+        else:
+            for pattern in _UNREADABLE_PARENT_PATTERNS:
+                m = pattern.match(line)
+                if m:
+                    path = PurePosixPath(m.group(1)).parent.as_posix()
+                    break
+        if not path or path == "." or PurePosixPath(path).is_absolute() \
+                or ".." in PurePosixPath(path).parts:
+            continue
+        if path not in found:
+            found.append(path)
+    return found
+
+
+def _stage_all(
+    store: Path, working_dir: str, index_file: Path,
+) -> tuple[bool, list[str], str]:
+    """``git add -A`` the work tree into ``index_file``, skipping unreadable paths.
+
+    One path this user cannot read (a root-owned 0600 file, an unsearchable
+    directory) makes ``git add -A`` abort with ``fatal: adding files failed``
+    and stage nothing at all. Such paths are identified from git's own
+    diagnostics, excluded, and dropped from the index (a stale entry would be
+    checked out over a path that cannot be written), so everything else is
+    still staged. Any other failure — index lock, corrupt store, disk full —
+    names no unreadable path and is still returned as a failure.
+
+    Returns ``(ok, skipped_paths, stderr)``.
+    """
+    skipped: list[str] = []
+    ok, err = False, ""
+    # Diagnostics are parsed, so pin them to the untranslated C locale.
+    c_locale = {"LC_ALL": "C"}
+    with tempfile.TemporaryDirectory(prefix="stage-", dir=store) as scratch:
+        spec_file = Path(scratch) / "pathspec"
+        args = ["add", "-A"]
+        # Each retry can only add paths, and git reports every unreadable
+        # path it met in one pass, so this terminates in a couple of rounds.
+        for _ in range(_MAX_STAGE_ROUNDS):
+            ok, _, err = _run_git(
+                args, store, working_dir,
+                timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+                allowed_returncodes={128}, extra_env=c_locale,
+            )
+            new = [p for p in _unreadable_paths(err) if p not in skipped]
+            skipped.extend(new)
+            if ok or not new:
+                break
+            specs = ["."] + [f":(exclude,literal){p}" for p in skipped]
+            spec_file.write_bytes(b"".join(os.fsencode(s) + b"\0" for s in specs))
+            args = ["add", "-A", f"--pathspec-from-file={spec_file}", "--pathspec-file-nul"]
+        if not ok:
+            logger.error("Checkpoint git add failed in %s: %s", working_dir, err)
+            return False, skipped, err
+        if skipped:
+            spec_file.write_bytes(b"".join(os.fsencode(p) + b"\0" for p in skipped))
+            _run_git(
+                ["rm", "-r", "--cached", "-f", "-q", "--ignore-unmatch",
+                 f"--pathspec-from-file={spec_file}", "--pathspec-file-nul"],
+                store, working_dir, index_file=index_file,
+                extra_env={**c_locale, "GIT_LITERAL_PATHSPECS": "1"},
+            )
+            logger.warning(
+                "Checkpoint of %s skipped %d unreadable path(s): %s",
+                working_dir, len(skipped), ", ".join(skipped),
+            )
+    return True, skipped, err
 
 
 def _project_meta_path(store: Path, dir_hash: str) -> Path:
@@ -878,8 +975,7 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage the current tree so the name-only diff sees new files too.
-        _run_git(["add", "-A"], store, abs_dir,
-                 timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        _stage_all(store, abs_dir, index_file)
         ok, names_out, err = _run_git(
             ["diff", "--name-only", "-z", commit_hash, "--cached"],
             store, abs_dir, index_file=index_file,
@@ -1059,8 +1155,7 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
 
         # Stage current state into the per-project index to compare.
-        _run_git(["add", "-A"], store, abs_dir,
-                 timeout=_GIT_TIMEOUT * 2, index_file=index_file)
+        _stage_all(store, abs_dir, index_file)
 
         ok_stat, stat_out, _ = _run_git(
             ["diff", "--stat", commit_hash, "--cached"],
@@ -1469,10 +1564,7 @@ class CheckpointManager:
         # via ``core.bigFileThreshold`` is not what we want — instead, we
         # rely on the exclude file for broad patterns and post-stage prune
         # any path whose size exceeds max_file_size_mb.
-        ok, _, err = _run_git(
-            ["add", "-A"], store, working_dir,
-            timeout=_GIT_TIMEOUT * 2, index_file=index_file,
-        )
+        ok, unreadable, err = _stage_all(store, working_dir, index_file)
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
@@ -1527,12 +1619,17 @@ class CheckpointManager:
         if nested_repos:
             logger.info("Checkpoint of %s does not capture nested git repositories: %s",
                         working_dir, ", ".join(nested_repos))
+        if nested_repos or unreadable:
             # Listings read the subject (%s), which ends at the first blank
             # line, so keep a multiline reason (a terminal command) on one
             # line or the note falls outside every listing.
             reason = " ".join(
                 line.strip() for line in reason.splitlines() if line.strip()
-            ) + _uncaptured_note(nested_repos)
+            )
+            if nested_repos:
+                reason += _uncaptured_note(nested_repos)
+            if unreadable:
+                reason += _uncaptured_note(unreadable, "unreadable paths")
 
         # Build commit (parent = current ref tip, if any).
         commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]

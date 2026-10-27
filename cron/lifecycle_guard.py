@@ -301,6 +301,21 @@ _PIPE_TO_INTERPRETER = re.compile(
 # Bytes sniffed before reading a referenced file in full (see _BINARY_MAGICS).
 _BINARY_SNIFF_BYTES = 4096
 
+# Prefix a shell inspects before refusing a no-shebang file as binary (bash's check_binary_file
+# and dash both stop at 80 bytes): a NUL before the first newline in it means no shell runs the
+# file as a script. See _is_unexecutable_data_file.
+_SHELL_BINARY_CHECK_BYTES = 80
+
+# Suffixes that name an interpreted script; such a file is never classified as inert data even
+# when it carries no execute bit (see _is_unexecutable_data_file). Belt-and-braces over the NUL
+# rule, so err wide.
+_SCRIPT_SUFFIXES = frozenset({
+    ".sh", ".bash", ".zsh", ".ksh", ".dash", ".csh", ".tcsh", ".fish", ".command",
+    ".py", ".pyw", ".pyc", ".pl", ".pm", ".rb", ".php", ".lua", ".tcl", ".awk", ".sed",
+    ".js", ".mjs", ".cjs", ".ts", ".ps1", ".bat", ".cmd",
+    ".applescript", ".scpt", ".scptd", ".osa", ".jxa",
+})
+
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
 
 # Wrappers that hand execution to their argument tail: the real command sits further right, so a
@@ -918,18 +933,40 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
         yield from _resolved_or_nothing(executable, cwd)
 
 
-def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
-    original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
-    a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
+def _references_with_mode_at(
+    segment: list[str], index: int, cwd: Optional[str]
+) -> Iterator[tuple[Path, bool]]:
+    """``(path, direct)`` for each script the token at *index* executes. ``direct`` is True only
+    for a path in command position (run via ``execve``, so it needs an execute bit); a script read
+    by a shell (``bash x``, ``. x``, ``source x``) runs whatever its mode is."""
+    if index < len(segment):
+        name = _executable_name(segment[index])
+        direct = name not in {".", "source"} and name not in _SHELL_EXECUTABLES
+        for path in _references_at(segment, index, cwd):
+            yield path, direct
+
+
+def _iter_referenced_shell_scripts_with_mode(
+    command: str, *, cwd: Optional[str] = None
+) -> Iterator[tuple[Path, bool]]:
+    """Yield ``(path, direct)`` for scripts executed directly or through a POSIX shell. Each
+    segment is read at the original token AND at the peeled wrapper target — additive on purpose:
+    peeling must never REMOVE a reference (a local ``./timeout`` is a script, not the coreutils
+    wrapper)."""
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
             continue
-        yield from _references_at(segment, index, cwd)
+        yield from _references_with_mode_at(segment, index, cwd)
         peeled = _peel_transparent_prefixes(segment, index)
         if peeled != index:
-            yield from _references_at(segment, peeled, cwd)
+            yield from _references_with_mode_at(segment, peeled, cwd)
+
+
+def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
+    """Yield scripts executed directly or through a POSIX shell (paths only)."""
+    for path, _direct in _iter_referenced_shell_scripts_with_mode(command, cwd=cwd):
+        yield path
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -1052,6 +1089,45 @@ def _read_referenced_script_unlocked(
     return data.decode("utf-8", errors="replace"), False
 
 
+def _is_unexecutable_data_file(path: Path) -> bool:
+    """True when *path* is provably a DATA file that cannot run when named in command position, so
+    an oversized one is "nothing to scan" rather than a fail-closed script. ALL must hold:
+
+    * a regular, non-live-SQLite local file (same locked open as the script reader);
+    * no execute bit at all — ``execve`` refuses it, so the shell never runs it directly;
+    * no script-shaped suffix (``_SCRIPT_SUFFIXES``) and no ``#!`` shebang — a script stays a
+      script even before a later ``chmod +x`` in the same command;
+    * a NUL byte before the first newline within the first ``_SHELL_BINARY_CHECK_BYTES``: the
+      window every POSIX shell's ENOEXEC fallback inspects before refusing a file as "cannot
+      execute binary file" (bash 3.2 and dash stop looking at byte 80), so even after a later
+      ``chmod +x`` in the same command no shell runs it as a script.
+
+    Only consulted for DIRECT references; a file a shell reads (``bash x``, ``. x``) runs whatever
+    its mode, so it stays fail-closed. Any doubt (unreadable, cloud, live SQLite) is False.
+    """
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+
+    if _on_cloud_path(path) or path.suffix.lower() in _SCRIPT_SUFFIXES:
+        return False
+    try:
+        with offline_file_access(path, what="classify referenced data file"):
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    return False
+                if metadata.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+                    return False
+                prefix = os.read(descriptor, _BINARY_SNIFF_BYTES)
+            finally:
+                os.close(descriptor)
+    except (LiveConnectionError, OSError, ValueError):
+        return False
+    if prefix.startswith(b"#!"):
+        return False
+    return b"\x00" in prefix[:_SHELL_BINARY_CHECK_BYTES].split(b"\n", 1)[0]
+
+
 def _sanitize_remote_script_text(
     text: Optional[str], *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
@@ -1126,11 +1202,17 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    candidates = [
+        (path, executed, direct)
+        for path, direct in _iter_referenced_shell_scripts_with_mode(walk_command, cwd=cwd)
+    ]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        candidates += [
+            (path, False, direct)
+            for path, direct in _iter_referenced_shell_scripts_with_mode(command, cwd=cwd)
+        ]
 
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed, direct in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:
@@ -1152,7 +1234,10 @@ def _contains_unsafe_gateway_action(
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
-            if candidate_executed:
+            # A path in command position only runs via execve: an oversized file that provably
+            # cannot execute (no x bit, no script suffix/shebang, shell-refused binary prefix) is
+            # an input such as `LogReader('/x/rlog.zst')`, not a script — nothing to scan.
+            if candidate_executed and not (direct and _is_unexecutable_data_file(script_path)):
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
             continue
         if script_text is None and read_remote_script is not None:

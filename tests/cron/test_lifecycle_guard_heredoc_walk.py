@@ -38,8 +38,11 @@ def test_allowlisted_name_function_heredoc_stays_visible(tmp_path):
 
 
 def test_unquoted_heredoc_body_path_still_walked(tmp_path):
-    """An expansion-capable body is not provably inert: the walk still sees it and fails closed."""
-    big = _big_file(tmp_path)
+    """An expansion-capable body is not provably inert: the walk still sees it and fails closed.
+    The file is oversized TEXT (runnable after a chmod): an all-NUL non-executable blob is
+    provably inert data and is exempt (see test_lifecycle_guard_datafiles.py)."""
+    big = tmp_path / "big_script"
+    big.write_text("echo hi\n" * (256 * 1024), encoding="utf-8")
     assert guard(f"cat > /tmp/x <<EOF\n{big}\nEOF", cwd=str(tmp_path)) is True
 
 
