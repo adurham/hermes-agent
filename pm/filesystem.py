@@ -125,9 +125,13 @@ def lock_path(path: Path, *, timeout: float | None, create_dir: bool = False) ->
         try:
             fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         except FileNotFoundError:
-            if create_dir:
-                continue  # parent removed between mkdir and open
-            raise
+            # Only a parent removed between mkdir and open is worth another try; anything else
+            # (a dangling symlink at *path*) fails the same way every time.
+            if not create_dir or path.parent.is_dir():
+                raise
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            continue
         try:
             remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
             if not lock_fd(fd, wait=True, timeout=remaining):
@@ -139,6 +143,8 @@ def lock_path(path: Path, *, timeout: float | None, create_dir: bool = False) ->
             os.close(fd)
             raise
         os.close(fd)
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
 
 
 def _same_file(fd: int, path: Path) -> bool:
