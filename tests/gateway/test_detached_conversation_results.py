@@ -6,11 +6,12 @@ DiscordAdapter (``send`` recorded), SessionAuthority, drain and SessionStore ove
 agent run is the stand-in of ``test_authority_lane_moves_on``.
 """
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
 
-from tests.gateway.test_authority_lane_moves_on import _chat
+from tests.gateway.test_authority_lane_moves_on import _app_turn, _chat
 from tests.gateway.test_detached_conversation_lifecycle import _moved_on
 from tests.waiting import async_wait_until
 
@@ -55,3 +56,40 @@ async def test_a_note_into_the_old_conversation_leaves_the_row_the_chats_new_end
     await asyncio.wait_for(authority.sessions[a].task, 10)
     assert ran[ran_before:] == []
     assert authority.db.get_session(a)['end_reason'] == 'session_reset'
+
+
+def _chat_started(kind, lane, a):
+    """A result of work the chat's own turn on A started before its ``/new``: pinned to A, on the chat's route."""
+    if kind == 'delegation':
+        return {'type': 'async_delegation', 'delegation_id': 'deleg-1', 'session_key': lane,
+                'parent_session_id': a, 'dispatched_at': 1.0, 'summary': 'delegated result', 'status': 'completed'}
+    return {'type': 'completion', 'event_id': 'c-1', 'session_id': 'proc_chat', 'started_at': 1000.0,
+            'session_key': lane, 'parent_session_id': a, 'command': 'make', 'exit_code': 0, 'output': 'built',
+            'platform': 'discord', 'chat_id': '42', 'chat_type': 'dm', 'user_id': '42', 'emitted_at': time.time()}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['delegation', 'process'])
+async def test_a_result_the_chat_started_on_the_old_conversation_lands_in_it_once_the_app_used_it(monkeypatch, kind):
+    """N2b: the app's turn reopened A after the chat's ``/new``. A result of work the chat's turn on A
+    started lands in A once (a note, no viewer), never in the chat, and is not refused on every retry."""
+    import tools.async_delegation as ad
+    runner, _adapter, authority, _source, sent, ran, _gates, lane, ref_a = await _moved_on(monkeypatch)
+    a = ref_a.session_id
+    assert await _app_turn(authority, ref_a, 'app on A') == ('terminal', 'completed')
+    evt = _chat_started(kind, lane, a)
+    chat_before, ran_before = len(sent), len(ran)
+    if kind == 'delegation':
+        ad._persist_dispatch(evt)
+        ad._persist_completion(evt, {'status': 'completed', 'summary': evt['summary']})
+        results = [await runner._deliver_completion_notification('delegated result', dict(evt)) for _ in range(2)]
+        assert results == [True, None]
+        assert ad.get_durable_delegation('deleg-1')['delivery_state'] == 'delivered'
+        text = 'delegated result'
+    else:
+        assert await runner._inject_watch_notification('[process proc_chat finished]', evt) is True
+        assert '_refusal_permanent' not in evt
+        text = '[process proc_chat finished]'
+    await async_wait_until(lambda: _noted(authority, a, text), timeout=10, what='the result in A')
+    assert ran[ran_before:] == []
+    assert sent[chat_before:] == [], f'the chat got the old conversation\'s result: {sent[chat_before:]}'

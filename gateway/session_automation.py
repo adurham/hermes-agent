@@ -28,7 +28,8 @@ def completion_admission(runner, event):
     authority = active_authority(runner)
     if authority is None:
         return None
-    entry = runner.session_store.lookup_by_session_key(str(event.get('session_key') or ''))
+    from gateway.session_detached import route_entry
+    entry = route_entry(authority, str(event.get('session_key') or ''))
     if entry is None:
         return None
     from hermes_state_runtime import list_session_admissions
@@ -46,10 +47,11 @@ async def deliver_heartbeat(runner, event):
     way in withdraws it once it is in, and a tick checked after it sees it. True when admitted, None
     to drop it, False to requeue the original event."""
     from gateway.run import _format_gateway_process_notification
+    from gateway.session_detached import follow_detached_pin
     async with _heartbeat_lock(runner):
         for _attempt in range(2):
             try:
-                prepared = await prepare_heartbeat(runner, event)
+                prepared = await prepare_heartbeat(runner, await follow_detached_pin(runner, event))
             except Exception:
                 # One tick's failure must not drop the rest of the drained events.
                 logger.exception("Heartbeat preparation error; the tick is requeued")

@@ -913,9 +913,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         gateway route or a refused notice pinned to a permanently-gone session (``_watch_pin_gone``).
         Not transactional: a crash after acceptance can replay (at-least-once).
         """
+        from gateway.session_detached import follow_detached_pin
         from gateway.session_local_recovery import restore_completion_route
         from gateway.wake import WakeNotAccepted, adapter_supports_push, admit_internal_event
         restore_completion_route(self, str(evt.get("session_key") or ""))  # watch notices and heartbeats too
+        queued, evt = evt, await follow_detached_pin(self, evt)  # the drain reads its verdict off *queued*
         source = await asyncio.to_thread(self._build_process_event_source, evt)
         if not source:
             # API-server sessions bind the RAW X-Hermes-Session-Id key, not a structured ``agent:...`` key.
@@ -998,7 +1000,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             if pin_gone and not raise_not_accepted:
                 return None
             if not raise_not_accepted:
-                evt["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
+                queued["_refusal_permanent"] = exc.permanent  # the drain counts only permanent refusals
             logger.warning("Watch notification not admitted for %s chat=%s: %s",
                            platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
@@ -1272,6 +1274,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
         restore_completion_route(self, str(evt.get("session_key") or ""))
+        from gateway.session_detached import follow_detached_pin
+        evt = await follow_detached_pin(self, evt)
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False

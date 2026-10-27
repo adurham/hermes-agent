@@ -189,6 +189,46 @@ def own_detached_key(key, session_id) -> bool:
     return isinstance(key, str) and detached_session_id(key) == session_id
 
 
+async def follow_detached_pin(runner, evt):
+    """*evt* (a background result) on its pinned conversation's detached key, else *evt* itself.
+
+    The chat's turn on a conversation started it, and the chat has moved on since, but the
+    conversation is still open: the app used it after the chat's ``/new`` (a row the ``/new`` left
+    ended stays a boundary, and its result is dropped once). The result lands in that conversation,
+    for its app viewers, never in the chat's current one, and is never refused there on every retry
+    (#141562). A conversation not mounted (a restart) mounts off the chat first."""
+    key = str(evt.get('session_key') or '')
+    pinned = str(evt.get('parent_session_id') or '').strip()
+    from gateway.session_authorities import all_authorities
+    if not key or not pinned or detached_session_id(key) or not all_authorities(runner):
+        return evt
+    store = runner.session_store
+    authority = _route_authority(runner, store, key)
+    entry = store.lookup_by_session_key(key) if authority is not None else None
+    if authority is None or entry is None:
+        return evt
+    verdict, _owner, target = await runner._classify_completion_owner(pinned, key)
+    session_id = authority.logical_owner(target) if verdict == 'deliver' else None
+    if session_id is None or session_id == authority.logical_owner(entry.session_id):
+        return evt
+    row = authority.db.get_session(target)
+    if row is None or row.get('ended_at'):
+        return evt
+    if session_id not in authority.sessions:
+        from gateway.session_authorities import owner_scope
+        from gateway.session_route_recovery import restore_routed_session
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            with owner_scope(authority):
+                restore_routed_session(authority, session_id)
+        except RuntimeStoreError:  # draining: the drain retries it
+            return evt
+    live = authority.sessions.get(session_id)
+    if live is None or live.route != detached_key(key, session_id):
+        return evt
+    return {**evt, 'session_key': live.route}
+
+
 def detached_live_source(runner, key):
     """The source of the conversation still live on detached key *key*, else None."""
     from gateway.session_authorities import active_authority
