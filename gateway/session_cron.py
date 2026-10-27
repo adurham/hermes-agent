@@ -43,13 +43,21 @@ async def _admit_local_delivery(authority, chat_id, text, metadata):
     from gateway.session_authorities import owner_scope
     from gateway.session_automation import admit_route_wake
     from gateway.session_local_recovery import local_adapter_map, restore_local_session
+    from gateway.session_route_recovery import mountable, restore_routed_session
     with owner_scope(authority):
         live = authority.sessions.get(chat_id)
-        if live is None or not live.detached:  # a conversation its chat moved past is live in the apps
+        if live is None and mountable(authority, chat_id):
+            # A messaging conversation a reminder set from the app names (gateway/session_detached.py),
+            # not mounted (a restart): it mounts off the chat, or on it when the chat names it again.
+            restore_routed_session(authority, chat_id)
+        elif live is None or live.source is None or live.source.platform == Platform.LOCAL:
             restore_local_session(authority, chat_id)  # a chat closed before this fire, as for completions
         source = authority.sessions[chat_id].source
-        return await admit_route_wake(authority.runner, local_adapter_map(authority)[Platform.LOCAL], source,
-                                      text, 'cron', metadata)
+        # Off the chat its app viewers take it (as a note); back on the chat (its /resume) it is that
+        # conversation's own turn there.
+        adapter = (local_adapter_map(authority)[Platform.LOCAL] if source.platform == Platform.LOCAL
+                   else authority.runner._adapter_for_source(source))
+        return await admit_route_wake(authority.runner, adapter, source, text, 'cron', metadata)
 
 
 def deliver_to_local_chat(home, chat_id, text, *, diagnostic=False):
