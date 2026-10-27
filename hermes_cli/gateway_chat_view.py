@@ -26,8 +26,8 @@ def _pending_preview(text):
     return f'    "{line}"' if line else ""
 
 
-_UNKNOWN_OUTCOME = ("Hermes restarted before this turn finished, so how far it got is unknown. "
-                    "Resume this session to check, then type /discard to drop it. "
+_UNKNOWN_OUTCOME = ("Hermes couldn't confirm how this turn ended (usually because it restarted mid-turn). "
+                    "Resume this session and use the /discard <id> command it shows to drop the turn. "
                     "Don't send the same message again until you've checked.")
 
 _BLOCKING_CONTROL_EVENTS = frozenset({
@@ -45,9 +45,9 @@ def pending_lines(pending):
     lines = []
     if lost:
         one = len(lost) == 1
-        lines.append("⏸ This chat is paused. Hermes restarted while "
-                     + ("a turn was running, so it never finished:" if one
-                        else f"{len(lost)} turns were running, so they never finished:"))
+        lines.append("⏸ This chat is paused. Hermes couldn't confirm how "
+                     + ("the last turn ended" if one else f"{len(lost)} turns ended")
+                     + " (usually because it restarted mid-turn):")
         why = (f"  Hermes won't re-run {'it' if one else 'them'} by itself, since {'it' if one else 'they'} "
                "may already have done part of the work.")
         if one:
@@ -469,7 +469,7 @@ class GatewayChatView:
             self.completions[admission] = {"outcome": "unknown", "text": _UNKNOWN_OUTCOME}
             return None
         if own == "queued" and self.unknown_admissions():
-            return ("This chat is paused behind a turn that never finished when Hermes restarted. "
+            return ("This chat is paused behind a turn whose ending Hermes couldn't confirm. "
                     "Your message is saved and will run once you resume this session and /discard "
                     "that turn; don't send it again.")
         if self.prompts and (own or not self.gaps):  # a control blocks only a turn still pending
