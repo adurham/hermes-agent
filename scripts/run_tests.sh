@@ -77,38 +77,12 @@ _account_tool_store() {
   _store_has_pins "$account/.hermes/tools" || return 1
   printf '%s\n' "$account"
 }
-# facts.json selects ONE entry per package, not one per version: provisioning
-# a checkout with other pins re-points the account's own runtime at them and
-# pulls the selection from under a concurrent run on the store's pins. So
-# share only when every tool `pm install` would provision here (cmd_install's
-# roots, defaults and the venv's deps) is already recorded at this checkout's
-# pins. Read-only: no lock, no install, no bytecode; any unreadable record or
-# error means "do not share".
+# Read-only check that the store already records this checkout's pins
+# (scripts/tool_store_pins.py says why and what counts).
 _store_has_pins() {
   local python
   python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")" || return 1
-  PYTHONHOME= "$python" -I -B - "$REPO_ROOT" "$1" >/dev/null 2>&1 <<'PY'
-import sys
-from pathlib import Path
-
-repo, store = sys.argv[1], Path(sys.argv[2])
-sys.path.insert(0, repo)
-from pm.defaults import default_packages
-from pm.lock import Facts, Lockfile
-from pm.package import StatePackage
-from pm.registry import tool_roots, walk
-from pm.store import current_target
-
-lock = Lockfile(Path(repo, "pm", "lock.json"))
-facts = Facts(store / "facts.json", strict=True)
-names, target = lock.names(), current_target()
-for package in walk(tool_roots(names) + default_packages(names) + ["venv"]):
-    if isinstance(package, StatePackage):
-        continue
-    shas = tuple(a["sha256"] for a in lock.artifacts(package.name, target))
-    if not facts.installed(package.name, lock.version(package.name), store, (target, shas) if shas else None):
-        sys.exit(1)
-PY
+  PYTHONHOME= "$python" -I -B "$REPO_ROOT/scripts/tool_store_pins.py" "$REPO_ROOT" "$1" >/dev/null 2>&1
 }
 if _account="$(_account_tool_store)"; then
   export HERMES_RUNTIME_DIR="$_account/.hermes/tools"
