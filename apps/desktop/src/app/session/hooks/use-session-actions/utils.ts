@@ -71,6 +71,12 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 import type { ClientSessionState } from '../../../types'
 
 import {
+  committedReplyCovers,
+  isStrictAnswerTextExtension,
+  pageReplyCommittingLiveRow,
+  replyAfterLastTool
+} from './committed-reply'
+import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
   persistedTurnsEquivalent,
@@ -108,45 +114,6 @@ function hasStructuralParts(message: ChatMessage): boolean {
  */
 function isLiveTailRow(message: ChatMessage): boolean {
   return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
-}
-
-/**
- * True when `next` is a pure forward extension of the previous *answer* text.
- * Empty previous answer never accepts a dump as an extension — that is how the
- * mid-turn inflight flat dump used to sandwich structured rows (#76444).
- */
-export function isStrictAnswerTextExtension(next: string, previous: string): boolean {
-  const n = next.trim()
-  const p = previous.trim()
-
-  if (!p || !n) {
-    return false
-  }
-
-  return n.startsWith(p)
-}
-
-/**
- * Whether a committed bubble already holds the reply a stale live snapshot was
- * streaming. History folds a tool turn's narration, tools and answer into one
- * bubble while the snapshot carries the turn's whole text, so compare the
- * bubble's text with whitespace collapsed. The bubble must end in a reply: a
- * mid-turn commit ends on a tool call and the turn is still running.
- */
-function committedReplyCovers(message: ChatMessage, snapshot: string): boolean {
-  const text = message.parts
-    .flatMap(part => (part.type === 'text' ? [part.text] : []))
-    .join(' ')
-    .replace(/\s+/g, ' ')
-
-  return Boolean(replyAfterLastTool(message).trim()) && isStrictAnswerTextExtension(text, snapshot.replace(/\s+/g, ' '))
-}
-
-/** A folded tool-turn bubble's answer: its text after the last tool call. */
-function replyAfterLastTool(message: ChatMessage): string {
-  const lastTool = message.parts.findLastIndex(part => part.type === 'tool-call')
-
-  return chatMessageText({ ...message, parts: message.parts.slice(lastTool + 1) })
 }
 
 /**
@@ -1711,6 +1678,8 @@ export function overlayConcurrentMessageChanges(
     )
   }
 
+  const committedNewRow = (message: ChatMessage) => !baselineById.has(message.id) && !isLiveTailRow(message)
+
   const representedOnPage = (current: ChatMessage): boolean =>
     // The page can still carry the row's older streaming copy by id when it
     // was composed from the baseline; the committed row replaces both.
@@ -1766,6 +1735,18 @@ export function overlayConcurrentMessageChanges(
       nextIndexById.set(current.id, activationStreamIndex)
       overlaid[activationStreamIndex] = replacement
       activationStreamIndex = -1
+      changed = true
+
+      continue
+    }
+
+    // The page caught this turn's reply committed before its completion
+    // reached the live row: the live row takes that bubble's place.
+    const committedIndex = pageReplyCommittingLiveRow(overlaid, committedNewRow, current, currentMessages)
+
+    if (committedIndex >= 0) {
+      nextIndexById.set(current.id, committedIndex)
+      overlaid[committedIndex] = current
       changed = true
 
       continue
