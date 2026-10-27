@@ -44,8 +44,10 @@ describe('usePromptActions deep-cut confirm across a session switch (#133716)', 
       { id: 'u2', parts: [textPart('new prompt')], role: 'user', rowId: 13, timestamp: 2 },
       { id: 'a2', parts: [textPart('new reply')], role: 'assistant', timestamp: 3 }
     ]
+
     const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
     const submits: Record<string, unknown>[] = []
+
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
         submits.push(params ?? {})
@@ -67,8 +69,11 @@ describe('usePromptActions deep-cut confirm across a session switch (#133716)', 
       />
     )
 
+    let confirms = 0
+
     const stopConfirming = $confirmRequest.listen(request => {
       if (request) {
+        confirms += 1
         activeSessionIdRef.current = RUNTIME_SESSION_B
         settleConfirm(true)
       }
@@ -77,6 +82,7 @@ describe('usePromptActions deep-cut confirm across a session switch (#133716)', 
     await handle!.reloadFromMessage('a1')
     stopConfirming()
 
+    expect(confirms).toBe(1)
     expect(submits).toEqual([])
   })
 
@@ -300,6 +306,7 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     )
 
     let confirms = 0
+
     const stopConfirming = $confirmRequest.listen(request => {
       if (request) {
         confirms += 1
@@ -383,6 +390,7 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
 
     const grown = [...fresh, { id: 'u4', parts: [textPart('newer')], role: 'user' as const, rowId: 27, timestamp: 4 }]
     let confirms = 0
+
     const stopConfirming = $confirmRequest.listen(request => {
       if (request) {
         confirms += 1
@@ -544,7 +552,10 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
 
   it.each([
     ['fails', new JsonRpcGatewayError('generation failed', { code: 5035 })],
-    ['hits a stale target', new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })]
+    [
+      'hits a stale target',
+      new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+    ]
   ])('an edit whose submit recovers the runtime and then %s leaves the composer idle', async (_label, failure) => {
     const seed = [
       { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },

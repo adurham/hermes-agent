@@ -714,6 +714,7 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
       'invalid params for prompt.submit: some_other_field: Extra inputs are not permitted',
       { code: 4000 }
     )
+
     const request = vi.fn().mockRejectedValue(failure)
 
     await expect(
@@ -734,7 +735,8 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     expect(request).toHaveBeenCalledTimes(1)
   })
 
-  const DEEP_CONFIRM_REJECTED = 'invalid params for prompt.submit: confirm_deep_truncate: Extra inputs are not permitted'
+  const DEEP_CONFIRM_REJECTED =
+    'invalid params for prompt.submit: confirm_deep_truncate: Extra inputs are not permitted'
 
   it.each([
     ['another code with the same message', DEEP_CONFIRM_REJECTED, 4018, true],
