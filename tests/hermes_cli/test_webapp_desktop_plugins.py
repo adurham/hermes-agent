@@ -5,12 +5,15 @@ server, so ``/api/desktop-plugins/*`` answers the same three reads the loader ma
 folders, a folder's ``plugin.js`` and package marker), whole, and nothing else. The renderer half is
 pinned in ``apps/desktop/src/lib/browser-desktop-plugins.test.ts``.
 """
+import concurrent.futures
 import json
+import os
 
 import pytest
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
+from hermes_cli.web_routers import desktop_plugins
 
 
 def _client(monkeypatch, surface):
@@ -126,6 +129,55 @@ def test_a_linked_entry_file_is_never_followed(webapp, hermes_root, entry):
     read = webapp.get("/api/desktop-plugins/read", params={"path": str(folder.resolve() / entry)})
     assert read.status_code == 404
     assert "sk-test" not in read.text
+
+
+def _swap_folder_for_link(folder, hermes_root):
+    secrets = hermes_root / "pairing"
+    secrets.mkdir()
+    (secrets / "plugin.js").write_text("sk-test", encoding="utf-8")
+    folder.rename(folder.with_name("evil.old"))
+    folder.symlink_to(secrets, target_is_directory=True)
+
+
+def _swap_entry_for_link(folder, hermes_root):
+    (folder / "plugin.js").unlink()
+    (folder / "plugin.js").symlink_to(hermes_root / ".env")
+
+
+def _swap_entry_for_fifo(folder, hermes_root):
+    (folder / "plugin.js").unlink()
+    os.mkfifo(folder / "plugin.js")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX links and FIFOs")
+@pytest.mark.parametrize("swap", [_swap_folder_for_link, _swap_entry_for_link, _swap_entry_for_fifo])
+@pytest.mark.parametrize("nofollow", [True, False])
+def test_a_swap_between_the_checks_and_the_open_fails_closed(webapp, hermes_root, monkeypatch, swap, nofollow):
+    # The checks pass on a real plugin; the swap lands at the open. Without O_NOFOLLOW (Windows)
+    # the open follows a final link too, so only the identity check after it may stop the read.
+    (hermes_root / ".env").write_text("OPENAI_API_KEY=sk-test", encoding="utf-8")
+    folder = _install(hermes_root, "evil", "export default {}").resolve()
+    if not nofollow:
+        monkeypatch.setattr(desktop_plugins, "_OPEN_FLAGS", desktop_plugins._OPEN_FLAGS & ~getattr(os, "O_NOFOLLOW", 0))
+    real_open, pending = os.open, [True]
+
+    def open_after_swap(path, flags, *args, **kwargs):
+        if pending and str(path) == str(folder / "plugin.js"):
+            pending.clear()
+            swap(folder, hermes_root)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(desktop_plugins.os, "open", open_after_swap)
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        read = pool.submit(webapp.get, "/api/desktop-plugins/read", params={"path": str(folder / "plugin.js")})
+        try:
+            response = read.result(timeout=10)
+        finally:
+            if not read.done() and (folder / "plugin.js").is_fifo():
+                os.close(real_open(folder / "plugin.js", os.O_WRONLY | os.O_NONBLOCK))
+    assert not pending
+    assert response.status_code == 404
+    assert "sk-test" not in response.text
 
 
 @pytest.mark.parametrize("surface", ["gateway", "dashboard", "serve"])

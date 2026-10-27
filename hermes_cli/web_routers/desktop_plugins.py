@@ -29,6 +29,8 @@ DESKTOP_PLUGINS_DIR = "desktop-plugins"
 _READABLE_FILES = frozenset({"plugin.js", ".hermes-package.json"})
 #: Electron's ``PLUGIN_SOURCE_MAX_BYTES``: a plugin loads whole or not at all, never truncated.
 PLUGIN_SOURCE_MAX_BYTES = 16 * 1024 * 1024
+#: Never follow a final link where the OS can refuse one, and never block on a FIFO.
+_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
 
 
 def desktop_plugins_root() -> Path:
@@ -72,18 +74,24 @@ def _read(raw: str) -> dict:
     not_found = HTTPException(status_code=404, detail="Not a desktop plugin file")
     if len(parts) != 2 or parts[1] not in _READABLE_FILES:
         raise not_found
-    # Follow a linked plugin folder, never a linked file in it: open the entry inside the folder's
-    # real path without following a final link, so a check-then-swap can't slip one in either.
+    # Follow a linked plugin folder, never a linked file in it. The file actually opened must be the
+    # regular file at the entry's real, non-sensitive path, checked again after the open, so swapping
+    # the entry or its folder for a link mid-read fails closed, with or without O_NOFOLLOW.
     try:
         entry = target.parent.resolve(strict=True) / parts[1]
-        if entry.is_symlink() or _is_sensitive_path(entry):
+        if _is_sensitive_path(entry) or not stat.S_ISREG(os.lstat(entry).st_mode):
             raise not_found
-        fd = os.open(entry, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        fd = os.open(entry, _OPEN_FLAGS)
     except OSError:
         raise not_found from None
     with os.fdopen(fd, "rb") as handle:
         st = os.fstat(handle.fileno())
-        if not stat.S_ISREG(st.st_mode):
+        try:
+            here = os.lstat(entry)
+            unchanged = entry.resolve(strict=True) == entry
+        except OSError:
+            raise not_found from None
+        if not (unchanged and stat.S_ISREG(st.st_mode) and (st.st_dev, st.st_ino) == (here.st_dev, here.st_ino)):
             raise not_found
         if st.st_size > PLUGIN_SOURCE_MAX_BYTES:
             raise HTTPException(status_code=413, detail="Plugin source exceeds 16 MiB")
