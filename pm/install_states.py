@@ -56,11 +56,34 @@ def _last_used(state: Path) -> float:
     return max(mtimes)
 
 
-def _retention_seconds() -> float | None:
+def _retention_seconds(data_root: Path) -> float | None:
+    """The store-wide retention, from the config of the data root that owns ``installs/``.
+    Every profile of that root shares the store, so the active profile's config must not decide
+    for the others: a named profile without the key would apply the default to a state the root
+    opted out of reclaiming."""
     from hermes_cli.config import cfg_get, load_config_readonly
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    days = cfg_get(load_config_readonly(), "worktrees", "install_state_retention_days", default=14)
+    token = set_hermes_home_override(data_root)
+    try:
+        days = cfg_get(load_config_readonly(), "worktrees", "install_state_retention_days", default=14)
+    finally:
+        reset_hermes_home_override(token)
     return days * 86400 if isinstance(days, (int, float)) and days > 0 else None
+
+
+def _is_orphan(state: Path, data_root: Path, retention: float | None) -> bool:
+    record = state / "inputs" / ".project-root"
+    if not state.is_dir() or not record.is_file():
+        return False
+    try:
+        root = record.read_text(encoding="utf-8-sig").strip()
+    except OSError:
+        return False
+    if not root or Path(root).exists():
+        return False
+    return _provably_deleted(Path(root), data_root) or (
+        retention is not None and time.time() - _last_used(state) > retention)
 
 
 def orphan_install_states(installs: Path) -> list[Path]:
@@ -69,41 +92,33 @@ def orphan_install_states(installs: Path) -> list[Path]:
     if not installs.is_dir():
         return []
     data_root = installs.resolve().parent
-    retention = _retention_seconds()
-    orphans: list[Path] = []
-    for state in sorted(installs.iterdir()):
-        record = state / "inputs" / ".project-root"
-        if not state.is_dir() or not record.is_file():
-            continue
-        try:
-            root = record.read_text(encoding="utf-8-sig").strip()
-        except OSError:
-            continue
-        if not root or Path(root).exists():
-            continue
-        if _provably_deleted(Path(root), data_root) or (
-                retention is not None and time.time() - _last_used(state) > retention):
-            orphans.append(state)
-    return orphans
+    retention = _retention_seconds(data_root)
+    return [state for state in sorted(installs.iterdir()) if _is_orphan(state, data_root, retention)]
 
 
-def _held(state: Path) -> bool:
-    """True while a process may still be using this state dir: the install lock is taken or a
-    generation lease is held. Any lock we cannot even open counts as held."""
-    from hermes_cli.runtime_state import leases_held
+@contextlib.contextmanager
+def _install_lock(state: Path):
+    """Hold the state's install lock (``runtime_lock``'s) without waiting: yields False while
+    another process holds it, or when it cannot even be opened."""
     from pm.filesystem import lock_fd
 
-    lock = state / ".install.lock"
-    if lock.exists():
-        try:
-            fd = os.open(lock, os.O_RDWR)
-        except OSError:
-            return True
-        try:
-            if not lock_fd(fd, wait=False):
-                return True
-        finally:
-            os.close(fd)
+    try:
+        fd = os.open(state / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        fd = None
+    if fd is None:
+        yield False
+        return
+    try:
+        yield lock_fd(fd, wait=False)
+    finally:
+        os.close(fd)
+
+
+def _leased(state: Path) -> bool:
+    """True while a generation lease (dependency env or PM runtime) is held."""
+    from hermes_cli.runtime_state import leases_held
+
     for generations in (state / "environments", state / "pm-runtime" / "generations"):
         if generations.is_dir():
             for generation in generations.iterdir():
@@ -112,25 +127,43 @@ def _held(state: Path) -> bool:
     return False
 
 
-def collect_orphan_install_states(installs: Path) -> list[Path]:
-    """Remove every unheld orphan state dir under *installs*; returns what was removed."""
-    removed: list[Path] = []
-    for state in orphan_install_states(installs):
-        if _held(state):
-            logger.debug("orphan install state %s is still held; skipped", state.name)
+_KEPT_UNTIL_LAST = frozenset({"inputs", ".install.lock"})
+
+
+def _remove_contents(state: Path) -> bool:
+    """Remove everything but the record and the held lock; True when nothing else is left.
+    The record goes last, and only once everything else is gone: the startup prune runs on a
+    daemon thread and a removal can fail part-way (an open file on Windows, a read-only dir), and
+    a dir that lost its record first would never be recognised again."""
+    for child in state.iterdir():
+        if child.name in _KEPT_UNTIL_LAST:
             continue
-        # The record goes last, and only once everything else is gone: the startup prune runs on
-        # a daemon thread and a removal can fail part-way (an open file on Windows, a read-only
-        # dir), and a dir that lost its record first would never be recognised again.
-        for child in state.iterdir():
-            if child.name == "inputs":
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            with contextlib.suppress(OSError):
+                child.unlink()
+    return not any(child.name not in _KEPT_UNTIL_LAST for child in state.iterdir())
+
+
+def collect_orphan_install_states(installs: Path) -> list[Path]:
+    """Remove every unheld orphan state dir under *installs*; returns what was removed.
+
+    Each candidate is re-checked under its install lock right before removal: removing a large
+    orphan takes long enough for another state to be synced or launched (lease taken and
+    released) since the candidates were listed, and that use must keep it."""
+    if not installs.is_dir():
+        return []
+    data_root = installs.resolve().parent
+    retention = _retention_seconds(data_root)
+    removed: list[Path] = []
+    for state in [s for s in sorted(installs.iterdir()) if _is_orphan(s, data_root, retention)]:
+        with _install_lock(state) as locked:
+            if not locked or not _is_orphan(state, data_root, retention) or _leased(state):
+                logger.debug("orphan install state %s is held or back in use; skipped", state.name)
                 continue
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child, ignore_errors=True)
-            else:
-                with contextlib.suppress(OSError):
-                    child.unlink()
-        if any(child.name != "inputs" for child in state.iterdir()):
+            emptied = _remove_contents(state)
+        if not emptied:
             logger.debug("orphan install state %s only partly removed; retried next pass", state.name)
             continue
         shutil.rmtree(state, ignore_errors=True)
