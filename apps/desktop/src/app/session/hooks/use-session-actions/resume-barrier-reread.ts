@@ -47,7 +47,7 @@ export async function graftTranscriptPage(
  * once it returns), so a snapshot whose tail is still a local row is read once
  * more.
  */
-async function rereadPageAfterResumeBarrier(
+export async function rereadPageAfterResumeBarrier(
   resumed: Pick<SessionResumeResult, 'inflight' | 'messages' | 'queued'> & { running?: boolean },
   early: GraftedTranscriptPage | null,
   storedSessionId: string,
@@ -70,32 +70,6 @@ async function rereadPageAfterResumeBarrier(
   }
 
   return graftTranscriptPage(page, early.snapshot, storedSessionId, scope)
-}
-
-export interface ColdPrefetchState {
-  localSnapshot: ChatMessage[]
-  prefetchedPage: GraftedTranscriptPage | null
-  prefetchedResult: SessionMessagesResponse | null
-  prefetchedTranscriptMessages: ChatMessage[] | null
-}
-
-/** The cold resume's prefetch state once the resume answered: re-read past the barrier when it raced the commit. */
-export async function settlePrefetchAtResumeBarrier(
-  resumed: Pick<SessionResumeResult, 'inflight' | 'messages' | 'queued'> & { running?: boolean },
-  state: ColdPrefetchState,
-  storedSessionId: string,
-  scope: ProfileScope
-): Promise<ColdPrefetchState> {
-  const reread = await rereadPageAfterResumeBarrier(resumed, state.prefetchedPage, storedSessionId, scope)
-
-  return reread
-    ? {
-        localSnapshot: reread.snapshot,
-        prefetchedPage: reread,
-        prefetchedResult: reread.page,
-        prefetchedTranscriptMessages: reread.transcript
-      }
-    : state
 }
 
 const durableRowId = ({ id, row_id }: SessionMessage): number | undefined => {

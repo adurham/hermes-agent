@@ -171,7 +171,7 @@ import {
   type GraftedTranscriptPage,
   graftTranscriptPage,
   prefetchServesResume,
-  settlePrefetchAtResumeBarrier
+  rereadPageAfterResumeBarrier
 } from './resume-barrier-reread'
 import { clearResumeLatches, clearResumeToasts, notifyResumeFailed, type ResumeAttemptOptions } from './resume-latches'
 import {
@@ -2072,12 +2072,11 @@ export function useSessionActions({
 
         const resumed = await resumePromise
 
-        ;({ localSnapshot, prefetchedResult, prefetchedTranscriptMessages } = await settlePrefetchAtResumeBarrier(
-          resumed,
-          { localSnapshot, prefetchedPage, prefetchedResult, prefetchedTranscriptMessages },
-          storedSessionId,
-          sessionRestScope
-        ))
+        const reread = await rereadPageAfterResumeBarrier(resumed, prefetchedPage, storedSessionId, sessionRestScope)
+
+        if (reread) {
+          ;({ page: prefetchedResult, snapshot: localSnapshot, transcript: prefetchedTranscriptMessages } = reread)
+        }
 
         if (!isCurrentResume()) {
           return
