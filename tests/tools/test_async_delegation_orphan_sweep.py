@@ -6,6 +6,7 @@ tests produce the orphan with a real owner process against a real temp ``state.d
 (``now=``) or written into the row, never raced against the wall clock.
 """
 
+import json
 import logging
 import os
 import queue
@@ -145,20 +146,41 @@ def test_orphaned_terminal_completion_is_offered_once_while_the_process_runs(tmp
 
 
 def test_dead_childs_completion_is_retired_at_the_next_startup(tmp_path, caplog):
-    """The reload-interrupted child of the report: its owner dies with it, and the completion it
-    left must be retired by the next startup instead of sitting pending until the 48 h age cap."""
+    """The reload-interrupted child of the report: its owner was alive when the child failed, so the
+    failure kept its replay (the owner could still push it). The owner then died with it; the next
+    startup retires the row instead of leaving it pending until the 48 h age cap."""
     home = tmp_path / "home"
     delegation_id = _orphan(home, _DEAD_CHILD_OWNER)
     row = _row(home, delegation_id)
-    # Dead work carries no replay payload from the moment it finalizes ...
-    assert (row["state"], row["event_json"]) == ("error", None) and row["result_json"]
+    assert (row["state"], row["delivery_state"]) == ("error", "pending") and row["event_json"]
+    # Age it past the dead-completion grace window: that, not owner liveness, is what retires a row.
+    conn = sqlite3.connect(home / "state.db")
+    try:
+        conn.execute("UPDATE async_delegations SET completed_at=? WHERE delegation_id=?",
+                     (time.time() - ad._DEAD_COMPLETION_GRACE_S - 60, delegation_id))
+        conn.commit()
+    finally:
+        conn.close()
     q = queue.Queue()
     with _Home(home), caplog.at_level(logging.INFO, logger="tools.async_delegation"):
-        # ... and the owner's death retires the row itself at the next start, without offering it.
         assert ad.restore_undelivered_completions(q) == 0
     assert q.empty()
     assert _row(home, delegation_id)["delivery_state"] == "dropped"
-    assert f"Async delegation {delegation_id}: terminal state 'error' with no owner left" in caplog.text
+    assert json.loads(_row(home, delegation_id)["result_json"])["status"] == "error"
+    assert f"Async delegation {delegation_id}: terminal state 'error' was never claimed" in caplog.text
+
+
+def test_dead_childs_failure_is_offered_by_the_running_sweep(tmp_path):
+    """An owner that dies while THIS process runs (a desktop reload) must not swallow its child's
+    failure: the running sweep still offers it to a live consumer here."""
+    home = tmp_path / "home"
+    delegation_id = _orphan(home, _DEAD_CHILD_OWNER)
+    row = _row(home, delegation_id)
+    q = queue.Queue()
+    with _Home(home):
+        assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 1
+    (evt,) = _drain(q)
+    assert (evt["delegation_id"], evt["status"], evt["restored"]) == (delegation_id, "error", True)
 
 
 def test_row_owned_by_a_live_process_is_never_swept(tmp_path):
