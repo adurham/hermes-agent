@@ -50,11 +50,31 @@ def host_gateway_note() -> str:
     return f" ({topology.describe()})" if topology is not None else ""
 
 
-def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> list:
+def _large_db_advice(sessions: dict | None) -> tuple:
+    """``(detail, issue)`` lead-ins for an oversized state.db, from the live ``sessions:`` block.
+
+    Suggesting ``auto_prune`` is only true advice while it is off: once it is on, everything ended
+    past ``retention_days`` is already gone, so the size is rows inside the window."""
+    from hermes_cli.prune_advisor import _retention_days
+    sessions = sessions or {}
+    if not sessions.get("auto_prune"):
+        return ("consider enabling sessions.auto_prune in config.yaml to bound growth",
+                "state.db is large — enable sessions.auto_prune in config.yaml")
+    days = _retention_days(sessions)
+    levers = ("lower sessions.retention_days or prune selectively "
+              "(e.g. 'hermes sessions prune --source <source>')")
+    return (f"auto_prune is on (retention_days={days}), so the size is rows inside that window "
+            f"(messages/api_calls of recent, open or pinned sessions); {levers}",
+            f"state.db is large — auto_prune is already on (retention_days={days}); "
+            f"growth is rows inside the window: {levers}")
+
+
+def _render_state_db_stats(stats: dict, holders=None, host_note: str = "", sessions: dict | None = None) -> list:
     """Turn a collect_state_db_stats() dict into ``(kind, text, detail)`` rows, kind 'info' / 'warn'.
 
     Pure formatting — no I/O — so it is unit-testable without the doctor CLI. Tolerates None in every field.
     ``host_note`` names the shared host gateway among the holders (see :func:`host_gateway_note`).
+    ``sessions`` is the live ``sessions:`` config block; it decides the oversized-DB advice.
     """
     lines: list = []
     stats = stats or {}
@@ -92,11 +112,11 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
                           f"by PID(s) {pids}",
                           "(stop the listed processes; the host gateway's own retry then rebuilds, or run "
                           "'hermes sessions optimize-storage' with every holder stopped)"))
-    # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
+    # Oversized DB: advice matching the live auto_prune setting, plus the offline optimize-storage pass when the FTS rebuild is
     # pending, an earlier run stopped before tearing down the old index, or the stored FTS layout is an
     # older release's (not just a lagging marker).
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
-        detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
+        detail = _large_db_advice(sessions)[0]
         structural_fts_upgrade = bool(stats.get("fts_storage_upgrade_needed"))
         if stats.get("fts_rebuild_pending") or stats.get("fts_teardown_pending") or structural_fts_upgrade:
             detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
@@ -406,16 +426,18 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
     """Health/stats snapshot: strictly read-only (mode=ro) so it is safe against a live DB held by
     the gateway; any failure degrades to one info line rather than failing doctor."""
     with warn_on_error("state.db stats unavailable ({e})", "", report=lambda t, _d: check_info(t)):
+        from hermes_cli.prune_advisor import _effective_sessions
         from hermes_state_dbfile import collect_state_db_stats, count_db_holders
+        sessions = _effective_sessions(state_db_path.parent)
         rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path),
-                                      host_note=host_gateway_note())
+                                      host_note=host_gateway_note(), sessions=sessions)
         for _kind, _text, _detail in rows:
             if _kind != "warn":
                 check_info(_text + (f" {_detail}" if _detail else ""))
                 continue
             check_warn(_text, _detail)
-            if "auto_prune" in _detail:
-                issues.append("state.db is large — enable sessions.auto_prune in config.yaml"
+            if _text.startswith("state.db is large"):
+                issues.append(_large_db_advice(sessions)[1]
                               + (" and run 'hermes sessions optimize-storage' offline (gateway stopped)" if "optimize-storage" in _detail else ""))
 
 

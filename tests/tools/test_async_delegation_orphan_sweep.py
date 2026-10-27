@@ -6,6 +6,7 @@ tests produce the orphan with a real owner process against a real temp ``state.d
 (``now=``) or written into the row, never raced against the wall clock.
 """
 
+import logging
 import os
 import queue
 import sqlite3
@@ -24,12 +25,32 @@ from tools.process_registry import process_registry
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # The owner dispatches, its child fails (the reload-interrupted child of the report lands as
-# state='error'), the completion is persisted, and the process dies before anything delivers it.
-_OWNER = r'''
+# state='error'), and the process dies before anything delivers it. Dead work has no replay: this
+# row must be retired, never re-offered by a later process.
+_DEAD_CHILD_OWNER = r'''
 import os, time
 from tools import async_delegation as ad
 def child():
     raise RuntimeError("interrupted: waiting for model response")
+r = ad.dispatch_async_delegation(
+    goal="adversarial review", context=None, toolsets=None, role="leaf", model="m",
+    session_key="bot-chat", parent_session_id="bot-parent", runner=child)
+deadline = time.time() + 10
+while ad.active_count() and time.time() < deadline:
+    time.sleep(.01)
+print(r["delegation_id"], flush=True)
+os._exit(0)
+'''
+
+# The same owner with a child that finishes. Its completion IS replayable, so the sweep mechanics
+# below (offer once, claim arbitration, delivery budget, profile binding) run against a real
+# pending row rather than a hand-built one.
+_OWNER = r'''
+import os, time
+from tools import async_delegation as ad
+def child():
+    return {"status": "completed", "summary": "adversarial review done", "api_calls": 1,
+            "duration_seconds": 0.1, "exit_reason": "completed"}
 r = ad.dispatch_async_delegation(
     goal="adversarial review", context=None, toolsets=None, role="leaf", model="m",
     session_key="bot-chat", parent_session_id="bot-parent", runner=child)
@@ -48,11 +69,11 @@ def _clean_state():
     ad._reset_for_tests()
 
 
-def _orphan(home: Path) -> str:
+def _orphan(home: Path, script: str = _OWNER) -> str:
     """Run a real owner process under ``home`` and return the id of the completion it left pending."""
     home.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": REPO}
-    out = subprocess.run([sys.executable, "-c", _OWNER], cwd=REPO, env=env, text=True,
+    out = subprocess.run([sys.executable, "-c", script], cwd=REPO, env=env, text=True,
                          capture_output=True, timeout=60, check=True)
     return out.stdout.strip().splitlines()[-1]
 
@@ -101,7 +122,7 @@ def test_orphaned_terminal_completion_is_offered_once_while_the_process_runs(tmp
     home = tmp_path / "home"
     delegation_id = _orphan(home)
     row = _row(home, delegation_id)
-    assert (row["state"], row["delivery_state"]) == ("error", "pending") and row["event_json"]
+    assert (row["state"], row["delivery_state"]) == ("completed", "pending") and row["event_json"]
     q = queue.Queue()
     with _Home(home):
         # Freshly written: a live consumer may still be on it, so the sweep leaves it alone.
@@ -109,7 +130,7 @@ def test_orphaned_terminal_completion_is_offered_once_while_the_process_runs(tmp
         later = row["updated_at"] + ad._ORPHAN_STALE_S + 1
         assert ad.sweep_orphaned_completions(q, now=later) == 1
         (evt,) = _drain(q)
-        assert evt["delegation_id"] == delegation_id and evt["status"] == "error"
+        assert evt["delegation_id"] == delegation_id and evt["status"] == "completed"
         assert evt["session_key"] == "bot-chat" and evt["restored"] is True
         # Offered once per process: the next sweep does not flood the queue with the same row.
         assert ad.sweep_orphaned_completions(q, now=later + 60) == 0
@@ -121,6 +142,23 @@ def test_orphaned_terminal_completion_is_offered_once_while_the_process_runs(tmp
         assert ad.claim_event_delivery(evt, "second") is None
         assert ad.complete_completion_delivery(delegation_id, claim)
     assert _row(home, delegation_id)["delivery_state"] == "delivered"
+
+
+def test_dead_childs_completion_is_retired_at_the_next_startup(tmp_path, caplog):
+    """The reload-interrupted child of the report: its owner dies with it, and the completion it
+    left must be retired by the next startup instead of sitting pending until the 48 h age cap."""
+    home = tmp_path / "home"
+    delegation_id = _orphan(home, _DEAD_CHILD_OWNER)
+    row = _row(home, delegation_id)
+    # Dead work carries no replay payload from the moment it finalizes ...
+    assert (row["state"], row["event_json"]) == ("error", None) and row["result_json"]
+    q = queue.Queue()
+    with _Home(home), caplog.at_level(logging.INFO, logger="tools.async_delegation"):
+        # ... and the owner's death retires the row itself at the next start, without offering it.
+        assert ad.restore_undelivered_completions(q) == 0
+    assert q.empty()
+    assert _row(home, delegation_id)["delivery_state"] == "dropped"
+    assert f"Async delegation {delegation_id}: terminal state 'error' with no owner left" in caplog.text
 
 
 def test_row_owned_by_a_live_process_is_never_swept(tmp_path):

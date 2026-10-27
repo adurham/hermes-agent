@@ -250,3 +250,70 @@ def test_render_handles_all_none_stats():
     empty["fts_tables"] = None
     lines = _render_state_db_stats(empty, holders=None)
     assert isinstance(lines, list)  # must not raise
+
+
+# ── oversized-DB advice follows the live sessions.auto_prune setting ────
+
+
+_ENABLE_ADVICE = "enable sessions.auto_prune"
+
+
+def _large_db_issues(tmp_path, monkeypatch, config_yaml):
+    """Run doctor's state.db stats step against a HERMES_HOME whose config.yaml is *config_yaml*
+    (None = no file) and a state.db that reads as oversized; return (warn details, issues)."""
+    import hermes_state_dbfile
+    from hermes_cli import doctor_state
+
+    if config_yaml is not None:
+        (tmp_path / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    big = doctor_state.STATE_DB_SIZE_WARN_BYTES * 5
+    monkeypatch.setattr(hermes_state_dbfile, "collect_state_db_stats",
+                        lambda _p: _base_stats(logical_size_bytes=big))
+    monkeypatch.setattr(hermes_state_dbfile, "count_db_holders", lambda _p: None)
+    monkeypatch.setattr(doctor_state, "host_gateway_note", lambda: "")
+    warns = []
+    monkeypatch.setattr(doctor_state, "check_warn", lambda text, detail="": warns.append((text, detail)))
+    issues: list = []
+    doctor_state._state_db_stats(issues, tmp_path / "state.db")
+    large = [d for t, d in warns if t.startswith("state.db is large")]
+    assert len(large) == 1 and len(issues) == 1, (warns, issues)
+    return large[0], issues[0]
+
+
+def test_large_db_with_auto_prune_on_states_the_truth(tmp_path, monkeypatch):
+    detail, issue = _large_db_issues(
+        tmp_path, monkeypatch, "sessions:\n  auto_prune: true\n  retention_days: 45\n")
+    for text in (detail, issue):
+        assert _ENABLE_ADVICE not in text and "consider enabling" not in text
+        assert "auto_prune is" in text and "on" in text
+        assert "retention_days=45" in text
+        assert "inside" in text and "window" in text
+        assert "hermes sessions prune" in text
+
+
+def test_large_db_with_auto_prune_off_suggests_enabling_it(tmp_path, monkeypatch):
+    detail, issue = _large_db_issues(tmp_path, monkeypatch, "sessions:\n  auto_prune: false\n")
+    assert "consider enabling sessions.auto_prune" in detail
+    assert issue == "state.db is large — enable sessions.auto_prune in config.yaml"
+
+
+def test_large_db_with_auto_prune_unset_suggests_enabling_it(tmp_path, monkeypatch):
+    # No sessions.auto_prune key (and no config.yaml at all): maintenance treats it as off.
+    for config_yaml in ("model: x\n", None):
+        detail, issue = _large_db_issues(tmp_path, monkeypatch, config_yaml)
+        assert "consider enabling sessions.auto_prune" in detail
+        assert issue == "state.db is large — enable sessions.auto_prune in config.yaml"
+        (tmp_path / "config.yaml").unlink(missing_ok=True)
+
+
+def test_render_large_db_auto_prune_on_keeps_optimize_storage_hint():
+    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+
+    lines = _render_state_db_stats(
+        _base_stats(logical_size_bytes=STATE_DB_SIZE_WARN_BYTES + 1, fts_rebuild_pending=True),
+        sessions={"auto_prune": True, "retention_days": 90},
+    )
+    details = [d for k, _t, d in lines if k == "warn"]
+    assert len(details) == 1
+    assert "retention_days=90" in details[0] and "optimize-storage" in details[0]
+    assert "consider enabling" not in details[0]
