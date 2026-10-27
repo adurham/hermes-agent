@@ -532,7 +532,7 @@ class CLIChatTurnMixin:
         except GatewayClientError as exc:
             _cprint(f"  /discard: {exc}")
             return
-        _cprint("  Dropped the turn. Send your message again.")
+        _cprint(f"  Dropped {lost['admission_id']}; it will not be re-run. You can send messages again.")
 
     def _chat_render_turn(self, turn, agent_thread, interrupt_msg):
         """Post-turn display: errors, interrupt marker, reasoning/response panels, bell, re-queues.

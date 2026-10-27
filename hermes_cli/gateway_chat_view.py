@@ -55,7 +55,7 @@ def pending_lines(pending):
                                            "  To drop it and continue, type:",
                                            f"/discard {lost[0]['admission_id']}") if line)
         else:
-            lines.append(f"{why} To drop one and continue, type the /discard line under it:")
+            lines.append(f"{why} To continue, drop each one with the /discard line under it:")
             for row in lost:
                 preview = _pending_preview(row.get("text"))
                 lines.append(f"{preview}\n/discard {row['admission_id']}" if preview
