@@ -104,6 +104,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
+import { frontUntouchedDraftTab } from '../chat/reuse-draft-tab'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -995,8 +996,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // tab (stacked into the workspace zone) WITHOUT polluting the session list.
   // Created `listed: false`, so each new tab's in-memory session stays out of
   // the sidebar until its first message persists a turn and a refresh surfaces
-  // it — Cursor-style. Every click opens a fresh "New session" tab (multiple
-  // empty tabs are fine since none touch the session list).
+  // it — Cursor-style. Several may be open, but only one blank: an untouched
+  // draft (main or a tab) is fronted instead of minting a twin (#145594).
   //
   // Bot Mode aims the "+" at the selected bot's own profile. Anything short of
   // an exact route — a group chat's `blocked` target, an orphaned roster row —
@@ -1021,7 +1022,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       return
     }
 
-    void openNewSessionTile('center', { listed: false })
+    if (!frontUntouchedDraftTab()) {
+      void openNewSessionTile('center', { listed: false })
+    }
   }, [openNewSessionTile])
 
   // Archive the selected session (rebindable `session.archive` hotkey).
