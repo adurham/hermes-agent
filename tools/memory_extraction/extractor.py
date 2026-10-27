@@ -641,6 +641,7 @@ def on_session_end(
     *,
     interactive: bool = False,
     confirm_callback: Optional[Callable[..., Any]] = None,
+    defer_llm: bool = False,
 ) -> dict[str, Any]:
     """Session-end extraction + commit.
 
@@ -661,6 +662,16 @@ def on_session_end(
             now — cleanup review has no callback path) or ``cb(entries)``
             otherwise. See ``_invoke_confirm_callback`` for accepted return
             shapes.
+        defer_llm: when True, make NO LLM calls (no reconcile pass, no
+            cleanup pass, no conflict classification) and leave the session's
+            buffer exactly as it is, so the next session end for this
+            session_id reconciles it. Set by the gateway's shutdown cleanup
+            path: these calls are network-bound (~25 s each on slow
+            providers) and ran serially per idle-cached agent, which pushed
+            shutdown past the watchdog and got the process force-killed. Every
+            buffered proposal is already on disk, and cleanup is best-effort
+            ("doing nothing is always the safe outcome"), so deferring loses
+            nothing. Default False keeps normal session ends unchanged.
 
     Returns a summary dict:
         {
@@ -696,6 +707,17 @@ def on_session_end(
 
     buffered = _buffer.get_session_entries(session_id)
     summary["buffered"] = len(buffered)
+
+    if defer_llm:
+        # Buffer untouched on purpose: clearing or replacing it here would drop
+        # the proposals the deferred pass is meant to pick up later.
+        summary["deferred"] = True
+        logger.info(
+            "memory extraction session_end deferred for session %s (shutdown): "
+            "skipped the LLM passes; %d buffered proposal(s) kept for the next session end",
+            session_id, len(buffered),
+        )
+        return summary
 
     cfg = _get_extraction_config()
 

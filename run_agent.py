@@ -200,10 +200,15 @@ def _fork_memory_session_end(agent: Any, messages: Optional[list]) -> None:
 
     The CLI's session-finalize callback surfaces the confirm UI; here the extractor just
     stashes proposals back to the buffer for the next interactive session.
+
+    ``agent._defer_memory_extraction`` (set only by the gateway's shutdown cleanup) skips the
+    extraction LLM passes so process shutdown never waits on the network; the buffer is kept.
     """
     try:
         from tools import memory_extraction as _mex
-        _summary = _mex.on_session_end(agent.session_id or "", messages or [], interactive=False)
+        # Only passed when set, so the default call shape (and any test double of on_session_end) is unchanged.
+        _kw: dict[str, Any] = {"defer_llm": True} if getattr(agent, "_defer_memory_extraction", False) is True else {}
+        _summary = _mex.on_session_end(agent.session_id or "", messages or [], interactive=False, **_kw)
         if _summary.get("final_proposed", 0) or _summary.get("committed", 0):
             logger.info(
                 "memory extraction session end: buffered=%d proposed=%d committed=%d skipped=%d",
