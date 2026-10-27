@@ -257,3 +257,31 @@ def test_file_captured_then_made_unreadable_round_trips_between_checkpoints(proj
     assert back["success"], back
     assert bytes_as_user() == b"PRIVATE-BYTES\n"
     assert (work / "keep.txt").read_text(encoding="utf-8") == "original\n"
+
+
+def test_ledger_owned_file_that_became_unreadable_survives_a_restore(project):
+    """The ordering that could reach the restore plan's delete branch: Hermes itself wrote the
+    file (agent-write ledger entry, captured in snapshot 1), the user then makes it unreadable,
+    and snapshot 2 therefore cannot capture it. Restoring to snapshot 2 must not delete it just
+    because unreadability made it invisible to the diff."""
+    work, locked = project
+    manager = checkpoints.CheckpointManager(enabled=True)
+    key = work / "secret.key"
+    key.write_text("PRIVATE-BYTES\n", encoding="utf-8")
+    manager.record_agent_write(str(key))            # ledger: Hermes wrote this file
+    assert manager._take(str(work), "one: captured") is True
+    [snapshot_one] = manager.list_checkpoints(str(work))
+
+    _lock(locked, key)                              # user makes it unreadable
+    (work / "keep.txt").write_text("edited\n", encoding="utf-8")
+    assert manager._take(str(work), "two: skipped") is True
+    snapshot_two = next(s for s in manager.list_checkpoints(str(work)) if s["reason"].startswith("two"))
+
+    result = manager.restore(str(work), snapshot_two["hash"], safe=True)
+    assert result["success"], result
+    assert key.exists(), "a restore deleted a file that exists on disk and only became unreadable"
+    if "secret.key" in result.get("restored_files", []):
+        # If it ever is written back, the checkpointed bytes must be what lands.
+        os.chmod(key, 0o600)
+        assert key.read_bytes() == b"PRIVATE-BYTES\n"
+    assert key.exists() and snapshot_one["hash"] != snapshot_two["hash"]
