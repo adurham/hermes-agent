@@ -14,6 +14,8 @@ at the preview cap. Webapp only (``SurfacePolicy.desktop_plugins``; 404 elsewher
 from __future__ import annotations
 
 import asyncio
+import os
+import stat
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -40,7 +42,8 @@ def desktop_plugins_root() -> Path:
 def _inside_root(raw: str) -> tuple[Path, tuple[str, ...]]:
     """*raw* and its parts below the root, judged as written: no ``..``, at most a folder and a file.
     Links are not resolved here; a linked plugin folder is followed like native Desktop follows it.
-    The link buys nothing the tab cannot already reach through ``/api/fs`` or the host terminal."""
+    The files inside it are not: :func:`_read` refuses a linked entry file, which could name any
+    file on the host, ``.env`` included, past the sensitive-file guard ``/api/fs`` applies."""
     root = desktop_plugins_root()
     try:
         parts = Path(raw).relative_to(root).parts
@@ -63,14 +66,32 @@ def _list(raw: str) -> dict:
 
 
 def _read(raw: str) -> dict:
+    from hermes_cli.web_routers.files import _is_sensitive_path
+
     target, parts = _inside_root(raw)
-    if len(parts) != 2 or parts[1] not in _READABLE_FILES or not target.is_file():
-        raise HTTPException(status_code=404, detail="Not a desktop plugin file")
-    size = target.stat().st_size
-    if size > PLUGIN_SOURCE_MAX_BYTES:
+    not_found = HTTPException(status_code=404, detail="Not a desktop plugin file")
+    if len(parts) != 2 or parts[1] not in _READABLE_FILES:
+        raise not_found
+    # Follow a linked plugin folder, never a linked file in it: open the entry inside the folder's
+    # real path without following a final link, so a check-then-swap can't slip one in either.
+    try:
+        entry = target.parent.resolve(strict=True) / parts[1]
+        if entry.is_symlink() or _is_sensitive_path(entry):
+            raise not_found
+        fd = os.open(entry, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+    except OSError:
+        raise not_found from None
+    with os.fdopen(fd, "rb") as handle:
+        st = os.fstat(handle.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise not_found
+        if st.st_size > PLUGIN_SOURCE_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Plugin source exceeds 16 MiB")
+        data = handle.read(PLUGIN_SOURCE_MAX_BYTES + 1)
+    if len(data) > PLUGIN_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Plugin source exceeds 16 MiB")
-    text = target.read_text(encoding="utf-8-sig", errors="replace")
-    return {"byteSize": size, "path": str(target), "text": text, "truncated": False}
+    text = data.decode("utf-8-sig", errors="replace")
+    return {"byteSize": st.st_size, "path": str(target), "text": text, "truncated": False}
 
 
 @router.get("/api/desktop-plugins/root")

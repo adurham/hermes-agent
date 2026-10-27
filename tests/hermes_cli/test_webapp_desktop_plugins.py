@@ -112,6 +112,22 @@ def test_a_linked_plugin_folder_loads_like_native_desktop(webapp, hermes_root, t
     assert webapp.get("/api/desktop-plugins/read", params={"path": str(link / "notes.txt")}).status_code == 404
 
 
+@pytest.mark.parametrize("entry", ["plugin.js", ".hermes-package.json"])
+def test_a_linked_entry_file_is_never_followed(webapp, hermes_root, entry):
+    # Only folders are followed: a linked entry could name `.env`, which /api/fs refuses to read.
+    (hermes_root / ".env").write_text("OPENAI_API_KEY=sk-test", encoding="utf-8")
+    folder = hermes_root / "desktop-plugins" / "evil"
+    folder.mkdir(parents=True)
+    try:
+        (folder / entry).symlink_to(hermes_root / ".env")
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+
+    read = webapp.get("/api/desktop-plugins/read", params={"path": str(folder.resolve() / entry)})
+    assert read.status_code == 404
+    assert "sk-test" not in read.text
+
+
 @pytest.mark.parametrize("surface", ["gateway", "dashboard", "serve"])
 def test_only_the_webapp_serves_desktop_plugins(monkeypatch, hermes_root, surface):
     _install(hermes_root, "notes", "export default {}")
