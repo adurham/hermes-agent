@@ -809,11 +809,8 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0.0.0.0"})
 _CDP_PROBE_TIMEOUT_S = 0.5
 
 
-def _cdp_endpoint_alive(cdp: Optional[str]) -> Optional[bool]:
-    """Whether something still listens on a LOOPBACK CDP endpoint (``http://``/``ws://`` host:port).
-
-    True/False for a loopback endpoint (one local TCP connect, no network); None when there is no
-    endpoint or it is remote (a cloud ``wss://``): a remote browser is never probed from the janitor."""
+def _loopback_cdp(cdp: Optional[str]) -> Optional[tuple[str, int]]:
+    """``(host, port)`` to probe for a LOOPBACK CDP endpoint, else None (none / remote / unparseable)."""
     if not cdp:
         return None
     from urllib.parse import urlsplit
@@ -824,16 +821,53 @@ def _cdp_endpoint_alive(cdp: Optional[str]) -> Optional[bool]:
         return None
     if not host or not port or host.lower() not in _LOOPBACK_HOSTS:
         return None
+    return ("127.0.0.1" if host == "0.0.0.0" else host), port
+
+
+def _cdp_endpoint_alive(cdp: Optional[str]) -> Optional[bool]:
+    """Whether something still listens on a LOOPBACK CDP endpoint (``http://``/``ws://`` host:port).
+
+    True only when the connect succeeds; False only when the connect is REFUSED or RESET (nothing
+    listens: the Chrome is gone); None when it cannot be told — no endpoint, a remote one (a cloud
+    ``wss://``, never probed from the janitor), or the probe timed out / failed any other way. A timeout
+    is NOT evidence of a dead Chrome: a loaded machine answers slowly, and treating that as dead would
+    stop the daemon mid-browse. Callers may stop a daemon on the endpoint check only for an explicit False."""
+    target = _loopback_cdp(cdp)
+    if target is None:
+        return None
+    host, port = target
+    import errno
     import socket
     try:
-        with socket.create_connection(("127.0.0.1" if host == "0.0.0.0" else host, port),
+        with socket.create_connection((host, port),
                                       timeout=_CDP_PROBE_TIMEOUT_S):
             return True
-    except OSError:
+    except (ConnectionRefusedError, ConnectionResetError):
         return False
+    except OSError as e:  # socket.timeout is TimeoutError, an OSError: unknown, never "dead"
+        if e.errno in (errno.ECONNREFUSED, errno.ECONNRESET):
+            return False
+        return None
 
 
-def stop_idle_harness_daemons(idle_s: float, now: Optional[float] = None) -> list:
+# Second, much longer ceiling for a daemon whose Chrome is ALIVE: without it a daemon nobody calls for
+# days is immortal (the dead-endpoint gate never fires). Stops only the daemon (the automation bridge,
+# via its own --reload); Chrome and its tabs are never touched, and the next call respawns a daemon.
+DEFAULT_HARNESS_DAEMON_MAX_IDLE_S = 43200.0
+
+
+def _harness_daemon_max_idle_s() -> float:
+    """``browser.harness_daemon_max_idle_seconds`` (default 12 h; <= 0 disables the ceiling)."""
+    def read() -> float:
+        from hermes_cli.config import read_raw_config_readonly
+        cfg = read_raw_config_readonly().get("browser", {})
+        raw = cfg.get("harness_daemon_max_idle_seconds") if isinstance(cfg, dict) else None
+        return DEFAULT_HARNESS_DAEMON_MAX_IDLE_S if raw is None else float(raw)
+    return _quiet(read, DEFAULT_HARNESS_DAEMON_MAX_IDLE_S, "harness daemon max idle lookup failed")
+
+
+def stop_idle_harness_daemons(idle_s: float, now: Optional[float] = None,
+                              max_idle_s: Optional[float] = None) -> list:
     """Stop daemons this process drove whose Chrome is gone; returns them.
 
     The gate is the daemon's Chrome endpoint being DEAD (nothing listening on the loopback CDP port its
@@ -842,6 +876,11 @@ def stop_idle_harness_daemons(idle_s: float, now: Optional[float] = None) -> lis
     restart; it is NOT the stop signal: a daemon whose Chrome is still live is left alone however long
     the agent pauses. Only a daemon with no loopback endpoint to probe (a remote/cloud browser, or none
     recorded) falls back to ``idle_s`` alone, since nothing local can say whether it is still in use.
+    A probe that cannot tell (timeout / other error: ``None`` for a loopback endpoint) never stops it.
+
+    ``max_idle_s`` (``browser.harness_daemon_max_idle_seconds``, default 12 h; <= 0 off) is the ceiling
+    for a daemon whose Chrome IS alive: past it the daemon (the automation bridge) is stopped too. Chrome
+    itself is never stopped here.
 
     A daemon with a call in flight is never stopped (a browser_exec may run up to ``_MAX_TIMEOUT_S``).
     The probe runs outside the lock; the in-flight/idle predicate is then re-checked and the daemon fenced
@@ -849,17 +888,29 @@ def stop_idle_harness_daemons(idle_s: float, now: Optional[float] = None) -> lis
     between the check and the stop. Each stop runs the harness's own ``--reload`` under its owning
     profile's home, so that profile's ownership record is the one cleared."""
     now = _monotonic() if now is None else now
+    max_idle_s = _harness_daemon_max_idle_s() if max_idle_s is None else max_idle_s
 
-    def idle_now(key: tuple[str, ...]) -> bool:  # caller holds _driven_daemons_cond
+    def idle_for(key: tuple[str, ...], floor: float) -> bool:  # caller holds _driven_daemons_cond
         return (key in _driven_daemons and not _daemon_calls_in_flight.get(key)
-                and key not in _daemons_stopping and now - _daemon_last_used.get(key, now) >= idle_s)
+                and key not in _daemons_stopping and now - _daemon_last_used.get(key, now) >= floor)
+
+    def stoppable(cdp: Optional[str]) -> Optional[float]:
+        """The idle floor past which a daemon on ``cdp`` may be stopped, or None (never, this tick)."""
+        if not cdp or _loopback_cdp(cdp) is None:
+            return idle_s  # nothing local to probe (remote/cloud or none recorded): time rule only
+        alive = _cdp_endpoint_alive(cdp)
+        if alive is False:
+            return idle_s  # Chrome provably gone
+        if alive is True and max_idle_s and max_idle_s > 0:
+            return max(idle_s, max_idle_s)  # Chrome alive: only the long ceiling
+        return None  # probe inconclusive (timeout/other error), or alive with the ceiling off
 
     with _driven_daemons_cond:
-        candidates = [(key, _daemon_cdp.get(key)) for key in sorted(_driven_daemons) if idle_now(key)]
-    dead = {key: cdp for key, cdp in candidates if _cdp_endpoint_alive(cdp) is not True}
+        candidates = [(key, _daemon_cdp.get(key)) for key in sorted(_driven_daemons) if idle_for(key, idle_s)]
+    floors = {key: (cdp, floor) for key, cdp in candidates if (floor := stoppable(cdp)) is not None}
     with _driven_daemons_cond:
-        idle = sorted((key, _driven_daemons[key]) for key, cdp in dead.items()
-                      if idle_now(key) and _daemon_cdp.get(key) == cdp)
+        idle = sorted((key, _driven_daemons[key]) for key, (cdp, floor) in floors.items()
+                      if idle_for(key, floor) and _daemon_cdp.get(key) == cdp)
         for key, _home in idle:
             _driven_daemons.pop(key, None)
             _daemon_last_used.pop(key, None)
@@ -1043,15 +1094,27 @@ def forget_harness_daemon_owner(identity: tuple[str, ...]) -> None:
 
 
 def _other_live_owner(identity: tuple[str, ...]) -> bool:
-    """Whether a live process OTHER than this one holds an ownership record for ``identity``'s daemon."""
+    """Whether a live process OTHER than this one holds an ownership record for ``identity``'s daemon.
+
+    Fails SAFE (True = leave the daemon running): the record dir cannot be listed, or a peer's record
+    still exists but cannot be read/parsed, so its owner cannot be ruled out. Callers then drop only OUR
+    claim; the orphan sweep (which also leaves unreadable records alone) never signals on a guess."""
     me = _harness_record_path(identity).name
     try:
         paths = list(_harness_record_dir().glob(f"{_harness_record_digest(identity)}-*.json"))
-    except OSError:
-        return False
+    except OSError as e:
+        logger.debug("harness ownership records unreadable for %r (%s): assuming another owner", identity, e)
+        return True
     for path in paths:
-        record = None if path.name == me else _read_harness_record(path)
-        if record and tuple(record["identity"]) == tuple(identity) and record["owner_pid"] != os.getpid() \
+        if path.name == me:
+            continue
+        record = _read_harness_record(path)
+        if record is None:
+            if path.exists():  # unreadable/corrupt/foreign, not merely unlinked mid-scan
+                logger.debug("harness ownership record %s unreadable: assuming another owner", path)
+                return True
+            continue
+        if tuple(record["identity"]) == tuple(identity) and record["owner_pid"] != os.getpid() \
                 and _owner_alive(record["owner_pid"], record.get("owner_started")):
             return True
     return False
@@ -1212,6 +1275,30 @@ _reload_failures: dict[tuple[str, ...], tuple[int, Optional[tuple[int, Optional[
 _reload_failures_lock = threading.Lock()
 
 
+_POST_KILL_SOCKET_WAIT_S = 1.0
+
+
+def _wait_socket_released(sock: Path, budget_s: float) -> bool:
+    """Poll up to ``budget_s`` until nothing accepts on the AF_UNIX ``sock`` (or it is gone); True once
+    released. Bounded: a socket still held past the budget is cleaned up anyway (the pid is proven dead)."""
+    import socket
+    deadline = time.monotonic() + budget_s
+    while True:
+        if not sock.exists() or not hasattr(socket, "AF_UNIX"):
+            return True
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.05)
+        try:
+            probe.connect(str(sock))
+        except OSError:
+            return True  # refused / no listener: the dead process no longer holds it
+        finally:
+            probe.close()
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
 def _signal_pid(pid: int, sig: int) -> None:  # a seam: tests observe which signals were sent
     os.kill(pid, sig)
 
@@ -1272,6 +1359,10 @@ def _kill_wedged_daemon(env: dict, daemon: tuple[str, ...], seen: Optional[tuple
         logger.warning("browser-harness daemon pid %d survived SIGKILL; keeping its record", pid)
         return
     runtime, stem = _daemon_endpoint_paths(env, daemon)
+    # The pid is gone, but on Darwin the kernel can finish tearing down a just-killed process's sockets a
+    # moment later; unlinking while it still holds the listener lets a fresh daemon bind a path whose old
+    # socket is mid-close. Poll (bounded) until nothing accepts on it any more, then clean up.
+    _wait_socket_released(runtime / f"{stem}.sock", _POST_KILL_SOCKET_WAIT_S)
     for suffix in (".sock", ".port", ".pid"):  # what --reload would have cleaned up
         try:
             (runtime / f"{stem}{suffix}").unlink()

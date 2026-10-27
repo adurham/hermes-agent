@@ -438,3 +438,37 @@ def _age_entries(session_id: str, age_seconds: float) -> None:
         if entry.get("session_id") == session_id:
             entry["started_at"] = time.time() - age_seconds
     active_sessions._write_entries(state_path, entries)
+
+
+def test_lease_reclaim_stats_tell_a_skip_from_a_zero_and_from_a_real_reclaim(monkeypatch, caplog):
+    """``0 reclaimed`` must be distinguishable from 'never ran' and from 'skipped fail-closed', in the
+    counters and in the log line."""
+    import logging
+
+    monkeypatch.setattr(active_sessions, "_SELF_ORPHAN_GRACE_SECONDS", 0.0)
+    monkeypatch.setattr(active_sessions, "_lease_reclaim_stats",
+                        {"sweeps": 0, "dropped": 0, "skipped_fail_closed": 0})
+    assert active_sessions.lease_reclaim_stats() == {"sweeps": 0, "dropped": 0, "skipped_fail_closed": 0}
+    caplog.set_level(logging.INFO)
+
+    monkeypatch.setattr(server, "_own_live_lease_ids", lambda: None)
+    server._reclaim_orphaned_leases()
+    assert active_sessions.lease_reclaim_stats() == {"sweeps": 0, "dropped": 0, "skipped_fail_closed": 1}
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("skipped (lease-source failure)" in m for m in messages), messages
+    assert not any("Reclaimed" in m for m in messages)
+
+    caplog.clear()
+    key = "agent:main:local:dm:local-stats-leaked-lease-00000000000000000000000"
+    lease, message = try_acquire_active_session(
+        session_id=key, surface="tui", config={}, metadata={"live_session_id": key},
+    )
+    assert lease is not None and message is None, message
+    monkeypatch.setattr(server, "_own_live_lease_ids", lambda: set())
+    server._reclaim_orphaned_leases()
+    stats = active_sessions.lease_reclaim_stats()
+    assert stats["sweeps"] == 1 and stats["dropped"] >= 1 and stats["skipped_fail_closed"] == 1, stats
+    assert _entries_for(key) == []
+    assert any("Reclaimed" in r.getMessage() for r in caplog.records)
+    assert not any("skipped" in r.getMessage() for r in caplog.records)
+    lease.release()

@@ -203,6 +203,9 @@ _ANY_HEAD = object()
 # long turn otherwise ran as N model turns before the message the user typed after Ctrl+C (#141822).
 # FIFO holds within each class; wakes run once no person's input is queued.
 AUTOMATION_PRINCIPAL_PREFIX = 'automation:'
+# QUEUED_HEAD_ORDER_SQL splices this prefix into a GLOB pattern unescaped: a ``*``, ``?`` or ``[`` in it
+# would silently change what the pattern matches (tests/hermes_state/test_queued_head_order_parity.py).
+assert not set(AUTOMATION_PRINCIPAL_PREFIX) & set('*?['), 'GLOB metacharacter in AUTOMATION_PRINCIPAL_PREFIX'
 # GLOB, not LIKE: LIKE is ASCII case-insensitive, so ``Automation:x`` (a principal from an actor
 # subject) sorted as an internal wake in SQL but as a person in ``queued_head_key`` — the claim and
 # the preclaim checks then validated different rows. The prefix holds no GLOB metacharacters.

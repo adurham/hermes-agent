@@ -107,3 +107,11 @@ def test_real_store_claims_the_head_session_authority_validates(tmp_path):
                            'automation:wake1', 'automation:wake2', 'automation:wake3']
     finally:
         db.close()
+
+
+def test_the_automation_prefix_holds_no_glob_metacharacters():
+    """``QUEUED_HEAD_ORDER_SQL`` splices the prefix into a GLOB pattern unescaped: a ``*``, ``?`` or ``[``
+    in it would silently change which rows sort as internal wakes (and break parity with startswith)."""
+    from hermes_state_runtime import AUTOMATION_PRINCIPAL_PREFIX
+    assert AUTOMATION_PRINCIPAL_PREFIX and not set(AUTOMATION_PRINCIPAL_PREFIX) & set('*?[')
+    assert QUEUED_HEAD_ORDER_SQL == f"(principal_id GLOB '{AUTOMATION_PRINCIPAL_PREFIX}*'), seq"

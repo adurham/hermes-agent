@@ -52,6 +52,29 @@ is no coalescing of several completions into one turn; and the 32-entry admissio
 burst of wakes can still refuse a human message with `queue_full`. Seven fixes in one commit also cost
 attribution, as the review noted; later waves land per-fix commits.
 
+Second review pass, same day — six hardening items, each with a fail-before test:
+
+- **CDP probe: timeout is not death.** A refused or reset connect (exception type or `ECONNREFUSED`/
+  `ECONNRESET`) is dead; a timeout or any other `OSError` is *unknown* and leaves the daemon alone for that
+  tick. Before, the probe collapsed every `OSError` into "dead", so a loaded machine could have killed a
+  daemon mid-browser. A local endpoint is now stoppable only on an explicit dead verdict.
+- **A GLOB prefix guard.** `AUTOMATION_PRINCIPAL_PREFIX` is asserted at import to contain none of `*?[`, so a
+  future rename cannot silently change the meaning of `QUEUED_HEAD_ORDER_SQL`.
+- **Post-SIGKILL wait.** After the kill is confirmed, the socket is polled every 50 ms for up to 1 s before the
+  socket/pid files are unlinked (Darwin can hold the socket while the process is still being reaped). The
+  identity check is untouched.
+- **Reclaim is now measurable, and a skip is not a zero.** `lease_reclaim_stats()` returns `{sweeps, dropped,
+  skipped_fail_closed}`; the reaper logs "Orphaned active-session lease reclaim skipped (lease-source
+  failure)" on the fail-closed path instead of a count of 0. This is what makes the post-restart proof
+  possible: a genuine zero and a fail-closed zero are textually different and counter-distinguishable.
+- **12 h ceiling for a live-endpoint daemon.** `browser.harness_daemon_max_idle_seconds` (default 43200; ≤0
+  disables) stops a daemon whose Chrome is still alive but which nobody has called for 12 h. It stops the
+  daemon (the automation bridge) and never Chrome — so a daemon attached to a long-lived real-profile browser
+  is no longer immortal.
+- **`_other_live_owner` fails safe.** An unlistable record dir, or a peer record that exists but cannot be
+  parsed, now returns True ("assume another owner"): the exit and idle paths drop only our claim and never
+  signal a daemon another owner might be using. Previously both cases returned False and could kill it.
+
 Verification (mine, not the lanes'): 33 passed across the hold/veto/parity/lease files, 17 passed on
 tests/tools/test_browser_harness_orphans.py. Still unmeasured: the "Reclaimed N orphaned active-session
 lease(s)" counter, which needs a gateway restart onto this code, and the daemon idle stop, which needs a live
