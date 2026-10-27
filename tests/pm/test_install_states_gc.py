@@ -157,6 +157,21 @@ def test_retention_comes_from_the_store_owner_not_the_active_profile(tmp_path, r
     assert state.exists() is not reclaimed
 
 
+def test_symlinked_installs_reads_retention_from_the_home_not_the_link_target(tmp_path):
+    """``installs/`` moved to another disk via a symlink: the opt-out in the home's config still
+    applies, and the link target's parent is not turned into a Hermes home."""
+    root = tmp_path / "home"
+    root.mkdir()
+    (root / "config.yaml").write_text("worktrees:\n  install_state_retention_days: 0\n", encoding="utf-8")
+    target = tmp_path / "bigdisk" / "installs"
+    target.mkdir(parents=True)
+    (root / "installs").symlink_to(target, target_is_directory=True)
+    state = _state(root / "installs", "aaaa", tmp_path / "unmounted" / "checkout")
+    _age(state, 30)
+    assert collect_orphan_install_states(root / "installs") == []
+    assert state.exists() and sorted(p.name for p in target.parent.iterdir()) == ["installs"]
+
+
 def test_state_used_while_another_orphan_is_removed_is_kept(tmp_path, monkeypatch):
     """Candidates are listed before any removal starts; a state launched (lease taken and
     released) while an earlier, large orphan is still being removed is back in use."""

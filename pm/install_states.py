@@ -92,7 +92,7 @@ def orphan_install_states(installs: Path) -> list[Path]:
     if not installs.is_dir():
         return []
     data_root = installs.resolve().parent
-    retention = _retention_seconds(data_root)
+    retention = _retention_seconds(installs.parent)
     return [state for state in sorted(installs.iterdir()) if _is_orphan(state, data_root, retention)]
 
 
@@ -155,7 +155,7 @@ def collect_orphan_install_states(installs: Path) -> list[Path]:
     if not installs.is_dir():
         return []
     data_root = installs.resolve().parent
-    retention = _retention_seconds(data_root)
+    retention = _retention_seconds(installs.parent)
     removed: list[Path] = []
     for state in [s for s in sorted(installs.iterdir()) if _is_orphan(s, data_root, retention)]:
         with _install_lock(state) as locked:
@@ -163,10 +163,16 @@ def collect_orphan_install_states(installs: Path) -> list[Path]:
                 logger.debug("orphan install state %s is held or back in use; skipped", state.name)
                 continue
             emptied = _remove_contents(state)
+            if emptied:  # still under the lock: only the record is left, so it goes last
+                shutil.rmtree(state / "inputs", ignore_errors=True)
         if not emptied:
             logger.debug("orphan install state %s only partly removed; retried next pass", state.name)
             continue
-        shutil.rmtree(state, ignore_errors=True)
+        # Non-recursive: a launch from a checkout recreated at the same path may have taken the
+        # lock the moment it was released and written here; its files make rmdir fail, not vanish.
+        with contextlib.suppress(OSError):
+            (state / ".install.lock").unlink()
+            state.rmdir()
         if not state.exists():
             removed.append(state)
     return removed
