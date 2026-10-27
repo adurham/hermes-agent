@@ -761,6 +761,35 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     ).rejects.toBe(failure)
     expect(request).toHaveBeenCalledTimes(1)
   })
+
+  it('a busy retry after the fallback leaves the rejected field out', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new JsonRpcGatewayError(DEEP_CONFIRM_REJECTED, { code: 4000 }))
+      .mockRejectedValueOnce(new JsonRpcGatewayError('session busy', { code: 4009 }))
+      .mockResolvedValue({ status: 'streaming' })
+
+    await runRewindSubmit(
+      request as never,
+      'sid',
+      'fixed prompt',
+      1,
+      undefined,
+      false,
+      undefined,
+      13,
+      'typo prompt',
+      undefined,
+      true
+    )
+
+    // Field rejected, then busy without it, then accepted: no second rejected round trip.
+    const submits = request.mock.calls.filter(([method]) => method === 'prompt.submit').map(([, params]) => params)
+
+    expect(submits).toHaveLength(3)
+    expect(submits[2]).toMatchObject({ confirm_truncate: true, truncate_before_row_id: 13 })
+    expect(submits[2]).not.toHaveProperty('confirm_deep_truncate')
+  })
 })
 
 describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {

@@ -344,11 +344,20 @@ export async function runRewindSubmit(
     }
   }
 
+  // Set once a backend rejected confirm_deep_truncate: the later sends of this submit (busy retries,
+  // a resumed runtime) leave it out instead of paying a rejected round trip each.
+  let deepConfirmUnsupported = false
+
   const submitFor = async (targetId: string) => {
     const params = {
       session_id: targetId,
       text,
-      ...truncateSubmitParams(resolvedOrdinal, resolvedMessageId, resolvedRowId, confirmDeepTruncate),
+      ...truncateSubmitParams(
+        resolvedOrdinal,
+        resolvedMessageId,
+        resolvedRowId,
+        confirmDeepTruncate && !deepConfirmUnsupported
+      ),
       // A first-turn rewind resolves to an empty transcript, which the
       // gateway additionally gates behind confirm_empty_truncate. In
       // resolved-row-id mode the tail-local ordinal was dropped (see
@@ -369,6 +378,7 @@ export async function runRewindSubmit(
       // The user already confirmed client-side, so retry once without only that
       // field; never strip any other rejected param.
       const message = error instanceof Error ? error.message : String(error)
+
       const rejectedDeepConfirm =
         error instanceof JsonRpcGatewayError &&
         error.code === 4000 &&
@@ -379,6 +389,7 @@ export async function runRewindSubmit(
         throw error
       }
 
+      deepConfirmUnsupported = true
       const { confirm_deep_truncate: _unsupported, ...compatible } = params
 
       return requestGateway<PromptSubmitResult>('prompt.submit', compatible, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
