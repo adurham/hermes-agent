@@ -1,0 +1,18 @@
+name: inspeximus
+title: Inspeximus
+repo: https://github.com/DanceNitra/inspeximus
+sha: 2a4141cf89e0bbe5bcca9d2e167df41477ef5463
+subdir: integrations/hermes-plugin-inspeximus
+version: "3.23.1"
+description: "Memory provider with keyed corrections you can undo. A correction retires the old value by key, so it stops being recalled, and inspeximus_revert puts the previous value back from the key alone, without anyone retyping what the record used to say. Recall before each turn returns retrieval minus what a later correction retired, so a value corrected three sessions ago cannot come back as context. Adds inspeximus_remember, inspeximus_correct, inspeximus_revert, inspeximus_forget and inspeximus_forget_me. Disclosure - the provider makes no network calls of its own and carries no telemetry: the store is a local file under the Hermes home, and every write and recall reads and writes that file. Semantic recall is optional and off until an embedder is configured; when one is, the text being stored or queried is posted to the embedding URL the operator sets, a loopback Ollama by default and whatever host they name otherwise. No shell commands, no threads of its own, and nothing is written automatically from cron or subagent runs."
+maintainer: DanceNitra
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+docs_url: https://github.com/DanceNitra/inspeximus/blob/main/integrations/hermes-plugin-inspeximus/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
