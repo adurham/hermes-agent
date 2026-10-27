@@ -241,3 +241,37 @@ async def test_a_reminder_the_app_set_on_the_old_conversation_fires_into_it(monk
                                        for message in authority.db.get_messages(ref_a.session_id)),
                            timeout=10, what='the reminder note in A')
     assert sent[chat_before:] == []
+
+
+@pytest.mark.asyncio
+async def test_a_late_route_announcement_never_hands_the_chat_back_its_old_conversation(monkeypatch):
+    """Review on #144840: a worker's ``/resume`` of A announces its route after a newer ``/new``
+    moved the chat on to C. The stale announcement must not reattach A to the chat: the app's next
+    prompt on A still runs in A, off the chat, and the chat keeps C."""
+    import threading
+    runner, adapter, authority, source, sent, ran, _gates, lane, ref_a = await _moved_on(monkeypatch)
+    store = runner.session_store
+    announce, paused, release = store._announce_route, threading.Event(), threading.Event()
+
+    def held(session_key, entry):  # the worker pauses after its store write, before announcing
+        if entry.session_id == ref_a.session_id and not paused.is_set():
+            paused.set()
+            release.wait(10)
+        announce(session_key, entry)
+    monkeypatch.setattr(store, '_announce_route', held)
+    worker = asyncio.create_task(asyncio.to_thread(store.switch_session, lane, ref_a.session_id))
+    await async_wait_until(paused.is_set, what='the worker to pause before announcing')
+    await _chat(adapter, source, sent, '/new')
+    await _chat(adapter, source, sent, 'newest')
+    c = store.peek_session_id(lane)
+    assert c != ref_a.session_id
+    release.set()
+    await worker  # its announcement was handed to the loop before the worker's result, so it has run
+
+    assert store.peek_session_id(lane) == c
+    chat_replies = len(sent)
+    assert await _app_turn(authority, ref_a, 'app prompt on A') == ('terminal', 'completed')
+    assert ran[-1][:2] == ('app prompt on A', ref_a.session_id) and ran[-1][2] != lane
+    assert sent[chat_replies:] == [], f'the chat got the old conversation\'s reply: {sent[chat_replies:]}'
+    await _chat(adapter, source, sent, 'still C')
+    assert ran[-1][1:] == (c, lane) and sent[-1] == f"reply to 'still C' from {c}"

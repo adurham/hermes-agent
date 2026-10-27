@@ -144,7 +144,15 @@ def watch_routes(runner, store) -> None:
             return
 
         def name():
-            authority.name_lane(route, authority.logical_owner(session_id), origin)
+            # Writers announce outside the store lock, so announcements can land out of order: one
+            # the store has since moved past (a worker's /resume overtaken by a /new) would hand the
+            # chat back a conversation it left; the newer write announces itself. Compared by logical
+            # owner: a compression repoint since (unannounced) is still the same conversation.
+            current = store.lookup_by_session_key(route)
+            owner = authority.logical_owner(session_id)
+            if current is None or authority.logical_owner(current.session_id) != owner:
+                return
+            authority.name_lane(route, owner, origin)
         try:
             on_loop = asyncio.get_running_loop() is loop
         except RuntimeError:
