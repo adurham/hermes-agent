@@ -972,6 +972,14 @@ _HARNESS_RECORD_DIRNAME = "browser-harness"
 # sweeps instead of stalling the one browser call that happens to run right after a crash.
 HARNESS_ORPHAN_SWEEP_INTERVAL_S = 300.0
 HARNESS_ORPHAN_SWEEP_MAX = 8
+# An ownership record that cannot be parsed (torn by a crash mid-write on a filesystem without atomic
+# rename, hand-edited, written by an incompatible version) fails SAFE while it is recent: its owner cannot
+# be ruled out, so the exit and idle stops leave the daemon running. Without an end to that, one bad write
+# would make its daemon permanently unstoppable. Records are rewritten on every call that drives the
+# daemon, so a corrupt one untouched for this long belongs to no live call: it stops counting as an owner
+# and the orphan sweep deletes it. A corrupt record is NEVER grounds to signal anything — once ignored,
+# the daemon is judged on the records that do parse.
+HARNESS_CORRUPT_RECORD_GRACE_S = 24 * 3600.0
 _last_harness_orphan_sweep = 0.0
 _harness_orphan_sweep_lock = threading.Lock()
 
@@ -1043,6 +1051,46 @@ def _read_harness_record(path: Path) -> Optional[dict]:
     return record
 
 
+def _unparseable_record_state(path: Path, now: Optional[float] = None) -> str:
+    """For a record ``_read_harness_record`` could not parse: ``"gone"`` (unlinked mid-scan), ``"stale"``
+    (untouched for ``HARNESS_CORRUPT_RECORD_GRACE_S``) or ``"recent"``. A stat that fails for any other
+    reason is ``"recent"`` — fail safe, its owner cannot be ruled out."""
+    try:
+        mtime = Path(path).stat().st_mtime
+    except FileNotFoundError:
+        return "gone"
+    except OSError:
+        return "recent"
+    age = (time.time() if now is None else now) - mtime
+    return "stale" if age >= HARNESS_CORRUPT_RECORD_GRACE_S else "recent"
+
+
+def _prune_stale_corrupt_records() -> int:
+    """Delete ownership records that cannot be parsed and are older than the grace; returns how many.
+
+    Never touches a record that parses, and never signals a daemon: the record is only bookkeeping."""
+    try:
+        paths = sorted(_harness_record_dir().glob("*.json"))
+    except OSError:
+        return 0
+    pruned = 0
+    for path in paths:
+        # Re-checked right before the unlink: a record rewritten since the scan parses (or is recent).
+        if _read_harness_record(path) is not None or _unparseable_record_state(path) != "stale":
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            logger.debug("could not delete stale corrupt harness record %s: %s", path, e)
+            continue
+        pruned += 1
+        logger.info("Deleted corrupt browser-harness ownership record %s (unparseable, untouched for %.0fh)",
+                    path, HARNESS_CORRUPT_RECORD_GRACE_S / 3600)
+    return pruned
+
+
 def _write_harness_record(path: Path, record: dict) -> None:
     """Atomically replace ``path`` with ``record`` (a torn read would look like a dead owner)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1098,7 +1146,9 @@ def _other_live_owner(identity: tuple[str, ...]) -> bool:
 
     Fails SAFE (True = leave the daemon running): the record dir cannot be listed, or a peer's record
     still exists but cannot be read/parsed, so its owner cannot be ruled out. Callers then drop only OUR
-    claim; the orphan sweep (which also leaves unreadable records alone) never signals on a guess."""
+    claim; the orphan sweep never signals on a guess. The escape: an unparseable record untouched for
+    ``HARNESS_CORRUPT_RECORD_GRACE_S`` is ignored here (and pruned by the sweep), so one bad write cannot
+    make a daemon unstoppable forever."""
     me = _harness_record_path(identity).name
     try:
         paths = list(_harness_record_dir().glob(f"{_harness_record_digest(identity)}-*.json"))
@@ -1110,9 +1160,12 @@ def _other_live_owner(identity: tuple[str, ...]) -> bool:
             continue
         record = _read_harness_record(path)
         if record is None:
-            if path.exists():  # unreadable/corrupt/foreign, not merely unlinked mid-scan
+            state = _unparseable_record_state(path)
+            if state == "recent":  # unreadable/corrupt/foreign, not merely unlinked mid-scan
                 logger.debug("harness ownership record %s unreadable: assuming another owner", path)
                 return True
+            if state == "stale":
+                logger.debug("harness ownership record %s unreadable and past the grace: ignored", path)
             continue
         if tuple(record["identity"]) == tuple(identity) and record["owner_pid"] != os.getpid() \
                 and _owner_alive(record["owner_pid"], record.get("owner_started")):
@@ -1142,7 +1195,7 @@ def orphaned_harness_daemons(exclude=()) -> list[dict]:
     for path in paths:
         record = _read_harness_record(path)
         if record is None:
-            continue  # corrupt/foreign: leave it alone rather than guess
+            continue  # corrupt/foreign: never evidence to reap (a stale one is pruned, never acted on)
         identity = tuple(record["identity"])
         if identity in exempt:
             continue
@@ -1219,6 +1272,7 @@ def reap_orphaned_harness_daemons(exclude=(), force: bool = False) -> int:
         if not force and now - _last_harness_orphan_sweep < HARNESS_ORPHAN_SWEEP_INTERVAL_S:
             return 0
         _last_harness_orphan_sweep = now
+    _prune_stale_corrupt_records()  # bookkeeping only: a long-corrupt record must not linger as a blocker
     orphans = orphaned_harness_daemons(exclude=exclude)
     try:
         env = _base_subprocess_env()
