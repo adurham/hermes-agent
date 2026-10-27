@@ -71,8 +71,11 @@ def test_concurrent_writers_lose_no_handoff_log_lines(tmp_path: Path) -> None:
     ]
     result = subprocess.run(
         argv,
+        check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
         env=env,
         cwd=os.fspath(REPO_ROOT),

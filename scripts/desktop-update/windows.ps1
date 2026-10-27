@@ -114,17 +114,14 @@ try {
     $handoffLogHash = [BitConverter]::ToString($handoffSha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($LogPath.ToLowerInvariant())), 0, 8).Replace("-", "")
 } finally { $handoffSha.Dispose() }
 $script:HandoffLogMutexName = "Global\HermesHandoffLog-$handoffLogHash"
+# Lines the log could not take yet, oldest first (Write-HandoffLog).
+$script:PendingLogLines = New-Object System.Collections.Generic.List[string]
 
-function Write-HandoffLog([string]$Message) {
-    $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
-    # Add-Content is unsafe once a second writer is live: PowerShell caches a
-    # content writer per path, so the second writer (an overlapping hand-off
-    # process, or any future runspace writer) gets a handle the first already
-    # consumed -- Windows PowerShell 5.1 floods "stream is not readable"
-    # errors while PowerShell 7 silently loses lines (#126152). A named mutex
-    # plus one FileStream per write serializes appends across processes and
-    # runspaces; the bounded wait and the empty catch keep the "logging must
-    # never break the update" contract.
+function Sync-HandoffLog {
+    # Append every pending line in one write, oldest first. False while another process still
+    # holds the log: the lines stay queued for the next attempt instead of being dropped.
+    if ($script:PendingLogLines.Count -eq 0) { return $true }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes((($script:PendingLogLines -join "`r`n") + "`r`n"))
     $held = $false
     try {
         $mutex = $script:HandoffLogMutex
@@ -136,13 +133,41 @@ function Write-HandoffLog([string]$Message) {
         }
         try { $held = $mutex.WaitOne(5000) }
         catch [System.Threading.AbandonedMutexException] { $held = $true }  # a writer died mid-append; the wait still granted ownership
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($line + [Environment]::NewLine)
-        $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
-        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush() } finally { $fs.Dispose() }
+        # AppendData with full sharing: never conflicts with a reader, and lands at end-of-file
+        # atomically even beside a writer that skipped the mutex (its wait timed out).
+        $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Append,
+            [System.Security.AccessControl.FileSystemRights]::AppendData,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete), 4096, [System.IO.FileOptions]::None)
+        try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
     } catch {
+        return $false
     } finally {
         if ($held) { try { $script:HandoffLogMutex.ReleaseMutex() } catch {} }
     }
+    $script:PendingLogLines.Clear()
+    return $true
+}
+
+function Complete-HandoffLog([int]$Seconds = 10) {
+    # Before exiting: a holder that outlives the run would otherwise take the last lines with it.
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    while (-not (Sync-HandoffLog) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+}
+
+function Write-HandoffLog([string]$Message) {
+    $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
+    # Add-Content is unsafe once a second writer is live: PowerShell caches a
+    # content writer per path, so the second writer (an overlapping hand-off
+    # process, or any future runspace writer) gets a handle the first already
+    # consumed -- Windows PowerShell 5.1 floods "stream is not readable"
+    # errors while PowerShell 7 silently loses lines (#126152). A named mutex
+    # serializes appends across processes and runspaces. Any other holder (a
+    # scanner on the just-closed file, a reader opened without write sharing)
+    # still fails an append: that line waits in the queue and lands, in order,
+    # with the next append that succeeds. A relayed stage is marked seen before
+    # it is logged, so a dropped line there was never written again.
+    $script:PendingLogLines.Add($line)
+    [void](Sync-HandoffLog)
     if ($MarkerOp) { return }   # a helper op's stdout is its one verdict line
     if ($script:ConsoleInput -and [HermesHandoff.ConsoleInput]::Selecting()) { return }
     Write-Host $line
@@ -1248,6 +1273,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         }
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
         Update-MarkerHeartbeat
+        [void](Sync-HandoffLog)
         if ((Get-Date) -ge $nextStageCheck) {
             Sync-ChildStage
             $nextStageCheck = (Get-Date).AddSeconds(1)
@@ -1422,7 +1448,7 @@ exit 7
     # Writes straight to the console stream, holding nothing: a step that is
     # merely loud. `hermes update` is this shape -- the Electron/vite build
     # alone is megabytes. Few large lines rather than many small ones on
-    # purpose: Write-HandoffLog is one Add-Content per line and runs inside the
+    # purpose: Write-HandoffLog is one file append per line and runs inside the
     # measured window, so line-heavy output would time the logger instead of
     # the drain.
     $floodSource = @'
@@ -1591,23 +1617,25 @@ if ($SelfTestLogConcurrency) {
     # would leave the runspace without a callable definition.
     $fnAst = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null).FindAll({
         param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq "Write-HandoffLog"
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @("Write-HandoffLog", "Sync-HandoffLog", "Complete-HandoffLog")
     }, $true)
-    if (-not $fnAst -or $fnAst.Count -eq 0) {
-        Write-Host "LOG-CONCURRENCY SELF-TEST: FAIL -- Write-HandoffLog definition not found in this script"
+    if (-not $fnAst -or $fnAst.Count -ne 3) {
+        Write-Host "LOG-CONCURRENCY SELF-TEST: FAIL -- the hand-off log writer definitions were not found in this script"
         exit 1
     }
-    $fnText = $fnAst[0].Extent.Text
+    $fnText = (@($fnAst) | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n"
     $body = @'
 param([string]$TargetLog, [string]$MutexName, [int]$Count, [int]$WriterId)
 $LogPath = $TargetLog
 $script:HandoffLogMutexName = $MutexName
 $script:HandoffLogMutex = $null
+$script:PendingLogLines = New-Object System.Collections.Generic.List[string]
 $script:ConsoleInput = $false
 
 '@ + $fnText + @'
 
 for ($i = 0; $i -lt $Count; $i++) { Write-HandoffLog ("w$WriterId line$i") }
+Complete-HandoffLog
 '@
     $pool = [runspacefactory]::CreateRunspacePool(1, $writers)
     $pool.Open()
@@ -2018,5 +2046,6 @@ try {
         }
     }
     if ($null -ne $savedConsoleInputMode) { [HermesHandoff.ConsoleInput]::Restore($savedConsoleInputMode) }
+    Complete-HandoffLog
 }
 exit $finalCode
