@@ -279,10 +279,16 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   }
 
   if (aPart.type === 'tool-call') {
-    const aCall = aPart as { toolCallId?: string; toolName?: string; result?: unknown }
-    const bCall = bPart as { toolCallId?: string; toolName?: string; result?: unknown }
+    const aCall = aPart as { argsText?: string; toolCallId?: string; toolName?: string; result?: unknown }
+    const bCall = bPart as { argsText?: string; toolCallId?: string; toolName?: string; result?: unknown }
 
     if (aCall.toolCallId !== bCall.toolCallId || aCall.toolName !== bCall.toolName) {
+      return false
+    }
+
+    // A clarify re-arm changes only the row's args and its request binding;
+    // a view that kept the old ones would never show the next card.
+    if (aCall.argsText !== bCall.argsText || aPart.clarifyRequestId !== bPart.clarifyRequestId) {
       return false
     }
 
@@ -2413,8 +2419,11 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 /** Session-independent side effects of one runtime info snapshot. */
 function reportRuntimeInfoAppState(info: SessionRuntimeInfo, owner: SessionOwnerScope): void {
   if (info.stored_session_id) {
-    reconcilePendingSubmissions(info.stored_session_id, info.pending_submissions,
-      pendingSnapshotFence(info.replay_epoch, info.last_sequence))
+    reconcilePendingSubmissions(
+      info.stored_session_id,
+      info.pending_submissions,
+      pendingSnapshotFence(info.replay_epoch, info.last_sequence)
+    )
   }
 
   // App/profile-level reporting is session-independent — a tile's runtime

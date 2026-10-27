@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
+import { chatMessageArraysEquivalent } from '@/app/session/hooks/use-session-actions/utils'
 import { I18nProvider } from '@/i18n'
 import { type ChatMessage, restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import { $settledClarifyResults, type ClarifyRequest, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
@@ -94,16 +95,39 @@ const liveCards = (container: HTMLElement) =>
     choices.querySelector('button:not([disabled])')
   ).length
 
-/** Assistant messages (one per argument) whose clarify rows re-arm the way `parkClarify` does. */
+/**
+ * Assistant messages (one per argument) whose clarify rows re-arm the way `parkClarify` does. Rows
+ * render from what the view last published: like `use-session-state-cache`, it takes a new
+ * transcript only when `chatMessageArraysEquivalent` sees a change.
+ */
 function transcript(...rows: ReturnType<typeof clarifyCall>[][]) {
+  return transcriptOf(rows, { pending: true })
+}
+
+/** A transcript hydrated from REST: its messages are settled until the first re-arm. */
+function resumedTranscript(...rows: ReturnType<typeof clarifyCall>[][]) {
+  return transcriptOf(rows, { pending: false })
+}
+
+function transcriptOf(rows: ReturnType<typeof clarifyCall>[][], { pending }: { pending: boolean }) {
   const request = vi.fn().mockResolvedValue({ ok: true })
 
   let messages: ChatMessage[] = rows.map((parts, index) => ({
     id: `m${index + 1}`,
     parts,
-    pending: true,
+    pending,
     role: 'assistant'
   }))
+
+  let shown = messages
+
+  const publish = (next: ChatMessage[]) => {
+    messages = next
+
+    if (!chatMessageArraysEquivalent(next, shown)) {
+      shown = next
+    }
+  }
 
   $activeSessionId.set('session-1')
   $gateway.set({ request } as never)
@@ -111,7 +135,7 @@ function transcript(...rows: ReturnType<typeof clarifyCall>[][]) {
   return {
     add(call: ReturnType<typeof clarifyCall>) {
       const tail = messages.at(-1)!
-      messages = [...messages.slice(0, -1), { ...tail, parts: [...tail.parts, call] }]
+      publish([...messages.slice(0, -1), { ...tail, parts: [...tail.parts, call] }])
     },
     locks: () =>
       [...request.mock.calls, ...gatewayMocks.requestGatewayForAgent.mock.calls].filter(call =>
@@ -122,14 +146,14 @@ function transcript(...rows: ReturnType<typeof clarifyCall>[][]) {
       rememberServerRequest({ fail: vi.fn(), id: next.requestId, method: 'clarify', params: {}, respond: vi.fn() })
       setClarifyRequest(next)
       const before = clarifyParts(messages).length
-      messages = restorePendingClarifyToolCall(messages, pendingClarifyToolPayload(next)).messages
+      publish(restorePendingClarifyToolCall(messages, pendingClarifyToolPayload(next)).messages)
       expect(clarifyParts(messages)).toHaveLength(before + (appends ? 1 : 0))
     },
-    props: (toolCallId: string) => rowProps(clarifyParts(messages).find(part => part.toolCallId === toolCallId)!),
-    /** Every clarify row, in transcript order. */
+    props: (toolCallId: string) => rowProps(clarifyParts(shown).find(part => part.toolCallId === toolCallId)!),
+    /** Every clarify row the view shows, in transcript order. */
     rows: () => (
       <>
-        {clarifyParts(messages).map((part, index) => (
+        {clarifyParts(shown).map((part, index) => (
           <ClarifyTool key={index} {...rowProps(part)} />
         ))}
       </>
@@ -263,5 +287,39 @@ describe('a clarify asked one card per question', () => {
     const view = render(tree(chat.rows()))
 
     expect(liveCards(view.container)).toBe(1)
+  })
+
+  // A resumed or switched-to session publishes the row with its first card's binding. The next card's
+  // re-arm changes only the row's args and binding, and the view has to take that change.
+  it('shows the next card after a resume when its own Confirm answered the first', async () => {
+    const chat = resumedTranscript([clarifyCall('call-1', [TARGET, REGION])])
+    chat.park(card('prompt-1', TARGET))
+    const view = render(tree(chat.rows()))
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+    await waitFor(() => expect(chat.locks()).toHaveLength(1))
+
+    act(() => chat.park(card('prompt-2', REGION)))
+    view.rerender(tree(chat.rows()))
+
+    expect(liveCards(view.container)).toBe(1)
+    expect(screen.getByText('Which region?')).toBeTruthy()
+  })
+
+  it('shows the next card after a resume when the chat bar answered the first', () => {
+    const chat = resumedTranscript([clarifyCall('call-1', [TARGET, REGION])])
+    chat.park(card('prompt-1', TARGET))
+    const view = render(tree(chat.rows()))
+
+    act(() => {
+      expect(answerParkedCard('session-1', 'staging')).toBe(true)
+    })
+
+    act(() => chat.park(card('prompt-2', REGION)))
+    view.rerender(tree(chat.rows()))
+
+    expect(liveCards(view.container)).toBe(1)
+    expect(screen.getByText('Which region?')).toBeTruthy()
   })
 })
