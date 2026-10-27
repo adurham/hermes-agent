@@ -13,10 +13,21 @@
  * a stale copy cannot stick. The cap keeps the most recently saved drafts,
  * by those times, so every window drops the same ones.
  *
+ * Times come from one clock across every key (`nextStashStamp`): the newest
+ * stamp in the stash plus one when the wall clock reads earlier. After the
+ * system clock jumps back, a draft saved then still sorts newest, so the cap
+ * never evicts it on its own save.
+ *
  * The authoritative copy is one key (`DRAFT_STASH_STORAGE_KEY`) so a read never
  * sees half of another window's write. The older `{ key: text }` list is still
- * written after it, for builds and readers that only know that list; two
- * windows writing in the same instant can leave that mirror one write behind.
+ * written, before it, for older builds that only know that list. That list is
+ * exactly the texts of the stash's drafts, so the stash is also the copy of the
+ * list as this build last wrote it. An older build (after a downgrade) edits,
+ * sends and adds drafts only in the list: at boot, a list that differs from
+ * that copy was written there, and `adoptLegacyEdits` takes its changes (a key
+ * gone from the list was sent or cleared there). Two windows writing in the
+ * same instant can leave the list one write behind; the next stash write any
+ * window hears about rewrites it (`healLegacyMirror`).
  */
 
 export const DRAFT_STASH_STORAGE_KEY = 'hermes:composer-drafts:v4'
@@ -32,6 +43,8 @@ export type StashEntries = Map<string, StashEntry>
 interface StoredStash {
   cleared?: Record<string, number>
   drafts?: Record<string, { at?: number; text?: string }>
+  /** `false`: the legacy list could not be written with this stash, so it is not a copy of it. */
+  mirrored?: boolean
 }
 
 // A marker only has to outlive another window's stale copy (milliseconds);
@@ -60,11 +73,30 @@ export function hasDraftStash(): boolean {
   }
 }
 
+/** Later than every entry in `entries` and no earlier than the wall clock. */
+export function nextStashStamp(entries: StashEntries, now: number): number {
+  let highest = 0
+
+  for (const entry of entries.values()) {
+    highest = Math.max(highest, entry.at)
+  }
+
+  return Math.max(now, highest + 1)
+}
+
+function readStoredStash(): StoredStash {
+  try {
+    return JSON.parse(window.localStorage.getItem(DRAFT_STASH_STORAGE_KEY) ?? '{}') as StoredStash
+  } catch {
+    return {}
+  }
+}
+
 export function readDraftStash(): StashEntries {
   const entries: StashEntries = new Map()
 
   try {
-    const stored = JSON.parse(window.localStorage.getItem(DRAFT_STASH_STORAGE_KEY) ?? '{}') as StoredStash
+    const stored = readStoredStash()
 
     for (const [key, at] of Object.entries(stored.cleared ?? {})) {
       entries.set(key, { at: Number(at) || 0, text: null })
@@ -98,6 +130,57 @@ export function readLegacyDrafts(legacyKey: string): StashEntries {
   }
 }
 
+/** Keys whose text in the legacy list is not the stash's (a cleared marker reads as absent). */
+function legacyChanges(entries: StashEntries, legacyKey: string): Map<string, string | null> {
+  const legacy = readLegacyDrafts(legacyKey)
+  const changes = new Map<string, string | null>()
+
+  for (const key of new Set([...entries.keys(), ...legacy.keys()])) {
+    const theirs = legacy.get(key)?.text ?? null
+
+    if (theirs !== (entries.get(key)?.text ?? null)) {
+      changes.set(key, theirs)
+    }
+  }
+
+  return changes
+}
+
+/**
+ * Take what an older build changed in the legacy list since this build last
+ * wrote it: edited and added drafts, and keys it dropped (sent or cleared
+ * there) as cleared markers, all stamped newest. `null` when nothing changed.
+ */
+export function adoptLegacyEdits(entries: StashEntries, legacyKey: string, now: number): StashEntries | null {
+  if (readStoredStash().mirrored === false) {
+    return null
+  }
+
+  const changes = legacyChanges(entries, legacyKey)
+
+  if (changes.size === 0) {
+    return null
+  }
+
+  const at = nextStashStamp(entries, now)
+  const adopted: StashEntries = new Map(entries)
+
+  for (const [key, text] of changes) {
+    adopted.set(key, { at, text })
+  }
+
+  return adopted
+}
+
+/** Rewrite the legacy list from the stored stash when another window's write left it behind. */
+export function healLegacyMirror(legacyKey: string): void {
+  const entries = readDraftStash()
+
+  if (legacyChanges(entries, legacyKey).size > 0) {
+    writeLegacyList(entries, legacyKey)
+  }
+}
+
 /** Keep the `maxDrafts` most recently saved drafts and only recent cleared markers. */
 export function compactDraftStash(entries: StashEntries, maxDrafts: number, now: number): StashEntries {
   const byRecency = [...entries].sort(([ka, a], [kb, b]) => b.at - a.at || (ka < kb ? -1 : ka > kb ? 1 : 0))
@@ -118,33 +201,54 @@ export function compactDraftStash(entries: StashEntries, maxDrafts: number, now:
   return kept
 }
 
-/** Write the stash (and the legacy list after it); `false` when storage refused. */
-export function writeDraftStash(entries: StashEntries, legacyKey: string): boolean {
-  const drafts: NonNullable<StoredStash['drafts']> = {}
-  const cleared: Record<string, number> = {}
+/** The legacy `{ key: text }` list, oldest first (its most-recent-last order); `false` when storage refused. */
+function writeLegacyList(entries: StashEntries, legacyKey: string): boolean {
   const texts: Record<string, string> = {}
 
-  // Oldest first, so the legacy list keeps its most-recent-last order.
   for (const [key, entry] of [...entries].sort(([, a], [, b]) => a.at - b.at)) {
-    if (entry.text === null) {
-      cleared[key] = entry.at
-    } else {
-      drafts[key] = { at: entry.at, text: entry.text }
+    if (entry.text !== null) {
       texts[key] = entry.text
     }
   }
 
   try {
-    const raw = JSON.stringify({ cleared, drafts })
-
-    if (window.localStorage.getItem(DRAFT_STASH_STORAGE_KEY) !== raw) {
-      window.localStorage.setItem(DRAFT_STASH_STORAGE_KEY, raw)
-    }
-
     if (Object.keys(texts).length === 0) {
       window.localStorage.removeItem(legacyKey)
     } else {
       window.localStorage.setItem(legacyKey, JSON.stringify(texts))
+    }
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Write the legacy list, then the stash; `false` when storage refused the stash.
+ * The list goes first so a stash write that fails leaves the list newer, and
+ * the next boot adopts it; a list write that fails marks the stash `mirrored:
+ * false`, so the next boot does not take the stale list for an older build's.
+ */
+export function writeDraftStash(entries: StashEntries, legacyKey: string): boolean {
+  const drafts: NonNullable<StoredStash['drafts']> = {}
+  const cleared: Record<string, number> = {}
+
+  for (const [key, entry] of [...entries].sort(([, a], [, b]) => a.at - b.at)) {
+    if (entry.text === null) {
+      cleared[key] = entry.at
+    } else {
+      drafts[key] = { at: entry.at, text: entry.text }
+    }
+  }
+
+  const mirrored = writeLegacyList(entries, legacyKey)
+
+  try {
+    const raw = JSON.stringify(mirrored ? { cleared, drafts } : { cleared, drafts, mirrored })
+
+    if (window.localStorage.getItem(DRAFT_STASH_STORAGE_KEY) !== raw) {
+      window.localStorage.setItem(DRAFT_STASH_STORAGE_KEY, raw)
     }
 
     return true
