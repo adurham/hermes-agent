@@ -550,7 +550,7 @@ def test_a_daemon_whose_chrome_is_still_live_is_never_idle_stopped(runtime, harn
     try:
         assert _drive_exec(monkeypatch, scripts, session="thinking", cdp=cdp)["success"]
         assert cdp in bu._daemon_cdp.values(), "the daemon's Chrome endpoint was not tracked"
-        later = time.monotonic() + 24 * 3600
+        later = time.monotonic() + 6 * 3600  # far past idle_s, still under the 12 h live-Chrome ceiling
         monkeypatch.setattr(bu, "_monotonic", lambda: later)
         lifecycle._cleanup_inactive_browser_sessions()
         assert daemon.poll() is None, "a daemon whose Chrome is still live was stopped for being idle"
@@ -590,6 +590,134 @@ def test_a_daemon_whose_chrome_died_is_stopped_once_past_idle(runtime, harness_s
             daemon.kill()
             daemon.wait(timeout=10)
             pytest.fail("a daemon whose Chrome died outlived idle_s")
+
+
+def _idle_driven(monkeypatch, name, cdp, last_used=0.0):
+    identity = ("", "", "", "", name)
+    monkeypatch.setattr(bu, "_driven_daemons", {identity: ""})
+    monkeypatch.setattr(bu, "_daemon_cdp", {identity: cdp})
+    monkeypatch.setattr(bu, "_daemon_last_used", {identity: last_used})
+    monkeypatch.setattr(bu, "_daemon_calls_in_flight", {})
+    monkeypatch.setattr(bu, "_other_live_owner", lambda key: False)
+    stopped = []
+    monkeypatch.setattr(bu, "_reload_daemons", lambda daemons: (stopped.extend(daemons), [])[1])
+    return identity, stopped
+
+
+def test_a_cdp_connect_timeout_is_unknown_and_never_stops_a_daemon(monkeypatch):
+    """A loaded machine answers a CDP connect slowly: a TIMEOUT is not a dead Chrome."""
+    import socket as _socket
+    identity, stopped = _idle_driven(monkeypatch, "slow-chrome", "http://127.0.0.1:9222")
+
+    def timeout(*_a, **_k):
+        raise _socket.timeout("timed out")
+    monkeypatch.setattr(_socket, "create_connection", timeout)
+    assert bu._cdp_endpoint_alive("http://127.0.0.1:9222") is None
+    assert bu.stop_idle_harness_daemons(60, now=3600.0) == []
+    assert stopped == [] and identity in bu._driven_daemons
+
+    def other(*_a, **_k):
+        raise OSError(65, "No route to host")  # any non-refused OSError: unknown as well
+    monkeypatch.setattr(_socket, "create_connection", other)
+    assert bu._cdp_endpoint_alive("http://127.0.0.1:9222") is None
+    assert bu.stop_idle_harness_daemons(60, now=3600.0) == [] and stopped == []
+
+
+def test_a_refused_cdp_connect_is_dead_and_stops_the_daemon_past_idle(monkeypatch):
+    import socket as _socket
+    identity, stopped = _idle_driven(monkeypatch, "gone-chrome", "http://127.0.0.1:9222")
+
+    def refused(*_a, **_k):
+        raise ConnectionRefusedError(61, "Connection refused")
+    monkeypatch.setattr(_socket, "create_connection", refused)
+    assert bu._cdp_endpoint_alive("http://127.0.0.1:9222") is False
+    assert bu.stop_idle_harness_daemons(60, now=30.0) == [], "stopped before idle_s"
+    assert bu.stop_idle_harness_daemons(60, now=3600.0) == [identity]
+    assert stopped == [identity]
+
+
+def test_a_live_chrome_daemon_is_kept_past_idle_but_stopped_past_the_12h_ceiling(monkeypatch):
+    """Alive Chrome: idle_s never stops the daemon, the long ceiling does (the daemon only, not Chrome)."""
+    chrome = socket.socket()
+    chrome.bind(("127.0.0.1", 0))
+    chrome.listen(8)
+    try:
+        cdp = f"http://127.0.0.1:{chrome.getsockname()[1]}"
+        identity, stopped = _idle_driven(monkeypatch, "live-chrome", cdp)
+        assert bu._harness_daemon_max_idle_s() == 43200.0
+        assert bu._cdp_endpoint_alive(cdp) is True
+        assert bu.stop_idle_harness_daemons(60, now=11 * 3600.0) == [], "a live-Chrome daemon stopped early"
+        assert stopped == []
+        assert bu.stop_idle_harness_daemons(60, now=12 * 3600.0 + 1) == [identity]
+        assert stopped == [identity]
+        chrome.getsockname()  # Chrome's listener is untouched
+    finally:
+        chrome.close()
+
+
+def test_the_live_chrome_ceiling_is_configurable_and_can_be_disabled(monkeypatch):
+    chrome = socket.socket()
+    chrome.bind(("127.0.0.1", 0))
+    chrome.listen(8)
+    try:
+        cdp = f"http://127.0.0.1:{chrome.getsockname()[1]}"
+        identity, stopped = _idle_driven(monkeypatch, "cfg-chrome", cdp)
+        import hermes_cli.config as cfg
+        monkeypatch.setattr(cfg, "read_raw_config_readonly",
+                            lambda: {"browser": {"harness_daemon_max_idle_seconds": 0}})
+        assert bu.stop_idle_harness_daemons(60, now=10 ** 7) == [] and stopped == []
+        monkeypatch.setattr(cfg, "read_raw_config_readonly",
+                            lambda: {"browser": {"harness_daemon_max_idle_seconds": 600}})
+        assert bu.stop_idle_harness_daemons(60, now=601.0) == [identity]
+    finally:
+        chrome.close()
+
+
+def test_the_live_chrome_ceiling_default_is_in_config_defaults():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["browser"]["harness_daemon_max_idle_seconds"] == 43200
+
+
+def test_unreadable_ownership_records_fail_safe_on_exit(runtime, monkeypatch):
+    """Exit is claim-aware: if a peer's claim cannot be read (or the record dir cannot be listed), another
+    owner cannot be ruled out, so the daemon is left running and only our claim is dropped."""
+    identity = tuple(_identity(runtime, "garbled-peer", runtime))
+    mine = _record_path(identity)
+    _write_record(mine, identity, runtime, os.getpid(), bu._process_start_time(os.getpid()))
+    peer = _record_path(identity, 999999)
+    peer.write_text("{not json", encoding="utf-8")
+    assert bu._other_live_owner(identity) is True
+
+    stopped = []
+    monkeypatch.setattr(bu, "_reload_daemons", lambda daemons: stopped.extend(daemons))
+    monkeypatch.setattr(bu, "_driven_daemons", {identity: ""})
+    bu.stop_harness_daemons(claim_aware=True)
+    assert stopped == [] and not mine.exists() and peer.exists()
+
+    peer.unlink()
+
+    def unlistable(self, pattern):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(Path, "glob", unlistable)
+    assert bu._other_live_owner(identity) is True
+
+
+def test_a_killed_daemon_socket_is_waited_out_before_cleanup(tmp_path, monkeypatch):
+    """After SIGKILL the socket may still accept for a moment (Darwin): wait (bounded) before unlinking."""
+    path = Path(tempfile.mkdtemp(dir="/tmp", prefix="hbw-")) / "s.sock"  # no-tmp: ok — AF_UNIX sun_path
+    try:
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(path))
+        listener.listen(8)
+        t0 = time.monotonic()
+        assert bu._wait_socket_released(path, 0.3) is False  # still held: bounded wait, then give up
+        assert 0.25 <= time.monotonic() - t0 < 2.0
+        import threading
+        threading.Timer(0.2, listener.close).start()
+        assert bu._wait_socket_released(path, 2.0) is True  # released mid-wait
+        assert bu._wait_socket_released(path.with_name("absent.sock"), 1.0) is True
+    finally:
+        shutil.rmtree(path.parent, ignore_errors=True)
 
 
 # ── exit is claim-aware, like the idle stop ──────────────────────────────────────────────────────
@@ -670,8 +798,15 @@ def test_a_wedged_daemon_is_sigtermed_then_sigkilled_after_two_failed_reloads(ru
         assert sent == [] and daemon.poll() is None
         assert _record_path(identity).exists()
 
+        waited = []
+        real_wait = bu._wait_socket_released
+        monkeypatch.setattr(bu, "_wait_socket_released",
+                            lambda sock, budget: (waited.append((sock.name, budget, pid_file.exists())),
+                                                  real_wait(sock, budget))[1])
         assert bu._reload_daemons([identity]) == []
         assert sent == [(daemon.pid, signal.SIGTERM), (daemon.pid, signal.SIGKILL)], sent
+        assert waited == [("bu-wedged.sock", bu._POST_KILL_SOCKET_WAIT_S, True)], \
+            "endpoint files were unlinked without waiting for the killed daemon's socket"
         daemon.wait(timeout=10)
         assert not _record_path(identity).exists(), "the killed daemon's record was kept"
         assert not pid_file.exists()

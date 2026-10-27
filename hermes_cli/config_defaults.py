@@ -482,6 +482,11 @@ DEFAULT_CONFIG = {
         # "off" = force the built-in browser_navigate/browser_click/... tools.
         "backend": "",
         "inactivity_timeout": 120,
+        # Ceiling (seconds) for a Browser Use harness daemon whose Chrome endpoint is still ALIVE but
+        # which nobody has called for this long: the daemon (the automation bridge) is stopped; Chrome and
+        # its tabs are never touched, and the next browser_exec respawns a daemon. A daemon whose Chrome
+        # is dead is stopped after inactivity_timeout instead. <= 0 disables the ceiling.
+        "harness_daemon_max_idle_seconds": 43200,
         "command_timeout": 30,  # seconds per browser command (screenshot, navigate, etc.)
         "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
         "record_sessions": False,  # auto-record browser sessions as WebM videos

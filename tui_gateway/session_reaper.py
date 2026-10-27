@@ -324,7 +324,12 @@ def _reclaim_orphaned_leases() -> None:
         logger.debug("stale deferred lease sweep failed", exc_info=True)
     try:
         from hermes_cli.active_sessions import release_orphaned_leases
-        if dropped := release_orphaned_leases(_own_live_lease_ids()):
+        live = _own_live_lease_ids()
+        if live is None:
+            # Fail closed: textually distinct from a sweep that ran and found nothing.
+            release_orphaned_leases(None)  # counts the skip (lease_reclaim_stats)
+            logger.info("Orphaned active-session lease reclaim skipped (lease-source failure)")
+        elif dropped := release_orphaned_leases(live):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
     except Exception:
         logger.debug("orphaned lease reclaim failed", exc_info=True)

@@ -774,6 +774,7 @@ def release_orphaned_leases(live_lease_ids: set[str] | None) -> int:
         pass
 
     if live_lease_ids is None:
+        _count_lease_reclaim(skipped=True)
         return 0
     dropped = 0
     for home in homes:
@@ -781,7 +782,30 @@ def release_orphaned_leases(live_lease_ids: set[str] | None) -> int:
             dropped += _release_orphaned_leases_in_home(home, live_lease_ids)
         except OSError as exc:
             logger.debug("orphaned-lease sweep failed for %s: %s", home, exc)
+    _count_lease_reclaim(dropped=dropped)
     return dropped
+
+
+# Reclaim accounting, so "0 dropped" is distinguishable from "never ran" (sweeps == 0) and from
+# "skipped because a lease source failed" (skipped_fail_closed).
+_LEASE_RECLAIM_STATS_LOCK = threading.Lock()
+_lease_reclaim_stats = {"sweeps": 0, "dropped": 0, "skipped_fail_closed": 0}
+
+
+def _count_lease_reclaim(*, dropped: int = 0, skipped: bool = False) -> None:
+    with _LEASE_RECLAIM_STATS_LOCK:
+        if skipped:
+            _lease_reclaim_stats["skipped_fail_closed"] += 1
+        else:
+            _lease_reclaim_stats["sweeps"] += 1
+            _lease_reclaim_stats["dropped"] += dropped
+
+
+def lease_reclaim_stats() -> dict[str, int]:
+    """``{"sweeps", "dropped", "skipped_fail_closed"}`` for ``release_orphaned_leases`` in this process:
+    completed sweeps, leases they dropped in total, and calls skipped fail-closed (``None`` ids)."""
+    with _LEASE_RECLAIM_STATS_LOCK:
+        return dict(_lease_reclaim_stats)
 
 
 def active_session_registry_snapshot(
