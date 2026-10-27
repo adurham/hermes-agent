@@ -702,6 +702,75 @@ def test_unreadable_ownership_records_fail_safe_on_exit(runtime, monkeypatch):
     assert bu._other_live_owner(identity) is True
 
 
+def _corrupt_peer(identity, age_s: float) -> Path:
+    peer = _record_path(identity, 999999)
+    peer.parent.mkdir(parents=True, exist_ok=True)
+    peer.write_text("{not json", encoding="utf-8")
+    _age(peer, age_s)
+    return peer
+
+
+def _claim_idle(monkeypatch, runtime, identity):
+    from hermes_constants import hermes_home_key
+    monkeypatch.setattr(bu, "_driven_daemons", {identity: hermes_home_key()})
+    monkeypatch.setattr(bu, "_daemon_last_used", {identity: 0.0})
+    mine = _record_path(identity)
+    _write_record(mine, identity, runtime, os.getpid(), bu._process_start_time(os.getpid()))
+    stopped = []
+    monkeypatch.setattr(bu, "_reload_daemons", lambda daemons: (stopped.extend(daemons), [])[1])
+    return mine, stopped
+
+
+def test_a_long_corrupt_record_stops_blocking_exit_and_idle_and_is_pruned(runtime, monkeypatch):
+    """The fail-safe must not become a trap: one bad write used to make its daemon unstoppable by the exit
+    and idle paths forever, because nothing ever removed an unparseable record."""
+    identity = tuple(_identity(runtime, "corrupt-old", runtime))
+    peer = _corrupt_peer(identity, bu.HARNESS_CORRUPT_RECORD_GRACE_S + 3600)
+    assert bu._other_live_owner(identity) is False
+
+    mine, stopped = _claim_idle(monkeypatch, runtime, identity)  # idle stop
+    assert bu.stop_idle_harness_daemons(60, now=3600.0) == [identity]
+    assert stopped == [identity], "a long-corrupt record still blocked the idle stop"
+
+    _, stopped = _claim_idle(monkeypatch, runtime, identity)  # exit stop
+    bu.stop_harness_daemons(claim_aware=True)
+    assert stopped == [identity], "a long-corrupt record still blocked the exit stop"
+
+    monkeypatch.setattr(bu, "_find_cli", lambda: None)  # the prune is bookkeeping: no CLI needed, nothing signalled
+    bu.reap_orphaned_harness_daemons(force=True)
+    assert not peer.exists(), "the sweep left a long-corrupt record behind"
+
+
+def test_a_recent_corrupt_record_still_fails_safe(runtime, monkeypatch):
+    identity = tuple(_identity(runtime, "corrupt-new", runtime))
+    peer = _corrupt_peer(identity, bu.HARNESS_CORRUPT_RECORD_GRACE_S - 3600)
+    assert bu._other_live_owner(identity) is True
+
+    mine, stopped = _claim_idle(monkeypatch, runtime, identity)
+    bu.stop_idle_harness_daemons(60, now=3600.0)
+    assert stopped == [] and not mine.exists()
+
+    mine, stopped = _claim_idle(monkeypatch, runtime, identity)
+    bu.stop_harness_daemons(claim_aware=True)
+    assert stopped == [] and not mine.exists()
+
+    monkeypatch.setattr(bu, "_find_cli", lambda: pytest.fail("signalled on an unparseable record"))
+    bu.reap_orphaned_harness_daemons(force=True)
+    assert peer.exists(), "the sweep deleted a corrupt record still inside its grace"
+
+
+def test_the_sweep_never_deletes_a_record_that_parses_however_old(runtime, monkeypatch):
+    identity = tuple(_identity(runtime, "valid-old", runtime))
+    record = _record_path(identity)
+    _write_record(record, identity, runtime, os.getpid(), bu._process_start_time(os.getpid()))
+    _age(record, bu.HARNESS_CORRUPT_RECORD_GRACE_S * 10)
+    monkeypatch.setattr(bu, "_find_cli", lambda: pytest.fail("reaped a daemon with a live owner"))
+
+    assert bu._prune_stale_corrupt_records() == 0
+    assert bu.reap_orphaned_harness_daemons(force=True) == 0
+    assert record.exists(), "the sweep deleted a valid record"
+
+
 def test_a_killed_daemon_socket_is_waited_out_before_cleanup(tmp_path, monkeypatch):
     """After SIGKILL the socket may still accept for a moment (Darwin): wait (bounded) before unlinking."""
     path = Path(tempfile.mkdtemp(dir="/tmp", prefix="hbw-")) / "s.sock"  # no-tmp: ok — AF_UNIX sun_path
