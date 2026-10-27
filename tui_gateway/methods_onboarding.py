@@ -79,7 +79,7 @@ def _shared_nous_store() -> tuple[Path, ...]:
 def _version(path):
     from utils import file_cache_version
     try:
-        return file_cache_version(path)
+        return file_cache_version(path, always_digest=True)  # stamp stored, compared later
     except OSError:
         return None
 

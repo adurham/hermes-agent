@@ -135,7 +135,7 @@ def _config_stamp() -> tuple:
     stamp = []
     for name in _INVENTORY_FILES:
         try:
-            stamp.append(file_cache_version(home / name))
+            stamp.append(file_cache_version(home / name, always_digest=True))
         except OSError:
             stamp.append(None)
     return tuple(stamp)

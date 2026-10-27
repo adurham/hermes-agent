@@ -41,7 +41,7 @@ _OWN_GATEWAY_PROBE_TIMEOUT_SECS = 5.0
 
 def _stat_signature(path: Path) -> Optional[tuple]:
     try:
-        return file_cache_version(path)
+        return file_cache_version(path, always_digest=True)  # stored, compared on a later tick
     except OSError:
         return None
 
