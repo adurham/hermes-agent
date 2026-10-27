@@ -61,6 +61,11 @@ def mtime_is_racy(mtime_ns: int) -> bool:
     return time.time_ns() - mtime_ns < RACY_MTIME_WINDOW_NS
 
 
+def content_digest(data: bytes) -> str:
+    """Short digest of ``data`` for cache keys (not a security primitive)."""
+    return hashlib.blake2b(data, digest_size=16).hexdigest()
+
+
 def racy_content_digest(path: str | Path, mtime_ns: int) -> str:
     """``""`` once ``mtime_ns`` has settled; while it is racy, a digest of the file's bytes. A cache
     keyed on a stat signature appends it, because two same-size in-place writes in one timestamp tick
@@ -69,7 +74,30 @@ def racy_content_digest(path: str | Path, mtime_ns: int) -> str:
     if not mtime_is_racy(mtime_ns):
         return ""
     with open(path, "rb") as f:
-        return hashlib.blake2b(f.read(), digest_size=16).hexdigest()
+        return content_digest(f.read())
+
+
+def file_cache_version(path: str | Path, st: os.stat_result | None = None, *,
+                       always_digest: bool = False) -> tuple[Any, ...]:
+    """Key for anything derived from a file's content: :func:`file_signature` plus a content digest.
+
+    The digest is :func:`racy_content_digest` (empty once the file is 2 s old), which suits a cache
+    re-validated on every read: a racily-stored entry costs one re-parse when the file settles.
+    ``always_digest`` hashes on every call, for a signature stored and compared much later (a
+    change detector whose false "changed" restarts something, or a "still the broken file" record),
+    where the racy digest turning empty would read as a change. Raises ``OSError`` like ``os.stat``;
+    given the caller's ``st`` it does not: a file gone or unreadable since that stat gets the error's
+    name as its digest, which no readable version matches."""
+    sig = file_signature(Path(path).stat() if st is None else st)
+    try:
+        if always_digest:
+            with open(path, "rb") as f:
+                return (*sig, content_digest(f.read()))
+        return (*sig, racy_content_digest(path, sig[0]))  # sig[0] is st_mtime_ns
+    except OSError as exc:
+        if st is None:
+            raise
+        return (*sig, type(exc).__name__)
 
 
 def _preserve_file_mode(path: Path) -> int | None:
@@ -647,13 +675,12 @@ _YAML_FILE_CACHE_LOCK = threading.Lock()
 
 
 def load_yaml_file_readonly(path: str | Path) -> Any:
-    """``fast_safe_load`` of a file, re-parsed only when its :func:`file_signature` changes.
+    """``fast_safe_load`` of a file, re-parsed only when its :func:`file_cache_version` changes.
 
     Returns the cached object itself — callers must never mutate it. Parse errors propagate and
     are not cached; a missing file raises ``FileNotFoundError`` like ``open`` does."""
     path = Path(path)
-    st = path.stat()
-    sig = (*file_signature(st), racy_content_digest(path, st.st_mtime_ns))
+    sig = file_cache_version(path)
     key = str(path)
     with _YAML_FILE_CACHE_LOCK:
         cached = _YAML_FILE_CACHE.get(key)

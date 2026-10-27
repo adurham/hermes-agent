@@ -998,13 +998,13 @@ def _load_cfg_raw() -> dict:
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config_backend import config_exists, config_version
+    from hermes_cli.config_backend import config_cache_version, config_exists
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.config_read_errors import FailedConfigRead
     try:
         p = _active_config_path()
         try:
-            sig = config_version(p)
+            sig = config_cache_version(p)
         except FileNotFoundError:  # absent; any other stat error is a failed read, never "no config"
             sig = None
         with _cfg_lock:
@@ -1032,13 +1032,13 @@ def _load_cfg() -> dict:
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
     from hermes_cli.config import atomic_config_replace
-    from hermes_cli.config_backend import config_version
+    from hermes_cli.config_backend import config_cache_version
     path = _active_config_path()
     atomic_config_replace(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
-            _cfg_sig = config_version(path)
+            _cfg_sig = config_cache_version(path)
         except Exception:
             _cfg_sig = None
 
