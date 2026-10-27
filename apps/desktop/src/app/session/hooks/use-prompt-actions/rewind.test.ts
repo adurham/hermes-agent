@@ -733,6 +733,34 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
     ).rejects.toBe(failure)
     expect(request).toHaveBeenCalledTimes(1)
   })
+
+  const DEEP_CONFIRM_REJECTED = 'invalid params for prompt.submit: confirm_deep_truncate: Extra inputs are not permitted'
+
+  it.each([
+    ['another code with the same message', DEEP_CONFIRM_REJECTED, 4018, true],
+    ['a 4000 that only mentions the field', 'prompt.submit failed near confirm_deep_truncate', 4000, true],
+    ['a submit that never sent the field', DEEP_CONFIRM_REJECTED, 4000, false]
+  ])('does not retry %s', async (_label, message, code, confirmDeep) => {
+    const failure = new JsonRpcGatewayError(message, { code })
+    const request = vi.fn().mockRejectedValue(failure)
+
+    await expect(
+      runRewindSubmit(
+        request as never,
+        'sid',
+        'fixed prompt',
+        1,
+        undefined,
+        false,
+        undefined,
+        13,
+        'typo prompt',
+        undefined,
+        confirmDeep
+      )
+    ).rejects.toBe(failure)
+    expect(request).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('optimistic rewind/reload turn-clock seeding (#86795)', () => {
