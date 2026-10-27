@@ -1374,11 +1374,14 @@ export function usePromptActions({
             notify({ kind: 'warning', message: copy.editFailed })
           }
 
-          // Nothing was cut. After a refresh the optimistic edit is already gone, so keep whatever
-          // history the session holds now; with no stored session to refresh from, restore the
-          // original history. A switch during the confirm leaves the foreground flags to the
-          // session now on screen.
-          rollBackEdit(sessionId, storedId ? undefined : messages, activeSessionIdRef.current === sessionId)
+          // Nothing was cut. A turn the backend accepted meanwhile (another window, a queued
+          // follow-up) owns the busy flags and the transcript now, so leave both to it. Otherwise,
+          // after a refresh the optimistic edit is already gone: keep whatever history the session
+          // holds now; with no stored session to refresh from, restore the original history. A
+          // switch during the confirm leaves the foreground flags to the session now on screen.
+          if (!$sessionStates.get()[sessionId]?.turnLive) {
+            rollBackEdit(sessionId, storedId ? undefined : messages, activeSessionIdRef.current === sessionId)
+          }
 
           return 'done'
         }

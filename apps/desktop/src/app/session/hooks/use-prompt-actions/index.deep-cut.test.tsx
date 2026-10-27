@@ -439,6 +439,99 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     expect($notifications.get().some(n => n.kind === 'warning')).toBe(answer === 'moved')
   })
 
+  it.each([
+    ['declining', 'decline'],
+    ['accepting after it moved', 'moved']
+  ])('%s the second deep confirm leaves a turn that started meanwhile running', async (_label, answer) => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 },
+      { id: 'u2', parts: [textPart('second')], role: 'user' as const, rowId: 13, timestamp: 2 }
+    ]
+
+    const fresh = [
+      { ...seed[0], rowId: 21 },
+      seed[1],
+      { ...seed[2], rowId: 23 },
+      { id: 'u3', parts: [textPart('arrived after consent')], role: 'user' as const, rowId: 25, timestamp: 3 }
+    ]
+
+    setActiveSessionId(RUNTIME_SESSION_ID)
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', seed as never))
+    setMessages(seed as never)
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+
+        if (submits.length === 1) {
+          throw new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+    let lastState: Record<string, unknown> | undefined
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        onUpdateState={(_id, _stored, next) => {
+          lastState = next
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={async () => {
+          publishSessionState(RUNTIME_SESSION_ID, createClientSessionState('stored', [...fresh] as never))
+          setMessages(fresh as never)
+          handle!.replaceSessionMessages(fresh)
+        }}
+        seedMessages={seed}
+        storedSessionId="stored"
+      />
+    )
+
+    const grown = [...fresh, { id: 'u4', parts: [textPart('newer')], role: 'user' as const, rowId: 27, timestamp: 4 }]
+    let confirms = 0
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        confirms += 1
+
+        if (confirms === 2) {
+          // Another window starts a turn in this session while the dialog is open.
+          const live = { ...createClientSessionState('stored', grown as never), busy: true, turnLive: true }
+
+          publishSessionState(RUNTIME_SESSION_ID, live as never)
+          setMessages(grown as never)
+          handle!.replaceSessionMessages(grown)
+          $busy.set(true)
+        }
+
+        settleConfirm(confirms === 1 || answer === 'moved')
+      }
+    })
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+    stopConfirming()
+
+    expect(confirms).toBe(2)
+    expect(submits).toHaveLength(1)
+    // The live turn keeps its busy flags: nothing this edit did is rolled back over it.
+    expect($busy.get()).toBe(true)
+    expect(lastState).not.toMatchObject({ busy: false })
+  })
+
   it('a stale-target retry whose resume rebinds the runtime reports the turn unavailable', async () => {
     const seed = [
       { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
