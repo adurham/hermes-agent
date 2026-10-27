@@ -121,7 +121,6 @@ function Sync-HandoffLog {
     # Append every pending line in one write, oldest first. False while another process still
     # holds the log: the lines stay queued for the next attempt instead of being dropped.
     if ($script:PendingLogLines.Count -eq 0) { return $true }
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes((($script:PendingLogLines -join "`r`n") + "`r`n"))
     $held = $false
     try {
         $mutex = $script:HandoffLogMutex
@@ -138,7 +137,12 @@ function Sync-HandoffLog {
         $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Append,
             [System.Security.AccessControl.FileSystemRights]::AppendData,
             ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete), 4096, [System.IO.FileOptions]::None)
-        try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+        try {
+            # Encoded only once the file is open: a held log retried on every poll of a long step
+            # must not re-encode the whole growing queue each time.
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes((($script:PendingLogLines -join "`r`n") + "`r`n"))
+            $fs.Write($bytes, 0, $bytes.Length)
+        } finally { $fs.Dispose() }
     } catch {
         return $false
     } finally {
@@ -179,12 +183,19 @@ function Write-HandoffLog([string]$Message) {
 New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
 try { . (Join-Path $PSScriptRoot 'marker.ps1') } catch {
     Write-HandoffLog "Update aborted: $PSScriptRoot\marker.ps1 could not be loaded ($($_.Exception.Message)). Nothing was changed. Repair the installation and try again."
+    Complete-HandoffLog
     exit 3
 }
 
-# Helper op (SPEC 6): one verdict line, before any UI, result or relaunch.
-if ($MarkerOp -ceq 'custody') { Invoke-MarkerCustody $CustodyOf; exit 0 }   # Start-MarkerCustodian's watcher
-if ($MarkerOp) { exit (Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun) }
+# Helper op (SPEC 6): one verdict line, before any UI, result or relaunch. Each releases the
+# marker lock before it returns; the log flush comes after. A reclaim/withdraw flush is short
+# because Electron bounds the whole helper (MARKER_HELPER_TIMEOUT_MS); its verdict is already out.
+if ($MarkerOp -ceq 'custody') { Invoke-MarkerCustody $CustodyOf; Complete-HandoffLog; exit 0 }   # Start-MarkerCustodian's watcher
+if ($MarkerOp) {
+    $markerOpCode = Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun
+    Complete-HandoffLog 3
+    exit $markerOpCode
+}
 
 # The Desktop's identity is pinned now: a reused pid later is not "still open".
 $script:DesktopCt = $null
@@ -194,7 +205,7 @@ if ($DesktopPid -gt 0) {
     $script:DesktopSeenAlive = $desktopProbe.Alive
     $script:DesktopCt = $desktopProbe.Ct
 }
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestLogConcurrency) {
     $script:MarkerClaim = Invoke-MarkerClaim
 }
 
