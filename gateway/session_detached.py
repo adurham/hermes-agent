@@ -61,7 +61,8 @@ def detach(authority, live, session_id) -> None:
     from gateway.session_local_recovery import local_adapter
     adapter = local_adapter(authority)  # its delivery; a messaging-only gateway has none yet
     live.route = detached_key(live.route, session_id)
-    live.source = replace_source(live.source, detached_route=live.route)
+    # No reply anchor: its replies reach the apps, and a background result's event is this very source.
+    live.source = replace_source(live.source, detached_route=live.route, message_id=None)
     adapter.register_source(live.source)  # what admits its background results (``authorize_source``)
 
 
@@ -201,7 +202,11 @@ async def follow_detached_pin(runner, evt):
     key = str(evt.get('session_key') or '')
     pinned = str(evt.get('parent_session_id') or '').strip()
     from gateway.session_authorities import all_authorities
-    if not key or not pinned or detached_session_id(key) or not all_authorities(runner):
+    if not key or not all_authorities(runner):
+        return evt
+    if (detached := detached_session_id(key)) is not None:
+        return _follow_detached_key(runner, evt, key, detached)
+    if not pinned:
         return evt
     store = runner.session_store
     authority = _route_authority(runner, store, key)
@@ -215,6 +220,25 @@ async def follow_detached_pin(runner, evt):
     row = authority.db.get_session(target)
     if row is None or row.get('ended_at'):
         return evt
+    live = _mounted(authority, session_id)
+    if live is None or live.route != detached_key(key, session_id):
+        return evt
+    return {**evt, 'session_key': live.route}
+
+
+def _follow_detached_key(runner, evt, key, session_id):
+    """A result of a turn that ran on detached *key*: on the chat's route once the chat names the
+    conversation again (its ``/resume``), as that conversation's own result there."""
+    authority = _route_authority(runner, runner.session_store, key)
+    live = _mounted(authority, session_id) if authority is not None else None
+    if live is None or live.route == key:
+        return evt
+    return {**evt, 'session_key': live.route}
+
+
+def _mounted(authority, session_id):
+    """*session_id*'s live session, mounted as its route would after a restart (off the chat when the
+    chat names another conversation); None when it cannot be mounted now."""
     if session_id not in authority.sessions:
         from gateway.session_authorities import owner_scope
         from gateway.session_route_recovery import restore_routed_session
@@ -223,11 +247,8 @@ async def follow_detached_pin(runner, evt):
             with owner_scope(authority):
                 restore_routed_session(authority, session_id)
         except RuntimeStoreError:  # draining: the drain retries it
-            return evt
-    live = authority.sessions.get(session_id)
-    if live is None or live.route != detached_key(key, session_id):
-        return evt
-    return {**evt, 'session_key': live.route}
+            return None
+    return authority.sessions.get(session_id)
 
 
 def detached_live_source(runner, key):

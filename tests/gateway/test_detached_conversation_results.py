@@ -96,6 +96,23 @@ async def test_a_result_the_chat_started_on_the_old_conversation_lands_in_it_onc
 
 
 @pytest.mark.asyncio
+async def test_a_result_of_the_apps_turn_that_finishes_after_the_chat_resumed_the_conversation_runs_there(monkeypatch):
+    """A process the app's turn on A started (on A's own key) finishes after the chat ``/resume``d A:
+    it runs as A's turn on the chat's route, never refused for a key that no longer names A."""
+    from tests.gateway.test_detached_conversation_lifecycle import _process_event
+    runner, adapter, authority, source, sent, ran, _gates, lane, ref_a = await _moved_on(monkeypatch)
+    a = ref_a.session_id
+    assert await _app_turn(authority, ref_a, 'start a job') == ('terminal', 'completed')
+    evt = _process_event(runner, authority.sessions[a], a, exit_code=0, output='done')
+    await _chat(adapter, source, sent, '/resume First chat')
+    ran_before = len(ran)
+
+    assert await runner._inject_watch_notification('[process proc_1 finished]', evt) is True
+    await async_wait_until(lambda: len(ran) > ran_before, timeout=10, what="A's result turn")
+    assert [turn[1:] for turn in ran[ran_before:]] == [(a, lane)]
+
+
+@pytest.mark.asyncio
 async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_source_cache_forgot_it(
         tmp_path, monkeypatch):
     """N3, two profiles in one process: a process the app's turn on a ``fitness`` conversation A
@@ -125,7 +142,8 @@ async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_s
     runner.session_authorities = SessionAuthorities(root, multiplexed=True)
     runner.session_authorities.add(root, launch)
     runner.session_authorities.add(profile, fitness, name='fitness')
-    source = SessionSource(platform=Platform.TELEGRAM, chat_id='555', chat_type='dm', user_id='u1', profile='fitness')
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='555', chat_type='dm', user_id='u1', profile='fitness',
+                           message_id='chat-message-1')  # as the chat's last inbound left it
     route = runner.session_store._generate_session_key(source)
     assert route.startswith('agent:fitness:')
     a = 'conversation-a'
