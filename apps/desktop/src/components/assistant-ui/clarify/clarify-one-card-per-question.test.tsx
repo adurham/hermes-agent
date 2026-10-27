@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -62,23 +62,20 @@ const tree = (ui: ReactNode) => (
   </I18nProvider>
 )
 
-function rowProps(messages: ChatMessage[], toolCallId: string): ToolCallMessagePartProps {
-  const part = messages[0].parts.find(entry => entry.type === 'tool-call' && entry.toolCallId === toolCallId)
+type ClarifyPart = Extract<ChatMessage['parts'][number], { type: 'tool-call' }>
 
-  if (part?.type !== 'tool-call') {
-    throw new Error(`no tool row ${toolCallId}`)
-  }
-
+function rowProps(part: ClarifyPart): ToolCallMessagePartProps & { clarifyRequestId?: string } {
   return {
     addResult: vi.fn(),
     args: part.args,
     argsText: JSON.stringify(part.args),
+    clarifyRequestId: part.clarifyRequestId,
     isError: false,
     respondToApproval: vi.fn(),
     result: undefined,
     resume: vi.fn(),
     status: { type: 'running' },
-    toolCallId,
+    toolCallId: part.toolCallId,
     toolName: 'clarify',
     type: 'tool-call'
   } as ToolCallMessagePartProps
@@ -88,37 +85,61 @@ function clarifyCall(toolCallId: string, questions: (typeof TARGET)[]) {
   return { args: { questions }, toolCallId, toolName: 'clarify', type: 'tool-call' } as never
 }
 
-/** One assistant message whose clarify rows re-arm the way `parkClarify` does. */
-function transcript(...calls: ReturnType<typeof clarifyCall>[]) {
+const clarifyParts = (messages: ChatMessage[]) =>
+  messages.flatMap(message => message.parts.filter((part): part is ClarifyPart => part.type === 'tool-call'))
+
+/** Cards whose choices can be answered right now. */
+const liveCards = (container: HTMLElement) =>
+  [...container.querySelectorAll('[data-clarify-choices]')].filter(choices =>
+    choices.querySelector('button:not([disabled])')
+  ).length
+
+/** Assistant messages (one per argument) whose clarify rows re-arm the way `parkClarify` does. */
+function transcript(...rows: ReturnType<typeof clarifyCall>[][]) {
   const request = vi.fn().mockResolvedValue({ ok: true })
-  let messages: ChatMessage[] = [{ id: 'm1', parts: calls, pending: true, role: 'assistant' }]
+
+  let messages: ChatMessage[] = rows.map((parts, index) => ({
+    id: `m${index + 1}`,
+    parts,
+    pending: true,
+    role: 'assistant'
+  }))
 
   $activeSessionId.set('session-1')
   $gateway.set({ request } as never)
 
   return {
     add(call: ReturnType<typeof clarifyCall>) {
-      messages = [{ ...messages[0], parts: [...messages[0].parts, call] }]
+      const tail = messages.at(-1)!
+      messages = [...messages.slice(0, -1), { ...tail, parts: [...tail.parts, call] }]
     },
     locks: () =>
       [...request.mock.calls, ...gatewayMocks.requestGatewayForAgent.mock.calls].filter(call =>
         (call as unknown[]).includes('clarify.lock')
       ),
-    park(next: ClarifyRequest) {
+    /** Park the next card. `appends`: the re-arm cannot pick between open rows and adds its own. */
+    park(next: ClarifyRequest, { appends = false } = {}) {
       rememberServerRequest({ fail: vi.fn(), id: next.requestId, method: 'clarify', params: {}, respond: vi.fn() })
       setClarifyRequest(next)
-      const projection = restorePendingClarifyToolCall(messages, pendingClarifyToolPayload(next))
-      // Re-armed in place: a card never grows a second row.
-      expect(projection.messages[0].parts).toHaveLength(messages[0].parts.length)
-      messages = projection.messages
+      const before = clarifyParts(messages).length
+      messages = restorePendingClarifyToolCall(messages, pendingClarifyToolPayload(next)).messages
+      expect(clarifyParts(messages)).toHaveLength(before + (appends ? 1 : 0))
     },
-    props: (toolCallId: string) => rowProps(messages, toolCallId)
+    props: (toolCallId: string) => rowProps(clarifyParts(messages).find(part => part.toolCallId === toolCallId)!),
+    /** Every clarify row, in transcript order. */
+    rows: () => (
+      <>
+        {clarifyParts(messages).map((part, index) => (
+          <ClarifyTool key={index} {...rowProps(part)} />
+        ))}
+      </>
+    )
   }
 }
 
 describe('a clarify asked one card per question', () => {
   it('shows the next card after the chat bar answered the first, and the chat bar answers that card', async () => {
-    const chat = transcript(clarifyCall('call-1', [TARGET, REGION]))
+    const chat = transcript([clarifyCall('call-1', [TARGET, REGION])])
     chat.park(card('prompt-1', TARGET))
     const view = render(tree(<ClarifyTool {...chat.props('call-1')} />))
 
@@ -148,7 +169,7 @@ describe('a clarify asked one card per question', () => {
   })
 
   it('shows the next card after Skip on the first', () => {
-    const chat = transcript(clarifyCall('call-1', [TARGET, REGION]))
+    const chat = transcript([clarifyCall('call-1', [TARGET, REGION])])
     chat.park(card('prompt-1', TARGET))
     const view = render(tree(<ClarifyTool {...chat.props('call-1')} />))
 
@@ -165,9 +186,9 @@ describe('a clarify asked one card per question', () => {
   it("keeps an earlier call's answered row settled when a later call asks", () => {
     // The earlier row never got its tool.complete (a lost frame, or a duplicate row a re-delivered
     // activate left behind), so it is still a live clarify row when the later call's question lands.
-    const chat = transcript(clarifyCall('call-1', [TARGET]))
+    const chat = transcript([clarifyCall('call-1', [TARGET])])
     chat.park(card('prompt-1', TARGET))
-    const view = render(tree(<ClarifyTool {...chat.props('call-1')} />))
+    const view = render(tree(chat.rows()))
 
     act(() => {
       expect(answerParkedCard('session-1', 'staging')).toBe(true)
@@ -175,17 +196,72 @@ describe('a clarify asked one card per question', () => {
 
     chat.add(clarifyCall('call-2', [REGION]))
     act(() => chat.park(card('prompt-2', REGION)))
-    view.rerender(
-      tree(
-        <>
-          <ClarifyTool {...chat.props('call-1')} />
-          <ClarifyTool {...chat.props('call-2')} />
-        </>
-      )
-    )
+    view.rerender(tree(chat.rows()))
 
     expect(view.container.querySelectorAll('[data-clarify-settled]')).toHaveLength(1)
     expect(screen.getAllByText('Which region?')).toHaveLength(1)
     expect(screen.getByRole('button', { name: /^.*eu/ }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('keeps an earlier answered call settled when a later call asks the same question', () => {
+    const chat = transcript([clarifyCall('call-1', [TARGET])])
+    chat.park(card('prompt-1', TARGET))
+    const view = render(tree(chat.rows()))
+
+    act(() => {
+      expect(answerParkedCard('session-1', 'staging')).toBe(true)
+    })
+
+    chat.add(clarifyCall('call-2', [TARGET]))
+    act(() => chat.park(card('prompt-2', TARGET)))
+    view.rerender(tree(chat.rows()))
+
+    expect(view.container.querySelectorAll('[data-clarify-settled]')).toHaveLength(1)
+    expect(liveCards(view.container)).toBe(1)
+  })
+
+  it("does not show a later call's question on a card answered with its own Confirm", async () => {
+    // Confirm latches the card until tool.complete; here that completion has not landed yet.
+    const chat = transcript([clarifyCall('call-1', [TARGET])])
+    chat.park(card('prompt-1', TARGET))
+    const view = render(tree(chat.rows()))
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+    await waitFor(() => expect(chat.locks()).toHaveLength(1))
+
+    chat.add(clarifyCall('call-2', [REGION]))
+    act(() => chat.park(card('prompt-2', REGION)))
+    view.rerender(tree(chat.rows()))
+
+    expect(liveCards(view.container)).toBe(1)
+    expect(screen.getAllByText('Which region?')).toHaveLength(1)
+  })
+
+  it('shows each card once when the call is duplicated in a second message', () => {
+    // A re-delivered activate can leave a copy of the call; neither copy's args single out a card,
+    // so the re-arm adds its own row for each one.
+    const chat = transcript([clarifyCall('call-1', [TARGET, REGION])], [clarifyCall('call-1', [TARGET, REGION])])
+    chat.park(card('prompt-1', TARGET), { appends: true })
+    const view = render(tree(chat.rows()))
+    expect(liveCards(view.container)).toBe(1)
+
+    act(() => {
+      expect(answerParkedCard('session-1', 'staging')).toBe(true)
+    })
+
+    act(() => chat.park(card('prompt-2', REGION), { appends: true }))
+    view.rerender(tree(chat.rows()))
+
+    expect(liveCards(view.container)).toBe(1)
+    expect(screen.getByRole('button', { name: /^.*eu/ }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('shows one card when a one-question call is duplicated', () => {
+    const chat = transcript([clarifyCall('call-1', [TARGET])], [clarifyCall('call-1', [TARGET])])
+    chat.park(card('prompt-1', TARGET))
+    const view = render(tree(chat.rows()))
+
+    expect(liveCards(view.container)).toBe(1)
   })
 })

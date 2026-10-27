@@ -6,6 +6,7 @@ import { useMemo, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import type { TimelinePartMetadata } from '@/lib/chat-messages'
 import { $settledClarifyResults, type ClarifyRequest, sessionClarifyRequest } from '@/store/clarify'
 
 import { selectMessageRunning } from '../tool/fallback-model'
@@ -15,7 +16,9 @@ import { ClarifyToolPending } from './pending'
 import { ClarifyToolSettled } from './settled'
 import { useUndeliveredClarify } from './use-undelivered'
 
-export const ClarifyTool = (props: ToolCallMessagePartProps) => {
+type ClarifyToolProps = ToolCallMessagePartProps & Pick<TimelinePartMetadata, 'clarifyRequestId'>
+
+export const ClarifyTool = (props: ClarifyToolProps) => {
   // Answered → settled Q&A (ToolFallback collapsed the answer away).
   if (props.result !== undefined) {
     return <ClarifyToolSettled {...props} />
@@ -31,14 +34,19 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
 // would show a later card the answer of an earlier one.
 const requestIdByToolCall = new Map<string, string>()
 
-// Whether this row may follow the session's live request: only when its own
-// args cover every question the request asks. A one-at-a-time batch re-arms
-// the same row for its next question, so the row must keep up — but a
-// duplicate row left behind by a re-delivered activate must not paint the
-// current question as a second live card. No request means nothing to follow.
-function rowCoversRequest(request: ClarifyRequest | null, args: ClarifyArgs): boolean {
+// Whether this row renders the session's live request. The transcript re-arm
+// ties each request to one row (`clarifyRequestId`): that row follows it, even
+// when the gateway asks a batch one card per question on the same row. Every
+// other row it saw is history, including an earlier call or a duplicated copy
+// that asks the same question. A row no re-arm has seen follows a request its
+// own args cover.
+function ownsRequest(request: ClarifyRequest | null, row: ClarifyToolProps, args: ClarifyArgs): boolean {
   if (!request) {
-    return true
+    return false
+  }
+
+  if (row.clarifyRequestId !== undefined) {
+    return row.clarifyRequestId === request.requestId
   }
 
   const asked = new Set((args.questions ?? []).map(entry => entry.question.trim()))
@@ -46,7 +54,7 @@ function rowCoversRequest(request: ClarifyRequest | null, args: ClarifyArgs): bo
   return asked.size > 0 && request.questions.every(question => asked.has(question.question.trim()))
 }
 
-function ClarifyToolLive(props: ToolCallMessagePartProps) {
+function ClarifyToolLive(props: ClarifyToolProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
@@ -61,20 +69,18 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   // the request and must still collapse an unanswered card.
   const [answered, setAnswered] = useState(false)
   const settledResults = useStore($settledClarifyResults)
-  const requestId = requestIdByToolCall.get(rowKey)
-  const covers = rowCoversRequest(request, fromArgs)
-  // The chat bar settles a one-question card as soon as it is answered. The
-  // gateway then sends the next question as a new request on this same row.
-  // That live request replaces the settlement, or the next question never
-  // appears and the next chat-bar line is taken as its answer. Only a row
-  // whose args cover the request follows it.
-  const nextRequest = Boolean(request && covers && request.requestId !== requestId)
+  const owner = ownsRequest(request, props, fromArgs)
 
-  if (request && nextRequest) {
+  if (request && owner) {
     requestIdByToolCall.set(rowKey, request.requestId)
   }
 
-  const settledResult = !nextRequest && requestId ? settledResults[requestId] : undefined
+  // The chat bar and Skip store an answer before `tool.complete`. It shows
+  // until this row's next live request: the gateway asks a batch one card per
+  // question, and a stored answer that outlived its card would hide the next
+  // question while the chat bar answered it.
+  const requestId = requestIdByToolCall.get(rowKey)
+  const settledResult = !owner && requestId ? settledResults[requestId] : undefined
 
   const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered && !settledResult)
 
@@ -82,10 +88,10 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
     return <ClarifyToolSettled {...props} result={settledResult} />
   }
 
-  // A row that does not carry the live question (a re-delivered duplicate, an
-  // earlier call) is history: it renders its own args as a plain tool row,
-  // never as the session's one interactive card.
-  if (request && !covers && !answered) {
+  // A row that does not own the live question (an earlier call, a duplicated
+  // copy) is history: it renders its own args as a plain tool row, never as
+  // the session's one interactive card.
+  if (request && !owner && !answered) {
     return <ToolFallback {...props} />
   }
 
@@ -97,11 +103,13 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
     return <ToolFallback {...props} />
   }
 
+  // A row answered from its own card waits for `tool.complete` with its own
+  // args. A live request it does not own belongs to another row.
   return (
     <ClarifyToolPending
       fromArgs={fromArgs}
       onAnswered={() => setAnswered(true)}
-      request={request}
+      request={owner ? request : null}
       undelivered={undelivered}
     />
   )
