@@ -152,6 +152,91 @@ describe('spawnRelaunch', () => {
     expect(childEnv).toEqual({ APPIMAGE: image, PATH: '/tmp/.mount_IdeAbC123/usr/bin:/usr/bin' })
   })
 
+  // --appimage-extract-and-run restarts the executable inside APPDIR, a plain
+  // directory no AppRun re-enters: dropping APPDIR there left ownAppImage blind
+  // and uninstall unable to find the image file.
+  it.skipIf(process.platform !== 'linux')('keeps APPDIR for an executable inside it', async () => {
+    const appDir = path.join(os.tmpdir(), 'appimage_extracted_0123abcd')
+    const env: NodeJS.ProcessEnv = { APPDIR: appDir, APPIMAGE: '/apps/Hermes.AppImage', PATH: `${appDir}/usr/bin:/bin` }
+    const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
+    let childEnv: NodeJS.ProcessEnv | undefined
+    vi.mocked(spawn).mockImplementationOnce((_file, _args, options) => {
+      childEnv = (options as childProcess.SpawnOptions).env
+
+      return realSpawn('true', [], { stdio: 'pipe' })
+    })
+
+    spawnRelaunch(path.join(appDir, 'hermes'), [], env).stdin!.end()
+
+    expect(childEnv).toMatchObject(env)
+  })
+
+  // APPDIR keeps the raw $TMPDIR (a symlink on Fedora Atomic, /home -> /var/home)
+  // while process.execPath is resolved: the containment check must agree with ownAppImage.
+  it.skipIf(process.platform !== 'linux')(
+    'keeps APPDIR when the extracted dir is reached through a symlink',
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-extracted-link-'))
+
+      try {
+        const realDir = path.join(root, 'var-home', 'appimage_extracted_0123abcd')
+        fs.mkdirSync(realDir, { recursive: true })
+        fs.writeFileSync(path.join(realDir, 'hermes'), '')
+        fs.symlinkSync(path.join(root, 'var-home'), path.join(root, 'home'))
+        const appDir = path.join(root, 'home', 'appimage_extracted_0123abcd')
+        const exe = fs.realpathSync(path.join(realDir, 'hermes'))
+
+        const env: NodeJS.ProcessEnv = {
+          APPDIR: appDir,
+          APPIMAGE: '/apps/Hermes.AppImage',
+          PATH: `${appDir}/usr/bin:/bin`
+        }
+
+        const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
+        let childEnv: NodeJS.ProcessEnv | undefined
+        vi.mocked(spawn).mockImplementationOnce((_file, _args, options) => {
+          childEnv = (options as childProcess.SpawnOptions).env
+
+          return realSpawn('true', [], { stdio: 'pipe' })
+        })
+
+        expect(ownAppImage(exe, env)).toBe('/apps/Hermes.AppImage')
+        spawnRelaunch(exe, [], env).stdin!.end()
+
+        expect(childEnv).toMatchObject(env)
+        expect(ownAppImage(exe, childEnv!)).toBe('/apps/Hermes.AppImage')
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  // Started from another app's AppImage (an AppImage terminal), Hermes inherits
+  // that app's APPDIR/APPIMAGE and its mount on PATH and EDITOR; app.relaunch
+  // kept them, so a restart must not strip half of that env.
+  it.skipIf(process.platform !== 'linux')("keeps another app's AppImage env intact", async () => {
+    const mount = path.join(os.tmpdir(), '.mount_TermAbC123')
+
+    const env: NodeJS.ProcessEnv = {
+      APPDIR: mount,
+      APPIMAGE: '/apps/Terminal.AppImage',
+      EDITOR: `${mount}/usr/bin/nvim`,
+      PATH: `${mount}/usr/bin:/bin`
+    }
+
+    const realSpawn = (await vi.importActual<typeof childProcess>('node:child_process')).spawn
+    let childEnv: NodeJS.ProcessEnv | undefined
+    vi.mocked(spawn).mockImplementationOnce((_file, _args, options) => {
+      childEnv = (options as childProcess.SpawnOptions).env
+
+      return realSpawn('true', [], { stdio: 'pipe' })
+    })
+
+    spawnRelaunch('/opt/Hermes/hermes', [], env).stdin!.end()
+
+    expect(childEnv).toEqual(env)
+  })
+
   // After `ready` Chromium holds dozens of fds above 9 without O_CLOEXEC
   // (crashpad client socket, DevTools listener, caches); dash, Debian's
   // /bin/sh, cannot close them, and each relaunch carried the last one's.
