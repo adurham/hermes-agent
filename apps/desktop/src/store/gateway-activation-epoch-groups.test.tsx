@@ -187,6 +187,19 @@ it('New Group Chat stays creatable after an activation that follows a healthy an
   await waitFor(() => expect(createButton().disabled).toBe(false))
 })
 
+// The live repro: a relaunch (or Webapp reload) restores the Bots pane, so the
+// roster mounts the closed dialog before the boot activation bumps the epoch.
+it('New Group Chat mounted closed before the boot activation enables Create once opened', async () => {
+  request.mockResolvedValue(payload)
+  const { rerender } = render(<CreateGroupChatDialog onClose={vi.fn()} open={false} roster={roster} />)
+
+  await activate()
+  rerender(<CreateGroupChatDialog onClose={vi.fn()} open roster={roster} />)
+  tickAll()
+
+  await waitFor(() => expect(createButton().disabled).toBe(false), { timeout: 2000 })
+})
+
 it('the existing-room execution gate re-probes after an activation, then settles', async () => {
   request.mockImplementation(async (_route: unknown, method: string) => {
     if (method === 'groups.capabilities') {
