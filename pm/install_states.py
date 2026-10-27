@@ -14,6 +14,13 @@ checkout sat where this process can see that it was deleted -- under the data ro
 ``installs/`` (scratch clones, the runtime checkout) or directly in a ``.worktrees/`` dir that
 still exists. Removal still fails closed on anything a live process could hold: the install
 lock, or a dependency / PM runtime generation lease.
+
+A checkout elsewhere (``~/.cache/review-1/head``, a scratch clone outside the data root) can never
+be proved deleted, so its missing checkout alone would keep the state forever. It is reclaimed
+once the state has also gone unused for ``worktrees.install_state_retention_days``: every sync
+recreates ``inputs/`` and every launch takes a generation lease (moving its
+``.leases`` dir), so a checkout that still exists behind a mount boundary and is used at all keeps
+its state. One unused for longer is rebuilt by ``hermes pm repair`` / the next activation.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ import contextlib
 import logging
 import os
 import shutil
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -33,11 +41,35 @@ def _provably_deleted(root: Path, data_root: Path) -> bool:
     return root.is_relative_to(data_root) or (root.parent.name == ".worktrees" and root.parent.is_dir())
 
 
+def _last_used(state: Path) -> float:
+    """Newest mtime among what a sync (``inputs/`` is recreated, ``facts.json`` rewritten) or a
+    launch (a generation's ``.leases`` dir) moves. Not the state dir itself: a part-way removal
+    moves it, and that must not restart the clock for the retry."""
+    paths = [state / "inputs", state / "facts.json"]
+    for generations in (state / "environments", state / "pm-runtime" / "generations"):
+        if generations.is_dir():
+            paths += [generation / ".leases" for generation in generations.iterdir()]
+    mtimes = [0.0]
+    for path in paths:
+        with contextlib.suppress(OSError):
+            mtimes.append(path.lstat().st_mtime)
+    return max(mtimes)
+
+
+def _retention_seconds() -> float | None:
+    from hermes_cli.config import cfg_get, load_config_readonly
+
+    days = cfg_get(load_config_readonly(), "worktrees", "install_state_retention_days", default=14)
+    return days * 86400 if isinstance(days, (int, float)) and days > 0 else None
+
+
 def orphan_install_states(installs: Path) -> list[Path]:
-    """State dirs whose recorded checkout is provably deleted. Dirs without a record are left alone."""
+    """State dirs whose recorded checkout is provably deleted, or missing and unused past the
+    retention period. Dirs without a record, and dirs whose checkout exists, are left alone."""
     if not installs.is_dir():
         return []
     data_root = installs.resolve().parent
+    retention = _retention_seconds()
     orphans: list[Path] = []
     for state in sorted(installs.iterdir()):
         record = state / "inputs" / ".project-root"
@@ -47,7 +79,10 @@ def orphan_install_states(installs: Path) -> list[Path]:
             root = record.read_text(encoding="utf-8-sig").strip()
         except OSError:
             continue
-        if root and _provably_deleted(Path(root), data_root):
+        if not root or Path(root).exists():
+            continue
+        if _provably_deleted(Path(root), data_root) or (
+                retention is not None and time.time() - _last_used(state) > retention):
             orphans.append(state)
     return orphans
 

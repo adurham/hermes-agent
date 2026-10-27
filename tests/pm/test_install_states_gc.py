@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 import pm.environments
 import pytest
@@ -83,3 +84,26 @@ def test_partly_removed_orphan_keeps_its_record_until_retried(tmp_path):
     finally:
         stuck.chmod(0o700)
     assert collect_orphan_install_states(installs) == [state] and not state.exists()
+
+
+def test_unprovable_missing_checkout_is_reclaimed_once_unused_past_retention(tmp_path):
+    installs = tmp_path / "home" / "installs"
+    present_root = tmp_path / "review" / "present"
+    present_root.mkdir(parents=True)
+    fresh = _state(installs, "aaaa", tmp_path / "review" / "fresh")
+    idle = _state(installs, "bbbb", tmp_path / "review" / "idle")
+    leased = _state(installs, "cccc", tmp_path / "review" / "leased")
+    present = _state(installs, "dddd", present_root)
+    lease_dir = leased / "environments" / "gen" / ".leases"
+    lease_dir.mkdir()
+    fd = os.open(lease_dir / "reader", os.O_CREAT | os.O_RDWR, 0o600)
+    assert lock_fd(fd, wait=False)
+    month_ago = time.time() - 30 * 86400
+    for state in (idle, leased, present):
+        for path in sorted(state.rglob("*"), reverse=True) + [state]:
+            os.utime(path, (month_ago, month_ago), follow_symlinks=False)
+    try:
+        assert collect_orphan_install_states(installs) == [idle]
+    finally:
+        os.close(fd)
+    assert all(p.is_dir() for p in (fresh, leased, present)) and not idle.exists()
