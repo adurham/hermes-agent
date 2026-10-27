@@ -832,7 +832,8 @@ def attach_self_to_kill_on_close_job() -> bool:
 # the spawn ledger. Children something else spawns (the MCP SDK, the browser-harness daemon) hand their
 # group to ``own_process_groups`` where we learn the pgid; a descendant that leaves the group on
 # purpose is registered by its own pgid the same way. Stopping an owned child yourself ends with
-# ``release_process_groups``. ``scripts/check_detached_spawns.py`` flags new detached spawns
+# ``release_process_group_once_empty`` (survivors stay covered); ``release_process_groups`` hands a
+# group back on purpose. ``scripts/check_detached_spawns.py`` flags new detached spawns
 # (start_new_session / process_group / setsid / setpgid; its docstring lists what it misses). POSIX-only: Windows children die
 # through the layer-3 job object instead.
 
@@ -1078,7 +1079,7 @@ def spawn_owned(argv, *, purpose: str, **popen_kwargs) -> subprocess.Popen:
     POSIX: the child leads a new session and process group, and that group goes to the owner-death
     supervisor, so the child and every descendant that stays in its group die the moment this
     process dies by any cause (SIGKILL, OOM, crash). The child is recorded in the spawn ledger under
-    ``purpose``. Call ``release_process_groups([proc.pid])`` after stopping it yourself.
+    ``purpose``. After stopping it yourself, ``release_process_group_once_empty(proc.pid, proc=proc)``.
     Windows: a plain ``Popen`` with the caller's kwargs (the layer-3 job object covers ownership).
     """
     if os.name != "posix":
