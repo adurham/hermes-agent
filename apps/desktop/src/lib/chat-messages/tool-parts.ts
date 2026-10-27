@@ -970,17 +970,46 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
 }
 
 /**
- * Concatenate two part lists so each tool call appears once: an earlier
- * tool-call part is dropped when the later list carries the same id, so the
- * fresher copy wins. Other parts concatenate unchanged. Activation uses this
- * when it merges a cached stream row into the re-fetched one: a re-delivered
- * `open_requests` marks the cached row changed, and a raw concat rendered the
- * same call twice, with reasoning from between the copies.
+ * Merge an activation page's stream row (`earlier`) with the live store's copy
+ * of that turn (`later`) so each tool call appears once. A call keeps its place
+ * in `earlier`, so text and reasoning that followed it there still follow it,
+ * and the live copy's fields win unless only the page's copy carries a result.
+ * Calls match on id and tool name: ids repeat across calls (llama.cpp sends one
+ * constant id), and a later `terminal` call must not delete an answered clarify
+ * that shares its id. A re-delivered `open_requests` marks the cached row
+ * changed, and a raw concat rendered the same call twice.
  */
 export function concatPartsByToolCall(earlier: ChatMessagePart[], later: ChatMessagePart[]): ChatMessagePart[] {
-  const laterIds = new Set(later.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
+  const callKey = (part: ChatMessagePart) =>
+    part.type === 'tool-call' && part.toolCallId ? `${part.toolName}\u0000${part.toolCallId}` : null
 
-  return [...earlier.filter(part => !(part.type === 'tool-call' && laterIds.has(part.toolCallId))), ...later]
+  const hasResult = (part: ChatMessagePart) => part.type === 'tool-call' && part.result !== undefined
+  const laterByKey = new Map<string, ChatMessagePart>()
+
+  for (const part of later) {
+    const key = callKey(part)
+
+    if (key && !laterByKey.has(key)) {
+      laterByKey.set(key, part)
+    }
+  }
+
+  const placed = new Set<ChatMessagePart>()
+
+  const merged = earlier.map(part => {
+    const key = callKey(part)
+    const live = key ? laterByKey.get(key) : undefined
+
+    if (!live || placed.has(live)) {
+      return part
+    }
+
+    placed.add(live)
+
+    return hasResult(part) && !hasResult(live) ? part : live
+  })
+
+  return [...merged, ...later.filter(part => !placed.has(part))]
 }
 
 export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
