@@ -1374,10 +1374,11 @@ export function usePromptActions({
             notify({ kind: 'warning', message: copy.editFailed })
           }
 
-          // Nothing was cut and the refresh already replaced the optimistic edit: keep whatever
-          // history the session holds now and only drop the busy arm. A switch during the confirm
-          // leaves the foreground flags to the session now on screen.
-          rollBackEdit(sessionId, undefined, activeSessionIdRef.current === sessionId)
+          // Nothing was cut. After a refresh the optimistic edit is already gone, so keep whatever
+          // history the session holds now; with no stored session to refresh from, restore the
+          // original history. A switch during the confirm leaves the foreground flags to the
+          // session now on screen.
+          rollBackEdit(sessionId, storedId ? undefined : messages, activeSessionIdRef.current === sessionId)
 
           return 'done'
         }

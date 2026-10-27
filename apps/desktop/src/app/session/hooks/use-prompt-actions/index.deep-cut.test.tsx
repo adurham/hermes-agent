@@ -479,6 +479,69 @@ describe('usePromptActions deep-edit consent scope (#133716)', () => {
     expect($notifications.get().some(n => n.kind === 'error')).toBe(true)
   })
 
+  it('a stale-target retry with no stored session to refresh from restores the original history', async () => {
+    const seed = [
+      { id: 'u1', parts: [textPart('first')], role: 'user' as const, rowId: 11, timestamp: 0 },
+      { id: 'a1', parts: [textPart('reply')], role: 'assistant' as const, timestamp: 1 },
+      { id: 'u2', parts: [textPart('second')], role: 'user' as const, rowId: 13, timestamp: 2 },
+      { id: 'u3', parts: [textPart('third')], role: 'user' as const, rowId: 15, timestamp: 3 }
+    ]
+
+    setActiveSessionId(RUNTIME_SESSION_ID)
+    publishSessionState(RUNTIME_SESSION_ID, createClientSessionState(null, seed as never))
+    setMessages(seed as never)
+    const submits: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'prompt.submit') {
+        submits.push(params ?? {})
+        throw new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | undefined
+    let lastState: Record<string, unknown> | undefined
+
+    await actRender(
+      <Harness
+        onReady={h => {
+          handle = h
+        }}
+        onUpdateState={(_id, _stored, next) => {
+          lastState = next
+          // The slice carries the optimistic edit while the $messages mirror, which publishes a
+          // frame later while the session is busy, still holds the pre-edit history.
+          publishSessionState(RUNTIME_SESSION_ID, next as never)
+        }}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={seed}
+        storedSessionId={null}
+      />
+    )
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        settleConfirm(true)
+      }
+    })
+
+    await handle!.editMessage({
+      content: [{ text: 'edited first', type: 'text' }],
+      parentId: null,
+      role: 'user',
+      sourceId: 'u1'
+    } as never)
+    stopConfirming()
+
+    expect(submits).toHaveLength(1)
+    const kept = (lastState?.messages ?? []) as { id: string; rowId?: number }[]
+    expect(kept.map(m => [m.id, m.rowId])).toEqual(seed.map(m => [m.id, m.rowId]))
+    expect(lastState).toMatchObject({ busy: false })
+  })
+
   it.each([
     ['fails', new JsonRpcGatewayError('generation failed', { code: 5035 })],
     ['hits a stale target', new JsonRpcGatewayError('target user message is no longer in session history', { code: 4018 })]
