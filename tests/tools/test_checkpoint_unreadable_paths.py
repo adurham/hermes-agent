@@ -144,3 +144,77 @@ def test_unreadable_paths_parses_git_diagnostics():
     assert checkpoints._unreadable_paths(stderr) == [
         "adams-mbp.ts.net.key", "locked", "locked/inner.txt", "d",
     ]
+
+
+def test_non_ascii_unreadable_path_is_skipped_and_the_rest_is_snapshotted(project, caplog):
+    """git echoes the raw path for a permission-denied file; a name outside ASCII
+    must still be recognised, or the retry loop burns its rounds and the snapshot fails."""
+    work, locked = project
+    secret = work / "clé-秘密.key"
+    secret.write_text("private\n", encoding="utf-8")
+    _lock(locked, secret)
+    manager = checkpoints.CheckpointManager(enabled=True)
+    with caplog.at_level(logging.WARNING, logger="tools.checkpoint_manager"):
+        assert manager._take(str(work), "non-ascii unreadable") is True
+    assert str(secret.name) in caplog.text
+    _assert_rest_restorable(manager, work, "unreadable paths not captured")
+
+
+def test_root_collapsing_unreadable_report_fails_instead_of_excluding_everything(project, monkeypatch):
+    """``fatal: unable to stat 'X'`` yields X's PARENT, so a top-level X collapses to the
+    tree root. Excluding '.' would stage nothing and still report success — an empty
+    checkpoint that a later rollback would restore over the project. It must fail instead."""
+    work, _locked = project
+    real_run_git = checkpoints._run_git
+
+    def fake_run_git(args, store, working_dir, **kwargs):
+        joined = " ".join(args)
+        if args[:2] == ["add", "-A"] and "--pathspec-from-file" not in joined:
+            return False, "", "fatal: unable to stat 'top-level.txt': Permission denied\n"
+        return real_run_git(args, store, working_dir, **kwargs)
+
+    monkeypatch.setattr(checkpoints, "_run_git", fake_run_git)
+    store = checkpoints._store_path()
+    store.mkdir(parents=True, exist_ok=True)
+    index_file = checkpoints._index_path(store, checkpoints._project_hash(str(work)))
+    ok, skipped, _err = checkpoints._stage_all(store, str(work), index_file)
+    assert ok is False, "a root-collapsing report must fail the snapshot, not exclude the tree"
+    assert skipped == [], "the tree root must never enter the skip list"
+
+
+def test_unreadable_paths_never_returns_root_relative_or_absolute_paths():
+    """The skip list is fed to ``:(exclude,literal)`` pathspecs; a root, parent or absolute
+    entry there would exclude far more than the unreadable path."""
+    stderr = "\n".join([
+        "fatal: unable to stat 'top-level.txt': Permission denied",
+        "error: open(\"../outside\"): Permission denied",
+        "error: open(\"/etc/shadow\"): Permission denied",
+        "error: open(\"sub/real.txt\"): Permission denied",
+    ])
+    assert checkpoints._unreadable_paths(stderr) == ["sub/real.txt"]
+
+
+def test_rollback_never_deletes_a_path_the_checkpoint_could_not_capture(project):
+    """``unlink`` needs write permission on the PARENT, not the file, so a safe rollback would
+    happily delete a file Hermes once wrote that later became unreadable and that the snapshot
+    had to skip — no checkpoint holds a copy. It must be kept and reported instead."""
+    work, locked = project
+    manager = checkpoints.CheckpointManager(enabled=True)
+    assert manager._take(str(work), "before the key appears") is True
+    [before] = manager.list_checkpoints(str(work))
+
+    secret = work / "host.key"
+    secret.write_text("private\n", encoding="utf-8")
+    manager.record_agent_write(str(secret))          # ledger: Hermes wrote it
+    _lock(locked, secret)                            # then it became unreadable (root-owned later)
+    (work / "keep.txt").write_text("edited\n", encoding="utf-8")
+    assert manager._take(str(work), "key is unreadable") is True
+
+    result = manager.restore(str(work), before["hash"], safe=True)
+    assert result["success"], result
+    assert secret.exists(), "rollback deleted a file no checkpoint could capture"
+    # A skipped path is excluded from staging, so it never enters the restore diff at all:
+    # not restored, not deleted, not reported as either.
+    assert "host.key" not in result.get("restored_files", [])
+    assert "host.key" not in result.get("skipped_user_edits", [])
+    assert "host.key" not in result.get("failed_deletes", [])
