@@ -59,9 +59,10 @@ def detach(authority, live, session_id) -> None:
         return
     from gateway.session_identity import replace_source
     from gateway.session_local_recovery import local_adapter
-    local_adapter(authority)  # its delivery; a messaging-only gateway has none yet
+    adapter = local_adapter(authority)  # its delivery; a messaging-only gateway has none yet
     live.route = detached_key(live.route, session_id)
     live.source = replace_source(live.source, detached_route=live.route)
+    adapter.register_source(live.source)  # what admits its background results (``authorize_source``)
 
 
 def lane_source(source):
@@ -230,9 +231,10 @@ async def follow_detached_pin(runner, evt):
 
 
 def detached_live_source(runner, key):
-    """The source of the conversation still live on detached key *key*, else None."""
-    from gateway.session_authorities import active_authority
-    authority = active_authority(runner) if detached_session_id(key) else None
+    """The source of the conversation still live on detached key *key*, else None. The key's
+    namespace names the owning profile: this runs before any profile scope is bound
+    (``_completion_event_scope`` derives the scope from it)."""
+    authority = _route_authority(runner, runner.session_store, key) if detached_session_id(key) else None
     found = detached_live(authority, key) if authority is not None else None
     return found[1].source if found is not None else None
 

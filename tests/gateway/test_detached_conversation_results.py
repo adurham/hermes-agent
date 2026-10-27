@@ -93,3 +93,54 @@ async def test_a_result_the_chat_started_on_the_old_conversation_lands_in_it_onc
     await async_wait_until(lambda: _noted(authority, a, text), timeout=10, what='the result in A')
     assert ran[ran_before:] == []
     assert sent[chat_before:] == [], f'the chat got the old conversation\'s result: {sent[chat_before:]}'
+
+
+@pytest.mark.asyncio
+async def test_a_secondary_profiles_old_conversation_gets_its_result_after_the_source_cache_forgot_it(
+        tmp_path, monkeypatch):
+    """N3, two profiles in one process: a process the app's turn on a ``fitness`` conversation A
+    started finishes after the runner's bounded source cache dropped A. Its key names the profile, so
+    the event resolves A's live source and binds ``fitness``'s scope, unscoped as the drain starts,
+    and the result is written into A in ``fitness``'s store."""
+    import hermes_state
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from gateway.session_authorities import SessionAuthorities
+    from gateway.session_authority import LiveSession, initialize_session_authority
+    from gateway.session_detached import detach
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+    root = tmp_path / 'hermes'
+    profile = root / 'profiles' / 'fitness'
+    profile.mkdir(parents=True)
+    (profile / 'config.yaml').write_text('{}\n', encoding='utf-8')
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    monkeypatch.setattr(hermes_state, 'DEFAULT_DB_PATH', hermes_state._IMPORT_DEFAULT_DB_PATH)
+    runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
+    launch = await initialize_session_authority(runner, profile_id=str(root), instance_id='owner',
+                                                db=SessionDB(root / 'state.db'))
+    fitness = await initialize_session_authority(runner, profile_id=str(profile), instance_id='owner',
+                                                 db=SessionDB(profile / 'state.db'), register=False)
+    runner.session_authorities = SessionAuthorities(root, multiplexed=True)
+    runner.session_authorities.add(root, launch)
+    runner.session_authorities.add(profile, fitness, name='fitness')
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='555', chat_type='dm', user_id='u1', profile='fitness')
+    route = runner.session_store._generate_session_key(source)
+    assert route.startswith('agent:fitness:')
+    a = 'conversation-a'
+    fitness.db.create_session(a, source='telegram', session_key=route)
+    live = fitness.sessions[a] = LiveSession(source, route)
+    detach(fitness, live, a)  # the chat moved on; the app keeps A
+    evt = {'type': 'completion', 'event_id': 'c-1', 'session_id': 'proc_1', 'started_at': 1000.0,
+           'session_key': live.route, 'parent_session_id': a, 'command': 'make', 'exit_code': 0,
+           'output': 'built', 'platform': 'local', 'chat_id': a, 'chat_type': 'dm', 'user_id': 'u1',
+           'emitted_at': time.time()}
+    runner._session_sources.clear()
+
+    assert runner._build_process_event_source(evt) is live.source
+    async with runner._completion_event_scope(evt):
+        assert Path(get_hermes_home()) == profile
+        assert await runner._inject_watch_notification('[process proc_1 finished]', evt) is True
+    await async_wait_until(lambda: _noted(fitness, a, '[process proc_1 finished]'), timeout=10,
+                           what="the result in fitness's A")

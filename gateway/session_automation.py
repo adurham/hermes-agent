@@ -434,7 +434,8 @@ def _local_automation_owner(authority, adapter, event, entry):
     from gateway.session_detached import detached_live, detached_route_of
     if detached_route_of(event.source):
         found = detached_live(authority, entry.session_key)
-        if found is None or authority.runner._adapter_for_source(found[1].source) is not adapter:
+        if (found is None or found[1].source is not event.source or not adapter.authorize_source(event.source)
+                or authority.runner._adapter_for_source(found[1].source) is not adapter):
             raise RuntimeStoreError('permission_denied')
         return found
     from gateway.session_local_recovery import restore_local_session
