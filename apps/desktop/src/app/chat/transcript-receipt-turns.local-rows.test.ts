@@ -163,4 +163,33 @@ describe('local notices inside a steered turn', () => {
     expect(indexOf('SIDE ANSWER')).toBeLessThan(indexOf('change course'))
     expect(indexOf('Switched to fallback model')).toBeLessThan(indexOf('change course'))
   })
+
+  it('stay in front of a steer prompt the window drew before its row was written', () => {
+    const window = [
+      ...toChatMessages([...olderTurn(1, 'old-a'), ...olderTurn(7, 'old-b')]),
+      live('user-sub-steer', 'user', 'steered prompt', { rowId: 13 }),
+      live('assistant-stream-1', 'assistant', 'live look', { interim: false }),
+      ...notices,
+      live('user-other', 'user', 'change course'),
+      live('assistant-stream-2', 'assistant', 'steered answer', { rowId: 17, persistedTurn: receipt })
+    ]
+
+    const page = toChatMessages([
+      ...olderTurn(1, 'old-a').slice(3),
+      ...olderTurn(7, 'old-b'),
+      ...turnRows,
+      user(16, 'change course'),
+      answer(17, 'steered answer')
+    ])
+
+    const merged = refresh(page, window)
+    const indexOf = (text: string) => merged.findIndex(message => chatMessageText(message).includes(text))
+
+    for (const text of ['SIDE ANSWER', 'change course', 'steered answer']) {
+      expect(count(merged, text), text).toBe(1)
+    }
+
+    expect(indexOf('SIDE ANSWER')).toBeGreaterThan(indexOf('steered prompt'))
+    expect(indexOf('SIDE ANSWER')).toBeLessThan(indexOf('change course'))
+  })
 })

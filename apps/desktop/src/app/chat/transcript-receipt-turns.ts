@@ -23,6 +23,7 @@
 
 import type { PersistedTurn } from '@hermes/shared'
 
+import { isTurnUserBubble, receiptUserRowIds } from '@/app/session/hooks/use-message-stream/receipt-user-rows'
 import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { type ChatMessage, isLocalSystemNotice } from '@/lib/chat-messages'
 
@@ -120,13 +121,37 @@ export interface ReceiptTurnDrop {
   noticeAnchors: Map<string, number>
 }
 
-/** Stored id of the first dropped row after `at` that has one. */
-function nextDroppedRowId(window: ChatMessage[], indices: number[], at: number): number | undefined {
+/**
+ * Stored id of the first dropped row after `at`. A steer prompt the window
+ * drew before its row was written carries no id yet; when the turn's user
+ * bubbles pair one-to-one with the receipt's user rows, it takes its row's id,
+ * so the notice stays above the steer instead of sliding to the final answer.
+ */
+function nextDroppedRowId(
+  window: ChatMessage[],
+  indices: number[],
+  at: number,
+  receipt: PersistedTurn
+): number | undefined {
+  const userIndices = indices.filter(index => isTurnUserBubble(window[index]))
+  const userRows = receiptUserRowIds(receipt)
+  const paired = userIndices.length === userRows.length
+
   for (const index of indices) {
-    const ids = index > at ? transcriptRowIds(window[index]) : []
+    if (index <= at) {
+      continue
+    }
+
+    const ids = transcriptRowIds(window[index])
 
     if (ids.length) {
       return ids[0]
+    }
+
+    const userRow = paired ? userRows[userIndices.indexOf(index)] : undefined
+
+    if (userRow !== undefined) {
+      return userRow
     }
   }
 
@@ -154,7 +179,7 @@ export function dropReceiptTurnsThePageHolds(window: ChatMessage[], page: ChatMe
     indices.forEach(at => dropped.add(at))
 
     for (let at = indices[0] ?? index; at < index; at += 1) {
-      const anchor = isLocalSystemNotice(window[at]) ? nextDroppedRowId(window, indices, at) : undefined
+      const anchor = isLocalSystemNotice(window[at]) ? nextDroppedRowId(window, indices, at, message.persistedTurn) : undefined
 
       if (anchor !== undefined) {
         noticeAnchors.set(window[at].id, anchor)
