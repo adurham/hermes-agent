@@ -110,8 +110,9 @@ async def prepare_heartbeat(runner, event):
     queues behind it. A retry of a tick already admitted is dropped."""
     import asyncio
     from gateway.session_authorities import active_authority
+    from gateway.session_detached import route_entry
     authority = active_authority(runner)
-    entry = runner.session_store.lookup_by_session_key(str(event.get('session_key') or '')) if authority else None
+    entry = route_entry(authority, str(event.get('session_key') or '')) if authority else None
     if entry is None:
         return event
     owner, process = _route_owner(authority, entry), str(event.get('session_id') or '')
@@ -169,8 +170,9 @@ async def withdraw_process_ticks(runner, event):
     import asyncio
     from gateway.session_authorities import active_authority
     try:
+        from gateway.session_detached import route_entry
         authority = active_authority(runner)
-        entry = runner.session_store.lookup_by_session_key(str(event.get('session_key') or '')) if authority else None
+        entry = route_entry(authority, str(event.get('session_key') or '')) if authority else None
         if entry is None:
             return
         finished = {identity[1] for identity in _identities(
@@ -466,12 +468,14 @@ def check_local_automation(authority, ref, row, *, route=None):
     route = route or (live.route if live is not None else None)
     payload = row['payload']
     descriptor = payload['local_automation_v1']
+    from gateway.session_detached import own_detached_key, route_entry
+    # Admitted while its chat was elsewhere: the conversation's own key, whichever route it is on now.
+    admitted = descriptor.get('route') if own_detached_key(descriptor.get('route'), ref.session_id) else route
     if (not route or set(payload) != {'text', 'local_automation_v1'}
-            or row['principal_id'] != 'automation:' + route
-            or descriptor['owner'] != ref.session_id or descriptor['route'] != route
+            or row['principal_id'] != 'automation:' + admitted
+            or descriptor['owner'] != ref.session_id or descriptor['route'] != admitted
             or descriptor['identity'] != row['request_id']):
         raise RuntimeStoreError('permission_denied')
-    from gateway.session_detached import route_entry
     entry = route_entry(authority, route)
     if (entry is None or entry.suspended or (entry.session_id != descriptor['target']
             and authority.db.get_compression_tip(descriptor['target']) != entry.session_id)):
@@ -717,18 +721,21 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
     path (nothing is queued there either). Raises ``RuntimeStoreError`` on a refusal."""
     from gateway.session_authorities import active_authority
     from gateway.session_local_recovery import restore_completion_route
+    from gateway.session_detached import detached_live, detached_route_of, route_entry
     authority = active_authority(runner)
     key = runner._session_key_for_source(source)
     restore_completion_route(runner, key)  # a closed local session boot left unrestored has no store entry yet
-    entry = runner.session_store.lookup_by_session_key(key) if authority is not None else None
+    entry = route_entry(authority, key) if authority is not None else None
     if authority is None or entry is None:
         return False
     import uuid
     identity = json.dumps([producer, key, uuid.uuid4().hex], separators=(',', ':'))
-    if source.platform == Platform.LOCAL:
-        # A local route has no messaging provenance to borrow: its wake rides local_automation_v1 on
-        # the live session's own source object (``snapshot_local_automation`` checks identity).
-        live = authority.sessions.get(source.chat_id)
+    if source.platform == Platform.LOCAL or detached_route_of(source):
+        # A local route (or a conversation its chat moved past, answered by its app viewers) has no
+        # messaging provenance to borrow: its wake rides local_automation_v1 on the live session's own
+        # source object (``snapshot_local_automation`` checks identity).
+        found = detached_live(authority, key)
+        live = found[1] if found is not None else authority.sessions.get(source.chat_id)
         if live is None or live.route != key:
             return False
         event = MessageEvent(text=text, message_type=MessageType.TEXT, source=live.source, internal=True,

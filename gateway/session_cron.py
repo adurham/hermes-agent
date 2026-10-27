@@ -44,7 +44,9 @@ async def _admit_local_delivery(authority, chat_id, text, metadata):
     from gateway.session_automation import admit_route_wake
     from gateway.session_local_recovery import local_adapter_map, restore_local_session
     with owner_scope(authority):
-        restore_local_session(authority, chat_id)  # a chat closed before this fire, as for completions
+        live = authority.sessions.get(chat_id)
+        if live is None or not live.detached:  # a conversation its chat moved past is live in the apps
+            restore_local_session(authority, chat_id)  # a chat closed before this fire, as for completions
         source = authority.sessions[chat_id].source
         return await admit_route_wake(authority.runner, local_adapter_map(authority)[Platform.LOCAL], source,
                                       text, 'cron', metadata)

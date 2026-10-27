@@ -184,6 +184,19 @@ def detached_live(authority, route):
     return SessionRef(authority.profile_id, session_id), live
 
 
+def own_detached_key(key, session_id) -> bool:
+    """*key* is *session_id*'s own detached key (the route it was on while its chat was elsewhere)."""
+    return isinstance(key, str) and detached_session_id(key) == session_id
+
+
+def detached_live_source(runner, key):
+    """The source of the conversation still live on detached key *key*, else None."""
+    from gateway.session_authorities import active_authority
+    authority = active_authority(runner) if detached_session_id(key) else None
+    found = detached_live(authority, key) if authority is not None else None
+    return found[1].source if found is not None else None
+
+
 def route_entry(authority, route):
     """The routing entry *route* names: the store's, or a detached key's live conversation (a
     background result it started finds it there, never on the chat's route)."""
