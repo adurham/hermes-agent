@@ -107,3 +107,21 @@ def test_unprovable_missing_checkout_is_reclaimed_once_unused_past_retention(tmp
     finally:
         os.close(fd)
     assert all(p.is_dir() for p in (fresh, leased, present)) and not idle.exists()
+
+
+@pytest.mark.parametrize(("days", "reclaimed"), [(0, False), (1, True), (None, False)])
+def test_retention_days_from_config_yaml_decides_reclaim(tmp_path, days, reclaimed):
+    """0 keeps an unprovable state forever; a custom value moves the cutoff (2 days idle: kept
+    under the 14-day default, reclaimed under 1)."""
+    from hermes_constants import get_hermes_home
+
+    if days is not None:
+        (get_hermes_home() / "config.yaml").write_text(
+            f"worktrees:\n  install_state_retention_days: {days}\n", encoding="utf-8")
+    installs = tmp_path / "home" / "installs"
+    state = _state(installs, "aaaa", tmp_path / "review" / "gone")
+    two_days_ago = time.time() - 2 * 86400
+    for path in sorted(state.rglob("*"), reverse=True) + [state]:
+        os.utime(path, (two_days_ago, two_days_ago), follow_symlinks=False)
+    assert (collect_orphan_install_states(installs) == [state]) is reclaimed
+    assert state.exists() is not reclaimed
