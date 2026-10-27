@@ -218,3 +218,42 @@ def test_rollback_never_deletes_a_path_the_checkpoint_could_not_capture(project)
     assert "host.key" not in result.get("restored_files", [])
     assert "host.key" not in result.get("skipped_user_edits", [])
     assert "host.key" not in result.get("failed_deletes", [])
+
+
+def test_file_captured_then_made_unreadable_round_trips_between_checkpoints(project):
+    """The reverse ordering the first rollback test could not see: a file IS in snapshot 1, then
+    becomes unreadable before snapshot 2 (so staging drops it from the index), then the user
+    restores forward and back. It must keep existing with its bytes in every direction."""
+    work, locked = project
+    manager = checkpoints.CheckpointManager(enabled=True)
+    key = work / "secret.key"
+    key.write_text("PRIVATE-BYTES\n", encoding="utf-8")
+
+    assert manager._take(str(work), "one: key readable and captured") is True
+    [snapshot_one] = manager.list_checkpoints(str(work))
+
+    _lock(locked, key)                                   # root-owned in the real case
+    (work / "keep.txt").write_text("edited\n", encoding="utf-8")
+    assert manager._take(str(work), "two: key unreadable") is True
+    snapshots = manager.list_checkpoints(str(work))
+    snapshot_two = next(s for s in snapshots if s["reason"].startswith("two"))
+    assert "unreadable paths not captured: secret.key" in snapshot_two["reason"]
+
+    def bytes_as_user():
+        """Read it the way the owner would after regaining access, then lock it again."""
+        assert key.exists(), "the restore deleted a file it never captured"
+        os.chmod(key, 0o600)
+        data = key.read_bytes()
+        os.chmod(key, 0o000)
+        return data
+
+    # Forward: restore to the snapshot that does NOT contain the key. It must not be deleted.
+    forward = manager.restore(str(work), snapshot_two["hash"], safe=True)
+    assert forward["success"], forward
+    assert bytes_as_user() == b"PRIVATE-BYTES\n"
+
+    # Back: restore to the snapshot that DOES contain it. It must come back byte-identical.
+    back = manager.restore(str(work), snapshot_one["hash"], safe=True)
+    assert back["success"], back
+    assert bytes_as_user() == b"PRIVATE-BYTES\n"
+    assert (work / "keep.txt").read_text(encoding="utf-8") == "original\n"
