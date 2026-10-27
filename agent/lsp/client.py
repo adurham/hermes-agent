@@ -285,7 +285,8 @@ class LSPClient:
         # SIGKILLed / OOM-killed Hermes forever. The owner-death supervisor kills the whole group
         # the moment this process dies, by any cause. No-op on Windows (job object instead).
         own_process_groups([self._proc.pid])
-        register_child(self._proc.pid, "lsp-server")
+        # Off the event loop: the ledger write takes a cross-process lock (up to 2 s).
+        await asyncio.to_thread(register_child, self._proc.pid, "lsp-server")
         # stderr must be drained or the pipe buffer fills and the server hangs.
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._reader_task = asyncio.create_task(self._reader_loop())

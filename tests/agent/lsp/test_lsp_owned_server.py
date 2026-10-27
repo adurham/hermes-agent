@@ -9,6 +9,7 @@ owner-death supervisor; teardown hands it back once the group is empty.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -36,6 +37,14 @@ def _alive(pid: int) -> bool:
         return False
 
 
+def _no_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return True
+    return False
+
+
 def _client(workspace: Path, script: str, **extra_env: str) -> LSPClient:
     env = {"MOCK_LSP_SCRIPT": script, "PYTHONPATH": os.environ.get("PYTHONPATH", ""), **extra_env}
     return LSPClient(server_id=f"mock-{script}", workspace_root=str(workspace),
@@ -47,7 +56,13 @@ def recorded(monkeypatch):
     calls: list = []
     monkeypatch.setattr(lsp_client, "own_process_groups", lambda pgids: calls.append(("own", list(pgids))))
     monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: calls.append(("release", list(pgids))))
-    monkeypatch.setattr(lsp_client, "register_child", lambda pid, purpose: calls.append(("ledger", pid, purpose)))
+
+    def ledger(pid, purpose):
+        # The ledger write can wait up to 2 s on another Hermes's lock: never on the event loop.
+        assert _no_running_loop(), "the spawn-ledger write ran on the event loop"
+        calls.append(("ledger", pid, purpose))
+
+    monkeypatch.setattr(lsp_client, "register_child", ledger)
     return calls
 
 
