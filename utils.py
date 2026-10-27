@@ -76,17 +76,29 @@ def _frozen_config_worker(path: str | Path) -> bool:
     return policy is not None and policy.worker_config_snapshot() is not None
 
 
+def _file_digest(path: str | Path) -> str:
+    """:func:`content_digest` of the file's bytes. A file that stats but cannot be read here
+    (permission, removed since the stat, a directory) gets ``<ErrorName>``, which no hex digest
+    matches: the key differs from any cached one, so the caller's own read runs and meets the error
+    in its normal recovery, as it did when the key was stat-only and never opened the file."""
+    try:
+        with open(path, "rb") as f:
+            return content_digest(f.read())
+    except OSError as exc:
+        return f"<{type(exc).__name__}>"
+
+
 def racy_content_digest(path: str | Path, sig: tuple[int, int, int, int]) -> str:
     """``""`` once the :func:`file_signature` ``sig`` has settled; while it is racy, a digest of the
-    file's bytes. A cache keyed on a stat signature appends it, because two same-size in-place writes
-    in one timestamp tick share mtime, ctime, size and inode (kernels without multigrain timestamps).
-    Racy is judged on the later of mtime and ctime: userland can restore an older mtime after a write
-    (``cp -p``, ``rsync --inplace -t``), never ctime. Read before the parse it guards: a write in
-    between then costs one re-parse instead of pinning the older content."""
+    file's bytes (:func:`_file_digest`, so it never raises). A cache keyed on a stat signature appends
+    it, because two same-size in-place writes in one timestamp tick share mtime, ctime, size and inode
+    (kernels without multigrain timestamps). Racy is judged on the later of mtime and ctime: userland
+    can restore an older mtime after a write (``cp -p``, ``rsync --inplace -t``), never ctime. Read
+    before the parse it guards: a write in between then costs one re-parse instead of pinning the
+    older content."""
     if not mtime_is_racy(max(sig[0], sig[3])) or _frozen_config_worker(path):
         return ""
-    with open(path, "rb") as f:
-        return content_digest(f.read())
+    return _file_digest(path)
 
 
 def file_cache_version(path: str | Path, st: os.stat_result | None = None, *,
@@ -99,18 +111,12 @@ def file_cache_version(path: str | Path, st: os.stat_result | None = None, *,
     change detector whose false "changed" restarts something, or a "still the broken file" record),
     where the racy digest turning empty would read as a change. A worker with a frozen config
     snapshot never hashes a ``config.yaml`` (the key is stat-only there, as before). Raises
-    ``OSError`` like ``os.stat``; given the caller's ``st`` it does not: a file gone or unreadable
-    since that stat gets the error's name as its digest, which no readable version matches."""
+    ``OSError`` only from the stat (none given ``st``): a file that cannot be read gets the error's
+    name as its digest (:func:`_file_digest`)."""
     sig = file_signature(Path(path).stat() if st is None else st)
-    try:
-        if always_digest and not _frozen_config_worker(path):
-            with open(path, "rb") as f:
-                return (*sig, content_digest(f.read()))
-        return (*sig, racy_content_digest(path, sig))
-    except OSError as exc:
-        if st is None:
-            raise
-        return (*sig, type(exc).__name__)
+    if always_digest and not _frozen_config_worker(path):
+        return (*sig, _file_digest(path))
+    return (*sig, racy_content_digest(path, sig))
 
 
 def _preserve_file_mode(path: Path) -> int | None:
