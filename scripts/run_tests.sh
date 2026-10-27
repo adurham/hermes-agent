@@ -57,42 +57,50 @@ _has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/nul
 # A test run under a faked HOME (worktree lanes, probe homes) provisions its
 # test environment from the OS account's tool store instead of downloading
 # ~1 GB of tools into every temporary home, but only while that store already
-# records this checkout's pins (_store_has_pins). Only this runner's own
-# provisioning shares: the pytest
-# children below start from `env -i` without HERMES_RUNTIME_DIR, so tests that
-# exercise setup, install or update keep their own stores. An explicit
+# records this checkout's pins (_store_has_pins). The check runs unlocked
+# before `pm install` takes the store's install lock, so it keeps runs that
+# START on different pins apart; it does not cover the window in between, where
+# the account's own `hermes update` (or a run on other pins) can re-point
+# facts.json and this run's `pm install` then re-stages its pins over them.
+# Only this runner's own provisioning gets HERMES_RUNTIME_DIR: the pytest
+# children below start from `env -i` without it, so tests that exercise setup,
+# install or update resolve their own stores. Their PATH still holds the
+# account store's tool dirs, so a test writing through a PATH tool
+# (`pip install`, `npm -g`) would write into the account store. An explicit
 # HERMES_RUNTIME_DIR, a custom HERMES_HOME, a home that already holds a store,
 # or an account without a usable store keep today's per-home layout.
+# Prints the account home, then the pinned Python minor.
 _account_tool_store() {
-  local account real
+  local account py_minor
   [ -z "${HERMES_RUNTIME_DIR:-}" ] || return 1
   case "${HERMES_HOME:-}" in "" | "$HOME/.hermes" | "$HOME/.hermes/"*) ;; *) return 1 ;; esac
   [ ! -f "$HOME/.hermes/tools/facts.json" ] || return 1
   account="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
-  [ -n "$account" ] || account="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
-  [ -n "$account" ] && [ -d "$account" ] || return 1
-  real="$(cd "$account" 2>/dev/null && pwd -P)" || return 1
-  [ "$real" != "$(cd "$HOME" 2>/dev/null && pwd -P)" ] || return 1
+  [ -n "$account" ] || account="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: *//p')"
+  [ -n "$account" ] && [ -d "$account" ] && [ ! "$account" -ef "$HOME" ] || return 1
   [ -f "$account/.hermes/tools/facts.json" ] && [ -w "$account/.hermes/tools" ] || return 1
-  _store_has_pins "$account/.hermes/tools" || return 1
-  printf '%s\n' "$account"
+  py_minor="$(_store_has_pins "$account/.hermes/tools")" || return 1
+  printf '%s\n%s\n' "$account" "$py_minor"
 }
 # Read-only check that the store already records this checkout's pins
-# (scripts/tool_store_pins.py says why and what counts).
+# (scripts/tool_store_pins.py says why and what counts); prints the Python minor.
 _store_has_pins() {
   local python
   python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")" || return 1
-  PYTHONHOME= "$python" -I -B "$REPO_ROOT/scripts/tool_store_pins.py" "$REPO_ROOT" "$1" >/dev/null 2>&1
+  PYTHONHOME= "$python" -I -B "$REPO_ROOT/scripts/tool_store_pins.py" "$REPO_ROOT" "$1" 2>/dev/null
 }
-if _account="$(_account_tool_store)"; then
+if _shared="$(_account_tool_store)"; then
+  _account="${_shared%%$'\n'*}"
   export HERMES_RUNTIME_DIR="$_account/.hermes/tools"
-  # setup-hermes.sh's uv-managed bootstrap interpreter is the same kind of cache.
-  if [ -z "${UV_PYTHON_INSTALL_DIR:-}" ] && [ -w "$_account/.local/share/uv/python" ]; then
+  # setup-hermes.sh's uv-managed bootstrap interpreter is the same kind of
+  # cache, but only reused: a missing pinned minor would download into it.
+  if [ -z "${UV_PYTHON_INSTALL_DIR:-}" ] && [ -w "$_account/.local/share/uv/python" ] \
+      && compgen -G "$_account/.local/share/uv/python/cpython-${_shared#*$'\n'}[.-]*" >/dev/null; then
     export UV_PYTHON_INSTALL_DIR="$_account/.local/share/uv/python"
   fi
   echo "▶ faked HOME: using the account's tool store $HERMES_RUNTIME_DIR"
 fi
-unset _account
+unset _account _shared
 if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
   PYTHON="$HERMES_PYTHON"
   echo "▶ not activated — using HERMES_PYTHON: $PYTHON"
@@ -213,6 +221,8 @@ done
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
+# Never forward HERMES_RUNTIME_DIR or UV_PYTHON_INSTALL_DIR: under a faked HOME
+# they point at the account's shared stores (see _account_tool_store).
 echo "▶ running per-file parallel test suite via run_tests_parallel.py"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 
