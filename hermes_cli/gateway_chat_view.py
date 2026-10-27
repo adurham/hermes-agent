@@ -64,7 +64,8 @@ def pending_lines(pending):
         count = "1 message is" if len(queued) == 1 else f"{len(queued)} messages are"
         lines.append(f"  {count} waiting and will run after that:" if lost
                      else f"  {count} waiting to run:")
-        lines.extend(_pending_preview(row.get("text")) or "    (no text)" for row in queued)
+        lines.extend(_pending_preview(row.get("text")) or f"    (queued message {row['admission_id']})"
+                     for row in queued)
     return lines
 
 
