@@ -125,3 +125,45 @@ async def test_the_chats_resume_drops_the_agent_the_app_cached_for_the_old_conve
     await _chat(adapter, source, sent, '/resume First chat')
     assert authority.sessions[ref_a.session_id].route == lane
     assert key not in runner._agent_cache
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('viewer', [False, True], ids=['no-viewer', 'app-viewing'])
+async def test_a_background_result_of_the_old_conversation_reaches_the_app_not_the_chat(monkeypatch, viewer):
+    """A process the app's turn on A started finishes: its result lands in A (a note in its history
+    with no viewer, a turn of A with the app watching), never in the chat, and is not retried."""
+    import time
+    from gateway.session import build_session_context
+    from gateway.session_context import get_session_env
+    from hermes_state_runtime import list_session_admissions
+    runner, _adapter, authority, _source, sent, ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
+    assert await _app_turn(authority, ref_a, 'start a job') == ('terminal', 'completed')
+    live = authority.sessions[ref_a.session_id]
+    if viewer:
+        await authority.attach(_app(), ref_a)
+    entry = runner.session_store.get_or_create_session(live.source)
+    with runner._session_env_scope(build_session_context(live.source, runner.config, entry)):
+        # What the process registry records for a process the turn starts.
+        env = {name: get_session_env(f'HERMES_SESSION_{name}') for name in ('KEY', 'PLATFORM', 'CHAT_ID', 'CHAT_TYPE')}
+    evt = {'type': 'completion', 'event_id': 'e1', 'session_id': 'proc_1', 'started_at': time.time(),
+           'session_key': env['KEY'], 'parent_session_id': ref_a.session_id, 'command': 'sleep 1',
+           'exit_code': 0, 'output': 'done', 'platform': env['PLATFORM'], 'chat_id': env['CHAT_ID'],
+           'chat_type': env['CHAT_TYPE'], 'user_id': '42'}
+    chat_before, ran_before = len(sent), len(ran)
+
+    assert await runner._inject_watch_notification('[process proc_1 finished]', evt) is True
+
+    def settled():
+        rows = list_session_admissions(authority.db, session_id=ref_a.session_id, pending_only=False)
+        return [row for row in rows if row['principal_id'] == 'automation:' + live.route
+                and row['status'] == 'terminal']
+    rows = await async_wait_until(settled, timeout=10, what="the result's admission on A")
+    assert rows[0]['outcome'] == 'completed'
+    if viewer:
+        await async_wait_until(lambda: len(ran) > ran_before, what='the result turn')
+        assert [turn[1:] for turn in ran[ran_before:]] == [(ref_a.session_id, live.route)]
+    else:
+        assert ran[ran_before:] == []
+        assert any('[process proc_1 finished]' in str(message.get('content'))
+                   for message in authority.db.get_messages(ref_a.session_id))
+    assert sent[chat_before:] == [], f'the chat got the old conversation\'s result: {sent[chat_before:]}'

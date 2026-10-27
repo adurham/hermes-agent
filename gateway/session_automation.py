@@ -277,8 +277,9 @@ def _owned_by(db, session_id, current):
 
 
 def _owner(runner, event, authority):
+    from gateway.session_detached import route_entry
     route = event.metadata.get('gateway_session_key') or runner.session_store._generate_session_key(event.source)
-    entry = runner.session_store.lookup_by_session_key(route)
+    entry = route_entry(authority, route)
     if entry is None or entry.suspended:
         raise RuntimeStoreError('not_found')
     if runner.session_store._generate_session_key(event.source) != route:
@@ -364,7 +365,8 @@ def snapshot_automation(authority, adapter, event, identity):
     notification = (automation_notification_metadata(event.metadata) | automation_display_metadata(event.metadata)
                     | _tick_metadata(event.metadata))
     entry = _owner(runner, event, authority)
-    if event.source.platform == Platform.LOCAL:
+    from gateway.session_detached import detached_route_of
+    if event.source.platform == Platform.LOCAL or detached_route_of(event.source):
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     from gateway.session_envelope import restore_native
     owner = authority.logical_owner(entry.session_id)
@@ -422,13 +424,26 @@ def check_automation_route(runner, payload, session_id, available_source, adapte
     return event.source, entry.session_key
 
 
-def snapshot_local_automation(authority, adapter, event, identity, entry):
+def _local_automation_owner(authority, adapter, event, entry):
+    """``(ref, live)`` a local automation lands on. A conversation its chat moved past takes its
+    results as a Desktop session does (gateway/session_detached.py): its app viewers get them."""
+    from gateway.session_detached import detached_live, detached_route_of
+    if detached_route_of(event.source):
+        found = detached_live(authority, entry.session_key)
+        if found is None or authority.runner._adapter_for_source(found[1].source) is not adapter:
+            raise RuntimeStoreError('permission_denied')
+        return found
     from gateway.session_local_recovery import restore_local_session
     ref = restore_local_session(authority, event.source.chat_id)
     live = authority.sessions[ref.session_id]
     if (live.source is not event.source or not adapter.authorize_source(event.source)
             or authority.runner._adapter_for_source(live.source) is not adapter):
         raise RuntimeStoreError('permission_denied')
+    return ref, live
+
+
+def snapshot_local_automation(authority, adapter, event, identity, entry):
+    ref, _live = _local_automation_owner(authority, adapter, event, entry)
     descriptor = {'identity': identity, 'owner': ref.session_id,
                   'route': entry.session_key, 'target': entry.session_id}
     descriptor.update(automation_notification_metadata(event.metadata))
@@ -456,7 +471,8 @@ def check_local_automation(authority, ref, row, *, route=None):
             or descriptor['owner'] != ref.session_id or descriptor['route'] != route
             or descriptor['identity'] != row['request_id']):
         raise RuntimeStoreError('permission_denied')
-    entry = authority.runner.session_store.lookup_by_session_key(route)
+    from gateway.session_detached import route_entry
+    entry = route_entry(authority, route)
     if (entry is None or entry.suspended or (entry.session_id != descriptor['target']
             and authority.db.get_compression_tip(descriptor['target']) != entry.session_id)):
         raise RuntimeStoreError('admission_conflict')
@@ -466,7 +482,8 @@ def restore_local_automation(authority, ref, row):
     check_local_automation(authority, ref, row)
     live = authority.sessions[ref.session_id]
     descriptor = row['payload']['local_automation_v1']
-    entry = authority.runner.session_store.lookup_by_session_key(live.route)
+    from gateway.session_detached import route_entry
+    entry = route_entry(authority, live.route)
     event = MessageEvent(text=row['payload']['text'], source=live.source, internal=True,
         message_id=descriptor['identity'], metadata={'gateway_session_key': live.route,
             'gateway_session_id': entry.session_id})

@@ -174,6 +174,26 @@ def recover_detached_sessions(authority, pending):
     return scheduled
 
 
+def detached_live(authority, route):
+    """``(ref, live)`` of the conversation still live on detached key *route*, else None."""
+    from gateway.session_contract import SessionRef
+    session_id = detached_session_id(route)
+    live = authority.sessions.get(session_id) if session_id else None
+    if live is None or live.route != route:
+        return None
+    return SessionRef(authority.profile_id, session_id), live
+
+
+def route_entry(authority, route):
+    """The routing entry *route* names: the store's, or a detached key's live conversation (a
+    background result it started finds it there, never on the chat's route)."""
+    store = authority.runner.session_store
+    entry = store.lookup_by_session_key(route)
+    if entry is None and (found := detached_live(authority, route)) is not None:
+        return detached_entry(store, found[1].source)
+    return entry
+
+
 def detached_entry(store, source):
     """The routing entry a detached *source* resolves to: its own conversation, at the compression
     tip a turn writes to. Never stored: the chat's route stays the only one this conversation has."""

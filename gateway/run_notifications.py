@@ -857,6 +857,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         Platform.RELAY adapter fronts N logical platforms; native wins), literal ``p.value`` scan as
         fallback for minimal runner stubs / exotic platform strings when the resolver can't run."""
         from gateway.delivery import resolve_delivery_transport
+        from gateway.session_detached import detached_route_of
+        if detached_route_of(source):  # an old conversation's app viewers (gateway/session_detached.py)
+            return self._delivery_adapter_for(source)
         if source is not None:
             owner = self._transport_owner(source)
             if owner is not None:
