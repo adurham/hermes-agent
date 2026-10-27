@@ -4,6 +4,58 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-27 — A grandchild's process completion no longer wakes the human's chat
+
+**Symptom (live, reported by the owner).** With a PM subagent running workers ("a subagent running subagents"),
+the human's chat kept receiving turns it did not ask for, ending in the agent's own words: *"No change to
+report."* It then read as if the agent had ignored the question typed right after it.
+
+**Mechanism, from the live store (not from reasoning).** `~/.hermes/logs/process-results/proc_81835a06acf5.json`
+carries `owner_task_id = sa-1-16fcedc3` (a **grandchild**) and `parent_session_id = 20261027_001245_92302e`
+(that grandchild's own subagent session, whose parent is the PM subagent). The session chain was
+human → PM → "Static census". The completion reached the human's session because:
+
+1. every subagent inherits the parent chat's `session_key`, so route-key equality matches the human's drainer;
+2. `spawner_lineage()` deliberately returns `None` for a delegated-child spawner, so no spawner veto fires;
+3. the completion was held at first sight (owner alive) and released on owner exit, and the fork's
+   held-then-released exemption (`_EVENT_HELD_AT_KEY`) delivers such an event **with attribution** — the
+   v0.21.7 parity decision documented above. `delegation.surface_child_process_notifications=false` is
+   bypassed by design for that class.
+
+That made the human's chat the recipient of an event whose real consumer is the intermediate subagent: the
+parent agent had nothing to act on, so it closed the turn with an empty acknowledgement, printed immediately
+above the human's next question.
+
+**Fix (forward, not a revert).** The held-then-released delivery contract is untouched for DIRECT children
+(depth 1). The nested class is excluded from the exemption:
+
+* `tools.process_registry_notifications.is_nested_child_notification(evt)` — true when the event's
+  `parent_session_id` row is itself a subagent session (`source == "subagent"`, or carrying its own
+  `parent_session_id`). Fail-open (`False`) on a missing row, an unreadable store, or no `parent_session_id`,
+  so a store miss can never silence a real completion.
+* `tools.process_registry_notifications.held_delivery_exempt(evt)` — the exemption predicate every consumer
+  now reads (`_EVENT_HELD_AT_KEY in evt and not is_nested_child_notification(evt)`), so the gates cannot
+  drift apart again.
+* Applied at all five hold-stamp sites: `ProcessRegistry.drain_notifications` (CLI / oneshot),
+  `_drain_watch_notifications`, `_deliver_completion_notification_scoped`, `_enqueue_process_completion_notification`,
+  and `_released_completion_admitted` (the delivery-point admission, which now refuses the nested class even
+  when the watcher saw the process running).
+
+Nothing is lost: the grandchild's own result already lists the completion (`unread_completions`, from
+`account_background_processes`), and the durable receipt keeps the full output for the spawner's lineage via
+`process_manage`. Only the human-chat wake is dropped.
+
+**Verification.** New `tests/tools/test_nested_child_notification_suppression.py`: 8 tests over the predicate,
+the CLI drain and the gateway admission (nested suppressed; depth-1 held completion still delivered with its
+attribution line; missing/unknown spawner fails open). Mutation-checked: neutering
+`is_nested_child_notification` fails 4 of them; restored, 8/8 pass. `tests/gateway/test_completion_delivery.py`
++ `tests/gateway/test_child_notice_profile_admission.py`: 175 pass. In `tests/tools/test_process_registry.py`
+95 pass; the 14 failures there (and the 10 in `test_subagent_completion_hold.py` /
+`test_subagent_process_handoff.py`) are the documented home_io_guard trap — they die inside
+`registry.spawn_local` → `pm.environments._payload_manifest` reading the REAL `~/.hermes/manifest.json`,
+before any assertion, in suites this change does not touch (neither file mentions `parent_session_id`, so the
+new predicate is a no-op for them).
+
 ### Follow-up — 2026-10-26 (Fable review dispositions on the seven fixes above)
 
 The seven landed as one commit; the review's dispositions were applied as a second pass, each item with a

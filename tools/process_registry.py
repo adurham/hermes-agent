@@ -33,7 +33,8 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 from hermes_cli.config import get_hermes_home
 
 from tools.process_registry_notifications import (
-    format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
+    format_process_notification, heartbeat_output_tail, held_delivery_exempt,
+    is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_termination import ProcessTerminationMixin
@@ -2032,11 +2033,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 # An event that was HELD by the liveness gate (owner alive at
                 # first sight, then exited / TTL expired) is released to the
                 # parent via the documented orphan path and must be delivered
-                # with attribution, NOT re-dropped here. The suppression gate
-                # only applies to events never gated — i.e. child completions
-                # whose owner was already gone on arrival (true leaks), which
-                # never acquired a hold stamp.
-                if _EVENT_HELD_AT_KEY not in evt:
+                # with attribution, NOT re-dropped here — unless its OWNER is
+                # itself a subagent, in which case the owner's own result is
+                # the deliverable and the human chat is not woken for it
+                # (held_delivery_exempt). The suppression gate otherwise
+                # applies to events never gated — child completions whose
+                # owner was already gone on arrival (true leaks), which never
+                # acquired a hold stamp.
+                if not held_delivery_exempt(evt):
                     if surface_child is None:
                         surface_child = self._surface_child_process_notifications()
                     if not should_surface_notification(evt, surface_child=surface_child):

@@ -59,6 +59,59 @@ def is_child_process_notification(evt: dict) -> bool:
     return str(evt.get("owner_task_id") or evt.get("task_id") or "").startswith("sa-")
 
 
+def is_nested_child_notification(evt: dict) -> bool:
+    """True when a child-owned completion's OWNER is itself a subagent (delegation depth >= 2).
+
+    A completion's ``parent_session_id`` names the session that SPAWNED the process. For a
+    direct child of the human's chat that session IS the chat; for a grandchild it is another
+    subagent's session (``source == "subagent"`` or carrying its own ``parent_session_id``).
+    That intermediate conversation is the event's real consumer: its own result already
+    reports the completion (``unread_completions`` in ``account_background_processes``), and
+    the durable receipt keeps the full output (``~/.hermes/logs/process-results/<proc>.json``,
+    readable by the spawner's lineage through ``process_manage``).
+
+    Waking the human's chat for this class buys nothing the delegation tree does not already
+    carry, and costs them a whole turn: the parent agent has nothing to act on and closes with
+    an empty acknowledgement ("No change to report."), printed where the user expects the
+    answer to their own next question. Direct children (depth 1) are unaffected and keep the
+    fork's held-then-released delivery contract.
+
+    Fail-open (False) on any unreadable/absent session row: a store miss must never silence a
+    completion.
+    """
+    if not is_child_process_notification(evt):
+        return False
+    owner_session = str(evt.get("parent_session_id") or "").strip()
+    if not owner_session:
+        return False
+    row = None
+    with suppress(Exception):
+        from hermes_state import SessionDB
+
+        db = SessionDB(read_only=True)
+        try:
+            row = db.get_session(owner_session)
+        finally:
+            db.close()
+    if not isinstance(row, dict):
+        return False
+    return str(row.get("source") or "") == "subagent" or bool(row.get("parent_session_id"))
+
+
+def held_delivery_exempt(evt: dict) -> bool:
+    """The fork's held-then-released delivery exemption, minus the nested-delegation class.
+
+    A child completion HELD by the liveness gate (owner alive at first sight, then exited)
+    releases to the parent chat with attribution -- the documented orphan path. The nested
+    class is excluded (see ``is_nested_child_notification``): the owner's own parent subagent
+    is its consumer, so the human's chat is not woken for it. Every consumer of the hold stamp
+    reads the exemption through this one predicate so the two gates cannot drift apart.
+    """
+    from tools.process_registry import _EVENT_HELD_AT_KEY
+
+    return _EVENT_HELD_AT_KEY in evt and not is_nested_child_notification(evt)
+
+
 def should_surface_notification(evt: dict, *, surface_child: bool | None = None) -> bool:
     """Shared policy; callers must first enter the event's owning profile scope."""
     if not is_child_process_notification(evt):
