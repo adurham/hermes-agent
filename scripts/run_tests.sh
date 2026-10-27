@@ -56,24 +56,59 @@ _has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/nul
 
 # A test run under a faked HOME (worktree lanes, probe homes) provisions its
 # test environment from the OS account's tool store instead of downloading
-# ~1 GB of tools into every temporary home. The store holds immutable,
-# version-keyed entries written under its install lock, so concurrent runs
-# share it safely. Only this runner's own provisioning shares: the pytest
+# ~1 GB of tools into every temporary home, but only while that store already
+# records this checkout's pins (_store_has_pins). Only this runner's own
+# provisioning shares: the pytest
 # children below start from `env -i` without HERMES_RUNTIME_DIR, so tests that
 # exercise setup, install or update keep their own stores. An explicit
 # HERMES_RUNTIME_DIR, a custom HERMES_HOME, a home that already holds a store,
 # or an account without a usable store keep today's per-home layout.
 _account_tool_store() {
-  local account
+  local account real
   [ -z "${HERMES_RUNTIME_DIR:-}" ] || return 1
   case "${HERMES_HOME:-}" in "" | "$HOME/.hermes" | "$HOME/.hermes/"*) ;; *) return 1 ;; esac
   [ ! -f "$HOME/.hermes/tools/facts.json" ] || return 1
   account="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
   [ -n "$account" ] || account="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
   [ -n "$account" ] && [ -d "$account" ] || return 1
-  [ "$(cd "$account" && pwd -P)" != "$(cd "$HOME" 2>/dev/null && pwd -P)" ] || return 1
+  real="$(cd "$account" 2>/dev/null && pwd -P)" || return 1
+  [ "$real" != "$(cd "$HOME" 2>/dev/null && pwd -P)" ] || return 1
   [ -f "$account/.hermes/tools/facts.json" ] && [ -w "$account/.hermes/tools" ] || return 1
+  _store_has_pins "$account/.hermes/tools" || return 1
   printf '%s\n' "$account"
+}
+# facts.json selects ONE entry per package, not one per version: provisioning
+# a checkout with other pins re-points the account's own runtime at them and
+# pulls the selection from under a concurrent run on the store's pins. So
+# share only when every tool `pm install` would provision here (cmd_install's
+# roots, defaults and the venv's deps) is already recorded at this checkout's
+# pins. Read-only: no lock, no install, no bytecode; any unreadable record or
+# error means "do not share".
+_store_has_pins() {
+  local python
+  python="$(HERMES_RUNTIME_DIR="$1" hermes_bootstrap_python "$REPO_ROOT")" || return 1
+  PYTHONHOME= "$python" -I -B - "$REPO_ROOT" "$1" >/dev/null 2>&1 <<'PY'
+import sys
+from pathlib import Path
+
+repo, store = sys.argv[1], Path(sys.argv[2])
+sys.path.insert(0, repo)
+from pm.defaults import default_packages
+from pm.lock import Facts, Lockfile
+from pm.package import StatePackage
+from pm.registry import tool_roots, walk
+from pm.store import current_target
+
+lock = Lockfile(Path(repo, "pm", "lock.json"))
+facts = Facts(store / "facts.json", strict=True)
+names, target = lock.names(), current_target()
+for package in walk(tool_roots(names) + default_packages(names) + ["venv"]):
+    if isinstance(package, StatePackage):
+        continue
+    shas = tuple(a["sha256"] for a in lock.artifacts(package.name, target))
+    if not facts.installed(package.name, lock.version(package.name), store, (target, shas) if shas else None):
+        sys.exit(1)
+PY
 }
 if _account="$(_account_tool_store)"; then
   export HERMES_RUNTIME_DIR="$_account/.hermes/tools"
