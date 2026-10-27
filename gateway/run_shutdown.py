@@ -1246,6 +1246,13 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         if context.startswith("shutdown") or context == "session expiry":
             with suppress(Exception):
                 agent._end_session_on_close = False
+        if context.startswith("shutdown"):
+            # Session-end memory extraction makes network LLM calls (~25 s each on slow providers)
+            # and idle-cached agents are finalized one after another, so N warm agents pushed stop()
+            # past the shutdown watchdog and the process was force-killed. Defer those passes: the
+            # buffer stays on disk for the next session end of the same session_id.
+            with suppress(Exception):
+                agent._defer_memory_extraction = True
         ctx_label = f" ({context})" if context else ""
         try:
             await asyncio.wait_for(
