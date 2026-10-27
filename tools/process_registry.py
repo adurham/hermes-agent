@@ -1256,10 +1256,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         session.notify_on_complete = notify_on_complete
+        handed_pgid = getattr(proc, "_hermes_owned_pgid", None)
         self._take_handoff_group(session, proc)
         if output_so_far:
             session.append_output(output_so_far)
-        self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
+        try:
+            self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
+        except Exception:
+            # The caller resumes its foreground wait: give it back its group, still covered.
+            self._return_handoff_group(session, proc, handed_pgid)
+            raise
         return session
 
     def spawn_via_env(

@@ -61,6 +61,15 @@ class ProcessOwnershipMixin:
         elif owned_pgid is not None:
             release_process_groups([owned_pgid])
 
+    def _return_handoff_group(self, session: Any, proc: subprocess.Popen, owned_pgid: Any) -> None:
+        """The handoff failed (the reader could not start): the foreground wait resumes and must own
+        the group again, covered by the supervisor, so its own completion releases it."""
+        with self._owned_pgid_lock:
+            session._owned_pgid = None
+        if owned_pgid is not None:
+            own_process_groups([owned_pgid])  # re-covers a group the gateway path released
+            proc._hermes_owned_pgid = owned_pgid
+
     def _release_job_group(self, session: Any) -> None:
         """The job's own process exited or was killed: stop covering its group. What it left behind on
         purpose (`server &`) is no longer this job's, exactly as before."""

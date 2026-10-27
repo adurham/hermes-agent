@@ -197,6 +197,33 @@ def test_a_command_yielded_to_background_keeps_its_group_until_the_job_ends(monk
     assert calls.count(("release", [session.pid])) == 1, calls
 
 
+@pytest.mark.parametrize("jobs_outlive_host", [False, True], ids=["owned-jobs", "gateway"])
+def test_a_failed_handoff_leaves_the_foreground_owner_its_group(monkeypatch, tmp_path, jobs_outlive_host):
+    """adopt_local moved the group to the job before its reader started. If the reader cannot start,
+    the foreground wait resumes: it must still hold the group, covered, so its completion releases
+    it (a gateway had already released it; elsewhere the dead session kept it)."""
+    import types
+
+    from tools.process_registry import ProcessRegistry
+
+    calls = _record_calls(monkeypatch)
+    registry = ProcessRegistry()
+    registry._jobs_outlive_host = jobs_outlive_host
+
+    def no_reader(*_a, **_kw):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(registry, "_track_started", no_reader)
+    proc = types.SimpleNamespace(pid=4242, _hermes_owned_pgid=4242, poll=lambda: None)
+    with pytest.raises(RuntimeError):
+        registry.adopt_local(proc, command="sleep 60", cwd=str(tmp_path))
+
+    assert proc._hermes_owned_pgid == 4242, "the foreground wait lost its group"
+    covered = not calls or calls[-1] == ("own", [4242])
+    assert covered, f"the group is left uncovered: {calls}"
+    assert not registry._running, "a session with no reader stayed registered"
+
+
 def test_unowned_jobs_are_never_handed_to_the_supervisor(monkeypatch, tmp_path):
     from tools.process_registry import ProcessRegistry
 
