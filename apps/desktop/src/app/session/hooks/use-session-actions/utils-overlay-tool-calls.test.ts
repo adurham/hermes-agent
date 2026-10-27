@@ -74,19 +74,64 @@ describe('overlayConcurrentMessageChanges tool calls', () => {
   })
 
   it('keeps the copy that carries a result', () => {
+    const args = { questions: [{ question: 'Which deployment target?' }] }
+
     const parts = merge(
       [
         { type: 'text', text: 'partial A' },
-        { type: 'tool-call', toolCallId: 'call-clarify', toolName: 'clarify', result: { answer: 'staging' } }
+        { type: 'tool-call', toolCallId: 'call-clarify', toolName: 'clarify', args, result: { answer: 'staging' } }
       ] as ChatMessage['parts'],
       [
-        { type: 'tool-call', toolCallId: 'call-clarify', toolName: 'clarify' },
+        { type: 'tool-call', toolCallId: 'call-clarify', toolName: 'clarify', args },
         { type: 'text', text: ' + delta B' }
       ] as ChatMessage['parts']
     )
 
     expect(calls(parts)).toEqual(['clarify:call-clarify'])
     expect(parts[1]).toMatchObject({ result: { answer: 'staging' } })
+  })
+
+  it('keeps a running call that shares a finished call of the same tool its id', () => {
+    const parts = merge(
+      [
+        { type: 'text', text: 'partial A' },
+        { type: 'tool-call', toolCallId: 'call_0', toolName: 'terminal', args: { command: 'ls' }, result: 'ok' }
+      ] as ChatMessage['parts'],
+      [
+        { type: 'tool-call', toolCallId: 'call_0', toolName: 'terminal', args: { command: 'pwd' } },
+        { type: 'text', text: ' + delta B' }
+      ] as ChatMessage['parts']
+    )
+
+    expect(calls(parts)).toEqual(['terminal:call_0', 'terminal:call_0'])
+    expect(parts.filter(part => part.type === 'tool-call' && part.result === undefined)).toHaveLength(1)
+  })
+
+  it('keeps an open clarify that shares an answered clarify its id', () => {
+    const parts = merge(
+      [
+        { type: 'text', text: 'partial A' },
+        {
+          type: 'tool-call',
+          toolCallId: 'call_0',
+          toolName: 'clarify',
+          args: { questions: [{ question: 'Which deployment target?' }] },
+          result: { answer: 'staging' }
+        }
+      ] as ChatMessage['parts'],
+      [
+        {
+          type: 'tool-call',
+          toolCallId: 'call_0',
+          toolName: 'clarify',
+          args: { questions: [{ question: 'Which region?' }] }
+        },
+        { type: 'text', text: ' + delta B' }
+      ] as ChatMessage['parts']
+    )
+
+    expect(calls(parts)).toEqual(['clarify:call_0', 'clarify:call_0'])
+    expect(parts.filter(part => part.type === 'tool-call' && part.result === undefined)).toHaveLength(1)
   })
 
   it('keeps the call where the activation page had it', () => {

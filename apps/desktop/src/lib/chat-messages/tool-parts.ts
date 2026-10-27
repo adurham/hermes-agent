@@ -974,33 +974,33 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
  * of that turn (`later`) so each tool call appears once. A call keeps its place
  * in `earlier`, so text and reasoning that followed it there still follow it,
  * and the live copy's fields win unless only the page's copy carries a result.
- * Calls match on id and tool name: ids repeat across calls (llama.cpp sends one
- * constant id), and a later `terminal` call must not delete an answered clarify
- * that shares its id. A re-delivered `open_requests` marks the cached row
- * changed, and a raw concat rendered the same call twice.
+ * Two parts are one call when tool name and id match and either their args
+ * match or neither has finished: ids repeat across calls (llama.cpp sends one
+ * constant id), and a finished call must not replace a running call, or an
+ * answered clarify an open one, that shares its id. A re-delivered
+ * `open_requests` marks the cached row changed, and a raw concat rendered the
+ * same call twice.
  */
 export function concatPartsByToolCall(earlier: ChatMessagePart[], later: ChatMessagePart[]): ChatMessagePart[] {
-  const callKey = (part: ChatMessagePart) =>
-    part.type === 'tool-call' && part.toolCallId ? `${part.toolName}\u0000${part.toolCallId}` : null
-
   const hasResult = (part: ChatMessagePart) => part.type === 'tool-call' && part.result !== undefined
-  const laterByKey = new Map<string, ChatMessagePart>()
 
-  for (const part of later) {
-    const key = callKey(part)
+  const argsOf = (part: ChatMessagePart) =>
+    part.type === 'tool-call' ? (part.argsText ?? JSON.stringify(part.args ?? {})) : ''
 
-    if (key && !laterByKey.has(key)) {
-      laterByKey.set(key, part)
-    }
-  }
+  const sameCall = (a: ChatMessagePart, b: ChatMessagePart) =>
+    a.type === 'tool-call' &&
+    b.type === 'tool-call' &&
+    Boolean(a.toolCallId) &&
+    a.toolCallId === b.toolCallId &&
+    a.toolName === b.toolName &&
+    (argsOf(a) === argsOf(b) || (!hasResult(a) && !hasResult(b)))
 
   const placed = new Set<ChatMessagePart>()
 
   const merged = earlier.map(part => {
-    const key = callKey(part)
-    const live = key ? laterByKey.get(key) : undefined
+    const live = later.find(candidate => !placed.has(candidate) && sameCall(part, candidate))
 
-    if (!live || placed.has(live)) {
+    if (!live) {
       return part
     }
 
