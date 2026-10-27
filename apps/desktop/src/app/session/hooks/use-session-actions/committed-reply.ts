@@ -58,8 +58,11 @@ const promptText = (message: ChatMessage | undefined) =>
  * the turn: its late deltas and the completion still find it by id, while a
  * dropped live row would be re-seeded by the next delta. So it takes the
  * committed bubble's place. `committedNew` admits only page bubbles that are
- * new since the baseline and not themselves live, and the bubble must follow
- * the live row's own prompt and end in a reply covering the live text.
+ * new since the baseline and not themselves live; the bubble must follow the
+ * live row's own prompt, end in a reply, and say exactly what the live row
+ * says. A live row still short of the stored text keeps both: its tail may
+ * never arrive (a completion lost to a reconnect), and only the committed
+ * bubble holds the whole reply.
  */
 export function pageReplyCommittingLiveRow(
   page: ChatMessage[],
@@ -78,13 +81,14 @@ export function pageReplyCommittingLiveRow(
     return -1
   }
 
-  const snapshot = spokenText(live)
+  const said = spokenText(live).trim()
 
   return page.findIndex(
     (message, index) =>
       index > pagePrompt &&
       message.role === 'assistant' &&
       committedNew(message) &&
-      committedReplyCovers(message, snapshot)
+      Boolean(replyAfterLastTool(message).trim()) &&
+      spokenText(message).trim() === said
   )
 }

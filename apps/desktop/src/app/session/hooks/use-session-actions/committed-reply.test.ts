@@ -49,11 +49,22 @@ describe('a re-attach page that commits the reply before its completion', () => 
     expect(overlaid.map(message => message.id)).toEqual(['18-user', 'assistant-stream-1-3'])
   })
 
+  // A live row still short of the stored reply may never get its tail (a
+  // completion lost to a reconnect): only the committed bubble holds it all.
+  it('keeps the committed bubble while the live row is still short of it', () => {
+    const baseline = [steer, live('A6 ')]
+    const current = [steer, live('A6 steered')]
+
+    const overlaid = overlayConcurrentMessageChanges(committedPage('change course'), baseline, current)
+
+    expect(assistants(overlaid).map(([id]) => id)).toEqual(['19-assistant', 'assistant-stream-1-3'])
+  })
+
   // A page whose newest prompt is not the live row's own is an earlier turn:
   // a new reply that happens to open with the same words is not that answer.
   it('leaves a page reply that follows another prompt alone', () => {
     const baseline = [steer, live('A6 ')]
-    const current = [steer, live('A6 steered')]
+    const current = [steer, live('A6 steered answer')]
 
     const overlaid = overlayConcurrentMessageChanges(committedPage('an earlier prompt'), baseline, current)
 
