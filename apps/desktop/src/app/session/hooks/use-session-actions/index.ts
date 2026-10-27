@@ -167,7 +167,12 @@ import {
   withoutEarlyClarifyProjection
 } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
-import { type GraftedTranscriptPage, graftTranscriptPage, settlePrefetchAtResumeBarrier } from './resume-barrier-reread'
+import {
+  type GraftedTranscriptPage,
+  graftTranscriptPage,
+  prefetchServesResume,
+  settlePrefetchAtResumeBarrier
+} from './resume-barrier-reread'
 import { clearResumeLatches, clearResumeToasts, notifyResumeFailed, type ResumeAttemptOptions } from './resume-latches'
 import {
   ambientResumeConnectionId,
@@ -2080,15 +2085,10 @@ export function useSessionActions({
 
         const currentMessages = viewMessagesForReconcile()
 
-        // Keep the local snapshot when resume would only reshuffle runtime
-        // projection. When the REST prefetch already hydrated the transcript,
-        // skip converting/reconciling the resume payload entirely — on a
-        // 1000+-message session that second conversion plus the deep
-        // equivalence compare costs over a second of main-thread time.
-        const resumedStoredSessionId = resumed.session_key || resumed.resumed
-
-        const prefetchMatchesResumedSession =
-          !prefetchedStoredSessionId || !resumedStoredSessionId || prefetchedStoredSessionId === resumedStoredSessionId
+        // A current prefetch skips converting the resume payload (over a second
+        // on a 1000+-message session); a page older than the resume snapshot
+        // (it lacks a durable row the resume carries) yields to that snapshot.
+        const prefetchMatchesResumedSession = prefetchServesResume(prefetchedStoredSessionId, resumed, prefetchedResult)
 
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
 

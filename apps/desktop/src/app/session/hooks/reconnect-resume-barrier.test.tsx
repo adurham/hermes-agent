@@ -184,3 +184,23 @@ it('reads the page once when the resume still reports the turn running', async (
     resumedIdle.running = false
   }
 })
+
+// The authority pushes the missed tail and message.complete before it answers
+// the resume, and that answer still says running with the committed row in its
+// snapshot. The page read before the commit must not win over it.
+it('paints the resume snapshot over an older prefetch page while the turn still reports running', async () => {
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: beforeCommit })
+  Object.assign(resumedIdle, { running: true, messages: committed, messages_omitted: false })
+
+  try {
+    const hook = mount()
+
+    await act(async () => {
+      await hook.result.current.resumeSession(storedId, true)
+    })
+
+    expect(answers($messages.get())).toEqual(['A1firstanswer', 'A2inarratingA2answeracrossthedrop'])
+  } finally {
+    Object.assign(resumedIdle, { running: false, messages: [], messages_omitted: true })
+  }
+})
