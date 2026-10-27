@@ -23,11 +23,12 @@ def _pending_preview(text):
     line = " ".join("".join(ch if ch.isprintable() else " " for ch in strip_ansi(text)).split())
     if len(line) > _PREVIEW_CHARS:
         line = line[:_PREVIEW_CHARS - 1] + "…"
-    return f": {line}" if line else ""
+    return f'    "{line}"' if line else ""
 
 
-_UNKNOWN_OUTCOME = ("Execution outcome is unknown. Resume this session to inspect the lost turn "
-                    "and /discard it; do not resend the input.")
+_UNKNOWN_OUTCOME = ("Hermes restarted before this turn finished, so how far it got is unknown. "
+                    "Resume this session to check, then type /discard to drop it. "
+                    "Don't send the same message again until you've checked.")
 
 _BLOCKING_CONTROL_EVENTS = frozenset({
     "approval.request", "approval.settled", "clarify.request", "clarify.settled",
@@ -36,19 +37,34 @@ _BLOCKING_CONTROL_EVENTS = frozenset({
 
 
 def pending_lines(pending):
-    """The owner's pending admissions as shown on attach (the classic CLI shows them before a turn)."""
-    unknown = any(row["status"] == "unknown" for row in pending)
-    lines = ["Execution outcome unknown after restart. Discard acknowledges the lost turn "
-             "without replaying it; queued work may then continue."] if unknown else []
-    for row in pending:
-        admission = row["admission_id"]
-        # A queued prompt is not in the transcript yet: show what is about to run (or was lost).
-        preview = _pending_preview(row.get("text"))
-        if row["status"] == "unknown":
-            lines.append(f"Unknown admission: {admission}{preview}\n/discard {admission}")
-        elif row["status"] == "queued":
-            context = "waiting behind unknown work" if unknown else "waiting to run"
-            lines.append(f"Queued admission: {admission} ({context}){preview}")
+    """The owner's pending admissions as shown on attach (the classic CLI shows them before a turn).
+    A lost turn is never replayed, so the person must be told what it was and the exact command
+    that drops it; a queued prompt is not in the transcript yet, so it is quoted too."""
+    lost = [row for row in pending if row["status"] == "unknown"]
+    queued = [row for row in pending if row["status"] == "queued"]
+    lines = []
+    if lost:
+        one = len(lost) == 1
+        lines.append("⏸ This chat is paused. Hermes restarted while "
+                     + ("a turn was running, so it never finished:" if one
+                        else f"{len(lost)} turns were running, so they never finished:"))
+        why = (f"  Hermes won't re-run {'it' if one else 'them'} by itself, since {'it' if one else 'they'} "
+               "may already have done part of the work.")
+        if one:
+            lines.extend(line for line in (_pending_preview(lost[0].get("text")), why,
+                                           "  To drop it and continue, type:",
+                                           f"/discard {lost[0]['admission_id']}") if line)
+        else:
+            lines.append(f"{why} To drop one and continue, type the /discard line under it:")
+            for row in lost:
+                preview = _pending_preview(row.get("text"))
+                lines.append(f"{preview}\n/discard {row['admission_id']}" if preview
+                             else f"/discard {row['admission_id']}")
+    if queued:
+        count = "1 message is" if len(queued) == 1 else f"{len(queued)} messages are"
+        lines.append(f"  {count} waiting and will run after that:" if lost
+                     else f"  {count} waiting to run:")
+        lines.extend(_pending_preview(row.get("text")) or "    (no text)" for row in queued)
     return lines
 
 
@@ -452,8 +468,9 @@ class GatewayChatView:
             self.completions[admission] = {"outcome": "unknown", "text": _UNKNOWN_OUTCOME}
             return None
         if own == "queued" and self.unknown_admissions():
-            return ("Unknown execution blocks this session; your accepted input is retained. "
-                    "Resume interactively to resolve the lost turn; do not resend the input.")
+            return ("This chat is paused behind a turn that never finished when Hermes restarted. "
+                    "Your message is saved and will run once you resume this session and /discard "
+                    "that turn; don't send it again.")
         if self.prompts and (own or not self.gaps):  # a control blocks only a turn still pending
             return "Input required; detached without cancelling. Resume this session interactively."
         return None
