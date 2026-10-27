@@ -5,9 +5,10 @@ Native Desktop reads that folder from its own disk (``desktopPluginsRoot`` in El
 browser bridge asks here instead, and the same runtime loader scans, loads and polls it.
 
 The routes answer only what the loader reads: the root, its plugin folders, and each folder's
-``plugin.js`` and ``.hermes-package.json``, resolved through symlinks to inside the root. They never
-go through ``/api/fs``, which follows the profile's SSH workspace and truncates at the preview cap.
-Webapp only (``SurfacePolicy.desktop_plugins``; 404 elsewhere).
+``plugin.js`` and ``.hermes-package.json``. Containment is checked on the path as written, then
+symlinks are followed as Electron's ``readDir`` does, so ``desktop-plugins/foo -> ~/src/foo`` loads
+here too. They never go through ``/api/fs``, which follows the profile's SSH workspace and truncates
+at the preview cap. Webapp only (``SurfacePolicy.desktop_plugins``; 404 elsewhere).
 """
 
 from __future__ import annotations
@@ -37,14 +38,17 @@ def desktop_plugins_root() -> Path:
 
 
 def _inside_root(raw: str) -> tuple[Path, tuple[str, ...]]:
-    """*raw* resolved, and its parts below the root. Anything that resolves outside is a 404."""
+    """*raw* and its parts below the root, judged as written: no ``..``, at most a folder and a file.
+    Links are not resolved here; a linked plugin folder is followed like native Desktop follows it.
+    The link buys nothing the tab cannot already reach through ``/api/fs`` or the host terminal."""
     root = desktop_plugins_root()
     try:
-        target = Path(raw).resolve(strict=True)
-        parts = target.relative_to(root).parts
-    except (OSError, RuntimeError, ValueError):
+        parts = Path(raw).relative_to(root).parts
+    except ValueError:
         raise HTTPException(status_code=404, detail="Not a desktop plugin path") from None
-    return target, parts
+    if len(parts) > 2 or ".." in parts:
+        raise HTTPException(status_code=404, detail="Not a desktop plugin path")
+    return root.joinpath(*parts), parts
 
 
 def _list(raw: str) -> dict:

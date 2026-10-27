@@ -89,6 +89,29 @@ def test_webapp_reads_nothing_but_plugin_entries_and_markers(webapp, hermes_root
         assert webapp.get("/api/desktop-plugins/list", params={"path": str(path)}).status_code == 404, path
 
 
+def test_a_linked_plugin_folder_loads_like_native_desktop(webapp, hermes_root, tmp_path):
+    # `desktop-plugins/foo -> ~/src/foo` is how plugins get developed; Electron follows the link.
+    checkout = tmp_path / "src" / "foo"
+    checkout.mkdir(parents=True)
+    (checkout / "plugin.js").write_text("export default { id: 'foo' }", encoding="utf-8")
+    (checkout / "notes.txt").write_text("private", encoding="utf-8")
+    plugins = hermes_root / "desktop-plugins"
+    plugins.mkdir()
+    try:
+        (plugins / "foo").symlink_to(checkout, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+    link = plugins.resolve() / "foo"
+
+    listed = webapp.get("/api/desktop-plugins/list", params={"path": str(link)})
+    assert listed.status_code == 200
+    assert {e["name"] for e in listed.json()["entries"]} == {"plugin.js", "notes.txt"}
+    read = webapp.get("/api/desktop-plugins/read", params={"path": str(link / "plugin.js")}).json()
+    assert read["text"] == "export default { id: 'foo' }"
+    # The link opens the folder, not the rest of the checkout's files.
+    assert webapp.get("/api/desktop-plugins/read", params={"path": str(link / "notes.txt")}).status_code == 404
+
+
 @pytest.mark.parametrize("surface", ["gateway", "dashboard", "serve"])
 def test_only_the_webapp_serves_desktop_plugins(monkeypatch, hermes_root, surface):
     _install(hermes_root, "notes", "export default {}")
