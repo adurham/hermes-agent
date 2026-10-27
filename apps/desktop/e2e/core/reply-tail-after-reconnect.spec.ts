@@ -176,6 +176,7 @@ test('a reply that commits between the reconnect replay and the resume renders i
       // otherwise repairs the view 20-50 s later.
       await expect(viewport(page)).toContainText(`${A(2)} answer across the drop`, { timeout: 10_000 })
       await expect(stopButton(page)).toHaveCount(0, { timeout: 30_000 })
+      await page.screenshot({ path: test.info().outputPath('reply-after-reconnect.png') })
       session.lossyWire = [U(2)]
       await assertTranscriptOracle(page, ws, provider, session, 'commit between replay and resume')
     } finally {
