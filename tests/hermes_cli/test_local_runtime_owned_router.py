@@ -175,3 +175,30 @@ def test_a_crash_restart_stops_the_old_routers_survivors_and_releases_its_group(
         with contextlib.suppress(ProcessLookupError):
             os.killpg(old.pid, 9)  # windows-footgun: ok — posix-marked test
         process_identity.release_process_groups([old.pid])
+
+
+def test_a_crashed_routers_empty_group_is_released_before_the_restart_backoff(monkeypatch, tmp_path):
+    """Kept registered through the backoff, the freed number could be reused by a stranger's group,
+    which the restart's survivor stop would then TERM and KILL."""
+    from hermes_cli import process_identity
+    from hermes_cli.local_runtime import supervisor
+
+    monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
+    sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59995)
+    old = subprocess.Popen([sys.executable, "-c", "pass"],  # detached-spawn: ok — test router stand-in; exits at once
+                           stdin=subprocess.DEVNULL, start_new_session=True)
+    process_identity.own_process_groups([old.pid])
+    registered_during_backoff = []
+
+    def backoff_wait(_seconds):
+        registered_during_backoff.append(old.pid in process_identity._supervised_pgids)
+        return True  # stop() arrived during the backoff: ends the watch
+
+    try:
+        old.wait(timeout=30)  # the router crashed and left nothing in its group
+        sup.proc = old
+        monkeypatch.setattr(sup._stop_event, "wait", backoff_wait)
+        sup._watch()
+        assert registered_during_backoff == [False], "the empty group stayed registered through the backoff"
+    finally:
+        process_identity.release_process_groups([old.pid])

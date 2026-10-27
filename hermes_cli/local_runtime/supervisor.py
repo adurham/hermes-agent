@@ -27,7 +27,7 @@ from pathlib import Path
 from hermes_cli.local_runtime.binaries import runtimes_root
 from hermes_cli.local_runtime.endpoint import child_query
 from hermes_cli.local_runtime.processes import server_child_env, spawn_server
-from hermes_cli.process_identity import stop_owned_group_survivors
+from hermes_cli.process_identity import release_process_group_once_empty, stop_owned_group_survivors
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +269,9 @@ class LlamaServerSupervisor:
                 continue
             if self._stopping:
                 return
+            # An already-empty group is released now, not after the backoff: its number is free for
+            # reuse meanwhile, and the survivor stop below would then signal a stranger's group.
+            release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
             backoff = _RESTART_BACKOFF_S[min(self._restarts, len(_RESTART_BACKOFF_S) - 1)]
             logger.warning("llama-server exited rc=%s; restart #%s in %ss", rc, self._restarts + 1, backoff)
             if self._stop_event.wait(backoff):
