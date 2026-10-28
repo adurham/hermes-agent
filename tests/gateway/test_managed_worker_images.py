@@ -24,11 +24,14 @@ def test_admitted_images_reach_managed_worker(tmp_path, mode, model):
     thread = threading.Thread(target=peer.serve_forever, daemon=True)
     thread.start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'
+    # The daemon starts with no models.dev cache, so session.create would fetch the public
+    # registry in the foreground and a slow network outlasts rpc()'s deadline. Port 9 refuses.
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False, 'managed_workers': mode == 'managed'},
         'model': {'provider': 'custom', 'default': model, 'base_url': url},
         'agent': {'image_input_mode': 'native'}, 'platform_toolsets': {'cli': []},
         'auxiliary': {'title_generation': {'enabled': False}},
+        'models_dev': {'url': 'http://127.0.0.1:9/api.json'},
     }))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
