@@ -416,6 +416,29 @@ def test_recall_indicator_skipped_when_nothing_injected():
         assert "👁️" not in str(call)
 
 
+def test_recall_indicator_suppressed_when_surface_opts_out():
+    """A surface with memory_recall_indicator off gets no status line and no provider call."""
+    from agent import display as agent_display
+
+    agent = _FakeAgent()
+    agent._emit_status = MagicMock()
+    mm = MagicMock()
+    mm.prefetch_all.return_value = "- recalled fact"
+    mm.describe_recall.return_value = "🧠 Holographic — recalled 2 memories"
+    agent._memory_manager = mm
+
+    previous = agent_display.memory_indicator_enabled()
+    agent_display.set_memory_indicator(False)
+    try:
+        _build(agent, user_message="what did we decide about the deploy pipeline?")
+    finally:
+        agent_display.set_memory_indicator(previous)
+
+    mm.describe_recall.assert_not_called()
+    for call in agent._emit_status.call_args_list:
+        assert "recalled" not in str(call)
+
+
 def test_ensure_db_session_runs_after_system_prompt_restore():
     """Regression for #45499.
 

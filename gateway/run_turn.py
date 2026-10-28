@@ -1022,6 +1022,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
             ("set_friendly_tool_labels", "friendly_tool_labels", True, bool),
+            ("set_memory_indicator", "memory_recall_indicator", True, bool),
         ):
             with suppress(Exception):
                 from agent import display as _agent_display

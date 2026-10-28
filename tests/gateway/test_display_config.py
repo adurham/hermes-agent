@@ -271,3 +271,20 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+class TestMemoryRecallIndicator:
+    """The "🧠 <provider> — recalled N memories" status line is per-surface."""
+
+    def test_default_on(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "cli", "memory_recall_indicator") is True
+
+    def test_platform_override_off(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"discord": {"memory_recall_indicator": False}}}}
+        assert resolve_display_setting(config, "discord", "memory_recall_indicator") is False
+        # Another surface keeps the default.
+        assert resolve_display_setting(config, "telegram", "memory_recall_indicator") is True

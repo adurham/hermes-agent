@@ -22,6 +22,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
+    # "🧠 <provider> — recalled N memories" status line. On by default (it proves memory was used);
+    # chat platforms turn it off because each line is a separate push notification.
+    "memory_recall_indicator": True,
     "suppress_warning_notifications": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
@@ -185,6 +188,7 @@ _NORMALISERS: dict[str, Any] = {
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
+    "memory_recall_indicator": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,

@@ -128,6 +128,22 @@ def get_tool_preview_max_len() -> int:
     return _tool_preview_max_len
 
 
+# Per-surface switch for the "🧠 <provider> — recalled N memories" status line. The line exists so
+# the user SEES that injected memory was used; on a messaging platform it is a push notification
+# per turn, so those surfaces turn it off (display.<platform>.memory_recall_indicator: false).
+_memory_indicator_enabled: bool = True
+
+
+def set_memory_indicator(enabled: bool) -> None:
+    """Enable/disable the deterministic memory-recall status line for this turn's surface."""
+    global _memory_indicator_enabled
+    _memory_indicator_enabled = bool(enabled)
+
+
+def memory_indicator_enabled() -> bool:
+    return _memory_indicator_enabled
+
+
 _JSON_ESCAPE_RE = re.compile(r"\\(.)")
 
 
