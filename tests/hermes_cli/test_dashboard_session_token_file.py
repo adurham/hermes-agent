@@ -47,6 +47,18 @@ def test_empty_token_file_fails_loudly(monkeypatch, tmp_path):
         web_server._resolve_session_token()
 
 
+def test_malformed_token_file_fails_loudly(monkeypatch, tmp_path):
+    from hermes_cli import web_server
+
+    token_file = tmp_path / "token"
+    token_file.write_bytes(b"\xff\xfe\x00not-utf8")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN_FILE", str(token_file))
+
+    with pytest.raises(SystemExit, match="unreadable"):
+        web_server._resolve_session_token()
+
+
 def test_no_source_mints_a_token(monkeypatch):
     from hermes_cli import web_server
 

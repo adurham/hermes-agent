@@ -231,8 +231,8 @@ def _resolve_session_token() -> str:
     token_file = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN_FILE")
     if token_file:
         try:
-            token = Path(token_file).read_text(encoding="utf-8").strip()
-        except OSError as exc:
+            token = Path(token_file).read_text(encoding="utf-8-sig").strip()
+        except (OSError, UnicodeError) as exc:
             raise SystemExit(
                 f"HERMES_DASHBOARD_SESSION_TOKEN_FILE names an unreadable file ({token_file}): {exc}"
             ) from exc
