@@ -232,10 +232,13 @@ def lock_record_unpublished(home: Path) -> bool:
     """True when *home*'s ``gateway.lock`` record names no live holder yet: empty, torn, or a dead
     previous holder's. :meth:`ProfileOwnership.reserve` takes the flock BEFORE it writes the record,
     so a contender that loses the flock in that window cannot tell maintenance from a gateway; it
-    must retry (bounded) instead of reporting a runtime owner. Advisory only, never grants the lock."""
+    must retry (bounded) instead of reporting a runtime owner. A record naming the CALLER is the
+    caller's own rolled-back attempt (an all-or-nothing reserve writes each home's record before a
+    later home refuses), so whoever holds the flock now has not published either. Advisory only,
+    never grants the lock."""
     from gateway.status import _live_pid_from_record, _read_gateway_lock_record
     record = _read_gateway_lock_record(canonical_home(home) / 'gateway.lock')
-    return not record or _live_pid_from_record(record) is None
+    return not record or _live_pid_from_record(record) in (None, os.getpid())
 
 
 def live_runtime_owner(home: Path) -> int | None:

@@ -617,8 +617,12 @@ def _reserve_waiting_out_browse_reconcile(ownership, homes, *, wait_s: float | N
             conflicting = _conflicting_homes(homes)
             holders = [h for h in conflicting
                        if maintenance_holder(h, BROWSE_RECONCILE_PURPOSE) or lock_record_unpublished(h)]
-            if not holders or len(holders) < len(conflicting) or time.monotonic() >= deadline:
+            if len(holders) < len(conflicting) or time.monotonic() >= deadline:
                 raise
+            if not conflicting:
+                # The holder let go before the re-probe: a client's liveness probe
+                # (gateway.status._probe_lock_file takes the flock for an instant), never an owner.
+                continue
             if not logged:
                 logger.info("Profile %s is held by a short session-store schema catch-up; waiting up to %.0fs",
                             holders[0], wait_s)
