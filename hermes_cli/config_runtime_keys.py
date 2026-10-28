@@ -53,11 +53,15 @@ def _declared_keys_under(roots: tuple[str, ...]) -> frozenset[str]:
 
 
 def plugin_declared_config_keys() -> frozenset[str]:
-    """``config_keys`` declared by bundled and the active profile's user-installed plugins."""
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    """``config_keys`` declared by bundled, the active profile's user-installed and (opt-in) project plugins."""
+    from hermes_cli import plugins as _plugins
     from hermes_constants import get_hermes_home
 
-    return _declared_keys_under((str(get_bundled_plugins_dir()), str(get_hermes_home() / "plugins")))
+    roots = [str(_plugins.get_bundled_plugins_dir()), str(get_hermes_home() / "plugins")]
+    # Same opt-in gate and directory as plugins_discovery.collect_directory_manifests.
+    if _plugins._env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+        roots.append(str(Path.cwd() / ".hermes" / "plugins"))
+    return _declared_keys_under(tuple(roots))
 
 
 def is_runtime_read_key(key: str) -> bool:

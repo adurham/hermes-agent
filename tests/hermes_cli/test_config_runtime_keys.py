@@ -67,3 +67,16 @@ def test_user_plugin_declares_its_config_keys_in_plugin_yaml(hermes_home, capsys
     assert NOTICE in capsys.readouterr().out
     set_config_value("browser.cloud_providr", "browserbase")
     assert NOTICE in capsys.readouterr().out
+
+
+def test_enabled_project_plugin_declares_its_config_keys(hermes_home, tmp_path, monkeypatch, capsys):
+    plugin = tmp_path / "proj" / ".hermes" / "plugins" / "widget-plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(json.dumps({"name": "widget-plugin", "config_keys": ["display.widget"]}))
+    monkeypatch.chdir(tmp_path / "proj")
+
+    set_config_value("display.widget.size", "3")
+    assert NOTICE in capsys.readouterr().out  # project plugins are opt-in
+    monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+    set_config_value("display.widget.size", "4")
+    assert NOTICE not in capsys.readouterr().out
