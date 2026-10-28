@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
 from gateway import hosted_room_driver, hosted_rooms
 from gateway.hosted_rooms_gateway_import import handoff_gateway_id, import_standalone_rooms
+from tests.waiting import wait_until
 from tui_gateway.hosted_room_service import HostedRoomService
 
 MEMBERS = [{"member_id": "default", "profile": "default", "handle": "hermes"},
@@ -85,9 +85,7 @@ def test_a_room_handed_to_the_gateway_takes_sends_and_wakes_its_members(tmp_path
 
     service.start()
     try:
-        deadline = time.monotonic() + 5
-        while "message.member" not in _kinds(target, "room-desk") and time.monotonic() < deadline:
-            time.sleep(0.01)
+        wait_until(lambda: "message.member" in _kinds(target, "room-desk"), timeout=5, what="member reply")
     finally:
         assert service.stop(timeout=5.0)
     assert rpc.submits == ["ops"]
