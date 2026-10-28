@@ -536,10 +536,16 @@ class HostedRoomService:
         event = append_user_event(
             self, room_id=room_id, event_id=event_id, payload=normalized,
             gateway_id=gateway_id, epoch=epoch)
-        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
-        if binding is None:
-            raise hosted_rooms.RoomNotFoundError("hosted room not found")
-        self.prepare_room(binding)
+        # The committed event is the Send's result: a failure from here on is the room driver's,
+        # which runs the same preparation on its next pass and records the error there. Raising
+        # would tell the client a message it can already see in the room was not sent (#143239).
+        try:
+            binding = next((b for b in self.bindings() if b.room_id == room_id), None)
+            if binding is not None:
+                self.prepare_room(binding)
+        except Exception:
+            logger.warning("hosted room %s: preparing the room after a stored Send failed; "
+                           "the room driver retries it", room_id, exc_info=True)
         self.runtime.wakeup()
         return event
 
