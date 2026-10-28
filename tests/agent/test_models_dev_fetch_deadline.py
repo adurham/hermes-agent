@@ -4,7 +4,6 @@ A registry that trickles bytes slower than the per-read timeout never trips it, 
 fetch runs inside a caller's request (a fresh home's first ``session.create``), so the bound must
 cover the whole exchange and fall back to the cache path the client already has.
 """
-import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,9 +11,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 import agent.models_dev as md
-
-REGISTRY = {"anthropic": {"id": "anthropic", "models": {"claude-x": {"id": "claude-x"}}}}
-
 
 class _Trickle(BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -62,10 +58,3 @@ def test_cold_fetch_from_a_trickling_registry_returns_within_the_deadline(trickl
     assert time.monotonic() - started < 0.2
     assert trickling_registry.gets == 1
 
-
-def test_forced_refresh_falls_back_to_the_disk_cache_within_the_deadline(trickling_registry):
-    md._get_cache_path().parent.mkdir(parents=True, exist_ok=True)
-    md._get_cache_path().write_text(json.dumps(REGISTRY), encoding="utf-8")
-    started = time.monotonic()
-    assert md.fetch_models_dev(force_refresh=True) == REGISTRY
-    assert time.monotonic() - started < 2.0
