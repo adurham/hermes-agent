@@ -30,7 +30,7 @@ async def _pending_card(monkeypatch):
     adapter._client = SimpleNamespace(get_channel=lambda _id: channel)
     await adapter.send_exec_approval(
         chat_id="555", command="ls", session_key=session,
-        metadata={"_approval_request_id": "request-1"},
+        request_id="request-1",
     )
     return adapter, sent["view"], entry, message
 
@@ -192,7 +192,7 @@ async def test_external_answer_then_stale_click_preserves_resolved_observer(monk
     adapter._client = SimpleNamespace(get_channel=lambda _id: channel)
     await adapter.send_exec_approval(
         chat_id="555", command="ls", session_key=session,
-        metadata={"_approval_request_id": "request-1"},
+        request_id="request-1",
     )
     view = sent["view"]
 

@@ -31,6 +31,7 @@ class _ButtonAdapter:
         self.sends: list[str] = []
         self.edits: list[tuple] = []
         self.card_metadata: list[Any] = []
+        self.card_request_ids: list[Any] = []
         self.send_metadata: list[Any] = []
         self._editable = editable
 
@@ -39,6 +40,7 @@ class _ButtonAdapter:
 
     async def send_exec_approval(self, *a: Any, **k: Any) -> SendResult:
         self.card_metadata.append(k.get("metadata"))
+        self.card_request_ids.append(k.get("request_id"))
         return SendResult(success=True, message_id="card-1")
 
     async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
@@ -112,9 +114,9 @@ def test_prompt_carries_request_identity(pending_entry):
     data = dict(pending_entry.data, timeout_s=3600)
     _runner(adapter)._approval_notify_sync(data)
 
-    assert adapter.card_metadata == [{
-        "thread_id": "t1", "_approval_request_id": pending_entry.data["request_id"],
-    }]
+    assert adapter.card_request_ids == [pending_entry.data["request_id"]]
+    # Platform metadata stays the thread routing only: the relay forwards it verbatim.
+    assert adapter.card_metadata == [{"thread_id": "t1"}]
 
 
 @pytest.mark.parametrize("text_fallback", [False, True])

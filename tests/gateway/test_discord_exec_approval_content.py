@@ -77,7 +77,7 @@ async def test_exec_approval_view_honors_discord_timeout_with_request_id(monkeyp
 
     result = await adapter.send_exec_approval(
         chat_id="555", command="ls", session_key="agent:other:discord:555",
-        metadata={"_approval_request_id": "request-1"},
+        request_id="request-1",
     )
 
     assert result.success
@@ -96,7 +96,7 @@ async def test_expired_card_cannot_resolve_a_different_pending_request(monkeypat
     session = "agent:other:discord:555"
     await adapter.send_exec_approval(
         chat_id="555", command="ls", session_key=session,
-        metadata={"_approval_request_id": "expired"},
+        request_id="expired",
     )
     other = _ApprovalEntry({"request_id": "new", "command": "rm other"})
     monkeypatch.setitem(approval._gateway_queues, session, [other])
@@ -148,7 +148,7 @@ async def test_card_retires_when_backend_request_ends(monkeypatch, expire_during
     adapter._client = SimpleNamespace(get_channel=lambda _id: channel)
     await adapter.send_exec_approval(
         chat_id="555", command="ls", session_key=session,
-        metadata={"_approval_request_id": "request-1"},
+        request_id="request-1",
     )
     view = sent["view"]
     if not expire_during_send:

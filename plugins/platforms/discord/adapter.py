@@ -5727,7 +5727,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
                 admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
                 allow_session="session" in choices, smart_denied=prompt.smart_denied,
-                request_id=(prompt.metadata or {}).get("_approval_request_id"),
+                request_id=prompt.request_id,
             )
             view_holder.append(view)
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
