@@ -725,8 +725,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
-    # Every backend: capture_screenshot() brings a hidden tab to the front and falls back to jpeg instead of
-    # hanging on a png a hidden tab never renders (tools/browser_use_shot.py).
+    # Every backend: capture_screenshot() falls back to jpeg instead of hanging on a png a hidden tab never
+    # renders; only on a cloud browser does it (and new_tab) bring the tab to the front (tools/browser_use_shot.py).
     from tools.browser_use_shot import harness_command
     cmd = harness_command(cmd, activate_new_tabs=bool(env.pop(_CLOUD_BROWSER_SENTINEL, None)))
 

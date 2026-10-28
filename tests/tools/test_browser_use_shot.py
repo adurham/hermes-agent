@@ -102,20 +102,33 @@ def run_exec(monkeypatch, tmp_path):
     return run
 
 
-@pytest.mark.parametrize("activate_works", [True, False], ids=["activated", "activation-unsupported"])
-def test_hidden_tab_screenshot_returns_a_png_instead_of_hanging(run_exec, activate_works):
+@pytest.mark.parametrize("as_path", [False, True], ids=["str", "pathlib"])
+def test_hidden_tab_screenshot_on_the_users_chrome_never_switches_their_tab(run_exec, as_path):
     # a pathlib.Path on the jpeg fallback, where the extension decides the re-encode
-    code = "print(capture_screenshot({shot!r}))" if activate_works else \
-        "from pathlib import Path\nprint(capture_screenshot(Path({shot!r})))"
-    result, shot, calls = run_exec(activate_works, code=code)
+    code = "from pathlib import Path\nprint(capture_screenshot(Path({shot!r})))" if as_path else \
+        "print(capture_screenshot({shot!r}))"
+    result, shot, calls = run_exec(True, code=code)
 
     assert result.get("success") is True, result.get("stderr") or result
     with Image.open(shot) as img:
         assert img.format == "PNG"  # the path says .png, so a jpeg fallback is re-encoded
+    # the user's visible tab stays put: one bounded png, then jpeg, no activation
+    assert "Target.activateTarget" not in [c["method"] for c in calls], calls
+    shots = [c for c in calls if c["method"] == "Page.captureScreenshot"]
+    assert [s["format"] for s in shots] == ["png", "jpeg"] and shots[0]["timeout"] <= 10, shots
+
+
+@pytest.mark.parametrize("activate_works", [True, False], ids=["activated", "activation-unsupported"])
+def test_hidden_tab_screenshot_on_a_cloud_browser_is_brought_to_front(run_exec, activate_works):
+    result, shot, calls = run_exec(activate_works, cloud=True)
+
+    assert result.get("success") is True, result.get("stderr") or result
+    with Image.open(shot) as img:
+        assert img.format == "PNG"
     shots = [c for c in calls if c["method"] == "Page.captureScreenshot"]
     assert shots[0]["format"] == "png" and shots[0]["timeout"] <= 10, shots
+    assert [c["method"] for c in calls].index("Target.activateTarget") < calls.index(shots[0])
     if activate_works:  # the tab was brought to the front, so png answered first time
-        assert [c["method"] for c in calls].index("Target.activateTarget") < calls.index(shots[0])
         assert len(shots) == 1
     else:  # png never comes for a hidden tab: one bounded png, then jpeg
         assert [s["format"] for s in shots] == ["png", "jpeg"]
@@ -130,3 +143,11 @@ def test_new_tab_is_brought_to_front_only_on_a_cloud_browser(run_exec, cloud):
     activations = [c for c in calls if c["method"] == "Target.activateTarget"]
     # nobody watches a cloud browser; on the user's own Chrome the visible tab stays put
     assert activations == ([{"method": "Target.activateTarget", "timeout": 5.0, "targetId": "T2"}] if cloud else [])
+
+
+def test_cloud_new_tab_survives_a_provider_rejecting_activation(run_exec):
+    result, _, calls = run_exec(False, cloud=True, code="print('TAB', new_tab())")
+
+    assert result.get("success") is True, result.get("stderr") or result
+    assert "TAB T2" in result.get("output", "") + result.get("stdout", ""), result
+    assert [c["targetId"] for c in calls if c["method"] == "Target.activateTarget"] == ["T2"]

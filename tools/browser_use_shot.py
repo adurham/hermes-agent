@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
 import tempfile
 from typing import Any, Callable
@@ -21,6 +22,7 @@ from typing import Any, Callable
 PNG_DEADLINE_S = 10.0
 JPEG_DEADLINE_S = 60.0
 _HARNESS_MODULE = "browser_harness.helpers"
+_log = logging.getLogger("hermes_browser_use_shot")
 
 
 def _default_shot_path() -> str:
@@ -55,13 +57,17 @@ def _write_shot(data: bytes, path: str, fmt: str) -> None:
         f.write(data)
 
 
-def make_capture_screenshot(cdp: Callable[..., Any], current_tab: Callable[[], dict]) -> Callable[..., str]:
+def make_capture_screenshot(cdp: Callable[..., Any], current_tab: Callable[[], dict],
+                            activate_hidden: bool = False) -> Callable[..., str]:
+    """``activate_hidden`` only on a browser no human watches (cloud): on the user's own or connected
+    Chrome, activating the agent's tab would switch the tab they are looking at. Every backend keeps the
+    bounded png attempt and the jpeg fallback."""
     def capture_screenshot(path=None, full=False, max_dim=None):
-        """Save a PNG of the current viewport (bringing a hidden tab to the front first). Set
-        max_dim=1800 on a 2x display to keep the file under the 2000px-per-side limit some image-aware
-        LLMs enforce."""
+        """Save a PNG of the current viewport. Set max_dim=1800 on a 2x display to keep the file under
+        the 2000px-per-side limit some image-aware LLMs enforce."""
         path = os.fspath(path or _default_shot_path())  # a pathlib.Path works too
-        _bring_to_front_if_hidden(cdp, current_tab)
+        if activate_hidden:
+            _bring_to_front_if_hidden(cdp, current_tab)
         fmt = "png"
         try:
             r = cdp("Page.captureScreenshot", _response_timeout=PNG_DEADLINE_S,
@@ -91,7 +97,11 @@ def make_new_tab(new_tab: Callable[..., Any], cdp: Callable[..., Any]) -> Callab
         """Open (or reuse a blank) tab, navigate to url, and bring it to the front."""
         tid = new_tab(url)
         if tid:
-            cdp("Target.activateTarget", targetId=tid)
+            try:
+                cdp("Target.activateTarget", targetId=tid)
+            # The tab exists either way; a provider that rejects activation leaves it in the background.
+            except (RuntimeError, OSError) as e:
+                _log.warning("new_tab: Target.activateTarget failed, tab left in background: %s", e)
         return tid
     return new_tab_in_front
 
@@ -106,9 +116,11 @@ def install(helpers: Any, activate_new_tabs: bool = False) -> None:
     """Rebind the helpers on the ``browser_harness.helpers`` module before ``browser_harness.run`` star-imports
     them, so the agent's code, the harness's step tracer and recorder all see these. ``activate_new_tabs`` is
     for browsers no human is watching (cloud providers): there a background tab only costs throttling and
-    blank screenshots, while on a user's own Chrome the harness deliberately leaves the visible tab alone."""
+    blank screenshots, so new tabs and hidden tabs being captured are brought to the front; on a user's own
+    Chrome the harness deliberately leaves the visible tab alone."""
     if _is_harness_helper(helpers.capture_screenshot):
-        helpers.capture_screenshot = make_capture_screenshot(helpers.cdp, helpers.current_tab)
+        helpers.capture_screenshot = make_capture_screenshot(helpers.cdp, helpers.current_tab,
+                                                             activate_hidden=activate_new_tabs)
     if activate_new_tabs and _is_harness_helper(helpers.new_tab):
         helpers.new_tab = make_new_tab(helpers.new_tab, helpers.cdp)
 
