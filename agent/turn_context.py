@@ -944,12 +944,15 @@ def _memory_turn_start_and_prefetch(
         if not is_trivial_prompt(_query):
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
-    # drop injected memory.
+    # drop injected memory. Suppressed on surfaces that opted out (chat platforms),
+    # where the line arrives as its own push notification every turn.
     if ext_prefetch_cache:
         with suppress(Exception):
-            _recall_indicator = agent._memory_manager.describe_recall()
-            if _recall_indicator:
-                agent._emit_status(_recall_indicator)
+            from agent import display as _agent_display
+            if _agent_display.memory_indicator_enabled():
+                _recall_indicator = agent._memory_manager.describe_recall()
+                if _recall_indicator:
+                    agent._emit_status(_recall_indicator)
     return ext_prefetch_cache
 
 
