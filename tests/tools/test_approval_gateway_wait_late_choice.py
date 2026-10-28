@@ -134,6 +134,28 @@ def test_coalesced_follower_waits_the_leaders_captured_timeout(monkeypatch):
     assert seen == [3600]
 
 
+def test_leader_publishes_its_timeout_before_the_pre_request_hooks(monkeypatch):
+    """A follower can find the leader while its ``pre_approval_request`` hooks run, before the prompt
+    is sent; the leader's timeout must already be on the entry by then."""
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 3600)
+    published = []
+
+    def hook(name, **kw):
+        if name == "pre_approval_request":
+            published.append(mod._gateway_queues[SESSION_KEY][0].data.get("timeout_s"))
+
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", hook)
+    seen = []
+    monkeypatch.setattr(wait_mod, "_poll_event",
+                        lambda event, session_key, *, interrupt_log, timeout_s=None: seen.append(timeout_s) or "timeout")
+
+    wait_mod._await_gateway_decision(SESSION_KEY, lambda data: None, dict(APPROVAL))
+
+    assert published == [3600]
+    assert seen == [3600]
+
+
 def test_resolve_commits_the_choice_before_releasing_the_approval_lock(monkeypatch):
     """``_drop_entry`` reads ``entry.result`` and leaves the queue in one ``_lock`` section, which only
     closes the race if ``resolve_gateway_approval`` commits ``result``/``event`` INSIDE the section that

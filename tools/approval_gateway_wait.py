@@ -165,6 +165,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     }
     keys = list(approval_data.get("pattern_keys") or [])
     entry = _ApprovalEntry(approval_data)
+    # Captured before the entry is published: a coalesced follower can find it while the pre-request
+    # hooks still run, and must wait this same timeout rather than re-read a since-edited config.
+    timeout_s = entry.data["timeout_s"] = _ctx._get_approval_timeout()
 
     def _enqueue() -> None:
         register_prepared_approval(session_key, entry)
@@ -233,8 +236,6 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         _ctx._fire_approval_hook("pre_approval_request", **payload)
         # Bridges sync agent thread → async gateway.
         try:
-            timeout_s = _ctx._get_approval_timeout()
-            entry.data["timeout_s"] = timeout_s
             notify_cb(dict(entry.data))
             approval_published()
         except Exception as exc:
