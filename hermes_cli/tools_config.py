@@ -755,12 +755,22 @@ def _merge_mcp_servers(
 
 def _warn_all_invalid_platform_toolsets(platform: str, explicit: list, config: dict) -> None:
     """Warn once when an explicit platform list has only invalid names (``hermes`` for ``hermes-cli`` → no
-    native tools), at session tool resolution rather than only in update/doctor."""
+    native tools), at session tool resolution rather than only in update/doctor. Names are judged the way
+    ``hermes config check`` judges them, and the platform's own ``hermes-<platform>`` bundle always counts:
+    a plugin platform has no sessions to leave toolless until its plugin loads, and once it loads the
+    registry resolves the bundle. Installs seeded from cli-config.yaml.example carry such rows (``teams``,
+    ``google_chat``, and ``homeassistant`` before it left core) whether or not the platform is set up.
+    The own-bundle check runs first because this is reached on every schema build (the kanban gate
+    resolves every saved platform row), and the resolver's manifest scan is filesystem I/O."""
     from hermes_cli.toolset_validation import saved_toolset_resolver
 
+    if platform in _warned_invalid_platform_toolsets:
+        return
     named = [str(t) for t in explicit if isinstance(t, str) and t]
+    if not named or _platform_default_toolset(platform) in named:
+        return
     is_valid_toolset = saved_toolset_resolver(config)
-    if named and not any(is_valid_toolset(t) for t in named) and platform not in _warned_invalid_platform_toolsets:
+    if not any(is_valid_toolset(t) for t in named):
         _warned_invalid_platform_toolsets.add(platform)
         logger.warning(
             "platform '%s' has no valid toolsets configured (unknown "

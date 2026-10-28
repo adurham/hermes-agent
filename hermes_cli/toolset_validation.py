@@ -55,8 +55,8 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     ``tools_config._get_platform_tools`` lets through: registered toolsets, any configured MCP server by
     its ``mcp-<server>`` toolset name or bare alias (neither is registered before MCP discovery; a
     disabled server is inactive, not a typo), ``hermes-<platform>`` plugin-platform bundles and the
-    ``no_mcp`` sentinel. The manifest/catalog scans and the plugin lookup (which may run plugin
-    discovery) happen only for a name the cheaper checks cannot place."""
+    ``no_mcp`` sentinel. The manifest scan and the plugin lookup (which may run plugin discovery)
+    happen only for a name the cheaper checks cannot place."""
     from functools import cache
 
     from toolsets import validate_toolset
@@ -68,14 +68,8 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     @cache
     def platform_bundles() -> frozenset:
         from hermes_cli.config import _platform_plugin_manifests
-        from hermes_cli.plugin_catalog import CATALOG_TIERS, load_catalog
 
-        manifest_names = {name for name, _manifest in _platform_plugin_manifests()}
-        catalog_names = {
-            entry.name for entry in load_catalog()
-            if entry.category == "platform" and entry.tier in CATALOG_TIERS
-        }
-        return frozenset(f"hermes-{name}" for name in manifest_names | catalog_names)
+        return frozenset(f"hermes-{name}" for name, _manifest in _platform_plugin_manifests())
 
     @cache
     def plugin_names() -> frozenset:
@@ -129,7 +123,10 @@ def validate_platform_toolsets(
         for name in toolsets:
             if not isinstance(name, str) or not name:
                 continue
-            if not is_valid_toolset(name):
+            # The platform's own bundle is never a typo: a plugin platform has no sessions until its plugin
+            # loads, and then the registry resolves it. Installs seeded from cli-config.yaml.example carry
+            # such rows for platforms nobody set up (teams, google_chat, homeassistant before it left core).
+            if not is_valid_toolset(name) and name != default:
                 hint = f" — did you mean '{default}'?" if default_valid else ""
                 warnings.append(f"platform '{platform}' references unknown toolset '{name}'{hint}")
             elif is_allowed_for_platform(name, str(platform)):
