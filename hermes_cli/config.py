@@ -2977,10 +2977,12 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     segments = _split_key_path(key)
     top = segments[0]
 
-    # A leading underscore on the FIRST segment marks an intentionally non-schema internal key
-    # (test harnesses/tooling); only the first segment is exempt so ``agent._max_turns`` is caught.
+    # A leading ``_`` on the FIRST segment only marks an internal key (``agent._max_turns`` is caught);
+    # runtime-read keys DEFAULT_CONFIG leaves unseeded come from config_runtime_keys.
+    from hermes_cli.config_runtime_keys import is_runtime_read_key
     from hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
-    if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS or key in LEFT_CORE_TERMINAL_KEYS:
+    if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS or key in LEFT_CORE_TERMINAL_KEYS \
+            or is_runtime_read_key(".".join(segments)):
         return True, None
 
     known = _known_top_level_keys()
@@ -3470,11 +3472,9 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
 
     # Phantom-key notice (#112348): a nested path under a KNOWN section that the schema does not
     # define (``compression.compressor.enabled``) is echoed straight from the user's file and is
-    # usually read by nothing, so it must not look like a live setting. The check is a
-    # DEFAULT_CONFIG walk and some live keys are deliberately unseeded (``browser.cloud_provider``,
-    # ``stt.provider``, ``gateway.proxy_url``: a stored value counts as an explicit user pick), so
-    # the wording hedges exactly like the set-path notice. Custom top-level keys stay exempt (they
-    # are bridged into os.environ for skills) and ``_validate_config_key`` already accepts
+    # usually read by nothing, so it must not look like a live setting. Unseeded live keys pass via
+    # config_runtime_keys; the wording still hedges like the set-path notice. Custom top-level keys
+    # stay exempt (bridged into os.environ for skills) and ``_validate_config_key`` already accepts
     # open-subkey sections. stderr keeps stdout/--json parseable; the exit code stays 0.
     if _split_key_path(key)[0] in _known_top_level_keys():
         is_known, suggestion = _validate_config_key(key)

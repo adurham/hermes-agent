@@ -199,6 +199,19 @@ _EXTRA_SELECTION_KEYS = {"web": ("search_backend", "extract_backend")}
 # pre-v52 driver choice) is not the cloud provider — excluded.
 _SELECTION_NAME_KEYS = {"browser": ("cloud_provider",), "web": ("backend",)}
 _DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
+# Categories whose stored selection read_selection() decides (the `hermes tools` / Tool Gateway rows).
+SELECTION_SECTIONS = ("web", "image_gen", "video_gen", "tts", "stt", "browser")
+
+
+def selection_config_keys() -> frozenset[str]:
+    """Dotted config keys read_selection()/selection_exists() honour. DEFAULT_CONFIG leaves them
+    unseeded on purpose (a stored key is the user's explicit pick), so the config-key validator
+    asks here instead of walking the defaults."""
+    return frozenset(
+        f"{section}.{key}"
+        for section in SELECTION_SECTIONS
+        for key in ("use_gateway", *_SELECTION_NAME_KEYS.get(section, _DEFAULT_NAME_KEYS),
+                    *_EXTRA_SELECTION_KEYS.get(section, ())))
 
 
 def _raw_section(section: str) -> dict[str, Any] | None:
