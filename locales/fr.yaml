@@ -1201,6 +1201,7 @@ platform:
       confirm_title: "Confirmer"
       already_resolved: "Cette approbation a déjà été traitée~"
       expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà traitée ailleurs)"
+      no_longer_pending: "⌛ Cette approbation n'est plus en attente (expirée ou traitée ailleurs)"
       by_user: "{label} par {user}"
       resolved_once: "Approuvé une fois"
       resolved_session: "Approuvé pour la session"

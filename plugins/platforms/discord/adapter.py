@@ -5710,7 +5710,20 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
-        view_holder = []
+        require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
+        choices = set(prompt.choices)
+        view = ExecApprovalView(
+            session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
+            allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
+            admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
+            allow_session="session" in choices, smart_denied=prompt.smart_denied,
+            request_id=prompt.request_id,
+        )
+        # Observe BEFORE sending, so a request that settles while the card is in flight still
+        # reports its real reason; ``pending_retire`` holds it until the card exists.
+        if view.request_id and not self._observe_exec_approval_settle(prompt.session_key, view):
+            view.pending_retire = "gone"  # already gone: how it ended is unknown
+
         def _build(_channel):
             content = prompt.text
             mention_content = self._approval_mention_content()
@@ -5720,16 +5733,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 title=_truncate_discord_component_text(f"⚠️ {t('gateway.exec_approval.header')}", _DISCORD_EMBED_TITLE_LIMIT),
                 color=discord.Color.orange(),
             )
-            require_admin, admin_user_ids = _resolve_exec_approval_admin_gate(getattr(self.config, "extra", None))
-            choices = set(prompt.choices)
-            view = ExecApprovalView(
-                session_key=prompt.session_key, allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids, require_admin=require_admin,
-                admin_user_ids=admin_user_ids, allow_permanent="always" in choices,
-                allow_session="session" in choices, smart_denied=prompt.smart_denied,
-                request_id=prompt.request_id,
-            )
-            view_holder.append(view)
             send_kwargs: dict[str, Any] = {"content": content, "embed": embed, "view": view}
             if mention_content:
                 allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
@@ -5739,22 +5742,27 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     )
             return send_kwargs, view
         result = await self._send_prompt(prompt.chat_id, prompt.metadata, _build)
-        if result.success and view_holder and view_holder[0].request_id:
-            from tools.approval import observe_gateway_settle
-            view = view_holder[0]
-            loop = asyncio.get_running_loop()
-
-            def retire(reason):
-                def schedule():
-                    task = loop.create_task(view.retire(reason))
-                    self._background_tasks.add(task)
-                    task.add_done_callback(self._background_tasks.discard)
-                    task.add_done_callback(_consume_background_task_result)
-                loop.call_soon_threadsafe(schedule)
-
-            if not observe_gateway_settle(prompt.session_key, view.request_id, retire):
-                await view.retire()
+        if result.success and view.pending_retire:
+            await view.retire(view.pending_retire)
         return result
+
+    def _observe_exec_approval_settle(self, session_key: str, view) -> bool:
+        """Retire ``view`` when its request settles (before it is sent: via ``view.pending_retire``)."""
+        from tools.approval import observe_gateway_settle
+        loop = asyncio.get_running_loop()
+
+        def retire(reason):
+            def schedule():
+                if view._message is None:  # still in flight (or its send failed)
+                    view.pending_retire = reason
+                    return
+                task = loop.create_task(view.retire(reason))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+                task.add_done_callback(_consume_background_task_result)
+            loop.call_soon_threadsafe(schedule)
+
+        return observe_gateway_settle(session_key, view.request_id, retire)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -6475,6 +6483,7 @@ def _define_discord_view_classes() -> None:
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.request_id = request_id
+            self.pending_retire: Optional[str] = None  # settle reason that arrived before the card was sent
             self._backend_settled = False
             self._retire_lock = asyncio.Lock()
             self.require_admin = require_admin
@@ -6529,6 +6538,7 @@ def _define_discord_view_classes() -> None:
                 footer = t({
                     "resolved": "platform.discord.approval.already_resolved",
                     "timeout": "platform.discord.prompt.expired_footer",
+                    "gone": "platform.discord.approval.no_longer_pending",
                 }.get(reason, "platform.discord.slash_confirm.resolved_cancel"))
                 if self._message:
                     try:

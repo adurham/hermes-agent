@@ -1005,6 +1005,7 @@ platform:
       confirm_title: "Bestätigen"
       already_resolved: "Diese Genehmigung wurde bereits entschieden~"
       expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)"
+      no_longer_pending: "⌛ Diese Genehmigung ist nicht mehr offen (abgelaufen oder anderswo beantwortet)"
       by_user: "{label} von {user}"
       resolved_once: "Einmalig genehmigt"
       resolved_session: "Für diese Sitzung genehmigt"

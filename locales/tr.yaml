@@ -1005,6 +1005,7 @@ platform:
       confirm_title: "Onayla"
       already_resolved: "Bu onay zaten sonuçlandırıldı~"
       expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaman aşımına uğradı veya başka yerde sonuçlandırıldı)"
+      no_longer_pending: "⌛ Bu onay artık beklemede değil (süresi doldu veya başka bir yerde yanıtlandı)"
       by_user: "{label} — {user}"
       resolved_once: "Bir kez onaylandı"
       resolved_session: "Oturum için onaylandı"

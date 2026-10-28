@@ -126,40 +126,46 @@ async def test_expired_approval_removes_discord_components():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("expire_during_send", [False, True])
-async def test_card_retires_when_backend_request_ends(monkeypatch, expire_during_send):
+@pytest.mark.parametrize("ends,footer_key", [
+    ("after_send", "platform.discord.prompt.expired_footer"),
+    ("during_send", "platform.discord.prompt.expired_footer"),
+    ("before_send", "platform.discord.approval.no_longer_pending"),
+])
+async def test_card_retires_when_backend_request_ends(monkeypatch, ends, footer_key):
+    """The card shows how its request ended, even when that happened while it was being sent."""
+    from agent.i18n import t
     from tools import approval
     from tools.approval_gateway_wait import _ApprovalEntry
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     session = "agent:other:discord:555"
     entry = _ApprovalEntry({"request_id": "request-1", "command": "ls"})
-    monkeypatch.setitem(approval._gateway_queues, session, [entry])
+    monkeypatch.setitem(approval._gateway_queues, session, [] if ends == "before_send" else [entry])
     message = SimpleNamespace(id=1234, edit=AsyncMock(), embeds=[])
     sent = {}
 
     async def send(**kwargs):
         sent.update(kwargs)
-        if expire_during_send:
-            approval._gateway_queues.pop(session)
+        message.embeds = [kwargs["embed"]]
+        if ends == "during_send":
+            entry.observers[0]("timeout")  # the wait times out while Discord is still sending
+            await asyncio.sleep(0)
         return message
 
     channel = SimpleNamespace(send=send)
     adapter._client = SimpleNamespace(get_channel=lambda _id: channel)
-    await adapter.send_exec_approval(
-        chat_id="555", command="ls", session_key=session,
-        request_id="request-1",
-    )
+    await adapter.send_exec_approval(chat_id="555", command="ls", session_key=session, request_id="request-1")
     view = sent["view"]
-    if not expire_during_send:
+    if ends == "after_send":
         assert not view.resolved
-        assert len(entry.observers) == 1
         entry.observers[0]("timeout")
         await asyncio.sleep(0)
-        await asyncio.sleep(0)
-    assert view.resolved
+        await asyncio.gather(*adapter._background_tasks)
+    assert view.resolved and view.is_finished()
     message.edit.assert_awaited_once()
-
+    assert message.edit.await_args.kwargs["view"] is None
+    footer = message.embeds[0].footer
+    assert (footer["text"] if isinstance(footer, dict) else footer.text) == t(footer_key)
 
 
 def _embed_text(embed):
