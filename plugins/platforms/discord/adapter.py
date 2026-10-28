@@ -6577,9 +6577,22 @@ def _define_discord_view_classes() -> None:
                 )
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from button: %s", exc)
-                count = 0
+                # Nothing was recorded and the request may still be pending: tell only the clicker
+                # and keep the card live for a retry. A later click, the request's observer, or
+                # (with no request id) the view timeout does the final edit.
+                self.resolved = False
+                self._backend_settled = False
+                await interaction.response.send_message(
+                    t("platform.discord.approval.click_failed"), ephemeral=True)
+                return
             if not count:
                 self._backend_settled = False
+                if self.request_id:
+                    # The request already settled through another path, whose observer owns this
+                    # card; editing it here too could land last and hide the real outcome.
+                    await interaction.response.send_message(
+                        t("platform.discord.approval.no_longer_pending"), ephemeral=True)
+                    return
                 color = discord.Color.dark_grey()
                 label = t("platform.discord.approval.expired")
             await self._finalize_embed(

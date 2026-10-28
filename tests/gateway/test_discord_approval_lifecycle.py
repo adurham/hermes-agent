@@ -220,3 +220,39 @@ async def test_external_answer_then_stale_click_preserves_resolved_observer(monk
     footer = message.embeds[0].footer
     footer_text = footer["text"] if isinstance(footer, dict) else footer.text
     assert footer_text == t("platform.discord.approval.already_resolved")
+    # The stale click only answers its clicker; the card edit belongs to the observer, so the
+    # two edits can't race and leave "command was not run" on top.
+    interaction.response.edit_message.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once_with(
+        t("platform.discord.approval.no_longer_pending"), ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_failed_click_keeps_a_pending_card_live(monkeypatch):
+    """A click whose lookup raises recorded nothing: the card stays clickable, only the clicker
+    hears about it, and the request's observer still settles the card later."""
+    adapter, view, entry, message = await _pending_card(monkeypatch)
+    session = view.session_key
+    monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
+    real_resolve = approval.resolve_gateway_approval
+    monkeypatch.setattr(approval, "resolve_gateway_approval", lambda *a, **k: 1 / 0)
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(display_name="tester"),
+        response=SimpleNamespace(send_message=AsyncMock(), edit_message=AsyncMock()))
+
+    await view._resolve(interaction, "once", 1, "gateway.exec_approval.action_once")
+
+    interaction.response.send_message.assert_awaited_once_with(
+        t("platform.discord.approval.click_failed"), ephemeral=True)
+    interaction.response.edit_message.assert_not_awaited()
+    assert not view.resolved and not view.is_finished()
+    assert approval._gateway_queues[session] == [entry]  # still pending, nothing recorded
+
+    assert real_resolve(session, "once", request_id="request-1") == 1  # answered by text later
+    entry.observers[0]("resolved")
+    await asyncio.sleep(0)
+    await asyncio.gather(*adapter._background_tasks)
+    footer = message.embeds[0].footer
+    assert (footer["text"] if isinstance(footer, dict) else footer.text) == t(
+        "platform.discord.approval.already_resolved")
+    assert view.is_finished()

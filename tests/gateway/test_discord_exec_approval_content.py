@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.i18n import t
 from gateway.config import PlatformConfig
 from plugins.platforms.discord.adapter import DiscordAdapter
 
@@ -104,12 +105,36 @@ async def test_expired_card_cannot_resolve_a_different_pending_request(monkeypat
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
     monkeypatch.setattr(view, "_finalize_embed", AsyncMock())
     monkeypatch.setattr(discord_adapter.discord, "Color", SimpleNamespace(dark_grey=lambda: 0))
-    interaction = SimpleNamespace(user=SimpleNamespace(display_name="tester"))
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(display_name="tester"), response=SimpleNamespace(send_message=AsyncMock()))
 
     await view._resolve(interaction, "once", 1, "gateway.exec_approval.action_once")
 
     assert not other.event.is_set()
     assert approval._gateway_queues[session] == [other]
+    # Its own request already settled elsewhere: the clicker hears so, the card is left alone.
+    view._finalize_embed.assert_not_awaited()
+    interaction.response.send_message.assert_awaited_once_with(
+        t("platform.discord.approval.no_longer_pending"), ephemeral=True)
+
+
+@pytest.mark.asyncio
+async def test_unsettled_click_without_an_observer_marks_the_card_expired(monkeypatch):
+    """A card with no request id has no observer, so its own no-op click stamps it, as before."""
+    from plugins.platforms.discord import adapter as discord_adapter
+    from plugins.platforms.discord.adapter import ExecApprovalView
+
+    view = ExecApprovalView(session_key="agent:other:discord:555", allowed_user_ids=set())
+    monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
+    monkeypatch.setattr(view, "_finalize_embed", AsyncMock())
+    monkeypatch.setattr(discord_adapter.discord, "Color", SimpleNamespace(dark_grey=lambda: 0))
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(display_name="tester"), response=SimpleNamespace(send_message=AsyncMock()))
+
+    await view._resolve(interaction, "once", 1, "gateway.exec_approval.action_once")
+
+    view._finalize_embed.assert_awaited_once_with(interaction, 0, t("platform.discord.approval.expired"))
+    interaction.response.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -133,7 +158,6 @@ async def test_expired_approval_removes_discord_components():
 ])
 async def test_card_retires_when_backend_request_ends(monkeypatch, ends, footer_key):
     """The card shows how its request ended, even when that happened while it was being sent."""
-    from agent.i18n import t
     from tools import approval
     from tools.approval_gateway_wait import _ApprovalEntry
 
