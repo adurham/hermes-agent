@@ -8,6 +8,7 @@ slots) lazily at call time so monkeypatching the source module keeps working.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
@@ -71,7 +72,16 @@ def extract_fail(urls: list[str], error: str) -> list[dict[str, Any]]:
 # Scraping vendors report the target's own status inside a successful API reply (Firecrawl
 # ``metadata.statusCode``, Parallel ``errors[].http_status_code``, Exa ``statuses[].error``).
 # Unchecked, a 403/404 page reads as a successful (often empty) extraction: the agent can't tell
-# "blocked" from "blank", the keyless rescue never runs, and the error page is cached as content.
+# "blocked" from "blank" and the error page is cached as content. The backend did its job, so an
+# origin error never triggers the keyless rescue (``is_origin_http_error``).
+_ORIGIN_HTTP_ERROR_RE = re.compile(r"HTTP \d{3} from origin(?::|$)")
+
+
+def is_origin_http_error(error: Any) -> bool:
+    """True for an ``error`` string built by ``origin_http_error`` (the target page's own answer)."""
+    return isinstance(error, str) and _ORIGIN_HTTP_ERROR_RE.match(error) is not None
+
+
 def origin_http_error(status: Any, reason: Any = None) -> Optional[str]:
     """``HTTP <status> from origin[: reason]`` when the target answered >= 400, else None."""
     if isinstance(status, bool):

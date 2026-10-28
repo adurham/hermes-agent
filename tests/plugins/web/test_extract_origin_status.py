@@ -92,3 +92,20 @@ def test_exa_sdk_reports_failed_urls_from_statuses():
         out = exa_provider.ExaWebSearchProvider().extract(["https://t.test/ok", "https://t.test/x"])
     assert [r.get("error") for r in out] == [None, "HTTP 403 from origin"]
     assert out[1]["url"] == "https://t.test/x"
+
+
+@pytest.mark.parametrize("errors,rescued", [
+    (["HTTP 404 from origin", "HTTP 410 from origin: Gone"], False),  # the pages answered; no outage
+    (["HTTP 500 upstream exploded", "HTTP 500 upstream exploded"], True),  # backend failure: rescue
+])
+def test_keyless_rescue_runs_for_backend_failures_not_origin_errors(errors, rescued):
+    from tools import web_tools_extract
+    urls = ["https://t.test/a", "https://t.test/b"]
+    provider = SimpleNamespace(name="keenable", extract=lambda batch, **_kw: [
+        {"url": u, "title": "", "content": "", "error": e} for u, e in zip(batch, errors)])
+    with patch.object(web_tools_extract, "_rescue_eligible", return_value=True), \
+            patch.object(web_tools_extract, "_rescue_extract", return_value=[]) as rescue:
+        out = asyncio.run(web_tools_extract._dispatch_extract(provider, urls, None))
+    assert rescue.called is rescued
+    if not rescued:
+        assert [r["error"] for r in out] == errors
