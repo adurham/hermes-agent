@@ -760,14 +760,16 @@ def _warn_all_invalid_platform_toolsets(platform: str, explicit: list, config: d
     a plugin platform has no sessions to leave toolless until its plugin loads, and once it loads the
     registry resolves the bundle. Installs seeded from cli-config.yaml.example carry such rows (``teams``,
     ``google_chat``, and ``homeassistant`` before it left core) whether or not the platform is set up.
-    The own-bundle check runs first because this is reached on every schema build (the kanban gate
-    resolves every saved platform row), and the resolver's manifest scan is filesystem I/O."""
+    The own-bundle and registered-toolset checks run first because this is reached on every schema build
+    (the kanban gate resolves every saved platform row) and on bypass launches that must not read profile
+    plugin state; the resolver's manifest scan and plugin lookup run only for names those cannot place."""
     from hermes_cli.toolset_validation import saved_toolset_resolver
+    from toolsets import validate_toolset
 
     if platform in _warned_invalid_platform_toolsets:
         return
     named = [str(t) for t in explicit if isinstance(t, str) and t]
-    if not named or _platform_default_toolset(platform) in named:
+    if not named or _platform_default_toolset(platform) in named or any(validate_toolset(t) for t in named):
         return
     is_valid_toolset = saved_toolset_resolver(config)
     if not any(is_valid_toolset(t) for t in named):
