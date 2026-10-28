@@ -118,6 +118,22 @@ def test_gateway_approval_captures_routed_profiles_timeout(tmp_path, monkeypatch
     assert observed == [300, 300, 3600, 3600]
 
 
+def test_coalesced_follower_waits_the_leaders_captured_timeout(monkeypatch):
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 300)  # edited since the leader prompted
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    seen = []
+    monkeypatch.setattr(wait_mod, "_poll_event",
+                        lambda event, session_key, *, interrupt_log, timeout_s=None: seen.append(timeout_s) or "timeout")
+    leader = _ApprovalEntry(dict(APPROVAL, request_id="leader", timeout_s=3600))
+
+    wait_mod._await_coalesced_leader(SESSION_KEY, leader, {})
+
+    assert seen == [3600]
+
+
 def test_resolve_commits_the_choice_before_releasing_the_approval_lock(monkeypatch):
     """``_drop_entry`` reads ``entry.result`` and leaves the queue in one ``_lock`` section, which only
     closes the race if ``resolve_gateway_approval`` commits ``result``/``event`` INSIDE the section that

@@ -115,7 +115,8 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
     so observers see the follower's lifecycle without a duplicate prompt."""
     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
-    state = _poll_event(leader.event, session_key,
+    # The leader's captured timeout (when stamped), so a config edit mid-wait can't end the follower first.
+    state = _poll_event(leader.event, session_key, timeout_s=leader.data.get("timeout_s"),
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s")
     if state == "set" and leader.result is None and leader.expired:
