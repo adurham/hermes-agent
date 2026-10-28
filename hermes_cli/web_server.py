@@ -26,6 +26,7 @@ from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 from hermes_cli.process_identity import is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
 from hermes_cli import web_server_file_tickets as _file_tickets
+from hermes_cli.web_server_session_token import resolve_session_token
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -217,36 +218,10 @@ from hermes_cli.memory_oauth import router as _memory_oauth_router
 
 app.include_router(_memory_oauth_router)
 
-# Session token for sensitive endpoints. The desktop shell mints it via
-# HERMES_DASHBOARD_SESSION_TOKEN; otherwise fresh per server start. It dies with
-# the process and is injected into the SPA HTML so only the web UI can use it.
-def _resolve_session_token() -> str:
-    env_token = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
-    if not env_token:
-        return secrets.token_urlsafe(32)
-    # A "file:" prefix means the value is a token-file path, not a token:
-    # deployment managers (agenix, sops-nix, systemd credentials) hand a
-    # secret over as a file, and a path -- unlike the token -- can sit in a
-    # systemd Environment= or a launchd plist without putting anything
-    # readable into a store path. The Nix modules set this form from
-    # backend.sessionTokenFile.
-    if env_token.startswith("file:"):
-        token_file = env_token[len("file:") :]
-        try:
-            token = Path(token_file).read_text(encoding="utf-8-sig").strip()
-        except (OSError, UnicodeError) as exc:
-            raise SystemExit(
-                f"HERMES_DASHBOARD_SESSION_TOKEN names an unreadable token file ({token_file}): {exc}"
-            ) from exc
-        if not token:
-            raise SystemExit(
-                f"HERMES_DASHBOARD_SESSION_TOKEN names an empty token file ({token_file})"
-            )
-        return token
-    return env_token
-
-
-_SESSION_TOKEN = _resolve_session_token()
+# Session token for sensitive endpoints. Resolution lives in the
+# web_server_session_token sibling; it dies with the process and is injected
+# into the SPA HTML so only the web UI can use it.
+_SESSION_TOKEN = resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
 _SSH_RUNTIME_PURELIB: Optional[tuple[str, int, int]] = None
