@@ -46,6 +46,9 @@ _BOT_DESKTOP_BROWSER_SENTINEL = "_HERMES_BU_BOT_DESKTOP_BROWSER"
 _REAL_PROFILE_FALLBACK_SENTINEL = "_HERMES_BU_REAL_PROFILE_FALLBACK"
 # local=True whose real profile could not load: run on the local sidecar browser. Popped before launch.
 _LOCAL_FALLBACK_SENTINEL = "_HERMES_BU_LOCAL_FALLBACK"
+# The resolved browser is a cloud provider's (no human watching it): new tabs are brought to the front.
+# Popped before launch.
+_CLOUD_BROWSER_SENTINEL = "_HERMES_BU_CLOUD_BROWSER"
 
 # Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
@@ -431,6 +434,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     provider_key = str(getattr(provider, "name", "") or "").strip().lower()
     if provider_key == _BROWSER_USE_PROVIDER and not _use_gateway(_read_browser_cfg()) and _browser_use_api_key_set():
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
+        env[_CLOUD_BROWSER_SENTINEL] = "1"
         return None
 
     provider_name = type(provider).__name__
@@ -456,6 +460,8 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         if err is None:
             _mark_local_browser(env, session, key)
         return err
+    if err is None:
+        env[_CLOUD_BROWSER_SENTINEL] = "1"
     # A provider browser keyed bu-named-<name> is exclusive to this session — the
     # own-tab preamble would just leak a blank tab into it.
     if err is None and session_name:
@@ -719,6 +725,10 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
+    # Every backend: capture_screenshot() brings a hidden tab to the front and falls back to jpeg instead of
+    # hanging on a png a hidden tab never renders (tools/browser_use_shot.py).
+    from tools.browser_use_shot import harness_command
+    cmd = harness_command(cmd, activate_new_tabs=bool(env.pop(_CLOUD_BROWSER_SENTINEL, None)))
 
     workspace = _workspace_dir(task_id)
     if workspace:
