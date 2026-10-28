@@ -18,6 +18,7 @@ import logging
 from functools import lru_cache
 from pathlib import Path
 
+import hermes_yaml as yaml
 from utils import fast_safe_load
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ def _manifest_config_keys(path: Path) -> list[str]:
     try:
         text = path.read_text(encoding="utf-8-sig")
         data = json.loads(text) if path.suffix == ".json" else fast_safe_load(text)
-    except Exception as exc:  # OSError, JSON/YAML parse errors: one bad plugin must not break config get
+    except (OSError, ValueError, yaml.YAMLError) as exc:  # one bad manifest must not break config get
         logger.debug("config_keys: skipping unreadable manifest %s: %s", path, exc)
         return []
     raw = data.get("config_keys") if isinstance(data, dict) else None
