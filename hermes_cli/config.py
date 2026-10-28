@@ -2963,26 +2963,25 @@ def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) ->
 
 
 def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
-    """Validate a dotted config-key path against the known schema -> ``(is_known, suggestion)``.
+    """Dotted config-key path -> ``(is_known, suggestion)``: the schema walk, then (only for a refused key)
+    the runtime-read keys DEFAULT_CONFIG leaves unseeded (config_runtime_keys)."""
+    known, suggestion = _validate_schema_key(key)
+    if known or not key:
+        return known, suggestion
+    from hermes_cli.config_runtime_keys import is_runtime_read_key
+    return (True, None) if is_runtime_read_key(".".join(_split_key_path(key))) else (False, suggestion)
 
-    Headline case from #34067: ``gateway.discord.gateway_restart_notification`` was silently written, even
-    though ``gateway`` only has 4 known sub-keys (``strict``, ``media_delivery_allow_dirs``,
-    ``trust_recent_files``, ``trust_recent_files_seconds``). The correct path is
-    ``discord.gateway_restart_notification`` (platform configs live at the top level, not under a
-    ``platforms`` namespace).
-    """
+
+def _validate_schema_key(key: str) -> tuple[bool, Optional[str]]:
+    """#34067: ``gateway.discord.gateway_restart_notification`` was silently written; the correct path is
+    ``discord.gateway_restart_notification`` (platform configs live at the top level)."""
     if not key:
         return False, None
-
     segments = _split_key_path(key)
     top = segments[0]
-
-    # A leading ``_`` on the FIRST segment only marks an internal key (``agent._max_turns`` is caught);
-    # runtime-read keys DEFAULT_CONFIG leaves unseeded come from config_runtime_keys.
-    from hermes_cli.config_runtime_keys import is_runtime_read_key
+    # A leading ``_`` on the FIRST segment only marks an internal key (``agent._max_turns`` is caught).
     from hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
-    if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS or key in LEFT_CORE_TERMINAL_KEYS \
-            or is_runtime_read_key(".".join(segments)):
+    if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS or key in LEFT_CORE_TERMINAL_KEYS:
         return True, None
 
     known = _known_top_level_keys()

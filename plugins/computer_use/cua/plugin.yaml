@@ -4,5 +4,3 @@ description: >-
   or focus. Default when computer_use.backend is unset.
 version: 1.0.0
 author: Nous Research
-config_keys:
-  - computer_use.backend  # read by the plugins/computer_use provider selector
