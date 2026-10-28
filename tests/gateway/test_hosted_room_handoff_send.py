@@ -81,6 +81,11 @@ def test_a_room_handed_to_the_gateway_takes_sends_and_wakes_its_members(tmp_path
     sent = service.send(room_id="room-desk", event_id="user-1",
                         payload={"text": "@ops inspect", "thread_id": "thread-1"})
     assert sent["kind"] == "message.user" and sent["authority_epoch"] == 3
+    # #145977: a Desktop that journaled the refused Send retries the exact same intent; it is
+    # acknowledged as the stored message (so the client retires it), never stored twice.
+    again = service.send(room_id="room-desk", event_id="user-1",
+                         payload={"text": "@ops inspect", "thread_id": "thread-1"})
+    assert again["seq"] == sent["seq"] and _kinds(target, "room-desk").count("message.user") == 1
     assert len(hosted_room_driver.list_tasks(target, room_id="room-desk", status="queued")) == 1
 
     service.start()
@@ -107,3 +112,56 @@ def test_a_send_already_stored_is_answered_as_sent_when_preparing_the_room_fails
 
     assert [sent["kind"], again["kind"]] == ["message.user", "message.user"]
     assert _kinds(db, "room-1").count("message.user") == 2
+
+
+def test_a_room_whose_members_cannot_be_woken_says_so_once_and_stops_retrying(tmp_path):
+    db = tmp_path / "state.db"
+    service, _ = _service(db)
+    service.create_room(room_id="room-1", name="Room", members=MEMBERS)
+    service.local_profiles = lambda: ("default", "dev", "ops")
+    service.create_room(room_id="room-2", name="Other", members=[
+        MEMBERS[0], {"member_id": "dev", "profile": "dev", "handle": "dev"}])
+    service.local_profiles = lambda: ("default", "dev")  # the ops member's profile was deleted
+    attempts: list[str] = []
+    real_prepare = service.prepare_room
+
+    def counted(binding):
+        attempts.append(binding.room_id)
+        return real_prepare(binding)
+
+    service.prepare_room = counted
+    sent = service.send(room_id="room-1", event_id="user-1", payload={"text": "@ops hi", "thread_id": "t"})
+    assert sent["kind"] == "message.user"
+
+    service.runtime.poll_interval_seconds = 0.02
+    service.start()
+    try:
+        wait_until(lambda: "member.unavailable" in _kinds(db, "room-1"), timeout=5, what="stall notice")
+        settled = attempts.count("room-1")
+        wait_until(lambda: service.runtime.status()["cycles"] > 30, timeout=5, what="more driver passes")
+    finally:
+        assert service.stop(timeout=5.0)
+    assert attempts.count("room-1") == settled == 3  # bounded: no retries after the stall
+    events = hosted_rooms.read_events(db, room_id="room-1", since_seq=0)["events"]
+    notices = [e for e in events if e["kind"] == "member.unavailable"]
+    assert len(notices) == 1 and "ops" in notices[0]["payload"]["error"]
+    status = service.status("room-1")
+    assert "ops" in status["last_error"] and service.status("room-2")["last_error"] is None
+    [retry] = [a for a in status["pending_actions"] if a["task_id"].startswith("prepare:")]
+
+    # Retry while the profile is still missing fails loudly and adds no second notice.
+    try:
+        service.retry_room_task("room-1", task_id=retry["task_id"], member_id=retry["member_id"],
+                                execution_generation=retry["execution_generation"])
+        raise AssertionError("retry of a still-broken room must fail")
+    except Exception as exc:
+        assert "ops" in str(exc)
+    assert _kinds(db, "room-1").count("member.unavailable") == 1
+
+    service.local_profiles = lambda: ("default", "dev", "ops")  # restored
+    receipt = service.retry_room_task("room-1", task_id=retry["task_id"], member_id=retry["member_id"],
+                                      execution_generation=1)
+    assert receipt["identity"].task_id == retry["task_id"]
+    assert service.status("room-1")["last_error"] is None
+    assert not [a for a in service.status("room-1")["pending_actions"] if a["task_id"].startswith("prepare:")]
+    assert len(hosted_room_driver.list_tasks(db, room_id="room-1", status="queued")) == 1
