@@ -13,8 +13,8 @@ def _write(job: dict[str, Any], text: str, what: str) -> bool:
     try:
         save_job_output(job.get("id", ""), text)
         return True
-    except Exception as e:
-        logger.debug("Failed to write %s diagnostic for job %r: %s", what, job.get("id"), e)
+    except Exception:
+        logger.debug("Failed to write %s diagnostic for job %r", what, job.get("id"), exc_info=True)
         return False
 
 

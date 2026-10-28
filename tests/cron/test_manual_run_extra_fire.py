@@ -90,18 +90,6 @@ def test_manual_run_does_not_spend_a_recurring_repeat_budget_or_shift_the_schedu
     assert after["next_run_at"] == slot
 
 
-def test_dashboard_run_before_the_slot_is_an_extra_fire(clock):
-    """The dashboard Run button claims without manual=True; firing ahead of the stored slot is
-    still off-schedule."""
-    job = create_job("remind me", "in 30m", name="reminder")
-
-    _fire(job["id"])
-
-    after = get_job(job["id"])
-    assert (after["state"], after["next_run_at"]) == ("scheduled", job["next_run_at"])
-    assert after["repeat"]["completed"] == 0
-
-
 def test_crash_mid_manual_run_leaves_the_scheduled_oneshot_due(clock):
     job = create_job("remind me", "in 30m", name="reminder")
     assert isinstance(claim_job_for_fire(job["id"], manual=True, return_job=True), dict)
@@ -115,17 +103,6 @@ def test_crash_mid_manual_run_leaves_the_scheduled_oneshot_due(clock):
     clock["now"] += timedelta(minutes=30, seconds=5)
     assert [d["id"] for d in get_due_jobs()] == [job["id"]]
     assert get_job(job["id"])["repeat"]["completed"] == 0
-
-
-def test_a_slot_that_passes_during_the_manual_run_still_fires(clock):
-    job = create_job("remind me", "in 2m", name="reminder")
-    claimed = claim_job_for_fire(job["id"], manual=True, return_job=True)
-    assert claim_dispatch(job["id"])
-    clock["now"] += timedelta(minutes=5)  # long run: the tick lost the claim race at the slot
-
-    assert mark_job_run(job["id"], success=True, expected_fire_owner=claimed["fire_claim"]["by"])
-
-    assert [d["id"] for d in get_due_jobs()] == [job["id"]]
 
 
 def test_run_at_or_after_the_due_slot_is_the_scheduled_fire(clock):

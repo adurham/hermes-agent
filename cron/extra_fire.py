@@ -7,7 +7,7 @@ The claim (``claim_job_for_fire``) decides once, under the jobs lock, and stamps
 slot on ``fire_claim["extra_slot"]``; every later step (``claim_dispatch``, ``mark_job_run``)
 reads that stamp, so a crash between claim and completion leaves ``next_run_at`` on the slot.
 """
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Optional
 
 RESTORE_KEY = "manual_run_restore_at"  # trigger_job's overwritten next_run_at
@@ -21,17 +21,14 @@ def _future_slot(value: Any, now: datetime) -> Optional[str]:
     return value if parsed is not None and parsed > now else None
 
 
-def pending_slot(job: dict[str, Any], now: datetime, manual_fire: bool, skew_seconds: float) -> Optional[str]:
-    """The still-future scheduled instant an off-schedule fire must leave in place, or None when
-    this fire IS the scheduled occurrence (slot due, or no pending slot: nothing to preserve)."""
+def pending_slot(job: dict[str, Any], now: datetime, manual_fire: bool) -> Optional[str]:
+    """The still-future scheduled instant an explicit run-now must leave in place, or None when
+    this fire IS the scheduled occurrence (a tick, a provider fire, or a run-now once the slot
+    is already due: nothing to preserve, no double fire)."""
     stored = job.get("next_run_at")
     if job.get("manual_run_at") == stored:  # trigger_job replaced next_run_at with "now"
         return _future_slot(job.get(RESTORE_KEY), now)
-    if manual_fire:
-        return _future_slot(stored, now)
-    # An unforced external fire before the stored slot (dashboard Run on an active job): a
-    # scheduled tick only fires once next_run_at has arrived, within provider clock skew.
-    return _future_slot(stored, now + timedelta(seconds=skew_seconds))
+    return _future_slot(stored, now) if manual_fire else None
 
 
 def stamp_claim(job: dict[str, Any], slot: str) -> None:

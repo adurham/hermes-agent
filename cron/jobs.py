@@ -2699,7 +2699,7 @@ def claim_job_for_fire(
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
         # Claimed: the occurrence is now owned by a run (its ledger row + fire claim carry it).
         job.pop("pending_slot", None)
-        if slot := extra_fire.pending_slot(job, now, manual_fire, FIRE_CLAIM_SKEW_SECONDS):
+        if slot := extra_fire.pending_slot(job, now, manual_fire):
             extra_fire.stamp_claim(job, slot)  # off-schedule: the pending occurrence stays
         elif job.get("schedule", {}).get("kind") in {"cron", "interval"}:
             nxt = compute_next_run(job["schedule"], now.isoformat())
