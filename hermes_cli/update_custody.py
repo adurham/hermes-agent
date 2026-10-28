@@ -406,6 +406,7 @@ def _run_owner_watched(argv: Sequence[str], kwargs: dict, *, watch_owner: bool =
         kwargs["stdin"] = subprocess.PIPE
     if kwargs.pop("capture_output", False):
         kwargs["stdout"] = kwargs["stderr"] = subprocess.PIPE
+    # detached-spawn: ok — awaited; _owner_watch kills a fetch's group on owner death, and a mutator must finish its write
     with subprocess.Popen(list(argv), start_new_session=True, **kwargs) as proc:
         dismiss = _owner_watch(proc.pid) if watch_owner else None
         try:
