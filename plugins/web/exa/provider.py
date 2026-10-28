@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 from plugins.web._common import (
     BaseWebSearchProvider, cached_sdk_client, document, keyless_extract, keyless_search, keyless_variant_schema,
-    provider_env, run_extract, run_search, search_ok, use_keyless, web_hit,
+    provider_env, run_extract, run_search, search_ok, use_keyless, vendor_error_entry, web_hit,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,12 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
                 return keyless_extract("Exa", "exa", urls, logger)
             logger.info("Exa extract: %d URL(s)", len(urls))
             response = _get_exa_client().get_contents(urls, text=True)
-            return [document(r.url or "", r.title or "", r.text or "") for r in response.results or []]
+            results = [document(r.url or "", r.title or "", r.text or "") for r in response.results or []]
+            # A URL Exa could not fetch is absent from ``results``; its reason is in ``statuses``.
+            return results + [
+                vendor_error_entry(s.id or "", status=getattr(s.error, "http_status_code", None), reason=getattr(s.error, "tag", None))
+                for s in getattr(response, "statuses", None) or [] if s.status == "error"
+            ]
 
         return run_extract("Exa", logger, urls, _body, sdk=True)
 

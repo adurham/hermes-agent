@@ -67,6 +67,44 @@ def extract_fail(urls: list[str], error: str) -> list[dict[str, Any]]:
     return [page_error(u, error) for u in urls]
 
 
+# --- Origin HTTP status (the target page's answer, not the vendor API's) ---
+# Scraping vendors report the target's own status inside a successful API reply (Firecrawl
+# ``metadata.statusCode``, Parallel ``errors[].http_status_code``, Exa ``statuses[].error``).
+# Unchecked, a 403/404 page reads as a successful (often empty) extraction: the agent can't tell
+# "blocked" from "blank", the keyless rescue never runs, and the error page is cached as content.
+def origin_http_error(status: Any, reason: Any = None) -> Optional[str]:
+    """``HTTP <status> from origin[: reason]`` when the target answered >= 400, else None."""
+    if isinstance(status, bool):
+        return None
+    try:
+        code = int(status)
+    except (TypeError, ValueError):
+        return None
+    if code < 400:
+        return None
+    detail = str(reason or "").strip()
+    return f"HTTP {code} from origin: {detail}" if detail else f"HTTP {code} from origin"
+
+
+def with_origin_status(entry: dict[str, Any], status: Any, reason: Any = None) -> dict[str, Any]:
+    """Set ``error`` on an extract entry whose target answered >= 400; the error page body
+    stays in ``content`` (it can still explain the refusal)."""
+    if error := origin_http_error(status, reason):
+        entry["error"] = error
+    return entry
+
+
+def vendor_error_entry(url: str, *, status: Any = None, reason: Any = None, body: Any = None) -> dict[str, Any]:
+    """Per-URL failure from a vendor's own error list. Names the origin status when the vendor
+    reports one (body kept as content; ``reason`` is a vendor tag like ``http_error`` that adds
+    nothing to the code); otherwise the vendor's body/reason is the error text."""
+    if origin := origin_http_error(status):
+        entry = {**page_error(url, origin), "content": str(body or "")}
+    else:
+        entry = page_error(url, str(body or reason or "extraction failed"))
+    return {**entry, "metadata": {"sourceURL": url}}
+
+
 # --- Keyless ring hand-off (shared by exa / parallel / keenable) ---------------
 def keyless_search(display: str, name: str, query: str, limit: int, logger: logging.Logger) -> dict[str, Any]:
     from plugins.web.keyless_mcp import search_with_failover
