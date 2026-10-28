@@ -70,6 +70,12 @@ describe('composer text entry on a touch host (#145166)', () => {
     fireEvent.touchEnd(editor, { touches: [second], changedTouches: [first] })
     expect(editor.ownerDocument.activeElement).not.toBe(editor)
 
+    // Both fingers down during the move, the outside one lifts first: only the move cancels this.
+    fireEvent.touchStart(editor, { touches: [first], changedTouches: [first] })
+    fireEvent.touchMove(editor, { touches: [point(12, 11), second], changedTouches: [point(12, 11)] })
+    fireEvent.touchEnd(editor, { touches: [], changedTouches: [point(12, 11)] })
+    expect(editor.ownerDocument.activeElement).not.toBe(editor)
+
     tap(editor, [10, 10])
     expect(editor.ownerDocument.activeElement).toBe(editor)
   })
