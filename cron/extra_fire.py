@@ -14,6 +14,20 @@ RESTORE_KEY = "manual_run_restore_at"  # trigger_job's overwritten next_run_at
 _CLAIM_KEY = "extra_slot"
 
 
+def queued(job: dict[str, Any]) -> bool:
+    """A ``trigger_job`` run-now not claimed yet: ``next_run_at`` still holds its "now" stamp and
+    the overwritten slot waits in RESTORE_KEY. This pair IS the durable manual intent, so the tick's
+    pre-run advance leaves such a job alone (the claim restores the slot and owns the advance)."""
+    marker = job.get("manual_run_at")
+    return marker is not None and marker == job.get("next_run_at") and RESTORE_KEY in job
+
+
+def restore_target(job: dict[str, Any]) -> Optional[str]:
+    """The slot a new ``trigger_job`` must save: a repeated trigger before the claim keeps the
+    first trigger's saved slot, never that trigger's own "now"."""
+    return job.get(RESTORE_KEY) if queued(job) else job.get("next_run_at")
+
+
 def _future_slot(value: Any, now: datetime) -> Optional[str]:
     from cron.jobs import _parse_aware
 

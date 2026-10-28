@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from cron.jobs import (
+    advance_next_runs,
     claim_dispatch,
     claim_job_for_fire,
     create_job,
@@ -76,6 +77,41 @@ def test_gateway_forwarded_trigger_restores_the_slot_at_claim_time(clock):
     assert (after["state"], after["next_run_at"]) == ("scheduled", slot)
     assert after["repeat"]["completed"] == 0
     assert "manual_run_restore_at" not in after
+
+
+def test_second_trigger_before_the_claim_keeps_the_original_slot(clock):
+    """Two run-now requests queued before the ticker claims: the saved slot is the job's real
+    scheduled time, not the first trigger's "now"."""
+    job = create_job("remind me", "in 30m", name="reminder")
+    slot = job["next_run_at"]
+    trigger_job(job["id"])
+    clock["now"] += timedelta(seconds=20)
+    trigger_job(job["id"])
+
+    _fire(job["id"])  # the ticker's claim of the queued manual run
+
+    after = get_job(job["id"])
+    assert (after["state"], after["next_run_at"]) == ("scheduled", slot)
+    assert after["repeat"] == {"times": 1, "completed": 0}
+
+
+def test_forwarded_recurring_run_survives_the_tick_advance(clock):
+    """The gateway-forwarded run goes through the tick: get_due_jobs, then advance_next_runs
+    for the whole due set, THEN the worker's plain claim. The queued manual intent must survive
+    that advance, so the run spends no repeat budget and the schedule does not shift."""
+    job = create_job("digest", "every 60m", name="digest", repeat=1)
+    slot = job["next_run_at"]
+    clock["now"] += timedelta(minutes=20)
+    trigger_job(job["id"])
+
+    due = get_due_jobs()
+    assert [d["id"] for d in due] == [job["id"]]
+    advance_next_runs([d["id"] for d in due])
+    _fire(job["id"])  # the worker: claim_job_for_fire with neither manual nor force
+
+    after = get_job(job["id"])
+    assert (after["state"], after["next_run_at"]) == ("scheduled", slot)
+    assert after["repeat"] == {"times": 1, "completed": 0}
 
 
 def test_manual_run_does_not_spend_a_recurring_repeat_budget_or_shift_the_schedule(clock):

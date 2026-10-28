@@ -2180,7 +2180,7 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[dic
         "next_run_at": manual_run_at,
         # Run-now intent, so cron expression/TZ repair guards don't treat it as stale state; the
         # overwritten slot comes back at claim time (an extra fire, cron/extra_fire.py).
-        "manual_run_at": manual_run_at, "manual_run_restore_at": job.get("next_run_at"),
+        "manual_run_at": manual_run_at, extra_fire.RESTORE_KEY: extra_fire.restore_target(job),
         "manual_run_prompt": (extra_prompt or None),
     })
 
@@ -2607,6 +2607,7 @@ def advance_next_runs(job_ids) -> int:
                 job["id"] not in ids
                 or (is_terminal_job(job) and not _is_recoverable_error_job(job))
                 or job.get("schedule", {}).get("kind") not in {"cron", "interval"}
+                or extra_fire.queued(job)  # the claim restores its slot; advancing erases the intent
             ):
                 continue
             new_next = compute_next_run(job["schedule"], now)
