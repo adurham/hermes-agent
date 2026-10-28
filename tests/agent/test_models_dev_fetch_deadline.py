@@ -23,7 +23,7 @@ class _Trickle(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", "1000000")
             self.end_headers()
-            for _ in range(40):  # ~4 s of one byte per 0.1 s: far under any per-read timeout
+            for _ in range(80):  # ~8 s of one byte per 0.1 s: far under any per-read timeout
                 self.wfile.write(b" ")
                 self.wfile.flush()
                 if self.server.stop.wait(0.1):
@@ -43,6 +43,9 @@ def trickling_registry(monkeypatch):
         monkeypatch.setattr(md, name, value)
     yield server
     server.stop.set()
+    # The abandoned download ends once the body stops; it must hand its slot back.
+    assert md._models_dev_download_slot.acquire(timeout=10)
+    md._models_dev_download_slot.release()
     server.shutdown()
     server.server_close()
 
@@ -52,9 +55,9 @@ def test_cold_fetch_from_a_trickling_registry_returns_within_the_deadline(trickl
     started = time.monotonic()
     assert md.fetch_models_dev() == {}
     assert time.monotonic() - started < 2.0
-    # The failure arms the backoff, so the next caller does not wait again.
-    started = time.monotonic()
+    # The failure arms the backoff, and a forced refresh (which skips the backoff) does not stack a
+    # second transfer while the abandoned one is still trickling.
     assert md.fetch_models_dev() == {}
-    assert time.monotonic() - started < 0.2
+    assert md.fetch_models_dev(force_refresh=True) == {}
     assert trickling_registry.gets == 1
 
