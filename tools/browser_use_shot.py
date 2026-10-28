@@ -39,7 +39,8 @@ def _bring_to_front_if_hidden(cdp: Callable[..., Any], current_tab: Callable[[],
         if (state.get("result") or {}).get("value") != "hidden":
             return
         cdp("Target.activateTarget", targetId=current_tab()["targetId"])
-    except Exception:  # an engine without Target.activateTarget (Lightpanda) still captures below
+    # A CDP error (Lightpanda has no Target.activateTarget) or a slow IPC round trip: capture anyway.
+    except (RuntimeError, OSError, KeyError):
         return
 
 
