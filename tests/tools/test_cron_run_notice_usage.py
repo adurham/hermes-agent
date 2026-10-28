@@ -4,7 +4,6 @@ The background ``cronjob(action='run')`` completion used to render ``Model: ?`` 
 whatever the job did: the runner hard-coded ``api_calls: 0`` and the dispatch only knew the job's
 model pin (None for a job on the default model). The run's own session in state.db is the record.
 """
-import time
 from unittest.mock import patch
 
 import pytest
@@ -28,24 +27,21 @@ def _completion(job, run_one_job):
     from tools.process_registry import process_registry
 
     token = _approval_session_key.set("agent:main:telegram:dm:4242")
+    others = []
     try:
         with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: dict(job)), \
              patch("cron.scheduler.run_one_job", side_effect=run_one_job):
             res = _try_dispatch_background_run(dict(job))
             assert res["dispatched"] is True
-            for _ in range(200):
-                try:
-                    evt = process_registry.completion_queue.get_nowait()
-                except Exception:
-                    time.sleep(0.05)
-                    continue
+            while True:  # a blocking get is the signal; Empty after the deadline fails the test
+                evt = process_registry.completion_queue.get(timeout=10)
                 if evt.get("delegation_id") == res["delegation_id"]:
                     return evt
-                process_registry.completion_queue.put(evt)
-                time.sleep(0.05)
+                others.append(evt)
     finally:
+        for evt in others:
+            process_registry.completion_queue.put(evt)
         _approval_session_key.reset(token)
-    raise AssertionError("completion event never reached the queue")
 
 
 @pytest.mark.asyncio
@@ -80,3 +76,16 @@ def test_notice_omits_fields_no_run_session_recorded(owner):
     text = format_process_notification(evt)
     assert "Model: ?" not in text and "API calls" not in text
     assert "Role: cron_run" in text
+
+
+def test_refused_fire_of_a_pinned_job_prints_no_model(owner):
+    """The job's model pin is not what ran: a fire with no run session reports no model at all."""
+    job = jobs.create_job(prompt="report", schedule="every 1h", deliver="local", model="vendor/pinned-model")
+
+    def run_one_job(claimed, **kw):  # refused before any run session existed
+        jobs.mark_job_run(claimed["id"], False, "refused")
+        return False
+
+    evt = _completion(job, run_one_job)
+    assert not evt.get("model")
+    assert "pinned-model" not in format_process_notification(evt)

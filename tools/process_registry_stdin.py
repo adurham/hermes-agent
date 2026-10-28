@@ -2,20 +2,34 @@
 import importlib.util
 import sys
 
+_NON_INTERACTIVE = "Pass input non-interactively instead (arguments, a here-doc, or `printf ... | cmd`)."
+
 
 def _pty_available() -> bool:
     return importlib.util.find_spec("winpty" if sys.platform == "win32" else "ptyprocess") is not None
 
 
-def _pty_relaunch_helps(session) -> bool:
-    """A local pipe-mode spawn (stdin is /dev/null) where ``spawn_local`` could give a PTY instead."""
-    return session.process is not None and not session.output_log and _pty_available()
+def _no_pty_reason(session) -> str:
+    """Why a pty=true relaunch of this local pipe-mode session would not help, or "" when it would.
+
+    ``spawn_local`` records a pty=true request that fell back to pipe mode, so the advice never
+    repeats a request that already failed: an installed PTY library is not proof a PTY spawns."""
+    if session.pty_fallback:
+        return f"pty=true was requested but {session.pty_fallback}, so it runs without stdin"
+    if session.output_log:
+        return "background processes here run in an isolated worker that cannot give them a pseudo-terminal"
+    if not _pty_available():
+        return "the PTY library (ptyprocess/pywinpty) is not installed"
+    return ""
 
 
 def already_exited_error(session) -> str:
     """A pipe-mode process that read stdin got EOF at once and exited: say so, or the agent retries blind."""
-    if session.process is None or session.process.stdin is not None or not _pty_relaunch_helps(session):
+    if session.process is None or session.process.stdin is not None:
         return "Process has already finished"
+    if reason := _no_pty_reason(session):
+        return (f"Process has already finished. It ran without stdin ({reason}), so anything it read got "
+                f"end-of-file at once. {_NON_INTERACTIVE}")
     return ("Process has already finished. It was started without stdin (terminal background=true without "
             "pty=true), so anything it read got end-of-file at once. Relaunch it with "
             "terminal(background=true, pty=true) to send input.")
@@ -25,15 +39,11 @@ def stdin_unavailable_error(session) -> str:
     """Error for process_manage write/submit on a session without a stdin pipe or PTY.
 
     A local pipe-mode spawn connects stdin to /dev/null by design, so only a PTY relaunch can take
-    input; that advice is wrong where ``spawn_local`` cannot give a PTY (an isolated worker writes
-    output to a log, or the PTY library is missing), and a non-local backend has no live stdin."""
+    input, and only where ``spawn_local`` can give one; a non-local backend has no live stdin."""
     if session.process is None:
         return ("Process stdin not available: it runs on a non-local terminal backend (or was recovered "
-                "after a restart), which has no live stdin. Pass input non-interactively instead "
-                "(arguments, a here-doc, or `printf ... | cmd`).")
-    if not _pty_relaunch_helps(session):
-        return ("This process was started without stdin, and this session cannot give background "
-                "processes a pseudo-terminal, so pty=true would not help. Pass input non-interactively "
-                "instead (arguments, a here-doc, or `printf ... | cmd`).")
+                f"after a restart), which has no live stdin. {_NON_INTERACTIVE}")
+    if reason := _no_pty_reason(session):
+        return f"This process has no stdin: {reason}. Relaunching with pty=true would not help. {_NON_INTERACTIVE}"
     return ("This process was started without stdin (terminal background=true without pty=true). "
             "Relaunch it with terminal(background=true, pty=true) to send input.")

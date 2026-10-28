@@ -643,7 +643,8 @@ def _try_dispatch_background_run(
         goal=f"Manual run of cron job '{job_name}' ({job_id})",
         context=("Triggered via cronjob(action='run'). The job executed in its own "
                  "fresh cron session; this block reports its outcome."),
-        toolsets=None, role="cron_run", model=job.get("model"), session_key=session_key,
+        # model=None: the run session (via _runner) is the only source; a pin a refused fire never ran is not.
+        toolsets=None, role="cron_run", model=None, session_key=session_key,
         parent_session_id=str(session_id) if session_id else None, runner=_runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         max_async_children=max_async)
