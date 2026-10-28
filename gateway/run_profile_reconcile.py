@@ -407,7 +407,7 @@ class GatewayProfileReconcileMixin:
         from gateway.run_runtime import release_profile_home, reserve_profile_home, serve_profile_runtime
         from gateway.runtime_ownership import OwnershipConflict
         try:
-            reserve_profile_home(self, name, home)
+            await asyncio.to_thread(reserve_profile_home, self, name, home)
         except (OwnershipConflict, OSError) as exc:
             logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
             return f"home owned by another gateway: {exc}"

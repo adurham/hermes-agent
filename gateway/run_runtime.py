@@ -235,10 +235,13 @@ def _publish_served_set(runner):
 def reserve_profile_home(runner, name, home):
     """Grow the process reservation by one profile (hot-serve): take its ``gateway.lock`` and add it
     to the frozen boot set, so every reader of the reservation — and the next restart's
-    all-or-nothing reserve — sees it. ``OwnershipConflict`` when another gateway owns the home."""
-    from gateway.runtime_ownership import process_ownership
+    all-or-nothing reserve — sees it. Waits out a transient holder within boot's window (blocking:
+    callers on the event loop run it in a worker thread). ``OwnershipConflict`` when another
+    gateway owns the home."""
+    from gateway.run_bootstrap import _browse_reconcile_reserve_wait_s
+    from gateway.runtime_ownership import process_ownership, reserve_waiting_out_transient_holders
     home = Path(home).resolve()
-    process_ownership.reserve([home])
+    reserve_waiting_out_transient_holders(process_ownership, [home], wait_s=_browse_reconcile_reserve_wait_s())
     reserved = getattr(runner.config, '_runtime_profile_homes', None)
     if reserved is not None and all(Path(h).resolve() != home for _n, h in reserved):
         runner.config._runtime_profile_homes = (*reserved, (name, home))
