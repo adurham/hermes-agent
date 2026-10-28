@@ -6440,14 +6440,19 @@ def _define_discord_view_classes() -> None:
                     pass  # message deleted or too old to edit
 
         async def _finalize_embed(self, interaction: discord.Interaction, color, footer: str) -> None:
-            """Mark resolved, stamp the embed (color + footer), disable buttons, edit in place."""
+            """Mark resolved, stamp the embed (color + footer), disable buttons, edit in place, then
+            ``stop()`` the view (also when the edit fails)."""
             self.resolved = True
             embed = self._first_embed(interaction.message)
             if embed:
                 embed.color = color
                 embed.set_footer(text=footer)
             self._disable_all()
-            await interaction.response.edit_message(embed=embed, view=self)
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            finally:
+                # Answered: release the view, or its timeout later stamps "expired" over the answer.
+                self.stop()
 
         def _localize_buttons(self, **keys_by_attr: str) -> None:
             """Relabel decorator-declared buttons from the catalog (decorators run at import, before
@@ -6577,12 +6582,9 @@ def _define_discord_view_classes() -> None:
                 self._backend_settled = False
                 color = discord.Color.dark_grey()
                 label = t("platform.discord.approval.expired")
-            try:
-                await self._finalize_embed(
-                    interaction, color,
-                    t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
-            finally:
-                self.stop()
+            await self._finalize_embed(
+                interaction, color,
+                t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
 
         # Decorator labels are placeholders; ``_localize_buttons`` in __init__ sets the real text.
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)
@@ -6996,6 +6998,8 @@ def _define_discord_view_classes() -> None:
                     await interaction.response.defer()
                 except Exception:
                     pass
+            finally:
+                self.stop()  # answered (or handed to typed text): release the view and its timeout
 
         async def _resolve_choice(self, interaction: discord.Interaction, index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""
