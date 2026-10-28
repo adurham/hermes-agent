@@ -135,9 +135,17 @@ def build_exec_approval_view(discord, base, *, unauthorized):
                     return
                 color = discord.Color.dark_grey()
                 label = t("platform.discord.approval.expired")
-            await self._finalize_embed(
-                interaction, color,
-                t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
+            try:
+                await self._finalize_embed(
+                    interaction, color,
+                    t("platform.discord.approval.by_user", label=label, user=interaction.user.display_name) if count else label)
+            except Exception:
+                if count:
+                    # The answer is recorded but this click's edit failed, and the observer skips cards
+                    # whose click owns the edit: stamp the card through its message instead.
+                    self._backend_settled = False
+                    await self.retire("resolved")
+                raise
 
         # Decorator labels are placeholders; ``_localize_buttons`` in __init__ sets the real text.
         @discord.ui.button(label="Allow Once", style=discord.ButtonStyle.green)

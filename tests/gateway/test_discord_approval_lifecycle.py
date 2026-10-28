@@ -57,8 +57,44 @@ async def test_click_stops_view_even_if_interaction_edit_fails(monkeypatch, edit
     await asyncio.sleep(0)
     await asyncio.gather(*adapter._background_tasks)
     assert view.is_finished()
-    assert message.embeds[0].footer == footer
-    message.edit.assert_not_awaited()
+    if edit_fails:
+        # The recorded answer must not leave a pending-looking card: it is stamped through the message.
+        message.edit.assert_awaited_once()
+        assert message.edit.await_args.kwargs["view"] is None
+        footer = message.embeds[0].footer
+        assert (footer["text"] if isinstance(footer, dict) else footer.text) == t(
+            "platform.discord.approval.already_resolved")
+    else:
+        assert message.embeds[0].footer == footer
+        message.edit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_observer_that_fires_before_a_failed_click_edit_still_sees_the_card_retired(monkeypatch):
+    """The waiter usually wakes before Discord rejects the edit, so the observer runs while the click
+    still owns the card and skips it; the click itself must then retire the card."""
+    adapter, view, entry, message = await _pending_card(monkeypatch)
+    monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))
+
+    async def edit_message(**_kwargs):
+        entry.observers[0]("resolved")
+        await asyncio.sleep(0)
+        await asyncio.gather(*adapter._background_tasks)
+        message.edit.assert_not_awaited()  # the observer skipped: the click owned the edit
+        raise RuntimeError("Discord unavailable")
+
+    interaction = SimpleNamespace(
+        message=message, user=SimpleNamespace(display_name="tester"),
+        response=SimpleNamespace(edit_message=edit_message))
+
+    with pytest.raises(RuntimeError, match="Discord unavailable"):
+        await view._resolve(interaction, "once", 2, "platform.discord.approval.resolved_once")
+
+    message.edit.assert_awaited_once()
+    assert message.edit.await_args.kwargs["view"] is None
+    footer = message.embeds[0].footer
+    assert (footer["text"] if isinstance(footer, dict) else footer.text) == t(
+        "platform.discord.approval.already_resolved")
 
 
 @pytest.mark.asyncio
