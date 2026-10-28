@@ -505,11 +505,12 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             # list (systemd) or an EnvironmentVariables set (launchd).
             backendTokenText =
               # Same NAME=value shape on both platforms, so one assertion
-              # covers each: systemd renders an Environment list, launchd an
-              # attribute set that holds the bare value.
+              # covers each: systemd renders an Environment list (with the
+              # value quoted), launchd an attribute set that holds the bare
+              # value.
               if pkgs.stdenv.hostPlatform.isDarwin then
-                "HERMES_DASHBOARD_SESSION_TOKEN_FILE="
-                + (cfg.launchd.agents.hermes-backend.config.EnvironmentVariables.HERMES_DASHBOARD_SESSION_TOKEN_FILE
+                "HERMES_DASHBOARD_SESSION_TOKEN=file:"
+                + (cfg.launchd.agents.hermes-backend.config.EnvironmentVariables.HERMES_DASHBOARD_SESSION_TOKEN
                   or "")
               else
                 lib.concatStringsSep "\n" cfg.systemd.user.services.hermes-backend.Service.Environment;
@@ -547,7 +548,8 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 !lib.hasInfix tokenFile wrapper || !lib.hasInfix "--run" wrapper
               ) "the launcher must read the token from ${tokenFile} at start time, with --run"
               ++ lib.optional (
-                !lib.hasInfix "HERMES_DASHBOARD_SESSION_TOKEN_FILE=${tokenFile}" backendTokenText
+                !lib.hasInfix "HERMES_DASHBOARD_SESSION_TOKEN=" backendTokenText
+                || !lib.hasInfix "file:${tokenFile}" backendTokenText
               ) "the backend unit must name the token file in its environment, or hermes mints a token the application cannot know"
               # With no waitFor, a token must no longer force the launcher:
               # nothing in the command line has to read a secret any more.

@@ -952,7 +952,8 @@ let
   # The token never rides through this script: it travels as a file path in
   # the unit environment (backendSessionEnvironment), which is not a secret,
   # and hermes reads the file itself at startup
-  # (HERMES_DASHBOARD_SESSION_TOKEN_FILE). A shell wrapper that read the file
+  # as HERMES_DASHBOARD_SESSION_TOKEN=file:<path>, which hermes expands). A
+  # shell wrapper that read the file
   # had to escapeShellArg the path, which froze any "${XDG_RUNTIME_DIR}"
   # placeholder into a literal and crash-looped the unit (agenix's Home
   # Manager module default). Set an absolute path instead; see the option
@@ -1040,9 +1041,9 @@ let
   # The session token travels as a file path, never as the token itself. A
   # path is not a secret, so it can sit in a systemd Environment= or a
   # launchd EnvironmentVariables value without putting anything readable
-  # into the store, and hermes reads the file itself at startup
-  # (HERMES_DASHBOARD_SESSION_TOKEN_FILE), failing loudly when the file is
-  # missing or empty.
+  # into the store. hermes expands the file: prefix of
+  # HERMES_DASHBOARD_SESSION_TOKEN and reads that file at startup, failing
+  # loudly when it is missing or empty.
   #
   # The path must be absolute. A "$XDG_RUNTIME_DIR"-style placeholder that a
   # secret manager left for a shell to expand is passed through verbatim and
@@ -1052,7 +1053,7 @@ let
   backendSessionEnvironment =
     { cfg }:
     lib.optionalAttrs (cfg.backend.sessionTokenFile != null) {
-      HERMES_DASHBOARD_SESSION_TOKEN_FILE = cfg.backend.sessionTokenFile;
+      HERMES_DASHBOARD_SESSION_TOKEN = "file:" + cfg.backend.sessionTokenFile;
     };
 
   backendArgv =
