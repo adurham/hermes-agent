@@ -222,26 +222,28 @@ app.include_router(_memory_oauth_router)
 # the process and is injected into the SPA HTML so only the web UI can use it.
 def _resolve_session_token() -> str:
     env_token = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
-    if env_token:
-        return env_token
-    # Deployment managers hand the token over as a file path (agenix,
-    # sops-nix, systemd credentials) so the secret never enters a store
-    # path or a process listing. The Nix modules set this from
-    # backend.sessionTokenFile instead of exporting the token itself.
-    token_file = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN_FILE")
-    if token_file:
+    if not env_token:
+        return secrets.token_urlsafe(32)
+    # A "file:" prefix means the value is a token-file path, not a token:
+    # deployment managers (agenix, sops-nix, systemd credentials) hand a
+    # secret over as a file, and a path -- unlike the token -- can sit in a
+    # systemd Environment= or a launchd plist without putting anything
+    # readable into a store path. The Nix modules set this form from
+    # backend.sessionTokenFile.
+    if env_token.startswith("file:"):
+        token_file = env_token[len("file:") :]
         try:
             token = Path(token_file).read_text(encoding="utf-8-sig").strip()
         except (OSError, UnicodeError) as exc:
             raise SystemExit(
-                f"HERMES_DASHBOARD_SESSION_TOKEN_FILE names an unreadable file ({token_file}): {exc}"
+                f"HERMES_DASHBOARD_SESSION_TOKEN names an unreadable token file ({token_file}): {exc}"
             ) from exc
         if not token:
             raise SystemExit(
-                f"HERMES_DASHBOARD_SESSION_TOKEN_FILE names an empty file ({token_file})"
+                f"HERMES_DASHBOARD_SESSION_TOKEN names an empty token file ({token_file})"
             )
         return token
-    return secrets.token_urlsafe(32)
+    return env_token
 
 
 _SESSION_TOKEN = _resolve_session_token()
