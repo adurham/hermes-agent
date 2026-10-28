@@ -2285,8 +2285,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return None
 
     def _stdin_op(self, session_id: str, pty_op, pipe_op, ok: dict) -> dict:
-        """Run a stdin operation on a running session — ``pty_op(pty)`` under PTY mode,
-        else ``pipe_op(stdin)`` on the Popen pipe — and return *ok* on success."""
+        """``pty_op(pty)`` under PTY mode, else ``pipe_op(stdin)`` on the Popen pipe; *ok* on success."""
+        from tools.process_registry_stdin import stdin_unavailable_error
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
@@ -2296,7 +2296,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             if session._pty:
                 pty_op(session._pty)
             elif not session.process or not session.process.stdin:
-                return {"status": "error", "error": "Process stdin not available (non-local backend or stdin closed)"}
+                return {"status": "error", "error": stdin_unavailable_error(session)}
             else:
                 pipe_op(session.process.stdin)
             return ok
