@@ -179,6 +179,21 @@ describe('WebAccessSettings', () => {
     expect(screen.getByDisplayValue('https://hermes.example.org')).toBeTruthy()
   })
 
+  it('keeps an unsaved address choice through a refetch that changes nothing', async () => {
+    renderPane(OFF)
+    fireEvent.click(await screen.findByRole('button', { name: 'My own URL' }))
+    fireEvent.change(screen.getByPlaceholderText('https://hermes.example.com'), {
+      target: { value: 'https://typed.example.net' }
+    })
+    mocked.getWebAccessStatus.mockClear()
+
+    fireEvent.focus(window)
+
+    await waitFor(() => expect(mocked.getWebAccessStatus).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(screen.getByDisplayValue('https://typed.example.net')).toBeTruthy()
+  })
+
   it('keeps reading the status while the pane stays open', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
 
