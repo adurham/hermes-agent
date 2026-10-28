@@ -60,7 +60,7 @@ def make_capture_screenshot(cdp: Callable[..., Any], current_tab: Callable[[], d
         """Save a PNG of the current viewport (bringing a hidden tab to the front first). Set
         max_dim=1800 on a 2x display to keep the file under the 2000px-per-side limit some image-aware
         LLMs enforce."""
-        path = path or _default_shot_path()
+        path = os.fspath(path or _default_shot_path())  # a pathlib.Path works too
         _bring_to_front_if_hidden(cdp, current_tab)
         fmt = "png"
         try:

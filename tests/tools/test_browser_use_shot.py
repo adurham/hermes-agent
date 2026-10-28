@@ -45,6 +45,10 @@ _FAKE_TRANSPORT = textwrap.dedent("""\
                 raise RuntimeError("Target.activateTarget wasn't found")
             state["hidden"] = False
             return {}
+        if method == "Target.createTarget":
+            return {"targetId": "T2"}
+        if method == "Target.attachToTarget":
+            return {"sessionId": "S2"}
         if method == "Page.captureScreenshot":
             if params.get("format") == "png" and state["hidden"]:
                 raise h._IPCResponseTimeout(f"{method} timed out after {_response_timeout:g}s")
@@ -52,6 +56,7 @@ _FAKE_TRANSPORT = textwrap.dedent("""\
         raise AssertionError(method)
 
     h.cdp = cdp
+    h._send = lambda req: {}
     h.current_tab = lambda: {"targetId": "T1", "target_id": "T1", "url": "about:blank", "title": ""}
     import browser_harness.admin as admin, browser_harness.telemetry as telemetry
     admin.ensure_daemon = admin.print_update_banner = lambda *a, **k: None
@@ -63,15 +68,11 @@ _FAKE_TRANSPORT = textwrap.dedent("""\
 
 @pytest.fixture
 def run_exec(monkeypatch, tmp_path):
-    """browser_exec on the local route; the real harness CLI with the fake transport above."""
+    """browser_exec on the local or cloud-provider route; the real harness CLI with the fake transport above."""
     monkeypatch.delenv("BU_NAME", raising=False)
     monkeypatch.delenv("BU_AUTOSPAWN", raising=False)
     monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: "")
     monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override_raw", lambda: "")
-    monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: None)
-    monkeypatch.setattr(bs, "get_session_info",
-                        lambda key: {"cdp_url": f"ws://127.0.0.1:47000/devtools/browser/{key}",
-                                     "features": {"local": True}})
     monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
     monkeypatch.setattr(bu_cli, "_exec_route_is_sidecar", {}, raising=False)
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})
@@ -84,11 +85,15 @@ def run_exec(monkeypatch, tmp_path):
     monkeypatch.setattr(bu_cli, "_find_cli", lambda: [sys.executable, "-m", "browser_harness.run"])
     log = tmp_path / "cdp.jsonl"
 
-    def run(activate_works: bool):
+    def run(activate_works: bool, cloud: bool = False, code: str = "print(capture_screenshot({shot!r}))"):
+        monkeypatch.setattr(bs_cloud, "get_cloud_provider", (lambda: object()) if cloud else (lambda: None))
+        monkeypatch.setattr(bs, "get_session_info",
+                            lambda key: {"cdp_url": f"ws://127.0.0.1:47000/devtools/browser/{key}",
+                                         "features": {} if cloud else {"local": True}})
         monkeypatch.setenv("FAKE_CDP_LOG", str(log))
         monkeypatch.setenv("FAKE_ACTIVATE_WORKS", "1" if activate_works else "0")
         shot = tmp_path / "shot.png"
-        result = bu_cli.browser_exec(f"print(capture_screenshot({str(shot)!r}))", task_id="t", timeout_s=60)
+        result = bu_cli.browser_exec(code.format(shot=str(shot)), task_id="t", timeout_s=60)
         if not isinstance(result, str):  # a native screenshot result (image attached)
             result = json.dumps({"success": True, "screenshot_path": str(shot)})
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
@@ -99,7 +104,10 @@ def run_exec(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("activate_works", [True, False], ids=["activated", "activation-unsupported"])
 def test_hidden_tab_screenshot_returns_a_png_instead_of_hanging(run_exec, activate_works):
-    result, shot, calls = run_exec(activate_works)
+    # a pathlib.Path on the jpeg fallback, where the extension decides the re-encode
+    code = "print(capture_screenshot({shot!r}))" if activate_works else \
+        "from pathlib import Path\nprint(capture_screenshot(Path({shot!r})))"
+    result, shot, calls = run_exec(activate_works, code=code)
 
     assert result.get("success") is True, result.get("stderr") or result
     with Image.open(shot) as img:
@@ -111,3 +119,14 @@ def test_hidden_tab_screenshot_returns_a_png_instead_of_hanging(run_exec, activa
         assert len(shots) == 1
     else:  # png never comes for a hidden tab: one bounded png, then jpeg
         assert [s["format"] for s in shots] == ["png", "jpeg"]
+
+
+@pytest.mark.parametrize("cloud", [True, False], ids=["cloud", "local"])
+def test_new_tab_is_brought_to_front_only_on_a_cloud_browser(run_exec, cloud):
+    result, _, calls = run_exec(True, cloud=cloud, code="print('TAB', new_tab())")
+
+    assert result.get("success") is True, result.get("stderr") or result
+    assert "TAB T2" in result.get("output", "") + result.get("stdout", ""), result
+    activations = [c for c in calls if c["method"] == "Target.activateTarget"]
+    # nobody watches a cloud browser; on the user's own Chrome the visible tab stays put
+    assert activations == ([{"method": "Target.activateTarget", "timeout": 5.0, "targetId": "T2"}] if cloud else [])
