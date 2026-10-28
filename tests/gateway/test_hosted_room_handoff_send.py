@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
 from gateway import hosted_room_driver, hosted_rooms
 from gateway.hosted_rooms_gateway_import import handoff_gateway_id, import_standalone_rooms
 from tests.waiting import wait_until
+from gateway.session_hosted_controls import HostedControls
 from tui_gateway.hosted_room_service import HostedRoomService
 
 MEMBERS = [{"member_id": "default", "profile": "default", "handle": "hermes"},
@@ -47,8 +50,12 @@ class _RPC:
         return {"active": False, "task_id": None}
 
 
-def _service(db_path: Path) -> tuple[HostedRoomService, _RPC]:
-    service = HostedRoomService(
+class _GatewayRouteService(HostedControls, HostedRoomService):
+    """The gateway route's control overrides (CanonicalHostedRoomService) over the shared service."""
+
+
+def _service(db_path: Path, cls: type[HostedRoomService] = HostedRoomService) -> tuple[HostedRoomService, _RPC]:
+    service = cls(
         SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock()), db_path=db_path)
     service.rpc = service.runtime.rpc = rpc = _RPC()
     service.local_profiles = lambda: ("default", "ops")
@@ -114,9 +121,10 @@ def test_a_send_already_stored_is_answered_as_sent_when_preparing_the_room_fails
     assert _kinds(db, "room-1").count("message.user") == 2
 
 
-def test_a_room_whose_members_cannot_be_woken_says_so_once_and_stops_retrying(tmp_path):
+@pytest.mark.parametrize("route", [HostedRoomService, _GatewayRouteService], ids=["tui_gateway", "gateway"])
+def test_a_room_whose_members_cannot_be_woken_says_so_once_and_stops_retrying(tmp_path, route):
     db = tmp_path / "state.db"
-    service, _ = _service(db)
+    service, _ = _service(db, route)
     service.create_room(room_id="room-1", name="Room", members=MEMBERS)
     service.local_profiles = lambda: ("default", "dev", "ops")
     service.create_room(room_id="room-2", name="Other", members=[
