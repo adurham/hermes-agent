@@ -2286,12 +2286,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _stdin_op(self, session_id: str, pty_op, pipe_op, ok: dict) -> dict:
         """``pty_op(pty)`` under PTY mode, else ``pipe_op(stdin)`` on the Popen pipe; *ok* on success."""
-        from tools.process_registry_stdin import stdin_unavailable_error
+        from tools.process_registry_stdin import already_exited_error, stdin_unavailable_error
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
         if session.exited:
-            return {"status": "already_exited", "error": "Process has already finished"}
+            return {"status": "already_exited", "error": already_exited_error(session)}
         try:
             if session._pty:
                 pty_op(session._pty)

@@ -3,6 +3,8 @@
 A local ``terminal(background=true)`` spawn without ``pty=true`` connects stdin to /dev/null by
 design; the old error blamed a "non-local backend or stdin closed", so agents retried blind.
 """
+import time
+
 import pytest
 
 from tools.process_registry import ProcessRegistry
@@ -49,3 +51,16 @@ def test_non_local_session_keeps_the_backend_explanation():
 
     error = stdin_unavailable_error(SimpleNamespace(process=None, output_log=""))
     assert "non-local terminal backend" in error and "pty=true" not in error
+
+
+@pytest.mark.platforms("posix")
+def test_a_reader_that_hit_eof_says_why_it_already_exited(registry):
+    """``read x`` on /dev/null returns at once, so the write lands on an exited process."""
+    session = registry.spawn_local("read x; echo got:$x", cwd=None, task_id="t-stdin-eof")
+    for _ in range(100):
+        if session.exited:
+            break
+        time.sleep(0.05)
+    result = registry.write_stdin(session.id, "hello\n")
+    assert result["status"] == "already_exited"
+    assert "without stdin" in result["error"] and "pty=true" in result["error"]
