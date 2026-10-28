@@ -210,14 +210,18 @@ async def login_page(request: Request) -> HTMLResponse:
 
 @router.get("/api/auth/providers", name="auth_providers")
 async def api_auth_providers() -> Any:
-    # Only interactive providers are sign-in options; fail closed on zero.
-    providers = list_session_providers()
-    if not providers:
+    # Only interactive providers are sign-in options; fail closed on zero
+    # session providers. A deployment authenticated solely by a provisioned
+    # credential (interactive_login False — the session-token provider) answers
+    # an empty list: there is no browser sign-in to offer, which is correct,
+    # not an outage.
+    session_providers = list_session_providers()
+    if not session_providers:
         return JSONResponse({"detail": "no auth providers registered"}, status_code=503)
     return {"providers": [
         {"name": p.name, "display_name": p.display_name,
          "supports_password": bool(getattr(p, "supports_password", False))}
-        for p in providers]}
+        for p in session_providers if getattr(p, "interactive_login", True)]}
 
 
 # --- Public: OAuth round trip ----------------------------------------------
@@ -229,6 +233,10 @@ async def auth_login(request: Request, provider: str, next: str = ""):
         raise _http(404, f"Unknown provider: {provider!r}")
     if not getattr(p, "supports_session", True):
         raise _http(404, f"Provider does not support interactive login: {provider!r}")
+    if not getattr(p, "interactive_login", True):
+        # Verifies credentials but has no sign-in flow (the session-token provider):
+        # never 500 inside start_login — answer the same 404 an unknown provider gets.
+        raise _http(404, f"Provider has no interactive login: {provider!r}")
     safe_next = _validate_post_login_target(next)
     if getattr(p, "supports_password", False):
         login_url = f"{_prefix(request)}/login"
@@ -309,7 +317,8 @@ async def auth_native_authorize(
     redirect_uri = _validate_loopback_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
     if p is None and not provider:
-        candidates = list_session_providers()
+        candidates = [
+            c for c in list_session_providers() if getattr(c, "interactive_login", True)]
         if len(candidates) > 1:
             # Render the chooser BEFORE allocating broker state or setting a cookie: every link
             # re-enters this same validated route with an explicit provider.

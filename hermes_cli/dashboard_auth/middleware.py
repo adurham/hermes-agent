@@ -123,7 +123,8 @@ def _auto_sso_response(request: Request) -> Response | None:
         resp = _unauth_response(request, reason="no_cookie")
         clear_sso_attempt_cookie(resp, prefix=prefix_from_request(request), gateway=gateway)
         return resp
-    providers = list_session_providers()
+    providers = [
+        p for p in list_session_providers() if getattr(p, "interactive_login", True)]
     if len(providers) != 1 or getattr(providers[0], "supports_password", False):
         return None
     provider = providers[0]
