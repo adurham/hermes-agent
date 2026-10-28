@@ -128,7 +128,9 @@ export function WebAccessSettings(): ReactElement | null {
     queryKey: key,
     refetchInterval: STATUS_POLL_MS,
     refetchOnWindowFocus: true,
-    retry: false
+    retry: false,
+    // Reopening the pane reads at once instead of showing the shared client's cached answer.
+    staleTime: 0
   })
 
   // react-query's own focus refetch follows `visibilitychange` only, which a native window losing
