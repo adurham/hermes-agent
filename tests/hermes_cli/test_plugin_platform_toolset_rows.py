@@ -84,3 +84,20 @@ def test_config_check_accepts_seeded_rows_of_uninstalled_plugin_platforms():
     typo = {"platform_toolsets": {"cli": ["hermes-cli"], "homeassistant": ["hermes-homeasistant"]}}
     warnings = validate_platform_toolsets(typo["platform_toolsets"], saved_toolset_resolver(typo))
     assert any("unknown toolset 'hermes-homeasistant'" in w for w in warnings), warnings
+
+
+def test_misspelt_platform_key_naming_its_own_bundle_still_warns(caplog):
+    """Only a KNOWN platform's own bundle is exempt: ``telegarm: [hermes-telegarm]`` is a typo of the key,
+    and both the session-time check and `hermes config check` still report it."""
+    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
+
+    rows = {"cli": ["hermes-cli"], "telegarm": ["hermes-telegarm"]}
+    config = {"platform_toolsets": rows}
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.tools_config"):
+        _get_platform_tools(config, "telegarm")
+
+    errors = _toolset_errors(caplog)
+    assert len(errors) == 1 and "'telegarm'" in errors[0], errors
+    warnings = validate_platform_toolsets(rows, saved_toolset_resolver(config))
+    assert any("unknown toolset 'hermes-telegarm'" in w for w in warnings), warnings
