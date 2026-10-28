@@ -221,7 +221,27 @@ app.include_router(_memory_oauth_router)
 # HERMES_DASHBOARD_SESSION_TOKEN; otherwise fresh per server start. It dies with
 # the process and is injected into the SPA HTML so only the web UI can use it.
 def _resolve_session_token() -> str:
-    return os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+    env_token = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN")
+    if env_token:
+        return env_token
+    # Deployment managers hand the token over as a file path (agenix,
+    # sops-nix, systemd credentials) so the secret never enters a store
+    # path or a process listing. The Nix modules set this from
+    # backend.sessionTokenFile instead of exporting the token itself.
+    token_file = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN_FILE")
+    if token_file:
+        try:
+            token = Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise SystemExit(
+                f"HERMES_DASHBOARD_SESSION_TOKEN_FILE names an unreadable file ({token_file}): {exc}"
+            ) from exc
+        if not token:
+            raise SystemExit(
+                f"HERMES_DASHBOARD_SESSION_TOKEN_FILE names an empty file ({token_file})"
+            )
+        return token
+    return secrets.token_urlsafe(32)
 
 
 _SESSION_TOKEN = _resolve_session_token()
