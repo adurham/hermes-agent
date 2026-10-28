@@ -24,14 +24,15 @@ def _no_pty_reason(session) -> str:
 
 
 def already_exited_error(session) -> str:
-    """A pipe-mode process that read stdin got EOF at once and exited: say so, or the agent retries blind."""
+    """An exited pipe-mode process had no stdin; if it read stdin it got EOF at once. Say so, or the agent
+    retries blind."""
     if session.process is None or session.process.stdin is not None:
         return "Process has already finished"
     if reason := _no_pty_reason(session):
-        return (f"Process has already finished. It ran without stdin ({reason}), so anything it read got "
-                f"end-of-file at once. {_NON_INTERACTIVE}")
+        return (f"Process has already finished. It ran without stdin ({reason}), so if it read stdin, it "
+                f"got end-of-file at once. {_NON_INTERACTIVE}")
     return ("Process has already finished. It was started without stdin (terminal background=true without "
-            "pty=true), so anything it read got end-of-file at once. Relaunch it with "
+            "pty=true), so if it read stdin, it got end-of-file at once. Relaunch it with "
             "terminal(background=true, pty=true) to send input.")
 
 
