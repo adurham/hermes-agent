@@ -239,7 +239,7 @@ class GatewayClient:
         finally:
             self.pending.pop(rid, None)
             if future.done() and not future.cancelled():
-                future.exception()  # failed by the reader while the send raised: already reported above
+                future.exception()  # retrieved, so a failure nobody awaited is never logged as unretrieved
 
 
 def private_control_query(home: Path, request: bytes, timeout: float = 5) -> bytes:

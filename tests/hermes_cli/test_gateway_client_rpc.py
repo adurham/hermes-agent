@@ -139,3 +139,40 @@ async def test_a_request_after_the_reader_ended_is_not_sent():
             await client.rpc('prompt.submit', session_id='s')
         assert str(refused.value) == NOT_SENT
         assert sent == [] and client.pending == {}
+
+
+@pytest.mark.asyncio
+async def test_a_send_that_fails_after_the_reader_failed_its_request_logs_nothing():
+    """websockets' send waits for the connection to be lost before it raises, so the reader fails the
+    pending request first; rpc raises its own error and must retrieve that one, or asyncio logs
+    "Future exception was never retrieved"."""
+    import gc
+
+    class _DiesMidSend(_Socket):
+        def __init__(self, reply):
+            super().__init__(reply)
+            self.closed = asyncio.Event()
+
+        async def send(self, raw):
+            self.closed.set()
+            await asyncio.wait({self.client.reader}, timeout=1)  # the reader fails the request first
+            raise ConnectionClosedError(None, None)
+
+        async def __anext__(self):
+            await self.closed.wait()
+            raise ConnectionClosedError(None, None)
+
+    loop = asyncio.get_running_loop()
+    logged = []
+    loop.set_exception_handler(lambda _loop, context: logged.append(context.get('message')))
+    try:
+        socket = _DiesMidSend(lambda req: None)
+        async with GatewayClient(socket) as client:
+            socket.client = client
+            with pytest.raises(GatewayClientError):
+                await client.rpc('subagent.list', session_id='s')
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+    assert not [m for m in logged if 'never retrieved' in str(m)]
