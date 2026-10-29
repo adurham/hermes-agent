@@ -255,10 +255,15 @@ class GatewayTurnPrepareMixin:
         uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
         if not session_id or agent is None or self._session_db is None:
             return
-        model = getattr(agent, "model", None)
+        # A provider fallback is turn-scoped: the row keeps the session's OWN route (the one
+        # ``restore_primary_runtime`` will return to) and records the momentary state separately, or a
+        # resumed chat would come back on the backup provider and never fail back.
+        from agent.voice_turn_route import session_runtime_view
+        view = session_runtime_view(agent)
+        model = getattr(view, "model", None)
         if not model:
             return
-        runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
+        runtime = {k: getattr(view, k, None) for k in ("provider", "base_url", "api_mode")}
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
