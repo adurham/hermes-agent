@@ -1252,6 +1252,23 @@ def _is_nous_route(c: _Ctx) -> bool:
     return bool(c.base_url) and base_url_host_matches(c.base_url, "nousresearch.com")
 
 
+def _usage_window_fallback_enabled() -> bool:
+    """``fallback.on_usage_window`` — may a Nous plan-limit 402 hand the turn to the fallback chain?
+
+    Upstream rule (default False): a plan limit is the user's call — the limit card offers a
+    switch — and a cross-provider switch spends a *different* plan's quota, so it is never
+    automatic. FORK: an operator who wants their own configured chain to carry the turn sets
+    ``fallback.on_usage_window: true``; the chain itself still decides whether anything happens
+    (no chain -> the same terminal refusal as before).
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        return bool(cfg_get(load_config_readonly(), "fallback", "on_usage_window", default=False))
+    except Exception:  # health: allow BLE001 -- a config read must never change an error verdict
+        logger.debug("fallback.on_usage_window unreadable; plan limits stay non-fallback", exc_info=True)
+        return False
+
+
 def _classify_402(error_msg: str, result_fn: Callable[..., Any], code: str = "", body: Any = None) -> Any:
     """Disambiguate 402: "usage limit, try again in 5 minutes" is a periodic quota, not billing.
     The Nous usage-window code is decisive (its prose names the reset time, which must not
@@ -1262,8 +1279,10 @@ def _classify_402(error_msg: str, result_fn: Callable[..., Any], code: str = "",
         context: dict[str, Any] = {"usage_window": True}
         if display := _usage_window_display_message(body):
             context["display_message"] = display
-        # No fallback: another model is the user's call (the limit card offers it), never automatic.
-        return result_fn(**{**_V_BILLING, "should_fallback": False}, error_context=context)
+        # No fallback by default: another model is the user's call (the limit card offers it), never
+        # automatic. FORK knob ``fallback.on_usage_window`` opts the operator's own chain in.
+        return result_fn(**{**_V_BILLING, "should_fallback": _usage_window_fallback_enabled()},
+                         error_context=context)
     transient = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and any(
         p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
     )
