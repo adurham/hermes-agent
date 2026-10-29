@@ -446,6 +446,26 @@ _explicit_cli_profile: str | None = None
 _HERMES_SCRIPT_NAMES = {"hermes", "hermes-agent", "hermes-acp"}
 
 
+def _launched_by_published_launcher() -> bool:
+    """True when this process was started by one of Hermes' own published launchers.
+
+    ``hermes_cli/_launchers`` publishes every launcher as ``python -I -c '<bootstrap>' …``
+    where the bootstrap imports ``hermes_bootstrap`` and runs the entry point inline, so
+    ``sys.argv[0]`` is literally ``-c`` until that script renames it — AFTER importing this
+    module (the rename sits next to the entry call). argv[0] identity alone therefore
+    rejects every launcher-published ``hermes -p <profile> <cmd>``, which is the shape the
+    Desktop uses for its per-profile ``gateway ensure`` dials; a full ``--profile`` surface
+    then dies at argparse with ``'<profile>' is not a hermes command`` (exit 2).
+
+    ``sys.orig_argv`` records how the interpreter was actually started, which is the
+    signal argv[0] cannot carry. Version-agnostic: absent before 3.10, where the caller
+    falls back to identity alone.
+    """
+    orig = getattr(sys, "orig_argv", None) or []
+    return (len(orig) >= 4 and orig[1] == "-I" and orig[2] == "-c"
+            and "hermes_bootstrap" in str(orig[3]))
+
+
 def _looks_like_hermes_invocation(argv0: str = "") -> bool:
     """True if we are running under a real Hermes CLI entry point.
 
@@ -468,6 +488,8 @@ def _looks_like_hermes_invocation(argv0: str = "") -> bool:
         gateway.py's --replace re-exec argv builder, a systemd ExecStart
         example in the docs), so the parent-dir/file-name pair is a reliable
         signal without depending on how deep the repo/venv path is.
+      - launcher-published installs (``python -I -c '<bootstrap>'``), where argv[0]
+        is ``-c``: see ``_launched_by_published_launcher``.
     """
     argv0 = argv0 or (sys.argv[0] if sys.argv else "")
     # Test-runner guard (fork): never treat pytest's argv as a hermes invocation.
@@ -480,7 +502,9 @@ def _looks_like_hermes_invocation(argv0: str = "") -> bool:
     if stem in _HERMES_SCRIPT_NAMES:
         return True
     parts = Path(argv0).parts
-    return len(parts) >= 2 and parts[-1] == "main.py" and parts[-2] == "hermes_cli"
+    if len(parts) >= 2 and parts[-1] == "main.py" and parts[-2] == "hermes_cli":
+        return True
+    return _launched_by_published_launcher()
 
 
 def _inside_mcp_add_args(argv: list, index: int) -> bool:
