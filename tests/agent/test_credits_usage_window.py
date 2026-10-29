@@ -952,11 +952,29 @@ class TestClassifier:
         other.body["display_message"] = "x"
         assert "display_message" not in classify_api_error(other, provider="nous", model="m").error_context
 
-    def test_window_402_never_falls_back_to_another_model(self):
-        """A plan limit is the user's call (the limit card offers a switch): never the fallback chain."""
+    def test_window_402_never_falls_back_to_another_model(self, monkeypatch):
+        """Default: a plan limit is the user's call (the limit card offers a switch): never the fallback chain."""
         from agent.error_classifier import classify_api_error
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
         c = classify_api_error(self._err(402, "usage_window_and_credits_exhausted", "used up"), provider="nous", model="m")
         assert c.should_fallback is False
+
+    def test_window_402_falls_back_when_the_operator_opts_in(self, monkeypatch):
+        """FORK ``fallback.on_usage_window``: the operator's own chain carries the refused turn, and the
+        usage-window tagging the credential pool and the refusal copy rely on is unchanged."""
+        from agent.error_classifier import FailoverReason, classify_api_error
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                            lambda: {"fallback": {"on_usage_window": True}})
+        c = classify_api_error(self._err(402, "usage_window_and_credits_exhausted", "used up"), provider="nous", model="m")
+        assert c.reason == FailoverReason.billing and c.should_fallback is True
+        assert c.error_context.get("usage_window") is True
+
+    def test_window_402_knob_failure_keeps_the_default(self, monkeypatch):
+        """A config read that raises must not flip a plan limit into a cross-provider switch."""
+        from agent import error_classifier
+        monkeypatch.setattr("hermes_cli.config.load_config_readonly",
+                            lambda: (_ for _ in ()).throw(RuntimeError("unreadable")))
+        assert error_classifier._usage_window_fallback_enabled() is False
 
     def test_window_402_code_from_another_upstream_keeps_main_rules(self):
         from agent.error_classifier import FailoverReason, classify_api_error

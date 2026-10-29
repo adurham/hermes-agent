@@ -1977,7 +1977,7 @@ def route_classified_error(
     _should_fallback = (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
-    ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit
+    ) and not (getattr(classified, "error_context", None) or {}).get("usage_window")  # never switch models on a plan limit here: a 402 usage-window is governed by the classifier verdict (fallback.on_usage_window)
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.

@@ -49,6 +49,7 @@ fallback:
 | Key | Default | Effect |
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
+| `fallback.on_usage_window` | `false` (fork) | A Nous plan-limit 402 (included-usage window exhausted, code `usage_window_and_credits_exhausted`) hands the turn to the configured chain instead of ending it. Off by default: a plan limit is the user's call, and a cross-provider switch spends another plan's quota. With no usable chain the same refusal is shown. |
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini
