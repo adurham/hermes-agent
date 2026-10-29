@@ -23,6 +23,10 @@ class PlanGauge(Result):
     label: str
     used_bp: int
     resets_at_ms: int | None = None
+    # The plan's owner (``gateway/session_usage.py::GAUGE_PROVIDER``). The same allowance rides every
+    # session of that account, so a viewer labels the number by THIS, never by the session's provider;
+    # "" on a payload that predates it (viewers fall back to the bare allowance).
+    provider: str = ""
 
 
 class Usage(OpenModel):

@@ -190,7 +190,8 @@ def test_a_window_plans_gauge_rides_the_canonical_usage_feed():
     published = []
     publish_usage(_turn(Platform.LOCAL, published, agent), agent)
     frame = published[-1][1]
-    expected = {'id': 'day', 'label': 'today', 'used_bp': 4_200, 'resets_at_ms': 4_000_000_000_000}
+    expected = {'id': 'day', 'label': 'today', 'used_bp': 4_200, 'resets_at_ms': 4_000_000_000_000,
+                'provider': 'nous'}
     assert frame['usage']['plan_gauge'] == expected == _get_usage(agent)['plan_gauge']
     assert tui_usage(usage_stats(agent))['plan_gauge'] == expected  # message.complete.usage
     EVENTS['session.usage'].payload.model_validate(frame)

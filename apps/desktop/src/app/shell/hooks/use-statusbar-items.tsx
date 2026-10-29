@@ -34,6 +34,7 @@ import {
   Terminal,
   Zap
 } from '@/lib/icons'
+import { providerDisplayName } from '@/lib/model-status-label'
 import { type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
@@ -48,6 +49,7 @@ import { $freeTierSignInOpen, $freeTierStatus, FREE_TIER_MODEL } from '@/store/f
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { requestGatewayForProfile } from '@/store/gateway'
 import { revealFileInTree } from '@/store/layout'
+import { $planGauges, planScopeFor } from '@/store/plan-gauge'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
 import { $projectTree, projectNameForCwd } from '@/store/projects'
@@ -345,8 +347,17 @@ export function useStatusbarItems({
   // Both ride the same usage payload the context meter does (session.usage
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
-  const planGauge = currentUsage.plan_gauge
+  // The plan allowance is the ACCOUNT's, not the focused session's: every session reports its own
+  // snapshot of the same allowance, each taken at a different moment, so reading the focused
+  // session's gauge painted a different number on every tab of one account — and nothing at all on
+  // a tab whose session had not run yet. `$planGauges` holds the one shared observation per
+  // backend source; every tab reads the same slot.
+  const planScope = planScopeFor(activeSessionId)
+  const planGauge = useStoreSelector($planGauges, gauges => gauges[planScope]?.gauge ?? null)
   const planUsed = planGauge ? Math.min(1, Math.max(0, planGauge.used_bp / 10_000)) : 0
+  // Which plan the number belongs to ("Nous Portal"): the gauge names its owner, so a session
+  // running some other provider still reads the allowance it is actually drawing on.
+  const planProvider = planGauge?.provider ? providerDisplayName(planGauge.provider) : ''
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
   // Dial the viewed profile directly: the ambient `requestGateway` is the
@@ -733,7 +744,7 @@ export function useStatusbarItems({
         icon: <Activity className="size-3" />,
         id: 'plan-usage',
         label: planGauge
-          ? `${gaugeTitle({ label: planGauge.id, title: planGauge.label }, { day: t.modelPicker.today, month: t.modelPicker.month, top_tier: t.modelPicker.topTier, week: t.modelPicker.week })} ${formatPercentUsed(planUsed)}`
+          ? `${planProvider ? `${planProvider} · ` : ''}${gaugeTitle({ label: planGauge.id, title: planGauge.label }, { day: t.modelPicker.today, month: t.modelPicker.month, top_tier: t.modelPicker.topTier, week: t.modelPicker.week })} ${formatPercentUsed(planUsed)}`
           : undefined,
         title: planGauge
           ? copy.planUsageTitle(formatPercentUsed(planUsed), formatResetsIn(planGauge.resets_at_ms) ?? '')
@@ -780,6 +791,7 @@ export function useStatusbarItems({
       sessionStartedAt,
       gatewayState,
       planGauge,
+      planProvider,
       planUsed,
       systemResourcesItem,
       t.modelPicker,

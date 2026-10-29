@@ -614,6 +614,7 @@ export interface PlanGauge {
   label: string
   used_bp: number
   resets_at_ms?: number | null
+  provider?: string
 }
 export interface McpServerStatus {
   name?: string

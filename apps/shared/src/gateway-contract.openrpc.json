@@ -27383,6 +27383,11 @@
             ],
             "default": null,
             "title": "Resets At Ms"
+          },
+          "provider": {
+            "default": "",
+            "title": "Provider",
+            "type": "string"
           }
         },
         "required": [

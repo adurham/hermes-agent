@@ -20,6 +20,10 @@ _COUNTERS = (("input_tokens", "session_input_tokens"), ("output_tokens", "sessio
              ("api_calls", "session_api_calls"))
 # The output-token count at the start of the viewer's current turn (``↓ N tok`` on main's spinner).
 TURN_BASE_ATTR = "_viewer_turn_output_base"
+# The owner of the window-plan gauges this module projects: they exist only for the ``x-nous-credits-*``
+# reply/account shape, so the allowance is Nous's no matter which session observed it — or whether that
+# session has since been pointed at another provider.
+GAUGE_PROVIDER = "nous"
 
 
 def _finite(value):
@@ -60,7 +64,13 @@ def _rate_limit(agent):
 
 def plan_gauge(agent) -> dict | None:
     """Window plans only: the allowance the status bar shows at a glance (today's, else the one that binds),
-    from the reply headers the agent already tracks — no extra round trip, None for everyone else."""
+    from the reply headers the agent already tracks — no extra round trip, None for everyone else.
+
+    The dict names the plan's owner (``provider``): these gauges come from the ``x-nous-credits-*``
+    reply/account shape (``agent/credits_tracker.py`` communicates no other), so a status bar can
+    label whose allowance the number is — and every session of that account agrees on it — instead
+    of each viewer guessing from its own session's provider.
+    """
     with contextlib.suppress(Exception):
         state = getattr(agent, "_credits_state", None)
         if getattr(state, "is_usage_window", False) is True:  # `is True`: a Mock agent's attribute is not a plan
@@ -71,7 +81,7 @@ def plan_gauge(agent) -> dict | None:
             reset = getattr(gauge, "resets_at_ms", None)
             if gauge is not None and not (isinstance(reset, int) and 0 < reset <= int(time.time() * 1000)):
                 return {"id": gauge.id, "label": gauge.label, "used_bp": int(gauge.used_bp),
-                        "resets_at_ms": gauge.resets_at_ms}
+                        "resets_at_ms": gauge.resets_at_ms, "provider": GAUGE_PROVIDER}
     return None
 
 

@@ -919,10 +919,15 @@ export interface UsageStats {
   cost_usd?: number
   input: number
   output: number
-  /** Window plans only (tui_gateway `_get_usage`): today's allowance (else the binding one), for the status bar. */
-  plan_gauge?: { id: string; label: string; resets_at_ms?: null | number; used_bp: number }
+  /** Window plans only (tui_gateway `_get_usage`): today's allowance (else the binding one), for the
+   *  status bar. `provider` names the plan's owner — every session of that account reports the same
+   *  allowance, so a viewer labels the number by it, never by the session's own provider. */
+  plan_gauge?: { id: string; label: string; provider?: string; resets_at_ms?: null | number; used_bp: number }
   total: number
 }
+
+/** Window plans only: one observation of the plan's allowance (the statusbar's `$planGauges` entry). */
+export type PlanGauge = NonNullable<UsageStats['plan_gauge']>
 
 /** One graph node in the star map (learned skill or memory chunk). */
 export interface StarmapNode {
