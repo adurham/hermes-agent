@@ -100,12 +100,15 @@ def _portal_window_gauges():
     return tuple(fields.get("gauges") or ()) if fields else ()
 
 
-def _fallback_off_nous(agent) -> bool:
-    """True while a provider fallback carries the turn away from the Nous plan."""
-    if getattr(agent, "_fallback_activated", False) is not True:
-        return False
-    primary = getattr(agent, "_primary_runtime", None)
-    return isinstance(primary, dict) and str(primary.get("provider") or "").strip().lower() == GAUGE_PROVIDER
+def _answering_elsewhere(agent) -> bool:
+    """True while this agent answers on some provider other than the plan's owner."""
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    return bool(provider) and provider != GAUGE_PROVIDER
+
+
+def _fallback_bound(agent) -> bool:
+    """True while a provider fallback (or a persisted fallback route) carries the turn."""
+    return getattr(agent, "_fallback_activated", False) is True
 
 
 def plan_gauge(agent) -> dict | None:
@@ -117,17 +120,49 @@ def plan_gauge(agent) -> dict | None:
     label whose allowance the number is — and every session of that account agrees on it — instead
     of each viewer guessing from its own session's provider.
 
-    A turn the preflight moved off a spent Nous plan carries no headers of its own, so the account's
-    Portal block stands in: without it the readout vanished at 100% — the one moment it matters.
+    A turn the preflight moved off a spent Nous plan carries no headers of its own — and a fallback
+    bound into the session before a restart answers without ever setting ``_fallback_activated`` at
+    all — so the account's Portal block stands in. Its readout appears while a fallback is bound, or
+    whenever the plan reads spent on the session that is not on it: without it the number vanished at
+    100%, the one moment it exists for.
     """
     with contextlib.suppress(Exception):
         state = getattr(agent, "_credits_state", None)
         if getattr(state, "is_usage_window", False) is True:  # `is True`: a Mock agent's attribute is not a plan
             if (payload := _gauge_payload(getattr(state, "gauges", ()))) is not None:
                 return payload
-        if _fallback_off_nous(agent):
-            return _gauge_payload(_portal_window_gauges())
+        if _answering_elsewhere(agent):
+            payload = _gauge_payload(_portal_window_gauges())
+            if payload is not None and (_fallback_bound(agent) or payload.get("used_bp", 0) >= 10_000):
+                return payload
     return None
+
+
+def plan_route(agent, gauge: dict | None = None) -> dict | None:
+    """The swap a status bar names while the turn runs off the plan (the contract's ``Route``).
+
+    ``primary_*`` is the route this chat returns to. ``agent._primary_runtime`` carries it — except
+    after a fallback was bound into the session and the gateway restarted: the session then *is* the
+    backup, and the snapshot names the backup too. A swap that names no departure is no swap, so the
+    plan's owner (``GAUGE_PROVIDER``) stands in: that IS the allowance the number belongs to.
+    """
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if not provider or provider == GAUGE_PROVIDER:
+        return None
+    gauge = gauge if gauge is not None else plan_gauge(agent)
+    if gauge is None:
+        return None
+    primary = getattr(agent, "_primary_runtime", None)
+    primary = primary if isinstance(primary, dict) else {}
+    primary_provider = str(primary.get("provider") or "").strip().lower()
+    primary_model = str(primary.get("model") or "").strip() or None
+    if primary_provider and primary_provider != provider:
+        return {"model": str(getattr(agent, "model", "") or ""), "provider": provider,
+                "fallback_active": True, "primary_model": primary_model,
+                "primary_provider": primary_provider}
+    return {"model": str(getattr(agent, "model", "") or ""), "provider": provider,
+            "fallback_active": True, "primary_model": primary_model if primary_provider else None,
+            "primary_provider": GAUGE_PROVIDER}
 
 
 def usage_stats(agent) -> dict:
@@ -159,9 +194,7 @@ def usage_stats(agent) -> dict:
     # (`agent.failover_state.resolve_effective_model`, the same wire shape the subagent rows use):
     # the status bar names the primary, its spent allowance and who is answering instead of showing
     # the backup as if the operator had chosen it.
-    from agent.failover_state import resolve_effective_model
-    route = resolve_effective_model(agent)
-    if route.get("fallback_active"):
+    if (route := plan_route(agent, stats.get("plan_gauge"))) is not None:
         stats["route"] = route
     return stats
 
@@ -219,6 +252,8 @@ def tui_usage(stats: dict) -> dict:
         usage["active_subagents"] = stats["active_subagents"]
     if isinstance(stats.get("plan_gauge"), dict):
         usage["plan_gauge"] = stats["plan_gauge"]
+    if isinstance(stats.get("route"), dict):
+        usage["route"] = stats["route"]
     return usage
 
 

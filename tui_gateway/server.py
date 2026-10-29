@@ -1459,9 +1459,14 @@ def _get_usage(agent) -> dict:
             if _avg_ttft is not None and _avg_ttft == _avg_ttft and 0 <= _avg_ttft < 1e6:
                 usage["avg_ttft_s"] = round(float(_avg_ttft), 1)
     # Window plans only: the desktop status bar's allowance (the canonical feed carries the same one).
-    from gateway.session_usage import plan_gauge
-    if (gauge := plan_gauge(agent)) is not None:
+    from gateway.session_usage import plan_gauge, plan_route
+    gauge = plan_gauge(agent)
+    if gauge is not None:
         usage["plan_gauge"] = gauge
+    # ...and the swap that goes with it while the turn runs off the plan (a spent Nous window, or a
+    # fallback bound into the session before a restart): the bar names the primary and who answers.
+    if (route := plan_route(agent, gauge)) is not None:
+        usage["route"] = route
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     # FORK: active_task_count expands a delegate_task batch to its running children (N, not 1 pool slot).
     with contextlib.suppress(Exception):

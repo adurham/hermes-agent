@@ -22274,3 +22274,29 @@ Because the predicate keys on the generated bootstrap's text, `TestPublishedLaun
 **Evidence.** `tests/gateway/test_local_viewer_usage.py` +2 (Portal-sourced gauge on a Nous fallback and `None` off it; `route` present on a fallback, absent — field list untouched — otherwise), `use-statusbar-items.test.tsx` +3 (label/tooltip with and without a gauge, unchanged plain allowance). Desktop suite 20 passed; i18n overlay gaps regenerated and green; `tests/agent/test_usage_preflight.py` + `test_session_route_view.py` 23 passed.
 
 **Deploy.** Needs a gateway restart (new payload field) and a desktop rebuild (new renderer). Neither was done: a running gateway had live turns, and the app is the owner's session.
+
+## 2026-10-29 (follow-up) — the live gateway proved the flag-driven path wrong
+
+`hermes update` at 15:11 rebuilt everything onto `e5fb6c003e` and the gateway came back on it
+(`identify.code_sha`), yet `session.stats` for the running chat still answered
+`{"provider":"ollama-cloud","model":"deepseek-v4.1-flash","fallback_model":null}` with no
+`plan_gauge` and no `route`. Two causes, both mine:
+
+1. `plan_gauge` gated the Portal stand-in on `agent._fallback_activated`, and `route` gated on
+   `resolve_effective_model(...).fallback_active`. A fallback bound into the session before a
+   restart comes back as the session's *own* route (`_primary_runtime` names the backup too), so
+   the flag is False while every API call still bills `ollama-cloud` — the exact state the owner
+   was looking at: allowance 100%, chat on the fallback, bar blank.
+2. `route` was only added to `gateway/session_usage.py::usage_stats`; the desktop reads
+   `session.stats`, i.e. `tui_gateway/server.py::_get_usage`, which had no `route` at all.
+
+**Shape now.** Off the plan is `agent.provider != "nous"` — a fact about the turn, not a flag about
+how it got there. The Portal snapshot supplies the number, and it is published when a fallback is
+bound **or** the plan reads spent (a healthy plan plus another provider is a choice, not a warning).
+`plan_route()` names the primary from `_primary_runtime` when that still differs from the answering
+provider, else from the plan's owner, so a post-restart session cannot draw a pointless
+`ollama → ollama` arrow. `_get_usage` carries both fields, keeping `tui_usage(stats) == _get_usage(agent)`
+(measured equal on a plain agent) and so feeding `session.stats`, `message.complete` and the
+`session.usage` frame from one definition.
+
+**Still needed:** a gateway restart (Python only — the renderer at 15:11 already draws the chip).
