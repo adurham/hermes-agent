@@ -1103,7 +1103,17 @@ def build_turn_context(
     set_current_write_origin(getattr(agent, "_memory_write_origin", "assistant_tool"))
     from tools.skill_provenance import set_review_attended
     set_review_attended(getattr(agent, "_review_attended", False))
-    agent._restore_primary_runtime()
+    # FORK (fallback.preflight_usage): decide the turn's route from the plan's own gauges before any
+    # request, instead of spending a refused 402 per turn. True means "keep the fallback" — the
+    # allowance is still spent, so the primary restore is skipped rather than attempted and undone.
+    _keep_fallback = False
+    try:
+        from agent.usage_preflight import preflight_usage_route
+        _keep_fallback = preflight_usage_route(agent)
+    except Exception:
+        logger.debug("usage preflight skipped for this turn", exc_info=True)
+    if not _keep_fallback:
+        agent._restore_primary_runtime()
     _publish_runtime_main(agent)
     _refresh_mcp_tools_between_turns(agent)
 
