@@ -355,3 +355,45 @@ def test_usage_stats_names_the_route_a_fallback_carries(monkeypatch):
     # On its own route: no swap to name, and the frozen field list stays exactly as it was.
     agent.provider = 'nous'
     assert 'route' not in usage_stats(agent)
+
+
+def test_a_cold_process_warms_the_portal_snapshot_off_the_usage_tick(monkeypatch):
+    """A session that started on the fallback never runs a usage preflight, which is the only thing
+    that fills `nous_account`'s snapshot cache: the bar had no number and would never get one. The
+    tick must not block on the Portal — it starts one background fetch and reads the result next
+    time."""
+    import threading
+    import time
+
+    from hermes_cli import nous_account
+
+    from gateway import session_usage
+
+    calls = []
+
+    def fetch(**_kwargs):
+        calls.append(_kwargs)
+        # Stand in for the round trip and the cache write it performs.
+        monkeypatch.setattr(nous_account, 'cached_nous_portal_account_info',
+                            lambda **_kw: SimpleNamespace(usage_window={'gauges': []}))
+        return SimpleNamespace(usage_window={'gauges': []})
+
+    monkeypatch.setattr(nous_account, 'cached_nous_portal_account_info', lambda **_kw: None)
+    monkeypatch.setattr(nous_account, 'get_nous_portal_account_info', fetch)
+    monkeypatch.setattr(session_usage, '_portal_warm_at', 0.0)
+
+    started = time.monotonic()
+    assert session_usage._portal_window_gauges() == ()  # cold: nothing to show yet
+    assert time.monotonic() - started < 1.0, 'the usage tick must not block on the Portal'
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not calls:
+        time.sleep(0.02)
+    for thread in threading.enumerate():
+        if thread.name == 'portal-usage-warm':
+            thread.join(timeout=5)
+
+    assert calls and calls[0].get('force_fresh') is True, 'only a fresh call carries the window'
+    # ...and the guard keeps a hot tick from starting another round trip.
+    session_usage._portal_window_gauges()
+    assert len(calls) == 1

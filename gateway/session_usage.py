@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import threading
 import time
 
 _COUNTERS = (("input_tokens", "session_input_tokens"), ("output_tokens", "session_output_tokens"),
@@ -82,6 +83,37 @@ def _gauge_payload(gauges) -> dict | None:
             "resets_at_ms": gauge.resets_at_ms, "provider": GAUGE_PROVIDER}
 
 
+_PORTAL_WARM_LOCK = threading.Lock()
+_portal_warm_at = 0.0
+_PORTAL_WARM_INTERVAL = 120.0
+
+
+def _warm_portal_snapshot() -> None:
+    """Ask the Portal for the account block once, off the usage tick.
+
+    A session answering on the fallback never runs a usage preflight, which is the only thing that
+    fills ``nous_account``'s 60 s snapshot cache — so the bar had no number to show, and would have
+    kept none forever. Only ``force_fresh`` actually calls ``/api/oauth/account`` (the cached path
+    rebuilds from the JWT, which carries no window), so this is the preflight's own call, kept on a
+    daemon thread: a network round trip must not sit inside the usage tick.
+    ``_PORTAL_WARM_INTERVAL`` bounds the chatter — a spent window barely moves, and the reset edge is
+    caught within two minutes.
+    """
+    global _portal_warm_at
+    now = time.monotonic()
+    with _PORTAL_WARM_LOCK:
+        if now - _portal_warm_at < _PORTAL_WARM_INTERVAL:
+            return
+        _portal_warm_at = now
+
+    def _fetch() -> None:
+        with contextlib.suppress(Exception):
+            from hermes_cli.nous_account import get_nous_portal_account_info
+            get_nous_portal_account_info(force_fresh=True)
+
+    threading.Thread(target=_fetch, name='portal-usage-warm', daemon=True).start()
+
+
 def _portal_window_gauges():
     """The account's own gauges, from the Portal snapshot a usage preflight keeps warm.
 
@@ -91,7 +123,14 @@ def _portal_window_gauges():
     """
     from hermes_cli.nous_account import cached_nous_portal_account_info
 
-    window = getattr(cached_nous_portal_account_info(), "usage_window", None)
+    info = cached_nous_portal_account_info()
+    if info is None:
+        # Stale beats blank: keep the last number up while a refresh is in flight.
+        info = cached_nous_portal_account_info(any_age=True)
+        _warm_portal_snapshot()
+        if info is None:
+            return ()
+    window = getattr(info, "usage_window", None)
     if window is None:
         return ()
     from agent.credits_tracker import _window_seed_fields
