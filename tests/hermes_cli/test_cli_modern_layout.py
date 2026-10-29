@@ -259,3 +259,64 @@ def test_every_block_is_framed_by_bars_and_blank_lines(monkeypatch):
                    "", "📖", "💻",                  # tool rows, tight
                    "", "BAR", "☤", "", "It", "", "BAR",  # answer: header, blank, body, blank, bar
                    "", "─"], got                   # footer
+
+
+def _stream_rows(monkeypatch, chunks, *, modern: bool = True) -> list[str]:
+    """Stream ``chunks`` through the real line emitter, then close the block; return the rows."""
+    from cli import HermesCLI
+    import cli as climod
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._modern_layout = modern
+    cli.show_reasoning, cli.reasoning_full = True, False
+    cli.final_response_markdown, cli.show_timestamps = "raw", False
+    cli._reset_stream_state()
+    emitted: list[str] = []
+    monkeypatch.setattr(climod, "_cprint", lambda s: emitted.append(_plain(s)))
+    monkeypatch.setattr(climod, "_terminal_width_for_streaming", lambda: 100)
+    monkeypatch.setattr(HermesCLI, "_scrollback_box_width", lambda self: 100)
+    for chunk in chunks:
+        cli._stream_delta(chunk)
+    cli._flush_stream()
+    return "\n".join(emitted).split("\n")
+
+
+@pytest.mark.parametrize("tail", ["", "\n", "\n\n", "\n\n\n"])
+def test_a_reply_ending_on_a_blank_line_keeps_one_bottom_gap(monkeypatch, tail):
+    """A model's pre-tool-call text commonly ends on a blank line ("\n\n"). That blank line was
+    printed on top of the one the closing bar already leaves, so the reply ended on TWO empty
+    lines (owner-reported 2026-10-29). A held-back blank never stacks with the frame's own."""
+    rows = _stream_rows(monkeypatch, ["Added multiply to calc.py." + tail])
+
+    text_row = next(i for i, r in enumerate(rows) if "Added multiply" in r)
+    bar = next(i for i in range(text_row, len(rows)) if set(rows[i].strip()) == {"─"})
+    assert rows[text_row + 1:bar] == [""], rows  # exactly one blank line, never two
+
+
+def test_a_blank_line_inside_the_reply_is_still_printed(monkeypatch):
+    """Only TRAILING blanks are held back — a paragraph break mid-reply keeps its blank line."""
+    rows = _stream_rows(monkeypatch, ["Added multiply to calc.py.\n\nThen the tests.\n"])
+
+    first = next(i for i, r in enumerate(rows) if "Added multiply" in r)
+    second = next(i for i, r in enumerate(rows) if "Then the tests." in r)
+    assert second == first + 2 and rows[first + 1] == "", rows
+
+
+def test_a_held_blank_is_released_before_a_final_partial_line(monkeypatch):
+    """The buffer's last line arrives without a newline: the paragraph break before it must
+    still print, because real content follows it."""
+    rows = _stream_rows(monkeypatch, ["Added multiply.", "\n\nhalf a sen", "tence"])
+
+    first = next(i for i, r in enumerate(rows) if "Added multiply." in r)
+    tail = next(i for i, r in enumerate(rows) if "half a sentence" in r)
+    assert tail == first + 2 and rows[first + 1] == "", rows
+
+
+def test_classic_box_has_no_blank_row_above_its_bottom_border(monkeypatch):
+    """The boxed layout gets the same rule: a trailing blank line must not leave an empty row
+    inside the frame."""
+    rows = _stream_rows(monkeypatch, ["Added multiply to calc.py.\n\n"], modern=False)
+
+    text_row = next(i for i, r in enumerate(rows) if "Added multiply" in r)
+    border = next(i for i, r in enumerate(rows) if r.startswith("╰"))
+    assert border == text_row + 1, rows
