@@ -16,13 +16,11 @@ import queue
 import threading
 import time
 
-from hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, DISCONNECTED, RESUME_KEY_MISMATCH, GatewayClientError,
-                                       GatewayRPCError)
+from hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, DISCONNECTED, NOT_SENT, RESUME_KEY_MISMATCH,
+                                       GatewayClientError, GatewayRPCError)
 
 logger = logging.getLogger(__name__)
 
-# A request refused before it reached any socket: nothing is in doubt, so never DISCONNECTED.
-NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 # ``session.resume`` refusals that mean "this viewer may not open that session": the caller keeps the
 # session it is on instead of adopting the target (startup resume, bare -c fallback).
 RESUME_REFUSALS = frozenset({"not_found", "permission_denied"})

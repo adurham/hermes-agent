@@ -51,6 +51,8 @@ class GatewayClientError(ValueError):
 
 DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. "
                 "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
+# A request refused before it reached any socket: nothing is in doubt, so never DISCONNECTED.
+NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
 
 
 class GatewayRPCError(GatewayClientError):
@@ -214,6 +216,10 @@ class GatewayClient:
         """Send one request and await its answer; ``_timeout`` (seconds, never sent on the wire)
         overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer (``math.inf``: no
         deadline; the answer, a hang-up or the caller's cancel ends the wait)."""
+        if self.reader is not None and self.reader.done():
+            # The reader ended (the socket closed, e.g. a keepalive timeout, or it gave up): no answer
+            # could arrive, so nothing is sent and the caller may safely send again.
+            raise GatewayClientError(NOT_SENT)
         self.sequence += 1
         rid = self.sequence
         future = asyncio.get_running_loop().create_future()

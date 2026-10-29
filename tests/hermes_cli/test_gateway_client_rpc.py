@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from hermes_cli.gateway_client import GatewayClient, GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_client import NOT_SENT, GatewayClient, GatewayClientError, GatewayRPCError
 
 
 class _Socket:
@@ -89,3 +89,26 @@ async def test_send_on_a_dead_socket_is_a_client_error_not_a_raw_websockets_one(
         with pytest.raises(GatewayClientError, match='turn outcome is unknown'):
             await client.rpc('subagent.list', session_id='s')
         assert client.pending == {}
+
+
+@pytest.mark.asyncio
+async def test_a_request_after_the_reader_ended_is_not_sent():
+    """The keepalive timeout closes the socket and ends the reader before the dock's next poll: that
+    send is never written (websockets refuses a send on a closed socket), so the caller is told
+    nothing was sent, not that a turn's outcome is unknown."""
+    sent = []
+
+    class _Closed(_Socket):
+        async def send(self, raw):
+            sent.append(raw)
+
+        async def __anext__(self):
+            raise StopAsyncIteration  # the socket closed: iteration ends
+
+    async with GatewayClient(_Closed(lambda req: None)) as client:
+        await asyncio.sleep(0)  # let the reader see the close
+        assert client.reader.done()
+        with pytest.raises(GatewayClientError) as refused:
+            await client.rpc('prompt.submit', session_id='s')
+        assert str(refused.value) == NOT_SENT
+        assert sent == [] and client.pending == {}
