@@ -280,6 +280,10 @@ class MessageCompletePayload(Payload):
     #: ``text`` is a response this turn already delivered (streamed and/or sealed) — it adds no text.
     response_reused: bool | None = None
     response_transformed: bool | None = None
+    #: The delivered reply REPLACED the final message's streamed content (the turn-contract close
+    #: writes its summary over the draft, and only the summary is stored): a client settles the
+    #: streamed draft bubble onto ``text`` instead of painting the draft and the reply.
+    final_content_replaced: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None
     rendered: str | None = None

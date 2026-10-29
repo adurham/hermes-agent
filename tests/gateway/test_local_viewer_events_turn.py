@@ -321,7 +321,7 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
         def run_conversation(self, message, **kwargs):
             out = super().run_conversation(message, **kwargs)
             return {**out, 'final_response': 'partial answer', 'billing_block': billing,
-                    'warning': 'History changed during this turn'}
+                    'warning': 'History changed during this turn', 'final_content_replaced': True}
 
     runner = _gateway_runner()
     live = SimpleNamespace(tool_progress_mode=None)
@@ -344,6 +344,9 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     assert captured['result']['billing_block'] == billing
     assert captured['result']['warning'] == 'History changed during this turn'
     assert captured['result']['response_previewed'] is True
+    # The reply replaced the final message's streamed content (turn-contract close): only a
+    # local viewer is told, so it settles its draft bubble onto the reply.
+    assert captured['result']['final_content_replaced'] is True
     complete = completion_payload(
         {'admission_id': 'a1', 'request_id': 'r1'}, {'outcome': 'failed'}, delivered['final_response'], captured)
     assert complete['billing'] == billing
@@ -351,6 +354,7 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     assert complete['warning'] == 'History changed during this turn'
     assert complete['response_previewed'] is True
     assert complete['response_transformed'] is True
+    assert complete['final_content_replaced'] is True
     EVENTS['message.complete'].payload.model_validate(
         {k: v for k, v in complete.items() if k not in ('content', 'admission_id', 'outcome')})
 
@@ -372,7 +376,8 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     assert msg_captured['result']['response_previewed'] is False
     msg_complete = completion_payload(
         {'admission_id': 'a2', 'request_id': 'r2'}, {'outcome': 'failed'}, msg_delivered['final_response'], msg_captured)
-    for viewer_key in ('billing', 'failure_reason', 'warning', 'response_previewed', 'response_transformed'):
+    for viewer_key in ('billing', 'failure_reason', 'warning', 'response_previewed', 'response_transformed',
+                       'final_content_replaced'):
         assert viewer_key not in msg_complete
 
 

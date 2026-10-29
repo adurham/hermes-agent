@@ -23744,6 +23744,18 @@
             "default": null,
             "title": "Response Transformed"
           },
+          "final_content_replaced": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Final Content Replaced"
+          },
           "billing": {
             "anyOf": [
               {

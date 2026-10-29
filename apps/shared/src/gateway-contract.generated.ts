@@ -5689,6 +5689,7 @@ export interface MessageCompletePayload {
   response_previewed?: boolean | null
   response_reused?: boolean | null
   response_transformed?: boolean | null
+  final_content_replaced?: boolean | null
   billing?: BillingBlock | null
   failure_reason?: string | null
   rendered?: string | null

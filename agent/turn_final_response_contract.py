@@ -32,6 +32,7 @@ from agent.end_turn import (
     continuation_nudge,
     contract_decision,
     end_turn_payload,
+    note_final_content_replaced,
     record_turn_contract_event,
     recover_close,
     render_summary,
@@ -85,6 +86,7 @@ def apply_turn_contract(
         # the summary is what the model committed to and what the operator reads.
         reply = render_summary(payload or {})
         final_msg["content"] = reply
+        note_final_content_replaced(agent)
         logger.info(
             "turn-contract: closed[%s] open_items=%d tool_calls=%d (model=%s provider=%s)",
             (payload or {}).get("status"), len((payload or {}).get("open_items") or []),
@@ -131,6 +133,7 @@ def apply_turn_contract(
             payload or {}, open_label="Open (turn budget exhausted — still undone):",
         )
         final_msg["content"] = reply
+        note_final_content_replaced(agent)
         record_turn_contract_event("deferred_delivered")
         logger.error(
             "turn-contract: CONTINUE_EXHAUSTED[%s] — %d agent item(s) survived %d continuation(s); "
@@ -174,6 +177,7 @@ def apply_turn_contract(
         reply = render_summary(recovered) if recovered is not None else None
         if reply is not None:
             final_msg["content"] = reply
+            note_final_content_replaced(agent)
         result_preview = str((attempt or {}).get("result") or "")[:200].replace("\n", " ")
         record_turn_contract_event("harness_error")
         logger.error(

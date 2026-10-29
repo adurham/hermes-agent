@@ -78,6 +78,10 @@ def completion_payload(row, settled, response, captured):
             complete['response_previewed'] = True
         if captured_result.get('response_transformed'):
             complete['response_transformed'] = True
+        # The reply replaced the final message's streamed content (turn-contract close): the
+        # viewer settles its streamed draft bubble onto this text, never paints both.
+        if captured_result.get('final_content_replaced'):
+            complete['final_content_replaced'] = True
         if isinstance(captured_result.get('warning'), str) and captured_result['warning']:
             complete['warning'] = captured_result['warning']
         if isinstance(captured_result.get('billing_block'), dict):

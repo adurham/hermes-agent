@@ -688,8 +688,13 @@ class TurnController {
     // the answer and flushing would move the tool shelf/trail under it. Skipped
     // when `completionText` is absent: `rawText` is then the buffer (#16391).
     const tail = this.bufRef.trim()
+    // A flush here seals THIS final message's own streamed draft: the text streamed after the
+    // last seal, which the delivered reply does not carry. `final_content_replaced` (below) is
+    // the gateway telling us that reply REPLACED that draft — the draft bubble is the reply's
+    // bubble, not a second message.
+    const draftFlushed = Boolean(tail && completionText != null && !completionText.includes(tail))
 
-    if (tail && completionText != null && !completionText.includes(tail)) {
+    if (draftFlushed) {
       this.flushStreamingSegment()
     }
 
@@ -702,7 +707,24 @@ class TurnController {
     // the identical text doesn't render as a duplicate message. (#65919
     // review: duplicate-message blocker)
     const dedupeStart = payload.response_previewed ? 0 : (this.interimBoundaryIndex ?? 0)
-    const finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
+    let finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
+
+    // The turn-contract close writes its end_turn summary over the final message's streamed
+    // draft, and only the summary is stored. The draft bubble this turn streamed for that
+    // message IS the reply's bubble: it takes the delivered text instead of the transcript
+    // painting the draft AND a second bubble for one reply — which the operator reads as the
+    // same message twice (the draft often restates the pre-tool narration verbatim) with the
+    // delivered answer thrown off as a trailing line. `final_content_replaced` is set by the
+    // agent only on that replacement, so the #61520 keep-the-tail rule above is untouched.
+    if (draftFlushed && finalText && payload.final_content_replaced === true) {
+      const at = this.segmentMessages.length - 1
+
+      this.segmentMessages = this.segmentMessages.map((msg, i) =>
+        i === at && msg.role === 'assistant' && msg.kind !== 'diff' ? { ...msg, text: finalText } : msg
+      )
+      finalText = ''
+    }
+
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc

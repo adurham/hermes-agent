@@ -702,6 +702,10 @@ def finalize_turn(
         "response_transformed": _response_transformed,
         "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
+        # The delivered reply REPLACED the final message's streamed content (the turn-contract
+        # close wrote its summary over the draft): a client settles its streamed draft bubble onto
+        # this text instead of painting the draft AND the reply (agent/end_turn.note_final_content_replaced).
+        "final_content_replaced": bool(getattr(agent, "_final_content_replaced", False)),
         # The final is byte-for-byte a response this turn already delivered (no footer or
         # explanation appended since): it carries no new text for the client to paint.
         "response_reused": bool(final_response) and final_response == getattr(agent, "_reused_response_text", None),
@@ -755,6 +759,7 @@ def finalize_turn(
         result["pending_steer"] = _leftover_steer
     agent._response_was_previewed = False
     agent._reused_response_text = None
+    agent._final_content_replaced = False
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message
     agent.clear_interrupt()
