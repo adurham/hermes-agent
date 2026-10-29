@@ -398,6 +398,48 @@ class TestS6ContainerGatewayRun:
             assert result == str(root / "profiles" / "coder"), argv
 
 
+class TestPublishedLauncherInvocation:
+    """Every published launcher runs the CLI as ``python -I -c '<bootstrap>'`` (hermes_cli/_launchers),
+    so ``sys.argv[0]`` is ``-c`` until the entry point renames it AFTER importing hermes_cli.main.
+    The fork's argv0-identity guard rejected that shape, silently disabling the whole
+    ``-p/--profile`` surface on launcher installs — including Desktop's per-profile
+    ``gateway ensure`` dial, which then died with exit 2 ("'<profile>' is not a hermes command")."""
+
+    def test_launcher_shape_is_a_hermes_invocation(self, monkeypatch):
+        from hermes_cli.main import _looks_like_hermes_invocation
+
+        monkeypatch.setattr(
+            sys, "orig_argv",
+            ["/store/python3", "-I", "-c", "import hermes_bootstrap; ..."], raising=False)
+        assert _looks_like_hermes_invocation("-c") is True
+
+    @pytest.mark.parametrize("orig_argv", [
+        ["/usr/bin/python3", "-c", "print(1)"],                        # some other -c script
+        ["/store/python3", "-I", "-c", "import json"],                 # -I -c, not our bootstrap
+        ["/store/python3", "-I", "--run-module", "hermes_cli.main"],   # not the published shape
+    ])
+    def test_other_interpreter_shapes_stay_rejected(self, monkeypatch, orig_argv):
+        from hermes_cli.main import _looks_like_hermes_invocation
+
+        monkeypatch.setattr(sys, "orig_argv", orig_argv, raising=False)
+        assert _looks_like_hermes_invocation("-c") is False
+
+    def test_profile_flag_is_applied_from_a_launcher_argv0(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        (root / "profiles" / "work").mkdir(parents=True)
+        (root / "profiles" / "work" / "config.yaml").write_text("{}\n", encoding="utf-8")
+        monkeypatch.setattr(
+            sys, "orig_argv",
+            ["/store/python3", "-I", "-c", "import hermes_bootstrap; ..."], raising=False)
+
+        result = _run_apply_profile_override(
+            tmp_path, monkeypatch, hermes_home=str(root), active_profile=None,
+            argv=["-c", "-p", "work", "gateway", "status"],
+        )
+
+        assert result == str(root / "profiles" / "work")
+
+
 def test_module_entry_keeps_an_explicit_default_profile_over_the_sticky_one(tmp_path):
     """`python -m hermes_cli.main --profile default` (how Hermes spawns its own CLI) stays on the root
     home while active_profile names another profile: a second import of the module must not re-read
