@@ -19,7 +19,7 @@ import uuid
 from contextlib import suppress
 
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, CallStopped, lost_before
+from hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, CallStopped, lost_before
 
 logger = logging.getLogger(__name__)
 
@@ -794,6 +794,12 @@ class GatewayAgent:
                 return self._failed(history, user_message, str(exc),
                                     failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:
+                if str(exc) == NOT_SENT:
+                    # Never reached the owner: like a notice, the CLI keeps the turn's local state (no
+                    # history row, the /model --once pick and notes) so the resend is the same turn.
+                    self._give_back_turn_route()
+                    return {**self._failed(history, user_message, str(exc), failure_reason="gateway_connection"),
+                            "messages": history, "admitted": False}
                 return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
             if (receipt or {}).get("voice_stopped") is True:
                 return self._voice_stopped(history)

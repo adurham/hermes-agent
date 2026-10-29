@@ -4,11 +4,16 @@ import json
 
 import pytest
 
+from websockets.exceptions import ConnectionClosedError
+from websockets.protocol import State
+
 from hermes_cli.gateway_client import NOT_SENT, GatewayClient, GatewayClientError, GatewayRPCError
 
 
 class _Socket:
     """One scripted owner: answers each request with the frame ``reply(request)`` builds."""
+
+    state = State.OPEN  # GatewayClient.rpc reads the socket state before it sends
 
     def __init__(self, reply):
         self.reply = reply
@@ -92,6 +97,27 @@ async def test_send_on_a_dead_socket_is_a_client_error_not_a_raw_websockets_one(
 
 
 @pytest.mark.asyncio
+async def test_a_request_on_a_closing_socket_is_not_sent():
+    """A keepalive timeout fails the socket (CLOSING) and websockets waits up to ``close_timeout`` for
+    the peer before the reader ends. A send in that window is never written either."""
+    sent = []
+
+    class _Closing(_Socket):
+        state = State.CLOSING
+
+        async def send(self, raw):
+            sent.append(raw)
+            raise ConnectionClosedError(None, None)
+
+    async with GatewayClient(_Closing(lambda req: None)) as client:
+        assert not client.reader.done()
+        with pytest.raises(GatewayClientError) as refused:
+            await client.rpc('prompt.submit', session_id='s')
+        assert str(refused.value) == NOT_SENT
+        assert sent == [] and client.pending == {}
+
+
+@pytest.mark.asyncio
 async def test_a_request_after_the_reader_ended_is_not_sent():
     """The keepalive timeout closes the socket and ends the reader before the dock's next poll: that
     send is never written (websockets refuses a send on a closed socket), so the caller is told
@@ -99,14 +125,15 @@ async def test_a_request_after_the_reader_ended_is_not_sent():
     sent = []
 
     class _Closed(_Socket):
-        async def send(self, raw):
+        async def send(self, raw):  # websockets: a send on a closed socket raises, nothing written
             sent.append(raw)
+            raise ConnectionClosedError(None, None)
 
         async def __anext__(self):
             raise StopAsyncIteration  # the socket closed: iteration ends
 
     async with GatewayClient(_Closed(lambda req: None)) as client:
-        await asyncio.sleep(0)  # let the reader see the close
+        await asyncio.wait({client.reader}, timeout=1)  # the reader sees the close
         assert client.reader.done()
         with pytest.raises(GatewayClientError) as refused:
             await client.rpc('prompt.submit', session_id='s')

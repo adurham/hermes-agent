@@ -216,9 +216,11 @@ class GatewayClient:
         """Send one request and await its answer; ``_timeout`` (seconds, never sent on the wire)
         overrides ``DEFAULT_RPC_TIMEOUT`` for a verb that legitimately takes longer (``math.inf``: no
         deadline; the answer, a hang-up or the caller's cancel ends the wait)."""
-        if self.reader is not None and self.reader.done():
-            # The reader ended (the socket closed, e.g. a keepalive timeout, or it gave up): no answer
-            # could arrive, so nothing is sent and the caller may safely send again.
+        from websockets.protocol import State
+        if self.websocket.state is not State.OPEN or (self.reader is not None and self.reader.done()):
+            # A closing socket (a keepalive timeout fails it, then waits up to close_timeout for the
+            # peer) is never written to, and a reader that ended (closed socket, bad frame, stalled
+            # consumer) could not read the answer: refuse before writing, so the caller knows nothing left.
             raise GatewayClientError(NOT_SENT)
         self.sequence += 1
         rid = self.sequence
@@ -236,6 +238,8 @@ class GatewayClient:
             return await asyncio.wait_for(future, None if budget == float("inf") else budget)
         finally:
             self.pending.pop(rid, None)
+            if future.done() and not future.cancelled():
+                future.exception()  # failed by the reader while the send raised: already reported above
 
 
 def private_control_query(home: Path, request: bytes, timeout: float = 5) -> bytes:
