@@ -192,6 +192,10 @@ class CLIInitMixin:
         # Possible markdown-table lines held until the block ends for wcwidth-aware re-padding.
         self._stream_table_buf: list[str] = []
         self._in_stream_table = False
+        # Blank lines held back while a box streams: they are only printed once a real
+        # line follows, so a reply ending on a blank line (models emit "\n\n" before a
+        # tool call) cannot add a second empty line above the block's closing bar.
+        self._stream_pending_blanks: int = 0
         self._pending_edit_snapshots = {}
         self._last_input_mode_recovery = self._last_termios_drift_check = None  # None = never; monotonic epoch is arbitrary
         self._input_mode_recovery_notice_shown = self._termios_drift_notice_shown = False

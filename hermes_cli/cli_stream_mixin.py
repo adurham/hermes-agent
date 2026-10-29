@@ -460,6 +460,20 @@ class CLIStreamMixin:
         _cprint(
             f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
 
+    def _flush_pending_blanks(self) -> None:
+        """Print the blank lines held back mid-stream — a real line followed them.
+
+        ``_emit_one`` parks blank lines instead of printing them (see its comment); this
+        releases the parked ones in order, and ``_flush_stream`` drops whatever is still
+        parked when the block ends, so a reply never ends on an extra empty line.
+        """
+        pending = getattr(self, "_stream_pending_blanks", 0)
+        if not pending:
+            return
+        self._stream_pending_blanks = 0
+        for _ in range(pending):
+            self._emit_stream_line("")
+
     def _flush_stream_table_buf(self) -> None:
         """Emit the held table block re-aligned as a whole. Cell-level markdown is stripped FIRST
         so the realigner pads to the final visible width, not the marker-decorated width."""
@@ -536,6 +550,16 @@ class CLIStreamMixin:
             # DeepSeek ``<｜DSML｜…>``) so a backend tool-call-parser leak never
             # paints raw special tokens into the response box.
             printed_line = _strip_special_token_markup(printed_line)
+            # Hold a blank line back instead of printing it: one that ends the block
+            # stacks on the blank line the frame already leaves above the closing bar
+            # (or above the classic box's bottom border) and reads as an extra empty
+            # line at the bottom of the reply (2026-10-29). A real line following a
+            # held blank releases it in order; a close with nothing left drops it, so
+            # paragraph breaks INSIDE the reply are untouched.
+            if not printed_line.strip():
+                self._stream_pending_blanks = getattr(self, "_stream_pending_blanks", 0) + 1
+                return
+            self._flush_pending_blanks()
             # Hard-wrap prose to the box width so the right edge gets a
             # blank margin matching _STREAM_PAD's left indent (2026-08-10).
             # Table rows come in pre-aligned by realign_markdown_tables and
@@ -678,6 +702,14 @@ class CLIStreamMixin:
             and (looks_like_table_row(self._stream_buf) or is_table_divider(self._stream_buf))):
             self._stream_table_buf.append(self._stream_buf)
             self._stream_buf = ""
+        # Parked blank lines: real content still to print (a buffered table row or a partial
+        # line) releases them in order; with nothing left they are dropped — the frame already
+        # leaves one blank line above the closing bar, so a reply ending on a blank line (models
+        # emit "\n\n" before a tool call) must not stack a second one (2026-10-29).
+        if getattr(self, "_stream_table_buf", None) or self._stream_buf:
+            self._flush_pending_blanks()
+        # Nothing left to print: a parked blank line would be the reply's last row.
+        self._stream_pending_blanks = 0
         # Flush any buffered table rows first so their padding is finalised before the
         # stream remainder lands.  Table rows are pre-aligned by the realigner — do NOT
         # word-wrap them, it would break column padding.
@@ -753,6 +785,8 @@ class CLIStreamMixin:
         self.__dict__.pop("_tool_gen_announced", None)
         self._stream_table_buf = []
         self._in_stream_table = False
+        # Parked blank lines belong to the block that just ended (dropped by _flush_stream).
+        self._stream_pending_blanks = 0
         # No box is live at turn start; also clears any status lines still
         # parked from a turn that errored out before its footer.
         self._stream_box_live = False
