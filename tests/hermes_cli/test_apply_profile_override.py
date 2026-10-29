@@ -424,6 +424,21 @@ class TestPublishedLauncherInvocation:
         monkeypatch.setattr(sys, "orig_argv", orig_argv, raising=False)
         assert _looks_like_hermes_invocation("-c") is False
 
+    def test_the_predicate_matches_the_real_launcher_source(self, monkeypatch):
+        """Pin the coupling: `_launched_by_published_launcher` keys on the generated bootstrap's
+        text (`hermes_bootstrap` in the `-c` code). A later edit to `_launchers.py` that drops or
+        renames that token would silently restore the exit-2 bug for every regenerated launcher —
+        build the argv from the REAL generator so that edit fails here instead."""
+        from pathlib import Path
+
+        from hermes_cli import _launchers
+        from hermes_cli.main import _launched_by_published_launcher
+
+        script = _launchers._launcher_script("hermes", Path("/opt/Hermes Agent/hermes-agent"), None)
+        monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-I", "-c", script], raising=False)
+
+        assert _launched_by_published_launcher() is True
+
     def test_profile_flag_is_applied_from_a_launcher_argv0(self, tmp_path, monkeypatch):
         root = tmp_path / ".hermes"
         (root / "profiles" / "work").mkdir(parents=True)
