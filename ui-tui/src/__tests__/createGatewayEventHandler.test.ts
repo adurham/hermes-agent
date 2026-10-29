@@ -883,6 +883,53 @@ describe('createGatewayEventHandler', () => {
     expect(answerIdx).toBe(appended.length - 1)
   })
 
+  // The turn contract's close REPLACES the final message's streamed content with the end_turn
+  // summary (message.complete.final_content_replaced), and only the summary is stored. The draft
+  // bubble this turn streamed for that message IS the reply's bubble: it takes the delivered
+  // text instead of the transcript painting the draft AND a second bubble for one reply — which
+  // the operator reads as the same message twice (the draft usually restates the prose the model
+  // already streamed before its closing tool call) with the delivered answer trailing behind it.
+  it('settles the streamed draft of the closing message onto the contract reply', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'Checking the config first.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: 'config.yaml', name: 'read_file', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'read_file', summary: 'read', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+    // The closing call carries the prose the model also streamed…
+    onEvent({ payload: { text: 'The pin lives in config.yaml.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: '', name: 'end_turn', tool_id: 'tool-2' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'end_turn', tool_id: 'tool-2' }, type: 'tool.complete' } as any)
+    // …and after the tool result it restates that same prose as the final message's text.
+    onEvent({ payload: { text: 'The pin lives in config.yaml.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { final_content_replaced: true, text: 'Pin: config.yaml.' }, type: 'message.complete' } as any)
+
+    expect(appended.filter(msg => msg.role === 'assistant').map(msg => msg.text)).toEqual([
+      'Checking the config first.',
+      'The pin lives in config.yaml.',
+      'Pin: config.yaml.'
+    ])
+    // The restated draft is never painted a second time.
+    expect(appended.filter(msg => msg.text === 'The pin lives in config.yaml.')).toHaveLength(1)
+  })
+
+  it('appends the contract reply when no draft was streamed for the closing message', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { text: 'Draft text.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: '', name: 'end_turn', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'end_turn', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { final_content_replaced: true, text: 'Summary.' }, type: 'message.complete' } as any)
+
+    expect(appended.filter(msg => msg.role === 'assistant').map(msg => msg.text)).toEqual([
+      'Draft text.',
+      'Summary.'
+    ])
+  })
+
   it('anchors inline_diff as its own segment where the edit happened', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

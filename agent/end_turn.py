@@ -343,6 +343,22 @@ def end_turn_payload(agent: Any) -> Optional[dict[str, Any]]:
     return getattr(agent, "_end_turn_payload", None)
 
 
+def note_final_content_replaced(agent: Any) -> None:
+    """Record that the delivered reply REPLACED the final assistant message's streamed content.
+
+    The CLOSE branch (and a harness fault whose call carried a summary) writes the close's
+    summary over the text the model had already streamed for that final message, and only the
+    summary is persisted. A client that paints streamed text as its own bubble cannot tell that
+    draft apart from a second reply by comparing words: without the fact, the Ink TUI kept the
+    draft AND appended the summary — the operator read the draft text twice while the delivered
+    answer rendered as a dim trailing line, or not at all (desktop parity: its
+    ``responseTransformed`` settlement, #124128). Read by ``turn_finalizer`` into
+    ``result["final_content_replaced"]``, forwarded to local viewers only; other surfaces ignore it.
+    """
+    if agent is not None:
+        agent._final_content_replaced = True
+
+
 def clear_end_turn(agent: Any) -> None:
     agent._end_turn_payload = None
 

@@ -1386,6 +1386,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             previewed = bool(previewed or (callable(was_delivered) and bool(final_response) and was_delivered(final_response) is True))
             viewer_meta = {
                 "local_viewer": True,
+                # The reply replaced the final message's streamed content (turn-contract close):
+                # the viewer settles its streamed draft bubble onto this text, never paints both.
+                **({"final_content_replaced": True} if result.get("final_content_replaced") else {}),
                 **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
                 **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
             }

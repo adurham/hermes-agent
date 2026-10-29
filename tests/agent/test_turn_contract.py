@@ -571,6 +571,8 @@ class TestLoopVerdict:
         assert agent._turn_contract_rejections == 0
         assert any("harness could not run it" in s for s in agent.statuses)
         assert not any("refused" in s for s in agent.statuses)
+        # The recovered summary replaced the streamed prose: the same fact a proper close records.
+        assert agent._final_content_replaced is True
 
     def test_dispatch_failure_without_a_recoverable_summary_keeps_the_prose(self, tmp_path, monkeypatch):
         from agent.turn_final_response_contract import apply_turn_contract
@@ -586,6 +588,8 @@ class TestLoopVerdict:
         assert verdict.decision == HARNESS_ERROR
         assert verdict.final_response is None          # the loop keeps its prose
         assert final_msg["content"] == "prose answer"
+        # The prose stands as the reply: no replacement to tell clients about.
+        assert not getattr(agent, "_final_content_replaced", False)
 
     def test_a_proper_close_is_delivered(self, tmp_path, monkeypatch):
         from agent import end_turn as et
@@ -599,6 +603,9 @@ class TestLoopVerdict:
         assert verdict.final_response == "Half done."
         assert et.read_turn_contract_stats() == {"closed": 1}
         assert end_turn_payload(agent) is None
+        # The close wrote the summary over the text this message had streamed: clients that paint
+        # streamed text as its own bubble are told the draft was replaced (final_content_replaced).
+        assert agent._final_content_replaced is True
 
     def test_a_deferred_close_is_handed_back_with_its_items(self, tmp_path, monkeypatch):
         # The regression the owner reported: "new attack surface" / "Open:" and then nothing.

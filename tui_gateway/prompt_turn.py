@@ -935,6 +935,10 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     # this payload as the authoritative replacement even without a prefix relationship.
     if result.get("response_transformed"):
         payload["response_transformed"] = True
+    # The turn-contract close writes its summary over the final message's streamed draft: the
+    # client settles the draft bubble onto this text instead of painting the draft and the reply.
+    if result.get("final_content_replaced"):
+        payload["final_content_replaced"] = True
     # Structured billing-wall descriptor: the client renders recovery without re-parsing text.
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block
