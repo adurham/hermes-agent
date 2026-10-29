@@ -12,6 +12,7 @@ import type * as DesktopFs from '@/lib/desktop-fs'
 import { $freeTierStatus } from '@/store/free-tier'
 import { INTERFACE_MODES, setInterfaceMode } from '@/store/interface-mode'
 import { markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
+import { resetPlanGauges } from '@/store/plan-gauge'
 import {
   $connection,
   $currentCwd,
@@ -437,5 +438,55 @@ describe('free-tier Sign in in every interface mode', () => {
 
     setOnboardingSurfaceActive('onboarding', false)
     expect(signInChipVisible()).toBe(true)
+  })
+})
+
+// A window plan's allowance is the ACCOUNT's, not the focused session's. Each session reports its
+// own snapshot of it, taken at its own last call, so reading the gauge off the focused session (the
+// old read) disagreed tab to tab on one account — and a fresh tab, whose session had not run yet,
+// showed no item at all. The item reads one shared allowance per backend source and names its owner.
+describe('statusbar plan usage — one allowance for every tab', () => {
+  const gauge = { id: 'day', label: 'Today', provider: 'nous', resets_at_ms: 4_000_000_000_000, used_bp: 6_800 }
+
+  function planUsageItem() {
+    const { result } = renderHook(() => useStatusbarItems(statusbarOptions), { wrapper })
+
+    return result.current.statusbarItems.find(item => item.id === 'plan-usage')
+  }
+
+  afterEach(() => {
+    setActiveSessionId(null)
+    $sessionStates.set({})
+    resetPlanGauges()
+  })
+
+  it('shows the account allowance, named by its provider, on a tab that has not run yet', () => {
+    setActiveSessionId('runtime-a')
+    $sessionStates.set({
+      'runtime-a': { ...createClientSessionState(), usage: { calls: 3, input: 1, output: 1, total: 2, plan_gauge: gauge } }
+    } as never)
+
+    const first = planUsageItem()
+
+    expect(first?.hidden).toBeFalsy()
+    expect(first?.label).toBe('Nous Portal · Today 68%')
+
+    // Second tab: same account, its own session carries no gauge yet.
+    setActiveSessionId('runtime-b')
+    $sessionStates.set({ ...$sessionStates.get(), 'runtime-b': createClientSessionState() } as never)
+
+    expect(planUsageItem()?.label).toBe('Nous Portal · Today 68%')
+  })
+
+  it('keeps the provider off a gauge that does not name one', () => {
+    setActiveSessionId('runtime-a')
+    $sessionStates.set({
+      'runtime-a': {
+        ...createClientSessionState(),
+        usage: { calls: 3, input: 1, output: 1, total: 2, plan_gauge: { ...gauge, provider: undefined } }
+      }
+    } as never)
+
+    expect(planUsageItem()?.label).toBe('Today 68%')
   })
 })
