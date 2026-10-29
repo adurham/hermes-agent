@@ -22235,3 +22235,24 @@ Because the predicate keys on the generated bootstrap's text, `TestPublishedLaun
 **Fix (forward, opt-in).** New `fallback.on_usage_window` (default `false`, keeping upstream semantics for every other install/profile) read by `_usage_window_fallback_enabled()`, which fails safe to `false` on an unreadable config. The 402 stays tagged `usage_window` so the credential pool still benches the refused model until its reset, and the terminal refusal copy is unchanged when the chain is empty or exhausted. Set true in `~/.hermes/config.yaml` on this Mac.
 
 **Evidence.** `TestClassifier` +2 (default off, opt-in on, unreadable-config fails safe) and the pre-existing default test now stubs the config read so live config cannot make it flaky — 9 passed; fallback suites 22 passed. End-to-end on the live CLI: `hermes -z … -m deepseek/does-not-exist-xyz --provider nous` (forced primary failure) returned the answer on `deepseek-v4.1-flash` / `ollama-cloud` per its `--usage-file` report, i.e. the chain resolves, binds and answers. `hermes fallback list` shows `Primary: deepseek/deepseek-v4.1-flash (via nous)` + `1. deepseek-v4.1-flash (via ollama-cloud)`.
+
+## 2026-10-29 — the fallback stops costing a refused request: `fallback.preflight_usage` asks the plan at turn start
+
+**Symptom (owner, right after the 402 fix shipped).** *"It should not be a try and fail — it should be 'does the user have usage available to them to complete this now'."* Measured live: with the day window spent (`usage_window_and_credits_exhausted`, resets 22:13), every turn still posted one request to `inference-api.nousresearch.com` that came back 402 and only then switched — 14:26:02 and 14:26:10 in one log, two sessions — plus a cold prompt-cache re-read on the fallback and, on the restore side, a "primary restored → fallback again" notice pair each turn.
+
+**Mechanism.** The chain is reactive by construction: `restore_primary_runtime` puts the primary back at the top of every turn, and only a *response* can prove the allowance is gone. The plan's own numbers were already in the process (`hermes_cli.nous_account.get_nous_portal_account_info`, the same gauges `/usage` renders) but nothing consulted them before the request.
+
+**Fix (`agent/usage_preflight.py`, knob `fallback.preflight_usage`, default off).** At turn start `build_turn_context` now calls `preflight_usage_route(agent)` *instead of* the unconditional restore:
+
+* fresh Portal lookup (the 60 s cache bypassed with `force_fresh`, debounced 5 s inside a turn);
+* `blocked_gauge(...)` applies the refusal path's own rule (`agent.plan_limits.blocking_gauge`): free models never block, a full all-scope gauge (day/week/month) blocks every paid model, a full top-tier gauge blocks only a catalog-marked top-tier model — an unmarked model is deliberately *not* preempted, because a wrong switch spends another provider's quota while the 402 path still catches that one after a single request. A gauge whose reset already passed reads as room;
+* primary + spent → `try_activate_fallback(..., notice_override=...)` with a sentence naming the allowance and its reset, so the user sees *why* without a refused request;
+* on the chain + still spent → return True, which suppresses the restore entirely (no attempt, no notice churn);
+* on the chain + room → False, and the normal restore brings the primary back;
+* any failure (portal down, unreadable config, no chain) returns False: the turn keeps its primary and the 402 path is unchanged.
+
+`try_activate_fallback` gained a keyword-only `notice_override` for the preflight's own wording; every other caller keeps the default "unavailable (reason)" line.
+
+**Evidence.** `tests/agent/test_usage_preflight.py` (17) pins the decision table and all three routing outcomes, the no-chain/no-knob/no-opinion/failed-lookup paths and the fresh-lookup-per-turn contract. Live probe against the real plan at 14:5x: `blocked_gauge -> ('day','all',10000,<22:13>)` and the notice rendered as *"Nous daily allowance is used up (resets 22:13); continuing this turn on deepseek-v4.1-flash via ollama-cloud."* The switch itself is the path already proven end-to-end earlier today (forced primary failure → turn completed on `ollama-cloud/deepseek-v4.1-flash`).
+
+**Deploy.** Config knob set true on this Mac. The running gateway started 14:16, before this module existed, so it keeps the reactive path until its next restart — the config half is live immediately either way.

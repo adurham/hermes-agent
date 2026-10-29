@@ -50,6 +50,7 @@ fallback:
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
 | `fallback.on_usage_window` | `false` (fork) | A Nous plan-limit 402 (included-usage window exhausted, code `usage_window_and_credits_exhausted`) hands the turn to the configured chain instead of ending it. Off by default: a plan limit is the user's call, and a cross-provider switch spends another plan's quota. With no usable chain the same refusal is shown. |
+| `fallback.preflight_usage` | `false` (fork) | Ask the plan's own gauges at the start of every turn, before any request, and route from that answer: on the primary with the allowance spent -> bind the chain immediately (one notice); on the chain while it is still spent -> stay there, with no restore attempt and no notice churn; on the chain once it resets -> the primary comes back. Reads the Portal snapshot (fresh lookup per turn, debounced within a turn) and applies the same rule as the refusal path; a full top-tier gauge only preempts a model the catalog marks top tier, and any lookup failure means "use the primary" (the 402 path then handles it). |
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini
