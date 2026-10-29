@@ -719,9 +719,18 @@ class CLIChatTurnMixin:
                 self._last_turn_interrupted and response.strip()
                 and " ".join(response.split()) in " ".join(self._streamed_text_this_turn.split())
             )
+            # The turn-contract close writes its summary over the text the final message had
+            # already streamed, and only the summary is stored: the streamed box holds a draft
+            # the operator never got as an answer. Suppressing the reply as "already streamed"
+            # would drop the answer from the screen entirely, so print it — unless the streamed
+            # text already carried the reply verbatim (then the box above IS it).
+            _reply_replaced_stream = bool(
+                turn.result and turn.result.get("final_content_replaced") and response.strip()
+                and " ".join(response.split()) not in " ".join(self._streamed_text_this_turn.split())
+            )
             already_streamed = (
                 (self._stream_started and self._stream_box_opened) or _interrupted_streamed
-            ) and not is_error_response
+            ) and not is_error_response and not _reply_replaced_stream
             modern = getattr(self, "_modern_layout", False)
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
