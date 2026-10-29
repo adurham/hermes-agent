@@ -34770,6 +34770,67 @@
         "title": "RoomTombstone",
         "type": "object"
       },
+      "Route": {
+        "additionalProperties": false,
+        "description": "``agent.failover_state.resolve_effective_model``: who answers, and whose route this chat is.\n\nPresent on ``usage`` only while a provider fallback carries the turn. The chat's own model and\nprovider stay in the composer; this names the departure: the primary it will return to, the\nallowance that forced the switch (``plan_gauge``), and who is actually calling the API.",
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "fallback_active": {
+            "default": false,
+            "title": "Fallback Active",
+            "type": "boolean"
+          },
+          "primary_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Primary Model"
+          },
+          "primary_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Primary Provider"
+          }
+        },
+        "title": "Route",
+        "type": "object"
+      },
       "RuntimeDescribeParams": {
         "additionalProperties": false,
         "properties": {},
@@ -38890,6 +38951,17 @@
               }
             ],
             "default": null
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Route"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -39442,6 +39514,17 @@
               }
             ],
             "default": null
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Route"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "SessionUsagePayload",
@@ -39674,6 +39757,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PlanGauge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Route"
               },
               {
                 "type": "null"
@@ -45448,6 +45542,17 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PlanGauge"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Route"
               },
               {
                 "type": "null"

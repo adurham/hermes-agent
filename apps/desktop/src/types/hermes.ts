@@ -923,6 +923,16 @@ export interface UsageStats {
    *  status bar. `provider` names the plan's owner — every session of that account reports the same
    *  allowance, so a viewer labels the number by it, never by the session's own provider. */
   plan_gauge?: { id: string; label: string; provider?: string; resets_at_ms?: null | number; used_bp: number }
+  /** Present only while a provider fallback carries the turn (`agent.failover_state.resolve_effective_model`):
+   *  the chat's own (primary) route, the provider actually answering, and the fact of the swap. The
+   *  status bar names the primary and its spent allowance instead of showing the backup as the chat. */
+  route?: {
+    model?: null | string
+    provider?: null | string
+    fallback_active?: boolean
+    primary_model?: null | string
+    primary_provider?: null | string
+  }
   total: number
 }
 

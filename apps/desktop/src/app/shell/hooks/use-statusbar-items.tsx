@@ -24,6 +24,7 @@ import { statusBarGatewayHealth } from '@/lib/gateway-health-pill'
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
   Clock,
   Command,
   FolderOpen,
@@ -358,6 +359,23 @@ export function useStatusbarItems({
   // Which plan the number belongs to ("Nous Portal"): the gauge names its owner, so a session
   // running some other provider still reads the allowance it is actually drawing on.
   const planProvider = planGauge?.provider ? providerDisplayName(planGauge.provider) : ''
+  // A provider fallback carries the turn on another provider while the chat keeps its own route
+  // (`usage.route`, present only while that is true). Naming it is the difference between "the
+  // allowance is fine" and "the allowance is spent, answers are coming from somewhere else":
+  // without it the composer shows the backup as if the operator had picked it.
+  const fallbackRoute = currentUsage.route?.fallback_active ? currentUsage.route : undefined
+
+  const fallbackFrom = fallbackRoute?.primary_provider
+    ? providerDisplayName(fallbackRoute.primary_provider)
+    : planProvider
+
+  const fallbackTo = fallbackRoute?.provider ? providerDisplayName(fallbackRoute.provider) : ''
+
+  const planAllowance = planGauge
+    ? `${planProvider ? `${planProvider} · ` : ''}${gaugeTitle({ label: planGauge.id, title: planGauge.label }, { day: t.modelPicker.today, month: t.modelPicker.month, top_tier: t.modelPicker.topTier, week: t.modelPicker.week })} ${formatPercentUsed(planUsed)}`
+    : ''
+
+  const planResetsIn = planGauge ? (formatResetsIn(planGauge.resets_at_ms) ?? '') : ''
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
   // Dial the viewed profile directly: the ambient `requestGateway` is the
@@ -734,24 +752,37 @@ export function useStatusbarItems({
       },
       {
         // Window plans only: today's allowance (else the one that binds) at a glance; opens Billing.
-        className:
-          planUsed >= 0.8
+        // While a fallback carries the turn it also names the swap: primary (and its spent
+        // allowance) → the provider actually answering, so the bar never goes blank at 100%.
+        className: fallbackRoute
+          ? 'text-amber-600 dark:text-amber-400'
+          : planUsed >= 0.8
             ? 'text-red-600 dark:text-red-400'
             : planUsed >= 0.5
               ? 'text-amber-600 dark:text-amber-400'
               : undefined,
-        hidden: !planGauge,
-        icon: <Activity className="size-3" />,
+        hidden: !planGauge && !fallbackRoute,
+        icon: fallbackRoute ? <AlertTriangle className="size-3" /> : <Activity className="size-3" />,
         id: 'plan-usage',
-        label: planGauge
-          ? `${planProvider ? `${planProvider} · ` : ''}${gaugeTitle({ label: planGauge.id, title: planGauge.label }, { day: t.modelPicker.today, month: t.modelPicker.month, top_tier: t.modelPicker.topTier, week: t.modelPicker.week })} ${formatPercentUsed(planUsed)}`
-          : undefined,
-        title: planGauge
-          ? copy.planUsageTitle(formatPercentUsed(planUsed), formatResetsIn(planGauge.resets_at_ms) ?? '')
-          : undefined,
+        label: fallbackRoute
+          ? planAllowance || fallbackFrom
+            ? copy.fallbackSwap(planAllowance || fallbackFrom, fallbackTo || copy.fallbackUnknown)
+            : fallbackTo || undefined
+          : planGauge
+            ? planAllowance
+            : undefined,
+        title: fallbackRoute
+          ? fallbackFrom
+            ? planGauge
+              ? copy.fallbackTitle(fallbackFrom, fallbackTo || copy.fallbackUnknown, formatPercentUsed(planUsed), planResetsIn)
+              : copy.fallbackTitleUnknown(fallbackFrom, fallbackTo || copy.fallbackUnknown)
+            : copy.fallbackTitleUnknown(fallbackTo || copy.fallbackUnknown, fallbackTo || copy.fallbackUnknown)
+          : planGauge
+            ? copy.planUsageTitle(formatPercentUsed(planUsed), planResetsIn)
+            : undefined,
         to: `${SETTINGS_ROUTE}?tab=billing`,
         // Listed in the bar's show/hide menu only for window plans; everyone else never sees the entry.
-        toggleLabel: planGauge ? copy.togglePlanUsage : undefined,
+        toggleLabel: planGauge || fallbackRoute ? copy.togglePlanUsage : undefined,
         variant: 'link'
       },
       systemResourcesItem,
@@ -787,14 +818,17 @@ export function useStatusbarItems({
       contextUsage,
       copy,
       currentUsage.compressions,
+      fallbackFrom,
+      fallbackRoute,
+      fallbackTo,
       gaugeUsage,
       sessionStartedAt,
       gatewayState,
+      planAllowance,
       planGauge,
-      planProvider,
+      planResetsIn,
       planUsed,
       systemResourcesItem,
-      t.modelPicker,
       terminalShowing,
       tokensPerSecond,
       turnStartedAt

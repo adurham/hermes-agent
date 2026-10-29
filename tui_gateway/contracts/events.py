@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, PlanGauge, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MessageReaction, PlanGauge, Route, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
@@ -341,6 +341,8 @@ class SessionUsagePayload(Payload):
     provider: str | None = None
     fallback_model: str | None = None
     plan_gauge: PlanGauge | None = None
+    # Present only while a provider fallback carries the turn (``Usage.route``).
+    route: Route | None = None
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")

@@ -16,6 +16,7 @@ import { resetPlanGauges } from '@/store/plan-gauge'
 import {
   $connection,
   $currentCwd,
+  $currentUsage,
   $selectedStoredSessionId,
   $sessions,
   $sessionStartedAt,
@@ -488,5 +489,63 @@ describe('statusbar plan usage — one allowance for every tab', () => {
     } as never)
 
     expect(planUsageItem()?.label).toBe('Today 68%')
+  })
+})
+
+// A provider fallback carries the turn on another provider while the chat keeps its own route.
+// The allowance is spent at exactly that moment, so the item must not go blank: it names the
+// primary, its spent allowance and the provider that is actually answering.
+describe('statusbar plan usage — a fallback carries the turn', () => {
+  const gauge = { id: 'day', label: 'Today', provider: 'nous', resets_at_ms: 4_000_000_000_000, used_bp: 10_000 }
+
+  const route = {
+    fallback_active: true,
+    model: 'deepseek-v4.1-flash',
+    primary_model: 'deepseek/deepseek-v4.1-flash',
+    primary_provider: 'nous',
+    provider: 'ollama-cloud'
+  }
+
+  function planUsageItem() {
+    const { result } = renderHook(() => useStatusbarItems(statusbarOptions), { wrapper })
+
+    return result.current.statusbarItems.find(item => item.id === 'plan-usage')
+  }
+
+  afterEach(() => {
+    setActiveSessionId(null)
+    $currentUsage.set({ calls: 0, input: 0, output: 0, total: 0 })
+    $sessionStates.set({})
+    resetPlanGauges()
+  })
+
+  it('reads primary · allowance → the provider answering', () => {
+    setActiveSessionId('runtime-a')
+    $currentUsage.set({ calls: 4, input: 1, output: 1, total: 2, plan_gauge: gauge, route })
+
+    const item = planUsageItem()
+
+    expect(item?.hidden).toBeFalsy()
+    expect(item?.label).toBe('Nous Portal · Today 100% → Ollama Cloud')
+    expect(item?.title).toContain('Nous Portal is at 100% used')
+    expect(item?.title).toContain('answering on Ollama Cloud')
+  })
+
+  it('still names the swap when no allowance gauge is known', () => {
+    setActiveSessionId('runtime-a')
+    $currentUsage.set({ calls: 4, input: 1, output: 1, total: 2, route })
+
+    const item = planUsageItem()
+
+    expect(item?.hidden).toBeFalsy()
+    expect(item?.label).toBe('Nous Portal → Ollama Cloud')
+    expect(item?.title).toContain('answers are coming from Ollama Cloud')
+  })
+
+  it('keeps the plain allowance when no fallback is active', () => {
+    setActiveSessionId('runtime-a')
+    $currentUsage.set({ calls: 4, input: 1, output: 1, total: 2, plan_gauge: { ...gauge, used_bp: 6_800 } })
+
+    expect(planUsageItem()?.label).toBe('Nous Portal · Today 68%')
   })
 })

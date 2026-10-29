@@ -22256,3 +22256,21 @@ Because the predicate keys on the generated bootstrap's text, `TestPublishedLaun
 **Evidence.** `tests/agent/test_usage_preflight.py` (17) pins the decision table and all three routing outcomes, the no-chain/no-knob/no-opinion/failed-lookup paths and the fresh-lookup-per-turn contract. Live probe against the real plan at 14:5x: `blocked_gauge -> ('day','all',10000,<22:13>)` and the notice rendered as *"Nous daily allowance is used up (resets 22:13); continuing this turn on deepseek-v4.1-flash via ollama-cloud."* The switch itself is the path already proven end-to-end earlier today (forced primary failure → turn completed on `ollama-cloud/deepseek-v4.1-flash`).
 
 **Deploy.** Config knob set true on this Mac. The running gateway started 14:16, before this module existed, so it keeps the reactive path until its next restart — the config half is live immediately either way.
+
+## 2026-10-29 — the status bar says when a fallback is answering, and whose allowance is spent
+
+**Symptom (owner, looking at the running app).** *"Why don't we see the usage status in the bottom right of the window at all anymore?"* Measured: the bar's right cluster showed only `⚡ Smart  v0.22.5`. The plan chip (`plan-usage`) is drawn from `usage.plan_gauge`, which `plan_gauge()` reads off `agent._credits_state` — the `x-nous-credits-*` reply/account headers. The preflight added earlier today moves the turn onto `ollama-cloud` **before** any request once the day window reads spent, so that turn never sees a Nous reply: no gauge, `hidden: !planGauge`, and the readout vanished at exactly 100% — the one moment it exists for. The composer meanwhile keeps showing the chat's own route (`DeepSeek V4.1 · Flash`), which reads as if nothing had changed.
+
+**Mechanism.** Two gaps, both on the display side: (1) the allowance had no source other than live headers, even though the Portal snapshot the preflight keeps warm carries the same gauges; (2) `session.usage` never said *which* provider was answering — `fallback_model` repeats the active model name and is the only hint, so no surface could name the primary/backup pair.
+
+**Fix.**
+
+* `gateway/session_usage.py::plan_gauge` — when the turn is on a fallback whose primary is Nous and `_credits_state` holds no usable window, the account's Portal block (`hermes_cli.nous_account.cached_nous_portal_account_info`, filled by the preflight every turn) supplies the gauge through the same `_window_seed_fields` parse the preflight uses, and `_gauge_payload` applies one selection rule (full → today's → binding; a passed reset is not current).
+* `gateway/session_usage.py::usage_stats` — carries `route` (`agent.failover_state.resolve_effective_model`: `model/provider/fallback_active/primary_model/primary_provider`, the shape the subagent rows already use) **only while a fallback is active**; the frozen field list is unchanged otherwise.
+* Contract: `Route` added to `tui_gateway/contracts/common.py` and to `Usage` + canonical `SessionStats`; `scripts/gen_gateway_contracts.py` regenerated the TS/OpenRPC.
+* `apps/shared/src/usage-tick.ts` — `usageFromTick` keeps `route`, and `mergeUsage` drops it when a complete payload arrives without one (same rule as `plan_gauge`), so a finished fallback never leaves a stale swap chip.
+* `apps/desktop` — the `plan-usage` item renders `Nous Portal · Today 100% → Ollama Cloud` with an `AlertTriangle`, amber, and a tooltip naming the primary, its allowance, the reset and the provider answering; it no longer hides when the gauge is unknown but a fallback is active (`Nous Portal → Ollama Cloud` then), and `ollama-cloud` gained a display name.
+
+**Evidence.** `tests/gateway/test_local_viewer_usage.py` +2 (Portal-sourced gauge on a Nous fallback and `None` off it; `route` present on a fallback, absent — field list untouched — otherwise), `use-statusbar-items.test.tsx` +3 (label/tooltip with and without a gauge, unchanged plain allowance). Desktop suite 20 passed; i18n overlay gaps regenerated and green; `tests/agent/test_usage_preflight.py` + `test_session_route_view.py` 23 passed.
+
+**Deploy.** Needs a gateway restart (new payload field) and a desktop rebuild (new renderer). Neither was done: a running gateway had live turns, and the app is the owner's session.

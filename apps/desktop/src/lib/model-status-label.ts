@@ -40,6 +40,7 @@ export const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
   'minimax-oauth': 'MiniMax',
   nous: 'Nous Portal',
+  'ollama-cloud': 'Ollama Cloud',
   'openai-codex': 'ChatGPT or Codex Subscription',
   'qwen-oauth': 'Qwen Code',
   xai: 'xAI',

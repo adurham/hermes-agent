@@ -62,6 +62,52 @@ def _rate_limit(agent):
     return None
 
 
+def _gauge_payload(gauges) -> dict | None:
+    """The one allowance to show: a full one first (it is what blocks), else today's, else the binding one.
+
+    A gauge whose reset already passed is no longer current — the same rule the preflight applies.
+    """
+    from agent.usage_gauges import all_scope, binding_gauge
+
+    gauges = tuple(gauges or ())
+    binding = binding_gauge(gauges)
+    day = next((g for g in gauges if g.id == "day" and g.scope == "all"), None)
+    gauge = binding if binding is not None and binding.full else (day or binding)
+    if gauge is None:
+        return None
+    reset = getattr(gauge, "resets_at_ms", None)
+    if isinstance(reset, int) and 0 < reset <= int(time.time() * 1000):
+        return None
+    return {"id": gauge.id, "label": gauge.label, "used_bp": int(gauge.used_bp),
+            "resets_at_ms": gauge.resets_at_ms, "provider": GAUGE_PROVIDER}
+
+
+def _portal_window_gauges():
+    """The account's own gauges, from the Portal snapshot a usage preflight keeps warm.
+
+    A session that began on the fallback lane never saw an ``x-nous-credits-*`` reply, so
+    ``_credits_state`` is empty and the status bar used to go blank exactly while the plan was
+    spent. The Portal block carries the same numbers the headers do.
+    """
+    from hermes_cli.nous_account import cached_nous_portal_account_info
+
+    window = getattr(cached_nous_portal_account_info(), "usage_window", None)
+    if window is None:
+        return ()
+    from agent.credits_tracker import _window_seed_fields
+
+    fields = _window_seed_fields(window)
+    return tuple(fields.get("gauges") or ()) if fields else ()
+
+
+def _fallback_off_nous(agent) -> bool:
+    """True while a provider fallback carries the turn away from the Nous plan."""
+    if getattr(agent, "_fallback_activated", False) is not True:
+        return False
+    primary = getattr(agent, "_primary_runtime", None)
+    return isinstance(primary, dict) and str(primary.get("provider") or "").strip().lower() == GAUGE_PROVIDER
+
+
 def plan_gauge(agent) -> dict | None:
     """Window plans only: the allowance the status bar shows at a glance (today's, else the one that binds),
     from the reply headers the agent already tracks — no extra round trip, None for everyone else.
@@ -70,18 +116,17 @@ def plan_gauge(agent) -> dict | None:
     reply/account shape (``agent/credits_tracker.py`` communicates no other), so a status bar can
     label whose allowance the number is — and every session of that account agrees on it — instead
     of each viewer guessing from its own session's provider.
+
+    A turn the preflight moved off a spent Nous plan carries no headers of its own, so the account's
+    Portal block stands in: without it the readout vanished at 100% — the one moment it matters.
     """
     with contextlib.suppress(Exception):
         state = getattr(agent, "_credits_state", None)
         if getattr(state, "is_usage_window", False) is True:  # `is True`: a Mock agent's attribute is not a plan
-            binding = state.binding_gauge
-            day = next((g for g in state.gauges if g.id == "day" and g.scope == "all"), None)
-            # A full allowance is what blocks, so it wins over today's; a passed reset is no longer current.
-            gauge = binding if binding is not None and binding.full else (day or binding)
-            reset = getattr(gauge, "resets_at_ms", None)
-            if gauge is not None and not (isinstance(reset, int) and 0 < reset <= int(time.time() * 1000)):
-                return {"id": gauge.id, "label": gauge.label, "used_bp": int(gauge.used_bp),
-                        "resets_at_ms": gauge.resets_at_ms, "provider": GAUGE_PROVIDER}
+            if (payload := _gauge_payload(getattr(state, "gauges", ()))) is not None:
+                return payload
+        if _fallback_off_nous(agent):
+            return _gauge_payload(_portal_window_gauges())
     return None
 
 
@@ -110,6 +155,14 @@ def usage_stats(agent) -> dict:
                  if getattr(agent, "_fallback_activated", False) is True else None)
     if (gauge := plan_gauge(agent)) is not None:  # absent off a window plan, as on the embedded path
         stats["plan_gauge"] = gauge
+    # A provider fallback carries the turn on another provider while the chat keeps its own route
+    # (`agent.failover_state.resolve_effective_model`, the same wire shape the subagent rows use):
+    # the status bar names the primary, its spent allowance and who is answering instead of showing
+    # the backup as if the operator had chosen it.
+    from agent.failover_state import resolve_effective_model
+    route = resolve_effective_model(agent)
+    if route.get("fallback_active"):
+        stats["route"] = route
     return stats
 
 

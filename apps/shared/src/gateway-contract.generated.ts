@@ -606,6 +606,7 @@ export interface Usage {
   cost_usd?: number | null
   cost_status?: string | null
   plan_gauge?: PlanGauge | null
+  route?: Route | null
   [key: string]: unknown
 }
 /** ``gateway/session_usage.py::plan_gauge``: a window plan's allowance for the status bar. */
@@ -615,6 +616,14 @@ export interface PlanGauge {
   used_bp: number
   resets_at_ms?: number | null
   provider?: string
+}
+/** ``agent.failover_state.resolve_effective_model``: who answers, and whose route this chat is. Present on ``usage`` only while a provider fallback carries the turn. The chat's own model and provider stay in the composer; this names the departure: the primary it will return to, the allowance that forced the switch (``plan_gauge``), and who is actually calling the API. */
+export interface Route {
+  model?: string | null
+  provider?: string | null
+  fallback_active?: boolean
+  primary_model?: string | null
+  primary_provider?: string | null
 }
 export interface McpServerStatus {
   name?: string
@@ -3538,6 +3547,7 @@ export interface SessionUsageResult {
   cost_usd?: number | null
   cost_status?: string | null
   plan_gauge?: PlanGauge | null
+  route?: Route | null
   credits_lines?: string[] | null
   credits_usage_window?: boolean | null
   [key: string]: unknown
@@ -4740,6 +4750,7 @@ export interface SessionStats {
   provider: string
   fallback_model?: string | null
   plan_gauge?: PlanGauge | null
+  route?: Route | null
 }
 export interface RollbackSessionDiffParams {
   session_id: string
@@ -5786,6 +5797,7 @@ export interface SessionUsagePayload {
   provider?: string | null
   fallback_model?: string | null
   plan_gauge?: PlanGauge | null
+  route?: Route | null
 }
 /** ``prompt_turn._invoke_agent`` ``_on_session_title`` hook. */
 export interface SessionTitlePayload {
