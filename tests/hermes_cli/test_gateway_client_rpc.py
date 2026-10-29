@@ -163,7 +163,7 @@ async def test_a_send_that_fails_after_the_reader_failed_its_request_logs_nothin
             raise ConnectionClosedError(None, None)
 
     loop = asyncio.get_running_loop()
-    logged = []
+    logged, previous = [], loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: logged.append(context.get('message')))
     try:
         socket = _DiesMidSend(lambda req: None)
@@ -171,8 +171,9 @@ async def test_a_send_that_fails_after_the_reader_failed_its_request_logs_nothin
             socket.client = client
             with pytest.raises(GatewayClientError):
                 await client.rpc('subagent.list', session_id='s')
+            assert client.reader.done()  # the reader failed the request before the send raised
         gc.collect()
         await asyncio.sleep(0)
     finally:
-        loop.set_exception_handler(None)
+        loop.set_exception_handler(previous)
     assert not [m for m in logged if 'never retrieved' in str(m)]
