@@ -99,6 +99,33 @@ def test_interrupted_reply_panel_after_tool_call_boundary(cli_stub, monkeypatch,
     assert bool(printed) is expect_panel, printed
 
 
+@pytest.mark.parametrize("replaced, reply_streamed, expect_panel", [
+    (True, False, True),   # the contract close: the box held the draft, the reply is new text
+    (True, True, False),   # the reply IS the streamed text: the box above is it, no duplicate
+    (False, False, False),  # a plain turn: the already-streamed suppression is unchanged
+])
+def test_contract_reply_after_a_streamed_draft_still_renders(cli_stub, monkeypatch, replaced, reply_streamed, expect_panel):
+    """The turn contract writes its end_turn summary over the closing message's streamed draft
+    (``final_content_replaced``); that summary is text the operator never saw as an answer, so the
+    already-streamed suppression must not drop it from the screen."""
+    from types import SimpleNamespace
+    import cli as climod
+
+    cli, _ = cli_stub
+    printed = []
+    monkeypatch.setattr(climod, "ChatConsole", lambda: SimpleNamespace(print=printed.append))
+    cli._streamed_text_this_turn = ""
+    reply = "Summary of the answer."
+    cli._stream_delta(f"{reply if reply_streamed else 'Draft text.'}\n")
+    cli._flush_stream()  # turn end: the box closes but _stream_box_opened stays set (by design)
+    cli._last_turn_interrupted = False
+    turn = SimpleNamespace(use_streaming_tts=False, box_opened=False,
+                           result={"completed": True, "final_response": reply,
+                                   "final_content_replaced": replaced})
+    cli._chat_print_response_panel(turn, reply)
+    assert bool(printed) is expect_panel, printed
+
+
 def test_unstreamed_final_reply_after_streamed_segment_still_prints_panel(cli_stub, monkeypatch):
     """#65666 scope: the turn-level streamed record only suppresses the Panel for interrupted results.
     A turn that streamed text A, crossed a tool boundary, then returned an unstreamed final B must
