@@ -255,3 +255,54 @@ async def test_local_viewer_admission_settles_with_tui_usage_on_message_complete
     assert isinstance(usage, dict), complete
     assert usage['cache_hit_pct'] == 9 and usage['avg_tps'] == 10.0
     assert usage['context_used'] == 900 and usage['context_max'] == 128000 and usage['context_percent'] == 1
+
+
+def test_a_fallback_off_a_spent_nous_plan_still_shows_the_allowance(monkeypatch):
+    """The turn a usage preflight moved onto the fallback never sees a Nous reply, so there are no
+    ``x-nous-credits-*`` headers to read. The account's Portal block stands in — otherwise the
+    readout vanished at 100%, the one moment it matters."""
+    from hermes_cli import nous_account
+
+    from gateway.session_usage import plan_gauge, usage_stats
+
+    import time
+
+    resets_at_ms = int(time.time() * 1000) + 7 * 3_600_000  # inside the 366-day plausibility window
+    window = {'gauges': [{'id': 'day', 'scope': 'all', 'label': 'today', 'used_bp': 10_000,
+                          'resets_at_ms': resets_at_ms}]}
+    monkeypatch.setattr(nous_account, 'cached_nous_portal_account_info',
+                        lambda **_kw: SimpleNamespace(usage_window=window))
+    agent = _agent()
+    agent._credits_state = None
+    agent._fallback_activated = True
+    agent._primary_runtime = {'provider': 'nous', 'model': 'deepseek/deepseek-v4.1-flash'}
+
+    assert plan_gauge(agent) == {'id': 'day', 'label': 'today', 'used_bp': 10_000,
+                                 'resets_at_ms': resets_at_ms, 'provider': 'nous'}
+
+    # Not on a Nous fallback: the Portal snapshot is not this session's business.
+    agent._primary_runtime = {'provider': 'anthropic', 'model': 'claude-opus-5'}
+    assert plan_gauge(agent) is None
+
+
+def test_usage_stats_names_the_route_a_fallback_carries():
+    """The status bar can only say "answering on X" if the payload names the chat's own route:
+    the backup provider otherwise reads as the operator's choice."""
+    from gateway.session_usage import usage_stats
+    from tui_gateway.contracts.registry import CANONICAL_METHODS
+
+    agent = _agent()
+    agent.provider = 'ollama-cloud'
+    agent.model = 'deepseek-v4.1-flash'
+    agent._fallback_activated = True
+    agent._primary_runtime = {'provider': 'nous', 'model': 'deepseek/deepseek-v4.1-flash'}
+
+    stats = usage_stats(agent)
+
+    assert stats['route'] == {
+        'model': 'deepseek-v4.1-flash', 'provider': 'ollama-cloud', 'fallback_active': True,
+        'primary_model': 'deepseek/deepseek-v4.1-flash', 'primary_provider': 'nous'}
+    CANONICAL_METHODS['session.stats'].result.model_validate(stats)
+
+    # On its own route: no swap to name, and the frozen field list stays exactly as it was.
+    assert 'route' not in usage_stats(_agent())

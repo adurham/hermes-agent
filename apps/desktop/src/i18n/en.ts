@@ -4129,6 +4129,14 @@ export const en: Translations = {
       togglePlanUsage: 'Plan usage',
       planUsageTitle: (used, resetsIn) =>
         `${used} of your plan's usage used${resetsIn ? ` · resets in ${resetsIn}` : ''} · open Billing`,
+      // A provider fallback carries the turn while the chat keeps its own route: the bar names the
+      // primary (and its spent allowance, when the gauge is known) and the provider answering now.
+      fallbackSwap: (primary, active) => `${primary} → ${active}`,
+      fallbackUnknown: 'fallback',
+      fallbackTitle: (primary, active, used, resetsIn) =>
+        `${primary} is at ${used} used${resetsIn ? `, resets in ${resetsIn}` : ''} — this chat is answering on ${active} until then · open Billing`,
+      fallbackTitleUnknown: (primary, active) =>
+        `This chat is set to ${primary}, but answers are coming from ${active} (provider fallback) · open Billing`,
       agents: 'Agents',
       closeAgents: 'Close agents',
       openAgents: 'Open agents',

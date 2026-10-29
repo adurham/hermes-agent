@@ -3599,6 +3599,10 @@ catalog: CatalogTranslations
       tokensPerSecondTitle: string
       togglePlanUsage: string
       planUsageTitle: (used: string, resetsIn: string) => string
+      fallbackSwap: (primary: string, active: string) => string
+      fallbackUnknown: string
+      fallbackTitle: (primary: string, active: string, used: string, resetsIn: string) => string
+      fallbackTitleUnknown: (primary: string, active: string) => string
       agents: string
       closeAgents: string
       openAgents: string

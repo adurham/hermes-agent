@@ -29,6 +29,21 @@ class PlanGauge(Result):
     provider: str = ""
 
 
+class Route(Result):
+    """``agent.failover_state.resolve_effective_model``: who answers, and whose route this chat is.
+
+    Present on ``usage`` only while a provider fallback carries the turn. The chat's own model and
+    provider stay in the composer; this names the departure: the primary it will return to, the
+    allowance that forced the switch (``plan_gauge``), and who is actually calling the API.
+    """
+
+    model: str | None = None
+    provider: str | None = None
+    fallback_active: bool = False
+    primary_model: str | None = None
+    primary_provider: str | None = None
+
+
 class Usage(OpenModel):
     """``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``."""
 
@@ -56,6 +71,8 @@ class Usage(OpenModel):
     cost_usd: float | None = None
     cost_status: str | None = None
     plan_gauge: PlanGauge | None = None
+    # Present only while a provider fallback carries the turn (see ``Route``).
+    route: Route | None = None
 
 
 class ProjectRef(Result):

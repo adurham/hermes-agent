@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef
+from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef, Route
 from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
@@ -238,6 +238,8 @@ class SessionStats(Result):
     provider: str
     fallback_model: str | None = None
     plan_gauge: PlanGauge | None = None
+    # Present only while a provider fallback carries the turn (``Usage.route``).
+    route: Route | None = None
 
 
 canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,
