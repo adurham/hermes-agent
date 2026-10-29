@@ -261,9 +261,11 @@ def test_a_fallback_off_a_spent_nous_plan_still_shows_the_allowance(monkeypatch)
     """The turn a usage preflight moved onto the fallback never sees a Nous reply, so there are no
     ``x-nous-credits-*`` headers to read. The account's Portal block stands in — otherwise the
     readout vanished at 100%, the one moment it matters."""
+    import time
+
     from hermes_cli import nous_account
 
-    from gateway.session_usage import plan_gauge, usage_stats
+    from gateway.session_usage import plan_gauge
 
     import time
 
@@ -274,28 +276,68 @@ def test_a_fallback_off_a_spent_nous_plan_still_shows_the_allowance(monkeypatch)
                         lambda **_kw: SimpleNamespace(usage_window=window))
     agent = _agent()
     agent._credits_state = None
+    agent.provider = 'ollama-cloud'
+
+    # A live fallback (the flag the preflight sets)...
     agent._fallback_activated = True
     agent._primary_runtime = {'provider': 'nous', 'model': 'deepseek/deepseek-v4.1-flash'}
-
     assert plan_gauge(agent) == {'id': 'day', 'label': 'today', 'used_bp': 10_000,
                                  'resets_at_ms': resets_at_ms, 'provider': 'nous'}
 
-    # Not on a Nous fallback: the Portal snapshot is not this session's business.
-    agent._primary_runtime = {'provider': 'anthropic', 'model': 'claude-opus-5'}
+    # ...and the same session after a restart bound the fallback into it: the flag is gone, the plan
+    # is still spent, the agent still answers elsewhere. The number must not vanish with the flag.
+    agent._fallback_activated = False
+    agent._primary_runtime = {'provider': 'ollama-cloud', 'model': 'deepseek-v4.1-flash'}
+    assert plan_gauge(agent) == {'id': 'day', 'label': 'today', 'used_bp': 10_000,
+                                 'resets_at_ms': resets_at_ms, 'provider': 'nous'}
+
+    # On the plan itself: no chip of somebody else's allowance.
+    agent.provider = 'nous'
     assert plan_gauge(agent) is None
 
 
-def test_usage_stats_names_the_route_a_fallback_carries():
+def test_an_unspent_plan_on_another_provider_is_not_a_warning(monkeypatch):
+    """Answering elsewhere with a healthy plan is a choice, not a fallback: stay quiet."""
+    import time
+
+    from hermes_cli import nous_account
+
+    from gateway.session_usage import plan_gauge
+
+    window = {'gauges': [{'id': 'day', 'scope': 'all', 'label': 'today', 'used_bp': 2_900,
+                          'resets_at_ms': 4_000_000_000_000}]}
+    monkeypatch.setattr(nous_account, 'cached_nous_portal_account_info',
+                        lambda **_kw: SimpleNamespace(usage_window=window))
+    agent = _agent()
+    agent._credits_state = None
+    agent.provider = 'ollama-cloud'
+    agent._fallback_activated = False
+
+    assert plan_gauge(agent) is None
+
+
+def test_usage_stats_names_the_route_a_fallback_carries(monkeypatch):
     """The status bar can only say "answering on X" if the payload names the chat's own route:
     the backup provider otherwise reads as the operator's choice."""
+    import time
+
+    from hermes_cli import nous_account
+
     from gateway.session_usage import usage_stats
     from tui_gateway.contracts.registry import CANONICAL_METHODS
 
+    window = {'gauges': [{'id': 'day', 'scope': 'all', 'label': 'today', 'used_bp': 10_000,
+                          'resets_at_ms': int(time.time() * 1000) + 3_600_000}]}
+    monkeypatch.setattr(nous_account, 'cached_nous_portal_account_info',
+                        lambda **_kw: SimpleNamespace(usage_window=window))
     agent = _agent()
     agent.provider = 'ollama-cloud'
     agent.model = 'deepseek-v4.1-flash'
+    agent._credits_state = None
     agent._fallback_activated = True
     agent._primary_runtime = {'provider': 'nous', 'model': 'deepseek/deepseek-v4.1-flash'}
+    # The plan is what the bar names, even though this reply carried no plan headers.
+    agent._credits_state = SimpleNamespace(is_usage_window=False, gauges=())
 
     stats = usage_stats(agent)
 
@@ -304,5 +346,12 @@ def test_usage_stats_names_the_route_a_fallback_carries():
         'primary_model': 'deepseek/deepseek-v4.1-flash', 'primary_provider': 'nous'}
     CANONICAL_METHODS['session.stats'].result.model_validate(stats)
 
+    # A fallback bound into the session (post-restart): the snapshot names the backup, so the plan's
+    # owner is the primary the bar reports.
+    agent._fallback_activated = False
+    agent._primary_runtime = {'provider': 'ollama-cloud', 'model': 'deepseek-v4.1-flash'}
+    assert usage_stats(agent)['route']['primary_provider'] == 'nous'
+
     # On its own route: no swap to name, and the frozen field list stays exactly as it was.
-    assert 'route' not in usage_stats(_agent())
+    agent.provider = 'nous'
+    assert 'route' not in usage_stats(agent)
