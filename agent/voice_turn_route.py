@@ -188,12 +188,44 @@ class _SessionRuntimeView:
         return own[name] if name in own else getattr(self.__dict__["_agent"], name)
 
 
+def _fallback_primary_route(agent: Any) -> dict[str, Any] | None:
+    """The route a session belongs to while a *provider fallback* carries the turn.
+
+    A fallback is turn-scoped by design (``restore_primary_runtime`` undoes it at the next turn), so
+    it is not the chat's own setting: persisting it as the session route strands a resumed session
+    on the backup provider — it would never fail back to the model the operator chose.
+    """
+    if not bool(getattr(agent, "_fallback_activated", False)):
+        return None
+    snapshot = getattr(agent, "_primary_runtime", None)
+    if not isinstance(snapshot, dict):
+        return None
+    provider = str(snapshot.get("provider") or "").strip()
+    model = str(snapshot.get("model") or "").strip()
+    if not (provider and model):
+        return None
+    return {name: snapshot[name] for name in ("model", "provider", "base_url", "api_mode") if name in snapshot}
+
+
 def session_runtime_view(agent: Any) -> Any:
-    """What a surface reports or persists as the SESSION's model and effort. Mid voice turn the agent
-    runs on the voice route (often reasoning off); reported as the chat's own setting, Desktop adopted
-    it into the composer, and every new chat it opened inherited reasoning off."""
+    """What a surface reports or persists as the SESSION's model and effort.
+
+    Two momentary routes must not become the chat's own setting: a voice turn's model (often
+    reasoning off — Desktop adopted it into the composer and every new chat inherited it), and a
+    provider fallback's route (persisted as the session's provider, a resumed chat came back on the
+    backup provider and never failed back). Both are reported from the route the session restores to.
+    """
     state = getattr(agent, "_voice_route_state", None)
-    return _SessionRuntimeView(agent, state) if state else agent
+    if state:
+        return _SessionRuntimeView(agent, state)
+    primary = _fallback_primary_route(agent)
+    if primary:
+        reasoning = (getattr(agent, "_primary_runtime", None) or {}).get("reasoning_config")
+        return _SessionRuntimeView(agent, {
+            "snapshot": primary,
+            "reasoning_config": reasoning if isinstance(reasoning, dict) else getattr(agent, "reasoning_config", None),
+        })
+    return agent
 
 
 def end_voice_turn_route(agent: Any) -> None:
