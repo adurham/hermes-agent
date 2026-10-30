@@ -4,6 +4,29 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-29 — GUI sessions kept every memory proposal in a buffer the prune deleted
+
+**Symptom (reported by the owner).** Memory maintenance "ran at the end of sessions in the CLI, but in the
+desktop app I'm not sure it runs at all". Live evidence: `~/.hermes/logs/agent.log` carried
+`memory extraction session end: buffered=35 proposed=15 committed=0 skipped=15` for session after session,
+and `memory_extraction_buffer.json` held 2,740 proposals across 476 session ids, 33 of the 53 desktop
+buffers holding a stashed final pass.
+
+**Mechanism.** The gateway's session end reaches `_fork_memory_session_end(..., interactive=False)`, where
+`auxiliary.memory_extraction.auto_commit_session_end` (default **false**) routes NEW proposals to
+`_buffer.replace_session_entries()` and reports them as `skipped`. The CLI exit path runs the same pass with
+`interactive=True`, so the owner's `memory.auto_apply: true` applied proposals inline — which is why it looked
+like "it only runs when I close a CLI session". A session id also ends exactly once, so the buffer's "next
+session end of the same session_id" never arrives and `buffer._PRUNE_AFTER_DAYS` (7) deletes it: silent loss.
+Existing-fact cleanup was never gated, so merges/removals kept running; only new facts were dropped.
+
+**Fix.** Config (`auxiliary.memory_extraction.auto_commit_session_end: true`) closes the steady-state gap.
+For the shutdown half — a gateway stop defers the LLM passes (`agent._defer_memory_extraction`) to stay inside
+the shutdown watchdog, which strands that session's buffer forever — `tools/memory_extraction/orphan_sweep.py`
+drains orphaned buffers (session not live in `state.db`, buffer idle past a guard window) through the same
+`conflict.classify` → `conflict.apply_verdict` path, bounded per call and gated on the same flag. It runs at
+gateway boot from `_start_gateway_start_cron_and_housekeeping`, per profile home, on a daemon thread.
+
 ### 2026-10-27 — A grandchild's process completion no longer wakes the human's chat
 
 **Symptom (live, reported by the owner).** With a PM subagent running workers ("a subagent running subagents"),
