@@ -29,18 +29,31 @@ def _deny_network(*_args: Any, **_kwargs: Any) -> None:
 
 
 def _stage_copy(source: Path, staged: Path) -> None:
-    """Copy *source* to *staged*, refusing a destination inside the source.
+    """Copy *source* to *staged*, refusing any directory that leads into the destination.
 
-    TMPDIR can point inside the plugin being checked; copying into a descendant of the source
-    walks its own output until the path is too long or the disk is full. Both sides are resolved
-    so a symlinked TMPDIR or plugin path cannot hide the overlap.
+    TMPDIR can sit inside the plugin being checked, or a symlink/junction inside the plugin can
+    point at TMPDIR; either way the copy walks its own output until the path is too long or the
+    disk is full. Paths are resolved so link aliases cannot hide the overlap.
     """
-    src = source.resolve()
-    if staged.resolve().is_relative_to(src):
-        raise _DoctorLoadError(
-            f"Refusing to stage {src}: Doctor's temporary directory {staged.parent} is inside it, "
-            "so the copy would recurse into itself. Point TMPDIR outside the plugin.")
-    shutil.copytree(source, staged, ignore=shutil.ignore_patterns(*_STAGING_SKIPPED_DIRS, "*.pyc"))
+    dest = staged.resolve()
+    skipped = shutil.ignore_patterns(*_STAGING_SKIPPED_DIRS, "*.pyc")
+
+    def _refuse_overlap(path: Path) -> None:
+        real = path.resolve()
+        if dest.is_relative_to(real) or real.is_relative_to(dest):
+            raise _DoctorLoadError(
+                f"Refusing to stage {source}: {path} leads into Doctor's temporary directory "
+                f"{staged.parent}, so the copy would recurse into itself. Point TMPDIR outside "
+                "the plugin and remove links to it.")
+
+    def _ignore(directory: str, names: list[str]) -> set[str]:
+        for name in names:
+            if os.path.isdir(os.path.join(directory, name)):
+                _refuse_overlap(Path(directory, name))
+        return skipped(directory, names)
+
+    _refuse_overlap(source)
+    shutil.copytree(source, staged, ignore=_ignore)
 
 
 @contextmanager

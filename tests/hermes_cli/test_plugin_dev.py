@@ -336,12 +336,14 @@ def test_doctor_removes_temp_home_when_staging_copy_fails(
 
 
 @pytest.mark.parametrize("layout", ["direct", "category"])
+@pytest.mark.parametrize("route", ["tmpdir-inside", "link-to-tmpdir", "harmless-link"])
 @pytest.mark.platforms("posix")
-def test_doctor_refuses_to_stage_a_plugin_containing_its_temp_dir(
-    tmp_path: Path, monkeypatch, layout: str
+def test_doctor_never_copies_a_plugin_into_its_own_temp_dir(
+    tmp_path: Path, monkeypatch, layout: str, route: str
 ) -> None:
-    """A valid plugin that holds Doctor's temp dir (reached through a symlinked TMPDIR) must
-    not be copied into itself: the copy would walk its own output until ENAMETOOLONG/ENOSPC."""
+    """Doctor's copy must never reach its own temp dir, whether TMPDIR (via a symlink alias) sits
+    inside the plugin or a link inside the plugin points at TMPDIR; either one walks its own
+    output until ENAMETOOLONG/ENOSPC. A link elsewhere still stages normally."""
     import shutil
     import tempfile
 
@@ -352,18 +354,34 @@ def test_doctor_refuses_to_stage_a_plugin_containing_its_temp_dir(
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text("name: inner\n", encoding="utf-8")
     (plugin / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
-    (plugin / "scratch").mkdir()
+    scratch = plugin / "scratch" if route == "tmpdir-inside" else tmp_path / "scratch"
+    scratch.mkdir()
     alias = tmp_path / "tmp-alias"
-    alias.symlink_to(plugin / "scratch")
+    alias.symlink_to(scratch)
     monkeypatch.setattr(tempfile, "tempdir", str(alias))
-    copied: list[Path] = []
-    monkeypatch.setattr(plugin_dev.shutil, "copytree", lambda src, *a, **k: copied.append(src))
+    if route == "link-to-tmpdir":
+        (plugin / "assets").symlink_to(scratch)
+    elif route == "harmless-link":
+        (tmp_path / "shared").mkdir()
+        (plugin / "assets").symlink_to(tmp_path / "shared")
+    real_copytree = shutil.copytree
+    calls: list[str] = []
+
+    def _capped_copytree(src, dst, *args, **kwargs):
+        calls.append(str(src))
+        if len(calls) > 20:  # a regression must fail fast, never fill the disk
+            raise RuntimeError("runaway staging copy")
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(plugin_dev.shutil, "copytree", _capped_copytree)
 
     report = plugin_dev.doctor_plugin(str(target))
 
-    assert copied == []
-    assert any("would recurse into itself" in issue.message for issue in report.findings)
-    assert list((plugin / "scratch").iterdir()) == []
+    refused = any("would recurse into itself" in f.message for f in report.findings)
+    assert refused == (route != "harmless-link"), report.format_text()
+    if route == "harmless-link":
+        assert report.ok, report.format_text()
+    assert list(scratch.iterdir()) == []
 
 
 def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path: Path) -> None:
