@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils'
 import {
   COMPOSER_CLEARANCE_SLOT,
   getThreadScrollPosition,
+  isOwnThreadScroll,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
@@ -1119,9 +1120,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // event it fires is recognised as ours below and cannot cancel the restore.
     let ownScrollTop: number | null = null
 
+    // The transcript height that apply was measured against: a browser clamp (a shrinking card, the
+    // composer clearance growing) changes the height under the apply, and only that kind of deviation
+    // is forgiven during the landing.
+    let ownHeight: number | null = null
+
     const applyTarget = (node: HTMLElement) => {
       node.scrollTop = threadScrollTargetTop(target, node)
       ownScrollTop = node.scrollTop
+      ownHeight = node.scrollHeight
     }
 
     applyRestoreRef.current = () => {
@@ -1304,7 +1311,25 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // restore like wheel input does — otherwise the next ResizeObserver tick
     // would rewrite scrollTop over a genuine scroll.
     const onScroll = () => {
-      if (el.scrollTop === ownScrollTop || el.scrollTop === threadScrollTargetTop(target, el)) {
+      const targetTop = threadScrollTargetTop(target, el)
+
+      // An in-flight restore forgives a small deviation from its own target ONLY when the transcript
+      // height changed under it (see THREAD_SCROLL_GLUE_TOLERANCE_PX): that is the browser clamping
+      // after a same-frame resize, and the app's recorded scrollTop is stale by exactly that jitter.
+      // A reader's scrollbar drag changes no height and still cancels.
+      if (
+        isOwnThreadScroll({
+          heightChanged: ownHeight !== null && el.scrollHeight !== ownHeight,
+          loadSettled: loadSettledRef.current,
+          ownScrollTop,
+          scrollTop: el.scrollTop,
+          targetTop
+        })
+      ) {
+        if (el.scrollTop !== ownScrollTop) {
+          ownScrollTop = el.scrollTop
+        }
+
         return
       }
 

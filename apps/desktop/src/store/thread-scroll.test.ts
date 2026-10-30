@@ -4,6 +4,7 @@ import {
   $threadJumpButtonVisibleBySession,
   $threadMessagesBelowBySession,
   $threadScrolledUpBySession,
+  isOwnThreadScroll,
   onScrollToBottomRequest,
   publishThreadAtBottom,
   publishThreadMessagesBelow,
@@ -136,6 +137,30 @@ describe('requestScrollToBottom', () => {
     expect(first).not.toHaveBeenCalled()
     expect(second).toHaveBeenCalledOnce()
     stopSecond()
+  })
+})
+
+describe('isOwnThreadScroll', () => {
+  const base = { heightChanged: true, loadSettled: false, ownScrollTop: 206, scrollTop: 192, targetTop: 192 }
+
+  it('treats the layout clamping under an in-flight restore as the app\'s own scroll', () => {
+    // The live trace shape: the app applied 206 against a 969px transcript, a same-frame resize
+    // clamped the browser to 192 (= the new bottom of 955), and the stale ownScrollTop made the
+    // exact-match test call it foreign — cancelling the restore and leaving the reader mid-flight.
+    expect(isOwnThreadScroll(base)).toBe(true)
+    expect(isOwnThreadScroll({ ...base, scrollTop: 192, ownScrollTop: 192, targetTop: 206 })).toBe(true)
+    expect(isOwnThreadScroll({ ...base, ownScrollTop: null, scrollTop: 200, targetTop: 210 })).toBe(true)
+  })
+
+  it('still hands over to a real scroll while the restore is landing', () => {
+    // Same landing, but nothing resized: this is the reader, not the layout.
+    expect(isOwnThreadScroll({ ...base, heightChanged: false, scrollTop: 200 })).toBe(false)
+    // Or resized, but the position is nowhere near the target.
+    expect(isOwnThreadScroll({ ...base, scrollTop: 100, targetTop: 192 })).toBe(false)
+  })
+
+  it('hands over to any deviation once the restore has settled', () => {
+    expect(isOwnThreadScroll({ ...base, loadSettled: true, scrollTop: 100, targetTop: 192 })).toBe(false)
   })
 })
 
