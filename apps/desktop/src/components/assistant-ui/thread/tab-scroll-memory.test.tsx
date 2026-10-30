@@ -1,6 +1,6 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { act, render, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
@@ -210,5 +210,69 @@ describe('tab switch scroll memory', () => {
 
     expect(viewports(container)[0]!.scrollTop).toBe(topA)
     expect(getThreadScrollPosition('a')).toEqual({ fromBottom: 800, kind: 'offset' })
+  })
+
+  it('does not strand a settled reader at the top when the transcript collapses under them', async () => {
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const deliverContentResize = (height: number) => {
+      for (const observer of observers) {
+        const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+        if (targets.length) {
+          observer.callback(
+            targets.map(target => ({ target, contentRect: { height } })) as ResizeObserverEntry[],
+            observer as unknown as ResizeObserver
+          )
+        }
+      }
+    }
+
+    const { container, unmount } = render(<Pane sessionKey="a" visible />)
+
+    try {
+      const vp = viewports(container)[0]!
+      await settleScroll(10)
+
+      scrollUpTo(vp, 800)
+      await settleScroll(10)
+      expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H - 800)
+
+      // The transcript window collapses under the reader — the app prunes the
+      // render budget for a tab it just left, so the mounted rows shrink far
+      // below the reading offset.
+      scrollHeightValue = SCROLL_H - 3000
+      act(() => deliverContentResize(scrollHeightValue))
+      await settleScroll(10)
+
+      // eslint-disable-next-line no-console -- evidence for the investigation
+      console.error(`[tab-scroll-memory] top after collapse = ${vp.scrollTop} of ${SCROLL_H - 3000 - CLIENT_H}`)
+
+      expect(vp.scrollTop).toBeGreaterThan(0)
+    } finally {
+      scrollHeightValue = SCROLL_H
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
   })
 })
