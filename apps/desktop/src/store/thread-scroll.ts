@@ -244,7 +244,9 @@ export function isOwnThreadScroll(args: {
   }
 
   return (
-    !args.loadSettled && args.heightChanged && Math.abs(args.scrollTop - args.targetTop) <= THREAD_SCROLL_GLUE_TOLERANCE_PX
+    !args.loadSettled &&
+    args.heightChanged &&
+    Math.abs(args.scrollTop - args.targetTop) <= THREAD_SCROLL_GLUE_TOLERANCE_PX
   )
 }
 
@@ -256,6 +258,75 @@ export function threadScrollTargetTop(
   const max = Math.max(0, metrics.scrollHeight - metrics.clientHeight)
 
   return state.kind === 'bottom' ? max : Math.max(0, max - state.fromBottom)
+}
+
+/** How far a reader may drift from a captured anchor and still count as still at it. */
+export const THREAD_SCROLL_ANCHOR_DRIFT_PX = 32
+
+/**
+ * May a parked anchor be applied to the viewport as it stands now?
+ *
+ * `restoreFromBottomRef` carries two different things through the same slot:
+ *
+ * - a CAPTURED anchor (a prepend/expand, or a restore the reader's own input cancelled) recording
+ *   where the reader WAS — a bottom intent as `clientHeight`, otherwise their distance from the
+ *   transcript bottom. Applying that to a reader who has since scrolled drags them back to a stale
+ *   position, and it is an unconditional app write: no library escape can protect them from it. The
+ *   probe build of 2026-10-30 has the shape — a settled reader left the bottom, the next streamed
+ *   growth re-pinned them to the bottom, and the session was then recorded as `{kind:'bottom'}`, so
+ *   the tab could never come back to where it was left.
+ * - a PARKED OFFSET target (an unreachable remembered offset, parked on the settle loop's clamped
+ *   exit) which is the position the reader ASKED for and is applied when the content finally covers
+ *   it; its reader is still at the bottom of the short transcript, because that is where the clamp
+ *   put them.
+ *
+ * So a captured anchor is applied when it still describes the reader — where the anchor puts them, or
+ * the scrollTop they had when it was taken, so a prepend the browser has not yet adjusted for still
+ * lands. Anything else means they have moved on, and the anchor is dropped rather than applied
+ * behind them.
+ */
+export function shouldApplyThreadScrollAnchor(args: {
+  anchor: number
+  anchorHeight: number | null
+  metrics: ThreadScrollMetrics
+}): boolean {
+  const { anchor, anchorHeight, metrics } = args
+  const fromContentBottom = metrics.scrollHeight - metrics.scrollTop
+
+  // Still where the anchor puts them (the browser adjusted scrollTop for the prepend itself), or
+  // still at the scrollTop they had when it was taken (it has not adjusted yet). A reader who has
+  // scrolled is at neither, and gets nothing.
+  if (Math.abs(fromContentBottom - anchor) <= THREAD_SCROLL_ANCHOR_DRIFT_PX) {
+    return true
+  }
+
+  return anchorHeight !== null && Math.abs(metrics.scrollTop - (anchorHeight - anchor)) <= THREAD_SCROLL_ANCHOR_DRIFT_PX
+}
+
+/**
+ * The reader has left the bottom band and the sticky follow must be disarmed.
+ *
+ * The follow is only correct while the reader is AT the bottom, and the app knows that from its own
+ * classification — the same one that records the reading position. It must act on it here rather
+ * than leave the escape to use-stick-to-bottom's heuristic: that heuristic drops the reader's own
+ * scroll whenever a content resize landed in the same frame (`if (state.resizeDifference ||
+ * scrollTop === ignoreScrollToTop) return`, before it can set `escapedFromLock`), and its only other
+ * escape is `handleWheel`, which needs a wheel event. A live turn resizes the transcript every few
+ * frames, so scrollbar drags, keyboard pages and find-in-page reveals — the moves that cover
+ * hundreds of pixels in a single scroll event, which no wheel can produce — routinely failed to
+ * escape: the follow stayed locked and the next growth re-pinned the bottom over the reader.
+ * Measured live (the `[scroll-trace]` probe, the build of 2026-10-30 11:37-14:07): every one of
+ * those positions was destroyed 4-28ms after it was taken, every yank landing on the library's own
+ * target (`scrollHeight - 1 - clientHeight`, one pixel short of `threadScrollTargetTop`), and the
+ * position was then recorded as `{kind:'bottom'}` — which is why the per-session store held nothing
+ * but bottoms and a tab never came back where it was left.
+ *
+ * A transition only: an app write at an offset (an offset restore, a prepend anchor, "Show earlier")
+ * already stops the follow before it moves the viewport, and re-running this on every scroll event
+ * would be a no-op anyway — but keeping it a transition means the disarm costs one call per escape.
+ */
+export function shouldDisarmThreadFollow(previous: ThreadScrollState, next: ThreadScrollState): boolean {
+  return previous.kind !== 'offset' && next.kind === 'offset'
 }
 
 // Composer metrics write --composer-measured-height onto the chat surface,

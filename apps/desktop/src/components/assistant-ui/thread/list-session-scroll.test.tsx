@@ -250,6 +250,166 @@ describe('list session-scroll restore', () => {
     }
   })
 
+  it('disarms the follow for a reader who left the bottom without a wheel, so the next growth cannot re-pin them', async () => {
+    // The live trace (2026-10-30, `[scroll-trace]`) showed every deep reading position destroyed
+    // 4-28ms after it was taken, each yank landing on use-stick-to-bottom's own target
+    // (scrollHeight - 1 - clientHeight) — the library's follow, not an app write — and the session
+    // then recorded as `{kind:'bottom'}`. The moves that got yanked were single scroll events of
+    // hundreds to thousands of px: scrollbar drags, keyboard pages, find-in-page reveals. Those
+    // never reach the library's `handleWheel` escape, and its only other one — `handleScroll`'s
+    // isScrollingUp check — returns early whenever a content resize landed in the same frame, which
+    // a live turn does every few frames. This is that case: a growth and the reader's scroll in the
+    // same frame, with no wheel event anywhere.
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const { container, unmount } = render(
+      <ScrollHarness isRunning messages={sessionMessages('drag', 6)} sessionKey="drag" />
+    )
+
+    const vp = viewportEl(container)
+
+    const deliverContentResize = () => {
+      for (const observer of observers) {
+        const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+        if (targets.length) {
+          observer.callback(
+            targets.map(target => ({ target, contentRect: { height: scrollHeightValue } })) as ResizeObserverEntry[],
+            observer as unknown as ResizeObserver
+          )
+        }
+      }
+    }
+
+    try {
+      await settleScroll(10)
+      expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+      expect(vp.dataset.following).toBe('true')
+
+      const readingTop = SCROLL_H - CLIENT_H - 1500
+
+      // The reader drags the scrollbar: ONE scroll event, no wheel, in the same frame as a growth.
+      act(() => {
+        scrollHeightValue += 300
+        deliverContentResize()
+
+        vp.scrollTop = readingTop
+        vp.dispatchEvent(new Event('scroll'))
+      })
+
+      await settleScroll(6)
+
+      // The follow is disarmed by the app's own classifier, not left to the library's escape.
+      expect(vp.dataset.following).toBe('false')
+
+      // Streamed growth arrives; the reader stays where they left off.
+      act(() => {
+        scrollHeightValue += 400
+        deliverContentResize()
+      })
+
+      await settleScroll(6)
+      expect(vp.scrollTop).toBe(readingTop)
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
+  it('does not re-pin a settled reader to the bottom when the transcript grows under them', async () => {
+    // Same defect as the case above, reached without a resize landing in the scroll's own frame: a
+    // settled reader who leaves the bottom (a scrollbar drag, a keyboard page, a find-in-page
+    // reveal) must not be dragged back by the next streamed chunk. Its writer is the library's
+    // follow, which only runs while the library still believes it is at the bottom.
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const { container, unmount } = render(
+      <ScrollHarness isRunning messages={sessionMessages('settled', 6)} sessionKey="settled" />
+    )
+
+    const vp = viewportEl(container)
+
+    const deliverContentResize = () => {
+      for (const observer of observers) {
+        const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+        if (targets.length) {
+          observer.callback(
+            targets.map(target => ({ target, contentRect: { height: scrollHeightValue } })) as ResizeObserverEntry[],
+            observer as unknown as ResizeObserver
+          )
+        }
+      }
+    }
+
+    try {
+      await settleScroll(10)
+      expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H)
+
+      // The reader leaves the bottom (no wheel) in a frame of its own, so the growth below arrives
+      // against a settled reader rather than in the same frame as the scroll.
+      const readingTop = SCROLL_H - CLIENT_H - 1200
+
+      act(() => {
+        vp.scrollTop = readingTop
+        vp.dispatchEvent(new Event('scroll'))
+      })
+
+      await settleScroll(6)
+
+      act(() => {
+        scrollHeightValue += 400
+        deliverContentResize()
+      })
+
+      await settleScroll(6)
+      expect(vp.scrollTop).toBe(readingTop)
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
   it('does not follow a composer-only resize while a turn is running (#118482)', async () => {
     // Typing in the composer grows the clearance spacer, not the transcript.
     // The follow is keyed on transcript height, so it must not pull the reader.

@@ -12,6 +12,8 @@ import {
   resetPublishedThreadScroll,
   resetThreadScroll,
   setThreadAtBottom,
+  shouldApplyThreadScrollAnchor,
+  shouldDisarmThreadFollow,
   threadScrollStateFromMetrics
 } from './thread-scroll'
 
@@ -143,7 +145,7 @@ describe('requestScrollToBottom', () => {
 describe('isOwnThreadScroll', () => {
   const base = { heightChanged: true, loadSettled: false, ownScrollTop: 206, scrollTop: 192, targetTop: 192 }
 
-  it('treats the layout clamping under an in-flight restore as the app\'s own scroll', () => {
+  it("treats the layout clamping under an in-flight restore as the app's own scroll", () => {
     // The live trace shape: the app applied 206 against a 969px transcript, a same-frame resize
     // clamped the browser to 192 (= the new bottom of 955), and the stale ownScrollTop made the
     // exact-match test call it foreign — cancelling the restore and leaving the reader mid-flight.
@@ -165,9 +167,13 @@ describe('isOwnThreadScroll', () => {
 })
 
 describe('threadScrollStateFromMetrics', () => {
-  const metrics = (fromBottom: number) => ({ clientHeight: 762, scrollHeight: 5000, scrollTop: 5000 - 762 - fromBottom })
+  const metrics = (fromBottom: number) => ({
+    clientHeight: 762,
+    scrollHeight: 5000,
+    scrollTop: 5000 - 762 - fromBottom
+  })
 
-  it('records the follow loop\'s one-frame lag as the bottom, not a reading position', () => {
+  it("records the follow loop's one-frame lag as the bottom, not a reading position", () => {
     // The lag values seen on live traces while a tool card re-renders under a reader who is following
     // the tail. Recorded as offsets, they came back as a deliberate position just outside the follow
     // zone, so the follow disarmed and the transcript walked away under the reader.
@@ -180,5 +186,54 @@ describe('threadScrollStateFromMetrics', () => {
     for (const parked of [97, 281, 800, 1500]) {
       expect(threadScrollStateFromMetrics(metrics(parked))).toEqual({ fromBottom: parked, kind: 'offset' })
     }
+  })
+})
+
+describe('shouldDisarmThreadFollow', () => {
+  it('disarms on the transition that leaves the bottom band, not on every event', () => {
+    const bottom = { kind: 'bottom' } as const
+    const offset = { fromBottom: 800, kind: 'offset' } as const
+
+    expect(shouldDisarmThreadFollow(bottom, offset)).toBe(true)
+    expect(shouldDisarmThreadFollow(offset, offset)).toBe(false)
+    expect(shouldDisarmThreadFollow(offset, bottom)).toBe(false)
+    expect(shouldDisarmThreadFollow(bottom, bottom)).toBe(false)
+  })
+})
+
+describe('shouldApplyThreadScrollAnchor', () => {
+  // A transcript that grew by a prepend from 5000 to 7000, with the reader who was at 800 in it.
+  const metrics = (scrollTop: number, scrollHeight = 7000) => ({ clientHeight: 600, scrollHeight, scrollTop })
+
+  it('lands a prepend for the reader it was taken for, adjusted or not', () => {
+    const anchor = 5000 - 800
+
+    // The browser already adjusted scrollTop for the prepend: still the same distance from the end.
+    expect(shouldApplyThreadScrollAnchor({ anchor, anchorHeight: 5000, metrics: metrics(2800) })).toBe(true)
+    // It did not: the reader is still at the scrollTop they had when the anchor was taken.
+    expect(shouldApplyThreadScrollAnchor({ anchor, anchorHeight: 5000, metrics: metrics(800) })).toBe(true)
+  })
+
+  it('drops an anchor whose reader has moved on', () => {
+    expect(shouldApplyThreadScrollAnchor({ anchor: 5000 - 800, anchorHeight: 5000, metrics: metrics(400) })).toBe(false)
+    expect(shouldApplyThreadScrollAnchor({ anchor: 5000 - 800, anchorHeight: 5000, metrics: metrics(4000) })).toBe(
+      false
+    )
+  })
+
+  it('keeps a bottom intent for a reader still at the bottom, in either frame', () => {
+    // Bottom intent is recorded as the viewport height, so the write is the bottom either way: the
+    // reader is either still at the old bottom (4400) or already moved to the new one (6400).
+    expect(shouldApplyThreadScrollAnchor({ anchor: 600, anchorHeight: 5000, metrics: metrics(4400) })).toBe(true)
+    expect(shouldApplyThreadScrollAnchor({ anchor: 600, anchorHeight: 5000, metrics: metrics(6400) })).toBe(true)
+    // A reader 1500px up is neither.
+    expect(shouldApplyThreadScrollAnchor({ anchor: 600, anchorHeight: 5000, metrics: metrics(6400 - 1500) })).toBe(
+      false
+    )
+  })
+
+  it('falls back to the live position alone when the capture height is unknown', () => {
+    expect(shouldApplyThreadScrollAnchor({ anchor: 3200, anchorHeight: null, metrics: metrics(3800) })).toBe(true)
+    expect(shouldApplyThreadScrollAnchor({ anchor: 3200, anchorHeight: null, metrics: metrics(800) })).toBe(false)
   })
 })
