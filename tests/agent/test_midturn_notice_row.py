@@ -107,6 +107,33 @@ def test_a_steer_ticket_and_a_notice_ticket_never_settle_each_other():
     assert [part[1] for part in agent._drain_pending_notices()] == [NOTICE]
 
 
+def test_the_real_turn_seam_injects_a_pushed_notice(tmp_path, monkeypatch):
+    """The seam itself, on a real agent: ``prepare_iteration`` is what every turn calls before each API
+    request, and it is where a mid-turn notice becomes a row the model sees THIS iteration."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from agent.turn_context import _reset_per_turn_agent_state
+    from agent.turn_iteration_prep import prepare_iteration
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    agent = AIAgent(session_db=SessionDB(db_path=tmp_path / "proof.db"), model="test-model",
+                    provider="openai-compat", api_key="test", base_url="http://127.0.0.1:1/v1",
+                    max_iterations=4, quiet_mode=True, skip_context_files=True, skip_memory=True)
+    try:
+        _reset_per_turn_agent_state(agent)
+        messages = _messages()
+        assert _push(agent) is True
+
+        prepare_iteration(agent, messages=messages, api_call_count=1)
+
+        assert messages[3]["content"] == NOTICE
+        assert messages[3]["display_kind"] == "process_complete"
+        assert messages[3]["display_metadata"] == DISPLAY
+        assert agent.withdraw_notice("adm-1") is False, "the turn took it: the row settles delivered"
+    finally:
+        agent._session_db.close()
+
+
 def test_an_empty_notice_is_refused():
     agent = Agent()
     assert agent.push_notice("   ", display_kind="process_complete") is False
