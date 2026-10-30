@@ -46,10 +46,12 @@ class Turn:
         monkeypatch.setattr(session_finite, 'execute_finite_admission', execute)
 
 
-def interactive(db, sid='s', source='gui'):
+def interactive(db, sid='s', source='gui', created=None):
     """The session was launched from an interactive local surface (Desktop by default): a local
-    session's row records its frozen launch policy's source."""
-    db._execute_write(lambda conn: conn.execute('UPDATE sessions SET source=? WHERE id=?', (source, sid)))
+    session's row records its frozen launch policy's source. ``created`` is the ``created_source`` a
+    live owner-local row keeps its creating surface in (``source='local'``, ``created='desktop'``)."""
+    db._execute_write(lambda conn: conn.execute('UPDATE sessions SET source=?, created_source=? WHERE id=?',
+                                                (source, created, sid)))
 
 
 def _connection(authority):

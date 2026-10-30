@@ -27,9 +27,12 @@ logger = logging.getLogger(__name__)
 _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
-# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).
-# cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they
-# do not name, so a transfer or replacement would strand them: never offered, refused by name.
+# The label is read off the row by ``_launch_labels``: an owner-local row is STORED ``local`` with the
+# creating surface in ``created_source`` (session_local_title), while a chat migrated from main keeps
+# ``desktop`` in ``source`` and an older row keeps its creating label there. ``local`` itself is not a
+# surface and never admits a row on its own (session_policy._NOT_A_SURFACE).
+# cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they do
+# not name, so a transfer or replacement would strand them: never offered, refused by name.
 _INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})
 
 
@@ -38,18 +41,26 @@ def handlers(connection):
             'prompt.replace_queued': partial(replace_queued, connection)}
 
 
+def _launch_labels(value):
+    """The surface labels a session's row records: the ``(source, created_source)`` pair ``_interactive``
+    cached, or a single label a caller seeded into ``launch_sources`` directly."""
+    if isinstance(value, str):
+        return frozenset({value})
+    return frozenset(label for label in value if label)
+
+
 def _interactive(authority, session_id):
-    """The session's frozen launch source (a local session's row records it) names a local surface.
+    """Whether the session was launched from an interactive local surface, read as the row's labels.
     Callers hold the stream lock: one plain read per session, cached (``get_session`` flushes token
     counts, a write). Under WAL it takes the lock-free reader pool, as ``_pending_rows`` does there."""
     sources = authority.launch_sources
     if session_id not in sources:
         with authority.db._read_ctx() as conn:
-            found = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()
+            found = conn.execute('SELECT source, created_source FROM sessions WHERE id=?', (session_id,)).fetchone()
         if found is None:
             return False
-        sources[session_id] = found[0]
-    return sources[session_id] in _INTERACTIVE_SOURCES
+        sources[session_id] = (found[0], found[1])
+    return bool(_launch_labels(sources[session_id]) & _INTERACTIVE_SOURCES)
 
 
 def queued_controls(authority, row):
