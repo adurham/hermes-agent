@@ -9,11 +9,19 @@
 //
 // So throttling is a runtime dial instead: the renderers already report
 // "which chats are mid-turn" for the quit guard (`hermes:active-work`), and
-// this controller rides the merged edge of those reports. Any turn in flight →
-// every registered chat window gets `setBackgroundThrottling(false)`, exactly
-// the streaming behavior the static flag used to provide. All turns done →
-// after a short trailing delay (so tail flushes land at full cadence) Chromium's
-// default throttling returns and hidden windows go quiet.
+// this controller rides the merged edge of those reports. A turn in flight
+// restores full cadence — but only for a window that is actually on screen.
+// A window that is minimized, hidden, or on another Space keeps Chromium's
+// throttling even mid-turn: nobody is looking at the frames it would paint,
+// the deltas are already in the store, and the first paint after the window
+// is shown renders the whole transcript. That distinction is the difference
+// between "one session is streaming, so painting costs a little" and "six
+// sessions are streaming, so the compositor runs at display refresh while the
+// user works in another app" — the always-on-laptop case this file exists for.
+//
+// All turns done → after a short trailing delay (so tail flushes land at full
+// cadence) Chromium's default throttling returns and even visible windows go
+// quiet.
 //
 // On native Wayland only, a fullscreen chat may be misclassified as occluded
 // after sitting idle (#94865). The caller can opt into keeping the fleet
@@ -31,6 +39,10 @@ const RETHROTTLE_DELAY_MS = 5_000
 export interface ThrottleWindowLike {
   isDestroyed(): boolean
   isFullScreen?: () => boolean
+  /** Absent on test doubles and non-window surfaces: treated as on screen. */
+  isMinimized?: () => boolean
+  /** Absent on test doubles and non-window surfaces: treated as on screen. */
+  isVisible?: () => boolean
   webContents?: {
     isDestroyed(): boolean
     setBackgroundThrottling(allowed: boolean): void
@@ -49,7 +61,7 @@ export interface StreamThrottleOptions {
 }
 
 export interface StreamThrottle {
-  /** True while windows are currently unthrottled (streaming or trailing). */
+  /** True while a turn is in flight (on-screen windows are then unthrottled). */
   isUnthrottled(): boolean
   /** Track a chat window; applies the current state immediately and stops
    * tracking on close. */
@@ -57,6 +69,9 @@ export interface StreamThrottle {
   /** Report whether any turn is in flight across all renderers. */
   update(busy: boolean): void
 }
+
+/** Events that can change whether a window counts as on screen. */
+const VISIBILITY_EVENTS = ['show', 'hide', 'minimize', 'restore'] as const
 
 export function createStreamThrottle(
   timers: TimersLike = { clearTimeout: handle => clearTimeout(handle as never), setTimeout },
@@ -87,6 +102,21 @@ export function createStreamThrottle(
     return false
   }
 
+  /** Is this window actually being looked at? A minimized window and a hidden
+   * one are not; anything that cannot be asked is assumed visible, which is
+   * the contract every pre-visibility caller relies on. */
+  function onScreen(win: ThrottleWindowLike): boolean {
+    try {
+      if (win.isMinimized?.() === true) {
+        return false
+      }
+
+      return win.isVisible?.() !== false
+    } catch {
+      return true
+    }
+  }
+
   function apply(win: ThrottleWindowLike) {
     if (win.isDestroyed()) {
       windows.delete(win)
@@ -100,8 +130,13 @@ export function createStreamThrottle(
       return
     }
 
+    // Throttling stays ON for a window nobody can see, even mid-turn: the
+    // paint is invisible, and Chromium's own occlusion tracking is the only
+    // signal that knows about another app covering the window.
+    const throttle = !(unthrottled && onScreen(win))
+
     try {
-      contents.setBackgroundThrottling(!unthrottled)
+      contents.setBackgroundThrottling(throttle)
     } catch {
       // A window mid-teardown can throw; it's about to leave the set anyway.
     }
@@ -134,6 +169,14 @@ export function createStreamThrottle(
         windows.delete(win)
         armRethrottleIfIdle()
       })
+
+      // Minimizing or hiding a window mid-turn must hand it back to Chromium,
+      // and showing it again must restore the full-cadence stream.
+      for (const event of VISIBILITY_EVENTS) {
+        win.on?.(event, () => {
+          apply(win)
+        })
+      }
 
       if (keepFullscreenPainting) {
         win.on?.('enter-full-screen', () => {
