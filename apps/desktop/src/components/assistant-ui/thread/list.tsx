@@ -1385,8 +1385,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     if (!loadSettledRef.current && restoreFromBottomRef.current != null) {
       cancelRestoreRef.current?.()
       restoreFromBottomRef.current = null
+
+      // The parked offset never became reachable: the mounted window cannot cover it — its older
+      // pages failed to arrive (a remote page resolving false), or the session has no more history
+      // to pull. Leaving the viewport where the clamped restore dropped it strands the reader at
+      // the TOP of the loaded rows: not the position they left, not the tail, and with nothing left
+      // that will move them. Default to the bottom — the same landing a session with no remembered
+      // position gets — so the reader always ends where they can scroll from.
+      void scrollToBottomUnlessSelecting('instant')
+      liveScrollStateRef.current = THREAD_SCROLL_BOTTOM
+      loadSettledRef.current = true
     }
-  }, [])
+  }, [scrollToBottomUnlessSelecting])
 
   const growWindow = useCallback(async () => {
     if (!paneVisible || windowRequestRef.current || windowCommitRef.current != null) {

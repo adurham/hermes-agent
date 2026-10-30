@@ -808,8 +808,14 @@ describe('list session-scroll restore', () => {
     }
 
     act(() => window.dispatchEvent(new Event('beforeunload')))
-    expect(getThreadScrollPosition('lost')).toEqual({ kind: 'offset', fromBottom: SCROLL_H - CLIENT_H })
-    expect(viewportEl(container).scrollTop).toBe(0)
+    // An unreachable offset is released to the BOTTOM, not left at the top of the loaded rows: a
+    // reader stranded there is at neither their position nor the tail, with nothing left that would
+    // move them. The bottom is the landing a session with no remembered position gets, and "Show
+    // earlier messages" remains the explicit retry path when the pages are actually available.
+    expect(getThreadScrollPosition('lost')).toEqual({ kind: 'bottom' })
+    // The stick-to-bottom target sits one pixel above the true bottom (its `scrollHeight - 1 -
+    // clientHeight`), which is where a released restore parks.
+    expect(viewportEl(container).scrollTop).toBe(SCROLL_H - CLIENT_H - 1)
 
     if (outcome === 'failed') {
       expect(expandWindow).toHaveBeenCalledTimes(1)

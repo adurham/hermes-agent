@@ -4,6 +4,37 @@ This is a personal fork of [NousResearch/hermes-agent](https://github.com/NousRe
 Fork-only work stays here. Individual fixes that are separable from fork-only code are filed upstream when
 PR slots allow — see "Upstreaming" below for the current queue and the rules that decide what qualifies.
 
+### 2026-10-30 (desktop) — an unreachable reading position stranded the reader at the top of the loaded rows
+
+**Symptom (reported by the owner).** "When I'm bouncing around tabs it doesn't always remember where we were
+on the page… if it doesn't know where I was it should default to the bottom."
+
+**Investigation.** The per-session store (`hermes.desktop.threadScroll.v1.profile.<p>`, distance-from-bottom
+per session) and its restore loop were traced end to end — first with a temporary renderer probe in the
+installed app (`console.error` → `desktop.log`, since that is the only renderer level the main process
+forwards), then with a real-engine harness. Every path a reader actually travels round-trips correctly:
+warm switch, kept-alive tab round trip, growth while reading, an active run streaming chunks, the composer
+clamp, a deep offset whose older pages DO commit, and an unknown session (lands at the bottom). The live
+probe over two hours of real use found no lost position either: every tab the owner left was saved at the
+position its container actually had.
+
+**The one loss that reproduces** is the *unreachable* offset: the stored distance-from-bottom is larger than
+the mounted window can ever cover because its older pages never commit (a remote page resolving false) or the
+session has no more history to pull. The parked restore gave up and left the viewport where the clamp dropped
+it — the TOP of the loaded rows, which is neither the position the reader left nor the live tail, and it also
+overwrote the stored position with that clamping. The owner's rule for an unknowable position is the bottom,
+so a released restore now pins to the bottom (and records `bottom`), leaving "Show earlier messages" as the
+explicit retry path when the pages do arrive. Two existing tests that encoded the old "stay clamped"
+expectation were updated to the new landing.
+
+**Harness (headless, no Electron, no LLM).** `scroll-harness.html` + `src/dev/scroll-harness.tsx` mount the
+real `Thread` in the real tab topology (inactive panes kept mounted and hidden exactly as the pane shell does)
+and serve it from Vite; `scripts/diag-scroll-tabs.mjs` and `scripts/diag-scroll-deep.mjs` drive it in headless
+Chromium (Playwright, already in the desktop devDependencies), step by step, printing the geometry. The
+harness's `expandWindow` must honour the app's contract — call `beforePrepend` on commit and resolve a
+boolean — or the parked-offset regrow is declared failed and the reader is released early, which is how the
+first (wrong) reproduction was produced.
+
 ### 2026-10-29 (desktop) — a strip drag left the replay order of the tab strip stale
 
 **Symptom (reported by the owner).** "Tab order when the app is closed and reopened is not preserved."
