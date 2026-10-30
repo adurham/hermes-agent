@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 def test_doctor_uses_registration_to_reject_bad_hook_and_callback_signature(
     tmp_path: Path,
@@ -331,6 +333,37 @@ def test_doctor_removes_temp_home_when_staging_copy_fails(
     # exact window where a stranded hermes-plugin-doctor-* dir was observed.
     leftovers = list(scratch.glob("hermes-plugin-doctor-*"))
     assert leftovers == [], f"stranded doctor temp dirs: {leftovers}"
+
+
+@pytest.mark.parametrize("layout", ["direct", "category"])
+@pytest.mark.platforms("posix")
+def test_doctor_refuses_to_stage_a_plugin_containing_its_temp_dir(
+    tmp_path: Path, monkeypatch, layout: str
+) -> None:
+    """A valid plugin that holds Doctor's temp dir (reached through a symlinked TMPDIR) must
+    not be copied into itself: the copy would walk its own output until ENAMETOOLONG/ENOSPC."""
+    import shutil
+    import tempfile
+
+    from hermes_cli import plugin_dev
+
+    target = tmp_path / "target"
+    plugin = target / "inner" if layout == "category" else target
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: inner\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    (plugin / "scratch").mkdir()
+    alias = tmp_path / "tmp-alias"
+    alias.symlink_to(plugin / "scratch")
+    monkeypatch.setattr(tempfile, "tempdir", str(alias))
+    copied: list[Path] = []
+    monkeypatch.setattr(plugin_dev.shutil, "copytree", lambda src, *a, **k: copied.append(src))
+
+    report = plugin_dev.doctor_plugin(str(target))
+
+    assert copied == []
+    assert any("would recurse into itself" in issue.message for issue in report.findings)
+    assert list((plugin / "scratch").iterdir()) == []
 
 
 def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path: Path) -> None:

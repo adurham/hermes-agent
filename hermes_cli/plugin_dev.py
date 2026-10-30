@@ -28,6 +28,21 @@ def _deny_network(*_args: Any, **_kwargs: Any) -> None:
     raise RuntimeError("network access is disabled while Plugin Doctor runs")
 
 
+def _stage_copy(source: Path, staged: Path) -> None:
+    """Copy *source* to *staged*, refusing a destination inside the source.
+
+    TMPDIR can point inside the plugin being checked; copying into a descendant of the source
+    walks its own output until the path is too long or the disk is full. Both sides are resolved
+    so a symlinked TMPDIR or plugin path cannot hide the overlap.
+    """
+    src = source.resolve()
+    if staged.resolve().is_relative_to(src):
+        raise _DoctorLoadError(
+            f"Refusing to stage {src}: Doctor's temporary directory {staged.parent} is inside it, "
+            "so the copy would recurse into itself. Point TMPDIR outside the plugin.")
+    shutil.copytree(source, staged, ignore=shutil.ignore_patterns(*_STAGING_SKIPPED_DIRS, "*.pyc"))
+
+
 @contextmanager
 def _doctor_runtime(plugin_path: Path):
     """Load one plugin through the real runtime and restore global state afterwards.
@@ -45,10 +60,9 @@ def _doctor_runtime(plugin_path: Path):
         bundled.mkdir(parents=True)
         plugins_root.mkdir(parents=True)
         staging_root = plugins_root / plugin_path.name
-        ignore = shutil.ignore_patterns(*_STAGING_SKIPPED_DIRS, "*.pyc")
         if _has_manifest(plugin_path):
             staged = staging_root
-            shutil.copytree(plugin_path, staged, ignore=ignore)
+            _stage_copy(plugin_path, staged)
         else:
             # A category: stage only its plugin under the category name (discovery keys it
             # ``category/plugin``), never the loose files or skipped dirs beside it.
@@ -58,7 +72,7 @@ def _doctor_runtime(plugin_path: Path):
                 raise _DoctorLoadError(
                     f"{plugin_path} holds {len(members)} plugins ({names}); point Doctor at one of them")
             staged = staging_root / members[0].name
-            shutil.copytree(members[0], staged, ignore=ignore)
+            _stage_copy(members[0], staged)
         stack.enter_context(patch.dict(os.environ, {
             "HERMES_HOME": str(home),
             "HERMES_BUNDLED_PLUGINS": str(bundled),
