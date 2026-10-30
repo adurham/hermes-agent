@@ -111,6 +111,37 @@ export function applySessionInfoStatePatch(
 // `scripts/profile-typing-lag.md` for the measurement work behind this.
 export const STREAM_DELTA_FLUSH_MS = 33
 
+// Floor used while the window is VISIBLE but unfocused. Nothing on screen is
+// being read at that moment, and every flush is a React commit plus a
+// Streamdown re-parse of the growing last block, so 30fps of text growth buys
+// nothing a background window can show. 120ms still moves the text ~8x/s, and
+// the focus/visibility handlers flush the queue immediately on the way back in,
+// so returning to the window never reveals a stalled reply. Chromium only
+// throttles an occluded page, so without this a backgrounded-but-visible window
+// keeps paying the display-cadence price for text nobody is watching.
+export const STREAM_DELTA_FLUSH_UNFOCUSED_MS = 120
+
+// Which floor applies right now. Deliberately a real blur/focus latch rather
+// than `document.hasFocus()`: a renderer can report "not focused" for reasons
+// that are not "nobody is watching" (the app launching behind another window, a
+// devtools focus handoff, a test environment), and guessing wrong there shows a
+// visibly stalled stream. Only an actual blur slows us down; the focus and
+// visibilitychange handlers flush the queue the moment the window comes back.
+let windowUnfocused = false
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('blur', () => {
+    windowUnfocused = true
+  })
+  window.addEventListener('focus', () => {
+    windowUnfocused = false
+  })
+}
+
+export function streamDeltaFlushFloorMs(): number {
+  return windowUnfocused ? STREAM_DELTA_FLUSH_UNFOCUSED_MS : STREAM_DELTA_FLUSH_MS
+}
+
 // Ceiling for the ADAPTIVE flush gap (see scheduleDeltaFlush). Under heavy
 // multi-stream load the gap stretches to 3x the measured flush cost so the
 // main thread stays responsive to input; this cap guarantees streaming text

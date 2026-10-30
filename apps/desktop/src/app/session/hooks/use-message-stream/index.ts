@@ -52,7 +52,12 @@ import { handleServerRequest as dispatchServerRequest } from './gateway-event/se
 import { extendInterruptedReply } from './interrupted-reply'
 import { bindReceiptUserRows } from './receipt-user-rows'
 import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
-import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
+import {
+  completionErrorText,
+  delegateTaskPayloads,
+  MAX_STREAM_FLUSH_GAP_MS,
+  streamDeltaFlushFloorMs
+} from './utils'
 
 interface MessageStreamOptions {
   activeGatewayProfile?: string
@@ -380,8 +385,14 @@ export function useMessageStream({
     // actually happens; see runFlush below.
     const sinceLast = performance.now() - lastFlushAtRef.current
 
+    // A backgrounded-but-visible window is not throttled by Chromium, so the
+    // only thing keeping its flush rate honest is this floor. Text nobody is
+    // looking at does not need 30fps of commits (see STREAM_DELTA_FLUSH_UNFOCUSED_MS);
+    // the focus/visibility handlers flush the queue the moment it comes back.
+    const baseFloor = streamDeltaFlushFloorMs()
+
     const adaptiveFloor = Math.min(
-      Math.max(STREAM_DELTA_FLUSH_MS, lastFlushCostRef.current * 3),
+      Math.max(baseFloor, lastFlushCostRef.current * 3),
       MAX_STREAM_FLUSH_GAP_MS
     )
 
