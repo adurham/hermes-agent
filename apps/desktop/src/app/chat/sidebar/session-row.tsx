@@ -447,7 +447,19 @@ function SidebarSessionRowImpl({
         style={style}
         {...rest}
       >
-        {showsRunningArc(dotState) && <span aria-hidden="true" className="arc-border arc-row" />}
+        {/* Only the row for the session the user is actually looking at runs
+            the arc's travelling-highlight animation. `.arc-border::before` is
+            a compositor animation per mounted row, and several concurrent
+            agent sessions were animating at once — with the window focused
+            that fan-out alone cost ~30% of a core (#measured). `.arc-static`
+            paints the identical ring with `animation: none`, so the other
+            running rows keep the working cue without the paint cost. The
+            signal is `isSelected` — the sidebar's own active-session id
+            (`session.id === activeSessionId`), the same one that paints the
+            row's active band — not a second source of truth. */}
+        {showsRunningArc(dotState) && (
+          <span aria-hidden="true" className={cn('arc-border arc-row', !isSelected && 'arc-static')} />
+        )}
         {/* #38072 finding 3: the row's body is a DIV, not a button — the
             reorder grabber (dnd-kit role="button" + tabIndex, kept for
             keyboard reorder, #83617) and the ⋯ trigger must be SIBLINGS of

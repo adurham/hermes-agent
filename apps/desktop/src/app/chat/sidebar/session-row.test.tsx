@@ -161,21 +161,23 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
 
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
-  render(
-    <SidebarSessionRow
-      card={extra?.card}
-      isPinned={false}
-      isSelected={false}
-      onArchive={noop}
-      onDelete={noop}
-      onPin={noop}
-      onResume={noop}
-      onToggleUnread={noop}
-      session={session}
-      unread={false}
-    />
-  )
+const rowJsx = (session: SessionInfo, extra?: { card?: boolean; isSelected?: boolean }) => (
+  <SidebarSessionRow
+    card={extra?.card}
+    isPinned={false}
+    isSelected={extra?.isSelected ?? false}
+    onArchive={noop}
+    onDelete={noop}
+    onPin={noop}
+    onResume={noop}
+    onToggleUnread={noop}
+    session={session}
+    unread={false}
+  />
+)
+
+const renderRow = (session: SessionInfo, extra?: { card?: boolean; isSelected?: boolean }) =>
+  render(rowJsx(session, extra))
 
 // The row no longer takes its running state as a prop, so this drives the real
 // store the way the app does. $workingSessionIds is the actual computed here
@@ -200,6 +202,57 @@ describe('SidebarSessionRow running arc', () => {
     const { container } = renderRow(makeSession({ title: 'Running' }))
 
     expect(arc(container)).toBeTruthy()
+  })
+
+  // Fan-out regression: several concurrent agent sessions run at once (4-6 is
+  // normal, CLI-origin ones included), and every running row mounted its own
+  // `.arc-border::before` compositor animation. Measured with the window
+  // focused, that fan-out alone burned ~30% of a core; `animation: none` on the
+  // whole tree took it to ~2%. Only the row the user is looking at — the
+  // sidebar's active session (`isSelected`, i.e. `session.id ===
+  // activeSessionId`) — may animate; every other running row paints the same
+  // ring statically.
+  const animatedArcs = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('.arc-row')).filter(el => !el.classList.contains('arc-static'))
+
+  const staticArcs = (container: HTMLElement) => Array.from(container.querySelectorAll('.arc-row.arc-static'))
+
+  it('animates only the active row’s arc and paints other running rows statically', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+    publishSessionState('rt2', { ...createClientSessionState('s2'), busy: true })
+
+    const { container } = render(
+      <>
+        {rowJsx(makeSession({ id: 's1', title: 'Open in the pane' }), { isSelected: true })}
+        {rowJsx(makeSession({ id: 's2', title: 'Running in the background' }))}
+      </>
+    )
+
+    // Both rows are working, so both still wear the ring…
+    expect(container.querySelectorAll('.arc-row')).toHaveLength(2)
+    // …but exactly one of them animates, and it's the active row's.
+    expect(animatedArcs(container)).toHaveLength(1)
+    expect(staticArcs(container)).toHaveLength(1)
+    expect(animatedArcs(container)[0].parentElement?.textContent).toContain('Open in the pane')
+    expect(staticArcs(container)[0].parentElement?.textContent).toContain('Running in the background')
+  })
+
+  it('keeps the plain animated arc when the only running row is the active one', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    const { container } = renderRow(makeSession({ title: 'Focused and running' }), { isSelected: true })
+
+    expect(arc(container)).toBeTruthy()
+    expect(arc(container)!.classList.contains('arc-static')).toBe(false)
+  })
+
+  it('paints a running row that is not the active one statically, even alone', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    const { container } = renderRow(makeSession({ title: 'Elsewhere' }))
+
+    expect(arc(container)).toBeTruthy()
+    expect(arc(container)!.classList.contains('arc-static')).toBe(true)
   })
 })
 
