@@ -103,22 +103,27 @@ function Harness() {
   const totals = counts
 
   // A hidden pane's transcript is PRUNED in the real app (its runtime window collapses to a short
-  // tail — the live trace shows a hidden pane around 989px where the revealed one is 4385px). That
-  // prune-and-regrow on reveal is the case this harness has to model, because a reader parked at the
-  // bottom must still be at the bottom once the full transcript lays back out.
+  // tail — the live trace shows a hidden pane around 989px where the revealed one is 4385px), and the
+  // rows come back in STEPS afterwards: the timeline reveal walks a first-paint budget up to the pane
+  // budget over the frames after the switch, so a restored reader can be looking at a near-empty
+  // transcript at the moment the restore settles. That stepped refill is what this models.
   const PRUNED_ROWS = 2
+  const REVEAL_STEP_MS = 60
+  const [revealRows, setRevealRows] = useState<Record<string, number>>({})
 
   const messages = useMemo(
     () =>
       Object.fromEntries(
         KEYS.map(key => {
           const window = mounted[key] ?? 1
-          const rows = key === active ? window : Math.min(window, PRUNED_ROWS)
+          const visible = key === active
+          const ramping = visible ? (revealRows[key] ?? window) : undefined
+          const rows = visible ? Math.min(window, ramping ?? window) : Math.min(window, PRUNED_ROWS)
 
           return [key, turns(key, totals[key] ?? 0).slice(-Math.max(1, rows))]
         })
       ) as Record<string, ThreadMessage[]>,
-    [active, mounted, totals]
+    [active, mounted, revealRows, totals]
   )
 
   const grow = (by: number) => setCounts(current => ({ ...current, [active]: (current[active] ?? 0) + by }))
@@ -154,10 +159,33 @@ function Harness() {
   }, [expand])
 
   // Switching tabs does not shrink the runtime window — a kept-alive pane comes back at whatever it
-  // had (the real trace: a revealed pane at 4385px that was 989px while hidden, the prune being the
-  // hidden-render rule below). Only a cold re-adopt rebuilds the window at the tail.
+  // had — but the rows do come back in steps (the reveal's stepped budget), so the restored reader is
+  // looking at a near-empty transcript for the first frames.
+  const rampTimer = useRef<number | null>(null)
+
   const selectTab = (key: string) => {
     setActive(key)
+
+    if (rampTimer.current !== null) {
+      window.clearInterval(rampTimer.current)
+    }
+
+    const target = mounted[key] ?? 1
+
+    setRevealRows(current => ({ ...current, [key]: PRUNED_ROWS }))
+
+    rampTimer.current = window.setInterval(() => {
+      setRevealRows(current => {
+        const next = Math.min(target, (current[key] ?? PRUNED_ROWS) + 2)
+
+        if (next >= target && rampTimer.current !== null) {
+          window.clearInterval(rampTimer.current)
+          rampTimer.current = null
+        }
+
+        return { ...current, [key]: next }
+      })
+    }, REVEAL_STEP_MS)
   }
 
   return (
